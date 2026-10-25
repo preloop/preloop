@@ -301,7 +301,9 @@ describe('delivery-report-view', () => {
   });
 
   function enabled(): DeliveryReportDetail {
-    return detail({ actions: { open_issue: true, reopen: true, dismiss: true } });
+    return detail({
+      actions: { open_issue: true, reopen: true, dismiss: true },
+    });
   }
 
   function stubActions(

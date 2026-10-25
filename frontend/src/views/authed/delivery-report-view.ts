@@ -445,7 +445,12 @@ export class DeliveryReportView extends LitElement {
   private proposalActions(
     key: string,
     decision: ProposalDecision | undefined,
-    primary: { label: string; enabled: boolean; title?: string; run: () => void },
+    primary: {
+      label: string;
+      enabled: boolean;
+      title?: string;
+      run: () => void;
+    },
     detail: DeliveryReportDetail
   ) {
     if (decision) {
