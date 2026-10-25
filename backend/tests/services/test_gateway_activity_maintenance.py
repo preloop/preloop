@@ -259,16 +259,59 @@ def test_size_backfill_fills_legacy_rows_in_batches(db_session, test_user):
     rows = [_row(db_session, session, turns=3) for _ in range(5)]
     _forget_sizes(db_session, rows)
 
+    # Windows cover the whole table, so other rows may share a window.
     first = maintenance.backfill_metadata_sizes(db_session, batch_size=2, max_batches=1)
-    assert first.sized_rows == 2 and not first.exhausted
-    rest = maintenance.backfill_metadata_sizes(db_session, batch_size=2, max_batches=10)
-    assert rest.sized_rows == 3 and rest.exhausted
+    assert first.batches == 1 and first.sized_rows <= 2 and not first.exhausted
+    rest = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=2, max_batches=100_000
+    )
+    assert first.sized_rows + rest.sized_rows >= 5 and rest.exhausted
 
     for row in rows:
         db_session.refresh(row)
         assert row.metadata_bytes == _db_text_bytes(db_session, row)
     again = maintenance.backfill_metadata_sizes(db_session, batch_size=2, max_batches=5)
     assert again.sized_rows == 0 and again.exhausted
+
+
+def test_size_backfill_stops_walking_after_a_complete_walk(
+    db_session, test_user, monkeypatch
+):
+    """Once the backlog is gone, later passes do not rescan the table."""
+    session = _session(db_session, test_user.account_id)
+    row = _row(db_session, session, turns=2)
+    _forget_sizes(db_session, [row])
+    done = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=1000, max_batches=1000
+    )
+    assert done.exhausted and done.sized_rows >= 1
+
+    def no_walk(*args, **kwargs):
+        raise AssertionError("walked again after completion")
+
+    monkeypatch.setattr(
+        maintenance.crud_runtime_session_activity,
+        "backfill_metadata_bytes_batch",
+        no_walk,
+    )
+    later = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=10, max_batches=5
+    )
+    assert later.exhausted and later.batches == 0
+
+
+def test_size_backfill_window_is_bounded_without_matches(db_session, test_user):
+    """A window of already-sized rows costs one bounded batch, not a scan."""
+    session = _session(db_session, test_user.account_id)
+    rows = [_row(db_session, session, turns=1) for _ in range(3)]
+    ordered = sorted(r.id for r in rows)
+    updated, last = (
+        maintenance.crud_runtime_session_activity.backfill_metadata_bytes_batch(
+            db_session, limit=1, after=ordered[0]
+        )
+    )
+    assert updated == 0
+    assert last is not None and last > ordered[0]
 
 
 def test_size_backfill_dry_run_writes_nothing(db_session, test_user):

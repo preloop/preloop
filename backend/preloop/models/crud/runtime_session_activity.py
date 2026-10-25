@@ -1706,42 +1706,46 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         limit: int,
         after: Optional[Any] = None,
     ) -> tuple[int, Optional[Any]]:
-        """Fill ``metadata_bytes`` for one keyset page of gateway call rows.
+        """Fill ``metadata_bytes`` on one primary-key window of rows.
 
-        Walks ``model_gateway_call`` rows in primary-key order from ``after``
-        and sets the size of those still NULL in one UPDATE. Does not commit.
+        Takes the next ``limit`` ids after ``after`` from the primary-key
+        index, whatever their type, and sets the size on the
+        ``model_gateway_call`` rows among them that still have none. The work
+        per call is bounded by ``limit`` even when no row in the window needs
+        filling, so a walk over an already-filled table never turns into an
+        open-ended scan. Does not commit.
 
         Args:
             db: Database session.
-            limit: Rows per page.
-            after: Last id of the previous page, or None to start.
+            limit: Rows per window.
+            after: Last id of the previous window, or None to start.
 
         Returns:
-            ``(rows_updated, last_id_seen)``; ``last_id_seen`` is None when
-            no candidate row was left.
+            ``(rows_updated, last_id_in_window)``; ``last_id_in_window`` is
+            None when the walk has reached the end of the table.
         """
         model = self.model
-        page = (
+        window = (
             select(model.id)
-            .where(
-                model.activity_type == "model_gateway_call",
-                model.metadata_bytes.is_(None),
-                model.metadata_.is_not(None),
-                model.id > after if after is not None else true(),
-            )
+            .where(model.id > after if after is not None else true())
             .order_by(model.id.asc())
             .limit(max(1, int(limit)))
         )
-        ids = list(db.execute(page).scalars())
+        ids = list(db.execute(window).scalars())
         if not ids:
             return 0, None
         updated = db.execute(
             update(model)
-            .where(model.id.in_(ids), model.metadata_bytes.is_(None))
+            .where(
+                model.id.in_(ids),
+                model.activity_type == "model_gateway_call",
+                model.metadata_bytes.is_(None),
+                model.metadata_.is_not(None),
+            )
             .values(metadata_bytes=func.octet_length(cast(model.metadata_, Text)))
             .execution_options(synchronize_session=False)
         ).rowcount
-        return int(updated or 0), max(ids)
+        return int(updated or 0), ids[-1]
 
     def gateway_call_batch(
         self,

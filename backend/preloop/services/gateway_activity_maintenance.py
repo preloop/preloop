@@ -1,7 +1,7 @@
 """Bounded maintenance of stored model gateway call rows.
 
-Two passes over ``runtime_session_activity`` rows of type
-``model_gateway_call``, both batched, idempotent and resumable:
+Three passes over ``runtime_session_activity`` rows of type
+``model_gateway_call``, all batched, idempotent and resumable:
 
 * **Compaction** rewrites rows stored before slim storage into the slim form
   (:func:`preloop.services.gateway_activity_body.slim_gateway_payload`). It
@@ -16,7 +16,8 @@ Two passes over ``runtime_session_activity`` rows of type
   rows written before that column existed, so payload readers stop
   detoasting them to measure their size. It writes only the size column.
 
-Sessions under legal hold are skipped by both. Each batch is its own
+Compaction and retention skip sessions under legal hold; the size backfill
+does not need to, since it only records a size derived from the stored value. Each batch is its own
 transaction, so stopping a pass at any point loses at most one batch of work
 and the next pass carries on. The pass runs hourly from the sync scheduler
 (task ``maintain_gateway_activity``) and can be run by hand::
@@ -65,8 +66,11 @@ _compaction_cursor: dict[str, Any] = {}
 _CURSOR_MAX_AGE_S = 24 * 3600
 
 
-# Same idea for the size backfill: new rows get their size on insert, so the
-# NULL backlog only shrinks and the walk resumes where it stopped.
+# Size backfill walk. Every write sets the size, so no row becomes unsized
+# behind the walk: one complete walk finishes the backlog, after which
+# ``done`` makes later passes return at once. In memory on purpose, like the
+# compaction cursor: a restarted worker walks once more, in bounded windows
+# that find nothing to fill.
 _size_backfill_cursor: dict[str, Any] = {}
 
 
@@ -247,9 +251,10 @@ def backfill_metadata_sizes(
 ) -> MaintenanceResult:
     """Fill ``metadata_bytes`` on gateway call rows that predate the column.
 
-    Each batch is one UPDATE over at most ``batch_size`` rows and its own
-    transaction. Measuring a legacy row reads it once; afterwards readers use
-    the stored size.
+    Walks the table in primary-key windows of ``batch_size`` rows; each
+    window is one UPDATE and its own transaction, so the work per batch is
+    bounded however many rows still need a size. Measuring a legacy row
+    reads it once; afterwards readers use the stored size.
 
     Args:
         db: Database session. Committed once per batch.
@@ -260,11 +265,14 @@ def backfill_metadata_sizes(
         result: Accumulator to add to.
 
     Returns:
-        The accumulated counts. ``exhausted`` is True when no NULL sizes were
-        left past the cursor.
+        The accumulated counts. ``exhausted`` is True once a complete walk
+        has finished.
     """
     result = result or MaintenanceResult(dry_run=dry_run)
     if dry_run:
+        return result
+    if _size_backfill_cursor.get("done"):
+        result.exhausted = True
         return result
     after: Optional[Any] = _size_backfill_cursor.get("after")
     for _ in range(max(0, max_batches)):
@@ -274,9 +282,7 @@ def backfill_metadata_sizes(
         if last_id is None:
             db.rollback()
             result.exhausted = True
-            # Start over next time: rows skipped by a concurrent writer are
-            # picked up by a fresh walk, which is one index scan when done.
-            _size_backfill_cursor.clear()
+            _size_backfill_cursor["done"] = True
             break
         db.commit()
         after = last_id
