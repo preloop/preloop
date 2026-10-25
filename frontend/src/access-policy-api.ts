@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /** Secret-free DTOs from the enforced account-hierarchy access API. */
 import {
   extractErrorMessage,
@@ -144,7 +145,7 @@ export async function accessRequest<T>(
   return response.status === 204 ? (undefined as T) : response.json();
 }
 const base = (kind: string, id: string) =>
-  `/api/v1/access/resources/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`;
+  `${REST_API_PREFIX}/access/resources/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`;
 export const getResourceAccess = (
   kind: string,
   id: string
@@ -223,7 +224,7 @@ export const emptyRule = (): PolicyRule => ({
 export const labelsOf = (selector: Selector) =>
   selector.matchLabels ?? selector.match_labels ?? {};
 export const listPolicyRules = (): Promise<StoredRule[]> =>
-  accessRequest('/api/v1/access/rules', {}, 'capability-off');
+  accessRequest(REST_API_PREFIX + '/access/rules', {}, 'capability-off');
 export const writePolicyRule = (
   rule: PolicyRule,
   version?: number
@@ -231,7 +232,7 @@ export const writePolicyRule = (
   const value = ruleDefinition(rule);
   if (version === undefined) delete value.id;
   return accessRequest(
-    `/api/v1/access/rules${version === undefined ? '' : '/' + encodeURIComponent(String(rule.id))}`,
+    `${REST_API_PREFIX}/access/rules${version === undefined ? '' : '/' + encodeURIComponent(String(rule.id))}`,
     {
       method: version === undefined ? 'POST' : 'PUT',
       body: JSON.stringify({
@@ -243,7 +244,7 @@ export const writePolicyRule = (
 };
 export const deletePolicyRule = (rule: StoredRule): Promise<void> =>
   accessRequest(
-    `/api/v1/access/rules/${encodeURIComponent(rule.id)}?expected_version=${rule.version}`,
+    `${REST_API_PREFIX}/access/rules/${encodeURIComponent(rule.id)}?expected_version=${rule.version}`,
     { method: 'DELETE' }
   );
 export interface ModePreview {
@@ -262,12 +263,12 @@ export const previewAccountMode = (
   action: Action,
   mode: string
 ): Promise<ModePreview> =>
-  accessRequest('/api/v1/access/modes/preview', {
+  accessRequest(REST_API_PREFIX + '/access/modes/preview', {
     method: 'POST',
     body: JSON.stringify({ action, mode }),
   });
 export const saveAccountMode = (preview: ModePreview): Promise<unknown> =>
-  accessRequest('/api/v1/access/modes', {
+  accessRequest(REST_API_PREFIX + '/access/modes', {
     method: 'PUT',
     body: JSON.stringify({
       action: preview.action,
@@ -280,7 +281,9 @@ export async function getAccountModes(): Promise<
 > {
   const policy = await accessRequest<{
     access_rule_mode?: Record<string, 'additive' | 'require_permit'>;
-  }>('/api/v1/policies/export?format=json&include_mcp_servers=false');
+  }>(
+    REST_API_PREFIX + '/policies/export?format=json&include_mcp_servers=false'
+  );
   return policy.access_rule_mode ?? {};
 }
 

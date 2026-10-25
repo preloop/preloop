@@ -258,7 +258,7 @@ func applyUnattendedEnrollment(opts unattendedOptions, home, uid, keyID string, 
 			payload["device_ref_hash"] = hmacHex(authority.Salt, "preloop-mdm-device:v1:"+opts.DeviceRef)
 		}
 		client := api.NewEnrollmentClient(opts.URL, authority.Token)
-		if err := client.Post("/api/v1/agents/enrollment/exchange", payload, &checkpoint); err != nil {
+		if err := client.Post(api.RESTPrefix+"/agents/enrollment/exchange", payload, &checkpoint); err != nil {
 			return errors.New("enrollment exchange failed; authority may be consumed, contact the administrator before retrying")
 		}
 		if err := validateUnattendedCheckpoint(checkpoint, opts.Apps); err != nil {
@@ -480,7 +480,7 @@ func acknowledgeUnattendedApply(baseURL string, checkpoint *unattendedCheckpoint
 		return nil
 	}
 	client := api.NewEnrollmentClient(baseURL, checkpoint.Apps[index].Token)
-	if err := client.Post("/api/v1/agents/enrollment/applied", map[string]interface{}{}, nil); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/enrollment/applied", map[string]interface{}{}, nil); err != nil {
 		return errors.New("local config applied; server acknowledgment pending, rerun to retry without reissuing credentials")
 	}
 	checkpoint.Apps[index].Applied = true

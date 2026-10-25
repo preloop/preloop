@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 /**
  * WebAuthn passkey ceremonies for the console.
  *
@@ -113,7 +114,7 @@ function serializeAssertion(credential: PublicKeyCredential): any {
 /** Register a new passkey for the signed-in user (settings page). */
 export async function registerPasskey(name?: string): Promise<PasskeySummary> {
   const optionsResponse = await fetchWithAuth(
-    '/api/v1/auth/webauthn/register/options',
+    REST_API_PREFIX + '/auth/webauthn/register/options',
     { method: 'POST' }
   );
   if (!optionsResponse.ok) {
@@ -129,7 +130,7 @@ export async function registerPasskey(name?: string): Promise<PasskeySummary> {
   }
 
   const verifyResponse = await fetchWithAuth(
-    '/api/v1/auth/webauthn/register/verify',
+    REST_API_PREFIX + '/auth/webauthn/register/verify',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -160,7 +161,7 @@ export async function signInWithPasskey(): Promise<{
   refresh_token: string;
 }> {
   const optionsResponse = await fetch(
-    '/api/v1/auth/webauthn/authenticate/options',
+    REST_API_PREFIX + '/auth/webauthn/authenticate/options',
     { method: 'POST' }
   );
   if (!optionsResponse.ok) {
@@ -176,7 +177,7 @@ export async function signInWithPasskey(): Promise<{
   }
 
   const verifyResponse = await fetch(
-    '/api/v1/auth/webauthn/authenticate/verify',
+    REST_API_PREFIX + '/auth/webauthn/authenticate/verify',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -199,7 +200,9 @@ export async function signInWithPasskey(): Promise<{
 
 /** List the signed-in user's passkeys. */
 export async function listPasskeys(): Promise<PasskeySummary[]> {
-  const response = await fetchWithAuth('/api/v1/auth/webauthn/credentials');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/auth/webauthn/credentials'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch passkeys');
   }
@@ -209,7 +212,7 @@ export async function listPasskeys(): Promise<PasskeySummary[]> {
 /** Remove a passkey by id. */
 export async function deletePasskey(id: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/webauthn/credentials/${id}`,
+    `${REST_API_PREFIX}/auth/webauthn/credentials/${id}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {

@@ -1,7 +1,7 @@
 """Index flow execution log model calls for the compaction walk.
 
 Revision ID: 20261112_flow_log_gateway_idx
-Revises: 20261111_credential_columns
+Revises: 20261110_media_timing
 
 The gateway activity maintenance pass walks ``model_gateway_call`` rows of
 ``flow_execution_log`` across all executions, oldest first on
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261112_flow_log_gateway_idx"
-down_revision: Union[str, None] = "20261111_credential_columns"
+down_revision: Union[str, None] = "20261110_media_timing"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

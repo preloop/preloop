@@ -22,7 +22,7 @@ import (
 	"github.com/preloop/preloop/cli/internal/api"
 )
 
-const mcpServersPath = "/api/v1/mcp-servers"
+const mcpServersPath = api.RESTPrefix + "/mcp-servers"
 
 // mcpServer is the part of MCPServerResponse these commands print.
 type mcpServer struct {

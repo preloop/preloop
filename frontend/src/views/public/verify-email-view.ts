@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -33,7 +34,9 @@ export class VerifyEmailView extends LitElement {
     }
 
     try {
-      const data = await post('/api/v1/auth/verify-email', { token });
+      const data = await post(REST_API_PREFIX + '/auth/verify-email', {
+        token,
+      });
       // The link is the only thing an unverified user can act on, so it is
       // also the sign-in. Storing the tokens the endpoint returns turns
       // "verify, then go and find the login page" into one click. An older

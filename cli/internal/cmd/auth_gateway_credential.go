@@ -99,7 +99,7 @@ func gatewayCredential(client *api.Client, cacheDir, clientName string, now func
 
 	if cached, err := loadCachedGatewayCredential(cachePath); err == nil && cached.Key != "" && cached.APIURL == baseURL {
 		var summary map[string]interface{}
-		err := client.Get("/api/v1/auth/api-keys/"+url.PathEscape(cached.KeyID), &summary)
+		err := client.Get(api.RESTPrefix+"/auth/api-keys/"+url.PathEscape(cached.KeyID), &summary)
 		if err == nil {
 			return cached.Key, nil
 		}
@@ -125,7 +125,7 @@ func gatewayCredential(client *api.Client, cacheDir, clientName string, now func
 		ID  string `json:"id"`
 		Key string `json:"key"`
 	}
-	if err := client.Post("/api/v1/auth/api-keys", map[string]interface{}{"name": name, "scopes": []string{}}, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/auth/api-keys", map[string]interface{}{"name": name, "scopes": []string{}}, &created); err != nil {
 		return "", fmt.Errorf("could not mint a %s gateway key: %w", label, err)
 	}
 	if created.Key == "" {

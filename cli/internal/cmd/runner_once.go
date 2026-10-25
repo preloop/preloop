@@ -235,7 +235,7 @@ func registerEphemeralRunner(
 	req["ephemeral"] = true
 	delete(req, "runner_id")
 	var created runnerAPIRecord
-	if err := client.Post("/api/v1/runners/register", req, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/runners/register", req, &created); err != nil {
 		return nil, fmt.Errorf("register runner: %w", err)
 	}
 	if created.ID == "" || created.Token == "" {

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /** Console contract for the governance review plugin, behind governance_review. */
 import { extractErrorMessage, fetchWithAuth } from './api';
 
@@ -97,7 +98,7 @@ export interface FindingFilters {
   limit?: number;
   offset?: number;
 }
-const BASE = '/api/v1/governance-review';
+const BASE = REST_API_PREFIX + '/governance-review';
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetchWithAuth(`${BASE}${path}`, {
     ...options,
@@ -161,10 +162,13 @@ export interface WeeklyReportPreferences {
   member_policy_findings_enabled?: boolean;
 }
 async function preferences<T>(options?: RequestInit): Promise<T> {
-  const response = await fetchWithAuth('/api/v1/weekly-report/preferences', {
-    ...options,
-    passive: !options?.method,
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/weekly-report/preferences',
+    {
+      ...options,
+      passive: !options?.method,
+    }
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(

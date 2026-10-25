@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '../api';
+import { REST_API_PREFIX } from '../api-path';
 
 export interface CopilotSeatActivity {
   organization: string;
@@ -148,7 +149,7 @@ async function read<T>(path: string): Promise<T | null> {
 }
 
 export function getCopilotSeatActivity(): Promise<CopilotSeatActivity | null> {
-  return read('/api/v1/cost/copilot/seat-activity?active_days=30');
+  return read(`${REST_API_PREFIX}/cost/copilot/seat-activity?active_days=30`);
 }
 
 export function getCopilotOrganizationMetrics(
@@ -158,5 +159,5 @@ export function getCopilotOrganizationMetrics(
   const params = new URLSearchParams();
   if (startDate) params.set('start_date', startDate);
   if (endDate) params.set('end_date', endDate);
-  return read(`/api/v1/cost/copilot/organization-metrics?${params}`);
+  return read(`${REST_API_PREFIX}/cost/copilot/organization-metrics?${params}`);
 }

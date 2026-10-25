@@ -138,7 +138,7 @@ func listGatewayModelChoices(
 		return choices
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		// Fail soft to inferred/local choices, but tell the operator the
 		// account catalog was unavailable so the picker may be incomplete.
 		fmt.Fprintf(

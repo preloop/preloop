@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 import { fetchWithAuth, getFeatures, getUserProfile } from './api';
 import type { UserProfile } from './api';
 
@@ -114,7 +115,7 @@ async function request<T>(
   signal?: AbortSignal,
   body?: unknown
 ): Promise<T> {
-  const response = await fetchWithAuth(`/api/v1/fleet${path}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/fleet${path}`, {
     signal,
     ...(body === undefined
       ? {}

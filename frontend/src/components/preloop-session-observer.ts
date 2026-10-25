@@ -97,6 +97,10 @@ import './session-request-timeline';
 import { runtimeFromSourceType } from '../utils/session-turns';
 import './similar-sessions-panel';
 import './browser-step-strip';
+import './session-recording-player';
+import type { SessionRecordingPlayer } from './session-recording-player';
+import type { RecordingSync, MediaSyncResponse } from '../types';
+import { getRuntimeSessionMediaSync } from '../api';
 import './artifact-image-viewer';
 import './session-artifact-summary';
 import {
@@ -207,6 +211,7 @@ const DEFAULT_FEATURES: Required<SessionObserverFeatures> = {
   endSession: false,
   similarSessions: false,
   liveDesktop: false,
+  syncedRecordingPlayer: true,
 };
 
 @customElement('preloop-session-observer')
@@ -372,6 +377,101 @@ export class PreloopSessionObserver extends LitElement {
   /** Index into the active session's browser steps shown full size, or -1. */
   @state()
   private browserStepViewerIndex = -1;
+  @state() private loadedMediaSync: Record<string, MediaSyncResponse> = {};
+  @state() private selectedRecordingId = '';
+  @state() private recordingActivityId: string | null = null;
+  private recordingLastUserScroll = -Infinity;
+
+  private get selectedRecording() {
+    return (
+      this.recordings.find((item) => item.id === this.selectedRecordingId) ??
+      this.recordings[0]
+    );
+  }
+  private get recordings() {
+    return Object.values(this.activeArtifacts).filter(
+      (item) => item.kind === 'recording' || item.kind === 'screencast'
+    );
+  }
+  private get recordingSync(): RecordingSync | undefined {
+    return this.loadedMediaSync[this.activeSessionId || '']?.recordings?.find(
+      (item) => item.artifact_id === this.selectedRecording?.id
+    );
+  }
+  private get recordingEnabled(): boolean {
+    return (
+      this.enabledFeatures.syncedRecordingPlayer &&
+      !!this.selectedRecording?.media_timing &&
+      this.selectedRecording.availability === 'available' &&
+      this.selectedRecording.content_type !== 'image/gif'
+    );
+  }
+  private get recordingPlayer(): SessionRecordingPlayer | null {
+    return this.renderRoot.querySelector('session-recording-player');
+  }
+  private seekRecording(activityId: string): void {
+    void this.recordingPlayer?.seekActivity(activityId);
+  }
+  private recordingUnavailable(
+    event: CustomEvent<{
+      sessionId: string;
+      artifactId: string;
+      availability: string;
+    }>
+  ): void {
+    const { sessionId, artifactId, availability } = event.detail;
+    const cached = this.loadedArtifacts[sessionId];
+    const artifact = cached?.byId[artifactId];
+    if (!artifact) return;
+    if (
+      sessionId === this.activeSessionId &&
+      artifactId === this.selectedRecording?.id
+    )
+      this.recordingActivityId = null;
+    this.loadedArtifacts = {
+      ...this.loadedArtifacts,
+      [sessionId]: {
+        ...cached,
+        byId: { ...cached.byId, [artifactId]: { ...artifact, availability } },
+      },
+    };
+  }
+  private recordingPlayhead(
+    event: CustomEvent<{ activityId: string | null }>
+  ): void {
+    this.recordingActivityId = event.detail.activityId;
+    if (
+      !this.recordingActivityId ||
+      Date.now() - this.recordingLastUserScroll < 5000
+    )
+      return;
+    const selector =
+      this.replayMode === 'conversation'
+        ? 'session-chat-view'
+        : 'session-replay-panel';
+    const host = this.renderRoot.querySelector(selector);
+    const row = host?.shadowRoot?.querySelector(
+      `[data-recording-activity="${CSS.escape(this.recordingActivityId)}"]`
+    );
+    row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  private renderRecordingPlayer() {
+    if (!this.enabledFeatures.syncedRecordingPlayer || !this.recordings.length)
+      return nothing;
+    return html`<session-recording-player
+      .sessionId=${this.activeSessionId || ''}
+      .recordings=${this.recordings}
+      .sync=${this.loadedMediaSync[this.activeSessionId || '']?.recordings ?? []}
+      .selectedId=${this.selectedRecording?.id ?? ''}
+      @recording-selected=${(event: CustomEvent<{ artifactId: string }>) => {
+        this.selectedRecordingId = event.detail.artifactId;
+        this.recordingActivityId = null;
+      }}
+      @recording-playhead=${this.recordingPlayhead}
+      @recording-unavailable=${this.recordingUnavailable}
+    ></session-recording-player>`;
+  }
+
   /** Artifact descriptors per session, by artifact id. */
   @state()
   private loadedArtifacts: Record<
@@ -1408,6 +1508,8 @@ export class PreloopSessionObserver extends LitElement {
     }
     this.browserStepViewerIndex = -1;
     this.artifactViewerIndex = -1;
+    this.selectedRecordingId = '';
+    this.recordingActivityId = null;
     this.artifactKindFilter = null;
     this.highlightedArtifactId = null;
     // A later link to an artifact of this or another session lands again.
@@ -2202,6 +2304,22 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedArtifacts,
         [sessionId]: { byId, truncated },
       };
+      if (
+        this.enabledFeatures.syncedRecordingPlayer &&
+        items.some(
+          (item) => item.kind === 'recording' || item.kind === 'screencast'
+        )
+      ) {
+        try {
+          const sync = await getRuntimeSessionMediaSync(sessionId);
+          this.loadedMediaSync = { ...this.loadedMediaSync, [sessionId]: sync };
+        } catch {
+          this.loadedMediaSync = {
+            ...this.loadedMediaSync,
+            [sessionId]: { recordings: [] },
+          };
+        }
+      }
     } catch (error) {
       console.warn('Could not list session artifacts:', error);
     }
@@ -2390,6 +2508,11 @@ export class PreloopSessionObserver extends LitElement {
    * viewer so the click still lands somewhere.
    */
   private scrubToBrowserStep(key: string): void {
+    const step = this.activeBrowserSteps.find(
+      (item) => browserStepKey(item) === key
+    );
+    if (this.recordingEnabled && step?.activity_id)
+      this.seekRecording(step.activity_id);
     const selector =
       this.replayMode === 'conversation'
         ? 'session-chat-view'
@@ -2407,6 +2530,7 @@ export class PreloopSessionObserver extends LitElement {
     return html`<browser-step-strip
       style="margin-bottom: var(--sl-spacing-small);"
       .steps=${steps}
+      .currentActivityId=${this.recordingActivityId}
       .sessionId=${this.activeSessionId}
       @browser-step-scrub=${(event: CustomEvent<{ key: string }>) =>
         this.scrubToBrowserStep(event.detail.key)}
@@ -2637,6 +2761,10 @@ export class PreloopSessionObserver extends LitElement {
         .pendingApprovals=${this.activePendingApprovals}
         .sessionEnded=${this.isSessionEnded(this.activeSession)}
         .connected=${this.realtimeConnected}
+        .recordingSync=${this.recordingSync}
+        .recordingEnabled=${this.recordingEnabled}
+        .recordingActivityId=${this.recordingActivityId}
+        .syncedRecordingPlayer=${this.enabledFeatures.syncedRecordingPlayer}
         .artifacts=${this.activeArtifacts}
         .artifactKindFilter=${this.artifactKindFilter}
         .highlightArtifactId=${this.highlightedArtifactId}
@@ -3113,6 +3241,34 @@ export class PreloopSessionObserver extends LitElement {
     const content = html`
       <div
         class="content"
+        @wheel=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @touchmove=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @pointerdown=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @pointermove=${(event: PointerEvent) => {
+          if (event.buttons) this.recordingLastUserScroll = Date.now();
+        }}
+        @keydown=${(event: KeyboardEvent) => {
+          this.recordingPlayer?.handleShortcut(event);
+          if (
+            [
+              'ArrowUp',
+              'ArrowDown',
+              'PageUp',
+              'PageDown',
+              'Home',
+              'End',
+            ].includes(event.key)
+          )
+            this.recordingLastUserScroll = Date.now();
+        }}
+        @recording-seek=${(event: CustomEvent<{ activityId: string }>) => this.seekRecording(event.detail.activityId)}
+        @recording-open=${(event: CustomEvent<{ artifactId: string }>) => this.recordingPlayer?.selectRecording(event.detail.artifactId)}
         @browser-step-open=${(event: CustomEvent<{ key: string }>) =>
           this.openBrowserStepViewer(event.detail.key)}
         @artifact-open=${(event: CustomEvent<{ artifactId: string }>) =>
@@ -3233,7 +3389,7 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
-        ${this.renderConversationView()}
+        ${this.renderRecordingPlayer()} ${this.renderConversationView()}
         <!-- Artifacts and the step strip follow the transcript, so the
              first turn starts above the fold at 1440x900 (#1689). -->
         ${this.renderArtifactSummary()} ${this.renderBrowserStepStrip()}
@@ -3249,6 +3405,10 @@ export class PreloopSessionObserver extends LitElement {
               : []
           }
           .activity=${this.activeActivity}
+          .recordingSync=${this.recordingSync}
+          .recordingEnabled=${this.recordingEnabled}
+          .recordingActivityId=${this.recordingActivityId}
+          .syncedRecordingPlayer=${this.enabledFeatures.syncedRecordingPlayer}
           .artifacts=${this.activeArtifacts}
           .artifactKindFilter=${this.artifactKindFilter}
           .highlightArtifactId=${this.highlightedArtifactId}

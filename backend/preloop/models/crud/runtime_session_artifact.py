@@ -152,6 +152,7 @@ def store(
     content_type: str,
     plaintext: bytes,
     manifest: dict[str, Any],
+    media_timing: dict[str, Any] | None = None,
     activity_id: UUID | None = None,
     expires_at: datetime | None = None,
     name: str | None = None,
@@ -213,6 +214,12 @@ def store(
             ``storage_budget_exhausted`` to HTTP 507 for recordings and to a
             rejected row for screenshots.
     """
+    if media_timing is not None:
+        from preloop.schemas.media_timing import MediaTiming
+
+        if kind not in ("recording", "screencast"):
+            raise ValueError("artifact_timing_kind_invalid")
+        media_timing = MediaTiming.model_validate(media_timing).model_dump(mode="json")
     if len(plaintext) > _max_bytes(kind):
         raise ValueError("artifact_too_large")
     content_type = check_content(kind, content_type, plaintext)
@@ -288,6 +295,7 @@ def store(
         size_bytes=len(plaintext),
         sha256=hashlib.sha256(plaintext).hexdigest(),
         manifest=dict(manifest),
+        media_timing=media_timing,
         ciphertext=_get_fernet().encrypt(plaintext),
         availability="available",
         expires_at=expires_at,

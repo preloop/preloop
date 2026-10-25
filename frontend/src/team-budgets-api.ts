@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for team budgets.
  *
@@ -64,7 +65,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function base(): Promise<string> {
   const accountId = (await getUserProfile()).account_id;
-  return `/api/v1/accounts/${enc(accountId)}`;
+  return `${REST_API_PREFIX}/accounts/${enc(accountId)}`;
 }
 
 export async function listTeamBudgets(): Promise<TeamBudget[]> {

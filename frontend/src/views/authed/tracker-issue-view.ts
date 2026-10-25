@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -176,7 +177,7 @@ export class TrackerIssueView extends LitElement {
     try {
       const [issue, trackerRes] = await Promise.all([
         getIssue(this._issueId),
-        fetchWithAuth(`/api/v1/trackers/${this._trackerId}`),
+        fetchWithAuth(`${REST_API_PREFIX}/trackers/${this._trackerId}`),
       ]);
       if (generation !== this._loadGeneration) return;
       this._issue = issue;
