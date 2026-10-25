@@ -142,7 +142,9 @@ def score(
         got_change = shipped_by_ref.get(str(change["ref"])) or {}
         if (got_change.get("purpose") or {}).get("verdict") == dr.PURPOSE_NO_CRITERIA:
             no_criteria += 1
-        if got_change.get("metadata_only") == change.get("metadata_only_expected"):
+        if got_change and got_change.get("metadata_only") == change.get(
+            "metadata_only_expected"
+        ):
             metadata += 1
 
     return {

@@ -1632,6 +1632,14 @@ class GitLabTracker(BaseTracker):
                 "created_at": mr.created_at,
                 "updated_at": mr.updated_at,
                 "merged_at": mr.merged_at if hasattr(mr, "merged_at") else None,
+                "head_sha": getattr(mr, "sha", None),
+                "merge_commit_sha": getattr(mr, "merge_commit_sha", None)
+                or getattr(mr, "squash_commit_sha", None),
+                "checks": [{"state": mr.head_pipeline.get("status") or "unknown"}]
+                if isinstance(getattr(mr, "head_pipeline", None), dict)
+                and mr.head_pipeline.get("sha") == getattr(mr, "sha", None)
+                and getattr(mr, "sha", None)
+                else [],
                 "work_in_progress": mr.work_in_progress
                 if hasattr(mr, "work_in_progress")
                 else False,

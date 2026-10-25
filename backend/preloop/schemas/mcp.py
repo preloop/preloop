@@ -217,6 +217,10 @@ class PullRequestResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     merged_at: Optional[str] = None
+    head_sha: Optional[str] = None
+    merge_commit_sha: Optional[str] = None
+    # Missing, inaccessible, or truncated checks must not imply success.
+    checks: List[dict] = []
     is_draft: bool = False
     comments: List[dict] = []
     changes: Optional[dict] = None  # Diff/changes information

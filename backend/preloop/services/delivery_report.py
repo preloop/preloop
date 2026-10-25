@@ -1300,7 +1300,7 @@ def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
     """Whether a parent-check record is a completed check of this merge.
 
     It must come from :func:`delivery_report_checks.parent_references` at
-    the closing merge (when that is known), resolve the parent, and carry a
+    the known closing merge, resolve the parent, and carry a
     result for at least one named file.
     """
     from preloop.services.delivery_report_checks import PARENT_CHECK_SCHEMA
@@ -1309,7 +1309,7 @@ def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
         return False
     if record.get("error") or not record.get("parent_sha"):
         return False
-    if merge_sha and record.get("merge_sha") != merge_sha:
+    if not merge_sha or record.get("merge_sha") != merge_sha:
         return False
     paths = record.get("paths")
     return isinstance(paths, list) and bool(paths)

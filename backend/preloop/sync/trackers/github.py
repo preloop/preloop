@@ -2023,6 +2023,53 @@ class GitHubTracker(BaseTracker):
         except TrackerResponseError:
             return False
 
+    async def _pull_request_checks(self, owner: str, repo: str, sha: str) -> List[dict]:
+        """Read bounded check runs and the combined legacy status for this SHA.
+
+        An inaccessible or truncated result remains explicitly unknown, so a
+        visible passing subset cannot be mistaken for a clean check suite.
+        """
+        checks: List[dict] = []
+        for suffix in ("check-runs", "status"):
+            try:
+                data = await self._request(
+                    "GET",
+                    f"/repos/{owner}/{repo}/commits/{sha}/{suffix}",
+                    params={"per_page": 100},
+                )
+            except (
+                TrackerAuthenticationError,
+                TrackerConnectionError,
+                TrackerRateLimitError,
+                TrackerResponseError,
+                TrackerPermissionError,
+                httpx.HTTPError,
+            ):
+                checks.append({"state": "unknown"})
+                continue
+            if not isinstance(data, dict):
+                checks.append({"state": "unknown"})
+            elif suffix == "status":
+                if data.get("total_count", 0):
+                    checks.append({"state": data.get("state") or "unknown"})
+            else:
+                runs = data.get("check_runs")
+                if not isinstance(runs, list):
+                    checks.append({"state": "unknown"})
+                    continue
+                checks.extend(
+                    {
+                        "name": run.get("name"),
+                        "conclusion": run.get("conclusion"),
+                        "state": run.get("status"),
+                    }
+                    for run in runs
+                    if isinstance(run, dict)
+                )
+                if data.get("total_count", len(runs)) > len(runs):
+                    checks.append({"state": "unknown"})
+        return checks
+
     async def get_pull_request(self, pr_identifier: str) -> Dict[str, Any]:
         """
         Get details of a GitHub pull request.
@@ -2110,6 +2157,13 @@ class GitHubTracker(BaseTracker):
                 ],
             }
 
+            head_sha = pr_data["head"].get("sha")
+            checks = (
+                await self._pull_request_checks(owner, repo, head_sha)
+                if head_sha
+                else []
+            )
+
             return {
                 "id": str(pr_data["id"]),
                 "number": pr_data["number"],
@@ -2128,7 +2182,8 @@ class GitHubTracker(BaseTracker):
                 "created_at": pr_data["created_at"],
                 "updated_at": pr_data["updated_at"],
                 "merged_at": pr_data.get("merged_at"),
-                "head_sha": pr_data["head"].get("sha"),
+                "head_sha": head_sha,
+                "checks": checks,
                 "merge_commit_sha": pr_data.get("merge_commit_sha"),
                 "is_draft": pr_data.get("draft", False),
                 "comments": all_comments,

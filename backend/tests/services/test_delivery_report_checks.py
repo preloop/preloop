@@ -478,3 +478,29 @@ class TestSeed:
             "tools/delivery_report_checks.py",
             dr.MERGE_AUDITS_WORKSPACE_PATH,
         ]
+
+
+@pytest.mark.parametrize("closing_sha", [None, "", "different-merge"])
+def test_parent_check_requires_the_known_closing_merge(closing_sha: str | None) -> None:
+    report = dr.finalize_delivery_report(
+        {
+            "closed_issues": [
+                {
+                    "ref": "acme/app#9",
+                    "closing_sha": closing_sha,
+                    "purpose": {
+                        "criteria": [
+                            {
+                                "text": ACCORDINGLY,
+                                "met": False,
+                                "parent_check": _record(),
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    criterion = report["closed_issues"][0]["purpose"]["criteria"][0]
+    assert criterion["met"] is None
+    assert criterion["unchecked"] == "parent-commit check not run"

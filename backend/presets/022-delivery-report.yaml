@@ -127,6 +127,9 @@ prompt_template: |
     Assess from its output only: the file list, the added test names, the
     last reviewer summary and the check conclusion, plus review threads
     and diff hunks only when the output includes them (scope says why).
+    A check conclusion of unknown means unavailable or incomplete evidence,
+    never a pass. Keep the closing merge SHA from the forge or git history;
+    a parent-check record cannot clear a criterion without that exact SHA.
   - Dependabot PRs and PRs that only touch docs or the README: report them
     from metadata (set metadata_only to "dependabot" or "docs_only") with
     no assessment and no risk pass.

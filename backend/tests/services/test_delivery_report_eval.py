@@ -203,3 +203,13 @@ class TestScore:
         assert ev.main([str(path), "--set", str(EVAL), "--min-accuracy", "0.9"]) == 0
         assert ev.main([str(path), "--set", str(EVAL), "--min-accuracy", "0.95"]) == 1
         assert '"accuracy": 0.925' in capsys.readouterr().out
+
+
+def test_missing_shipped_row_does_not_count_as_metadata_agreement(
+    evaluation: Dict[str, List[Dict[str, Any]]],
+) -> None:
+    run = _perfect_run(evaluation)
+    missing = next(s for s in run["shipped"] if s["metadata_only"] is None)
+    run["shipped"].remove(missing)
+    result = ev.score(run, evaluation)
+    assert result["shipped"]["metadata_only_correct"] == len(evaluation["shipped"]) - 1
