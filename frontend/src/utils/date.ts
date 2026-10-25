@@ -62,10 +62,10 @@ export function formatLocalTime(dateTimeString: string): string {
  * Formats a datetime string for display in the user's local timezone with date.
  *
  * @param dateTimeString - Datetime string from backend
- * @returns Formatted string in user's local timezone (e.g., "11/21/2025, 12:30:45 PM")
+ * @returns Formatted string in user's local timezone (e.g., "Nov 21, 2025, 12:30 PM")
  */
 export function formatLocalDateTime(dateTimeString: string): string {
-  return parseUTCDate(dateTimeString).toLocaleString();
+  return formatAbsoluteTime(dateTimeString);
 }
 
 /**
@@ -90,10 +90,10 @@ export function formatUTCDateTime(dateTimeString: string): string {
 export interface RelativeTimeOptions {
   /**
    * How long a timestamp stays relative. Past this many days the absolute
-   * date is shown instead, because "just now" next to "213d ago" reads worse
-   * than "just now" next to a date. Lists that mix fresh and stale rows
-   * (agents "Last seen") use 30; pages that are entirely relative, like
-   * /console/attention, pass Infinity.
+   * date is shown instead. The default is Infinity: DESIGN.md asks for
+   * relative times however old they are, with the absolute value in `title`
+   * (see formatAbsoluteTime). Pass a finite window only where a date reads
+   * better than an age.
    */
   maxRelativeDays?: number;
   /** Append " ago". Off for phrasings that supply their own word ("pending 7w"). */
@@ -114,7 +114,7 @@ export function formatRelativeTime(
   now: Date = new Date(),
   options: RelativeTimeOptions = {}
 ): string {
-  const { maxRelativeDays = 7, withSuffix = true } = options;
+  const { maxRelativeDays = Infinity, withSuffix = true } = options;
   const date = parseUTCDate(dateTimeString);
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -131,7 +131,7 @@ export function formatRelativeTime(
 
   const diffWeeks = Math.floor(diffDays / 7);
   if (diffWeeks < 52) return `${diffWeeks}w${suffix}`;
-  return `${Math.floor(diffDays / 365)}y${suffix}`;
+  return `${Math.max(1, Math.floor(diffDays / 365))}y${suffix}`;
 }
 
 /**
@@ -153,8 +153,47 @@ export function formatFutureRelativeTime(
   if (diffMins <= 0) return 'expired';
   if (diffMins < 60) return `in ${diffMins}m`;
   if (diffHours < 24) return `in ${diffHours}h`;
-  if (diffDays < 7) return `in ${diffDays}d`;
-  return date.toLocaleDateString();
+  if (diffDays < 30) return `in ${diffDays}d`;
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 52) return `in ${diffWeeks}w`;
+  return `in ${Math.max(1, Math.floor(diffDays / 365))}y`;
+}
+
+/**
+ * Relative time for a value that may lie in the past or the future, such as
+ * an API key's expiry: "3h ago" or "in 12w".
+ *
+ * @param dateTimeString - Datetime string from backend
+ * @param now - Instant to measure against
+ * @returns Relative time string
+ */
+export function formatRelativeOrFuture(
+  dateTimeString: string,
+  now: Date = new Date()
+): string {
+  const date = parseUTCDate(dateTimeString);
+  return date.getTime() > now.getTime()
+    ? formatFutureRelativeTime(dateTimeString, now)
+    : formatRelativeTime(dateTimeString, now);
+}
+
+/**
+ * The one absolute format the console shows, used in the `title` behind a
+ * relative time and wherever an exact instant is the point (e.g.
+ * "Oct 25, 2026, 12:24 PM").
+ *
+ * @param dateTimeString - Datetime string from backend
+ * @returns Local date and time, or '' when missing or unparseable
+ */
+export function formatAbsoluteTime(
+  dateTimeString: string | null | undefined
+): string {
+  const ms = parseUtc(dateTimeString);
+  if (ms === null) return '';
+  return new Date(ms).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
 }
 
 /**
