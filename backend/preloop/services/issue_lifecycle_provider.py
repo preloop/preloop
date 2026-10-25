@@ -447,7 +447,9 @@ class GitHubLifecycleProvider:
                     }
                 )
 
-        pending = dict(zip(_EVIDENCE_SOURCES, (checks, artifacts, previews)))
+        pending = dict(
+            zip(_EVIDENCE_SOURCES, (checks, artifacts, previews), strict=False)
+        )
         deadline = asyncio.timeout(EVIDENCE_TIMEOUT_SECONDS)
         try:
             async with deadline:

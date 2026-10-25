@@ -1874,7 +1874,6 @@ async def test_unreadable_evidence_source_is_recorded_not_fatal(rig: tuple) -> N
     assert audit_assessments(service)[0].purpose_verdict == "unverified"
 
 
-
 @pytest.mark.asyncio
 async def test_slow_evidence_source_times_out_into_unavailable(
     rig: tuple, monkeypatch: pytest.MonkeyPatch
