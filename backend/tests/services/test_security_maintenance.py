@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+
+from preloop.utils.permissions import members_have_full_access
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -2211,9 +2213,14 @@ class TestBaselineAuditEntry:
 
             app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
             # Both users belong to other accounts. The core edition has no
-            # role checks, so the release is simply not visible to them.
+            # role checks, so the release is simply not visible to them; with
+            # the RBAC plugin the viewer's missing edit_flows refuses first.
             foreign = client.post(path, json={"sbom_content_base64": SBOM_B64})
-            assert foreign.status_code == 404
+            if members_have_full_access():
+                assert foreign.status_code == 404
+            else:
+                assert foreign.status_code == 403
+                assert "edit_flows" in foreign.json()["detail"]
 
             app.dependency_overrides[get_current_active_user] = lambda: test_editor_user
             hidden = client.post(path, json={"sbom_content_base64": SBOM_B64})
