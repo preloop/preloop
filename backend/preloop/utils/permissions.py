@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import os
 import threading
 from contextvars import ContextVar, copy_context
 from typing import TYPE_CHECKING, Any, Callable
@@ -27,6 +28,12 @@ if TYPE_CHECKING:
     from preloop.models.models.user import User
 
 try:
+    if os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() in {
+        "true",
+        "1",
+        "yes",
+    }:
+        raise ImportError("Proprietary plugins disabled")
     from preloop.plugins.proprietary.rbac.permissions import (
         require_permission as _plugin_require_permission,
     )
