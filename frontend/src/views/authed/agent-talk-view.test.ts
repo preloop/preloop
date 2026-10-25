@@ -1033,3 +1033,163 @@ describe('agent-talk-view session integrity', () => {
     el.remove();
   });
 });
+
+describe('agent-talk-view live reply', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) return jsonResponse([]);
+      if (url.includes('/api/v1/agents/agent-1')) {
+        return jsonResponse({ agent: AGENT, sessions: [SESSION] });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  });
+
+  afterEach(() => sinon.restore());
+
+  const transcriptReads = () =>
+    fetchStub.getCalls().filter((call) =>
+      String(call.args[0]).includes('/gateway-events')
+    ).length;
+
+  function progress(
+    payload: Record<string, unknown>,
+    runtimeSessionId = 'sess-1'
+  ) {
+    return {
+      type: 'managed_agent_session_progress',
+      topic: 'session_progress',
+      managed_agent_id: 'agent-1',
+      runtime_session_id: runtimeSessionId,
+      payload,
+    };
+  }
+
+  function liveReply(el: AgentTalkView): string | null {
+    const chat = el.shadowRoot!.querySelector('session-chat-view')!;
+    const bubble = chat.shadowRoot!.querySelector(
+      '[data-testid="live-reply"] .bubble-text'
+    );
+    return bubble ? (bubble.textContent ?? '') : null;
+  }
+
+  async function mount(): Promise<AgentTalkView> {
+    const el = document.createElement('agent-talk-view') as AgentTalkView;
+    el.onBeforeEnter({ params: { agentId: 'agent-1' }, search: '' });
+    document.body.append(el);
+    await waitUntil(() => transcriptReads() > 0);
+    await aTimeout(0);
+    return el;
+  }
+
+  it('a delta for the open session appends without refetch', async () => {
+    const el = await mount();
+    const before = transcriptReads();
+    el.receiveSessionProgress(
+      progress({ kind: 'turn_started', turn_id: 't1', seq: 1 })
+    );
+    el.receiveSessionProgress(
+      progress({
+        kind: 'assistant_delta',
+        turn_id: 't1',
+        item_id: 'm1',
+        delta: 'Hello',
+        seq: 2,
+      })
+    );
+    el.receiveSessionProgress(
+      progress({
+        kind: 'assistant_delta',
+        turn_id: 't1',
+        item_id: 'm1',
+        delta: ' world',
+        seq: 3,
+      })
+    );
+    await el.updateComplete;
+    await waitUntil(() => liveReply(el) === 'Hello world');
+    await aTimeout(1400);
+    expect(transcriptReads()).to.equal(before);
+    el.remove();
+  });
+
+  it('a delta for another session is ignored', async () => {
+    const el = await mount();
+    const before = transcriptReads();
+    el.receiveSessionProgress(
+      progress(
+        {
+          kind: 'assistant_delta',
+          turn_id: 't1',
+          item_id: 'm1',
+          delta: 'not yours',
+          seq: 1,
+        },
+        'sess-other'
+      )
+    );
+    await aTimeout(1400);
+    expect(liveReply(el)).to.equal(null);
+    expect(transcriptReads()).to.equal(before);
+    el.remove();
+  });
+
+  it('refetches on a sequence gap instead of trusting the live text', async () => {
+    const el = await mount();
+    const before = transcriptReads();
+    el.receiveSessionProgress(
+      progress({
+        kind: 'assistant_delta',
+        turn_id: 't1',
+        item_id: 'm1',
+        delta: 'A',
+        seq: 4,
+      })
+    );
+    el.receiveSessionProgress(
+      progress({
+        kind: 'assistant_delta',
+        turn_id: 't1',
+        item_id: 'm1',
+        delta: 'C',
+        seq: 6,
+      })
+    );
+    await waitUntil(() => transcriptReads() > before, undefined, {
+      timeout: 3000,
+    });
+    el.remove();
+  });
+
+  it('reads the stored reply when the turn ends and drops the live bubble', async () => {
+    const el = await mount();
+    const before = transcriptReads();
+    el.receiveSessionProgress(
+      progress({
+        kind: 'assistant_delta',
+        turn_id: 't1',
+        item_id: 'm1',
+        delta: 'Done',
+        seq: 1,
+      })
+    );
+    await waitUntil(() => liveReply(el) === 'Done');
+    el.receiveSessionProgress(
+      progress({ kind: 'turn_completed', turn_id: 't1', seq: 2 })
+    );
+    await waitUntil(() => transcriptReads() > before, undefined, {
+      timeout: 3000,
+    });
+    await waitUntil(() => liveReply(el) === null);
+    el.remove();
+  });
+});

@@ -22,8 +22,10 @@ from preloop.services.account_realtime import (
 @pytest.fixture(autouse=True)
 def _clear_target_cache() -> Iterator[None]:
     agent_control._session_progress_targets.clear()
+    agent_control._session_progress_buckets.clear()
     yield
     agent_control._session_progress_targets.clear()
+    agent_control._session_progress_buckets.clear()
 
 
 class _FakeDatabase:
@@ -192,6 +194,80 @@ async def test_session_progress_target_is_resolved_once_per_session() -> None:
         )
     assert lookup.call_count == 2
     assert emit.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_reply_delta_published_only_to_owning_account_with_runtime_session_id() -> None:
+    """A reply delta reaches the owning account's sockets, never another's."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.websocket_manager import WebSocketManager
+
+    owner_account, other_account = str(uuid4()), str(uuid4())
+    agent_id = str(uuid4())
+    session = SimpleNamespace(id=uuid4())
+    emit = await _emit(
+        _connection(owner_account, agent_id),
+        _delta("thread-tui", seq=7),
+        session=session,
+        owner_id=agent_id,
+    )
+    event = emit.call_args.args[0]
+    assert event["account_id"] == owner_account
+    assert event["runtime_session_id"] == str(session.id)
+    assert event["payload"]["seq"] == 7
+
+    manager = WebSocketManager()
+    mine = MagicMock(send_text=AsyncMock())
+    theirs = MagicMock(send_text=AsyncMock())
+    mine_id = await manager.connect_with_account(mine, owner_account)
+    theirs_id = await manager.connect_with_account(theirs, other_account)
+    manager.subscribe(mine_id, ACCOUNT_TOPIC_SESSION_PROGRESS)
+    manager.subscribe(theirs_id, ACCOUNT_TOPIC_SESSION_PROGRESS)
+    # What the NATS consumer does with every ``account-updates.*`` message.
+    await manager.broadcast_json(event, account_id=str(event["account_id"]))
+    mine.send_text.assert_awaited_once()
+    theirs.send_text.assert_not_awaited()
+
+
+def test_session_progress_seq_is_a_bounded_non_negative_int() -> None:
+    base = {"kind": "assistant_delta", "delta": "x"}
+    assert agent_control._session_progress_payload({**base, "seq": 3})["seq"] == 3
+    for bad in (-1, True, "4", 2**40):
+        assert "seq" not in agent_control._session_progress_payload({**base, "seq": bad})
+
+
+@pytest.mark.asyncio
+async def test_chatty_reply_deltas_are_throttled_but_turn_bounds_are_not() -> None:
+    account_id, agent_id = str(uuid4()), str(uuid4())
+    connection = _connection(account_id, agent_id)
+    session = SimpleNamespace(id=uuid4())
+    with (
+        patch.object(
+            agent_control.crud_runtime_session,
+            "get_open_by_source_id",
+            return_value=session,
+        ),
+        patch.object(
+            agent_control,
+            "session_managed_agent",
+            return_value=SimpleNamespace(id=agent_id),
+        ),
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        for index in range(100):
+            await agent_control._emit_session_progress(
+                _FakeDatabase(), connection, _delta("thread-tui", seq=index)
+            )
+        deltas = emit.call_count
+        await agent_control._emit_session_progress(
+            _FakeDatabase(),
+            connection,
+            _delta("thread-tui", kind="turn_completed", seq=100),
+        )
+    assert 0 < deltas <= agent_control._SESSION_PROGRESS_DELTA_BURST
+    assert emit.call_count == deltas + 1
+    assert emit.call_args.args[0]["payload"]["kind"] == "turn_completed"
 
 
 def _runtime_session(

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -1231,6 +1232,11 @@ def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any
         value = payload.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
             clean[field] = value
+    seq = payload.get("seq")
+    # Per-session event counter: a viewer that sees a jump knows it missed
+    # events (dropped by the throttle or the socket) and re-reads the thread.
+    if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2**31:
+        clean["seq"] = seq
     clean = _sanitize_agent_control_payload(clean)
     usage = payload.get("usage")
     if kind == "usage" and isinstance(usage, dict):
@@ -1323,6 +1329,44 @@ def _resolve_session_progress_target(
     return str(session.id)
 
 
+#: Reply and reasoning deltas one session may broadcast: a burst of
+#: ``_SESSION_PROGRESS_DELTA_BURST`` refilled at ``_SESSION_PROGRESS_DELTA_RATE``
+#: a second. Sidecars already merge per-token deltas to four a second; this
+#: bounds a sidecar that does not, so a chatty agent cannot flood the account's
+#: realtime channel. A dropped delta leaves a ``seq`` gap and the viewer
+#: re-reads the thread. Turn bounds, tools and usage are never throttled.
+_SESSION_PROGRESS_DELTA_RATE = 8.0
+_SESSION_PROGRESS_DELTA_BURST = 16
+_SESSION_PROGRESS_THROTTLED_KINDS = frozenset({"assistant_delta", "status_title"})
+_session_progress_buckets: dict[tuple[str, str, str], tuple[float, float]] = {}
+
+
+def _allow_session_progress_delta(
+    connection: AgentControlConnectionContext, session_source_id: str
+) -> bool:
+    """Take one token from the session's delta bucket; False when it is empty."""
+    key = (
+        str(connection.account_id),
+        str(connection.managed_agent_id),
+        session_source_id,
+    )
+    now = time.monotonic()
+    tokens, last = _session_progress_buckets.get(
+        key, (float(_SESSION_PROGRESS_DELTA_BURST), now)
+    )
+    tokens = min(
+        float(_SESSION_PROGRESS_DELTA_BURST),
+        tokens + (now - last) * _SESSION_PROGRESS_DELTA_RATE,
+    )
+    if len(_session_progress_buckets) >= _SESSION_PROGRESS_TARGET_CACHE_MAX:
+        _session_progress_buckets.clear()
+    if tokens < 1.0:
+        _session_progress_buckets[key] = (tokens, now)
+        return False
+    _session_progress_buckets[key] = (tokens - 1.0, now)
+    return True
+
+
 async def _emit_session_progress(
     database: Any,
     connection: AgentControlConnectionContext,
@@ -1351,6 +1395,12 @@ async def _emit_session_progress(
             return
         _remember_session_progress_target(connection, source_id, runtime_session_id)
     if runtime_session_id is None:
+        return
+    if payload[
+        "kind"
+    ] in _SESSION_PROGRESS_THROTTLED_KINDS and not _allow_session_progress_delta(
+        connection, source_id
+    ):
         return
     emit_account_event(
         build_account_event(

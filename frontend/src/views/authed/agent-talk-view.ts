@@ -152,6 +152,15 @@ export class AgentTalkView extends LitElement {
   private channel: BroadcastChannel | null = null;
   private heartbeatTimer: number | null = null;
   private reloadTimer: number | null = null;
+  /**
+   * The open turn's reply as it streams in (`session_progress` deltas).
+   * Cleared once the stored reply is read after the turn ends.
+   */
+  @state() private liveReply = '';
+  private liveItemId: string | null = null;
+  private liveTurnEnded = false;
+  /** Last `seq` seen for the open session; a jump means a missed event. */
+  private lastProgressSeq: number | null = null;
   private geometryTimer: number | null = null;
 
   static styles = [
@@ -648,6 +657,8 @@ export class AgentTalkView extends LitElement {
         events.pagination?.next_offset ?? (events.logs || []).length;
       // Anything the server has now echoed back is in the thread already.
       this.composer?.clearSentPending(this.echoedCommandIds(this.activity));
+      // The ended turn's reply is now in the stored thread.
+      if (this.liveTurnEnded) this.resetLiveReply();
       this.sessionLoadFailed = false;
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
@@ -728,6 +739,10 @@ export class AgentTalkView extends LitElement {
       unifiedWebSocketManager.subscribe('agent_control', (message) =>
         this.handleActivity(message)
       ),
+      // Live reply deltas: appended to the open turn, never a refetch.
+      unifiedWebSocketManager.subscribe('session_progress', (message) =>
+        this.handleSessionProgress(message)
+      ),
       // Approvals have their own topic: a session blocked on a decision emits
       // no gateway or session traffic at all, so without this the operator is
       // not told until they happen to reload.
@@ -785,6 +800,81 @@ export class AgentTalkView extends LitElement {
     this.composer?.handleRealtime(message);
     this.noteAgentTurn();
     this.scheduleReload();
+  }
+
+  /**
+   * One `session_progress` event. Only the open session's events count;
+   * the server already scopes them to this account. Reply deltas append to
+   * the live bubble; a gap in `seq` (a throttled or lost event) or the end
+   * of the turn re-reads the stored thread instead. Sidecars that send no
+   * progress keep the reload-on-activity path above.
+   */
+  private handleSessionProgress(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
+    const payload = message?.payload ?? {};
+    const sessionId =
+      (payload.runtime_session_id as string | undefined) ??
+      message?.runtime_session_id;
+    if (!sessionId || sessionId !== this.sessionId) return;
+    if (message.managed_agent_id && message.managed_agent_id !== this.agentId)
+      return;
+    const seq = typeof payload.seq === 'number' ? payload.seq : null;
+    if (seq !== null) {
+      const gap =
+        this.lastProgressSeq !== null && seq !== this.lastProgressSeq + 1;
+      this.lastProgressSeq = seq;
+      if (gap) {
+        // Text is missing in the middle: the stored thread is the truth.
+        this.resetLiveReply();
+        this.scheduleReload();
+        return;
+      }
+    }
+    switch (payload.kind) {
+      case 'turn_started':
+        this.resetLiveReply();
+        return;
+      case 'assistant_delta': {
+        const delta = typeof payload.delta === 'string' ? payload.delta : '';
+        if (!delta) return;
+        if (this.liveTurnEnded) this.resetLiveReply();
+        const itemId =
+          typeof payload.item_id === 'string' ? payload.item_id : null;
+        const separator =
+          this.liveReply && itemId !== this.liveItemId ? '\n\n' : '';
+        this.liveItemId = itemId;
+        this.liveReply = `${this.liveReply}${separator}${delta}`.slice(
+          -20000
+        );
+        this.noteAgentTurn();
+        return;
+      }
+      case 'turn_completed':
+        this.liveTurnEnded = true;
+        this.scheduleReload();
+        return;
+      default:
+        // Tools, titles and usage drive the status line, not the thread.
+        return;
+    }
+  }
+
+  private resetLiveReply(): void {
+    this.liveReply = '';
+    this.liveItemId = null;
+    this.liveTurnEnded = false;
+  }
+
+  /** Test seam: feed one `session_progress` message without a socket. */
+  public receiveSessionProgress(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
+    this.handleSessionProgress(message);
   }
 
   /** Show the one-line "New session" notice for a session not on screen. */
@@ -888,6 +978,8 @@ export class AgentTalkView extends LitElement {
     this.events = [];
     this.activity = [];
     this.pendingApprovals = [];
+    this.resetLiveReply();
+    this.lastProgressSeq = null;
     this.hasMoreEvents = false;
     this.nextEventOffset = null;
     this.loadingEvents = false;
@@ -1050,6 +1142,7 @@ export class AgentTalkView extends LitElement {
         .pendingApprovals=${this.pendingApprovals}
         .connected=${this.realtimeConnected ?? true}
         .pending=${this.pending}
+        .liveReply=${this.liveReply}
         .loading=${this.loadingEvents && !this.events.length}
         .hasMoreEvents=${this.hasMoreEvents}
         .loadingMoreEvents=${this.loadingMoreEvents || this.eventsMoreQueued}
