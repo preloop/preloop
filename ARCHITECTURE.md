@@ -4,6 +4,8 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Version-tag publication is gated by [image SBOM and release audit validation](docs/release-sbom-audit.md). Backend, console, scanner and universal images carry inventories for both architectures, bound to immutable image digests and the source commit. The gate waits for the same tag's image and security workflows before publishing release assets.
+
 [MCP dispatch provenance](docs/architecture/mcp-dispatch-provenance.md) defines the
 identity-only extension event for completed proxied calls. Optional plugins own
 inventory interpretation; hook labels and mutable tool-name maps cannot establish
