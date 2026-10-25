@@ -97,6 +97,13 @@ export class PlanView extends LitElement {
   @state() private _checkoutPlan = '';
   @state() private _notice = '';
   @state() private _summary: BillingSummary | null = null;
+  /**
+   * Whether the account's plan state (options and summary) has answered.
+   * Those reads go through the payment provider and are the slow half of the
+   * page, so the published cards paint first and wait on this only for
+   * their buttons (UX3-20).
+   */
+  @state() private _accountSettled = false;
 
   /**
    * Re-read the current plan when something changed the subscription.
@@ -168,27 +175,43 @@ export class PlanView extends LitElement {
 
   private async _load(): Promise<void> {
     this._loading = true;
+    this._accountSettled = false;
     try {
       const features = await getFeatures();
       this._billingEnabled = features.features['billing'] === true;
-      if (!this._billingEnabled) return;
+      if (!this._billingEnabled) {
+        this._accountSettled = true;
+        return;
+      }
       // The published content is the price list; the account's options say
-      // what this account may do with it. Neither one alone can draw the page.
-      const [content] = await Promise.all([
-        loadPricingContent(),
-        this._loadOptions(),
-        this._loadSummary(),
-      ]);
+      // what this account may do with it. The list paints as soon as it is
+      // here; the account's state fills in the buttons when it lands.
+      const account = this._loadAccount();
+      const content = await loadPricingContent();
       this._plans = cloudPlans(content);
       this._comparison = content.comparison;
       if (content.comparison?.title) {
         this._comparisonTitle = content.comparison.title;
       }
+      this._loading = false;
+      await account;
     } catch (error) {
       this._error =
         error instanceof Error ? error.message : 'Could not load the plans.';
     } finally {
       this._loading = false;
+    }
+  }
+
+  /** Options and summary together; a failure is said once, at the top. */
+  private async _loadAccount(): Promise<void> {
+    try {
+      await Promise.all([this._loadOptions(), this._loadSummary()]);
+    } catch (error) {
+      this._error =
+        error instanceof Error ? error.message : 'Could not load the plans.';
+    } finally {
+      this._accountSettled = true;
     }
   }
 
@@ -560,11 +583,17 @@ export class PlanView extends LitElement {
           ${
             this._billingEnabled
               ? html`
-                  <billing-subscription-details
-                    .summary=${this._summary}
-                    .plans=${this._options?.plans ?? []}
-                    .canManageBilling=${this._options?.can_manage_billing === true}
-                  ></billing-subscription-details>
+                  ${
+                    // Mounted with its answer: an empty one would go and
+                    // ask the provider the same four questions again.
+                    this._summary
+                      ? html`<billing-subscription-details
+                          .summary=${this._summary}
+                          .plans=${this._options?.plans ?? []}
+                          .canManageBilling=${this._options?.can_manage_billing === true}
+                        ></billing-subscription-details>`
+                      : nothing
+                  }
                   ${this._renderCards()}
                   <!--
                     The section confirms the change; the cards above still
@@ -574,11 +603,15 @@ export class PlanView extends LitElement {
                     ignores it), and the cards kept a stale "Your plan" mark
                     and a stale renewal date until a manual reload.
                   -->
-                  <billing-plan-comparison
-                    .initialOptions=${this._options}
-                    @billing-subscription-changed=${() =>
-                      void this._reloadOptions()}
-                  ></billing-plan-comparison>
+                  ${
+                    this._accountSettled
+                      ? html`<billing-plan-comparison
+                          .initialOptions=${this._options}
+                          @billing-subscription-changed=${() =>
+                            void this._reloadOptions()}
+                        ></billing-plan-comparison>`
+                      : nothing
+                  }
                   <collapsible-section
                     heading="plan feature comparison"
                     storage-key="plan:comparison"

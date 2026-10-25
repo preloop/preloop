@@ -207,6 +207,8 @@ describe('PlanView', () => {
       checkout?: Record<string, unknown>;
       blocked?: string[];
       unpricedPlan?: boolean;
+      /** Holds the account's plan state, the slow provider-backed reads. */
+      holdAccount?: Promise<void>;
     } = {}
   ) {
     const billing = opts.billing !== false;
@@ -255,6 +257,12 @@ describe('PlanView', () => {
           return json({ plugins: [], features: { billing } });
         }
 
+        if (
+          opts.holdAccount &&
+          (url.includes('/api/v1/billing/summary') ||
+            url.includes('/api/v1/billing/plan-change-options'))
+        )
+          await opts.holdAccount;
         if (url.includes('/api/v1/billing/summary')) {
           return json({
             subscription: null,
@@ -374,7 +382,10 @@ describe('PlanView', () => {
     if (query)
       window.history.replaceState({}, '', `/console/settings/plan${query}`);
     const element = await fixture<PlanView>(html`<plan-view></plan-view>`);
-    await waitUntil(() => !(element as any)._loading, 'plan page did not load');
+    await waitUntil(
+      () => !(element as any)._loading && (element as any)._accountSettled,
+      'plan page did not load'
+    );
     await element.updateComplete;
     return element;
   }
@@ -401,6 +412,37 @@ describe('PlanView', () => {
     expect(
       (element.shadowRoot?.textContent ?? '').replace(/\s+/g, ' ')
     ).to.contain('Compare cloud plans');
+  });
+
+  it('draws the plan cards before the subscription state arrives', async () => {
+    let release!: () => void;
+    const holdAccount = new Promise<void>((resolve) => (release = resolve));
+    fetchStub = createFetchStub({ holdAccount });
+    const element = await fixture<PlanView>(html`<plan-view></plan-view>`);
+    await waitUntil(
+      () => element.shadowRoot?.querySelectorAll('pricing-card').length === 4,
+      'the cards waited for the subscription state'
+    );
+    // The cards say their buttons are pending, and nothing asks the same
+    // provider questions a second time while the page's own reads are out.
+    expect(Object.values(ctas(element))).to.include('Loading');
+    expect(element.shadowRoot?.querySelector('billing-subscription-details')).to
+      .not.exist;
+    expect(element.shadowRoot?.querySelector('billing-plan-comparison')).to.not
+      .exist;
+    release();
+    await waitUntil(
+      () => (element as any)._accountSettled,
+      'the subscription state never landed'
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('billing-plan-comparison')).to
+      .exist;
+    expect(Object.values(ctas(element))).to.not.include('Loading');
+    const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+    expect(
+      urls.filter((url) => url.includes('/billing/summary'))
+    ).to.have.length(1);
   });
 
   it('reads the plan-change options and the price list once per load', async () => {

@@ -364,6 +364,8 @@ export class UserDetailView extends LitElement {
   disconnectedCallback(): void {
     // A request that lands after the page is gone writes nothing.
     this.generation += 1;
+    this.sessionsObserver?.disconnect();
+    this.sessionsObserver = null;
     super.disconnectedCallback();
   }
 
@@ -382,17 +384,54 @@ export class UserDetailView extends LitElement {
       // requests below say for themselves whether they are allowed.
     }
     this.featureEnabled = true;
-    void this.loadUser();
-    for (const key of [
-      'teams',
-      'devices',
-      'runners',
-      'agents',
-      'sessions',
-      'usage',
-    ] as SectionKey[]) {
-      void this.loadSection(key);
+    this.sessionsRequested = false;
+    this.sessionsObserver?.disconnect();
+    this.sessionsObserver = null;
+    // Recent sessions sit at the bottom of the page and are its heaviest
+    // read; they wait for the sections above, or for the card to scroll into
+    // view, whichever comes first (UX3-20).
+    this.sessions = LOADING;
+    const first = [
+      this.loadUser(),
+      ...(
+        ['teams', 'devices', 'runners', 'agents', 'usage'] as SectionKey[]
+      ).map((key) => this.loadSection(key)),
+    ];
+    void Promise.allSettled(first).then(() => {
+      if (generation === this.generation) this.requestSessions();
+    });
+  }
+
+  /** Whether this load has asked for the recent sessions yet. */
+  private sessionsRequested = false;
+  private sessionsObserver: IntersectionObserver | null = null;
+
+  private requestSessions(): void {
+    if (this.sessionsRequested) return;
+    this.sessionsRequested = true;
+    this.sessionsObserver?.disconnect();
+    this.sessionsObserver = null;
+    void this.loadSection('sessions');
+  }
+
+  protected updated(): void {
+    if (this.sessionsRequested || this.sessionsObserver) return;
+    const target = this.renderRoot.querySelector(
+      '[data-testid="user-sessions"]'
+    );
+    if (!target) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      this.requestSessions();
+      return;
     }
+    this.sessionsObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting))
+          this.requestSessions();
+      },
+      { rootMargin: '200px' }
+    );
+    this.sessionsObserver.observe(target);
   }
 
   private async loadUser(): Promise<void> {

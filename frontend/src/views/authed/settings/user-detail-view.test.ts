@@ -277,6 +277,81 @@ describe('user-detail-view', () => {
     expect(root(el).querySelector('sl-spinner')).to.not.exist;
   });
 
+  describe('recent sessions, read last', () => {
+    // An observer the test drives: `reveal()` says the card scrolled in.
+    let observed: Element[];
+    let reveal: () => void;
+    const Original = window.IntersectionObserver;
+
+    beforeEach(() => {
+      observed = [];
+      reveal = () => {};
+      window.IntersectionObserver = class {
+        constructor(callback: IntersectionObserverCallback) {
+          reveal = () =>
+            callback(
+              observed.map(
+                (target) =>
+                  ({
+                    isIntersecting: true,
+                    target,
+                  }) as IntersectionObserverEntry
+              ),
+              this as unknown as IntersectionObserver
+            );
+        }
+        observe(target: Element) {
+          observed.push(target);
+        }
+        unobserve() {}
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+      } as unknown as typeof IntersectionObserver;
+    });
+
+    afterEach(() => {
+      window.IntersectionObserver = Original;
+    });
+
+    const sessionCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes('/runtime-sessions')).length;
+
+    it('waits for the rest of the page before asking for sessions', async () => {
+      fetchStub = stubFetch({ hang: true });
+      const el = await mount();
+      await waitUntil(() =>
+        root(el).querySelector('[data-testid="user-facts"]')
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sessionCalls()).to.equal(0);
+      // Still a skeleton, so the card holds its place.
+      expect(card(el, 'sessions')!.querySelector('sl-skeleton')).to.exist;
+    });
+
+    it('asks as soon as the card scrolls into view', async () => {
+      fetchStub = stubFetch({ hang: true });
+      const el = await mount();
+      await waitUntil(() => observed.length > 0, 'the card was not observed');
+      expect(observed[0]).to.equal(card(el, 'sessions'));
+      reveal();
+      await waitUntil(() => sessionCalls() === 1);
+      reveal();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sessionCalls()).to.equal(1);
+    });
+
+    it('asks once the other sections have answered', async () => {
+      fetchStub = stubFetch();
+      const el = await mount();
+      await settled(el);
+      expect(sessionCalls()).to.equal(1);
+    });
+  });
+
   it('renders the person with every section linked', async () => {
     fetchStub = stubFetch();
     const el = await mount();
