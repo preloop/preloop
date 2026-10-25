@@ -53,6 +53,7 @@ router = APIRouter(
 #: role check in :func:`_ensure_toggle_authorized` enforces the equivalent.
 MANAGE_KILL_SWITCH_PERMISSION = "manage_kill_switch"
 
+
 def _user_has_kill_switch_permission(db: Session, current_user: models.User) -> bool:
     """Whether one of the user's roles grants the kill-switch permission.
 
