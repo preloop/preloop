@@ -1,6 +1,10 @@
 """Default-deny ASGI boundary for restricted machine credentials."""
 
+import hashlib
 import logging
+import os
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from types import MappingProxyType
 from urllib.parse import parse_qsl
@@ -18,7 +22,7 @@ from preloop.api.auth.ci_policy import (
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import crud
 from preloop.models.crud.ci_principal import CiTokenInspection
-from preloop.models.db.session import get_db_session
+from preloop.models.db.session import get_auth_db_session
 from preloop.schemas.ci_principal import CiAction
 
 logger = logging.getLogger(__name__)
@@ -79,11 +83,84 @@ def _credentials(scope: Scope) -> tuple[tuple[str, ...], bool]:
     return tuple(tokens), canonical and bearer_count == 1 and len(tokens) == 1
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """Read a non-negative duration in seconds, falling back on bad input."""
+    try:
+        return max(0.0, float(os.getenv(name, default)))
+    except ValueError:
+        return default
+
+
+class _PassThroughCache:
+    """Remember tokens recently verified as not being machine credentials.
+
+    Only pass-through results are cached. They grant nothing: the request
+    still meets the route's normal authentication, which reads the key fresh.
+    Machine results are never cached, so revoking a CI key or bumping its
+    credential version takes effect on the next request.
+
+    Entries are fresh for ``ttl`` seconds; after that they are only served
+    while the database is unreachable, for at most ``stale_ttl`` seconds, so
+    a pool or database blip does not turn every agent call into a 503.
+    Keys are SHA-256 digests; token values are never stored.
+    """
+
+    def __init__(self, ttl: float, stale_ttl: float, max_entries: int) -> None:
+        self.ttl = ttl
+        self.stale_ttl = max(stale_ttl, ttl)
+        self.max_entries = max_entries
+        self._entries: OrderedDict[str, tuple[float, CiTokenInspection]] = OrderedDict()
+
+    @staticmethod
+    def key(tokens: tuple[str, ...], action: CiAction | None) -> str:
+        """Digest the credential set and action; never keep raw tokens."""
+        digest = hashlib.sha256()
+        for token in tokens:
+            digest.update(token.encode("utf-8", "surrogateescape"))
+            digest.update(b"\0")
+        digest.update(str(action).encode())
+        return digest.hexdigest()
+
+    def get(self, key: str, *, stale: bool = False) -> CiTokenInspection | None:
+        """Return a cached pass-through result that is still usable."""
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        stored_at, inspection = entry
+        age = time.monotonic() - stored_at
+        if age > self.stale_ttl:
+            self._entries.pop(key, None)
+            return None
+        if age > self.ttl and not stale:
+            return None
+        return inspection
+
+    def put(self, key: str, inspection: CiTokenInspection) -> None:
+        """Store a pass-through result; anything recognized is ignored."""
+        if inspection.recognized or self.ttl <= 0:
+            return
+        self._entries[key] = (time.monotonic(), inspection)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        """Drop every entry (used by tests)."""
+        self._entries.clear()
+
+
+PASS_THROUGH_CACHE = _PassThroughCache(
+    ttl=_env_seconds("CI_AUTH_PASS_THROUGH_TTL_SECONDS", 60.0),
+    stale_ttl=_env_seconds("CI_AUTH_PASS_THROUGH_STALE_TTL_SECONDS", 600.0),
+    max_entries=10_000,
+)
+
+
 def _inspect(
     tokens: tuple[str, ...], action: CiAction | None
 ) -> tuple[CiTokenInspection, bool]:
     """Own a short-lived session on the worker, with all queries in CRUD."""
-    sessions = get_db_session()
+    sessions = get_auth_db_session()
     db: Session = next(sessions)
     try:
         inspection = crud.crud_ci_principal.inspect_tokens(db, tokens=tokens)
@@ -136,6 +213,11 @@ class RestrictedCiAuthMiddleware:
                 ):
                     action = candidate
                     break
+        cache_key = PASS_THROUGH_CACHE.key(tokens, action)
+        cached = PASS_THROUGH_CACHE.get(cache_key)
+        if cached is not None:
+            await self.app(scope, receive, send)
+            return
         try:
             # Token syntax cannot prove a credential is human: legacy key rows
             # may carry machine markers even when their values contain periods.
@@ -146,6 +228,13 @@ class RestrictedCiAuthMiddleware:
         except SQLAlchemyError:
             # SQLAlchemy exceptions can include plaintext legacy-lookup binds.
             # Never let credential lookup errors reach traceback logging.
+            if PASS_THROUGH_CACHE.get(cache_key, stale=True) is not None:
+                logger.warning(
+                    "Credential verification unavailable; using a recent "
+                    "pass-through result"
+                )
+                await self.app(scope, receive, send)
+                return
             logger.warning("Credential verification unavailable")
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1013})
@@ -157,6 +246,7 @@ class RestrictedCiAuthMiddleware:
             return
         context = inspection.context
         if not inspection.recognized:
+            PASS_THROUGH_CACHE.put(cache_key, inspection)
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":

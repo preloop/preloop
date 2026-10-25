@@ -47,7 +47,7 @@ def client(
     app.include_router(ci_identities.router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = sessions
     app.dependency_overrides[get_current_active_user] = lambda: ci_resources[0]
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
     app.add_middleware(ci_auth.RestrictedCiAuthMiddleware)
     return TestClient(app)
 

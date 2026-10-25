@@ -63,7 +63,7 @@ def ci_http(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> None:
     def sessions() -> Any:
         yield db_session
 
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
 
 
 @pytest.mark.parametrize("transport", ["bearer", "header", "query", "duplicate"])

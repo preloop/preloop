@@ -33,6 +33,17 @@ Implementation PRs can use [durable feedback subscriptions](docs/guide/flows/dur
 
 [Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's ten-operation route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
 
+Credential checks use a dedicated synchronous auth pool alongside the sync and
+async request pools and the health engine. The auth pool adds its configured
+base size to each API/gateway process's retained connection budget, and base
+plus overflow to its ceiling. Helm values include this contribution; the pool
+monitor reports it as `auth`. Bounded non-machine classification caching never
+replaces route authentication; [restricted CI operations](docs/guide/flows/restricted-ci.md#credential-check-resilience)
+documents its freshness and database-error fallback windows. Async session
+teardown has a single shielded cleanup owner so caller cancellation cannot
+interrupt rollback/close or start a concurrent close on the same session.
+
+
 [Isolated publication](docs/guide/flows/automated-issue-implementation.md#isolated-publication-rollout-and-repair) verifies immutable bundles in fresh credential-free runtimes before acquiring a write lease. Controller-owned evidence reuse binds the execution, bundle, base, profile, pinned image and runtime; sandbox-written evidence cannot populate it. Failed durable repairs retain their latest workspace and native session while recovering only the prior published branch binding from authenticated thread ancestry.
 Private-runner log batches use stable delivery identities and acknowledgments so a reconnect can replay unconfirmed output without duplicating stored rows. Socket writes have deadlines, live log broadcasts have a bounded budget, and runner lease release shares the terminal result transaction. Publication and native-session markers are saved while output arrives. The execution console refreshes runner assignment and failure details at lifecycle transitions; an execution without an observed runtime is shown as unassigned.
 

@@ -1564,7 +1564,10 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={
-                "detail": ("Database connections are saturated. Please retry shortly.")
+                "detail": (
+                    "Server database connection pool is exhausted. "
+                    "Please retry shortly."
+                )
             },
             headers={"Retry-After": "1"},
         )

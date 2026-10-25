@@ -12,7 +12,7 @@ pending approvals). Two integrations, both intentionally small:
   (``pool_size + max_overflow``).
 
 Gated by the ``DB_MONITORING_ENABLED`` env var (default enabled). The
-monitor never creates engines: roles that never build one of the two
+monitor never creates engines: roles that never build one of the
 engines simply report nothing for it.
 """
 
@@ -67,11 +67,12 @@ def _snapshot(pool: Any, engine_name: str, max_overflow: int) -> Dict[str, Any]:
 
 
 def collect_pool_stats(*, include_holds: bool = False) -> List[Dict[str, Any]]:
-    """Snapshot both engines' pools; engines not yet created are skipped."""
+    """Snapshot request and credential engines' pools; engines not yet created are skipped."""
     from preloop.models.db.pool_diagnostics import collect_pool_holds
     from preloop.models.db.session import (
         _env_int,
         get_async_engine_if_initialized,
+        get_auth_engine_if_initialized,
         get_engine_if_initialized,
     )
 
@@ -90,6 +91,14 @@ def collect_pool_stats(*, include_holds: bool = False) -> List[Dict[str, Any]]:
         snapshot = _snapshot(async_engine.sync_engine.pool, "async", max_overflow)
         if include_holds:
             snapshot["holds"] = collect_pool_holds(async_engine.sync_engine)
+        stats.append(snapshot)
+    auth_engine = get_auth_engine_if_initialized()
+    if auth_engine is not None:
+        snapshot = _snapshot(
+            auth_engine.pool, "auth", _env_int("DATABASE_AUTH_MAX_OVERFLOW", 3)
+        )
+        if include_holds:
+            snapshot["holds"] = collect_pool_holds(auth_engine)
         stats.append(snapshot)
     return stats
 
@@ -178,7 +187,7 @@ class DbPoolMonitor:
         self._task: Optional[asyncio.Task] = None
 
     def check_once(self) -> List[Dict[str, Any]]:
-        """Check both pools once; log a WARNING for any near-saturated pool.
+        """Check all initialized pools once; log a WARNING for any near-saturated pool.
 
         Returns:
             The collected pool snapshots (also used by tests).

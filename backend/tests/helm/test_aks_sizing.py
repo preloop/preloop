@@ -112,6 +112,12 @@ class _Shape:
             size = int(env["DATABASE_POOL_SIZE"])
             overflow = int(env["DATABASE_MAX_OVERFLOW"])
             n = self.replicas(dep, gateway_at)
+            # Only HTTP-serving API/gateway processes initialize the auth pool.
+            if dep["metadata"]["name"].endswith(("-api", "-gateway")):
+                auth_size = int(env.get("DATABASE_AUTH_POOL_SIZE", "2"))
+                auth_overflow = int(env.get("DATABASE_AUTH_MAX_OVERFLOW", "3"))
+                steady += n * auth_size
+                ceiling += n * (auth_size + auth_overflow)
             steady += n * (size * 2 + 1)
             ceiling += n * ((size + overflow) * 2 + 1)
         return steady, ceiling
