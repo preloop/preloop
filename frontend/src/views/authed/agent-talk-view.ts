@@ -31,6 +31,7 @@ import {
   TALK_SESSION_NEW_EVENT,
   TALK_SESSION_SELECT_EVENT,
 } from '../../components/talk-session-picker';
+import type { TalkSessionPicker } from '../../components/talk-session-picker';
 
 import {
   getAccountAgent,
@@ -88,6 +89,7 @@ import {
 import {
   TALK_MESSAGE_SENT_EVENT,
   TALK_NEW_SESSION_EVENT,
+  TALK_OPEN_PICKER_EVENT,
   TALK_PENDING_CHANGED_EVENT,
   TALK_SWITCH_SESSION_EVENT,
 } from '../../components/talk-composer';
@@ -1126,6 +1128,11 @@ export class AgentTalkView extends LitElement {
     });
     this.addEventListener(TALK_SESSION_NEW_EVENT, () => this.startNewSession());
     this.addEventListener(TALK_NEW_SESSION_EVENT, () => this.startNewSession());
+    this.addEventListener(TALK_OPEN_PICKER_EVENT, () => {
+      void this.renderRoot
+        .querySelector<TalkSessionPicker>('talk-session-picker')
+        ?.show();
+    });
     this.addEventListener(TALK_PENDING_CHANGED_EVENT, (event: Event) => {
       this.pending = [
         ...((event as CustomEvent<{ pending: PendingTalkMessage[] }>).detail

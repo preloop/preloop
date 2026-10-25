@@ -112,6 +112,68 @@ describe('inline session decisions', () => {
       fetchStub.getCalls().some((c) => String(c.args[0]).endsWith('/approve'))
     ).to.equal(false);
   });
+  it('approves with Y from the focused card, and Y typed in the comment is text', async () => {
+    fetchStub.resolves(json(request({ status: 'approved' })));
+    const element = await mount();
+    const comment = element.shadowRoot!.querySelector('textarea')!;
+    comment.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'y', bubbles: true, composed: true })
+    );
+    expect(fetchStub.called).to.equal(false);
+    expect(element.focusChoices()).to.equal(true);
+    const article = element.shadowRoot!.querySelector('article')!;
+    expect(element.shadowRoot!.activeElement).to.equal(article);
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="approval-keys"]')
+        ?.textContent
+    ).to.contain('approve');
+    article.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'y', bubbles: true, composed: true })
+    );
+    await waitUntil(() => fetchStub.called);
+    expect(String(fetchStub.firstCall.args[0]).endsWith('/approve')).to.equal(
+      true
+    );
+  });
+  it('denies with N through the deny confirmation', async () => {
+    fetchStub.resolves(json(request({ status: 'declined' })));
+    const element = await mount();
+    element
+      .shadowRoot!.querySelector('article')!
+      .dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'n',
+          bubbles: true,
+          composed: true,
+        })
+      );
+    await waitUntil(() =>
+      Boolean(
+        document
+          .querySelector('confirm-dialog')
+          ?.shadowRoot?.querySelector('sl-dialog')
+      )
+    );
+    expect(fetchStub.called).to.equal(false);
+    document
+      .querySelector('confirm-dialog')!
+      .shadowRoot!.querySelector('sl-dialog')!
+      .querySelector<HTMLElement>('sl-button[variant="danger"]')!
+      .click();
+    await waitUntil(() => fetchStub.called);
+    expect(String(fetchStub.firstCall.args[0]).endsWith('/decline')).to.equal(
+      true
+    );
+  });
+  it('offers no key choices on a resolved request', async () => {
+    const element = await mount(
+      request({ status: 'approved', resolved_at: '2026-10-02T10:01:00Z' })
+    );
+    expect(element.focusChoices()).to.equal(false);
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="approval-keys"]')
+    ).to.equal(null);
+  });
   it('validates required inline form fields before submitting the structured answer', async () => {
     fetchStub.resolves(json(request({ status: 'approved' })));
     const element = await mount(
