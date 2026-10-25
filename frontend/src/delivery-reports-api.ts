@@ -1,5 +1,5 @@
 /**
- * Console client for Delivery Report runs (`/api/v1/delivery-reports`).
+ * Console client for Delivery Report runs (`${REST_API_PREFIX}/delivery-reports`).
  *
  * The report itself is the run's stored result document
  * (`preloop.delivery_report/v1`, see backend/preloop/services/delivery_report.py);
@@ -231,7 +231,7 @@ export async function actOnDeliveryReport(
   action: DeliveryReportAction
 ): Promise<{ key: string; decision: ProposalDecision }> {
   const response = await fetchWithAuth(
-    `/api/v1/delivery-reports/${encodeURIComponent(id)}/actions`,
+    `${REST_API_PREFIX}/delivery-reports/${encodeURIComponent(id)}/actions`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
