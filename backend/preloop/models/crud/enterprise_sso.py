@@ -472,7 +472,7 @@ class CRUDScimToken(_AccountScopedCRUD[ScimToken]):
         return token
 
 
-class CRUDSsoReplayGuard(_ThroughConnection, CRUDBase[SsoReplayGuard]):
+class CRUDSsoReplayGuard(_ThroughConnection, _AccountScopedCRUD[SsoReplayGuard]):
     """Single-use protocol ids."""
 
     def claim(

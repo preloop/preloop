@@ -422,7 +422,15 @@ def test_inherited_get_and_delete_cannot_cross_accounts(db_session, test_user):
     assert crud_sso_group_mapping.get(db_session, mapping.id, account_id=mine) is None
     assert crud_sso_group_mapping.get(db_session, mapping.id, account_id=other.id)
     assert crud_sso_group_mapping.get_multi(db_session, account_id=mine) == []
+    crud_sso_replay_guard.claim(
+        db_session,
+        connection_id=theirs.id,
+        guard_id="theirs",
+        expires_at=utc_now() + timedelta(minutes=5),
+    )
+    guard = db_session.query(models.SsoReplayGuard).filter_by(guard_id="theirs").one()
     for crud, row_id in (
+        (crud_sso_replay_guard, guard.id),
         (crud_sso_group_mapping, mapping.id),
         (crud_account_sso_connection, theirs.id),
     ):
