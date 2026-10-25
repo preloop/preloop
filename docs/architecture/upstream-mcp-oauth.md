@@ -43,10 +43,15 @@ compares the version again so an in-flight exchange cannot undo replacement.
 
 `upstream_mcp_oauth_connection` owns a tenant-scoped `SecretReference` using the
 existing local encrypted backend. The secret contains the grant and registration
-credentials. `mcp_server.auth_config` retains public configuration; API reads
-reconstruct only a redacted view. Policy snapshots do not copy new OAuth grants.
-A write-only edit merges redaction markers under the server lock, so a stale
-browser response cannot restore tokens superseded by a refresh.
+credentials. `mcp_server.auth_config` retains public configuration.
+`GET /api/v1/mcp-servers` returns that public OAuth configuration without
+write-only credential markers and batches connection-state reads without
+decrypting credentials. Before editing, clients must fetch
+`GET /api/v1/mcp-servers/{id}` to obtain the redacted credential markers; the
+console does this when opening the edit form. Submit those markers with the
+edited configuration to preserve stored secrets. A write-only edit merges the
+markers under the server lock, so a stale browser response cannot restore
+tokens superseded by a refresh. Policy snapshots do not copy new OAuth grants.
 
 Before every MCP session, the pool reads the current connection version.
 Tokens expiring within 60 seconds require refresh; absent expiry is treated as
