@@ -336,7 +336,10 @@ describe('user-detail-view', () => {
     expect(spend.textContent).to.contain('$ est.');
     // D-05: agent-1 has subscription traffic, partly priced.
     const line = spend.querySelector('[data-testid="without-subscriptions"]');
-    expect(line?.textContent?.trim()).to.equal('≥ $2.25 w/o subs.');
+    expect(line?.querySelector('summary')?.textContent?.trim()).to.equal(
+      '≥ $2.25 w/o subs.'
+    );
+    expect(line?.textContent).to.contain('1 of 2 subscription requests');
     expect(line?.getAttribute('title')).to.contain('1 of 2');
     expect(
       root(el).querySelector('[data-testid="stat-agents"]')!.textContent

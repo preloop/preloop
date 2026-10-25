@@ -10,6 +10,7 @@ import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
 import type { PreloopSessionObserver } from './preloop-session-observer';
 
 describe('PreloopSessionObserver', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let connectStub: sinon.SinonStub;
   let subscribeStub: sinon.SinonStub;
@@ -262,6 +263,7 @@ describe('PreloopSessionObserver', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     connectStub.restore();
     subscribeStub.restore();
@@ -277,6 +279,219 @@ describe('PreloopSessionObserver', () => {
     });
     return text;
   }
+
+  it('resolves a pinned session beyond the first page without selecting the newest', async () => {
+    const older = { ...session, id: 'older-session', agent_id: 'agent-1' };
+    fetchStub
+      .withArgs('/api/v1/runtime-sessions/older-session')
+      .resolves(new Response(JSON.stringify({ session: older })));
+    const selected: string[] = [];
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+        @session-selected=${(event: CustomEvent) => selected.push(event.detail.sessionId)}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => (el as any).activeSessionId === 'older-session');
+    expect(selected).to.deep.equal(['older-session']);
+    expect((el as any).observedSessions.map((row: any) => row.id)).to.include(
+      'older-session'
+    );
+    el.sessions = [{ ...session }];
+    await el.updateComplete;
+    expect((el as any).activeSessionId).to.equal('older-session');
+  });
+
+  for (const failure of ['missing', 'other-agent', 'invalid', 'empty']) {
+    it(`does not substitute another session when the pinned session is ${failure}`, async () => {
+      const id =
+        failure === 'invalid'
+          ? '../other'
+          : failure === 'empty'
+            ? ''
+            : 'unavailable-session';
+      fetchStub
+        .withArgs('/api/v1/runtime-sessions/unavailable-session')
+        .resolves(
+          failure === 'missing'
+            ? new Response('{}', { status: 404 })
+            : new Response(
+                JSON.stringify({
+                  session: { ...session, id, agent_id: 'another-agent' },
+                })
+              )
+        );
+      const selected: string[] = [];
+      const el = await fixture<PreloopSessionObserver>(
+        html`<preloop-session-observer
+          scope="managed_agent"
+          .scopeId=${'agent-1'}
+          .sessions=${[session]}
+          .selectedSessionId=${id}
+          @session-selected=${(event: CustomEvent) => selected.push(event.detail.sessionId)}
+        ></preloop-session-observer>`
+      );
+      await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+      expect((el as any).activeSessionId).to.equal(null);
+      expect(selected).to.deep.equal([]);
+      expect(
+        el.shadowRoot?.querySelector('[role="alert"]')?.textContent
+      ).to.contain('Select another session');
+      await (el as any).selectSession(session.id, { userInitiated: true });
+      expect((el as any).activeSessionId).to.equal(session.id);
+      expect((el as any).pinnedSessionError).to.equal(null);
+    });
+  }
+
+  it('clears an unavailable pin and resumes auto-selection when the host removes it', async () => {
+    fetchStub
+      .withArgs('/api/v1/runtime-sessions/missing-session')
+      .callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.equal(null);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+  });
+
+  it('does not retry an unavailable pin on refresh until the requested id changes', async () => {
+    const missing = fetchStub.withArgs(
+      '/api/v1/runtime-sessions/missing-session'
+    );
+    missing.callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const calls = missing.callCount;
+    for (let i = 0; i < 3; i++) {
+      el.sessions = [{ ...session }];
+      await el.updateComplete;
+      await el.reload();
+    }
+    expect(missing.callCount).to.equal(calls);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    el.selectedSessionId = 'missing-session';
+    await waitUntil(() => missing.callCount > calls);
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    expect(missing.callCount).to.equal(calls + 1);
+  });
+
+  it('does not let queued auto-selection replace a newly empty pin', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'../invalid'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const frames: FrameRequestCallback[] = [];
+    const frame = sinon
+      .stub(window, 'requestAnimationFrame')
+      .callsFake((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    try {
+      el.selectedSessionId = null;
+      await el.updateComplete;
+      expect(frames.length).to.be.greaterThan(0);
+      el.selectedSessionId = '';
+      await el.updateComplete;
+    } finally {
+      frame.restore();
+    }
+    for (const callback of frames) callback(performance.now());
+    await el.updateComplete;
+    expect((el as any).activeSessionId).to.equal(null);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+  });
+
+  it('invalidates an in-flight pinned read when the host removes the pin', async () => {
+    let release!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })
+    );
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!release);
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+    release(
+      new Response(
+        JSON.stringify({
+          session: { ...session, id: 'older-session', agent_id: 'agent-1' },
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((el as any).activeSessionId).to.equal(session.id);
+    expect(
+      (el as any).observedSessions.map((row: any) => row.id)
+    ).not.to.include('older-session');
+  });
+
+  it('ignores an older pinned read after the user chooses another session', async () => {
+    let release!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })
+    );
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !!release);
+    await (el as any).selectSession(session.id, { userInitiated: true });
+    release(
+      new Response(
+        JSON.stringify({
+          session: { ...session, id: 'older-session', agent_id: 'agent-1' },
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((el as any).activeSessionId).to.equal(session.id);
+  });
 
   it('loads optimization model choices only after opening optimization', async () => {
     const modelCalls = () =>

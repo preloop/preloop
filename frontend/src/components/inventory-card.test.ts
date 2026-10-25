@@ -487,11 +487,10 @@ describe('inventory-card', () => {
       el.shadowRoot!.querySelectorAll('tbody tr')[0].querySelectorAll('td')
     );
     expect(cells[0].textContent).to.contain('Hermes');
-    expect(cells[2].querySelector('sl-skeleton'), 'Requests').to.exist;
-    expect(cells[3].querySelector('sl-skeleton'), 'Tokens').to.exist;
-    expect(cells[4].querySelector('sl-skeleton'), '$ est.').to.exist;
+    expect(cells[2].querySelector('sl-skeleton'), 'Tokens').to.exist;
+    expect(cells[3].querySelector('sl-skeleton'), '$ est.').to.exist;
     // Last seen comes off the agent itself, so it is never a skeleton.
-    expect(cells[5].textContent!.trim()).to.not.equal('');
+    expect(cells[4].textContent!.trim()).to.not.equal('');
 
     (el as any).setSort('spend');
     await el.updateComplete;
@@ -712,7 +711,7 @@ describe('inventory-card', () => {
     ).map((cell) => cell.getAttribute('data-label'));
     // Spend and last seen used to arrive as two bare numbers with no word
     // saying what they were.
-    expect(labels).to.deep.equal(['Requests', 'Tokens', 'Spend', 'Seen']);
+    expect(labels).to.deep.equal(['Tokens', 'Spend', 'Seen']);
 
     // Read from the stylesheet, not the DOM: the separator is a ::before on
     // a media query, and a pseudo element has no node to query. The cost is
@@ -1147,6 +1146,27 @@ describe('inventory-card Agents columns', () => {
       (th.textContent || '').trim()
     );
 
+  it('keeps long model aliases readable in a constrained inventory card', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({
+          modelAlias:
+            'provider/research-model-with-a-long-distinguishing-suffix',
+        }),
+      ],
+    });
+    el.style.width = '735px';
+    await el.updateComplete;
+    const model = el.shadowRoot!.querySelector(
+      '.inventory-model'
+    ) as HTMLElement;
+    expect(model.getBoundingClientRect().width).to.be.at.least(100);
+    expect(model.textContent).to.contain('distinguishing-suffix');
+    const text = model.querySelector('span')!;
+    expect(getComputedStyle(text).whiteSpace).to.equal('normal');
+    expect(model.scrollWidth).to.be.at.most(model.clientWidth + 1);
+  });
+
   it('lets the column picker switch a column off, and remembers it', async () => {
     const el = await card({ agentRows: [agentRow()] });
     expect(headers(el)).to.include('Tokens');
@@ -1220,7 +1240,7 @@ describe('inventory-card Agents columns', () => {
       };
     };
     const table = el.agentTable;
-    expect(table.widthOfColumn('name')).to.equal(212);
+    expect(table.widthOfColumn('name')).to.equal(180);
     table.resizeBy('name', -1000);
     await el.updateComplete;
     expect(table.widthOfColumn('name')).to.equal(160);
@@ -1240,12 +1260,12 @@ describe('inventory-card Agents columns', () => {
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
     await el.updateComplete;
-    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(228);
+    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(196);
 
     const again = (await card({ agentRows: [agentRow()] })) as HTMLElement & {
       agentTable: { widthOfColumn(id: string): number };
     };
-    expect(again.agentTable.widthOfColumn('name')).to.equal(228);
+    expect(again.agentTable.widthOfColumn('name')).to.equal(196);
   });
 });
 

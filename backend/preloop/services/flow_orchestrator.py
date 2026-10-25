@@ -162,7 +162,18 @@ from preloop.utils.git_credentials import (
     strip_url_credentials,
     temporary_credential_file,
 )
-from preloop.utils.prompt_filters import parse_placeholders, truncate_value
+from preloop.utils.prompt_data import (
+    TRIGGER_PREFIXES,
+    field_reference,
+    is_free_text_field,
+    render_data_block,
+)
+from preloop.utils.prompt_filters import (
+    PLACEHOLDER_RE,
+    Placeholder,
+    parse_placeholders,
+    truncate_value,
+)
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
 from preloop.utils.workspace_seed import (
     attach_workspace_file_paths,
@@ -1748,6 +1759,48 @@ class FlowExecutionOrchestrator:
             )
         return effort
 
+    @staticmethod
+    def _stage_placeholder(
+        item: Placeholder,
+        value: Any,
+        *,
+        trigger_sourced: bool,
+        replacements: Dict[str, str],
+        data_fields: List[Tuple[str, str]],
+    ) -> None:
+        """Record how one resolved placeholder enters the prompt.
+
+        Trigger-payload prose goes to the data block and leaves a reference
+        in the template; anything else is substituted in place. A whole
+        object or list from the trigger event (``{{trigger_event.payload.issue}}``)
+        carries the same prose in its fields, so it goes to the block too,
+        as JSON. The ``truncate`` filter applies to the text either way.
+
+        Args:
+            item: The parsed placeholder.
+            value: Its resolved value, not yet stringified.
+            trigger_sourced: Whether the value was read from the trigger event.
+            replacements: Raw placeholder text to replacement, updated.
+            data_fields: Data block entries, appended to.
+        """
+        container = isinstance(value, (Mapping, list, tuple))
+        if trigger_sourced and container:
+            text = truncate_value(
+                json.dumps(value, indent=2, ensure_ascii=False, default=str),
+                item.limit,
+            )
+        else:
+            text = truncate_value(str(value), item.limit)
+        if (trigger_sourced and container) or is_free_text_field(
+            item.name, trigger_sourced=trigger_sourced
+        ):
+            replacements[item.raw] = field_reference(item.name)
+            # Two caps on one field are two entries; same name and value once.
+            if (item.name, text) not in data_fields:
+                data_fields.append((item.name, text))
+        else:
+            replacements[item.raw] = text
+
     async def _resolve_prompt(self) -> str:
         """
         Resolve dynamic placeholders in the prompt template using registered resolvers.
@@ -1770,7 +1823,12 @@ class FlowExecutionOrchestrator:
         self._ensure_resolvers_registered()
 
         prompt_template = self.flow.prompt_template
-        resolved_prompt = prompt_template
+        # Raw placeholder text -> what replaces it. Applied in one pass at the
+        # end, so a resolved value is never itself scanned for placeholders.
+        replacements: Dict[str, str] = {}
+        # Trigger-payload prose, carried in a data block after the template
+        # rather than spliced into it (see preloop.utils.prompt_data).
+        data_fields: List[Tuple[str, str]] = []
 
         # Create resolver context
         from preloop.services.persistent_workspace import workspace_mode
@@ -1815,9 +1873,12 @@ class FlowExecutionOrchestrator:
                     value = await resolver.resolve(path, resolver_context)
 
                     if value is not None:
-                        # Replace the placeholder with the value
-                        resolved_prompt = resolved_prompt.replace(
-                            item.raw, truncate_value(str(value), item.limit)
+                        self._stage_placeholder(
+                            item,
+                            value,
+                            trigger_sourced=prefix in TRIGGER_PREFIXES,
+                            replacements=replacements,
+                            data_fields=data_fields,
                         )
                         logger.debug(f"Resolved {item.raw}: {value}")
                     else:
@@ -1833,14 +1894,25 @@ class FlowExecutionOrchestrator:
                 # Try simple replacement from trigger_event_data for backwards compatibility
                 value = self._simple_resolve(placeholder, self.trigger_event_data)
                 if value is not None:
-                    resolved_prompt = resolved_prompt.replace(
-                        item.raw, truncate_value(str(value), item.limit)
+                    self._stage_placeholder(
+                        item,
+                        value,
+                        trigger_sourced=True,
+                        replacements=replacements,
+                        data_fields=data_fields,
                     )
                     logger.debug(f"Simple resolved {item.raw}: {value}")
                 else:
                     logger.warning(
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {item.raw}"
                     )
+
+        resolved_prompt = PLACEHOLDER_RE.sub(
+            lambda m: replacements.get(m.group(0), m.group(0)), prompt_template
+        )
+        data_block = render_data_block(data_fields)
+        if data_block:
+            resolved_prompt += "\n\n" + data_block
 
         from preloop.services.verification import verification_prompt_instructions
 
@@ -2129,7 +2201,7 @@ class FlowExecutionOrchestrator:
 
         self._revoke_execution_runtime_tokens()
 
-    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
+    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Any:
         """
         Simple fallback resolver for backwards compatibility.
 
@@ -2138,7 +2210,9 @@ class FlowExecutionOrchestrator:
             data: Dictionary to resolve from
 
         Returns:
-            Resolved value or None
+            Resolved value or None. An object or list is returned as is, so
+            the caller can keep its fields out of the template; anything
+            else as a string.
         """
         keys = placeholder.split(".")
         value = data
@@ -2150,7 +2224,9 @@ class FlowExecutionOrchestrator:
                 else:
                     return None
 
-            return str(value) if value is not None else None
+            if value is None or isinstance(value, (dict, list)):
+                return value
+            return str(value)
         except Exception:
             return None
 

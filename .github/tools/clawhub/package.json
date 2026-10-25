@@ -6,6 +6,6 @@
     "clawhub": "0.23.3"
   },
   "overrides": {
-    "undici": "7.29.1"
+    "undici": "7.30.1"
   }
 }
