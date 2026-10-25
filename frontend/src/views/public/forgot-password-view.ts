@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { formStyles } from '../../styles/form-styles';
@@ -25,7 +26,7 @@ export class ForgotPasswordView extends LitElement {
     const email = formData.get('email') as string;
 
     try {
-      await post('/api/v1/auth/forgot-password', { email });
+      await post(REST_API_PREFIX + '/auth/forgot-password', { email });
       this.message =
         'If an account with that email exists, a password reset link has been sent.';
       this.error = '';

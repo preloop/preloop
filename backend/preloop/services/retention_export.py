@@ -417,6 +417,7 @@ def _plan_artifacts(
             "sha256": row.sha256,
             "size_bytes": row.size_bytes,
             "producer": row.producer,
+            "media_timing": row.media_timing,
             "runtime_session_id": str(row.runtime_session_id),
             "created_at": _iso(row.created_at),
             "legal_hold": bool(row.legal_hold),
@@ -541,6 +542,35 @@ def build_period_export(
             runtime_session_id=runtime_session_id,
         ),
     )
+    # Resolve against the same server-side timebase as GET media-sync. Only
+    # recordings in this export are included; no extra content path is added.
+    from preloop.models.crud.media_sync import timing_rows
+    from preloop.services.media_sync import resolve_recordings
+
+    recording_sessions = {
+        plan.row.runtime_session_id
+        for plan in plans
+        if plan.row.kind in ("recording", "screencast")
+    }
+    sync = {}
+    for session_id in recording_sessions:
+        recordings = [
+            plan.row
+            for plan in plans
+            if plan.row.runtime_session_id == session_id
+            and plan.row.kind in ("recording", "screencast")
+        ]
+        resolved = resolve_recordings(
+            recordings, timing_rows(db, account_id=account_id, session_id=session_id)
+        )
+        sync.update(
+            {
+                item.artifact_id: item.model_dump(mode="json")
+                for item in resolved.recordings
+            }
+        )
+    if sync:
+        bodies["artifacts/media-sync.json"] = canonical_manifest_json(sync)
     included = [plan for plan in plans if plan.member]
     artifact_bytes = sum(int(plan.row.size_bytes or 0) for plan in included)
     cap = _max_artifact_bytes()

@@ -570,6 +570,9 @@ def _read_stored_usage(
         total.last_usage_id,
         total.latest_model_alias,
         total.latest_provider_name,
+        # The live path keeps the principal's own latest request on a tie
+        # and lets a session row win only when it is strictly newer.
+        literal_column("0").label("source_rank"),
     ).where(*direct_filter)
     aggregate_queries = [direct]
     owned_pairs = [
@@ -613,6 +616,7 @@ def _read_stored_usage(
                 total.last_usage_id,
                 total.latest_model_alias,
                 total.latest_provider_name,
+                literal_column("1").label("source_rank"),
             )
             .select_from(joined)
             .where(*session_filter)
@@ -638,6 +642,7 @@ def _read_stored_usage(
             candidates.c.owner_type,
             candidates.c.owner_id,
             candidates.c.last_request_at.desc(),
+            candidates.c.source_rank,
             candidates.c.last_usage_id.desc(),
         )
     ):
@@ -939,6 +944,23 @@ def _usage_aggregates_for_principals(
     return results
 
 
+def _stored_totals_ready(db: Session) -> bool:
+    """Whether ``agent_usage_total`` holds every historical gateway row.
+
+    The online backfill flips ``agent_usage_backfill.ready`` once it has
+    counted all existing rows; until then readers keep aggregating
+    ``api_usage`` so partial counters never reach a page.
+
+    Args:
+        db: Active database session.
+
+    Returns:
+        ``True`` when all-time reads may use the stored counters.
+    """
+    backfill = db.get(models.AgentUsageBackfill, "agents")
+    return backfill is not None and backfill.ready is True
+
+
 def _token_usage_from_aggregate(aggregate: dict[str, Any]) -> dict[str, Any]:
     """Return the token-figure block a managed-agent summary carries.
 
@@ -971,8 +993,13 @@ def _usage_aggregate_for_principal(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     ownership: Optional[_AgentSessionOwnership] = None,
+    use_stored_totals: bool = False,
 ) -> dict[str, Any]:
-    """Return principal-scoped usage totals across all runtime sessions."""
+    """Return principal-scoped usage totals across all runtime sessions.
+
+    ``use_stored_totals`` reads ``agent_usage_total`` for all-time reads
+    (no window); windowed reads always aggregate ``api_usage``.
+    """
     aggregates = _usage_aggregates_for_principals(
         db,
         account_id=account_id,
@@ -980,8 +1007,12 @@ def _usage_aggregate_for_principal(
         start_date=start_date,
         end_date=end_date,
         ownership=ownership,
+        use_stored_totals=use_stored_totals,
     )
-    return aggregates.get((principal_type, principal_id), _empty_usage_aggregate())
+    aggregate = aggregates.get((principal_type, principal_id), _empty_usage_aggregate())
+    # List-only marker; callers return this dict to the API as is.
+    aggregate.pop("_stored_totals", None)
+    return aggregate
 
 
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
@@ -1691,8 +1722,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 )
             )
 
-        backfill = db.get(models.AgentUsageBackfill, "agents")
-        stored_ready = backfill is not None and backfill.ready is True
+        stored_ready = _stored_totals_ready(db)
         total = base_query.count()
 
         # Rank with one index-bounded max() per agent, then count the page's
@@ -2051,6 +2081,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             principal_type=row.session_source_type,
             principal_id=row.session_source_id,
             ownership=ownership,
+            # All-time figures: the stored counters replace a live scan of
+            # every api_usage row the agent ever wrote.
+            use_stored_totals=_stored_totals_ready(db),
         )
         row = _PageRow(
             **{
@@ -2099,6 +2132,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             start_date=start_date,
             end_date=end_date,
             ownership=ownership,
+            # Only consulted when there is no window.
+            use_stored_totals=(
+                start_date is None and end_date is None and _stored_totals_ready(db)
+            ),
         )
 
     def get_usage_by_agent_for_account(
@@ -2142,6 +2179,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             ],
             start_date=start_date,
             end_date=end_date,
+            use_stored_totals=(
+                start_date is None and end_date is None and _stored_totals_ready(db)
+            ),
         )
         rows: list[dict[str, Any]] = []
         for agent in agents:
@@ -2150,6 +2190,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             )
             if not aggregate or not aggregate["total_requests"]:
                 continue
+            aggregate.pop("_stored_totals", None)
             rows.append({"agent_id": str(agent.id), **aggregate})
         return rows
 

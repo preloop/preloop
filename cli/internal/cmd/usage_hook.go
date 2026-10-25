@@ -21,7 +21,7 @@ var uuidRe = regexp.MustCompile(
 )
 
 const (
-	usageIngestPath = "/api/v1/usage/ingest"
+	usageIngestPath = api.RESTPrefix + "/usage/ingest"
 
 	// usageEventSchemaV1 is the versioned contract third-party harnesses
 	// target. Unknown schema values skip that event; they are never fatal.

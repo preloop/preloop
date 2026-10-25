@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
@@ -462,7 +463,7 @@ export class ToolCard extends LitElement {
       }
 
       const response = await fetchWithAuth(
-        `/api/v1/tool-configurations/${this.tool.config_id}/approval-condition/test`,
+        `${REST_API_PREFIX}/tool-configurations/${this.tool.config_id}/approval-condition/test`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

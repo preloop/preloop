@@ -541,7 +541,7 @@ func sha256Hex(value string) string {
 func ensureTrustedUpstreamKey(client *api.Client, opts claudeDesktopRouteOptions) (trustedUpstreamKey, string, error) {
 	var key trustedUpstreamKey
 	if id := strings.TrimSpace(opts.KeyID); id != "" {
-		if err := client.Get("/api/v1/auth/api-keys/"+url.PathEscape(id), &key); err != nil {
+		if err := client.Get(api.RESTPrefix+"/auth/api-keys/"+url.PathEscape(id), &key); err != nil {
 			return key, "", fmt.Errorf("could not load API key %s: %w", id, err)
 		}
 		if !key.hasTrustedScope() {
@@ -563,7 +563,7 @@ func ensureTrustedUpstreamKey(client *api.Client, opts claudeDesktopRouteOptions
 		"scopes":       []string{trustedUpstreamScope},
 		"context_data": map[string]string{trustedUpstreamSecretHashField: sha256Hex(secret)},
 	}
-	if err := client.Post("/api/v1/auth/api-keys", payload, &key); err != nil {
+	if err := client.Post(api.RESTPrefix+"/auth/api-keys", payload, &key); err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 403 {
 			return key, "", fmt.Errorf("creating a trusted upstream key requires account admin: %w", err)
@@ -579,7 +579,7 @@ func ensureTrustedUpstreamKey(client *api.Client, opts claudeDesktopRouteOptions
 	// or transport error) the key and secret are never printed, so a key left
 	// behind would be an unusable trusted credential: revoke it either way.
 	if err := verifyTrustedUpstreamSecretEnforced(client.BaseURL(), key.Key, secret); err != nil {
-		if delErr := client.Delete("/api/v1/auth/api-keys/"+url.PathEscape(key.ID), nil); delErr != nil {
+		if delErr := client.Delete(api.RESTPrefix+"/auth/api-keys/"+url.PathEscape(key.ID), nil); delErr != nil {
 			return trustedUpstreamKey{}, "", fmt.Errorf("%w; revoking key %s also failed: %v (delete it in the console)", err, key.ID, delErr)
 		}
 		return trustedUpstreamKey{}, "", fmt.Errorf("%w; key %s was revoked", err, key.ID)

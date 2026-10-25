@@ -118,7 +118,11 @@ _ALLOWED: dict[str, dict[str, _Check | None]] = {
         "image/webp": _is_webp,
     },
     "recording": {"video/webm": _is_ebml, "video/mp4": _is_iso_bmff},
-    "screencast": {"video/webm": _is_ebml, "video/mp4": _is_iso_bmff},
+    "screencast": {
+        "video/webm": _is_ebml,
+        "video/mp4": _is_iso_bmff,
+        "image/gif": lambda data: data.startswith((b"GIF87a", b"GIF89a")),
+    },
     "audio": {
         "audio/mpeg": _is_mpeg_audio,
         "audio/wav": _is_wav,

@@ -35,8 +35,8 @@ import (
 
 const (
 	discoveryReportEnv       = "PRELOOP_DISCOVERY_REPORT"
-	discoverySaltPath        = "/api/v1/agents/discovery-salt"
-	discoveryReportPath      = "/api/v1/agents/discovery-reports"
+	discoverySaltPath        = api.RESTPrefix + "/agents/discovery-salt"
+	discoveryReportPath      = api.RESTPrefix + "/agents/discovery-reports"
 	workstationFingerprintNS = "preloop-workstation:v1:"
 	configPathHashNS         = "preloop-config-path:v1:"
 	workstationIDFileName    = "workstation-id"

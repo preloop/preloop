@@ -372,7 +372,7 @@ func readCodexOAuthMarkers(
 	missing := false
 	for _, id := range ids {
 		var marker codexOAuthServerMarker
-		path := "/api/v1/ai-models/" + url.PathEscape(id) + "/credentials/marker"
+		path := api.RESTPrefix + "/ai-models/" + url.PathEscape(id) + "/credentials/marker"
 		if err := client.Get(path, &marker); err != nil {
 			if api.IsStatus(err, 404) {
 				missing = true
@@ -459,7 +459,7 @@ func pullCodexOAuthBundle(
 ) (codexOAuthSyncOutcome, error) {
 	modelID := strings.TrimSpace(marker.ModelID)
 	var exported exportedModelCredential
-	path := "/api/v1/ai-models/" + url.PathEscape(modelID) + "/credentials/export"
+	path := api.RESTPrefix + "/ai-models/" + url.PathEscape(modelID) + "/credentials/export"
 	if err := client.Post(path, nil, &exported); err != nil {
 		return codexOAuthSyncOutcome{}, fmt.Errorf("codex oauth sync: export model %s: %w", modelID, err)
 	}
@@ -858,7 +858,7 @@ func listCodexOAuthGroups(client *api.Client, agent AgentConfig) ([]codexOAuthSy
 		return nil, fmt.Errorf("codex oauth sync: managed agent has no id")
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		return nil, fmt.Errorf("codex oauth sync: list models: %w", err)
 	}
 	return codexOAuthGroupsForEnrollment(models, agentID), nil
@@ -878,7 +878,7 @@ func pushCodexOAuthBundle(
 			"credential_payload": payload,
 		}
 		var response aiModelResponse
-		path := "/api/v1/ai-models/" + url.PathEscape(strings.TrimSpace(target.ID))
+		path := api.RESTPrefix + "/ai-models/" + url.PathEscape(strings.TrimSpace(target.ID))
 		if err := client.Put(path, body, &response); err != nil {
 			return updated, fmt.Errorf(
 				"codex oauth sync: update model %s: %w",

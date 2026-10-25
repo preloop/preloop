@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { fetchWithAuth, generatePolicy, generatePolicyFromAudit } from '../api';
@@ -389,7 +390,9 @@ export class PolicyGenerateDialog extends LitElement {
     if (this.currentYaml.trim()) {
       return this.currentYaml;
     }
-    const response = await fetchWithAuth('/api/v1/policies/export?format=yaml');
+    const response = await fetchWithAuth(
+      REST_API_PREFIX + '/policies/export?format=yaml'
+    );
     if (!response.ok) {
       return '';
     }
@@ -403,7 +406,7 @@ export class PolicyGenerateDialog extends LitElement {
         'file',
         new File([yamlText], 'generated.yaml', { type: 'application/x-yaml' })
       );
-      const response = await fetchWithAuth('/api/v1/policies/diff', {
+      const response = await fetchWithAuth(REST_API_PREFIX + '/policies/diff', {
         method: 'POST',
         body: formData,
       });

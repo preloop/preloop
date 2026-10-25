@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from preloop.models import models
+
 from ..models.audit_outbox import (
     AUDIT_OUTBOX_DELIVERED,
     AUDIT_OUTBOX_FAILED,
@@ -142,6 +144,18 @@ def oldest_pending_age_seconds(db: Session) -> float:
     if oldest is None:
         return 0.0
     return max(0.0, (_utcnow() - oldest).total_seconds())
+
+
+def parked_count(db: Session) -> int:
+    """Count retained failures so alerting survives a process restart."""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(models.AuditOutbox)
+            .where(models.AuditOutbox.status == models.AUDIT_OUTBOX_FAILED)
+        )
+        or 0
+    )
 
 
 def requeue_failed(

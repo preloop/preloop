@@ -174,6 +174,7 @@ def _deposit(
         payload=payload,
         name=name,
         labels=merged_labels or None,
+        media_timing=arguments.get("media_timing"),
         activity_id=arguments.get("activity_id"),
         parent_artifact_id=parent_id,
         tool_name=tool_name,

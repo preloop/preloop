@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state, query } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -74,7 +75,7 @@ export class WelcomeView extends LitElement {
       const token = localStorage.getItem('accessToken');
       if (token && this._orgName.trim()) {
         const updateAccountResponse = await api.fetchPublic(
-          '/api/v1/account/details',
+          REST_API_PREFIX + '/account/details',
           {
             method: 'PATCH',
             headers: {
@@ -147,7 +148,7 @@ export class WelcomeView extends LitElement {
 
     try {
       const response = await api.fetchPublic(
-        '/api/v1/auth/complete-onboarding',
+        REST_API_PREFIX + '/auth/complete-onboarding',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

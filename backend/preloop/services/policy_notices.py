@@ -99,6 +99,8 @@ class PolicyNotice:
     agent_ref: Optional[str] = None
     runtime_session_id: Optional[UUID] = None
     audit_event_id: Optional[UUID] = None
+    # Safe metadata only: queued with the hit, then flushed in its transaction.
+    audit_fields: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
 
 @dataclass
@@ -251,6 +253,14 @@ def build_excerpt(
         return None
 
 
+def _enqueue_hit_audit(db: Session, notice: PolicyNotice) -> None:
+    """The hit and its audit intent either both commit or both roll back."""
+    if notice.audit_fields is not None:
+        from preloop.services.policy_evaluator import _log_policy_decision_async
+
+        _log_policy_decision_async(db=db, **notice.audit_fields)
+
+
 def record_policy_notice(
     db: Session,
     notice: PolicyNotice,
@@ -289,6 +299,7 @@ def record_policy_notice(
         runtime_session_id=notice.runtime_session_id,
         audit_event_id=notice.audit_event_id,
     )
+    _enqueue_hit_audit(db, notice)
     db.commit()
     claimed = crud_policy_notice_hit.claim_notification(
         db, hit=hit, window=NOTIFY_DEBOUNCE, now=now
@@ -352,6 +363,7 @@ def _persist_policy_match_hit(notice: PolicyNotice) -> None:
             runtime_session_id=notice.runtime_session_id,
             audit_event_id=notice.audit_event_id,
         )
+        _enqueue_hit_audit(db, notice)
         db.commit()
     except Exception:  # noqa: BLE001 - a hit must never fail the model call
         logger.exception(

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 
 /** Generic plugin contract; processing and wording belong to the provider. */
@@ -43,9 +44,12 @@ export async function loadExtensionAttentionItems(): Promise<
   PreparedExtensionAttentionItem[]
 > {
   try {
-    const response = await fetchWithAuth('/api/v1/attention/extension-items', {
-      passive: true,
-    });
+    const response = await fetchWithAuth(
+      REST_API_PREFIX + '/attention/extension-items',
+      {
+        passive: true,
+      }
+    );
     if (!response.ok) return [];
     const items: unknown = await response.json();
     return Array.isArray(items)

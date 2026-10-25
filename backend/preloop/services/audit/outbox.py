@@ -205,12 +205,19 @@ def intent_operation(
 
 _attempt_failure_counter: Any = None
 _lag_histogram: Any = None
+_lag_gauge: Any = None
+_parked_gauge: Any = None
 _metrics_failed = False
 
 
 def _record_metric(kind: str, value: float, attributes: dict[str, str]) -> None:
     """Emit drain lag and failed attempts; never let telemetry break the relay."""
-    global _attempt_failure_counter, _lag_histogram, _metrics_failed
+    global \
+        _attempt_failure_counter, \
+        _lag_histogram, \
+        _lag_gauge, \
+        _parked_gauge, \
+        _metrics_failed
     if _metrics_failed:
         return
     try:
@@ -222,9 +229,16 @@ def _record_metric(kind: str, value: float, attributes: dict[str, str]) -> None:
                 _attempt_failure_counter = meter.create_counter(
                     "preloop.audit.outbox.attempts_failed",
                     unit="{attempt}",
-                    description="Audit outbox deliveries that failed and will retry",
+                    description="Audit outbox admission, delivery and relay failures",
                 )
             _attempt_failure_counter.add(int(value), attributes)
+        elif kind == "parked":
+            if _parked_gauge is None:
+                _parked_gauge = meter.create_gauge(
+                    "preloop.audit.outbox.parked",
+                    description="Parked audit intents requiring operator replay",
+                )
+            _parked_gauge.set(int(value), attributes)
         else:
             if _lag_histogram is None:
                 _lag_histogram = meter.create_histogram(
@@ -233,8 +247,20 @@ def _record_metric(kind: str, value: float, attributes: dict[str, str]) -> None:
                     description="Age of the oldest pending audit outbox intent",
                 )
             _lag_histogram.record(value, attributes)
+            if _lag_gauge is None:
+                _lag_gauge = meter.create_gauge(
+                    "preloop.audit.outbox.oldest_pending_age",
+                    unit="s",
+                    description="Current age of the oldest due audit intent",
+                )
+            _lag_gauge.set(value, attributes)
     except Exception:
         _metrics_failed = True
+
+
+def record_admission_failure(reason: str) -> None:
+    """Alert on local admission lost after an irreversible external effect."""
+    _record_metric("failed", 1, {"reason": reason})
 
 
 class AuditOutboxRelay:
@@ -336,8 +362,9 @@ class AuditOutboxRelay:
         db = self._session_factory()
         try:
             _record_metric("lag", crud_audit_outbox.oldest_pending_age_seconds(db), {})
+            _record_metric("parked", crud_audit_outbox.parked_count(db), {})
         except Exception:
-            pass
+            _record_metric("failed", 1, {"reason": "health_query"})
         finally:
             db.close()
 
@@ -350,6 +377,7 @@ class AuditOutboxRelay:
                 delay = self._poll_interval
             except Exception:
                 # Database down: keep intents pending and back off.
+                _record_metric("failed", 1, {"reason": "relay_pass"})
                 logger.warning("Audit outbox relay pass failed; retrying")
                 delay = min(delay * 2, 60.0)
             self._stop.wait(delay)

@@ -501,7 +501,7 @@ func readRunnerOnline(client *api.Client) (runnerOnlineView, bool) {
 		return runnerOnlineView{}, false
 	}
 	var view runnerOnlineView
-	path := "/api/v1/runners/" + url.PathEscape(state.ID)
+	path := api.RESTPrefix + "/runners/" + url.PathEscape(state.ID)
 	if err := client.Get(path, &view); err != nil {
 		return runnerOnlineView{}, false
 	}

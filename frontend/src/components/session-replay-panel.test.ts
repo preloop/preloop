@@ -114,6 +114,72 @@ describe('SessionReplayPanel', () => {
     expect(element.shadowRoot!.textContent).not.to.include('Captured result');
     expect(element.shadowRoot!.textContent).to.include('Legacy result');
   });
+  it('marks mapped model turns and tool rows as recording scroll targets', async () => {
+    const tool: RuntimeSessionActivityItem = {
+      activity_id: 'tool-activity',
+      activity_type: 'tool_call',
+      timestamp: '2026-06-07T12:02:00Z',
+      title: 'read_file',
+      summary: null,
+      status: 'success',
+      api_usage_id: null,
+      tool_name: 'read_file',
+      server_name: null,
+      auth_subject_type: null,
+      api_key_id: null,
+      api_key_name: null,
+      estimated_cost: null,
+      total_tokens: null,
+      metadata: { tool_call_id: 'call-1' },
+    };
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${[
+          previewEvent('usage-1', '2026-06-07T12:01:00Z', [
+            { role: 'assistant', text: 'MAPPED_REPLY' },
+          ]),
+        ]}
+        .activity=${[tool]}
+        .recordingSync=${{
+          artifact_id: 'recording',
+          skew_ms: 0,
+          unmapped_activity_ids: [],
+          mappings: [
+            {
+              activity_id: 'model-activity',
+              activity_type: 'model_gateway_call',
+              api_usage_id: 'usage-1',
+              offset_ms: 1000,
+              rule: 'server_skew',
+              approximate: false,
+            },
+            {
+              activity_id: 'tool-activity',
+              activity_type: 'tool_call',
+              offset_ms: 2000,
+              rule: 'server_skew',
+              approximate: false,
+            },
+          ],
+        }}
+        .recordingActivityId=${'tool-activity'}
+        recordingEnabled
+      ></session-replay-panel>
+    `);
+
+    const root = element.shadowRoot!;
+    const turn = root.querySelector(
+      '[data-recording-activity="model-activity"]'
+    );
+    expect(turn?.classList.contains('chat-turn')).to.equal(true);
+    expect(turn?.classList.contains('recording-current')).to.equal(false);
+    const row = root.querySelector('[data-recording-activity="tool-activity"]');
+    expect(row?.querySelector('session-tool-card')).to.exist;
+    expect(row?.classList.contains('recording-current')).to.equal(true);
+  });
+
   it('renders agent control messages in chat mode', async () => {
     const element = await fixture<SessionReplayPanel>(html`
       <session-replay-panel

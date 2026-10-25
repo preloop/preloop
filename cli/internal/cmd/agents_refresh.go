@@ -197,7 +197,7 @@ func executeAgentsRefresh(
 	pinModelFamiliesSet bool,
 ) error {
 	var accountModels []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &accountModels); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &accountModels); err != nil {
 		return fmt.Errorf("failed to list account AI models: %w", err)
 	}
 
@@ -1075,7 +1075,7 @@ func fetchManagedAgentModelBindingsForRefresh(
 		return nil
 	}
 	var bindings []managedAgentModelBindingSummary
-	if err := client.Get("/api/v1/agents/"+managedAgent.ID+"/model-bindings", &bindings); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents/"+managedAgent.ID+"/model-bindings", &bindings); err != nil {
 		fmt.Fprintf(output, "  Note: could not list model bindings for this agent: %v\n", err) //nolint:errcheck
 		return nil
 	}
