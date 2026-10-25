@@ -1,5 +1,7 @@
 """Codex requires Responses and rejects chat-only bindings before launch."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -16,7 +18,7 @@ from preloop.services.model_routing import model_usable_for_agent
 
 @pytest.mark.parametrize("gateway", [None, {}, {"enabled": False}])
 def test_chat_only_custom_model_requires_gateway(gateway: Any) -> None:
-    model = models.AIModel(
+    model = ai_model_with_secret(
         provider_name="anthropic",
         model_identifier="claude-sonnet",
         api_key="test-key",
@@ -41,7 +43,7 @@ def test_chat_only_custom_model_requires_gateway(gateway: Any) -> None:
 def test_responses_capable_models_remain_supported(
     provider: str, metadata: dict[str, Any]
 ) -> None:
-    model = models.AIModel(
+    model = ai_model_with_secret(
         provider_name=provider,
         model_identifier="example-model",
         api_key="test-key",
@@ -71,7 +73,7 @@ def test_create_and_update_validate_default_model(
     test_user: models.User,
     gateway_enabled: bool | None,
 ) -> None:
-    model = models.AIModel(
+    model = ai_model_with_secret(
         name="Custom model",
         provider_name="anthropic",
         model_identifier="claude-sonnet",

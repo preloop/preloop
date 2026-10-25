@@ -1,5 +1,7 @@
 """Tests for FlowExecutionOrchestrator."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1815,12 +1817,11 @@ class TestFlowExecutionOrchestrator:
         """Test AI model query with UUID string conversion."""
         from preloop.models.crud import crud_flow
         from preloop.models.schemas.flow import FlowCreate
-        from preloop.models.models import AIModel
         from uuid import uuid4
 
         # Create an AI model
         ai_model_id = uuid4()
-        ai_model = AIModel(
+        ai_model = ai_model_with_secret(
             id=str(ai_model_id),
             name="Test Model",
             model_identifier="gpt-5.4",
@@ -1874,10 +1875,9 @@ class TestFlowExecutionOrchestrator:
         test_account: Account,
     ):
         """Gemini should now retain full gateway routing when configured."""
-        from preloop.models.models import AIModel
         from uuid import uuid4
 
-        ai_model = AIModel(
+        ai_model = ai_model_with_secret(
             id=str(uuid4()),
             name="Gemini Gateway Model",
             model_identifier="gemini-2.5-pro",

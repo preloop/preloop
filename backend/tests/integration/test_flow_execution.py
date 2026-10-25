@@ -1,5 +1,7 @@
 """Integration tests for flow execution end-to-end."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import asyncio
 import logging
 import os
@@ -48,7 +50,7 @@ def test_account(db_session: Session) -> Account:
 @pytest.fixture
 def test_ai_model(db_session: Session, test_account: Account) -> AIModel:
     """Create a test AI model configuration."""
-    ai_model = AIModel(
+    ai_model = ai_model_with_secret(
         name="Test GPT-4",
         provider_name="openai",
         model_identifier="gpt-5.4",

@@ -19,9 +19,10 @@ def test_profile_read_then_identifier_write_with_real_api_key(
     db_session: Session, test_user: models.User, field: str, value: str
 ) -> None:
     """Reading a profile with a key never grants session-only write authority."""
+    token = f"synthetic-personal-key-{uuid4().hex}"
     key = models.ApiKey(
         name=f"Example personal key {uuid4()}",
-        key=f"synthetic-personal-key-{uuid4().hex}",
+        key=token,
         user_id=test_user.id,
         account_id=test_user.account_id,
         is_active=True,
@@ -37,7 +38,8 @@ def test_profile_read_then_identifier_write_with_real_api_key(
     app.include_router(router, prefix="/api/v1/auth")
     # Keep the actual bearer authentication dependency; only isolate DB I/O.
     app.dependency_overrides[get_db_session] = lambda: db_session
-    headers = {"Authorization": f"Bearer {key.key}"}
+    assert key.key is None
+    headers = {"Authorization": f"Bearer {token}"}
 
     with TestClient(app) as client:
         profile = client.get("/api/v1/auth/users/me", headers=headers)

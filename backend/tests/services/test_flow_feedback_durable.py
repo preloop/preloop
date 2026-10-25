@@ -1,5 +1,7 @@
 """Policy and PostgreSQL crash/concurrency tests for durable implementation turns."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -271,7 +273,6 @@ def database() -> Generator[Engine, None, None]:
         for name in (
             "user",
             "tracker",
-            "secret_reference",
             "ci_principal",
             "api_key",
             "flow_runner",
@@ -280,6 +281,7 @@ def database() -> Generator[Engine, None, None]:
         # Flow deletion also cleans resource access in the same transaction.
         # Keep its owning account and access-rule tables faithful to that path.
         models.Account.__table__.create(conn)
+        models.SecretReference.__table__.create(conn)
         models.AccessRule.__table__.create(conn)
         models.AIModel.__table__.create(conn)
         models.Flow.__table__.create(conn)
@@ -299,7 +301,7 @@ def create_thread(db: Session) -> models.FlowThread:
     account, tracker = uuid.uuid4(), uuid.uuid4()
     db.add(models.Account(id=account, organization_name="Feedback test account"))
     db.execute(text('INSERT INTO "tracker" (id) VALUES (:id)'), {"id": tracker})
-    model = models.AIModel(
+    model = ai_model_with_secret(
         id=uuid.uuid4(),
         account_id=account,
         name="Test model",

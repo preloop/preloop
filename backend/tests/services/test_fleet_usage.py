@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth import get_current_active_user
 from preloop.api.endpoints.fleet_map import router
 from preloop.models import models
+from preloop.models.crud import crud_ai_model
 from preloop.models.db.session import get_db_session
 from preloop.services import fleet_usage
 from preloop.services.fleet_map import build_fleet_map
@@ -313,7 +314,9 @@ def test_built_in_models_match_graph_visibility_and_tenant_usage(
     db_session: Session, fleet: dict[str, Any]
 ) -> None:
     hosted = _model(db_session, None, "example-hosted-model", "hosted")
-    hosted.api_key = "example-operator-secret"
+    crud_ai_model.update(
+        db_session, db_obj=hosted, obj_in={"api_key": "example-operator-secret"}
+    )
     hosted.meta_data = {
         "gateway": {"enabled": True, "model_alias": "example/operator-model"}
     }

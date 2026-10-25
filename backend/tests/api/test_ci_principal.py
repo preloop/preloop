@@ -391,10 +391,17 @@ def test_null_history_and_legacy_runtime_contracts(
     )
     assert execution.ci_principal_id is None and execution.initiating_ci_key_id is None
     legacy = crud.crud_api_key.create_with_owner(
-        db_session, obj_in={"name": "Legacy"}, owner_username=owner.username
+        db_session,
+        obj_in={"name": "Legacy"},
+        owner_username=owner.username,
+        key_value="synthetic-legacy-token",
     )
     assert not legacy.requires_machine_authorization
-    assert crud.crud_api_key.get_by_key(db_session, key=legacy.key).id == legacy.id
+    assert legacy.key is None
+    assert (
+        crud.crud_api_key.get_by_key(db_session, key="synthetic-legacy-token").id
+        == legacy.id
+    )
     runtime, token = crud.crud_api_key.create_runtime_key(
         db_session,
         name="Runtime",
