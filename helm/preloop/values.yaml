@@ -248,6 +248,9 @@ api:
   # A generous ceiling costs nothing when connections have drained — uvicorn
   # exits as soon as the last one closes.
   terminationGracePeriodSeconds: 900
+  # Failed liveness must recover promptly; planned rollouts keep the long
+  # streaming drain above. Includes the 10s preStop sleep (Kubernetes >=1.28).
+  livenessTerminationGracePeriodSeconds: 60
   resources:
     requests:
       cpu: "50m"

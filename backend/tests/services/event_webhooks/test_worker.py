@@ -448,3 +448,40 @@ async def test_run_once_with_an_empty_queue_does_no_http(
 ):
     monkeypatch.setattr(db_session, "close", lambda: None)
     assert await worker.run_once(db_factory=lambda: db_session) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["account", SOURCE_APPROVAL_WORKFLOW])
+async def test_run_once_checks_target_before_opening_socket(
+    db_session, account, make_endpoint, monkeypatch, source
+) -> None:
+    """Both account deliveries and approval shims use the guarded transport."""
+    monkeypatch.setattr(settings, "webhook_block_private_targets", True)
+    endpoint, _ = make_endpoint(url="http://127.0.0.1/hook", source=source)
+    if source == SOURCE_APPROVAL_WORKFLOW:
+        outbox.enqueue_raw_delivery(
+            db_session,
+            endpoint=endpoint,
+            event_type=EVENT_APPROVAL_CREATED,
+            payload={"text": "Example approval"},
+            natural_key="example-approval",
+        )
+        db_session.flush()
+        delivery_id = (
+            db_session.query(WebhookDelivery)
+            .filter(WebhookDelivery.endpoint_id == endpoint.id)
+            .one()
+            .id
+        )
+    else:
+        delivery_id = _enqueue(db_session, account).id
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("A blocked delivery reached the HTTP transport")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", unexpected)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    assert await worker.run_once(db_factory=lambda: db_session) == 1
+    row = db_session.get(WebhookDelivery, delivery_id)
+    assert row.status == DELIVERY_PENDING
+    assert "Webhook target blocked: loopback" in row.last_error

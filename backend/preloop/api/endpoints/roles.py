@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.models import models
 from preloop.models.crud import crud_role
 from preloop.models.db.session import get_db_session
-from preloop.models.models.user import User
 from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ router = APIRouter()
 @router.get("/roles")
 @require_permission("view_users")
 async def list_roles(
-    current_user: Annotated[User, Depends(get_current_active_user)],
+    current_user: Annotated[models.User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
 ):
     """List all available roles.
@@ -35,8 +35,10 @@ async def list_roles(
     """
 
     def _query() -> dict:
-        # Get all roles (roles are global, not account-specific)
-        roles = crud_role.get_multi(db=db, limit=100)
+        # Include only this account and genuinely global system roles.
+        roles = crud_role.get_all_for_account(
+            db=db, account_id=current_user.account_id, limit=100
+        )
 
         result = []
         for role in roles:
