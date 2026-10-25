@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Callable
 from uuid import uuid4
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 import pytest
 
@@ -151,14 +151,11 @@ def test_bounded_gateway_payload_rechecks_row_before_transfer(
         if changed or "octet_length" not in statement or "ORDER BY" not in statement:
             return
         changed = True
-        values = (
-            {"metadata_": {"request": "x" * 5_000}}
-            if mutation == "growth"
-            else {"timestamp": at + timedelta(seconds=1)}
-        )
-        db_session.query(models.RuntimeSessionActivity).filter(
-            models.RuntimeSessionActivity.id == activity.id
-        ).update(values)
+        # Writers go through the ORM, which keeps metadata_bytes current.
+        if mutation == "growth":
+            activity.metadata_ = {"request": "x" * 5_000}
+        else:
+            activity.timestamp = at + timedelta(seconds=1)
         db_session.flush()
 
     event.listen(connection, "after_cursor_execute", grow_after_probe)
@@ -505,3 +502,109 @@ def test_timeline_limits_ids_before_reading_metadata(
     assert limits, "timeline query must bound rows with LIMIT"
     for node in limits:
         assert not any("metadata" in column for column in node.get("Output", []))
+
+
+def _gateway_row(
+    db_session: Session, account: models.Account, metadata: dict
+) -> tuple[models.RuntimeSessionActivity, datetime]:
+    at = datetime.now(UTC)
+    runtime_session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(runtime_session)
+    db_session.flush()
+    row = models.RuntimeSessionActivity(
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        activity_type="model_gateway_call",
+        timestamp=at,
+        metadata_=metadata,
+    )
+    db_session.add(row)
+    db_session.flush()
+    return row, at
+
+
+def _text_bytes(db_session: Session, row: models.RuntimeSessionActivity) -> int:
+    return db_session.execute(
+        text(
+            "SELECT octet_length(metadata::text) FROM runtime_session_activity "
+            "WHERE id = :id"
+        ),
+        {"id": row.id},
+    ).scalar_one()
+
+
+def test_metadata_bytes_matches_postgres_text_length_on_insert_and_update(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """The stored size equals what octet_length(metadata::text) reported."""
+    payload = {
+        "request": {"messages": [{"role": "user", "content": 'héllo ✓ \n"q"'}]},
+        "tokens": 12,
+        "ratio": 0.5,
+        "flag": True,
+        "none": None,
+    }
+    row, _ = _gateway_row(db_session, create_account(), payload)
+    assert row.metadata_bytes == _text_bytes(db_session, row)
+    row.metadata_ = {**payload, "response": "y" * 900}
+    db_session.flush()
+    assert row.metadata_bytes == _text_bytes(db_session, row)
+    row.status = "success"
+    db_session.flush()
+    assert row.metadata_bytes == _text_bytes(db_session, row)
+
+
+def test_bounded_gateway_payload_reads_the_stored_size(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """The budget comes from metadata_bytes, not from serialising the value."""
+    row, at = _gateway_row(db_session, create_account(), {"request": "small"})
+    db_session.execute(
+        text(
+            "UPDATE runtime_session_activity SET metadata_bytes = 5000 WHERE id = :id"
+        ),
+        {"id": row.id},
+    )
+    rows, skipped, _, _ = (
+        crud_runtime_session_activity.list_bounded_model_gateway_call_payloads_for_session(
+            db_session,
+            account_id=row.account_id,
+            runtime_session_id=row.runtime_session_id,
+            start_date=at,
+            end_date=at,
+            max_payload_bytes=1_000,
+        )
+    )
+    assert rows == []
+    assert skipped == [(row.id, at)]
+
+
+def test_bounded_gateway_payload_measures_rows_without_a_stored_size(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """Rows written before the column existed still respect the budget."""
+    big, at = _gateway_row(db_session, create_account(), {"request": "x" * 2_000})
+    db_session.execute(
+        text(
+            "UPDATE runtime_session_activity SET metadata_bytes = NULL WHERE id = :id"
+        ),
+        {"id": big.id},
+    )
+    rows, skipped, _, complete = (
+        crud_runtime_session_activity.list_bounded_model_gateway_call_payloads_for_session(
+            db_session,
+            account_id=big.account_id,
+            runtime_session_id=big.runtime_session_id,
+            start_date=at,
+            end_date=at,
+            max_payload_bytes=1_000,
+        )
+    )
+    assert rows == []
+    assert skipped == [(big.id, at)]
+    assert not complete

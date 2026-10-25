@@ -84,6 +84,16 @@ content cannot be restored. Run it by hand with `--retention`.
 Deleting whole sessions and their records is a separate job, the retention
 purge (`RETENTION_PURGE_ENABLED`, periods under **Settings > Records**).
 
+## Stored payload size
+
+Each row records the size of its `metadata` in `metadata_bytes`, set whenever
+the row is written. Readers that page gateway payloads under a byte budget use
+it instead of serialising every value to measure it. Rows written before the
+column existed are filled in by the same hourly pass
+(`GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED`, on by default), one bounded UPDATE
+per batch; until then, readers measure those rows the old way. Skip it in a
+manual run with `--no-size-backfill`.
+
 ## Settings
 
 | Setting | Default | Effect |
@@ -91,5 +101,6 @@ purge (`RETENTION_PURGE_ENABLED`, periods under **Settings > Records**).
 | `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | `32768` | Byte cap for one stored gateway call row; `0` disables the cap |
 | `GATEWAY_ACTIVITY_COMPACTION_ENABLED` | `true` | Hourly compaction of rows from older releases |
 | `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` | `false` | Hourly removal of content older than the plan history window |
+| `GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED` | `true` | Hourly fill of `metadata_bytes` on rows from older releases |
 | `GATEWAY_ACTIVITY_MAINTENANCE_BATCH_SIZE` | `200` | Rows per transaction |
 | `GATEWAY_ACTIVITY_MAINTENANCE_MAX_BATCHES` | `50` | Batches per pass |

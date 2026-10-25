@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Paging stored gateway payloads no longer serialises every row to measure
+  it.** The byte-budgeted payload reader computed
+  `octet_length(metadata::text)` per candidate row, which detoasts and
+  serialises the whole value. `runtime_session_activity` now has a nullable
+  `metadata_bytes` column, set on every write, and the reader uses it, falling
+  back to the old measurement only for rows not yet filled in. The migration
+  adds the column only; the hourly `maintain_gateway_activity` task fills
+  older gateway call rows in bounded batches
+  (`GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED`, on by default).
+
 - **Generated policies no longer set `defaults` that `apply` rejects.** The
   policy-generation prompts asked for `unknown_tools: deny` or
   `require_approval` (the audit-log prompt always asked for
