@@ -32,7 +32,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
     app.include_router(flows.router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = sessions
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
     app.add_middleware(ci_auth.RestrictedCiAuthMiddleware)
     return TestClient(app)
 

@@ -1,5 +1,6 @@
 """Database session management."""
 
+import asyncio
 import os
 import threading
 from urllib.parse import quote, quote_plus
@@ -31,6 +32,9 @@ _health_engine = None
 # threadpool), and a plain check-then-create global would let two of them each
 # build an engine, leaking a connection pool the code then forgets about.
 _health_engine_lock = threading.Lock()
+_auth_session_factory = None
+_pending_async_closes: set[asyncio.Future[None]] = set()
+_auth_engine_lock = threading.Lock()
 
 
 def redact_url(value: Any) -> str:
@@ -185,6 +189,25 @@ def _safe_close_db_session(db: Session) -> None:
 
 
 async def _safe_close_async_db_session(session: AsyncSession) -> None:
+    """Rollback and close an async session, even when the caller is cancelled.
+
+    Cleanup runs in its own task behind ``asyncio.shield``. Without that, a
+    cancelled request (client disconnect, task-group cancel) cancelled the
+    rollback and then the ``close`` in ``finally`` as well, so the connection
+    was never checked back in. The pool kept counting it as checked out until
+    the process restarted, which is how a single pod ends up with an
+    exhausted pool while Postgres sees only idle backends from it.
+    """
+    cleanup = asyncio.ensure_future(_close_async_db_session(session))
+    # Hold a reference until it finishes: the loop keeps only weak ones.
+    _pending_async_closes.add(cleanup)
+    cleanup.add_done_callback(_pending_async_closes.discard)
+    # On cancellation the shielded task keeps running and returns the
+    # connection; the caller still observes its own cancellation.
+    await asyncio.shield(cleanup)
+
+
+async def _close_async_db_session(session: AsyncSession) -> None:
     """Rollback and close an async session, invalidating dead connections quietly."""
     try:
         if session.in_transaction():
@@ -325,6 +348,58 @@ def get_health_engine(database_url: Optional[str] = None) -> Engine:
             echo=False,
         )
         return _health_engine
+
+
+def get_auth_session_factory(database_url: Optional[str] = None) -> sessionmaker:
+    """Return a session factory on a small pool reserved for credential checks.
+
+    Every authenticated request verifies its credential before any handler
+    runs. On the shared request pool, a pool exhausted by slow or leaked
+    request work turned every credential check into a 503, so the pod stopped
+    serving even requests that would have needed one short query. A separate
+    pool keeps the check independent of request load.
+    """
+    global _auth_session_factory
+
+    if _auth_session_factory is not None:
+        return _auth_session_factory
+
+    with _auth_engine_lock:
+        if _auth_session_factory is not None:
+            return _auth_session_factory
+
+        url = database_url or os.getenv("DATABASE_URL")
+        if not url:
+            raise Exception("DATABASE_URL not in env")
+
+        engine = create_engine(
+            url,
+            pool_size=_env_int("DATABASE_AUTH_POOL_SIZE", 2),
+            max_overflow=_env_int("DATABASE_AUTH_MAX_OVERFLOW", 3),
+            pool_pre_ping=True,
+            pool_recycle=_env_int("DATABASE_POOL_RECYCLE", 1800),
+            pool_timeout=_env_int("DATABASE_AUTH_POOL_TIMEOUT", 3),
+            pool_use_lifo=True,
+            connect_args={
+                "connect_timeout": 3,
+                "options": "-c statement_timeout=5000",
+            },
+            echo=False,
+        )
+        install_pool_hold_diagnostics(engine)
+        _auth_session_factory = sessionmaker(
+            autocommit=False, autoflush=False, bind=engine
+        )
+        return _auth_session_factory
+
+
+def get_auth_db_session() -> Generator[Session, None, None]:
+    """Yield a session from the credential-check pool and always close it."""
+    db = get_auth_session_factory()()
+    try:
+        yield db
+    finally:
+        _safe_close_db_session(db)
 
 
 def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:

@@ -45,6 +45,16 @@ def mock_openai_client():
 
 
 @pytest.fixture(autouse=True)
+def reset_ci_auth_pass_through_cache():
+    """Isolate the process-wide credential pass-through cache across tests."""
+    from preloop.api.middleware.ci_auth import PASS_THROUGH_CACHE
+
+    PASS_THROUGH_CACHE.clear()
+    yield
+    PASS_THROUGH_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
 def reset_gateway_usage_index_queue_between_tests():
     """Isolate the process-wide indexing queue across tests."""
     from preloop.services.gateway_usage_index_queue import (
