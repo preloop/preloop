@@ -459,3 +459,32 @@ def test_policy_upsert_survives_a_concurrent_first_write(db_session, test_user):
     assert row.enforce is True
     rows = db_session.query(models.AccountSsoPolicy).filter_by(account_id=account_id)
     assert rows.count() == 1
+
+
+@pytest.mark.parametrize(
+    "crud",
+    [
+        crud_account_sso_connection,
+        crud_account_sso_policy,
+        crud_account_verified_domain,
+        crud_sso_group_mapping,
+        crud_scim_token,
+        crud_sso_replay_guard,
+    ],
+)
+@pytest.mark.parametrize(
+    "field",
+    [
+        "team_id",
+        "connection_id",
+        "oidc_client_secret_ref_id",
+        "saml_sp_signing_key_ref_id",
+    ],
+)
+def test_generic_writes_require_validated_helpers(crud, field: str) -> None:
+    """No generic write may bypass the named helpers' account checks."""
+    fields = {field: uuid.uuid4()}
+    with pytest.raises(TypeError, match="requires a named write helper"):
+        crud.create(None, obj_in=fields)
+    with pytest.raises(TypeError, match="requires a named write helper"):
+        crud.update(None, db_obj=None, obj_in=fields)

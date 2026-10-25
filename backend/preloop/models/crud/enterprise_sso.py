@@ -70,12 +70,29 @@ def hash_scim_token(token: str) -> str:
 
 
 class _AccountScopedCRUD(CRUDBase[ModelType]):
-    """Deletion by id is always scoped to an account.
+    """Writes use validated named helpers; deletion is scoped to an account.
 
     The inherited ``delete`` would remove another account's row given its
     id; here ``account_id`` is required and filters through
     ``_scope_to_account``.
     """
+
+    def create(
+        self, db: Session, *, obj_in: dict[str, Any], commit: bool = True
+    ) -> ModelType:
+        """Require named write helpers, which validate account references."""
+        raise TypeError(f"{type(self).__name__}.create requires a named write helper")
+
+    def update(
+        self,
+        db: Session,
+        *,
+        db_obj: ModelType,
+        obj_in: dict[str, Any],
+        commit: bool = True,
+    ) -> ModelType:
+        """Require named write helpers, which validate account references."""
+        raise TypeError(f"{type(self).__name__}.update requires a named write helper")
 
     def delete(  # type: ignore[override]
         self, db: Session, *, id: Any, account_id: Any = None
