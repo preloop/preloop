@@ -2423,7 +2423,7 @@ export class FlowsView extends LitElement {
   }
 
   /**
-   * A run's status chip, in the taxonomy the executions pages use: blue in
+   * A run's status chip, in the taxonomy the executions pages use: neutral in
    * flight, amber waiting on a person, green succeeded, solid red broken.
    */
   private renderRunStatusChip(status: string) {

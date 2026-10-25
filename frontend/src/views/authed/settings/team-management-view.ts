@@ -499,7 +499,7 @@ export class TeamManagementView extends LitElement {
       }
       // Refresh team roles
       this.teamRoles = await getTeamRoles(this.selectedTeam.id);
-      // Refresh teams to update role display in cards
+      // Refresh teams to update role display in the table
       await this.fetchTeams();
       this.dialogError = null;
     } catch (error) {

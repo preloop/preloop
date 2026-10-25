@@ -1,5 +1,9 @@
 import { relativeTime } from '../../../utils/relative-time';
-import { formatFutureRelativeTime } from '../../../utils/date';
+import {
+  formatFutureRelativeTime,
+  formatAbsoluteTime,
+  parseUTCDate,
+} from '../../../utils/date';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
@@ -412,7 +416,7 @@ export class InvitationManagementView extends LitElement {
     if (!value) return nothing;
     if (!future) return relativeTime(value);
     const label = InvitationManagementView.expiresLabel(value);
-    return html`<span title=${this.formatDate(value)}>${label}</span>`;
+    return html`<span title=${formatAbsoluteTime(value)}>${label}</span>`;
   }
 
   private renderInvitationRow(invitation: UserInvitation) {
