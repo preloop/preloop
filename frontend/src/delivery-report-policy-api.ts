@@ -6,6 +6,7 @@
  * layer below. Shapes follow openapi.yaml.
  */
 import { extractErrorMessage, fetchWithAuth } from './api';
+import { REST_API_PREFIX } from './api-path';
 
 export type ReportCadence = 'weekly' | 'daily' | 'manual';
 export type ReportMode = 'deterministic' | 'assessed';
@@ -66,7 +67,7 @@ export class DeliveryReportPolicyError extends Error {
 }
 
 function layerPath(projectId?: string): string {
-  const base = '/api/v1/delivery-report/policy';
+  const base = `${REST_API_PREFIX}/delivery-report/policy`;
   return projectId ? `${base}/projects/${encodeURIComponent(projectId)}` : base;
 }
 
