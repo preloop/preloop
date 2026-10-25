@@ -451,7 +451,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # helm is preinstalled on ubuntu-latest runners
+      # A self-hosted runner may also carry the ubuntu-latest label, so install
+      # the chart tool explicitly before running the render and guard checks.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
 

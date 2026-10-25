@@ -116,6 +116,24 @@ def test_non_test_jobs_stay_on_their_own_runners() -> None:
     assert jobs["test-cli-windows"]["runs-on"] == "windows-latest"
 
 
+def test_helm_checks_install_pinned_helm_before_rendering() -> None:
+    """An ubuntu-latest label does not guarantee Helm on a self-hosted runner."""
+    steps = load_ci_jobs()["helm-lint"]["steps"]
+    setup_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Set up Helm"
+    )
+    setup = steps[setup_index]
+    assert setup["uses"] == (
+        "azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310"
+    )
+    assert setup["with"]["version"] == "v3.19.0"
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Helm render checks (chart lint + CNPG backup wiring)"
+    )
+
+
 def test_bootstrap_uses_opt_in_general_pool_for_trusted_sources() -> None:
     """Bootstrap can escape hosted queues without moving forks to private VMs."""
     jobs = load_ci_jobs()
