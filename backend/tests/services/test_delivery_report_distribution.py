@@ -553,10 +553,11 @@ class TestDistribute:
     def _send(self, db: Session, owner: Any, report: Any, **policy: Any) -> Any:
         sent: List[Dict[str, Any]] = []
 
-        def fake_send(to: str, subject: str, text: str, body: str, **kw: Any) -> None:
+        def fake_send(to: str, subject: str, text: str, body: str, **kw: Any) -> bool:
             sent.append(
                 {"to": to, "subject": subject, "text": text, "html": body, **kw}
             )
+            return True
 
         with patch("preloop.utils.email.send_email", fake_send):
             record = asyncio.run(
@@ -632,6 +633,53 @@ class TestDistribute:
         for report in ({"status": "error"}, {"status": "disabled"}):
             record, sent = self._send(db_session, owner, report)
             assert (record, sent) == (None, [])
+
+    def test_unconfigured_smtp_is_not_reported_as_sent(
+        self, db_session: Session, owner: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("preloop.utils.email.SMTP_USERNAME", "")
+        monkeypatch.setattr("preloop.utils.email.SMTP_PASSWORD", "")
+        record = asyncio.run(
+            dre.distribute_report(
+                db_session,
+                flow=SimpleNamespace(account_id=owner.account_id),
+                execution=SimpleNamespace(id="exec-1"),
+                report=_report(),
+                policy=None,
+            )
+        )
+        assert record["status"] == "not_configured"
+        assert record["sent_to"] == []
+
+    def test_partial_delivery_preserves_each_recipient_outcome(
+        self, db_session: Session, owner: Any
+    ) -> None:
+        from preloop.utils.email import EmailError
+
+        second = SimpleNamespace(id=uuid.uuid4(), email="second@example.com")
+        with (
+            patch.object(
+                crud_delivery_report_policy,
+                "report_recipients",
+                return_value=[owner, second],
+            ),
+            patch(
+                "preloop.utils.email.send_email",
+                side_effect=[True, EmailError("smtp down")],
+            ),
+        ):
+            record = asyncio.run(
+                dre.distribute_report(
+                    db_session,
+                    flow=SimpleNamespace(account_id=owner.account_id),
+                    execution=SimpleNamespace(id="exec-1"),
+                    report=_report(),
+                    policy=None,
+                )
+            )
+        assert record["status"] == "failed"
+        assert record["sent_to"] == [str(owner.id)]
+        assert record["failed"] == [str(second.id)]
 
     def test_a_send_failure_is_recorded(self, db_session: Session, owner: Any) -> None:
         from preloop.utils.email import EmailError

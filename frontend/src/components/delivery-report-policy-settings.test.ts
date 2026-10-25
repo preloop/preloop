@@ -61,6 +61,7 @@ function stubApi(
   options: {
     permissions?: string[];
     putStatus?: number;
+    subscriptionPutStatus?: number;
     isRecipient?: boolean;
   } = {}
 ) {
@@ -87,6 +88,11 @@ function stubApi(
         if (init?.method === 'PUT') {
           const body = JSON.parse(String(init.body));
           puts.push({ path, body });
+          if (options.subscriptionPutStatus)
+            return json(
+              { detail: 'Subscription save failed.' },
+              options.subscriptionPutStatus
+            );
           return json({ ...subscription, opted_out: body.opted_out });
         }
         return json(subscription);
@@ -218,6 +224,25 @@ describe('delivery-report-policy-settings', () => {
       path: '/api/v1/delivery-report/subscription',
       body: { opted_out: true },
     });
+  });
+
+  it('restores the saved subscription when the request fails', async () => {
+    stubApi({ subscriptionPutStatus: 500 });
+    const el = await mount();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('sl-switch[data-field="subscribed"]')
+    );
+    const toggle = el.shadowRoot!.querySelector(
+      'sl-switch[data-field="subscribed"]'
+    ) as any;
+    expect(toggle.checked).to.equal(true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Subscription save failed.')
+    );
+    await el.updateComplete;
+    expect(toggle.checked).to.equal(true);
   });
 
   it('shows no email switch to someone who is not the recipient', async () => {

@@ -236,7 +236,7 @@ async def distribute_report(
         )
         subject, text, body = render_email(report, link=link, opt_out=unsubscribe)
         try:
-            await asyncio.to_thread(
+            delivered = await asyncio.to_thread(
                 send_email,
                 user.email,
                 subject,
@@ -248,12 +248,19 @@ async def distribute_report(
                     "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
                 },
             )
+            if not delivered:
+                return {
+                    "status": "not_configured",
+                    "sent_to": sent,
+                    "failed": failed,
+                    "at": stamp,
+                }
             sent.append(str(user.id))
         except EmailError:
             logger.warning("Could not email the delivery report", exc_info=True)
             failed.append(str(user.id))
     return {
-        "status": "sent" if sent else "failed",
+        "status": "failed" if failed else "sent",
         "sent_to": sent,
         "failed": failed,
         "at": stamp,

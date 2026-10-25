@@ -1,4 +1,5 @@
 import { LitElement, html, css, nothing } from 'lit';
+import { live } from 'lit/directives/live.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { getUserProfile, hasPermission } from '../api';
 import {
@@ -238,6 +239,7 @@ export class DeliveryReportPolicySettings extends LitElement {
   }
 
   private async setSubscribed(subscribed: boolean): Promise<void> {
+    this.error = '';
     try {
       this.subscription = await saveDeliveryReportSubscription(!subscribed);
       showToast(
@@ -502,7 +504,7 @@ export class DeliveryReportPolicySettings extends LitElement {
           this.subscription?.is_recipient
             ? html`<sl-switch
                 data-field="subscribed"
-                ?checked=${!this.subscription.opted_out}
+                .checked=${live(!this.subscription.opted_out)}
                 @sl-change=${(event: Event) =>
                   void this.setSubscribed(
                     (event.target as HTMLInputElement).checked
