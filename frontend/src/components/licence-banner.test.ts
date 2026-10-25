@@ -6,15 +6,26 @@
  * and only grace can be dismissed.
  */
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { invalidateApiCaches } from '../api';
 import './licence-banner.ts';
 import type { LicenceBanner, LicenceStatus } from './licence-banner.ts';
 
 const original = window.fetch;
 let seen: string[] = [];
+let edition = 'enterprise';
 
 function serve(status: number, body?: Partial<LicenceStatus>): void {
+  invalidateApiCaches();
   window.fetch = (async (input: RequestInfo | URL) => {
     seen.push(String(input));
+    if (
+      new URL(String(input), location.origin).pathname === '/api/v1/features'
+    ) {
+      return new Response(JSON.stringify({ edition, features: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     return new Response(body ? JSON.stringify(body) : '', {
       status,
       headers: { 'Content-Type': 'application/json' },
@@ -41,6 +52,7 @@ const GRACE: LicenceStatus = {
 describe('licence-banner', () => {
   beforeEach(() => {
     seen = [];
+    edition = 'enterprise';
     localStorage.setItem('accessToken', 'test-token');
     localStorage.removeItem('licenceBannerDismissed');
   });
@@ -65,6 +77,33 @@ describe('licence-banner', () => {
     expect(
       seen.map((url) => new URL(url, location.origin).pathname)
     ).to.include('/api/v1/licence/status');
+  });
+
+  // Only a self-hosted Enterprise build mounts the endpoint. Asking anywhere
+  // else is a guaranteed 404 that the browser logs on every navigation.
+  for (const other of ['cloud', 'oss']) {
+    it(`does not request the licence status on the ${other} edition`, async () => {
+      edition = other;
+      serve(404);
+      const el = await mount();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const paths = seen.map((url) => new URL(url, location.origin).pathname);
+      expect(paths).to.include('/api/v1/features');
+      expect(paths).to.not.include('/api/v1/licence/status');
+      expect(el.shadowRoot!.querySelector('.banner')).to.equal(null);
+    });
+  }
+
+  it('asks once per session after a 404', async () => {
+    serve(404);
+    await mount();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    seen = [];
+    await mount();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(
+      seen.map((url) => new URL(url, location.origin).pathname)
+    ).to.not.include('/api/v1/licence/status');
   });
 
   it('shows the banner again for a renewed licence after a dismissal', async () => {

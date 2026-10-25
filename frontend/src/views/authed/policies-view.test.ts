@@ -43,6 +43,7 @@ describe('PoliciesView', () => {
       toolsFail?: boolean;
       emptyVersions?: boolean;
       features?: Record<string, boolean>;
+      exportStatus?: () => number;
     } = {}
   ) {
     return sinon
@@ -98,6 +99,10 @@ describe('PoliciesView', () => {
         }
 
         if (url.includes('/api/v1/policies/export')) {
+          const exportStatus = opts.exportStatus?.() ?? 200;
+          if (exportStatus !== 200) {
+            return json({ detail: 'Internal Server Error' }, exportStatus);
+          }
           return new Response('version: "1.0"\n', {
             status: 200,
             headers: { 'Content-Type': 'application/x-yaml' },
@@ -1375,6 +1380,62 @@ describe('PoliciesView', () => {
 
       expect((element as any)._showGenerateDialog).to.be.false;
       expect((element as any)._error).to.contain('Could not load');
+    });
+  });
+
+  describe('YAML tab when the export fails', () => {
+    it('shows an inline error with Retry instead of an empty editor', async () => {
+      let code = 500;
+      fetchStub = createFetchStub({ exportStatus: () => code });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+      (element as any)._activeTab = 'files';
+      await element.updateComplete;
+      // Let the tab's own reads settle so Retry is a request of its own.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await element.updateComplete;
+
+      const root = element.shadowRoot!;
+      const error = root.querySelector(
+        '[data-testid="policy-yaml-load-error"]'
+      );
+      expect(error, 'load error').to.exist;
+      expect(error!.textContent).to.contain(
+        'Could not load the current policy as YAML.'
+      );
+      expect(error!.getAttribute('role')).to.equal('alert');
+      expect(root.querySelector('[data-testid="policy-yaml-editor"]')).to.equal(
+        null
+      );
+      // Saving an empty draft would replace the live policy with nothing.
+      for (const id of ['policy-yaml-save', 'policy-yaml-validate']) {
+        expect(
+          root.querySelector(`[data-testid="${id}"]`)?.hasAttribute('disabled'),
+          id
+        ).to.be.true;
+      }
+
+      code = 200;
+      (
+        root.querySelector(
+          '[data-testid="policy-yaml-load-retry"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => root.querySelector('[data-testid="policy-yaml-editor"]'),
+        'editor after retry'
+      );
+      expect(
+        root.querySelector('[data-testid="policy-yaml-load-error"]')
+      ).to.equal(null);
+      expect((element as any)._yamlDraft).to.contain('version: "1.0"');
+      expect(
+        root
+          .querySelector('[data-testid="policy-yaml-save"]')
+          ?.hasAttribute('disabled')
+      ).to.be.false;
     });
   });
 

@@ -251,6 +251,9 @@ export class PoliciesView extends LitElement {
     'all' | 'tools' | 'model.request' | 'model.response' = 'all';
   @state() private _showGenerateDialog = false;
   @state() private _currentExportYaml = '';
+  /** True when the last export read failed, so the editor is not trusted. */
+  @state() private _currentExportFailed = false;
+  @state() private _currentExportRetrying = false;
   @state() private _pendingSensitiveSave = false;
   @state() private _sensitiveAgents: AgentOption[] = [];
   @state() private _sensitiveServers: string[] = [];
@@ -496,6 +499,18 @@ export class PoliciesView extends LitElement {
       }
 
       /* YAML tab: live editor over the active policy */
+      .yaml-load-error {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        min-height: 72px;
+        border-top: 1px solid var(--console-hairline);
+        border-bottom: 1px solid var(--console-hairline);
+        color: var(--sl-color-neutral-700);
+        font-size: var(--console-text-body);
+      }
+
       .yaml-editor-header {
         display: flex;
         flex-wrap: wrap;
@@ -1041,9 +1056,11 @@ export class PoliciesView extends LitElement {
       );
       if (!response.ok) {
         this._currentExportYaml = '';
+        this._currentExportFailed = true;
         return false;
       }
       this._currentExportYaml = await response.text();
+      this._currentExportFailed = false;
       // An edited draft is the user's work: only resync when it is untouched.
       if (!this._yamlDirty) {
         this._yamlDraft = this._currentExportYaml;
@@ -1051,9 +1068,24 @@ export class PoliciesView extends LitElement {
       return true;
     } catch {
       this._currentExportYaml = '';
+      this._currentExportFailed = true;
       return false;
     }
   }
+
+  /** Nothing to validate or save: the export failed and nothing was typed. */
+  private get _yamlUnavailable(): boolean {
+    return this._currentExportFailed && !this._yamlDirty;
+  }
+
+  private _retryCurrentExport = async () => {
+    this._currentExportRetrying = true;
+    try {
+      await this._refreshCurrentExport();
+    } finally {
+      this._currentExportRetrying = false;
+    }
+  };
 
   /**
    * Describe a change always works against the policy that is live right now,
@@ -2838,7 +2870,9 @@ export class PoliciesView extends LitElement {
             </sl-button>
             <sl-button
               size="small"
+              data-testid="policy-yaml-validate"
               ?loading=${this._yamlValidating}
+              ?disabled=${this._yamlUnavailable}
               @click=${this._handleValidateClick}
             >
               Validate
@@ -2846,7 +2880,9 @@ export class PoliciesView extends LitElement {
             <sl-button
               size="small"
               variant="primary"
+              data-testid="policy-yaml-save"
               ?loading=${this._isUploading}
+              ?disabled=${this._yamlUnavailable}
               @click=${this._saveYamlDraft}
             >
               Save
@@ -2855,18 +2891,35 @@ export class PoliciesView extends LitElement {
         </div>
 
         ${this._showSimulation ? html`<policy-simulator .draftYaml=${this._yamlDraft}></policy-simulator>` : ''}
-
-        <sl-textarea
-          class="yaml-editor"
-          data-testid="policy-yaml-editor"
-          label="Policy YAML"
-          rows="22"
-          resize="vertical"
-          spellcheck="false"
-          .value=${this._yamlDraft}
-          @sl-input=${(e: any) => this._onYamlDraftInput(e.target.value)}
-        ></sl-textarea>
-
+        ${
+          // An empty editor would read as an empty policy. When the export
+          // failed and nothing has been typed, say so and offer a retry.
+          this._yamlUnavailable
+            ? html`<div
+                class="yaml-load-error"
+                role="alert"
+                data-testid="policy-yaml-load-error"
+              >
+                <span>Could not load the current policy as YAML.</span>
+                <sl-button
+                  size="small"
+                  data-testid="policy-yaml-load-retry"
+                  ?loading=${this._currentExportRetrying}
+                  @click=${this._retryCurrentExport}
+                  >Retry</sl-button
+                >
+              </div>`
+            : html`<sl-textarea
+                class="yaml-editor"
+                data-testid="policy-yaml-editor"
+                label="Policy YAML"
+                rows="22"
+                resize="vertical"
+                spellcheck="false"
+                .value=${this._yamlDraft}
+                @sl-input=${(e: any) => this._onYamlDraftInput(e.target.value)}
+              ></sl-textarea>`
+        }
         ${
           this._yamlErrors.length > 0
             ? html`

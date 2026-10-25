@@ -1,7 +1,8 @@
 import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { fetchWithAuth } from '../api';
+import { fetchWithAuth, getFeatures, onApiCachesInvalidated } from '../api';
+import { editionOf } from '../capabilities';
 
 export interface LicenceStatus {
   status: 'missing' | 'valid' | 'grace' | 'expired' | 'invalid';
@@ -13,11 +14,34 @@ export interface LicenceStatus {
 const DISMISS_KEY = 'licenceBannerDismissed';
 
 /**
+ * Set once the endpoint answers 404: the route is not mounted on this server,
+ * so asking again on the next navigation can only produce the same 404.
+ */
+let licenceRouteMissing = false;
+onApiCachesInvalidated(() => {
+  licenceRouteMissing = false;
+});
+
+/**
+ * Only a self-hosted Enterprise build mounts the licence route. Cloud and the
+ * open-source edition never do, so the console does not ask there at all.
+ */
+async function licenceRouteExpected(): Promise<boolean> {
+  if (licenceRouteMissing) return false;
+  try {
+    return editionOf(await getFeatures()) === 'enterprise';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Enterprise licence banner for self-hosted administrators.
  *
  * Reads GET /api/v1/licence/status, which only an Enterprise build mounts and
  * only superusers may read; a 403 or 404 renders nothing, so the open-source
- * console is unchanged. The server writes the copy. A licence in its grace
+ * console is unchanged. Other editions skip the request entirely and a 404 is
+ * remembered for the session, so it is not logged on every navigation. The server writes the copy. A licence in its grace
  * period can be dismissed until the licence changes; an expired or
  * unverifiable licence cannot, because Enterprise features are already off.
  */
@@ -82,6 +106,10 @@ export class LicenceBanner extends LitElement {
       this._status = null;
       return;
     }
+    if (!(await licenceRouteExpected())) {
+      this._status = null;
+      return;
+    }
     try {
       // Passive: a background read must not raise the 429 toast or 402 modal.
       const response = await fetchWithAuth(
@@ -90,6 +118,9 @@ export class LicenceBanner extends LitElement {
           passive: true,
         }
       );
+      if (response.status === 404) {
+        licenceRouteMissing = true;
+      }
       if (!response.ok) {
         // Non-superusers (403) and community builds (404) get no banner.
         this._status = null;
