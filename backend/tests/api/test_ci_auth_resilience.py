@@ -152,3 +152,37 @@ def test_pool_exhaustion_message_names_the_pool() -> None:
     source = inspect.getsource(app_module)
     assert "Database connections are saturated" not in source
     assert "connection pool is exhausted" in source
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("restricted", [False, True])
+def test_cached_pass_through_still_checks_route_auth(
+    monkeypatch: pytest.MonkeyPatch, stale: bool, restricted: bool
+) -> None:
+    from fastapi import Depends
+    from preloop.api.auth import jwt
+
+    app = FastAPI()
+    app.dependency_overrides[jwt.get_db_session] = lambda: MagicMock()
+
+    @app.get("/protected")
+    def protected(user: Any = Depends(jwt.get_current_user)) -> dict[str, str]:
+        return {"ok": "yes"}
+
+    app.add_middleware(ci_auth.RestrictedCiAuthMiddleware)
+    key = MagicMock(requires_machine_authorization=restricted, is_active=False)
+    lookup = MagicMock(return_value=key)
+    monkeypatch.setattr(jwt.crud_api_key, "get_by_key", lookup)
+    inspect = MagicMock(return_value=(CiTokenInspection(recognized=False), True))
+    monkeypatch.setattr(ci_auth, "_inspect", inspect)
+    client = TestClient(app)
+    expected = 403 if restricted else 401
+    # Middleware caches the classification, but the real route dependency denies it.
+    assert _get(client).status_code == expected
+    assert len(ci_auth.PASS_THROUGH_CACHE._entries) == 1
+    if stale:
+        monkeypatch.setattr(ci_auth.PASS_THROUGH_CACHE, "ttl", 0.0)
+        inspect.side_effect = _pool_timeout
+    assert _get(client).status_code == expected
+    assert lookup.call_count == 2
+    assert inspect.call_count == (2 if stale else 1)

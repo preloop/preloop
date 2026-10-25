@@ -149,3 +149,31 @@ class TestOtelGauges:
         # With no meter provider configured the default no-op meter must
         # absorb the registration without errors.
         assert register_otel_pool_gauges() is True
+
+
+def test_auth_pool_is_monitored_with_its_own_ceiling(monkeypatch, caplog):
+    from preloop.models.db import session
+
+    engine = make_engine(make_pool(size=2, checked_out=4, overflow=2))
+    factory = MagicMock()
+    factory.kw = {"bind": engine}
+    monkeypatch.setattr(session, "_auth_session_factory", factory)
+    monkeypatch.setenv("DATABASE_AUTH_MAX_OVERFLOW", "3")
+    p1, p2, p3 = patch_engines()
+    with p1, p2, p3, caplog.at_level(logging.WARNING):
+        stats = DbPoolMonitor().check_once()
+    assert len(stats) == 1
+    assert stats[0]["engine"] == "auth"
+    assert stats[0]["ceiling"] == 5
+    assert "holds" in stats[0]
+    assert "engine=auth checked_out=4/5" in caplog.text
+
+
+def test_auth_pool_observation_does_not_initialize_engine(monkeypatch):
+    from preloop.models.db import session
+
+    monkeypatch.setattr(session, "_auth_session_factory", None)
+    create = MagicMock()
+    monkeypatch.setattr(session, "create_engine", create)
+    assert session.get_auth_engine_if_initialized() is None
+    create.assert_not_called()

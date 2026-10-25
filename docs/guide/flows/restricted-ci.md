@@ -202,3 +202,23 @@ performed for this implementation. The workflow is a runnable operator path;
 automatic Actions acceptance is not live-proven. On disposable resources, record
 the accepted exact head, signed completion, matching persisted result and the
 independent GitHub review receipt before calling that external path proven.
+
+### Credential-check resilience
+
+The middleware uses a separate synchronous credential-check pool in each
+API/gateway process. `DATABASE_AUTH_POOL_SIZE` (default 2) and
+`DATABASE_AUTH_MAX_OVERFLOW` (3) control its retained and overflow connections;
+`DATABASE_AUTH_POOL_TIMEOUT` (3 seconds) bounds checkout waits. Connections use a
+3-second connect timeout and a 5-second statement timeout. Include this pool in
+connection budgets alongside both request pools and the health connection.
+The DB pool monitor includes it as `engine=auth` in saturation warnings and
+`preloop.db.engine=auth` in OpenTelemetry connection gauges.
+
+Only non-machine credential classifications are cached, using SHA-256 keys and
+a maximum of 10,000 entries per process. `CI_AUTH_PASS_THROUGH_TTL_SECONDS`
+(default 60) controls freshness. If a database lookup fails, an entry can be used
+until `CI_AUTH_PASS_THROUGH_STALE_TTL_SECONDS` (default 600) from its original
+insertion, not from the latest hit. Unknown or expired entries still fail closed
+when verification is unavailable. Machine credential results are never cached.
+A pass-through classification supplies no identity or authorization: the route's
+normal authentication still checks current credential validity and restrictions.

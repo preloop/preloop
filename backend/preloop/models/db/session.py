@@ -115,8 +115,8 @@ def _database_pool_kwargs() -> dict:
         # Defaults sized for one process against a stock Postgres
         # (max_connections=100): each process builds a sync engine, an async
         # engine, a one-connection health engine, and up to two dedicated
-        # triage lock connections, so the ceiling is
-        # (pool_size + max_overflow) * 2 + 1 + 2 = 63. The previous 20 + 40
+        # triage lock connections, plus the auth pool (2 + 3), so the ceiling is
+        # (pool_size + max_overflow) * 2 + 1 + 2 + 5 = 68. The previous 20 + 40
         # defaults asked for 121 from a database that allows 100, and did not
         # match the deployed helm values either (see helm/preloop/values.yaml
         # database.pool).
@@ -201,10 +201,19 @@ async def _safe_close_async_db_session(session: AsyncSession) -> None:
     cleanup = asyncio.ensure_future(_close_async_db_session(session))
     # Hold a reference until it finishes: the loop keeps only weak ones.
     _pending_async_closes.add(cleanup)
-    cleanup.add_done_callback(_pending_async_closes.discard)
+    cleanup.add_done_callback(_async_close_done)
     # On cancellation the shielded task keeps running and returns the
     # connection; the caller still observes its own cancellation.
     await asyncio.shield(cleanup)
+
+
+def _async_close_done(cleanup: asyncio.Future[None]) -> None:
+    """Release the strong reference and retrieve detached cleanup failures."""
+    _pending_async_closes.discard(cleanup)
+    if not cleanup.cancelled():
+        error = cleanup.exception()
+        if error is not None:
+            logger.opt(exception=error).error("Async database session cleanup failed")
 
 
 async def _close_async_db_session(session: AsyncSession) -> None:
@@ -350,6 +359,13 @@ def get_health_engine(database_url: Optional[str] = None) -> Engine:
         return _health_engine
 
 
+def get_auth_engine_if_initialized() -> Optional[Engine]:
+    """Return the credential engine without creating a pool for monitoring."""
+    if _auth_session_factory is None:
+        return None
+    return _auth_session_factory.kw["bind"]
+
+
 def get_auth_session_factory(database_url: Optional[str] = None) -> sessionmaker:
     """Return a session factory on a small pool reserved for credential checks.
 
@@ -477,15 +493,12 @@ async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
     "idle in transaction" connections that can exhaust the connection pool.
     """
     session_factory = get_async_session_factory()
-    async with session_factory() as session:
-        try:
-            yield session
-        except Exception:
-            # Rollback on any exception to clean up the transaction
-            await session.rollback()
-            raise
-        finally:
-            await _safe_close_async_db_session(session)
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        # This task is the sole owner of rollback/close, even after cancellation.
+        await _safe_close_async_db_session(session)
 
 
 class SyncApprovalSession:
