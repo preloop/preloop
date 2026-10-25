@@ -79,7 +79,7 @@ jobs:
           echo "AUDIT_SHA=$sha" >> "$GITHUB_ENV"
           run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml \
             --event push --branch "$AUDIT_TAG" --commit "$sha" --limit 1 \
-            --json databaseId --jq '.[0].databaseId')"
+            --json databaseId --jq '.[0].databaseId // empty')"
           [ -n "$run_id" ] || { echo "no release run for $AUDIT_TAG@$sha"; exit 1; }
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name sbom --dir audited-sbom
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern 'image-sbom-*' --dir image-sbom
