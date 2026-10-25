@@ -32,6 +32,14 @@ def test_bulk_insert_after_small_inserts_is_not_quadratic(
     # Enough calls for any cached plan to settle on the small-batch shape.
     for _ in range(20):
         db_session.execute(text(INSERT), {"account": account.id, "rows": 1})
+    # Warm the update and delete triggers with single-row statements too.
+    small = "SELECT id FROM api_usage WHERE endpoint = 'replan' LIMIT 1"
+    for _ in range(20):
+        db_session.execute(
+            text(f"UPDATE api_usage SET duration = 1 WHERE id = ({small})")
+        )
+    for _ in range(10):
+        db_session.execute(text(f"DELETE FROM api_usage WHERE id = ({small})"))
     db_session.execute(text("SET LOCAL statement_timeout = '20s'"))
     db_session.execute(text(INSERT), {"account": account.id, "rows": 60000})
     db_session.execute(
@@ -44,7 +52,7 @@ def test_bulk_insert_after_small_inserts_is_not_quadratic(
         ),
         {"account": account.id},
     ).one()
-    assert tuple(total) == (60020, 60020)
+    assert tuple(total) == (60010, 60010)
     db_session.execute(text("DELETE FROM api_usage WHERE endpoint = 'replan'"))
     remaining = db_session.execute(
         text(
@@ -54,3 +62,26 @@ def test_bulk_insert_after_small_inserts_is_not_quadratic(
         {"account": account.id},
     ).scalar_one()
     assert remaining == 0
+
+
+def test_replanned_bodies_wrap_every_statement() -> None:
+    """The derived bodies keep each statement of the frozen 20261109 DDL."""
+    import importlib
+
+    replan = importlib.import_module(
+        "preloop.models.alembic.versions.20261112_agent_usage_replan"
+    )
+    counts = {}
+    for name in replan.FUNCTIONS:
+        original = replan._original(name)
+        body = replan._replanned(original)
+        counts[name] = body.count("EXECUTE $stmt$")
+        assert body.count("$stmt$") == 2 * counts[name]
+        assert body.endswith(" RETURN NULL;\nEND $$;")
+        unwrapped = body.replace("EXECUTE $stmt$", "").replace("$stmt$", "")
+        assert unwrapped.split() == original.split()
+    assert counts == {
+        "agent_usage_track_insert": 1,
+        "agent_usage_track_delete": 3,
+        "agent_usage_track_update": 4,
+    }

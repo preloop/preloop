@@ -498,6 +498,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert media_timing.down_revision == "20261111_credential_columns"
     flow_log_gateway_idx = script.get_revision("20261112_flow_log_gateway_idx")
     assert flow_log_gateway_idx.down_revision == "20261110_media_timing"
+    delivery_report_policy = script.get_revision("20261112_delivery_report_policy")
+    assert delivery_report_policy.down_revision == "20261112_flow_log_gateway_idx"
     agent_usage_replan = script.get_revision("20261112_agent_usage_replan")
-    assert agent_usage_replan.down_revision == "20261112_flow_log_gateway_idx"
+    assert agent_usage_replan.down_revision == "20261112_delivery_report_policy"
     assert script.get_heads() == ["20261112_agent_usage_replan"]

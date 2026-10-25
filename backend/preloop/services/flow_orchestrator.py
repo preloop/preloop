@@ -194,6 +194,7 @@ from preloop.services.account_realtime import (
 
 if TYPE_CHECKING:
     from preloop.services.backport import BackportPlan
+    from preloop.services.delivery_report import PolicyRun
 
 logger = logging.getLogger(__name__)
 
@@ -5613,6 +5614,14 @@ class FlowExecutionOrchestrator:
 
         payload = (trigger_event_data or {}).get("payload")
         window = payload.get("window") if isinstance(payload, dict) else None
+        run = self._plan_delivery_report_run()
+        if run is not None and isinstance(payload, dict):
+            # The policy the run applies: windows, criteria source, the
+            # per-repository layers and why this run may assess (#2020).
+            trigger_event_data = {
+                **(trigger_event_data or {}),
+                "payload": {**payload, "report_policy": run.payload()},
+            }
         try:
             document = load_merge_audits(
                 self.db,
@@ -5626,6 +5635,66 @@ class FlowExecutionOrchestrator:
             return trigger_event_data
         return with_merge_audits_seed(trigger_event_data, document)
 
+    def _plan_delivery_report_run(self) -> Optional["PolicyRun"]:
+        """The stored policy's decision for a Delivery Report run (#2020).
+
+        None for any other flow, and None when the policy cannot be read,
+        which keeps the preset's own defaults (an assessed run under the
+        flow's per-run ceiling) rather than failing the run.
+        """
+        if self.flow is None or not is_delivery_report_flow(self.flow):
+            return None
+        cached: Optional["PolicyRun"] = getattr(self, "_delivery_report_run", None)
+        if cached is not None:
+            return cached
+        from preloop.services.delivery_report import plan_policy_run
+
+        try:
+            run = plan_policy_run(
+                self.db,
+                flow=self.flow,
+                exclude_execution_id=getattr(self.execution_log, "id", None),
+            )
+        except Exception:
+            logger.warning("Could not read the delivery report policy", exc_info=True)
+            return None
+        self._delivery_report_run = run
+        return run
+
+    def _run_deterministic_delivery_report(self, run: "PolicyRun") -> Dict[str, Any]:
+        """Build the no-model report and shape it like an agent result."""
+        from preloop.services.delivery_report import (
+            deterministic_report,
+            report_window,
+        )
+
+        payload = (self.trigger_event_data or {}).get("payload")
+        try:
+            report = deterministic_report(
+                self.db,
+                flow=self.flow,
+                execution=self.execution_log,
+                run=run,
+                window=report_window(payload),
+            )
+        except Exception as exc:
+            logger.exception("Building the deterministic delivery report failed")
+            return {
+                "status": "FAILED",
+                "output_summary": "The deterministic Delivery Report failed.",
+                "error_message": str(exc),
+                "result": {"status": "error", "reason": "deterministic report failed"},
+            }
+        return {
+            "status": "SUCCEEDED",
+            "output_summary": (
+                "Delivery Report turned off; nothing was sent."
+                if run.decision == "disabled"
+                else "Deterministic Delivery Report (no model call)."
+            ),
+            "result": report,
+        }
+
     def _finalize_delivery_report(self, merged_result: Any) -> Any:
         """Apply the Delivery Report pass to a marked flow's result (#2019).
 
@@ -5635,11 +5704,15 @@ class FlowExecutionOrchestrator:
         if not is_delivery_report_flow(self.flow) or self.execution_log is None:
             return merged_result
         try:
+            run = getattr(self, "_delivery_report_run", None)
+            if run is not None and run.decision == "disabled":
+                return merged_result
             return finalize_delivery_report_for_execution(
                 self.db,
                 flow=self.flow,
                 execution=self.execution_log,
                 result=merged_result,
+                assessment=run.decision if run is not None else None,
             )
         except Exception:
             logger.exception("Finalizing the delivery report failed")
@@ -9529,7 +9602,23 @@ class FlowExecutionOrchestrator:
             # cherry-picks the merged change and opens the pull requests, so
             # a conflict can never be "resolved" by a model.
             backport_plan = self._resolve_backport_plan()
-            if backport_plan is not None:
+            report_run = self._plan_delivery_report_run()
+            if (
+                backport_plan is None
+                and report_run is not None
+                and not report_run.calls_model
+            ):
+                # Delivery Report runs that may not call a model (#2020): the
+                # deterministic report is built from stored tracker facts, so
+                # it still goes out with no budget or credit left.
+                await self._update_execution_log(
+                    status="RUNNING",
+                    resolved_input_prompt=(
+                        f"Delivery Report (no model call): {report_run.decision}"
+                    ),
+                )
+                agent_result = self._run_deterministic_delivery_report(report_run)
+            elif backport_plan is not None:
                 await self._update_execution_log(
                     status="RUNNING",
                     resolved_input_prompt=(

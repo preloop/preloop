@@ -1,7 +1,7 @@
 """Plan each agent usage trigger statement for its own transition table.
 
 Revision ID: 20261112_agent_usage_replan
-Revises: 20261112_flow_log_gateway_idx
+Revises: 20261112_delivery_report_policy
 
 PL/pgSQL keeps a statement's plan for the session, and the planner sizes a
 transition table from its row count at planning time. A plan cached by
@@ -9,6 +9,10 @@ single-row inserts joins ``inserted_usage`` to the claimed ids with a nested
 loop, so a later bulk insert on the same connection runs quadratically. The
 three statement triggers now run each statement through ``EXECUTE``, which
 plans it for the rows of that call. The SQL itself is unchanged.
+
+The cost is planning on every call: measured locally, 2,000 single-row inserts
+took 565 ms with these bodies against 225 ms with the static ones, about
+0.17 ms more trigger time per gateway request.
 """
 
 import importlib
@@ -17,7 +21,7 @@ import re
 from alembic import op
 
 revision = "20261112_agent_usage_replan"
-down_revision = "20261112_flow_log_gateway_idx"
+down_revision = "20261112_delivery_report_policy"
 branch_labels = None
 depends_on = None
 

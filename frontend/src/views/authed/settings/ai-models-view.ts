@@ -65,7 +65,7 @@ import {
   type BulkAction,
 } from '../../../components/list-selection';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
-import { formatRelativeTime } from '../../../utils/date';
+import { formatAbsoluteTime, formatRelativeTime } from '../../../utils/date';
 import {
   markerSinceLabel,
   modelAttentionState,
@@ -1767,7 +1767,12 @@ export class AIModelsView extends LitElement {
         </div>
         ${
           this.getLastRequestLabel(model.id)
-            ? html`<div class="cell-secondary">
+            ? html`<div
+                class="cell-secondary"
+                title=${formatAbsoluteTime(
+                  this.getModelOverview(model.id)?.last_request_at
+                )}
+              >
                 ${this.getLastRequestLabel(model.id)}
               </div>`
             : null

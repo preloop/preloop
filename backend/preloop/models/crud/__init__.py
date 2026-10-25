@@ -78,6 +78,7 @@ from .attention_dismissal import (
     crud_attention_dismissal,
 )
 from . import audit_outbox as crud_audit_outbox
+from . import delivery_report_policy as crud_delivery_report_policy
 from .audit_log import CRUDAuditLog
 from .base import CRUDBase
 from .budget import (
@@ -435,6 +436,7 @@ __all__ = [
     "crud_session_search_backfill_state",
     "crud_session_search_document",
     "crud_session_embedding_setting",
+    "crud_delivery_report_policy",
     "crud_session_saved_search",
     "SessionEmbeddingConfigError",
     "SessionSavedSearchNameConflictError",

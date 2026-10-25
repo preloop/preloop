@@ -155,6 +155,7 @@ from .runtime_session_optimization_result import RuntimeSessionOptimizationResul
 from .runtime_session_replay_run import RuntimeSessionReplayRun
 from .secret_reference import SecretReference
 from .session_embedding_setting import SessionEmbeddingSetting
+from .delivery_report_policy import DeliveryReportPolicySetting
 from .session_search_backfill_state import SessionSearchBackfillState
 from .session_saved_search import SessionSavedSearch
 from .session_search_document import SessionSearchDocument
@@ -412,6 +413,7 @@ __all__ = [
     "ReadinessPolicyRecord",
     "ReadinessSeries",
     "TicketCreationRecord",
+    "DeliveryReportPolicySetting",
 ]
 
 from .readiness import (

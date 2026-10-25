@@ -3819,6 +3819,15 @@ async def get_account_runtime_session_gateway_events(
             "long session does not carry the whole conversation (#1689)."
         ),
     ),
+    before: str | None = Query(
+        None,
+        description=(
+            "Keyset cursor: return only events older than the event with this "
+            "id. Pass `pagination.next_cursor` from the previous page. Unlike "
+            "`offset`, the page does not shift when new events arrive while "
+            "older ones are read. `offset` is ignored when this is set."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Return one compact page of stored gateway event metadata for a session."""
     from preloop.models.crud.runtime_session_activity import (
@@ -3836,6 +3845,29 @@ async def get_account_runtime_session_gateway_events(
                 detail="Runtime session not found",
             )
 
+        cursor = None
+        if before is not None:
+            try:
+                before_id = UUID(before)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="`before` must be a gateway event id",
+                ) from exc
+            cursor = crud_runtime_session_activity.get_model_gateway_call_cursor(
+                db,
+                account_id=account.id,
+                runtime_session_id=runtime_session_id,
+                activity_id=before_id,
+            )
+            if cursor is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Gateway event not found in this session",
+                )
+        page_limit = (
+            min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
+        )
         rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
             db,
             start_date=cutoff,
@@ -3845,15 +3877,16 @@ async def get_account_runtime_session_gateway_events(
             limit=limit,
             offset=offset,
             metadata_only=metadata_only,
+            before=cursor,
+            extra=1 if cursor is not None else 0,
         )
+        cursor_has_more = cursor is not None and len(rows) > page_limit
+        rows = rows[:page_limit]
         total = crud_runtime_session_activity.count_model_gateway_calls_for_session(
             db,
             start_date=cutoff,
             account_id=account.id,
             runtime_session_id=runtime_session_id,
-        )
-        page_limit = (
-            min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
         )
 
         events = [
@@ -3867,16 +3900,23 @@ async def get_account_runtime_session_gateway_events(
         ]
         if history == "delta" and not metadata_only:
             events = elide_replayed_history(events, window=history_window)
-        next_offset = offset + len(events)
+        if cursor is not None:
+            has_more = cursor_has_more
+            next_offset = None
+        else:
+            next_offset = offset + len(events)
+            has_more = next_offset < total
         return {
             "source": "database",
             "logs": events,
             "pagination": {
                 "limit": page_limit,
-                "offset": offset,
-                "next_offset": next_offset if next_offset < total else None,
+                "offset": offset if cursor is None else None,
+                "next_offset": next_offset if has_more else None,
+                # The oldest event on this page; pass it as `before`.
+                "next_cursor": str(rows[-1].id) if has_more and rows else None,
                 "total": total,
-                "has_more": next_offset < total,
+                "has_more": has_more,
             },
         }
 
