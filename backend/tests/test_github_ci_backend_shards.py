@@ -1,7 +1,7 @@
 """Guard GitHub Actions backend test sharding against config drift.
 
-The suite is split with pytest-split across a matrix of jobs, then coverage
-is combined before the 60% floor. ``--splits`` and the matrix group list
+The suite is partitioned into complete files before collection, then coverage
+is combined before the 60% floor. The shard count and matrix group list
 must stay in lockstep, and the floor must not run on a single shard.
 """
 
@@ -25,8 +25,8 @@ def test_pytest_split_is_a_dev_dependency() -> None:
     assert any(item.startswith("pytest-split") for item in dev)
 
 
-def test_backend_shards_partition_with_pytest_split() -> None:
-    """Each matrix group must match ``--splits N --group`` in the pytest invocation."""
+def test_backend_shards_partition_before_collection() -> None:
+    """Each matrix group must match the pre-collection file partition."""
     backend = load_ci_jobs()["test-backend"]
     groups = backend["strategy"]["matrix"]["group"]
     assert groups == list(range(1, BACKEND_TEST_SPLITS + 1))
@@ -36,11 +36,10 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     assert backend["strategy"]["fail-fast"] is False
 
     script = step_script(backend, "Run tests")
-    assert f"--splits {BACKEND_TEST_SPLITS}" in script
+    assert f"scripts/run_backend_shard.py --shards {BACKEND_TEST_SPLITS}" in script
     assert "--group ${{ matrix.group }}" in script
-    assert "--splitting-algorithm=duration_based_chunks" in script
-    assert "--durations-path .github/pytest-split-durations.json" in script
-    assert "--splitting-algorithm=least_duration" not in script
+    assert "--splits" not in script
+    assert "--splitting-algorithm" not in script
     assert "--cov-fail-under" not in script
     prepare = step_script(backend, "Prepare Postgres")
     assert "scripts/ci_postgres.py prepare" in prepare
@@ -203,3 +202,19 @@ def test_ci_aggregator_fails_when_changes_fails() -> None:
     )
     assert "check changes" in script
     assert "needs.changes.result" in str(aggregator)
+
+
+def test_browser_profile_does_not_require_sudo_on_self_hosted() -> None:
+    """Self-hosted jobs install browsers, while host setup owns OS packages."""
+    job = load_ci_jobs()["test-browser-profile"]
+    step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Install pinned Playwright MCP and Chromium"
+    )
+    assert step["env"]["WITH_DEPS"] == (
+        "${{ runner.environment == 'github-hosted' && '--with-deps' || '' }}"
+    )
+    assert "npm ci" in step["run"]
+    assert "npx playwright install $WITH_DEPS chromium" in step["run"]
+    assert "PRELOOP_BROWSER_CI" in str(job)

@@ -111,11 +111,31 @@ jobs:
         with:
           persist-credentials: false
 
+      # The JavaScript extractor requires Node even when analysis needs no
+      # build; a self-hosted ubuntu-latest runner may not have it preinstalled.
+      - name: Set up Node.js for CodeQL
+        if: matrix.language == 'javascript-typescript'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Set up Go for CodeQL
+        if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # Shared self-hosted runners have a smaller memory/CPU budget than
+          # GitHub-hosted runners. Init carries these limits into analyze.
+          ram: ${{ runner.environment == 'self-hosted' && '2560' || '' }}
+          threads: ${{ runner.environment == 'self-hosted' && '2' || '' }}
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0

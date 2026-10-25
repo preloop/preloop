@@ -3,8 +3,8 @@
 CI prefers GitHub-hosted `ubuntu-latest`. General self-hosted runners provide
 optional backend overflow when recent repository runs show hosted jobs queued
 without a runner for at least two minutes. This is a queue-pressure signal,
-not a measurement of GitHub's global capacity. The picker inspects at most ten
-recent runs, bounds each API request, and leaves every shard hosted when
+not a measurement of GitHub's global capacity. The picker inspects up to five oldest queued and five oldest in-progress
+runs from bounded 100-run API responses, plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
 pressure or inventory cannot be read, the read token is absent, or
 `CI_SELF_HOSTED_TESTS=false`. Fork and Dependabot PRs always remain hosted.
 Trusted same-repository PRs and pushes may use overflow.
@@ -34,6 +34,18 @@ it, and drops that database at the end. It does not stop the server.
 GitHub-hosted `ubuntu-latest` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
+
+## Bootstrap routing
+
+Set `CI_SELF_HOSTED_BOOTSTRAP=true` to run changed-path detection, the runner
+picker and the final CI aggregator on `preloop-ci-general` for trusted
+same-repository PRs and pushes. Forks and Dependabot keep hosted routing.
+This avoids waiting for hosted capacity before selecting idle overflow
+runners. The general pool must provide `gh`, `jq`, Python 3 and coreutils;
+changed-path detection also requires a writable checkout workspace.
+`CI_SELF_HOSTED_TESTS=false` disables this routing as well as shard overflow.
+If the pool goes offline, disable the bootstrap variable and rerun; GitHub
+does not migrate an already queued assignment automatically.
 
 ## Postgres
 
@@ -162,3 +174,57 @@ workspace, a tokenless service account, and no host Docker socket, kubeconfig,
 cloud identity, or deployment credentials. A serialized controller reuses only
 the repository runner identity and starts `run.sh --once` for each pod. These
 tests yield to hosted flow executions and use a reduced fuzz worker budget.
+
+## Backend collection and CPU budgets
+
+`scripts/run_backend_shard.py` discovers test files from the pytest configuration
+without importing them, then assigns whole files to contiguous, duration-weighted
+shards. New files receive an estimated weight and are always included. Pytest
+collects only the assigned files; tests within a file retain their normal order.
+The duration file is a balancing hint, not an allowlist. Coverage remains enabled
+on all shards and the combined job still enforces the coverage floor.
+Discovery honors static `collect_ignore` and `collect_ignore_glob` declarations in
+in-scope `conftest.py` files, path-qualified `norecursedirs`, and virtualenv
+directories. Dynamic `pytest_ignore_collect` hooks or computed ignore lists are
+unsupported and fail selection, because honoring them would require importing
+conftest code before sharding.
+
+Inspect a shard without running tests:
+
+```bash
+python scripts/run_backend_shard.py --shards 18 --group 1 --plan
+```
+
+One runner slot is not necessarily one CPU: CodeQL and other analysis tools may
+start multiple threads. Set CPU budgets on the host runner services and leave
+headroom for PostgreSQL and the operating system. Use measured concurrent load,
+not the number of registrations, to size the pool. Tool thread settings are
+hints; the host CPU budget enforces isolation without changing workflow checks.
+
+## Discovery fixture isolation
+
+`discovery-parity.yml` runs Linux discovery fixtures without external network
+access. GitHub-hosted runners use `sudo unshare --net` directly. Self-hosted
+runners instead grant passwordless sudo only for the root-owned
+`/usr/local/sbin/preloop-ci-offline` helper. The helper creates a network
+namespace, enables loopback for local HTTP fixtures, forces
+`PRELOOP_DISABLE_TELEMETRY=true` and `PRELOOP_DISCOVERY_OFFLINE=true`, then
+drops to the invoking runner UID and GID with `setpriv` before executing the
+test binary. Do not grant unrestricted sudo or direct `unshare` access to the
+runner account. A missing helper or denied sudo must fail the check.
+
+## Python dependency reuse
+
+The `install-ci-python-deps` composite uses pinned uv to install hash-checked
+locks into a fresh job-local environment. Persistent runners retain the extracted
+package cache under their tool cache; hosted runners restore it from Actions
+cache using the lockfile key. Self-hosted jobs skip archive upload/download and
+cache pruning. Changed lockfiles are still validated on every install. Editable
+project code is installed separately with `--no-deps` so each job tests its own
+checkout. No mutable virtual environment is shared between jobs.
+
+Install `patchelf` on minimal Linux runner images. When `setup-ci-python` falls
+back to a downloaded interpreter, it verifies that Python can start without
+`LD_LIBRARY_PATH` and repairs its tool-cache loader path if needed. The isolated
+shell tests intentionally clear that variable, so a missing loader path must
+fail before the test suite rather than produce unrelated test failures.

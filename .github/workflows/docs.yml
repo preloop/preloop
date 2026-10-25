@@ -61,11 +61,40 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
+      # A self-hosted runner may carry ubuntu-latest without its image tools.
+      - name: Set up ShellCheck
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/shellcheck-v0.11.0.linux.x86_64.tar.xz"
+          curl --fail --silent --show-error --location \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
+            "$archive" | sha256sum --check
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"
+
       - name: Check MDM templates against the CLI
         run: |
           (cd cli && go build -o ../build/preloop ./cmd/preloop)
           sh docs/scripts/test_mdm_recipes.sh "$PWD/build/preloop"
           shellcheck docs/assets/mdm-recipes/*.sh docs/scripts/test_mdm_recipes.sh
+
+      - name: Set up PowerShell
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/powershell-7.5.3-linux-x64.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/PowerShell/PowerShell/releases/download/v7.5.3/powershell-7.5.3-linux-x64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            5c74e0bbafd8be59e72267f05700fd6615344d9cf4d30460d9b6d12cd4a88a8c \
+            "$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/powershell-7.5.3"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/powershell-7.5.3"
+          chmod +x "$RUNNER_TEMP/powershell-7.5.3/pwsh"
+          echo "$RUNNER_TEMP/powershell-7.5.3" >> "$GITHUB_PATH"
 
       - name: Parse Windows inventory template (no execution)
         shell: pwsh

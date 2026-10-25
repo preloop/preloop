@@ -28,3 +28,32 @@ runs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: ${{ inputs.python-version }}
+
+    # Some minimal self-hosted images do not register setup-python's libpython
+    # directory with the dynamic loader. Tests deliberately run subprocesses
+    # with a clean environment, so LD_LIBRARY_PATH is insufficient.
+    - name: Make downloaded Python usable with a clean environment
+      if: steps.system.outputs.use_setup == 'true' && runner.environment == 'self-hosted' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python_bin="$(readlink -f "${pythonLocation}/bin/python3")"
+        if env -u LD_LIBRARY_PATH "$python_bin" -c 'import ssl'; then
+          exit 0
+        fi
+        command -v patchelf >/dev/null || {
+          echo "patchelf is required to repair the self-hosted Python loader path" >&2
+          exit 1
+        }
+        current="$(patchelf --print-rpath "$python_bin")"
+        library_path='${ORIGIN}/../lib'
+        if [ -n "$current" ]; then
+          library_path="${library_path}:${current}"
+        fi
+        temporary="$(mktemp "${python_bin}.repair.XXXXXX")"
+        trap 'rm -f "$temporary"' EXIT
+        cp -p "$python_bin" "$temporary"
+        patchelf --set-rpath "$library_path" "$temporary"
+        env -u LD_LIBRARY_PATH "$temporary" -c 'import ssl'
+        mv -f "$temporary" "$python_bin"
+        env -u LD_LIBRARY_PATH "$python_bin" -c 'import ssl'

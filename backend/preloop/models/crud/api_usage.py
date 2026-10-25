@@ -3608,6 +3608,93 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .all()
         )
 
+    def list_session_request_keys(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+        after: Optional[tuple[datetime, uuid.UUID]] = None,
+        limit: int = 1000,
+    ) -> List[SimpleNamespace]:
+        """List ``(id, timestamp)`` of a session's real gateway requests.
+
+        Column-projected so callers can index a whole session history without
+        loading ``meta_data``. Internal analysis purposes are excluded, and rows
+        keep the oldest-first order of :meth:`list_session_request_rows`.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session whose requests to list.
+            after: Exclusive ``(timestamp, id)`` keyset cursor.
+            limit: Maximum number of rows to return.
+
+        Returns:
+            Namespaces with ``id`` and ``timestamp``, oldest first.
+        """
+        purpose = self.model.meta_data.op("->>")(literal_column("'purpose'"))
+        query = db.query(self.model.id, self.model.timestamp).filter(
+            self.model.action_type == "model_gateway",
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            or_(purpose.is_(None), purpose.notin_(sorted(GATEWAY_USAGE_PURPOSES))),
+        )
+        if after is not None:
+            query = query.filter(
+                tuple_(self.model.timestamp, self.model.id) > tuple_(*after)
+            )
+        rows = (
+            query.order_by(self.model.timestamp.asc(), self.model.id.asc())
+            .limit(limit)
+            .all()
+        )
+        return [SimpleNamespace(id=row.id, timestamp=row.timestamp) for row in rows]
+
+    def list_session_context_measurements(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+        start_date: datetime,
+        end_date: datetime,
+        after: Optional[tuple[datetime, uuid.UUID]] = None,
+        limit: int = 1000,
+    ) -> List[SimpleNamespace]:
+        """Page real request model/token fields within ``[start_date, end_date)``.
+
+        Project scalar columns only: weekly context measurements do not need
+        request payloads. Filter internal analysis in SQL and use the same
+        timestamp/id ordering as the session history index.
+        """
+        purpose = self.model.meta_data.op("->>")(literal_column("'purpose'"))
+        query = db.query(
+            self.model.id,
+            self.model.timestamp,
+            self.model.ai_model_id,
+            self.model.model_alias,
+            self.model.provider_name,
+            self.model.prompt_tokens,
+        ).filter(
+            self.model.action_type == "model_gateway",
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            self.model.timestamp >= start_date,
+            self.model.timestamp < end_date,
+            or_(purpose.is_(None), purpose.notin_(sorted(GATEWAY_USAGE_PURPOSES))),
+        )
+        if after is not None:
+            query = query.filter(
+                tuple_(self.model.timestamp, self.model.id) > tuple_(*after)
+            )
+        rows = (
+            query.order_by(self.model.timestamp.asc(), self.model.id.asc())
+            .limit(limit)
+            .all()
+        )
+        return [SimpleNamespace(**row._mapping) for row in rows]
+
     # Hard cap on cache-rollup rows per session. Even a very long-lived agent
     # session stays well under this; the cap only guards against a pathological
     # session flooding the API pod's memory. Hitting it is logged because the
