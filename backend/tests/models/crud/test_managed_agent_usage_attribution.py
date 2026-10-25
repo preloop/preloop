@@ -834,3 +834,147 @@ def test_account_deletion_does_not_recreate_counters_during_fk_cascades(
         .count()
         == 0
     )
+
+
+def _mixed_usage(db: Session, user: Any, fleet: dict[str, Any]) -> None:
+    """Errors, cache tokens and subscription rows on top of the fleet's spend."""
+    for status_code, cache_read, cache_write, principal_id, session in (
+        (500, None, None, fleet["a"].session_source_id, fleet["run_colon"]),
+        (200, 40, 7, f"{fleet['a'].session_source_id}:run-1", fleet["run_colon"]),
+        (429, 0, None, fleet["b"].session_source_id, None),
+    ):
+        row = crud_api_usage.log_gateway_request(
+            db,
+            endpoint="/openai/v1/chat/completions",
+            method="POST",
+            status_code=status_code,
+            duration=0.1,
+            account_id=str(user.account_id),
+            runtime_session_id=str(session.id) if session else None,
+            model_alias="provider-z-latest",
+            provider_name="provider-z",
+            prompt_tokens=300,
+            completion_tokens=30,
+            total_tokens=330,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_write,
+            estimated_cost=0.07,
+            runtime_principal_type="claude_code",
+            runtime_principal_id=principal_id,
+        )
+        row.timestamp = NOW - timedelta(minutes=1)
+    _subscription_usage(
+        db, user, session=fleet["run_colon"], principal_id=None, api_equivalent=1.25
+    )
+    _subscription_usage(
+        db,
+        user,
+        session=db.get(models.RuntimeSession, fleet["b"].runtime_session_id),
+        principal_id=fleet["b"].session_source_id,
+        api_equivalent=None,
+    )
+    db.flush()
+
+
+def _set_backfill_ready(db: Session, ready: bool) -> None:
+    state = db.get(models.AgentUsageBackfill, "agents")
+    assert state is not None
+    state.ready = ready
+    db.flush()
+
+
+def _without_cost(value: dict[str, Any]) -> tuple[dict[str, Any], float]:
+    value = dict(value)
+    return value, float(value.pop("estimated_cost") or 0.0)
+
+
+def test_all_time_detail_reads_stored_totals_with_identical_figures(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Agent detail all-time summary and aggregate switch to agent_usage_total."""
+    account_id = str(test_user.account_id)
+    _mixed_usage(db_session, test_user, fleet)
+
+    def read(agent: models.ManagedAgent) -> tuple[Any, Any, list[str]]:
+        with _statements(db_session) as statements:
+            summary = crud_managed_agent.get_summary_for_account(
+                db_session, account_id=account_id, agent_id=str(agent.id)
+            )
+            aggregate = crud_managed_agent.get_usage_aggregate_for_account(
+                db_session, account_id=account_id, agent_id=str(agent.id)
+            )
+        return summary, aggregate, statements
+
+    for agent in (fleet["a"], fleet["b"]):
+        _set_backfill_ready(db_session, False)
+        live_summary, live_aggregate, live_sql = read(agent)
+        _set_backfill_ready(db_session, True)
+        stored_summary, stored_aggregate, stored_sql = read(agent)
+
+        assert any("listed_principals" in s for s in live_sql)
+        assert not any("listed_principals" in s for s in stored_sql)
+        assert any("agent_usage_total" in s for s in stored_sql)
+        assert "_stored_totals" not in stored_aggregate
+
+        expected, expected_cost = _without_cost(live_aggregate)
+        actual, actual_cost = _without_cost(stored_aggregate)
+        assert actual == expected
+        assert actual_cost == pytest.approx(expected_cost)
+        expected, expected_cost = _without_cost(live_summary)
+        actual, actual_cost = _without_cost(stored_summary)
+        assert actual == expected
+        assert actual_cost == pytest.approx(expected_cost)
+
+    a_aggregate = crud_managed_agent.get_usage_aggregate_for_account(
+        db_session, account_id=account_id, agent_id=str(fleet["a"].id)
+    )
+    assert a_aggregate["failed_requests"] >= 1
+    assert a_aggregate["cache_read_tokens"] >= 40
+    assert a_aggregate["latest_model_alias"] == "provider-z-latest"
+    assert a_aggregate["subscription_usage"]["api_equivalent_cost"] == 1.25
+
+
+def test_windowed_reads_keep_aggregating_api_usage(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Stored counters have no time axis, so a window always reads api_usage."""
+    account_id = str(test_user.account_id)
+    _set_backfill_ready(db_session, True)
+    with _statements(db_session) as statements:
+        crud_managed_agent.get_usage_aggregate_for_account(
+            db_session,
+            account_id=account_id,
+            agent_id=str(fleet["a"].id),
+            start_date=NOW - timedelta(days=7),
+        )
+        crud_managed_agent.get_usage_by_agent_for_account(
+            db_session, account_id=account_id, start_date=NOW - timedelta(days=7)
+        )
+    assert sum("listed_principals" in s for s in statements) == 2
+    assert not any("agent_usage_total" in s for s in statements)
+
+
+def test_all_time_usage_by_agent_reads_stored_totals_with_identical_figures(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """The Overview agent breakdown without a window uses the stored counters."""
+    account_id = str(test_user.account_id)
+    _mixed_usage(db_session, test_user, fleet)
+    _set_backfill_ready(db_session, False)
+    live = crud_managed_agent.get_usage_by_agent_for_account(
+        db_session, account_id=account_id
+    )
+    _set_backfill_ready(db_session, True)
+    with _statements(db_session) as statements:
+        stored = crud_managed_agent.get_usage_by_agent_for_account(
+            db_session, account_id=account_id
+        )
+    assert not any("listed_principals" in s for s in statements)
+    assert len(stored) == len(live) == 2
+    by_agent = {row["agent_id"]: row for row in live}
+    for row in stored:
+        assert "_stored_totals" not in row
+        actual, actual_cost = _without_cost(row)
+        expected, expected_cost = _without_cost(by_agent[row["agent_id"]])
+        assert actual == expected
+        assert actual_cost == pytest.approx(expected_cost)
