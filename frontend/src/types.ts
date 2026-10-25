@@ -86,7 +86,8 @@ export interface FlowExecutionStats {
   total_execs?: number;
   running_execs?: number;
   last_seen_at?: string | null;
-  estimated_cost?: number;
+  /** All-time spend. Null on a windowed `/flows/summary` read, which skips it. */
+  estimated_cost?: number | null;
   /**
    * Tokens over the same period as the counts beside them: the window when
    * `stats_since` was asked for, all time otherwise. Null means "nothing
@@ -373,8 +374,14 @@ export interface FlowGatewayEventsResponse {
   source: 'container' | 'database';
   pagination?: {
     limit: number;
-    offset: number;
+    /** Null on a page read by `before` cursor. */
+    offset: number | null;
     next_offset: number | null;
+    /**
+     * Session reads only: the oldest event id on this page, to pass as
+     * `before` for the next older page. Null when there is none.
+     */
+    next_cursor?: string | null;
     total: number;
     has_more: boolean;
   } | null;
