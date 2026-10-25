@@ -57,8 +57,11 @@ PRs with neither a brief nor a summary, go to the model (source `report`).
 ## Tools
 
 The run can call `search_issues`, `get_issue`, `get_pull_request` and
-`search_sessions`, and it reads git history in a read-only clone. It cannot
-create or update issues, comment, push or open pull requests.
+`search_sessions`, and it reads git history in a read-only clone. It never
+pushes or opens pull requests. `create_issue`, `update_issue` and
+`add_comment` are listed too, but the MCP endpoints refuse every call from a
+report run that the report policy does not allow (see Tracker actions
+below), on top of the account's tool policy.
 
 ## Report policy
 
@@ -119,6 +122,36 @@ in the report, and opening one is the approval. Automatic creation is a
 per-account setting (`create_follow_up: allow`), meant to be enabled once
 the proposals have proven precise on that account. The report never closes
 an issue: a policy with `close` set to anything but `deny` is refused.
+
+### Tracker actions
+
+A person acts on a proposal from the report page, through
+`POST /api/v1/delivery-reports/{id}/actions`:
+
+- `{"kind": "open_issue", "index": N}` opens follow-up N as a tracker issue
+  labelled with `follow_up_label` (`preloop:proposed`), with the reason, the
+  evidence and a link back to the report. Needs `create_issues`.
+- `{"kind": "reopen", "ref": "owner/repo#N"}` reopens the issue and comments
+  with the assessed revision, the unmet criteria and the evidence. Needs
+  `edit_issues`. A stale request (the issue was edited, or new commits landed
+  on its closing pull request, after the assessment) is refused with 409
+  `stale`: assess the issue again first.
+- `{"kind": "dismiss", "key": "follow_up:N" | "reopen:<ref>", "reason": "..."}`
+  records the decision without touching the tracker.
+- `{"kind": "close"}` is always refused with 403 `close_denied`.
+
+The click is the approval, so it does not depend on the run's write rules.
+Each proposal takes one decision; it is stored on the run under
+`proposal_actions` and a second click gets 409 `already_decided`.
+
+The run itself writes only where the account allows it:
+`create_follow_up: allow` lets it open follow-ups (the platform adds the
+label and the report link), `reopen: allow` lets it reopen and comment. Any
+other write from a report run, and every close, is refused with 403.
+
+Every write, refusal and dismissal is in the audit log as
+`delivery_report_tracker_write`, with what allowed or refused it
+(`allowed_by: click` or the policy rule).
 
 ## The report
 

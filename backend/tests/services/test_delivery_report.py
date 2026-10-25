@@ -73,15 +73,24 @@ class TestPresetRegistration:
         with pytest.raises(ValueError):
             dr.TrackerWritePolicy(close="allow")  # type: ignore[arg-type]
 
-    def test_read_tools_only(self) -> None:
+    def test_write_tools_are_listed_and_close_is_forbidden_in_the_prompt(
+        self,
+    ) -> None:
+        # The MCP endpoints gate the write tools on the report policy
+        # (tests/services/test_delivery_report_actions.py).
         tools = {t["name"] for t in _preset()["allowed_mcp_tools"]}
         assert tools == {
             "search_issues",
             "get_issue",
             "get_pull_request",
             "search_sessions",
+            "create_issue",
+            "update_issue",
+            "add_comment",
         }
-        assert not tools & {"create_issue", "update_issue", "add_comment"}
+        prompt = " ".join(_preset()["prompt_template"].split())
+        assert "Never close an issue" in prompt
+        assert 'Only when tracker_writes.create_follow_up is "allow"' in prompt
 
     def test_marked_for_the_report_pass(self) -> None:
         flow = SimpleNamespace(agent_config=_preset()["agent_config"])

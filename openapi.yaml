@@ -14649,6 +14649,63 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/delivery-reports/{execution_id}/actions:
+    post:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Act On Delivery Report
+      description: 'Open a proposed follow-up, reopen an issue, or dismiss a proposal.
+
+
+        The click is the approval: Open issue and Reopen write to the tracker
+
+        whatever the account''s ``tracker_writes`` rules say for the run itself.
+
+        A stale reopen request (new commits on the closing pull request, or an
+
+        issue edit after the assessment) is refused with 409 ``stale``. Close
+
+        is always refused with 403 ``close_denied``, and the attempt is logged.'
+      operationId: act_on_delivery_report_api_v1_delivery_reports__execution_id__actions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportActionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportActionResult'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not Found
+        '409':
+          description: Conflict
+        '422':
+          description: Unprocessable Entity
+        '502':
+          description: Bad Gateway
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue:
     get:
       tags:
@@ -31264,6 +31321,65 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DeliveryReportActionRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - open_issue
+          - reopen
+          - dismiss
+          - close
+          title: Kind
+        index:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Index
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - kind
+      title: DeliveryReportActionRequest
+      description: 'One click on a proposal in the report page.
+
+
+        ``open_issue`` names the follow-up by ``index``; ``reopen`` and ``close``
+
+        name the issue by ``ref``; ``dismiss`` names the proposal by ``key``
+
+        (``follow_up:<index>`` or ``reopen:<ref>``) and needs a ``reason``.'
+    DeliveryReportActionResult:
+      properties:
+        key:
+          type: string
+          title: Key
+        decision:
+          additionalProperties: true
+          type: object
+          title: Decision
+      type: object
+      required:
+      - key
+      - decision
+      title: DeliveryReportActionResult
+      description: The decision stored on the run for the proposal.
     DeliveryReportActions:
       properties:
         open_issue:
