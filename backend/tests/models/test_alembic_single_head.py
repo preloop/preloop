@@ -488,8 +488,10 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert totals.down_revision == "20261108_control_reachable"
     assessment = script.get_revision("20261110_assessment_pr_identity")
     assert assessment.down_revision == "20261109_agent_usage_totals"
+    prune = script.get_revision("20261110_prune_api_usage_idx")
+    assert prune.down_revision == "20261110_assessment_pr_identity"
     credential_backfill = script.get_revision("20261110_credential_backfill")
-    assert credential_backfill.down_revision == "20261110_assessment_pr_identity"
+    assert credential_backfill.down_revision == "20261110_prune_api_usage_idx"
     credential_columns = script.get_revision("20261111_credential_columns")
     assert credential_columns.down_revision == "20261110_credential_backfill"
     assert script.get_heads() == ["20261111_credential_columns"]

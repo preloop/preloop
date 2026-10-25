@@ -63,7 +63,7 @@ alembic upgrade head
 
 Revision `20261111_credential_columns` takes an exclusive lock, refuses any
 reintroduced plaintext, and removes the columns. If its guard fails, keep writers
-stopped, investigate the old writer, downgrade to `20261110_assessment_pr_identity`,
+stopped, investigate the old writer, downgrade to `20261110_prune_api_usage_idx`,
 and rerun both stages. The backfill downgrade never restores plaintext and the
 upgrade is idempotent. Do not stamp past checks or discard populated columns.
 

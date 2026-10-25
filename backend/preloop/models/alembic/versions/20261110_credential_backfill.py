@@ -1,7 +1,7 @@
 """Backfill residual credentials before removing the legacy columns.
 
 Revision ID: 20261110_credential_backfill
-Revises: 20261110_assessment_pr_identity
+Revises: 20261110_prune_api_usage_idx
 
 Drain old writers before applying. This revision is an operator-visible stopping
 point; the next revision removes the columns. No plaintext is reconstructed on
@@ -15,7 +15,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "20261110_credential_backfill"
-down_revision = "20261110_assessment_pr_identity"
+down_revision = "20261110_prune_api_usage_idx"
 branch_labels = None
 depends_on = None
 

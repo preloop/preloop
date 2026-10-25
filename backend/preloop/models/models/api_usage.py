@@ -62,6 +62,12 @@ class ApiUsage(Base):
 
     __tablename__ = "api_usage"
 
+    # api_usage_pkey already indexes id; the shared Base column would add a
+    # second, identical btree that every insert maintains.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, index=False, default=uuid.uuid4
+    )
+
     # Request details
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -73,7 +79,8 @@ class ApiUsage(Base):
         UUID(as_uuid=True),
         ForeignKey("account.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
+        # No single-column index: the account-leading composites below serve
+        # account-only filters and the FK lookup.
     )
     api_key_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -487,23 +494,15 @@ class ApiUsage(Base):
                 "AND meta_data->>'otlp_request_id' IS NOT NULL"
             ),
         ),
-        # Worker->parent conversation rollup for imported usage: partial
-        # indexes scoped to imported rows keep the gateway hot path
-        # unaffected while making per-thread aggregation indexable.
+        # Conversation rollup for imported usage: a partial index scoped to
+        # imported rows keeps the gateway hot path unaffected while making
+        # per-thread aggregation indexable.
         Index(
             "ix_api_usage_imported_conversation",
             "account_id",
             "conversation_id",
             postgresql_where=text(
                 "action_type = 'imported_usage' AND conversation_id IS NOT NULL"
-            ),
-        ),
-        Index(
-            "ix_api_usage_imported_parent_conv",
-            "account_id",
-            "parent_conversation_id",
-            postgresql_where=text(
-                "action_type = 'imported_usage' AND parent_conversation_id IS NOT NULL"
             ),
         ),
     )
