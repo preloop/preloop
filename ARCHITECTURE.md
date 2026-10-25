@@ -4,6 +4,8 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Version-tag publication is gated by [image SBOM and release audit validation](docs/release-sbom-audit.md). Backend, console, scanner and universal images carry inventories for both architectures, bound to immutable image digests and the source commit. The gate waits for the same tag's image and security workflows before publishing release assets.
+
 [MCP dispatch provenance](docs/architecture/mcp-dispatch-provenance.md) defines the
 identity-only extension event for completed proxied calls. Optional plugins own
 inventory interpretation; hook labels and mutable tool-name maps cannot establish
@@ -103,6 +105,12 @@ Explicit concurrent-index blocks have bounded lock and statement budgets and
 restore the migration session's short blocking-DDL timeout afterwards. Operation
 durations and cancellation diagnostics identify contention without extending
 the deployment deadline. See [schema migrations](docs/operations/schema-migrations.md).
+
+The [upgrade acceptance harness](docs/operations/upgrade-acceptance.md) runs published
+release initializers and Helm hooks against a synthetic corpus in disposable local
+stacks. It stops old writers, preserves encryption settings, and verifies data,
+identity and credential continuity. Candidate rehearsals remain separate from
+acceptance of an actually published release candidate.
 Cost and cycle time per tracker issue are rolled up across flows into their own
 tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
@@ -1357,6 +1365,12 @@ provider alias. Custom model discovery applies the operator endpoint CIDR policy
 and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
+
+Residual credential storage uses the existing SecretReference backend for model
+and webhook values, and hash-only storage for all Preloop API keys. Separate
+backfill and removal revisions retire the three legacy columns; see the
+[credential storage upgrade guide](docs/operations/credential-storage-upgrade.md)
+for the maintenance window, encryption-key continuity and rollback limits.
 
 ## API diagnostics
 

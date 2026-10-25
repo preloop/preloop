@@ -1,0 +1,255 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-0000000000a1",
+    "start_time": "2026-10-14T12:30:00",
+    "trigger_event_details": {
+      "payload": {
+        "sha": "2222222222222222222222222222222222222222",
+        "lifecycle": {
+          "issue_id": "00000000-0000-0000-0000-000000000012",
+          "issue_url": "https://example.com/acme/app/issues/12",
+          "issue_title": "Export to CSV",
+          "issue_revision": "rev-12",
+          "merge_sha": "2222222222222222222222222222222222222222",
+          "contract": {
+            "issue_revision": "rev-12",
+            "criteria": [
+              {
+                "id": "headers",
+                "outcome": "CSV export includes headers",
+                "verification": "test"
+              },
+              {
+                "id": "date-filter",
+                "outcome": "Exports respect the date filter",
+                "verification": "test"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "result": {
+      "status": "success",
+      "checked_out_sha": "2222222222222222222222222222222222222222",
+      "issue_revision": "rev-12",
+      "criteria": [
+        {
+          "criterion_id": "headers",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:40"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_headers passed"
+          ],
+          "observations": [],
+          "reason": "headers written"
+        },
+        {
+          "criterion_id": "date-filter",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:22"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_date_filter passed"
+          ],
+          "observations": [],
+          "reason": "filter applied"
+        }
+      ],
+      "follow_ups": []
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000000000a2",
+    "start_time": "2026-10-14T12:30:00",
+    "trigger_event_details": {
+      "payload": {
+        "sha": "2222222222222222222222222222222222222222",
+        "lifecycle": {
+          "issue_id": "00000000-0000-0000-0000-000000000012",
+          "issue_url": "https://example.com/acme/app/issues/12",
+          "issue_title": "Export to CSV",
+          "issue_revision": "rev-12",
+          "merge_sha": "2222222222222222222222222222222222222222",
+          "contract": {
+            "issue_revision": "rev-12",
+            "criteria": [
+              {
+                "id": "headers",
+                "outcome": "CSV export includes headers",
+                "verification": "test"
+              },
+              {
+                "id": "date-filter",
+                "outcome": "Exports respect the date filter",
+                "verification": "test"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "result": {
+      "status": "success",
+      "checked_out_sha": "3333333333333333333333333333333333333333",
+      "issue_revision": "rev-12",
+      "criteria": [
+        {
+          "criterion_id": "headers",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:40"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_headers passed"
+          ],
+          "observations": [],
+          "reason": "headers written"
+        },
+        {
+          "criterion_id": "date-filter",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:22"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_date_filter passed"
+          ],
+          "observations": [],
+          "reason": "filter applied"
+        }
+      ],
+      "follow_ups": []
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000000000a3",
+    "start_time": "2026-10-14T12:30:00",
+    "trigger_event_details": {
+      "payload": {
+        "sha": "2222222222222222222222222222222222222222",
+        "lifecycle": {
+          "issue_id": "00000000-0000-0000-0000-000000000012",
+          "issue_url": "https://example.com/acme/app/issues/12",
+          "issue_title": "Export to CSV",
+          "issue_revision": "rev-12",
+          "merge_sha": "2222222222222222222222222222222222222222",
+          "contract": {
+            "issue_revision": "rev-12",
+            "criteria": [
+              {
+                "id": "headers",
+                "outcome": "CSV export includes headers",
+                "verification": "test"
+              },
+              {
+                "id": "date-filter",
+                "outcome": "Exports respect the date filter",
+                "verification": "test"
+              }
+            ]
+          },
+          "audit_kind": "deployment_audit"
+        }
+      }
+    },
+    "result": {
+      "status": "success",
+      "checked_out_sha": "2222222222222222222222222222222222222222",
+      "issue_revision": "rev-12",
+      "criteria": [
+        {
+          "criterion_id": "headers",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:40"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_headers passed"
+          ],
+          "observations": [],
+          "reason": "headers written"
+        },
+        {
+          "criterion_id": "date-filter",
+          "verdict": "complete",
+          "code": [
+            "backend/app/export.py:22"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_date_filter passed"
+          ],
+          "observations": [],
+          "reason": "filter applied"
+        }
+      ],
+      "follow_ups": []
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000000000a0",
+    "start_time": "2026-10-14T12:10:00",
+    "trigger_event_details": {
+      "payload": {
+        "sha": "2222222222222222222222222222222222222222",
+        "lifecycle": {
+          "issue_id": "00000000-0000-0000-0000-000000000012",
+          "issue_url": "https://example.com/acme/app/issues/12",
+          "issue_title": "Export to CSV",
+          "issue_revision": "rev-12",
+          "merge_sha": "2222222222222222222222222222222222222222",
+          "contract": {
+            "issue_revision": "rev-12",
+            "criteria": [
+              {
+                "id": "headers",
+                "outcome": "CSV export includes headers",
+                "verification": "test"
+              },
+              {
+                "id": "date-filter",
+                "outcome": "Exports respect the date filter",
+                "verification": "test"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "result": {
+      "status": "success",
+      "checked_out_sha": "2222222222222222222222222222222222222222",
+      "issue_revision": "rev-12",
+      "criteria": [
+        {
+          "criterion_id": "headers",
+          "verdict": "unknown",
+          "code": [
+            "backend/app/export.py:40"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_headers passed"
+          ],
+          "observations": [],
+          "reason": "headers written"
+        },
+        {
+          "criterion_id": "date-filter",
+          "verdict": "unknown",
+          "code": [
+            "backend/app/export.py:22"
+          ],
+          "tests": [
+            "pytest backend/tests/test_export.py::test_date_filter passed"
+          ],
+          "observations": [],
+          "reason": "filter applied"
+        }
+      ],
+      "follow_ups": []
+    }
+  }
+]

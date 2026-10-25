@@ -365,3 +365,47 @@ class TestLatestSucceededWithResult:
 
         assert latest is not None and latest.id == failed.id
         assert succeeded is not None and succeeded.id == good.id
+
+
+class TestCompletedMergeAudits:
+    """The Delivery Report reads completed merge audits (#2029)."""
+
+    def _audit_flow(self, db_session: Session, account: Account) -> Flow:
+        flow_in = FlowCreate(
+            name=f"Audit Flow {uuid4().hex[:8]}",
+            description="Merge audit",
+            trigger_event_source="webhook",
+            trigger_event_types=["webhook"],
+            prompt_template="Audit",
+            agent_type="codex",
+            agent_config={"lifecycle_kind": "merge_audit"},
+        )
+        return crud_flow.create(db=db_session, flow_in=flow_in, account_id=account.id)
+
+    def _run(self, db_session: Session, flow: Flow, status: str):
+        execution = _execution(db_session, flow, result={"status": "success"})
+        crud_flow_execution.update(
+            db_session, db_obj=execution, obj_in=FlowExecutionUpdate(status=status)
+        )
+        return execution
+
+    def test_only_this_accounts_succeeded_audits(
+        self, db_session: Session, account: Account, flow: Flow
+    ):
+        audit_flow = self._audit_flow(db_session, account)
+        done = self._run(db_session, audit_flow, "SUCCEEDED")
+        self._run(db_session, audit_flow, "FAILED")
+        self._run(db_session, flow, "SUCCEEDED")
+        other = self._audit_flow(db_session, _account(db_session))
+        self._run(db_session, other, "SUCCEEDED")
+
+        rows = crud_flow_execution.completed_merge_audits(
+            db_session, account_id=str(account.id)
+        )
+
+        assert [row.id for row in rows] == [done.id]
+
+    def test_no_account_reads_nothing(self, db_session: Session):
+        assert (
+            crud_flow_execution.completed_merge_audits(db_session, account_id="") == []
+        )

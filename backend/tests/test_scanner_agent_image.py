@@ -239,12 +239,22 @@ def test_latest_moves_on_stable_tags_only() -> None:
         for s in workflow["jobs"]["scanner-image"]["steps"]
         if s.get("name") == "Build and push"
     )
-    tags = [line for line in push["with"]["tags"].splitlines() if line]
-    assert tags[0] == "${{ env.IMAGE }}:${{ steps.publication.outputs.release_tag }}"
-    assert tags[1] == (
-        "${{ steps.publication.outputs.publish_latest == 'true' && "
-        "format('{0}:latest', env.IMAGE) || '' }}"
+    assert (
+        "build-${{ github.run_id }}-${{ github.run_attempt }}" in push["with"]["tags"]
     )
+    assert "latest" not in push["with"]["tags"]
+    publish = workflow["jobs"]["publish"]
+    assert publish["if"] == "needs.scanner-image.outputs.publish == 'true'"
+    merge = next(s for s in publish["steps"] if s.get("id") == "index")
+    assert (
+        merge["env"]["PUBLISH_LATEST"]
+        == "${{ needs.scanner-image.outputs.publish_latest }}"
+    )
+    assert (
+        'if [ "$PUBLISH_LATEST" = true ]; then args+=(-t "$IMAGE:latest"); fi'
+        in merge["run"]
+    )
+    assert 'args=(-t "$IMAGE:$RELEASE_TAG")' in merge["run"]
 
 
 def test_pull_requests_touching_the_recipe_build_and_smoke() -> None:
