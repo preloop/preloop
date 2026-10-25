@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ def test_recorded_copilot_pr_gets_origin_author_and_issue_link(world: World) -> 
     assert row.author_id == "198982749"
     assert row.state == "open"
     assert row.head_sha == "0123456789abcdef0123456789abcdef01234567"
+    assert row.opened_at == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
     assert _links(world, row) == [world.issue.id]
 
 

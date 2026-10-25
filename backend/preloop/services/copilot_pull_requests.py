@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_issue_cost
 from preloop.services.issue_cost_rollup import (
+    OPENED_FORGE,
     TriggerSubject,
     _dict,
     _resolve_key,
@@ -32,7 +34,9 @@ from preloop.services.issue_cost_rollup import (
     _uuid,
     canonical_issue_key,
     closing_issue_keys,
+    parse_forge_time,
     parse_trigger_subject,
+    stamp_opened,
 )
 from preloop.services.issue_references import KIND_BRANCH, extract_issue_references
 
@@ -149,6 +153,9 @@ def record_copilot_pull_request(
         head_sha=None if merged else _str(_dict(pull.get("head")).get("sha")),
         state=None if merged else _forge_state(pull),
     )
+    created = parse_forge_time(pull.get("created_at"), now=datetime.now(UTC))
+    if created is not None:
+        stamp_opened(row, created, OPENED_FORGE)
     tracker_id = _trigger_tracker(db, account_id=account_id, details=event_data)
     for key in linked_issue_keys(subject):
         target = _resolve_key(db, account_id=account_id, key=key, tracker_id=tracker_id)
