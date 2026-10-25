@@ -133,7 +133,7 @@ export interface DeliveryReportSubscription {
   report_enabled: boolean;
 }
 
-const SUBSCRIPTION_PATH = '/api/v1/delivery-report/subscription';
+const SUBSCRIPTION_PATH = `${REST_API_PREFIX}/delivery-report/subscription`;
 
 async function parseSubscription(
   response: Response,
