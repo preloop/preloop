@@ -889,6 +889,7 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
             *_strs(item.get("code")),
             *_strs(item.get("tests")),
             *_strs(item.get("observations")),
+            *_strs(item.get("runtime")),
         ]
         criteria.append(
             {

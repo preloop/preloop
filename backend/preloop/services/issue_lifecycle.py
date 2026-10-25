@@ -2,19 +2,53 @@
 
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models import models
-from preloop.models.crud import crud_issue_lifecycle
+from preloop.models.crud import crud_assessment, crud_issue_lifecycle
 from preloop.schemas.issue_lifecycle import AuditResult, ReadinessContract
 from preloop.services.issue_lifecycle_provider import (
     LifecycleProvider,
     publication_budget,
 )
+
+#: Recorded on every audit assessment so readers can tell evaluator changes.
+AUDIT_EVALUATOR_VERSION = "merge-audit/2"
+_NO_EVIDENCE_REASON = (
+    "No reachable evidence: the audit cited neither code, tests and an "
+    "observation nor supplied CI or preview evidence with an observation."
+)
+_DEPLOYMENT_REASON = "Needs the separate deployment audit at a deployed revision."
+
+
+def runtime_evidence_ids(bundle: Any) -> set[str]:
+    """Ids of the CI checks, artifacts and previews supplied to an audit."""
+    if not isinstance(bundle, dict):
+        return set()
+    return {
+        str(item["id"])
+        for section in ("checks", "artifacts", "previews")
+        for item in bundle.get(section) or []
+        if isinstance(item, dict) and item.get("id")
+    }
+
+
+def assessment_verdict(criteria: list[dict[str, Any]]) -> str:
+    """Map per-criterion audit verdicts to the assessment vocabulary.
+
+    Same rule as the Delivery Report: every criterion complete is
+    ``covered``, some is ``partial``, none is ``unverified``.
+    """
+    if not criteria:
+        return "no_criteria"
+    met = sum(1 for item in criteria if item.get("verdict") == "complete")
+    if met == len(criteria):
+        return "covered"
+    return "partial" if met else "unverified"
 
 
 class EnvironmentCapabilities(Protocol):
@@ -390,6 +424,9 @@ class IssueLifecycleService:
                         {"number": link.number, "sha": link.sha, "url": link.url}
                         for link in links
                     ],
+                    "runtime_evidence": await self.provider.runtime_evidence(
+                        merge.sha
+                    ),
                 }
                 row = self._put("merge_audit", merge.sha, "queued", data)
             event = {
@@ -542,6 +579,7 @@ class IssueLifecycleService:
                     self.number, marker, self._audit_comment(data, execution.id)
                 )
                 self._put(kind, operation, "published", data)
+                self._record_assessment(data, execution, contract)
                 return data
             result = AuditResult.model_validate(execution.result)
             if (
@@ -554,25 +592,32 @@ class IssueLifecycleService:
             evidence = {item.criterion_id: item for item in result.criteria}
             if len(evidence) != len(result.criteria) or set(evidence) != set(criteria):
                 raise ValueError("audit_acceptance_coverage_mismatch")
+            supplied = runtime_evidence_ids(row.data.get("runtime_evidence"))
             verdicts = []
             for key, item in evidence.items():
-                verdict = item.verdict
+                # Only evidence the controller supplied counts; an invented id
+                # is dropped rather than trusted.
+                item.runtime = [ref for ref in item.runtime if ref in supplied]
+                verdict, why = item.verdict, ""
                 if verdict == "complete" and (
-                    not item.code
-                    or not item.tests
-                    or not item.observations
-                    or (
-                        criteria[key].deployment_required and kind != "deployment_audit"
-                    )
+                    criteria[key].deployment_required and kind != "deployment_audit"
                 ):
-                    verdict = "unknown"
+                    verdict, why = "unknown", _DEPLOYMENT_REASON
+                elif verdict == "complete" and (
+                    not item.observations
+                    or not ((item.code and item.tests) or item.runtime)
+                ):
+                    verdict, why = "unknown", _NO_EVIDENCE_REASON
                 if (
                     verdict == "gap"
                     and not item.code
                     and not item.tests
                     and not item.observations
+                    and not item.runtime
                 ):
-                    verdict = "unknown"
+                    verdict, why = "unknown", _NO_EVIDENCE_REASON
+                if why:
+                    item.reason = f"{item.reason} {why}".strip()
                 item.verdict = verdict
                 verdicts.append(verdict)
             verdict = (
@@ -635,7 +680,41 @@ class IssueLifecycleService:
                 self.number, marker, body
             )
             self._put(kind, operation, "published", data)
+            self._record_assessment(data, execution, contract)
             return data
+
+    def _record_assessment(
+        self,
+        data: dict[str, Any],
+        execution: models.FlowExecution,
+        contract: ReadinessContract,
+    ) -> None:
+        """Append the published outcome as an audit assessment of the issue.
+
+        Pinned to the revision the audit checked out: the deployed revision
+        for a deployment audit, the merge SHA otherwise. Publication returns
+        early once published, so each audit appends exactly one row.
+        """
+        criteria = data["evidence"]["criteria"]
+        crud_assessment.record(
+            self.db,
+            account_id=self.account_id,
+            source="audit",
+            purpose_verdict=assessment_verdict(criteria),
+            issue_id=self.issue.id,
+            flow_execution_id=cast(UUID, execution.id),
+            revision=data.get("deployed_revision") or data["merge_sha"],
+            criteria_snapshot=[item.model_dump() for item in contract.criteria],
+            evidence={
+                "audit_kind": data.get("audit_kind", "merge_audit"),
+                "audit_verdict": data["verdict"],
+                "issue_revision": data["issue_revision"],
+                "criteria": criteria,
+                "runtime": data.get("runtime_evidence"),
+                "comment_url": data.get("comment_url"),
+            },
+            evaluator_version=AUDIT_EVALUATOR_VERSION,
+        )
 
     @staticmethod
     def _audit_comment(data: dict[str, Any], execution_id: UUID) -> str:
@@ -649,6 +728,21 @@ class IssueLifecycleService:
         rows.extend(
             f"Merged PR: {merge['url']} (`{merge['sha']}`)" for merge in data["merges"]
         )
+        runtime = data.get("runtime_evidence")
+        if isinstance(runtime, dict):
+            rows.append(
+                "Runtime evidence at the merge: "
+                f"{len(runtime.get('checks') or [])} check runs, "
+                f"{len(runtime.get('artifacts') or [])} artifacts, "
+                f"{len(runtime.get('previews') or [])} previews"
+            )
+            rows.extend(
+                f"Preview: {item['url']}" for item in runtime.get("previews") or []
+            )
+            rows.extend(
+                f"Runtime evidence unavailable: {item['source']}"
+                for item in runtime.get("unavailable") or []
+            )
         if data.get("deployment_record"):
             rows.append(f"Deployed revision: `{data['deployed_revision']}`")
             rows.append(f"Deployment evidence: {data['deployment_record']['evidence']}")
@@ -661,7 +755,10 @@ class IssueLifecycleService:
             )
             rows.extend(
                 f"  - {pointer}"
-                for pointer in item["code"] + item["tests"] + item["observations"]
+                for pointer in item["code"]
+                + item["tests"]
+                + item["observations"]
+                + item.get("runtime", [])
             )
         rows.extend(f"Follow-up: {url}" for url in data["follow_ups"].values())
         if data["deployment_verification"]:

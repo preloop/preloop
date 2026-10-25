@@ -19,13 +19,24 @@ prompt_template: |
   Missing environment, skipped checks, ambiguous criteria or deployment evidence
   must remain unknown. Write artifacts/logs under /workspace/evidence.
 
+  payload.lifecycle.runtime_evidence lists what CI and deployments already recorded
+  for the merge SHA: check runs (name, conclusion, url), workflow artifacts (download
+  url) and previews (a preview or staging environment_url). Use them for criteria about
+  build output, latency against a baseline, viewport, layout and visual conformance:
+  read the check result, download and inspect the artifact, or load the preview URL
+  read-only and capture what you observe under /workspace/evidence. Cite each item you
+  relied on by its id in "runtime" and state what you saw in "observations". Only the
+  supplied ids count. A criterion whose evidence is not in the supplied list and cannot
+  be produced in the sandbox stays unknown, with the missing evidence in "reason".
+
   Write /workspace/result.json:
   {"status": "success", "checked_out_sha":"<exact 40-hex merge SHA>",
    "issue_revision":"<supplied issue revision>",
    "criteria":[{"criterion_id":"<contract id>",
      "verdict":"complete|gap|unknown", "code":["file:line"],
      "tests":["command and artifact path with actual result"],
-     "observations":["observable evidence"], "reason":"<bounded conclusion>"}],
+     "observations":["observable evidence"],
+     "runtime":["check:<id>|artifact:<id>|preview:<id>"], "reason":"<bounded conclusion>"}],
    "follow_ups":[{"criterion_id":"<confirmed gap criterion>",
      "kind":"defect|enhancement", "title":"<clear bounded title>",
      "description":"<problem, expected outcome and acceptance>",

@@ -14,6 +14,10 @@ from urllib.parse import urlparse
 
 PUBLICATION_TIMEOUT_SECONDS = 8.0
 PUBLICATION_MAX_REQUESTS = 128
+# Runtime evidence is bounded so it never starves the audit's own requests.
+EVIDENCE_MAX_WORKFLOW_RUNS = 3
+EVIDENCE_MAX_DEPLOYMENTS = 5
+EVIDENCE_TEXT_LIMIT = 500
 
 
 @dataclass
@@ -92,6 +96,9 @@ class LifecycleProvider(Protocol):
         self, number: int, marker: str, title: str, body: str
     ) -> str:
         """Create the follow-up issue once and return its identity."""
+
+    async def runtime_evidence(self, sha: str) -> dict[str, Any]:
+        """Return CI check runs, artifacts and previews recorded for ``sha``."""
 
 
 class GitHubRequests(Protocol):
@@ -307,3 +314,108 @@ class GitHubLifecycleProvider:
             {"title": title, "body": f"{body}\n\n{marker}", "labels": []},
         )
         return result["html_url"]
+
+    async def runtime_evidence(self, sha: str) -> dict[str, Any]:
+        """Collect the runtime evidence GitHub already holds for one commit.
+
+        Check runs, workflow-run artifacts and the newest successful status
+        of each deployment of ``sha`` (its environment URL is the preview or
+        staging address). Every item gets a stable ``id`` the audit cites.
+        A source that cannot be read is listed under ``unavailable`` with
+        the reason instead of failing the audit; nothing here is probed.
+
+        Args:
+            sha: The merge commit the audit is pinned to.
+
+        Returns:
+            The evidence bundle for the audit envelope.
+        """
+        bundle: dict[str, Any] = {
+            "revision": sha,
+            "checks": [],
+            "artifacts": [],
+            "previews": [],
+            "unavailable": [],
+        }
+
+        def text(value: Any) -> str:
+            return str(value or "")[:EVIDENCE_TEXT_LIMIT]
+
+        try:
+            raw = await self._request(
+                "GET", f"{self.root}/commits/{sha}/check-runs", params={"per_page": 100}
+            )
+            for run in raw.get("check_runs") or []:
+                output = run.get("output") or {}
+                bundle["checks"].append(
+                    {
+                        "id": f"check:{run['id']}",
+                        "name": text(run.get("name")),
+                        "status": run.get("status"),
+                        "conclusion": run.get("conclusion"),
+                        "url": run.get("html_url"),
+                        "summary": text(output.get("title") or output.get("summary")),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
+            bundle["unavailable"].append({"source": "checks", "reason": repr(exc)})
+        try:
+            raw = await self._request(
+                "GET",
+                f"{self.root}/actions/runs",
+                params={"head_sha": sha, "per_page": EVIDENCE_MAX_WORKFLOW_RUNS},
+            )
+            runs = (raw.get("workflow_runs") or [])[:EVIDENCE_MAX_WORKFLOW_RUNS]
+            for run in runs:
+                listed = await self._request(
+                    "GET",
+                    f"{self.root}/actions/runs/{run['id']}/artifacts",
+                    params={"per_page": 100},
+                )
+                for artifact in listed.get("artifacts") or []:
+                    bundle["artifacts"].append(
+                        {
+                            "id": f"artifact:{artifact['id']}",
+                            "name": text(artifact.get("name")),
+                            "workflow": text(run.get("name")),
+                            "workflow_conclusion": run.get("conclusion"),
+                            "size_in_bytes": artifact.get("size_in_bytes"),
+                            "expired": bool(artifact.get("expired")),
+                            "url": artifact.get("archive_download_url"),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
+            bundle["unavailable"].append({"source": "artifacts", "reason": repr(exc)})
+        try:
+            deployments = await self._request(
+                "GET",
+                f"{self.root}/deployments",
+                params={"sha": sha, "per_page": EVIDENCE_MAX_DEPLOYMENTS},
+            )
+            for deployment in list(deployments or [])[:EVIDENCE_MAX_DEPLOYMENTS]:
+                statuses = await self._request(
+                    "GET", f"{self.root}/deployments/{deployment['id']}/statuses"
+                )
+                # GitHub lists statuses newest first.
+                status = next(
+                    (
+                        item
+                        for item in statuses or []
+                        if item.get("state") == "success"
+                        and item.get("environment_url")
+                    ),
+                    None,
+                )
+                if status is None:
+                    continue
+                bundle["previews"].append(
+                    {
+                        "id": f"preview:{deployment['id']}",
+                        "environment": text(deployment.get("environment")),
+                        "url": status["environment_url"],
+                        "log_url": status.get("log_url"),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
+            bundle["unavailable"].append({"source": "previews", "reason": repr(exc)})
+        return bundle

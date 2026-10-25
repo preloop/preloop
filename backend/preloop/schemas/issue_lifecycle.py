@@ -42,6 +42,8 @@ class CriterionEvidence(BaseModel):
     code: list[str] = Field(default_factory=list)
     tests: list[str] = Field(default_factory=list)
     observations: list[str] = Field(default_factory=list)
+    # Ids of supplied runtime evidence (CI check runs, artifacts, previews).
+    runtime: list[str] = Field(default_factory=list)
     reason: str
 
 

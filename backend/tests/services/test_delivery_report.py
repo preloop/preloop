@@ -495,6 +495,24 @@ class TestMergeAuditReuse:
         assert [c["met"] for c in audit["purpose"]["criteria"]] == [True, True]
         assert audit["purpose"]["criteria"][0]["text"] == "CSV export includes headers"
 
+    def test_runtime_evidence_counts_as_cited_evidence(self) -> None:
+        execution = _executions()[0]
+        execution.result = {
+            **execution.result,
+            "criteria": [
+                {
+                    "criterion_id": item["criterion_id"],
+                    "verdict": "complete",
+                    "runtime": ["artifact:55"],
+                    "reason": "Checked the build artifact",
+                }
+                for item in execution.result["criteria"]
+            ],
+        }
+        record = dr.merge_audit_record(execution)
+        assert record is not None
+        assert record["purpose"]["criteria"][0]["evidence"] == ["artifact:55"]
+
     def test_audited_closed_issue_takes_the_audit(self) -> None:
         report = _window_report(merge_audits=_audits())
         closed = {i["ref"]: i for i in report["closed_issues"]}
