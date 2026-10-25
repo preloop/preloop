@@ -219,6 +219,50 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('fetches OAuth edit details on demand and preserves credential markers', async () => {
+    const detail = {
+      id: 'oauth-server',
+      name: 'OAuth',
+      auth_type: 'oauth',
+      url: 'https://example.com/mcp',
+      transport: 'http-streaming',
+      auth_config: {
+        client_id: 'public-client',
+        client_secret: '***REDACTED***',
+      },
+    };
+    fetchStub
+      .withArgs('/api/v1/mcp-servers/oauth-server')
+      .resolves(new Response(JSON.stringify(detail), { status: 200 }));
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    expect(fetchStub.calledWith('/api/v1/mcp-servers/oauth-server')).to.equal(
+      false
+    );
+    await (el as any)._handleServerEdit(
+      new CustomEvent('edit-server', {
+        detail: { ...detail, auth_config: { client_id: 'public-client' } },
+      })
+    );
+    await el.updateComplete;
+    const form = el.shadowRoot!.querySelector('mcp-server-form') as any;
+    expect(form.server.auth_config).to.deep.equal(detail.auth_config);
+  });
+
+  it('does not open an incomplete OAuth edit form when detail loading fails', async () => {
+    fetchStub
+      .withArgs('/api/v1/mcp-servers/oauth-server')
+      .resolves(new Response('{}', { status: 500 }));
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await (el as any)._handleServerEdit(
+      new CustomEvent('edit-server', {
+        detail: { id: 'oauth-server' },
+      })
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('mcp-server-form')).to.equal(null);
+    expect((el as any).error).to.equal('Failed to fetch MCP server');
+  });
+
   it('renders summary rows while catalogs are pending and loads schemas only on expansion', async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {

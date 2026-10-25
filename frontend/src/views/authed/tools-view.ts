@@ -7,6 +7,7 @@ import {
   getTools,
   getToolsSummary,
   getMCPServers,
+  getMCPServer,
   deleteMCPServer,
   scanMCPServer,
   updateMCPServer,
@@ -1510,9 +1511,16 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.editingMCPServer = null;
   }
 
-  private _handleServerEdit(e: CustomEvent) {
-    this.editingMCPServer = e.detail.server;
-    this.isAddingMCPServer = false;
+  private async _handleServerEdit(e: CustomEvent) {
+    const server = e.detail.server ?? e.detail;
+    try {
+      // Lists contain public OAuth config only. Fetch redacted credential
+      // markers on demand so an edit preserves stored write-only secrets.
+      this.editingMCPServer = await getMCPServer(server.id);
+      this.isAddingMCPServer = false;
+    } catch (err: any) {
+      this.error = err.message || 'Failed to load MCP server for editing';
+    }
   }
 
   private async _handleConnectOAuth(serverId: string) {
@@ -2334,7 +2342,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           this._openStarterPolicySuggestion(e.detail, {
             manual: true,
           })}
-        @edit-server=${(e: CustomEvent) => (this.editingMCPServer = e.detail)}
+        @edit-server=${this._handleServerEdit}
         @delete-server=${(e: CustomEvent) =>
           this._handleDeleteMCPServer(e.detail)}
       ></tools-editor-component>

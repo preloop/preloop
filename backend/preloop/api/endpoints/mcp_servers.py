@@ -262,8 +262,12 @@ def list_mcp_servers(
         shared = crud_resource_share.public_list(
             db, account_id=current_user.account_id, resource_type="mcp_server"
         )
+        states = crud_upstream_mcp_oauth.states_for_servers(db, servers)
         return [
-            *[_server_response(db, server, warnings_by_server) for server in servers],
+            *[
+                _server_response(db, server, warnings_by_server, states)
+                for server in servers
+            ],
             *filter_viewable(db, current_user, VISIBLE_MCP_SERVER, shared),
         ]
     except Exception as e:
@@ -324,14 +328,20 @@ def _server_response(
     db: Session,
     server: MCPServer,
     warnings_by_server: Dict[str, List[str]] | None = None,
+    states: dict[UUID, str | None] | None = None,
 ) -> SharedResourceRead | MCPServerResponse:
     """Server response with its tool-collision warnings (#1135).
 
-    A list passes ``warnings_by_server`` computed once for the account.
+    Lists batch warnings and states and use the stored public OAuth config.
+    Only individual reads load encrypted config to provide redacted edit markers.
     """
     response = MCPServerResponse.model_validate(server)
-    response.connection_state = crud_upstream_mcp_oauth.state(db, server)
-    if server.auth_type == "oauth":
+    response.connection_state = (
+        states[server.id]
+        if states is not None
+        else crud_upstream_mcp_oauth.state(db, server)
+    )
+    if server.auth_type == "oauth" and states is None:
         response.auth_config = crud_upstream_mcp_oauth.config_for_edit(db, server)
     try:
         if warnings_by_server is not None:

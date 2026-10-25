@@ -93,6 +93,46 @@ def begin(storage):
     return store
 
 
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("none", "connecting"),
+        ("expired", "reconnect_required"),
+        ("old_version", "reconnect_required"),
+        ("changed_config", "disconnected"),
+        ("wrong_account", "disconnected"),
+        ("non_oauth", None),
+    ],
+)
+def test_batch_states_preserve_handshake_and_owner_checks(
+    storage, change: str, expected: str | None
+) -> None:
+    store = begin(storage)
+    factory, (_, _, server_id) = storage
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        transaction = (
+            db.query(models.UpstreamMCPOAuthTransaction)
+            .filter_by(server_id=server_id)
+            .one()
+        )
+        if change == "expired":
+            transaction.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        elif change == "old_version":
+            transaction.version -= 1
+        elif change == "changed_config":
+            server.url += "/changed"
+        elif change == "wrong_account":
+            # Use a detached row to test the requested owner without persisting
+            # an invalid tenant relationship.
+            db.expunge(server)
+            server.account_id = uuid4()
+        elif change == "non_oauth":
+            server.auth_type = "none"
+        assert store.states_for_servers(db, [server]) == {server_id: expected}
+        db.rollback()
+
+
 def consume(store, db, **overrides):
     return store.consume(
         db,

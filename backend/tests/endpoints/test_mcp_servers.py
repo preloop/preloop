@@ -48,6 +48,76 @@ def test_list_mcp_servers_empty(client: TestClient, db_session):
     assert response.json() == []
 
 
+@pytest.mark.parametrize("count", [1, 12])
+def test_list_oauth_servers_batches_state_without_decrypting(
+    client: TestClient, db_session, test_user, count: int
+) -> None:
+    """Listing encrypted grants has constant query cost and never opens secrets."""
+    from sqlalchemy import event
+
+    from preloop.models import models
+    from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth
+
+    for index in range(count):
+        server = models.MCPServer(
+            name=f"OAuth {index}",
+            url=f"https://example.com/{index}/mcp",
+            transport="http-streaming",
+            auth_type="oauth",
+            account_id=test_user.account_id,
+            status="active",
+        )
+        db_session.add(server)
+        db_session.flush()
+        crud_upstream_mcp_oauth.protect_config(
+            db_session,
+            server,
+            {"client_id": "public-client", "access_token": "private-token"},
+        )
+    db_session.commit()
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "upstream_mcp_oauth" in statement.lower():
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with patch(
+            "preloop.services.secret_service.SecretService.resolve_secret_reference",
+            side_effect=AssertionError("Listing must not decrypt credentials"),
+        ):
+            response = client.get("/api/v1/mcp-servers")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert response.status_code == 200
+    assert len(response.json()) == count
+    assert len(statements) == 1
+    for server_data in response.json():
+        assert server_data["connection_state"] == "connected"
+        assert server_data["auth_config"] == {"client_id": "public-client"}
+
+    # Editing fetches detail on demand, preserving redacted credential markers.
+    server_data = response.json()[0]
+    detail = client.get(f"/api/v1/mcp-servers/{server_data['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["auth_config"]["access_token"] == "***REDACTED***"
+    from preloop.models.crud import crud_mcp_server
+
+    stored = db_session.get(models.MCPServer, uuid.UUID(server_data["id"]))
+    crud_mcp_server.update(
+        db_session,
+        db_obj=stored,
+        obj_in={"name": "Renamed OAuth", "auth_config": detail.json()["auth_config"]},
+    )
+    assert (
+        crud_upstream_mcp_oauth.config_for_edit(db_session, stored)["access_token"]
+        == "private-token"
+    )
+
+
 def test_list_mcp_servers_with_data(client: TestClient, db_session, test_user):
     """Test listing MCP servers with existing data.
 

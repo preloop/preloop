@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -521,32 +522,54 @@ class CRUDUpstreamMCPOAuth:
 
     def state(self, db: Session, server: models.MCPServer) -> str | None:
         """Public connection state; expired handshakes never remain connecting."""
-        if server.auth_type != "oauth":
-            return None
-        row = (
-            db.query(models.UpstreamMCPOAuthConnection)
-            .filter_by(server_id=server.id, account_id=server.account_id)
-            .one_or_none()
-        )
-        if row is None or row.config_digest != server_digest(server):
-            return (
-                "connected"
-                if (server.auth_config or {}).get("access_token")
-                else "disconnected"
-            )
-        if row.state == "connecting":
-            pending = (
-                db.query(models.UpstreamMCPOAuthTransaction.id)
-                .filter_by(server_id=server.id, version=row.version)
-                .filter(
-                    models.UpstreamMCPOAuthTransaction.expires_at
-                    > datetime.now(timezone.utc)
+        return self.states_for_servers(db, [server])[server.id]
+
+    def states_for_servers(
+        self, db: Session, servers: list[models.MCPServer]
+    ) -> dict[UUID, str | None]:
+        """Read public states in one query without loading encrypted credentials."""
+        oauth_servers = {s.id: s for s in servers if s.auth_type == "oauth"}
+        states = {
+            s.id: (
+                (
+                    "connected"
+                    if (s.auth_config or {}).get("access_token")
+                    else "disconnected"
                 )
-                .first()
+                if s.auth_type == "oauth"
+                else None
             )
-            if pending is None:
-                return "reconnect_required"
-        return row.state
+            for s in servers
+        }
+        if not oauth_servers:
+            return states
+        connection = models.UpstreamMCPOAuthConnection
+        transaction = models.UpstreamMCPOAuthTransaction
+        pending = (
+            select(transaction.id)
+            .where(
+                transaction.server_id == connection.server_id,
+                transaction.account_id == connection.account_id,
+                transaction.version == connection.version,
+                transaction.expires_at > datetime.now(timezone.utc),
+            )
+            .correlate(connection)
+            .exists()
+        )
+        rows = db.query(connection, pending).filter(
+            tuple_(connection.server_id, connection.account_id).in_(
+                [(s.id, s.account_id) for s in oauth_servers.values()]
+            )
+        )
+        for row, has_pending in rows:
+            if row.config_digest != server_digest(oauth_servers[row.server_id]):
+                continue
+            states[row.server_id] = (
+                "reconnect_required"
+                if row.state == "connecting" and not has_pending
+                else row.state
+            )
+        return states
 
 
 crud_upstream_mcp_oauth = CRUDUpstreamMCPOAuth()
