@@ -43,7 +43,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_headers passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "headers written"
         },
         {
@@ -55,7 +55,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_date_filter passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "filter applied"
         }
       ],
@@ -106,7 +106,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_headers passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "headers written"
         },
         {
@@ -118,7 +118,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_date_filter passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "filter applied"
         }
       ],
@@ -170,7 +170,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_headers passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "headers written"
         },
         {
@@ -182,7 +182,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_date_filter passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "filter applied"
         }
       ],
@@ -233,7 +233,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_headers passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "headers written"
         },
         {
@@ -245,7 +245,7 @@
           "tests": [
             "pytest backend/tests/test_export.py::test_date_filter passed"
           ],
-          "observations": [],
+          "observations": ["export output inspected"],
           "reason": "filter applied"
         }
       ],
