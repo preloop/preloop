@@ -73,13 +73,18 @@ describe('SessionRequestTimeline', () => {
         'input, select'
       ),
     ];
-    expect(controls).to.have.length(3);
+    expect(controls).to.have.length(4);
     expect(
       controls.map(
         (control) =>
           control.labels?.[0].querySelector('.control-label')?.textContent
       )
-    ).to.deep.equal(['Sort', 'Hide below', 'Threshold unit']);
+    ).to.deep.equal([
+      'Sort',
+      'Hide below',
+      'Threshold unit',
+      'Search requests',
+    ]);
     expect(
       controls.every((control) => !control.hasAttribute('aria-label'))
     ).to.equal(true);
@@ -132,6 +137,134 @@ describe('SessionRequestTimeline', () => {
     expect(
       el.shadowRoot?.querySelector('.request-row')?.textContent
     ).to.include('$0.50');
+  });
+
+  it('searches visible model, prompt, response, and tool text and restores rows', async () => {
+    const el = await fixture<SessionRequestTimeline>(html`
+      <session-request-timeline
+        .requests=${[
+          makeRequest({
+            id: 'first',
+            model_alias: 'Claude Sonnet',
+            prompt_preview: 'Review the patch',
+            response_preview: 'Looks good',
+            tools: [
+              {
+                name: 'search_issues',
+                source: 'github',
+                schema_tokens_estimate: 120,
+                stripped: false,
+              },
+            ],
+          }),
+          makeRequest({ id: 'second', model_alias: 'gpt-4o' }),
+        ]}
+      ></session-request-timeline>
+    `);
+    const search = el.shadowRoot!.querySelector<HTMLInputElement>(
+      'input[type="search"]'
+    )!;
+    for (const query of ['SONNET', 'review', 'LOOKS', 'ISSUES']) {
+      search.value = query;
+      search.dispatchEvent(new Event('input'));
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelectorAll('.request-row')).to.have.length(1);
+      expect(
+        el.shadowRoot!.querySelector('.request-row')!.textContent
+      ).to.include('Claude Sonnet');
+      expect(
+        el.shadowRoot!.querySelector('.search-count')!.textContent
+      ).to.match(/1 of\s+2/);
+    }
+    search.value = 'missing';
+    search.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelectorAll('.request-row')).to.have.length(0);
+    expect(el.shadowRoot!.querySelector('.empty')!.textContent).to.include(
+      'No requests match'
+    );
+    expect(el.shadowRoot!.querySelector('.search-count')!.textContent).to.match(
+      /0 of\s+2/
+    );
+    search.value = '';
+    search.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelectorAll('.request-row')).to.have.length(2);
+    expect(el.shadowRoot!.querySelector('.search-count')).to.not.exist;
+  });
+
+  it('copies only shown rows as plain text in displayed order', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(
+      navigator,
+      'clipboard'
+    );
+    const copied: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (value: string) => copied.push(value) },
+    });
+    try {
+      const el = await fixture<SessionRequestTimeline>(html`
+        <session-request-timeline
+          .requests=${[
+            makeRequest({
+              id: 'first',
+              model_alias: 'Model A',
+              prompt_preview: 'Find the issue',
+              response_preview: 'Found it',
+              total_tokens: 1234,
+              tools: [
+                {
+                  name: 'search_issues',
+                  source: 'github',
+                  schema_tokens_estimate: 120,
+                  stripped: false,
+                },
+              ],
+            }),
+            makeRequest({
+              id: 'second',
+              model_alias: 'Model B',
+              timestamp: '2026-03-09T20:01:00Z',
+              response_preview: 'Another result',
+              total_tokens: 42,
+            }),
+          ]}
+        ></session-request-timeline>
+      `);
+      const copyButton = [...el.shadowRoot!.querySelectorAll('sl-button')].find(
+        (button) => button.textContent?.includes('Copy as text')
+      )!;
+      copyButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await el.updateComplete;
+      expect(copied).to.have.length(1);
+      expect(copied[0]).to.equal(
+        [
+          `Time: ${new Date('2026-03-09T20:01:00Z').toLocaleString()}\nModel: Model B\nTokens: 42\nResponse: Another result`,
+          `Time: ${new Date('2026-03-09T20:00:00Z').toLocaleString()}\nModel: Model A\nTokens: 1,234\nPrompt: Find the issue\nResponse: Found it\nTools: search_issues`,
+        ].join('\n\n')
+      );
+      expect(
+        el.shadowRoot!.querySelector('[role="status"]')!.textContent
+      ).to.include('Copied');
+
+      const search = el.shadowRoot!.querySelector<HTMLInputElement>(
+        'input[type="search"]'
+      )!;
+      search.value = 'search_issues';
+      search.dispatchEvent(new Event('input'));
+      await el.updateComplete;
+      copyButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(copied[1]).to.equal(
+        `Time: ${new Date('2026-03-09T20:00:00Z').toLocaleString()}\nModel: Model A\nTokens: 1,234\nPrompt: Find the issue\nResponse: Found it\nTools: search_issues`
+      );
+    } finally {
+      if (originalClipboard)
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
   });
 
   it('emits a failed-only event when the toggle is clicked', async () => {

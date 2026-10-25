@@ -1274,6 +1274,8 @@ export interface RuntimeSessionRequestItem {
   timestamp: string | null;
   model_alias: string | null;
   provider_name: string | null;
+  prompt_preview?: string | null;
+  response_preview?: string | null;
   status_code: number;
   is_error: boolean;
   finish_reason: string | null;
