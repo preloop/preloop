@@ -22,6 +22,11 @@ export class RunnerComplianceView extends LitElement {
     :host {
       display: block;
     }
+    h2 {
+      margin: 0 0 0.5rem;
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
+    }
     section {
       margin: 1rem 0;
       padding: 1rem;

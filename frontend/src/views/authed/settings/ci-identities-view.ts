@@ -322,6 +322,10 @@ export class CiIdentitiesView extends LitElement {
           padding: var(--sl-spacing-large);
           color: var(--sl-color-neutral-900);
         }
+        ci-identities-view h2 {
+          font-size: var(--console-text-card-title, 0.9375rem);
+          font-weight: 600;
+        }
         ci-identities-view .ci-card {
           border: 1px solid var(--sl-color-neutral-200);
           border-radius: var(--sl-border-radius-medium);
@@ -404,7 +408,7 @@ export class CiIdentitiesView extends LitElement {
           padding: 1rem;
         }
       </style>
-      <h1>Restricted CI identities</h1>
+      <h1>CI identities</h1>
       <p>
         Each identity owns one project's dedicated hosted flow and its own
         executions and completion callbacks. Rotating a key preserves that

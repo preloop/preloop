@@ -70,6 +70,7 @@ import { isSaaS } from '../../brand-config';
 import { normalizeObservedSession } from '../../utils/session-observer';
 import { getAgentStatusChip } from '../../utils/agent-display';
 import {
+  attentionChipLabel,
   attentionItemAnchor,
   ATTENTION_KIND_META,
   deriveAttentionItems,
@@ -4113,6 +4114,7 @@ export class DashboardView extends AuthedElement {
               <a
                 class="attention-chip-link"
                 href=${attentionItemAnchor(item.id)}
+                title=${item.detail ? `${item.title} · ${item.detail}` : item.title}
               >
                 <sl-badge
                   class="chip"
@@ -4124,7 +4126,7 @@ export class DashboardView extends AuthedElement {
                     aria-hidden="true"
                   ></sl-icon>
                   <span class="attention-chip-text"
-                    >${item.title} · ${item.detail}</span
+                    >${attentionChipLabel(item)}</span
                   >
                 </sl-badge>
               </a>

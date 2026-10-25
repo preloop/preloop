@@ -3128,7 +3128,7 @@ export class CostView extends AuthedElement {
     if (this.reconciliationLoading) {
       return html`<div class="loading-state" role="status" aria-busy="true">
         <sl-spinner></sl-spinner>
-        <span>Loading reconciliation...</span>
+        <span>Loading reconciliation…</span>
       </div>`;
     }
     const errorAlert = this.reconciliationError
@@ -4408,7 +4408,7 @@ export class CostView extends AuthedElement {
                             aria-busy="true"
                           >
                             <sl-spinner></sl-spinner>
-                            <span>Loading cost analytics...</span>
+                            <span>Loading cost analytics…</span>
                           </div>
                         </sl-card>`
                   }

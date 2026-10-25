@@ -341,7 +341,7 @@ export class ToolCostFlagsPanel extends AuthedElement {
         aria-busy="true"
       >
         <sl-spinner></sl-spinner>
-        <span>Loading tool cost flags...</span>
+        <span>Loading tool cost flags…</span>
       </div>`;
     }
     if (this.error) {
@@ -361,7 +361,7 @@ export class ToolCostFlagsPanel extends AuthedElement {
     }
     if (!this.flags.length) {
       return html`<div class="empty">
-        No tool cost flags — your agents' tool definitions look efficient.
+        No tool cost flags. Your agents' tool definitions look efficient.
       </div>`;
     }
     return html`<div class="flag-list">

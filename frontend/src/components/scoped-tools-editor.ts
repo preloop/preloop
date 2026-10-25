@@ -83,7 +83,7 @@ export class ScopedToolsEditor extends LitElement {
 
     groups['builtin'] = {
       id: 'builtin',
-      name: 'Built-in Tools',
+      name: 'Built-in tools',
       type: 'builtin',
       tools: [],
       collapsed: this.collapsedGroups.has('builtin'),

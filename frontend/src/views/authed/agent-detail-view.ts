@@ -387,6 +387,14 @@ export class AgentDetailView extends LitElement {
         display: block;
       }
 
+      /* The session pane sits straight in the tab: a card here put the
+         session list and transcript three surfaces deep. */
+      .sessions-card.flat::part(base) {
+        background: transparent;
+        border: none;
+        box-shadow: none;
+      }
+
       .page,
       .stack,
       .timeline {
@@ -2200,7 +2208,7 @@ export class AgentDetailView extends LitElement {
     const total = this.sessionTotal;
     const firstLoad = this.sessionsLoading && this.sessions.length === 0;
     return html`
-      <sl-card class="sessions-card" style="width: 100%; --padding: 0;">
+      <sl-card class="sessions-card flat" style="width: 100%; --padding: 0;">
         <div class="stack" style="padding: 0;">
           <div
             class="hero"
@@ -3816,7 +3824,7 @@ export class AgentDetailView extends LitElement {
       return html`
         <div class="loading-state">
           <sl-spinner></sl-spinner>
-          <div>Loading agent details...</div>
+          <div>Loading agent details…</div>
         </div>
       `;
     }

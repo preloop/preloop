@@ -135,8 +135,8 @@ export class ApiKeyView extends LitElement {
       .section-header {
         margin-top: 0;
         margin-bottom: var(--sl-spacing-medium);
-        font-size: var(--sl-font-size-large);
-        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
       }
 
       .activity-table {

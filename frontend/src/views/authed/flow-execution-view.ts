@@ -3205,7 +3205,7 @@ export class FlowExecutionView extends LitElement {
           ${
             timelineLoading
               ? html`<div class="panel-loading" data-testid="timeline-loading">
-                  <sl-spinner></sl-spinner> Loading activity...
+                  <sl-spinner></sl-spinner> Loading activity…
                 </div>`
               : ''
           }
@@ -3446,8 +3446,8 @@ ${execution.model_output_summary}</pre>
                       query
                         ? `No log line matches "${query}".`
                         : this.isLoadingLogs
-                          ? 'Loading logs...'
-                          : 'Waiting for logs...'
+                          ? 'Loading logs…'
+                          : 'Waiting for logs…'
                     }
                   </p>
                 </div>`
@@ -4044,7 +4044,7 @@ ${execution.resolved_input_prompt}</pre>
         <view-header headerText="Flow execution" width="wide"></view-header>
         <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
-          <p>Loading...</p>
+          <p>Loading…</p>
         </div>
       `;
     }
@@ -4054,7 +4054,7 @@ ${execution.resolved_input_prompt}</pre>
         <view-header headerText="Flow execution" width="wide"></view-header>
         <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
-          <p>Loading execution details...</p>
+          <p>Loading execution details…</p>
         </div>
       `;
     }

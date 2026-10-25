@@ -670,7 +670,7 @@ export class IssuesComplianceView extends LitElement {
     if (this._loading && this._issues.length === 0) {
       return html`<div class="loading-container">
         <sl-spinner></sl-spinner>
-        <span>Loading issues...</span>
+        <span>Loading issues…</span>
       </div>`;
     }
 
@@ -910,7 +910,7 @@ export class IssuesComplianceView extends LitElement {
               () =>
                 html`<div class="loading-overlay">
                   <sl-spinner></sl-spinner>
-                  <span>Loading issues...</span>
+                  <span>Loading issues…</span>
                 </div>`
             )}
             ${when(

@@ -2698,7 +2698,7 @@ export class RuntimeSessionsView extends LitElement {
               ? html`
                   <div class="loading-state">
                     <sl-spinner></sl-spinner>
-                    <div>Loading captured session content...</div>
+                    <div>Loading captured session content…</div>
                   </div>
                 `
               : this.gatewayEvents.length === 0
@@ -2734,7 +2734,7 @@ export class RuntimeSessionsView extends LitElement {
         <sl-card>
           <div class="loading-state">
             <sl-spinner></sl-spinner>
-            <div>Loading session details...</div>
+            <div>Loading session details…</div>
           </div>
         </sl-card>
       `;
@@ -3031,7 +3031,7 @@ export class RuntimeSessionsView extends LitElement {
                       <sl-card>
                         <div class="loading-state">
                           <sl-spinner></sl-spinner>
-                          <div>Loading sessions...</div>
+                          <div>Loading sessions…</div>
                         </div>
                       </sl-card>
                     `

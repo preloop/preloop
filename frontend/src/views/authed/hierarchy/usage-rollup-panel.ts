@@ -55,7 +55,8 @@ export class UsageRollupPanel extends LitElement {
       }
       h3 {
         margin: 0;
-        font-size: var(--sl-font-size-medium);
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
       }
     `,
   ];

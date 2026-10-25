@@ -397,7 +397,7 @@ export class SessionHistoryWidget extends LitElement {
               : this.loadingSessions.has(this.activeSessionId)
                 ? html`
                     <div class="loading-state">
-                      <sl-spinner></sl-spinner> Loading interaction timeline...
+                      <sl-spinner></sl-spinner> Loading interaction timeline…
                     </div>
                   `
                 : this.errorSessions[this.activeSessionId]

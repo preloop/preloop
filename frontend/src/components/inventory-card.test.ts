@@ -844,6 +844,47 @@ describe('inventory-card', () => {
     }
   });
 
+  it('opens a phone tab strip on the remembered tab with room on both sides', async () => {
+    localStorage.setItem(INVENTORY_TAB_STORAGE_KEY, 'devices');
+    const wrapper = await fixture<HTMLDivElement>(
+      html`<div style="width: 320px"></div>`
+    );
+    const el = document.createElement('inventory-card') as InventoryCard;
+    Object.assign(el, {
+      agentRows: [agentRow()],
+      showUsers: true,
+      usersTotal: 28,
+      showDevices: true,
+      devicesTotal: 4,
+      agentsTotal: 10,
+      flowsTotal: 30,
+      modelsTotal: 16,
+      toolsTotal: 16,
+    });
+    wrapper.appendChild(el);
+    await el.updateComplete;
+    const group = el.shadowRoot!.querySelector(
+      'sl-tab-group'
+    ) as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await group.updateComplete;
+    // No scroll buttons: they clipped the previous tab into a "< 28" fragment.
+    expect(group.hasAttribute('no-scroll-controls')).to.be.true;
+    const nav = group.shadowRoot!.querySelector(
+      '.tab-group__nav'
+    ) as HTMLElement;
+    const active = el.shadowRoot!.querySelector(
+      'sl-tab[panel="devices"]'
+    ) as HTMLElement;
+    await waitUntil(() => nav.scrollLeft > 0, 'strip scrolls to the tab');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const navBox = nav.getBoundingClientRect();
+    const tabBox = active.getBoundingClientRect();
+    expect(tabBox.right).to.be.at.most(navBox.right);
+    expect(tabBox.left - navBox.left).to.be.at.least(16);
+  });
+
   it('has no Map view: the fleet map lives on its own page', async () => {
     const el = await card({ showDevices: true, devicesTotal: 1 });
     expect(el.shadowRoot?.querySelector('.view-switch')).to.not.exist;
@@ -1218,7 +1259,7 @@ describe('inventory-card Agents columns', () => {
       };
     };
     const table = el.agentTable;
-    expect(table.widthOfColumn('name')).to.equal(180);
+    expect(table.widthOfColumn('name')).to.equal(212);
     table.resizeBy('name', -1000);
     await el.updateComplete;
     expect(table.widthOfColumn('name')).to.equal(160);
@@ -1227,6 +1268,74 @@ describe('inventory-card Agents columns', () => {
       'a-very-long-agent-name-on-a-build-host'
     );
   });
+
+  it('keeps the without-subscriptions figure in a compact accessible tooltip', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({
+          cost: 0.74,
+          withoutSubscriptions: {
+            value: 6197.29,
+            partial: true,
+            text: 'at least $6,197.29',
+            title: '2 of 3 subscription requests carry an API-equivalent price',
+          },
+          subscriptionRequests: 3,
+        }),
+      ],
+    });
+    const cell = el.shadowRoot!.querySelector(
+      'td[data-label="Spend"]'
+    ) as HTMLElement;
+    expect(cell.querySelector('[data-testid="without-subscriptions"]')).to.not
+      .exist;
+    expect((cell.textContent || '').trim()).to.equal('$0.74');
+    const title = cell.querySelector('sl-tooltip')!.getAttribute('content')!;
+    expect(title).to.contain('Without subscriptions: at least $6,197.29');
+    expect(title).to.contain('2 of 3 subscription requests');
+  });
+
+  for (const tab of ['agents', 'users']) {
+    it(`opens ${tab} spend details by focus and tap`, async () => {
+      const spend = {
+        cost: 0.74,
+        withoutSubscriptions: {
+          value: 6197.29,
+          partial: false,
+          text: '$6,197.29',
+          title: 'All subscription requests carry an API-equivalent price',
+        },
+        subscriptionRequests: 3,
+      };
+      const el = await card({
+        agentRows: [agentRow(spend)],
+        showUsers: true,
+        usersTotal: 1,
+        userRows: [userRow(spend)],
+      });
+      await showTab(el, tab);
+      const button = el.shadowRoot!.querySelector<HTMLButtonElement>(
+        'button.spend-detail'
+      )!;
+      const tooltip = button.closest('sl-tooltip') as HTMLElement & {
+        open: boolean;
+      };
+      expect(button.getAttribute('aria-label')).to.contain(
+        'Without subscriptions:'
+      );
+      button.focus();
+      await waitUntil(() => tooltip.open, 'keyboard focus opens spend details');
+      button.blur();
+      await waitUntil(
+        () => !tooltip.open,
+        'leaving focus closes spend details'
+      );
+      button.click();
+      await waitUntil(() => tooltip.open, 'tap/click opens spend details');
+      button.click();
+      await waitUntil(() => !tooltip.open, 'a second tap closes spend details');
+    });
+  }
 
   it('keeps a resized width across reloads', async () => {
     const el = await card({ agentRows: [agentRow()] });
@@ -1238,12 +1347,12 @@ describe('inventory-card Agents columns', () => {
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
     await el.updateComplete;
-    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(196);
+    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(228);
 
     const again = (await card({ agentRows: [agentRow()] })) as HTMLElement & {
       agentTable: { widthOfColumn(id: string): number };
     };
-    expect(again.agentTable.widthOfColumn('name')).to.equal(196);
+    expect(again.agentTable.widthOfColumn('name')).to.equal(228);
   });
 });
 

@@ -230,7 +230,7 @@ export class IssueDetailView extends LitElement {
 
       <div class="detail-section">
         <div class="review-header">
-          <h3>AI Review</h3>
+          <h3>AI review</h3>
           ${when(
             state === 'done' && verdict,
             () => html` <div>${renderVerdict(verdict ?? undefined)}</div> `

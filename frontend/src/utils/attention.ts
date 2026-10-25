@@ -1535,3 +1535,30 @@ export function attentionKindChipLabel(
   const noun = count === 1 ? meta.label : meta.plural;
   return `${count} ${noun.toLowerCase()}`;
 }
+
+/**
+ * The short label an Overview strip chip prints. Three chips share one line
+ * at 1440, so a chip names the thing and the fact ("Budget over soft limit",
+ * "Pull Request Reviewer: 11 failed") and the full `title · detail` sentence
+ * goes in its `title`. Anything without a shorter form keeps its title.
+ */
+export function attentionChipLabel(item: AttentionItem): string {
+  const firstReason = (item.detail.split(' · ')[0] || '').trim();
+  switch (item.kind) {
+    case 'budget':
+      if (/^hard limit/i.test(item.detail)) return 'Budget at hard limit';
+      if (/^soft limit/i.test(item.detail)) return 'Budget over soft limit';
+      return item.title;
+    case 'flow':
+    case 'model': {
+      const count = /^(\d[\d,]*) failed/.exec(firstReason);
+      if (count) return `${item.title}: ${count[1]} failed`;
+      if (/^failed/i.test(firstReason)) return `${item.title}: failed`;
+      return item.title;
+    }
+    case 'agent':
+      return firstReason ? `${item.title}: ${firstReason}` : item.title;
+    default:
+      return item.title;
+  }
+}

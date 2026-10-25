@@ -2,6 +2,7 @@ import { expect } from '@open-wc/testing';
 import {
   renderWithoutSubscriptionsLine,
   subscriptionEstimate,
+  withoutSubscriptionsTitle,
 } from './subscription-estimate';
 import type { SubscriptionUsageSummary } from '../types';
 
@@ -53,6 +54,21 @@ describe('subscriptionEstimate (D-05)', () => {
     );
     expect(estimate.value).to.equal(null);
     expect(estimate.text).to.equal('No estimate');
+  });
+
+  it('states the estimate as a title sentence for a dense table cell', () => {
+    expect(
+      withoutSubscriptionsTitle(subscriptionEstimate(0.16, block({})), 3)
+    ).to.match(/^Without subscriptions: \$1\.91\. Estimate, not a bill/);
+    expect(
+      withoutSubscriptionsTitle(
+        subscriptionEstimate(0, block({ covered_requests: 0, coverage: 0 })),
+        3
+      )
+    ).to.match(/^Without subscriptions: unknown\. None of 3/);
+    expect(
+      withoutSubscriptionsTitle(subscriptionEstimate(0.5, null), 0)
+    ).to.equal('');
   });
 
   it('renders the table line only for agents with subscription use', async () => {

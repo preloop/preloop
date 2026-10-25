@@ -61,6 +61,25 @@ export function subscriptionEstimate(
 }
 
 /**
+ * The estimate as one sentence for the `title` of a spend figure, for a
+ * table cell too narrow for a second line (the Overview Inventory, where a
+ * three-line "$ est." cell took the width the name needed). Empty when there
+ * is no subscription traffic, so the title stays the exact spend alone.
+ */
+export function withoutSubscriptionsTitle(
+  estimate: SubscriptionEstimate | null | undefined,
+  subscription: SubscriptionUsageSummary | number | null | undefined
+): string {
+  const requests =
+    typeof subscription === 'number'
+      ? subscription
+      : (subscription?.request_count ?? 0);
+  if (!estimate || !requests) return '';
+  const figure = estimate.value === null ? 'unknown' : estimate.text;
+  return `Without subscriptions: ${figure}. ${estimate.title}`;
+}
+
+/**
  * The estimate as a muted second line under a spend figure, for an agent
  * with subscription traffic; nothing otherwise (the figure would only repeat
  * the spend). The full sentence, coverage included, is in its `title`.

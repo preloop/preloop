@@ -138,7 +138,7 @@ export class WeeklyValueSection extends LitElement {
   render() {
     return html`<section aria-label="Most valuable work: recorded outcomes">
       <h2>Most valuable work: recorded outcomes</h2>
-      ${this.loading ? html`<p role="status">Loading recorded outcomes...</p>` : nothing}
+      ${this.loading ? html`<p role="status">Loading recorded outcomes…</p>` : nothing}
       ${this.error ? html`<p role="alert">${this.error} <button @click=${() => void this.load()}>Retry</button></p>` : nothing}
       ${
         this.result && !this.loading && !this.error

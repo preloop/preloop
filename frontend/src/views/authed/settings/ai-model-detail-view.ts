@@ -3118,7 +3118,7 @@ export class AIModelDetailView extends LitElement {
                         aria-busy="true"
                       >
                         <sl-spinner></sl-spinner>
-                        <div>Loading AI model observability...</div>
+                        <div>Loading AI model observability…</div>
                       </div>
                     </sl-card>
                   `

@@ -539,9 +539,7 @@ export class ApprovalWorkflowDialog extends LitElement {
             aria-label="AI model"
             hoist
             placeholder=${
-              this._loadingModels
-                ? 'Loading models...'
-                : 'Select an AI model...'
+              this._loadingModels ? 'Loading models…' : 'Select an AI model...'
             }
             .value=${this._aiModel}
             @sl-change=${(e: any) => (this._aiModel = e.target.value)}
