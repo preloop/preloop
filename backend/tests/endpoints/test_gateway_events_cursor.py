@@ -107,3 +107,22 @@ def test_cursor_must_name_an_event_of_this_session(client, db_session, test_user
     assert client.get(f"{url}?before={uuid.uuid4()}").status_code == 404
     assert client.get(f"{url}?before={foreign}").status_code == 404
     assert client.get(f"{url}?before=not-an-id").status_code == 422
+
+
+def test_metadata_only_cursor_pages_keep_their_page_size(client, db_session, test_user):
+    """A metadata-only cursor page past 100 rows still reports what is left."""
+    base = datetime.now(UTC) - timedelta(hours=1)
+    session = _session(db_session, test_user, "cursor-metadata")
+    for index in range(152):
+        _log(
+            db_session, test_user, session, base + timedelta(seconds=index), f"m{index}"
+        )
+    url = f"/api/v1/runtime-sessions/{session.id}/gateway-events"
+
+    first = client.get(f"{url}?limit=1&metadata_only=true").json()
+    cursor = first["pagination"]["next_cursor"]
+    second = client.get(f"{url}?limit=150&metadata_only=true&before={cursor}").json()
+
+    assert len(second["logs"]) == 150
+    assert second["pagination"]["has_more"] is True
+    assert second["pagination"]["next_cursor"] == second["logs"][-1]["id"]

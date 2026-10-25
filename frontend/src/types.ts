@@ -86,7 +86,8 @@ export interface FlowExecutionStats {
   total_execs?: number;
   running_execs?: number;
   last_seen_at?: string | null;
-  estimated_cost?: number;
+  /** All-time spend. Null on a windowed `/flows/summary` read, which skips it. */
+  estimated_cost?: number | null;
   /**
    * Tokens over the same period as the counts beside them: the window when
    * `stats_since` was asked for, all time otherwise. Null means "nothing

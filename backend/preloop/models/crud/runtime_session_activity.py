@@ -1158,9 +1158,13 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             )
             .order_by(self.model.timestamp.desc(), self.model.id.desc())
         )
-        limit = min(tail, 200) if tail else min(max(limit, 1), 100)
-        if metadata_only:
-            limit = min(max(limit, 1), 5000)
+        # The endpoint states the same page size: 200 for a tail, 5000 for a
+        # metadata-only page, 100 otherwise.
+        limit = (
+            min(tail, 200)
+            if tail
+            else min(max(limit, 1), 5000 if metadata_only else 100)
+        )
         if before is not None:
             query = query.filter(
                 tuple_(self.model.timestamp, self.model.id) < tuple_(*before)

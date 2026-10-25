@@ -184,7 +184,7 @@ describe('agent-talk-view', () => {
     expect((el as any).events).to.have.length(101);
     // Not old-99: a burst can add more than a page, and resuming below the
     // retained rows would skip the gap between them and the fresh page.
-    expect((el as any).nextEventCursor).to.equal('new');
+    expect((el as any).nextEventPage).to.deep.equal({ before: 'new' });
     await (el as any).loadMoreEvents();
     const last = fetchStub
       .getCalls()
@@ -195,6 +195,34 @@ describe('agent-talk-view', () => {
       'new'
     );
     expect((el as any).events).to.have.length(101);
+    el.remove();
+  });
+
+  it('pages a server without next_cursor by offset, not by an ignored cursor', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events'))
+        return jsonResponse({
+          logs: [{ id: 'e1', timestamp: '2026-02-01T00:00:00Z', payload: {} }],
+          pagination: { has_more: true, next_offset: 20 },
+        });
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) return jsonResponse([]);
+      if (url.includes('/api/v1/agents/agent-1'))
+        return jsonResponse({ agent: AGENT, sessions: [SESSION] });
+      return jsonResponse({});
+    });
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    await (el as any).loadMoreEvents();
+    const older = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/gateway-events'))
+      .at(-1)!;
+    const params = new URL(older, location.origin).searchParams;
+    expect(params.get('offset')).to.equal('20');
+    expect(params.has('before')).to.equal(false);
     el.remove();
   });
 
@@ -233,7 +261,7 @@ describe('agent-talk-view', () => {
     const el = await mount('?session=sess-1');
     await waitUntil(() => !(el as any).loadingEvents);
     (el as any).hasMoreEvents = true;
-    (el as any).nextEventCursor = 'ev-50';
+    (el as any).nextEventPage = { before: 'ev-50' };
     let finish!: (response: Response) => void;
     const offsets: string[] = [];
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
@@ -630,7 +658,11 @@ describe('agent-talk-view session integrity', () => {
           },
         },
       })),
-      pagination: { has_more: hasMore, next_offset: ids.length },
+      pagination: {
+        has_more: hasMore,
+        next_offset: ids.length,
+        next_cursor: hasMore ? ids[ids.length - 1] : null,
+      },
     });
   }
 
