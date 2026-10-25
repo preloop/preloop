@@ -504,7 +504,11 @@ The agent-facing tool: [search_sessions](docs/guide/agent-session-search.md).
 Audit collection also offers a durable delivery path behind the default-off
 `PRELOOP_AUDIT_OUTBOX_ENABLED` flag. Committed sanitized intents are relayed into
 audit rows transactionally; failed deliveries back off and park after a finite
-retry budget. Local operators can preview and replay a bounded failed batch for
+retry budget. Approval transitions, policy evaluation, MCP activity outcomes and
+model-content policy hits enqueue in their owning database transactions, bypassing
+bounded audit admission. Async callers await only local database work; the relay
+owns its sessions on a separate thread. Due lag, failed attempts and parked rows
+have opt-in Helm alert rules; drop alerts remain for best-effort callers. Local operators can preview and replay a bounded failed batch for
 one account with `python -m preloop.services.audit.replay`. See
 [Audit outbox operations](docs/operations/audit-outbox.md) for activation,
 admission limits, metrics and recovery.
