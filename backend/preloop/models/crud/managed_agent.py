@@ -13,6 +13,8 @@ from sqlalchemy import (
     Float,
     String,
     and_,
+    any_,
+    bindparam,
     case,
     cast,
     column,
@@ -23,6 +25,7 @@ from sqlalchemy import (
     tuple_,
     values,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session
 
@@ -575,12 +578,11 @@ def _read_stored_usage(
         for session_id in session_ids
     ]
     if owned_pairs:
-        owned = values(
-            column("session_id", PG_UUID(as_uuid=True)),
-            column("owner_type", String),
-            column("owner_id", String),
-            name="stored_owned_sessions",
-        ).data(owned_pairs)
+        owned = _owned_sessions_from(
+            owned_pairs,
+            ("session_id", "owner_type", "owner_id"),
+            "stored_owned_sessions",
+        )
         session_filter = [total.account_id == account_id]
         if ownership.known_principals:
             session_filter.append(
@@ -646,6 +648,45 @@ def _read_stored_usage(
     for result in results.values():
         result["_stored_totals"] = True
     return results
+
+
+def _session_ids_param(session_ids: list[Any]) -> Any:
+    """Bind runtime session ids as ONE ``uuid[]`` parameter (``= ANY``).
+
+    ``IN (...)`` binds one parameter per id; a long-lived agent owns
+    thousands of per-run sessions, and past 65,535 parameters the statement
+    cannot be sent at all.
+    """
+    return any_(
+        bindparam(None, value=list(session_ids), type_=ARRAY(PG_UUID(as_uuid=True)))
+    )
+
+
+def _owned_sessions_from(
+    owned_pairs: list[tuple[Any, str, str]], names: tuple[str, str, str], name: str
+) -> Any:
+    """``(session, owner_type, owner_id)`` rows as ``unnest`` of three arrays.
+
+    A VALUES list bound three parameters per owned session, so an agent with
+    more than 21,845 sessions failed to load. Three array parameters keep the
+    statement the same size however many sessions an agent owns.
+    """
+    session_ids, owner_types, owner_ids = (
+        list(part) for part in zip(*owned_pairs, strict=False)
+    )
+    return (
+        func.unnest(
+            bindparam(None, value=session_ids, type_=ARRAY(PG_UUID(as_uuid=True))),
+            bindparam(None, value=owner_types, type_=ARRAY(String)),
+            bindparam(None, value=owner_ids, type_=ARRAY(String)),
+        )
+        .table_valued(
+            column(names[0], PG_UUID(as_uuid=True)),
+            column(names[1], String),
+            column(names[2], String),
+        )
+        .render_derived(name=name)
+    )
 
 
 def _usage_aggregates_for_principals(
@@ -790,19 +831,17 @@ def _usage_aggregates_for_principals(
     # Rows in the agent's own sessions written under another principal (a
     # per-run ``<base>:<run>`` id, or none): the same rows the Overview maps
     # to the agent through the session (B-02).
-    session_owner = values(
-        column("owned_session_id", PG_UUID(as_uuid=True)),
-        column("owner_type", String),
-        column("owner_id", String),
-        name="agent_owned_sessions",
-    )
     owned_pairs = [
         (session_id, principal[0], principal[1])
         for principal, session_ids in ownership.sessions_by_principal.items()
         for session_id in session_ids
     ]
     if owned_pairs:
-        owned = session_owner.data(owned_pairs)
+        owned = _owned_sessions_from(
+            owned_pairs,
+            ("owned_session_id", "owner_type", "owner_id"),
+            "agent_owned_sessions",
+        )
         session_rows = db.execute(
             select(
                 owned.c.owner_type,
@@ -947,6 +986,28 @@ def _usage_aggregate_for_principal(
 
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
     """CRUD helpers for account-scoped managed-agent registry entries."""
+
+    def governed_owner_ids(
+        self,
+        db: Session,
+        *,
+        account_id: UUID | str,
+        user_ids: Sequence[UUID],
+    ) -> set[UUID]:
+        """Return candidate owners with an active agent in this account."""
+        if not user_ids:
+            return set()
+        rows = (
+            db.query(models.ManagedAgent.owner_user_id)
+            .filter(
+                models.ManagedAgent.account_id == account_id,
+                models.ManagedAgent.owner_user_id.in_(set(user_ids)),
+                models.ManagedAgent.lifecycle_state == "active",
+            )
+            .distinct()
+            .all()
+        )
+        return {row.owner_user_id for row in rows if row.owner_user_id is not None}
 
     def remove_registry_entry(
         self, db: Session, *, agent: ManagedAgent, commit: bool = True
@@ -1823,23 +1884,46 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         account_id: str,
         agent_id: str,
         ownership: Optional[_AgentSessionOwnership] = None,
+        include_usage: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Return one managed agent summary with runtime and usage aggregates."""
-        row = (
+        query = (
             db.query(self.model)
             .outerjoin(
                 RuntimeSession, self.model.runtime_session_id == RuntimeSession.id
             )
             .outerjoin(User, self.model.owner_user_id == User.id)
-            .outerjoin(
+            .filter(self.model.account_id == account_id, self.model.id == agent_id)
+        )
+        if include_usage:
+            query = query.outerjoin(
                 ApiUsage,
                 and_(
                     ApiUsage.runtime_session_id == self.model.runtime_session_id,
                     ApiUsage.action_type == "model_gateway",
                 ),
             )
-            .filter(self.model.account_id == account_id, self.model.id == agent_id)
-            .with_entities(
+        usage_columns = (
+            [
+                func.count(ApiUsage.id).label("request_count"),
+                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                    "estimated_cost"
+                ),
+                func.max(ApiUsage.model_alias).label("latest_model_alias"),
+                func.max(ApiUsage.provider_name).label("latest_provider_name"),
+                func.max(ApiUsage.timestamp).label("last_request_at"),
+            ]
+            if include_usage
+            else [
+                literal_column("0").label("request_count"),
+                literal_column("0.0").label("estimated_cost"),
+                literal_column("NULL").label("latest_model_alias"),
+                literal_column("NULL").label("latest_provider_name"),
+                literal_column("NULL").label("last_request_at"),
+            ]
+        )
+        row = (
+            query.with_entities(
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
@@ -1869,13 +1953,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 RuntimeSession.turn_started_at,
                 RuntimeSession.turn_ended_at,
                 RuntimeSession.turn_interrupted,
-                func.count(ApiUsage.id).label("request_count"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
-                func.max(ApiUsage.model_alias).label("latest_model_alias"),
-                func.max(ApiUsage.provider_name).label("latest_provider_name"),
-                func.max(ApiUsage.timestamp).label("last_request_at"),
+                *usage_columns,
             )
             .group_by(
                 self.model.id,
@@ -1912,6 +1990,61 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
         if row is None:
             return None
+        if not include_usage:
+            # Identity requires recency, not historical totals. Read only the
+            # latest matching usage, preserving the same attribution rule as
+            # aggregates (including per-run and unlabelled session traffic).
+            ownership = ownership or _agent_session_ownership(
+                db,
+                account_id=account_id,
+                principals=[(row.session_source_type, row.session_source_id)],
+            )
+            latest = _latest_gateway_usage_for_principal(
+                db,
+                account_id=account_id,
+                principal_type=row.session_source_type,
+                principal_id=row.session_source_id,
+            )
+            session_ids = ownership.sessions_by_principal.get(
+                (row.session_source_type, row.session_source_id), []
+            )
+            session_latest = None
+            if session_ids:
+                session_latest = (
+                    db.query(
+                        ApiUsage.model_alias.label("latest_model_alias"),
+                        ApiUsage.provider_name.label("latest_provider_name"),
+                        ApiUsage.timestamp.label("last_request_at"),
+                    )
+                    .filter(
+                        ApiUsage.runtime_session_id == _session_ids_param(session_ids),
+                        *_session_usage_filter(
+                            account_id=account_id,
+                            known_principals=ownership.known_principals,
+                            start_date=None,
+                            end_date=None,
+                        ),
+                    )
+                    .order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc())
+                    .first()
+                )
+            if session_latest and (
+                latest is None
+                or session_latest.last_request_at > latest.last_request_at
+            ):
+                latest = session_latest
+            identity = _PageRow(
+                **{
+                    **row._asdict(),
+                    "request_count": int(latest is not None),
+                    **(latest._asdict() if latest else {}),
+                }
+            )
+            summary = self._row_to_summary(identity)
+            # Recency's existence flag is not a request total.
+            summary["total_requests"] = 0
+            summary["usage_computed"] = False
+            return summary
         aggregate = _usage_aggregate_for_principal(
             db,
             account_id=account_id,
@@ -2071,7 +2204,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 or_(
                     own_rows,
                     and_(
-                        ApiUsage.runtime_session_id.in_(owned_sessions),
+                        ApiUsage.runtime_session_id
+                        == _session_ids_param(owned_sessions),
                         *_session_usage_filter(
                             account_id=account_id,
                             known_principals=ownership.known_principals,

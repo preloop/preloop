@@ -99,13 +99,13 @@ dependencies = [
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
     "azure-identity>=1.17.0",  # Entra ID / managed identity for Azure OpenAI
     "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
-    "opentelemetry-api>=1.27.0",
-    "opentelemetry-sdk>=1.27.0",
-    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
     # OTLP/HTTP receiver for Claude client telemetry (#1412) decodes with the
     # proto classes directly; already pulled in by the exporter, pinned here
     # so a future exporter change cannot drop it.
-    "opentelemetry-proto>=1.27.0",
+    "opentelemetry-proto>=1.45.1",
 ]
 
 [project.urls]

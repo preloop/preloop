@@ -700,7 +700,7 @@ make build
 make build-all
 
 # Run tests
-make test
+PRELOOP_DISABLE_TELEMETRY=true make test
 
 # Format code
 make fmt
@@ -708,6 +708,22 @@ make fmt
 # Run linter
 make lint
 ```
+
+The `Discovery platform parity` workflow runs discovery, profile and harness
+inventory, report builders, and unattended enrollment fixtures on Linux, macOS,
+and Windows. It downloads dependencies before compiling offline, then runs the
+test binary with external networking blocked (Linux network namespace, macOS
+sandbox, or Windows Firewall). Loopback HTTP fixture servers remain available.
+Telemetry is disabled on all three runners.
+An isolation test requires the OS to reject an external documentation address
+with a policy or namespace error, while allowing a loopback connection.
+
+When registering an app or changing its config locations, update
+`internal/cmd/testdata/discovery-platform-paths.json`. Every app needs an explicit
+entry for `darwin`, `windows`, and `linux`: an expected home-relative path, or an
+`unsupported_reason` with no path or platform declaration. Native locations are
+checked independently of fallback paths, including through the ordinary
+discovery resolver on each OS runner.
 
 ### Installing a dev build
 

@@ -205,16 +205,16 @@ class CopilotDeveloperSpend(BaseModel):
     """Premium-request spend for one developer."""
 
     login: str
-    net_amount: float
-    net_quantity: float
+    net_amount: Optional[float] = None
+    net_quantity: Optional[float] = None
 
 
 class CopilotModelSpend(BaseModel):
     """Premium-request spend for one model."""
 
     model: str
-    net_amount: float
-    net_quantity: float
+    net_amount: Optional[float] = None
+    net_quantity: Optional[float] = None
 
 
 class CopilotPremiumRequests(BaseModel):

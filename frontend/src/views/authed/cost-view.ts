@@ -77,6 +77,7 @@ import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
 import '../../components/copilot-usage-panel.ts';
+import '../../components/copilot-activity-panel.ts';
 import '../../components/anthropic-usage-panel.ts';
 import '../../components/token-figures.ts';
 import { sumTokenUsage } from '../../components/token-figures';
@@ -3095,6 +3096,15 @@ export class CostView extends AuthedElement {
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
       ></copilot-usage-panel>
+      ${
+        this.featureFlags.copilot_seat_activity === true
+          ? html`<copilot-activity-panel
+              enabled
+              .startDate=${this.currentPeriod?.startDate}
+              .endDate=${this.currentPeriod?.endDate}
+            ></copilot-activity-panel>`
+          : nothing
+      }
       <anthropic-usage-panel
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
