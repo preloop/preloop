@@ -30,10 +30,21 @@ describe('apiKeySearchQuery', () => {
       'Flow Execution 9910dacd'
     );
     expect(apiKeySearchQuery('flow run')).to.equal('Flow Execution');
+    expect(apiKeySearchQuery('Flow run 9910')).to.equal('Flow Execution 9910');
+    expect(
+      apiKeySearchQuery('Flow run 9910dacd-4297-4bb0-9f1e-0a1b2c3d4e5f')
+    ).to.equal('Flow Execution 9910dacd-4297-4bb0-9f1e-0a1b2c3d4e5f');
   });
 
   it('passes other searches through', () => {
     expect(apiKeySearchQuery('deploy')).to.equal('deploy');
     expect(apiKeySearchQuery('Flow runner')).to.equal('Flow runner');
+    expect(apiKeySearchQuery('Flow run helper')).to.equal('Flow run helper');
+    expect(apiKeySearchQuery('Flow run deploy key')).to.equal(
+      'Flow run deploy key'
+    );
+    expect(apiKeySearchQuery('Flow run 9910dacd notes')).to.equal(
+      'Flow run 9910dacd notes'
+    );
   });
 });

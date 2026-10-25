@@ -24,8 +24,12 @@ export function apiKeyDisplayName(name: string): ApiKeyDisplayName {
 
 /**
  * Server search matches the stored name, so a search typed from the displayed
- * "Flow run <id>" is mapped back to "Flow Execution <id>".
+ * "Flow run <id>" is mapped back to "Flow Execution <id>". Other suffixes
+ * are user-chosen names and must reach the server unchanged.
  */
 export function apiKeySearchQuery(search: string): string {
-  return search.replace(/^(\s*)flow run(?=\s|$)/i, '$1Flow Execution');
+  return search.replace(
+    /^(\s*)flow run(?=\s*(?:[0-9a-f]{1,8}(?:-[0-9a-f]{1,12}){0,4})?\s*$)/i,
+    '$1Flow Execution'
+  );
 }
