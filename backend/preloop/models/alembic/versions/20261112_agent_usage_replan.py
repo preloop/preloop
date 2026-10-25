@@ -1,7 +1,7 @@
 """Plan each agent usage trigger statement for its own transition table.
 
 Revision ID: 20261112_agent_usage_replan
-Revises: 20261110_media_timing
+Revises: 20261112_flow_log_gateway_idx
 
 PL/pgSQL keeps a statement's plan for the session, and the planner sizes a
 transition table from its row count at planning time. A plan cached by
@@ -17,7 +17,7 @@ import re
 from alembic import op
 
 revision = "20261112_agent_usage_replan"
-down_revision = "20261110_media_timing"
+down_revision = "20261112_flow_log_gateway_idx"
 branch_labels = None
 depends_on = None
 
