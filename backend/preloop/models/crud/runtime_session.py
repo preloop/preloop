@@ -705,10 +705,18 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         return db_obj
 
     def lock_alias_account(self, db: Session, *, account_id: Any) -> None:
-        """Serialize spawn alias assignment within an account until commit."""
+        """Serialize spawn alias assignment within an account until commit.
+
+        The account identity is never changed here, so NO KEY UPDATE is
+        enough: it stays exclusive against other holders of this lock and
+        against FOR UPDATE, but lets concurrent child inserts (usage, audit,
+        activity rows) take their foreign-key KEY SHARE without waiting.
+        """
         from preloop.models.models.account import Account
 
-        db.query(Account.id).filter(Account.id == account_id).with_for_update().one()
+        db.query(Account.id).filter(Account.id == account_id).with_for_update(
+            key_share=True
+        ).one()
 
     def assign_spawn_alias(
         self,

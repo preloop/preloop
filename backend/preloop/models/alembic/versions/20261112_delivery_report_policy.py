@@ -1,7 +1,7 @@
 """Add the delivery_report_policy table (account and per-project overrides).
 
 Revision ID: 20261112_delivery_report_policy
-Revises: 20261110_media_timing
+Revises: 20261112_flow_log_gateway_idx
 """
 
 import sqlalchemy as sa
@@ -9,7 +9,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "20261112_delivery_report_policy"
-down_revision = "20261110_media_timing"
+down_revision = "20261112_flow_log_gateway_idx"
 branch_labels = None
 depends_on = None
 
