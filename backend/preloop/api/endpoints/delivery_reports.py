@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
@@ -107,7 +108,7 @@ _ACTION_PERMISSIONS = {
     responses={403: {}, 404: {}, 409: {}, 422: {}, 502: {}},
 )
 @require_permission("view_flows")
-async def act_on_delivery_report(
+def act_on_delivery_report(
     execution_id: UUID,
     body: DeliveryReportActionRequest,
     db: Session = Depends(get_db_session),
@@ -121,7 +122,12 @@ async def act_on_delivery_report(
     issue edit after the assessment) is refused with 409 ``stale``. Close
     is always refused with 403 ``close_denied``, and the attempt is logged.
     """
-    ensure_permission_in_oss(db, current_user, _ACTION_PERMISSIONS[body.kind])
+
+    @require_permission(_ACTION_PERMISSIONS[body.kind])
+    def authorize_action(*, db: Session, current_user: User) -> None:
+        ensure_permission_in_oss(db, current_user, _ACTION_PERMISSIONS[body.kind])
+
+    authorize_action(db=db, current_user=current_user)
     account = get_account_or_404(db, current_user)
     execution = crud_flow_execution.get_delivery_report(
         db, execution_id=execution_id, account_id=str(account.id)
@@ -138,12 +144,14 @@ async def act_on_delivery_report(
             if body.index is None:
                 raise ReportActionError("invalid", "open_issue needs index.", 422)
             key = delivery_report_actions.follow_up_key(body.index)
-            decision = await delivery_report_actions.open_follow_up(ctx, body.index)
+            decision = asyncio.run(
+                delivery_report_actions.open_follow_up(ctx, body.index)
+            )
         elif body.kind == "reopen":
             if not body.ref:
                 raise ReportActionError("invalid", "reopen needs ref.", 422)
             key = delivery_report_actions.reopen_key(body.ref)
-            decision = await delivery_report_actions.reopen_issue(ctx, body.ref)
+            decision = asyncio.run(delivery_report_actions.reopen_issue(ctx, body.ref))
         else:
             reason = (body.reason or "").strip()
             if not body.key or not reason:

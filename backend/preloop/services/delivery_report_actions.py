@@ -22,7 +22,6 @@ trail, and the decision is stored on the run's result under
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
@@ -31,6 +30,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from preloop.api.common import get_tracker_client
+from preloop.config import settings
 from preloop.models.crud import (
     crud_audit_log,
     crud_delivery_report_policy,
@@ -86,7 +86,7 @@ class ReportActionError(Exception):
 
 def report_link(execution_id: Any) -> str:
     """The console URL of one report run."""
-    base = os.getenv("PRELOOP_URL", "https://preloop.ai").rstrip("/")
+    base = settings.preloop_url.rstrip("/")
     return f"{base}/console/delivery-reports/{execution_id}"
 
 
@@ -465,6 +465,10 @@ async def reopen_issue(ctx: ActionContext, ref: str) -> Dict[str, Any]:
             synced, or the tracker refused.
     """
     request, closed = _reopen_request(ctx, ref)
+    if request.get("applied"):
+        raise ReportActionError(
+            "already_decided", "The run already reopened this issue.", 409
+        )
     details: Dict[str, Any] = {
         "execution_id": str(ctx.execution.id),
         "kind": "reopen",
@@ -563,10 +567,18 @@ def dismiss(ctx: ActionContext, key: str, reason: str) -> Dict[str, Any]:
             target.isascii() and target.isdigit() and int(target) < len(follow_ups)
         ):
             raise ReportActionError("not_found", "No such follow-up.", 404)
+        if follow_ups[int(target)].get("issue_url"):
+            raise ReportActionError(
+                "already_decided", "The run already opened this follow-up.", 409
+            )
         key = follow_up_key(int(target))
         target = str(int(target))
     elif kind == "reopen":
-        _reopen_request(ctx, target)
+        request, _ = _reopen_request(ctx, target)
+        if request.get("applied"):
+            raise ReportActionError(
+                "already_decided", "The run already reopened this issue.", 409
+            )
         key = reopen_key(target)
     else:
         raise ReportActionError("not_found", "No such proposal.", 404)
@@ -576,6 +588,7 @@ def dismiss(ctx: ActionContext, key: str, reason: str) -> Dict[str, Any]:
         "user_id": str(ctx.user.id),
         "at": _now(),
         "reason": reason,
+        "allowed_by": "click",
     }
     _claim(ctx, key, record, clear_unresolved=True)
     _settle(ctx, key, record)
@@ -590,6 +603,7 @@ def dismiss(ctx: ActionContext, key: str, reason: str) -> Dict[str, Any]:
             "kind": "dismiss",
             "proposal": key,
             "reason": reason,
+            "allowed_by": "click",
         },
     )
     return record

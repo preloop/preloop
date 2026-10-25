@@ -473,7 +473,7 @@ export class DeliveryReportView extends LitElement {
             : nothing
         }
         ${
-          unconfirmed
+          unconfirmed || decision.status === 'pending'
             ? this.actionButton(
                 'Dismiss',
                 detail.actions.dismiss,

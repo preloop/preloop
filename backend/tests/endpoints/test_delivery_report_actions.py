@@ -300,13 +300,31 @@ def test_dismiss_needs_a_reason_and_blocks_the_action(
     )
     assert response.status_code == 200, response.text
     assert response.json()["decision"]["status"] == "dismissed"
+    assert (
+        _audit_rows(db_session, test_user.account_id)[0].details["allowed_by"]
+        == "click"
+    )
     blocked = client.post(url, json={"kind": "reopen", "ref": "example/app#7"})
     assert blocked.status_code == 409
     assert tracker["fake"].calls == []
 
 
+@pytest.mark.parametrize("plugin_present", [False, True])
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "open_issue", "index": 0},
+        {"kind": "reopen", "ref": "example/app#7"},
+        {"kind": "dismiss", "key": "follow_up:0", "reason": "Known"},
+    ],
+)
 def test_a_member_without_the_permission_cannot_act(
-    db_session: Session, test_viewer_user: Any, tracker: Dict[str, Any]
+    db_session: Session,
+    test_viewer_user: Any,
+    tracker: Dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_present: bool,
+    action: dict,
 ) -> None:
     from fastapi.testclient import TestClient
 
@@ -314,17 +332,41 @@ def test_a_member_without_the_permission_cannot_act(
     from preloop.api.auth import get_current_active_user
     from preloop.models.db.session import get_db_session
 
+    from preloop.utils import permissions
+
+    checked = []
+    if plugin_present:
+
+        def plugin(permission):
+            def decorate(function):
+                def wrapper(*args, **kwargs):
+                    checked.append(permission)
+                    if not permissions.user_holds_permission(
+                        kwargs["db"], kwargs["current_user"], permission
+                    ):
+                        raise HTTPException(status_code=403, detail="RBAC denied")
+                    return function(*args, **kwargs)
+
+                return wrapper
+
+            return decorate
+
+        monkeypatch.setattr(permissions, "_plugin_require_permission", plugin)
+        monkeypatch.setattr(permissions, "_rbac_checks_enabled", lambda: True)
+
     # The viewer's own account, so only the missing permission can refuse it.
     run = _report_run(db_session, test_viewer_user.account_id)
     app = create_app()
     app.dependency_overrides[get_db_session] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
     with TestClient(app) as viewer_client:
-        response = viewer_client.post(
-            f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
-        )
+        response = viewer_client.post(f"{BASE}/{run.id}/actions", json=action)
     assert response.status_code == 403, response.text
     assert tracker["fake"].calls == []
+    if plugin_present:
+        assert (
+            "create_issues" if action["kind"] == "open_issue" else "edit_issues"
+        ) in checked
 
 
 def test_actions_are_404_for_a_foreign_or_unknown_run(
@@ -650,3 +692,44 @@ def test_set_action_keeps_other_result_keys(db_session: Session, test_user) -> N
     db_session.refresh(run)
     assert run.result["_private_publication"] == {"phase": "complete"}
     assert run.result["follow_ups"][0]["title"].startswith("Add a test")
+
+
+@pytest.mark.parametrize(
+    "proposal, action",
+    [
+        ("follow_ups", {"kind": "dismiss", "key": "follow_up:0", "reason": "Known"}),
+        (
+            "reopen_requests",
+            {"kind": "dismiss", "key": "reopen:example/app#7", "reason": "Known"},
+        ),
+        ("reopen_requests", {"kind": "reopen", "ref": "example/app#7"}),
+    ],
+)
+def test_run_applied_proposals_cannot_be_decided_again(
+    client,
+    db_session: Session,
+    test_user,
+    tracker: Dict[str, Any],
+    proposal: str,
+    action: dict,
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    report = _fixture_report()
+    report[proposal][0].update(
+        {"issue_url": ISSUE_URL} if proposal == "follow_ups" else {"applied": True}
+    )
+    run.result = report
+    db_session.commit()
+    response = client.post(f"{BASE}/{run.id}/actions", json=action)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "already_decided"
+    assert tracker["fake"].calls == []
+
+
+def test_report_links_use_instance_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actions.settings, "preloop_url", "https://internal.example/")
+    monkeypatch.delenv("PRELOOP_URL", raising=False)
+    assert (
+        actions.report_link("run")
+        == "https://internal.example/console/delivery-reports/run"
+    )

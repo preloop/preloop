@@ -461,6 +461,24 @@ describe('delivery-report-view', () => {
     );
   });
 
+  it('lets a stuck pending write be dismissed', async () => {
+    payload = enabled();
+    payload.report.proposal_actions = {
+      'follow_up:0': {
+        kind: 'open_issue',
+        status: 'pending',
+        at: '2026-01-01T00:00:00Z',
+      },
+    };
+    const el = await mount();
+    const row = el.shadowRoot!.querySelector('[data-testid="follow-up"]')!;
+    expect(row.querySelector('[data-testid="action-open-issue"]')).to.not.exist;
+    row.querySelector<HTMLElement>('[data-testid="action-dismiss"]')!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="dismiss-form"]')
+    );
+  });
+
   it('expands evidence in place', async () => {
     const el = await mount();
     const root = el.shadowRoot!;
