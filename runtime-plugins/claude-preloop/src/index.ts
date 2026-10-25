@@ -34,6 +34,7 @@ import {
   TurnUsage,
   sdkQueryFactory,
 } from "./sessions.js";
+import { SessionProgressForwarder } from "./progress.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
 import { GitRunner, WorkspaceManager, WorkspaceSpec } from "./workspace.js";
@@ -117,6 +118,16 @@ export class PreloopClaudeSidecar {
   private controlConfig?: ControlConfig;
   private socket?: WebSocket;
   private sessions?: SessionManager;
+  private readonly progress = new SessionProgressForwarder(
+    (payload) =>
+      this.sendEnvelope({
+        type: "event",
+        name: "session_progress",
+        message_id: randomUUID(),
+        payload,
+      }),
+    RUNTIME,
+  );
   private workspaces?: WorkspaceManager;
   /** Git runner for the flow-workspace dirty check. Tests replace it. */
   flowWorkspaceGit?: GitRunner;
@@ -188,6 +199,7 @@ export class PreloopClaudeSidecar {
     }
     this.sessions ??= new SessionManager(config, this.queryFactory, {
       log: (line) => this.log(`Claude sidecar: ${line}`),
+      onLiveProgress: (sessionId, event) => this.progress.push(sessionId, event),
     });
     this.launcher.setLogger((message) => this.log(message));
     this.launcher.onLauncherReleased(() => {
@@ -217,6 +229,7 @@ export class PreloopClaudeSidecar {
     this.observer = undefined;
     this.sessions?.stop();
     this.sessions = undefined;
+    this.progress.stop();
     this.launcher.stop();
     this.socket?.close();
     this.socket = undefined;
@@ -427,6 +440,8 @@ export class PreloopClaudeSidecar {
     if (!this.sessions) {
       this.sessions = new SessionManager(this.verify(), this.queryFactory, {
         log: (line) => this.log(`Claude sidecar: ${line}`),
+        onLiveProgress: (sessionId, event) =>
+          this.progress.push(sessionId, event),
       });
     }
     const payload = command.payload ?? {};
@@ -499,6 +514,7 @@ export class PreloopClaudeSidecar {
     try {
       const turn = await this.sessions.completeTurn({
         text,
+        commandId: messageId,
         onProgress: messageId
           ? (event) =>
               this.sendEnvelope({

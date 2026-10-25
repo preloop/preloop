@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -1231,6 +1232,11 @@ def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any
         value = payload.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
             clean[field] = value
+    seq = payload.get("seq")
+    # Per-session event counter: a viewer that sees a jump knows it missed
+    # events (dropped by the throttle or the socket) and re-reads the thread.
+    if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2**31:
+        clean["seq"] = seq
     clean = _sanitize_agent_control_payload(clean)
     usage = payload.get("usage")
     if kind == "usage" and isinstance(usage, dict):
@@ -1251,15 +1257,17 @@ _SESSION_PROGRESS_TARGET_TTL = timedelta(seconds=30)
 #: a moment after its first event is picked up quickly.
 _SESSION_PROGRESS_MISS_TTL = timedelta(seconds=5)
 _SESSION_PROGRESS_TARGET_CACHE_MAX = 2048
+#: Where one session's progress goes: (viewer account id, runtime session id).
+_ProgressTarget = tuple[str, str]
 _session_progress_targets: dict[
-    tuple[str, str, str], tuple[Optional[str], datetime]
+    tuple[str, str, str], tuple[Optional[_ProgressTarget], datetime]
 ] = {}
 
 
 def _cached_session_progress_target(
     connection: AgentControlConnectionContext, session_source_id: str
-) -> tuple[bool, Optional[str]]:
-    """Return ``(hit, runtime_session_id)`` from the per-agent cache."""
+) -> tuple[bool, Optional[_ProgressTarget]]:
+    """Return ``(hit, target)`` from the per-agent cache."""
     key = (
         str(connection.account_id),
         str(connection.managed_agent_id),
@@ -1275,29 +1283,25 @@ def _cached_session_progress_target(
 def _remember_session_progress_target(
     connection: AgentControlConnectionContext,
     session_source_id: str,
-    runtime_session_id: Optional[str],
+    target: Optional[_ProgressTarget],
 ) -> None:
     if len(_session_progress_targets) >= _SESSION_PROGRESS_TARGET_CACHE_MAX:
         _session_progress_targets.clear()
-    ttl = (
-        _SESSION_PROGRESS_TARGET_TTL
-        if runtime_session_id
-        else _SESSION_PROGRESS_MISS_TTL
-    )
+    ttl = _SESSION_PROGRESS_TARGET_TTL if target else _SESSION_PROGRESS_MISS_TTL
     _session_progress_targets[
         (
             str(connection.account_id),
             str(connection.managed_agent_id),
             session_source_id,
         )
-    ] = (runtime_session_id, datetime.now(UTC) + ttl)
+    ] = (target, datetime.now(UTC) + ttl)
 
 
 def _resolve_session_progress_target(
     db: Session,
     connection: AgentControlConnectionContext,
     session_source_id: str,
-) -> Optional[str]:
+) -> Optional[_ProgressTarget]:
     """Map a native session id to a runtime session this agent owns.
 
     Args:
@@ -1306,7 +1310,7 @@ def _resolve_session_progress_target(
         session_source_id: Native id the sidecar reported (a Codex thread id).
 
     Returns:
-        The runtime session id, or None when the session is unknown, ended or
+        ``(account id, runtime session id)``, or None when the session is unknown, ended or
         belongs to another agent. Account isolation comes from the
         connection's account; agent isolation from the ownership check.
     """
@@ -1320,7 +1324,94 @@ def _resolve_session_progress_target(
     agent = session_managed_agent(db, account_id=connection.account_id, session=session)
     if agent is None or str(agent.id) != str(connection.managed_agent_id):
         return None
-    return str(session.id)
+    return str(connection.account_id), str(session.id)
+
+
+def _resolve_command_progress_target(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    command_id: str,
+) -> Optional[_ProgressTarget]:
+    """Map a command this agent is running to the session it was sent for.
+
+    A Talk turn (New session included) is recorded on the command's tracking
+    session, whose source id is not the native id the sidecar knows, and a
+    shared agent's turn belongs to the consuming account, not the agent owner.
+    The command row holds both, so live progress for a command turn goes
+    exactly where its stored reply goes.
+
+    Args:
+        db: Database session.
+        connection: The authenticated sidecar connection.
+        command_id: Envelope id of the command whose turn is streaming.
+
+    Returns:
+        ``(consuming account id, runtime session id)``, or None when the
+        command is unknown, not this agent's, not running or unrecorded.
+    """
+    command = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=connection.account_id,
+        managed_agent_id=connection.managed_agent_id,
+        command_id=command_id,
+    )
+    if (
+        command is None
+        or command.kind != "command"
+        or command.status not in {"delivered", "acked"}
+    ):
+        return None
+    account_id = command.consuming_account_id or connection.account_id
+    # The session the operator's message was recorded on (a New session's
+    # tracking row, the targeted session, or the current binding), read the
+    # same way stored command progress is: the command row itself may still
+    # name the agent's previous binding.
+    message = crud_runtime_session_activity.command_message(
+        db, account_id=account_id, command_id=command_id
+    )
+    if message is None or message.runtime_session_id is None:
+        return None
+    return str(account_id), str(message.runtime_session_id)
+
+
+#: Reply and reasoning deltas one session may broadcast: a burst of
+#: ``_SESSION_PROGRESS_DELTA_BURST`` refilled at ``_SESSION_PROGRESS_DELTA_RATE``
+#: a second. Sidecars already merge per-token deltas to four a second; this
+#: bounds a sidecar that does not, so a chatty agent cannot flood the account's
+#: realtime channel. A dropped delta leaves a ``seq`` gap and the viewer
+#: re-reads the thread. Turn bounds, tools and usage are never throttled.
+_SESSION_PROGRESS_DELTA_RATE = 8.0
+_SESSION_PROGRESS_DELTA_BURST = 16
+#: Only reply text is throttled. Reasoning titles are accumulated by the
+#: status line, which has no re-read on a gap, so they are never dropped.
+_SESSION_PROGRESS_THROTTLED_KINDS = frozenset({"assistant_delta"})
+_session_progress_buckets: dict[tuple[str, str, str], tuple[float, float]] = {}
+
+
+def _allow_session_progress_delta(
+    connection: AgentControlConnectionContext, session_source_id: str
+) -> bool:
+    """Take one token from the session's delta bucket; False when it is empty."""
+    key = (
+        str(connection.account_id),
+        str(connection.managed_agent_id),
+        session_source_id,
+    )
+    now = time.monotonic()
+    tokens, last = _session_progress_buckets.get(
+        key, (float(_SESSION_PROGRESS_DELTA_BURST), now)
+    )
+    tokens = min(
+        float(_SESSION_PROGRESS_DELTA_BURST),
+        tokens + (now - last) * _SESSION_PROGRESS_DELTA_RATE,
+    )
+    if len(_session_progress_buckets) >= _SESSION_PROGRESS_TARGET_CACHE_MAX:
+        _session_progress_buckets.clear()
+    if tokens < 1.0:
+        _session_progress_buckets[key] = (tokens, now)
+        return False
+    _session_progress_buckets[key] = (tokens - 1.0, now)
+    return True
 
 
 async def _emit_session_progress(
@@ -1335,26 +1426,50 @@ async def _emit_session_progress(
     payload = _session_progress_payload(inbound.payload)
     if payload is None:
         return
-    hit, runtime_session_id = _cached_session_progress_target(connection, source_id)
+    command_id = inbound.payload.get("command_id")
+    if command_id is not None and (
+        not isinstance(command_id, str) or not 0 < len(command_id) <= 200
+    ):
+        return
+    # A command turn is scoped by its command, never by the native id: the
+    # two can name different sessions (or accounts, for a shared agent).
+    cache_key = f"command:{command_id}" if command_id else source_id
+    hit, target = _cached_session_progress_target(connection, cache_key)
     if not hit:
         try:
-            runtime_session_id = await database.run(
-                partial(
-                    _resolve_session_progress_target,
-                    connection=connection,
-                    session_source_id=source_id,
+            if command_id:
+                target = await database.run(
+                    partial(
+                        _resolve_command_progress_target,
+                        connection=connection,
+                        command_id=command_id,
+                    )
                 )
-            )
+            else:
+                target = await database.run(
+                    partial(
+                        _resolve_session_progress_target,
+                        connection=connection,
+                        session_source_id=source_id,
+                    )
+                )
         except _DB_DELIVERY_ERRORS:
             # Live progress is best effort; never drop the control socket.
             logger.warning("Could not scope session progress", exc_info=True)
             return
-        _remember_session_progress_target(connection, source_id, runtime_session_id)
-    if runtime_session_id is None:
+        _remember_session_progress_target(connection, cache_key, target)
+    if target is None:
+        return
+    account_id, runtime_session_id = target
+    if payload[
+        "kind"
+    ] in _SESSION_PROGRESS_THROTTLED_KINDS and not _allow_session_progress_delta(
+        connection, source_id
+    ):
         return
     emit_account_event(
         build_account_event(
-            account_id=connection.account_id,
+            account_id=account_id,
             topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
             event_type="managed_agent_session_progress",
             payload={**payload, "message_id": inbound.message_id},

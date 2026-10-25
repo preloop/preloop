@@ -765,6 +765,28 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             db.refresh(db_obj)
         return db_obj
 
+    def command_message(
+        self, db: Session, *, account_id: Any, command_id: str
+    ) -> RuntimeSessionActivity | None:
+        """Return the operator message row a command was recorded with.
+
+        Its session is the command's tracking session: where progress and
+        the reply of that command are stored.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.activity_type == "agent_control_message",
+                self.model.metadata_["command_id"].astext == command_id,
+                self.model.metadata_["source"].astext.is_distinct_from(
+                    "agent_control_progress"
+                ),
+            )
+            .order_by(self.model.timestamp.asc())
+            .first()
+        )
+
     def log_agent_control_progress(
         self,
         db: Session,
@@ -781,18 +803,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         """Attach bounded progress to the server-owned command tracking session."""
         from preloop.utils.secret_scrubbing import scrub_secrets
 
-        original = (
-            db.query(self.model)
-            .filter(
-                self.model.account_id == account_id,
-                self.model.activity_type == "agent_control_message",
-                self.model.metadata_["command_id"].astext == command_id,
-                self.model.metadata_["source"].astext.is_distinct_from(
-                    "agent_control_progress"
-                ),
-            )
-            .order_by(self.model.timestamp.asc())
-            .first()
+        original = self.command_message(
+            db, account_id=account_id, command_id=command_id
         )
         if original is None:
             return None

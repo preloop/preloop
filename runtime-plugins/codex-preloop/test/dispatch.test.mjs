@@ -733,5 +733,12 @@ test("presence lists loaded app-server TUI threads as reachable and forwards the
   appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m2", delta: "Done" });
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(sent[3].payload.delta, "Done", "a lone delta is flushed by the timer");
+  assert.deepEqual(
+    sent.slice(1).map((envelope) => envelope.payload.seq),
+    [1, 2, 3],
+    "each thread numbers its progress events so a viewer can see a gap",
+  );
+  appServer.listeners.onEvent("other-thread", { kind: "turn_started", turn_id: "t9" });
+  assert.equal(sent[4].payload.seq, 1, "the counter is per thread");
   sidecar.stop();
 });

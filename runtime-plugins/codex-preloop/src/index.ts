@@ -135,6 +135,8 @@ export class PreloopCodexSidecar {
     Extract<AppServerEvent, { kind: "assistant_delta" | "status_title" }>
   >();
   private progressTimer?: ReturnType<typeof setTimeout>;
+  /** Last `seq` sent per thread; viewers refetch when they see a jump. */
+  private progressSeq = new Map<string, number>();
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -736,11 +738,18 @@ export class PreloopCodexSidecar {
   }
 
   private emitSessionProgress(threadId: string, event: AppServerEvent): void {
+    const seq = (this.progressSeq.get(threadId) ?? 0) + 1;
+    this.progressSeq.set(threadId, seq);
     this.sendEnvelope({
       type: "event",
       name: "session_progress",
       message_id: randomUUID(),
-      payload: { ...event, session_source_id: threadId, runtime: this.runtime },
+      payload: {
+        ...event,
+        session_source_id: threadId,
+        runtime: this.runtime,
+        seq,
+      },
     });
   }
 

@@ -33,6 +33,12 @@ export type SdkMessage = {
   errors?: string[];
   usage?: { input_tokens?: number; output_tokens?: number };
   total_cost_usd?: number;
+  /** Raw stream event, sent when `includePartialMessages` is on. */
+  event?: {
+    type?: string;
+    index?: number;
+    delta?: { type?: string; text?: string };
+  };
   message?: {
     content?: Array<{
       type: string;
@@ -123,7 +129,35 @@ export type TurnProgress = {
   tool_name?: string;
 };
 
+/**
+ * Live progress of an owned session's turn, forwarded to Talk viewers as
+ * `session_progress`. Reply text arrives per stream delta; the stored reply
+ * still comes from the result message.
+ */
+export type LiveProgress =
+  | { kind: "turn_started"; turn_id: string; command_id?: string }
+  | {
+      kind: "turn_completed";
+      turn_id: string;
+      status: "completed" | "failed";
+      command_id?: string;
+    }
+  | {
+      kind: "assistant_delta";
+      turn_id: string;
+      item_id: string;
+      delta: string;
+      command_id?: string;
+    };
+
+export type LiveProgressListener = (
+  sessionId: string,
+  event: LiveProgress,
+) => void;
+
 type TurnWaiter = {
+  /** Command this turn answers; scopes its live progress on the server. */
+  commandId?: string;
   onProgress?: (event: TurnProgress) => void;
   progressCount: number;
   resolve: (outcome: TurnOutcome) => void;
@@ -149,11 +183,72 @@ class OwnedSession {
   /** Aborting it makes the SDK kill the Claude Code child process. */
   readonly abort = new AbortController();
 
+  /** Live turn bookkeeping for `onLive`; ids only need to be unique per session. */
+  private liveTurn = 0;
+  private liveTurnOpen = false;
+  private liveMessage = 0;
+  private liveCommandId?: string;
+
   constructor(
     readonly key: string,
     private registrar: SessionRegistrar,
     private cwd?: string,
+    private onLive?: LiveProgressListener,
   ) {}
+
+  private emitLive(event: LiveProgress): void {
+    if (!this.onLive || !this.sessionId) return;
+    // The server routes a command turn by its command (the session the
+    // operator opened); the native id alone may name another session.
+    const commandId = this.liveCommandId;
+    try {
+      this.onLive(
+        this.sessionId,
+        commandId ? { ...event, command_id: commandId } : event,
+      );
+    } catch {
+      // Live progress is best effort; the turn itself must not fail.
+    }
+  }
+
+  /** Map one SDK stream event to live reply progress. */
+  private streamEvent(message: SdkMessage): void {
+    const event = message.event;
+    if (!event) return;
+    if (!this.liveTurnOpen) {
+      this.liveCommandId = this.turnWaiters[0]?.commandId;
+      this.liveTurnOpen = true;
+      this.liveTurn += 1;
+      this.liveMessage = 0;
+      this.emitLive({ kind: "turn_started", turn_id: `turn-${this.liveTurn}` });
+    }
+    if (event.type === "message_start") {
+      this.liveMessage += 1;
+      return;
+    }
+    if (
+      event.type === "content_block_delta" &&
+      event.delta?.type === "text_delta" &&
+      event.delta.text
+    ) {
+      this.emitLive({
+        kind: "assistant_delta",
+        turn_id: `turn-${this.liveTurn}`,
+        item_id: `turn-${this.liveTurn}:${this.liveMessage}:${event.index ?? 0}`,
+        delta: event.delta.text,
+      });
+    }
+  }
+
+  private endLiveTurn(failed: boolean): void {
+    if (!this.liveTurnOpen) return;
+    this.liveTurnOpen = false;
+    this.emitLive({
+      kind: "turn_completed",
+      turn_id: `turn-${this.liveTurn}`,
+      status: failed ? "failed" : "completed",
+    });
+  }
 
   /** Consume SDK messages, resolving one waiter per completed turn. */
   async run(handle: SdkQueryHandle): Promise<void> {
@@ -165,6 +260,10 @@ class OwnedSession {
           this.sessionId = message.session_id ?? this.sessionId;
           // Never block the message stream on the registration request.
           void this.registrar.register(this.sessionId, this.cwd);
+          continue;
+        }
+        if (message.type === "stream_event") {
+          this.streamEvent(message);
           continue;
         }
         if (message.type === "assistant") {
@@ -189,6 +288,7 @@ class OwnedSession {
         if (message.type === "result") {
           const reply = message.result ?? this.turnText.join("\n").trim();
           this.turnText = [];
+          this.endLiveTurn(resultIsError(message));
           if (resultIsError(message)) {
             this.failNextWaiter(
               new Error(`Claude Code turn failed: ${resultErrorText(message)}`),
@@ -204,6 +304,7 @@ class OwnedSession {
           error instanceof Error ? error : new Error(String(error));
       }
     } finally {
+      this.endLiveTurn(true);
       this.ended = true;
       const error = this.endError
         ? new Error(`Claude Code session ended: ${this.endError.message}`)
@@ -269,6 +370,7 @@ class OwnedSession {
     text: string,
     timeoutMs: number = DEFAULT_TURN_TIMEOUT_MS,
     onProgress?: (event: TurnProgress) => void,
+    commandId?: string,
   ): Promise<TurnOutcome> {
     if (this.ended) {
       return Promise.reject(new Error("Claude Code session ended"));
@@ -280,6 +382,7 @@ class OwnedSession {
         settled: false,
         onProgress,
         progressCount: 0,
+        commandId,
       };
       waiter.timer = setTimeout(() => {
         if (!waiter.settled) {
@@ -324,6 +427,8 @@ export type SessionManagerOptions = {
   log?: (line: string) => void;
   /** Which Claude Code binary to run; tests replace it. */
   resolveExecutable?: () => Promise<ClaudeExecutable>;
+  /** Live reply progress of owned sessions (Talk streaming). */
+  onLiveProgress?: LiveProgressListener;
 };
 
 function finiteNonNegative(value: unknown): number | undefined {
@@ -373,6 +478,8 @@ function resultErrorText(message: SdkMessage): string {
 
 export type SendMessageParams = {
   onProgress?: (event: TurnProgress) => void;
+  /** Envelope id of the command this turn answers. */
+  commandId?: string;
   text: string;
   targetSessionId?: string;
   /** Native Claude session id for SDK `resume` when the envelope has it. */
@@ -423,6 +530,7 @@ export class SessionManager {
 
   private readonly log: (line: string) => void;
   private readonly resolveExecutable: () => Promise<ClaudeExecutable>;
+  private readonly onLiveProgress?: LiveProgressListener;
   private executable?: Promise<ClaudeExecutable>;
 
   constructor(
@@ -431,6 +539,7 @@ export class SessionManager {
     options: SessionManagerOptions = {},
   ) {
     this.registrar = new SessionRegistrar(config, "claude_code");
+    this.onLiveProgress = options.onLiveProgress;
     this.log =
       options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
     this.resolveExecutable =
@@ -492,6 +601,9 @@ export class SessionManager {
       // sessions exactly as it does in the founder's terminal. Approvals are
       // delegated to that hook, NOT reimplemented here.
       settingSources: ["user", "project", "local"],
+      // Stream events carry the reply as it is written, so Talk can show it
+      // live. Whole assistant messages and the result still arrive as before.
+      includePartialMessages: true,
     };
     if (this.config.permission_mode) {
       options.permissionMode = this.config.permission_mode;
@@ -527,6 +639,7 @@ export class SessionManager {
       resumeSessionId ?? randomUUID(),
       this.registrar,
       cwd ?? this.config.workspace_root,
+      this.onLiveProgress,
     );
     const executable = await this.claudeExecutable();
     const handle = await this.queryFactory({
@@ -596,6 +709,7 @@ export class SessionManager {
         params.text,
         timeoutMs,
         params.onProgress,
+        params.commandId,
       );
       params.onProgress?.({
         kind: "summary",

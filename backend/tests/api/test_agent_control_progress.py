@@ -22,8 +22,10 @@ from preloop.services.account_realtime import (
 @pytest.fixture(autouse=True)
 def _clear_target_cache() -> Iterator[None]:
     agent_control._session_progress_targets.clear()
+    agent_control._session_progress_buckets.clear()
     yield
     agent_control._session_progress_targets.clear()
+    agent_control._session_progress_buckets.clear()
 
 
 class _FakeDatabase:
@@ -194,6 +196,84 @@ async def test_session_progress_target_is_resolved_once_per_session() -> None:
     assert emit.call_count == 5
 
 
+@pytest.mark.asyncio
+async def test_reply_delta_published_only_to_owning_account_with_runtime_session_id() -> (
+    None
+):
+    """A reply delta reaches the owning account's sockets, never another's."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.websocket_manager import WebSocketManager
+
+    owner_account, other_account = str(uuid4()), str(uuid4())
+    agent_id = str(uuid4())
+    session = SimpleNamespace(id=uuid4())
+    emit = await _emit(
+        _connection(owner_account, agent_id),
+        _delta("thread-tui", seq=7),
+        session=session,
+        owner_id=agent_id,
+    )
+    event = emit.call_args.args[0]
+    assert event["account_id"] == owner_account
+    assert event["runtime_session_id"] == str(session.id)
+    assert event["payload"]["seq"] == 7
+
+    manager = WebSocketManager()
+    mine = MagicMock(send_text=AsyncMock())
+    theirs = MagicMock(send_text=AsyncMock())
+    mine_id = await manager.connect_with_account(mine, owner_account)
+    theirs_id = await manager.connect_with_account(theirs, other_account)
+    manager.subscribe(mine_id, ACCOUNT_TOPIC_SESSION_PROGRESS)
+    manager.subscribe(theirs_id, ACCOUNT_TOPIC_SESSION_PROGRESS)
+    # What the NATS consumer does with every ``account-updates.*`` message.
+    await manager.broadcast_json(event, account_id=str(event["account_id"]))
+    mine.send_text.assert_awaited_once()
+    theirs.send_text.assert_not_awaited()
+
+
+def test_session_progress_seq_is_a_bounded_non_negative_int() -> None:
+    base = {"kind": "assistant_delta", "delta": "x"}
+    assert agent_control._session_progress_payload({**base, "seq": 3})["seq"] == 3
+    for bad in (-1, True, "4", 2**40):
+        assert "seq" not in agent_control._session_progress_payload(
+            {**base, "seq": bad}
+        )
+
+
+@pytest.mark.asyncio
+async def test_chatty_reply_deltas_are_throttled_but_turn_bounds_are_not() -> None:
+    account_id, agent_id = str(uuid4()), str(uuid4())
+    connection = _connection(account_id, agent_id)
+    session = SimpleNamespace(id=uuid4())
+    with (
+        patch.object(
+            agent_control.crud_runtime_session,
+            "get_open_by_source_id",
+            return_value=session,
+        ),
+        patch.object(
+            agent_control,
+            "session_managed_agent",
+            return_value=SimpleNamespace(id=agent_id),
+        ),
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        for index in range(100):
+            await agent_control._emit_session_progress(
+                _FakeDatabase(), connection, _delta("thread-tui", seq=index)
+            )
+        deltas = emit.call_count
+        await agent_control._emit_session_progress(
+            _FakeDatabase(),
+            connection,
+            _delta("thread-tui", kind="turn_completed", seq=100),
+        )
+    assert 0 < deltas <= agent_control._SESSION_PROGRESS_DELTA_BURST
+    assert emit.call_count == deltas + 1
+    assert emit.call_args.args[0]["payload"]["kind"] == "turn_completed"
+
+
 def _runtime_session(
     db: Session,
     account_id: Any,
@@ -249,6 +329,180 @@ def test_get_open_by_source_id_scopes_account_and_skips_ended(
     assert (
         crud_runtime_session.get_open_by_source_id(
             db_session, account_id=mine.id, session_source_id="thread-unknown"
+        )
+        is None
+    )
+
+
+async def _emit_for_command(
+    connection: SimpleNamespace,
+    inbound: AgentControlInboundEnvelope,
+    command: Any,
+    recorded_on: Any = "from-command",
+) -> tuple[MagicMock, MagicMock]:
+    if recorded_on == "from-command":
+        recorded_on = getattr(command, "runtime_session_id", None)
+    message = SimpleNamespace(runtime_session_id=recorded_on) if recorded_on else None
+    with (
+        patch.object(
+            agent_control.crud_agent_control_command,
+            "get_by_command_id",
+            return_value=command,
+        ) as lookup,
+        patch.object(
+            agent_control.crud_runtime_session_activity,
+            "command_message",
+            return_value=message,
+        ) as recorded,
+        patch.object(
+            agent_control.crud_runtime_session, "get_open_by_source_id"
+        ) as by_source,
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        await agent_control._emit_session_progress(_FakeDatabase(), connection, inbound)
+    by_source.assert_not_called()
+    if recorded.called:
+        # The operator message is looked up in the account that owns the turn.
+        expected = getattr(command, "consuming_account_id", None) or (
+            connection.account_id
+        )
+        assert recorded.call_args.kwargs["account_id"] == expected
+    if lookup.called:
+        assert lookup.call_args.kwargs["account_id"] == connection.account_id
+        assert (
+            lookup.call_args.kwargs["managed_agent_id"] == connection.managed_agent_id
+        )
+    return emit, lookup
+
+
+@pytest.mark.asyncio
+async def test_new_session_command_delta_reaches_the_tracking_session() -> None:
+    """A New session turn streams to the session Talk was told to open.
+
+    The sidecar only knows the native Claude id; the command row names the
+    tracking session the send response returned.
+    """
+    account_id, agent_id = str(uuid4()), str(uuid4())
+    tracking = uuid4()
+    # Same-account sends: the command row still names the previous binding;
+    # the operator message was recorded on the new tracking session.
+    command = SimpleNamespace(
+        kind="command",
+        status="acked",
+        runtime_session_id=uuid4(),
+        consuming_account_id=None,
+    )
+    emit, _ = await _emit_for_command(
+        _connection(account_id, agent_id),
+        _delta("native-claude-id", command_id="cmd-1", seq=1),
+        command,
+        recorded_on=tracking,
+    )
+    event = emit.call_args.args[0]
+    assert event["account_id"] == account_id
+    assert event["runtime_session_id"] == str(tracking)
+    assert "command_id" not in event["payload"]
+
+
+@pytest.mark.asyncio
+async def test_shared_agent_command_delta_goes_to_the_consuming_account_only() -> None:
+    owner, consumer = str(uuid4()), str(uuid4())
+    command = SimpleNamespace(
+        kind="command",
+        status="acked",
+        runtime_session_id=uuid4(),
+        consuming_account_id=consumer,
+    )
+    emit, _ = await _emit_for_command(
+        _connection(owner, str(uuid4())),
+        _delta("native-claude-id", command_id="cmd-2"),
+        command,
+    )
+    emit.assert_called_once()
+    assert emit.call_args.args[0]["account_id"] == consumer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        None,
+        SimpleNamespace(
+            kind="command",
+            status="completed",
+            runtime_session_id=uuid4(),
+            consuming_account_id=None,
+        ),
+        SimpleNamespace(
+            kind="command",
+            status="acked",
+            runtime_session_id=None,
+            consuming_account_id=None,
+        ),
+    ],
+)
+async def test_command_delta_without_a_live_command_is_dropped(command: Any) -> None:
+    emit, _ = await _emit_for_command(
+        _connection(str(uuid4()), str(uuid4())),
+        _delta("native-claude-id", command_id="cmd-3"),
+        command,
+    )
+    emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_titles_are_never_throttled() -> None:
+    agent_id = str(uuid4())
+    connection = _connection(str(uuid4()), agent_id)
+    with (
+        patch.object(
+            agent_control.crud_runtime_session,
+            "get_open_by_source_id",
+            return_value=SimpleNamespace(id=uuid4()),
+        ),
+        patch.object(
+            agent_control,
+            "session_managed_agent",
+            return_value=SimpleNamespace(id=agent_id),
+        ),
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        for index in range(60):
+            await agent_control._emit_session_progress(
+                _FakeDatabase(),
+                connection,
+                _delta("thread-tui", kind="status_title", seq=index),
+            )
+    assert emit.call_count == 60
+
+
+def test_command_message_finds_the_session_a_command_was_recorded_on(
+    db_session: Session,
+) -> None:
+    from preloop.models.crud import crud_runtime_session_activity
+
+    account = models.Account(organization_name="Command owner")
+    other = models.Account(organization_name="Command other")
+    db_session.add_all([account, other])
+    db_session.flush()
+    tracking = _runtime_session(
+        db_session, account.id, f"cmd-{uuid4().hex[:8]}", age_minutes=0, ended=False
+    )
+    crud_runtime_session_activity.log_agent_control_message(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=tracking.id,
+        message="start fresh",
+        status="delivered",
+        metadata={"kind": "operator_command", "command_id": "cmd-live"},
+    )
+    found = crud_runtime_session_activity.command_message(
+        db_session, account_id=account.id, command_id="cmd-live"
+    )
+    assert found is not None and found.runtime_session_id == tracking.id
+    assert (
+        crud_runtime_session_activity.command_message(
+            db_session, account_id=other.id, command_id="cmd-live"
         )
         is None
     )

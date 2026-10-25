@@ -18,7 +18,11 @@ Talk, Conversation and Transcript. Gateway starts and accounting completions
 share a per-request identity; captured OpenAI, Responses and Anthropic tool
 metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
 Agent detail uses independent identity, session-page and spend reads; Talk uses
-bounded delta history and coalesced refreshes. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
+bounded delta history and coalesced refreshes. Sidecars stream the open turn's
+reply as numbered `session_progress` deltas (merged to four a second, throttled
+per session on the server, scoped to the owning account and runtime session);
+Talk appends them to a live bubble and re-reads the thread only on a sequence
+gap or turn end. Sidecars that send no deltas keep the refresh path. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
 Approval REST queries combine account and runtime-session scope, and websocket
 approval payloads pass the same permission boundary before delivery. See
 [Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
