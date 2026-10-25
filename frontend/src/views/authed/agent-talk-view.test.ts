@@ -126,6 +126,35 @@ describe('agent-talk-view', () => {
     el.remove();
   });
 
+  it('puts a status line under the input with the session model and cwd', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events'))
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) return jsonResponse([]);
+      if (url.includes('/api/v1/agents/agent-1'))
+        return jsonResponse({
+          agent: AGENT,
+          sessions: [
+            { ...SESSION, latest_model_alias: 'opus', cwd: '/srv/billing' },
+          ],
+        });
+      return new Response('{}', { status: 200 });
+    });
+    const el = await mount();
+    const line = el.shadowRoot!.querySelector('talk-status-line')!;
+    await waitUntil(() =>
+      line.querySelector('[data-testid="talk-status-model"]')
+    );
+    // Below the composer, so it reads like the CLI's footer.
+    expect(line.previousElementSibling?.tagName).to.equal('TALK-COMPOSER');
+    expect(line.textContent).to.contain('opus');
+    expect(line.textContent).to.contain('/srv/billing');
+    expect(line.textContent).to.contain('remote control');
+    el.remove();
+  });
+
   it('bounds history on the initial and older transcript pages', async () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = String(input);

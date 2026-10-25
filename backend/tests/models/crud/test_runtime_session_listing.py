@@ -516,3 +516,39 @@ def test_legacy_session_with_a_non_uuid_source_is_ignored_safely(
     items = {item["id"]: item for item in result["items"]}
     assert items[str(broken.id)]["total_requests"] == 0
     assert items[str(data["sessions"]["legacy"].id)]["total_requests"] == 3
+
+
+def test_listing_carries_the_hook_reported_cwd(
+    db_session: Session, session_listing_data: dict[str, Any]
+) -> None:
+    """The Talk status line reads the session's cwd from the agent detail list."""
+    from preloop.services.runtime_session_explorer import (
+        RuntimeSessionExplorerService,
+    )
+
+    data = session_listing_data
+    direct = data["sessions"]["direct"]
+    direct.cwd = "/work/example"
+    direct.runtime_principal_type = "managed_agent"
+    direct.runtime_principal_id = "agent-1"
+    db_session.flush()
+    result = crud_runtime_session.list_account_sessions(
+        db_session,
+        account_id=str(data["account"].id),
+        runtime_principal_type="managed_agent",
+        runtime_principal_id="agent-1",
+        min_requests=1,
+        status="all",
+    )
+    assert [item["cwd"] for item in result["items"]] == ["/work/example"]
+    schema = RuntimeSessionExplorerService._summary_row_to_schema(result["items"][0])
+    assert schema.cwd == "/work/example"
+    unscoped = crud_runtime_session.list_account_sessions(
+        db_session,
+        account_id=str(data["account"].id),
+        start_date=data["now"] - timedelta(days=1),
+        end_date=data["now"],
+    )
+    by_id = {item["id"]: item for item in unscoped["items"]}
+    assert by_id[str(data["sessions"]["direct"].id)]["cwd"] == "/work/example"
+    assert by_id[str(data["sessions"]["empty"].id)]["cwd"] is None

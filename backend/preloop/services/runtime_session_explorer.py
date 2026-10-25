@@ -1260,6 +1260,7 @@ class RuntimeSessionExplorerService:
             turn_started_at=row.get("turn_started_at"),
             turn_ended_at=row.get("turn_ended_at"),
             turn_interrupted=row.get("turn_interrupted"),
+            cwd=row.get("cwd"),
             total_requests=row["total_requests"],
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],
