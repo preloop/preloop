@@ -451,6 +451,32 @@ class Run:
             time.sleep(3)
         raise AcceptanceError("API readiness deadline exceeded")
 
+    def require_compose_image(self, cmd: list[str], label: str) -> None:
+        """Fail unless the running ``api`` container uses the pinned image."""
+        container = self.command("compose-api-container", [*cmd, "ps", "-q", "api"])
+        running = self.command(
+            "compose-api-image",
+            ["docker", "inspect", "--format", "{{.Image}}", container.strip()],
+        ).strip()
+        if not container.strip() or running != self.report[label]["image_id"]:
+            raise AcceptanceError(f"Compose api is not running the {label} image")
+
+    def require_helm_image(self, tag: str, label: str) -> None:
+        """Fail unless the rolled-out API deployment uses the pinned image."""
+        running = self.command(
+            "helm-api-image",
+            [
+                *self.kube(),
+                "get",
+                "deployment",
+                f"{self.name}-api",
+                "-o",
+                "jsonpath={.spec.template.spec.containers[0].image}",
+            ],
+        ).strip()
+        if running != tag:
+            raise AcceptanceError(f"Helm api is not running the {label} image")
+
     def run_compose(self) -> None:
         """Stop all old writers before running the candidate release initializer."""
         self.report["runtimes"]["compose"] = {"status": "running"}
@@ -464,6 +490,7 @@ class Run:
         self.command("compose-baseline-api", [*cmd, "up", "-d", "--no-deps", "api"])
         prefix = [*cmd, "exec", "-T", "api"]
         self.ready(prefix)
+        self.require_compose_image(cmd, "baseline")
         before = self.probe(prefix, True, {})
         self.report["runtimes"]["compose"]["before"] = public_probe(before)
         self.save()
@@ -485,6 +512,7 @@ class Run:
             [*cmd, "up", "-d", "--no-deps", "--force-recreate", "api"],
         )
         self.ready(prefix)
+        self.require_compose_image(cmd, "candidate")
         after = self.probe(prefix, False, before)
         # A second initializer is the operator's retry path. Check idempotence
         # with writers stopped as required by destructive credential migrations.
@@ -494,6 +522,7 @@ class Run:
         )
         self.command("compose-restart", [*cmd, "up", "-d", "--no-deps", "api"])
         self.ready(prefix)
+        self.require_compose_image(cmd, "candidate")
         retry = self.probe(prefix, False, before)
         self.report["runtimes"]["compose"].update(
             status="passed", after=public_probe(after), retry=public_probe(retry)
@@ -701,6 +730,9 @@ class Run:
                     "--timeout=240s",
                 ],
             )
+            self.require_helm_image(
+                tag, "baseline" if phase == "before" else "candidate"
+            )
             prefix = [*self.kube(), "exec", "-i", f"deployment/{self.name}-api", "--"]
             self.ready(prefix)
             state = self.probe(
@@ -769,22 +801,13 @@ class Run:
             if failures:
                 raise AcceptanceError("Failed runtimes: " + ", ".join(failures))
             self.report["status"] = "passed"
-            if self.args.rc and self.args.runtime == "both":
-                self.report["final_rc_gate"] = "passed"
-        except (
-            AcceptanceError,
-            subprocess.SubprocessError,
-            ValueError,
-            KeyError,
-            TypeError,
-            OSError,
-        ) as exc:
+        except KeyboardInterrupt:
+            self.report["status"] = "interrupted"
+        except Exception as exc:  # noqa: BLE001 - any error must fail the report
             self.report["status"] = "failed"
             self.report["error"] = (
                 str(exc) if isinstance(exc, AcceptanceError) else type(exc).__name__
             )
-        except KeyboardInterrupt:
-            self.report["status"] = "interrupted"
         finally:
             for cleanup in (self.cleanup_compose, self.cleanup_kind):
                 try:
@@ -792,6 +815,13 @@ class Run:
                 except AcceptanceError as exc:
                     self.report["cleanup"][cleanup.__name__] = str(exc)
                     self.report["status"] = "failed"
+            # The RC gate passes only once the run, including cleanup, passed.
+            if (
+                self.report["status"] == "passed"
+                and self.args.rc
+                and self.args.runtime == "both"
+            ):
+                self.report["final_rc_gate"] = "passed"
             self.report["finished_at"] = datetime.now(timezone.utc).isoformat()
             self.save()
         print(f"{self.report['status']}: {self.root / 'report.json'}", flush=True)

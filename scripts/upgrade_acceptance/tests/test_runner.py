@@ -281,6 +281,62 @@ def test_mismatched_image_source_revision_fails_before_stacks(
     assert not run.kind_owned
 
 
+def test_compose_candidate_must_be_the_running_image(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run.report["candidate"] = {"image_id": "sha256:candidate"}
+    outputs = {"compose-api-container": "abc123\n", "compose-api-image": ""}
+    monkeypatch.setattr(run, "command", lambda label, *a, **k: outputs[label])
+    for image in ("sha256:baseline\n", ""):
+        outputs["compose-api-image"] = image
+        with pytest.raises(AcceptanceError, match="not running the candidate"):
+            run.require_compose_image(["docker", "compose"], "candidate")
+    outputs["compose-api-image"] = "sha256:candidate\n"
+    run.require_compose_image(["docker", "compose"], "candidate")
+
+
+def test_helm_candidate_must_be_the_rolled_out_image(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        run, "command", lambda *a, **k: "ghcr.io/preloop/preloop:0.17.1"
+    )
+    with pytest.raises(AcceptanceError, match="not running the candidate"):
+        run.require_helm_image("example/app-candidate:abc", "candidate")
+    run.require_helm_image("ghcr.io/preloop/preloop:0.17.1", "baseline")
+
+
+def test_cleanup_failure_never_reports_a_passed_rc_gate(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run.args.rc = "v1.0.0-rc.1"
+    monkeypatch.setattr(run, "prepare", lambda: None)
+    monkeypatch.setattr(run, "run_compose", lambda: None)
+    monkeypatch.setattr(run, "run_helm", lambda: None)
+
+    def broken_cleanup() -> None:
+        raise AcceptanceError("synthetic cleanup failure")
+
+    monkeypatch.setattr(run, "cleanup_kind", broken_cleanup)
+    assert run.execute() == 1
+    assert run.report["status"] == "failed"
+    assert run.report["final_rc_gate"] != "passed"
+
+
+def test_unexpected_exception_is_recorded_as_failed(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def malformed() -> None:
+        raise ImportError("synthetic")
+
+    monkeypatch.setattr(run, "prepare", malformed)
+    assert run.execute() == 1
+    assert run.report["status"] == "failed"
+    assert run.report["error"] == "ImportError"
+    saved = json.loads((run.root / "report.json").read_text())
+    assert saved["status"] == "failed"
+
+
 def test_command_failure_logs_are_scrubbed(run: Run) -> None:
     with pytest.raises(AcceptanceError, match="synthetic-failure failed"):
         run.command(
