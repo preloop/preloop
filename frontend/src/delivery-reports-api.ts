@@ -6,6 +6,7 @@
  * the types below name only the fields the console reads.
  */
 import { fetchWithAuth } from './api';
+import { REST_API_PREFIX } from './api-path';
 import { permissionErrorFromResponse } from './permissions';
 
 export type PurposeVerdict =
@@ -182,9 +183,9 @@ export function listDeliveryReports(params: {
     offset: String(params.offset),
   });
   if (params.since) query.set('since', params.since);
-  return getJson(`/api/v1/delivery-reports?${query}`);
+  return getJson(`${REST_API_PREFIX}/delivery-reports?${query}`);
 }
 
 export function getDeliveryReport(id: string): Promise<DeliveryReportDetail> {
-  return getJson(`/api/v1/delivery-reports/${encodeURIComponent(id)}`);
+  return getJson(`${REST_API_PREFIX}/delivery-reports/${encodeURIComponent(id)}`);
 }
