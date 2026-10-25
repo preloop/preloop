@@ -7,6 +7,14 @@ from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
 from .gateway_subject import GatewaySubject
 from .telemetry_ingest import TelemetryIngestDedup, TelemetryMetricSeries
+from .enterprise_sso import (
+    AccountSsoConnection,
+    AccountSsoPolicy,
+    AccountVerifiedDomain,
+    ScimToken,
+    SsoGroupMapping,
+    SsoReplayGuard,
+)
 from .gateway_identity_provider import (
     GatewayIdentityProvider,
     GatewayIdentityProviderAudience,
@@ -276,6 +284,12 @@ __all__ = [
     "GatewaySubject",
     "TelemetryIngestDedup",
     "TelemetryMetricSeries",
+    "AccountSsoConnection",
+    "AccountSsoPolicy",
+    "AccountVerifiedDomain",
+    "ScimToken",
+    "SsoGroupMapping",
+    "SsoReplayGuard",
     "GatewayIdentityProvider",
     "GatewayIdentityProviderAudience",
     "CiPrincipal",

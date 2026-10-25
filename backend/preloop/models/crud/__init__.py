@@ -14,6 +14,12 @@ from ..models import (
     ApiKey,
     GatewaySubject,
     GatewayIdentityProvider,
+    AccountSsoConnection,
+    AccountSsoPolicy,
+    AccountVerifiedDomain,
+    ScimToken,
+    SsoGroupMapping,
+    SsoReplayGuard,
     ApiUsage,
     AuditLog,
     DiscoveredAgentCandidate,
@@ -63,6 +69,14 @@ from .api_key import CRUDApiKey
 from .gateway_subject import CRUDGatewaySubject
 from .telemetry_ingest import CRUDTelemetryIngest
 from .gateway_identity_provider import CRUDGatewayIdentityProvider
+from .enterprise_sso import (
+    CRUDAccountSsoConnection,
+    CRUDAccountSsoPolicy,
+    CRUDAccountVerifiedDomain,
+    CRUDScimToken,
+    CRUDSsoGroupMapping,
+    CRUDSsoReplayGuard,
+)
 from .api_usage import CRUDApiUsage
 from .approval_bypass import (
     CRUDApprovalBypass,
@@ -268,6 +282,12 @@ crud_api_key = CRUDApiKey(ApiKey)
 crud_gateway_subject = CRUDGatewaySubject(GatewaySubject)
 crud_telemetry_ingest = CRUDTelemetryIngest()
 crud_gateway_identity_provider = CRUDGatewayIdentityProvider(GatewayIdentityProvider)
+crud_account_sso_connection = CRUDAccountSsoConnection(AccountSsoConnection)
+crud_account_verified_domain = CRUDAccountVerifiedDomain(AccountVerifiedDomain)
+crud_account_sso_policy = CRUDAccountSsoPolicy(AccountSsoPolicy)
+crud_sso_group_mapping = CRUDSsoGroupMapping(SsoGroupMapping)
+crud_scim_token = CRUDScimToken(ScimToken)
+crud_sso_replay_guard = CRUDSsoReplayGuard(SsoReplayGuard)
 crud_api_usage = CRUDApiUsage(ApiUsage)
 crud_audit_log = CRUDAuditLog(AuditLog)
 crud_ai_model = CRUDAIModel(AIModel)
@@ -422,6 +442,12 @@ __all__ = [
     "crud_gateway_subject",
     "crud_telemetry_ingest",
     "crud_gateway_identity_provider",
+    "crud_account_sso_connection",
+    "crud_account_verified_domain",
+    "crud_account_sso_policy",
+    "crud_sso_group_mapping",
+    "crud_scim_token",
+    "crud_sso_replay_guard",
     "crud_api_usage",
     "crud_audit_log",
     "crud_audit_outbox",
