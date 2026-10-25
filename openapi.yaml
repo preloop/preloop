@@ -31385,23 +31385,25 @@ components:
         open_issue:
           type: boolean
           title: Open Issue
-          default: false
+          default: true
         reopen:
           type: boolean
           title: Reopen
-          default: false
+          default: true
         dismiss:
           type: boolean
           title: Dismiss
-          default: false
+          default: true
       type: object
       title: DeliveryReportActions
       description: 'Which report actions this server can carry out.
 
 
-        Opening a proposed follow-up and reopening an issue are tracker writes
+        All three are served by ``POST /delivery-reports/{id}/actions``. A
 
-        that are not implemented yet; the console renders them disabled.'
+        server that reports one as false (an older build) gets it rendered
+
+        disabled in the console.'
     DeliveryReportDetail:
       properties:
         id:
