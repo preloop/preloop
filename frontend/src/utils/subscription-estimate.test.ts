@@ -65,7 +65,12 @@ describe('subscriptionEstimate (D-05)', () => {
       )}`,
       host
     );
-    expect(host.textContent?.trim()).to.equal('w/o subs. unknown');
+    expect(host.querySelector('summary')?.textContent?.trim()).to.equal(
+      'w/o subs. unknown'
+    );
+    expect(host.querySelector('details')?.textContent).to.contain(
+      'None of 3 subscription requests'
+    );
     render(
       html`${renderWithoutSubscriptionsLine(subscriptionEstimate(0.5, null), 0)}`,
       host

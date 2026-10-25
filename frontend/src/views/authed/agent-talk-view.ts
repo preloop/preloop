@@ -209,6 +209,8 @@ export class AgentTalkView extends LitElement {
       }
 
       .name {
+        margin: 0;
+        font-size: inherit;
         font-weight: var(--sl-font-weight-semibold);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -934,9 +936,13 @@ export class AgentTalkView extends LitElement {
         </span>
         <div class="identity">
           <div class="name-row">
-            <span class="name" data-testid="talk-agent-name">
+            <h1
+              class="name"
+              data-testid="talk-agent-name"
+              aria-describedby="talk-subject"
+            >
               ${agent?.display_name || 'Agent'}
-            </span>
+            </h1>
             ${
               chip
                 ? html`<sl-badge class="chip" variant=${chip.variant} pill
@@ -945,7 +951,11 @@ export class AgentTalkView extends LitElement {
                 : nothing
             }
           </div>
-          <span class="subject" data-testid="talk-session-subject">
+          <span
+            id="talk-subject"
+            class="subject"
+            data-testid="talk-session-subject"
+          >
             ${subject || 'No session yet'}
           </span>
         </div>
@@ -998,14 +1008,14 @@ export class AgentTalkView extends LitElement {
 
   render() {
     if (this.loading && !this.agent) {
-      return html`<div class="state">
+      return html`<div class="state" role="status">
         <sl-spinner></sl-spinner>
         <div>Loading agent...</div>
       </div>`;
     }
     if (!this.agent) {
       return html`<div class="state">
-        <div>${this.error || 'Agent not found.'}</div>
+        <div role="alert">${this.error || 'Agent not found.'}</div>
         <sl-button href=${talkRoutePath(this.agentId).replace('/talk', '')}>
           Back to the agent
         </sl-button>

@@ -734,6 +734,20 @@ export class AgentDetailView extends LitElement {
         gap: var(--sl-spacing-small);
       }
 
+      .agent-settings,
+      .strip-technical {
+        font-size: var(--console-text-meta);
+      }
+      .agent-settings summary,
+      .strip-technical summary {
+        cursor: pointer;
+      }
+      .agent-settings {
+        margin: 8px 0;
+      }
+      .agent-settings p {
+        margin: 8px 0;
+      }
       .agent-control-status-title {
         color: var(--sl-color-neutral-900);
         font-weight: var(--sl-font-weight-semibold);
@@ -756,14 +770,21 @@ export class AgentDetailView extends LitElement {
   @state()
   private budgetsDialogJson = '{}';
 
-  onBeforeEnter(location: { params: { agentId?: string } }) {
+  @state() private selectedSessionId: string | null = null;
+
+  onBeforeEnter(location: { params: { agentId?: string }; search?: string }) {
     const nextAgentId = location.params.agentId ?? '';
     const changed = this.agentId !== nextAgentId;
     this.agentId = nextAgentId;
 
     // Honor a ?tab= deep-link (e.g. optimization "Scope tools" links here with
     // ?tab=tools to land directly on the Tools & Governance tab).
-    const requestedTab = new URLSearchParams(window.location.search).get('tab');
+    const params = new URLSearchParams(
+      location.search ?? window.location.search
+    );
+    this.selectedSessionId = params.get('session');
+    const requestedTab = params.get('tab');
+    if (this.selectedSessionId) this.activeTab = 'sessions';
     const validTabs = [
       'sessions',
       'tools',
@@ -1617,19 +1638,11 @@ export class AgentDetailView extends LitElement {
     return this.getUsageForDisplayedModel(model)?.ai_model_id?.trim() || null;
   }
 
-  private getLiveValidationVariant(): string {
-    if (!this.agent?.live_validation_supported) return 'neutral';
-    if (this.agent.live_validation_status === 'passed') return 'success';
-    if (this.agent.live_validation_status === 'failed') return 'danger';
-    if (this.agent.live_validation_status === 'not_run') return 'neutral';
-    return 'warning';
-  }
-
   private getLiveValidationLabel(): string {
     if (!this.agent?.live_validation_supported) return 'No live check';
     if (this.agent.live_validation_status === 'passed') return 'Live validated';
     if (this.agent.live_validation_status === 'failed')
-      return 'Live check failed';
+      return 'Last check failed';
     // The upstream provider refused the probe (rate limit / billing): the
     // gateway plumbing is proven but model traffic is UNVERIFIED. Never
     // present this as a check that is still in flight.
@@ -1641,9 +1654,8 @@ export class AgentDetailView extends LitElement {
       return 'Upstream refused, unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
-    if (this.agent.live_validation_status === 'not_run')
-      return 'Live check not run';
-    return 'Live check pending';
+    if (this.agent.live_validation_status === 'not_run') return 'Not checked';
+    return 'Not checked';
   }
 
   /** The label of the spend window currently selected ("30d"). */
@@ -1677,15 +1689,17 @@ export class AgentDetailView extends LitElement {
               this.agent.agent_kind || this.agent.session_source_type
             )}</span
           >
-          <span class="strip-sep" aria-hidden="true">·</span>
-          ${this.renderStripId(this.agent.session_source_id, 'Copy source id')}
-          ${
-            reference
-              ? html`<span class="strip-sep" aria-hidden="true">·</span>
-                  ${this.renderStripId(reference, 'Copy session reference')}`
-              : nothing
-          }
-          ${this.renderStripDevices()} ${this.renderStripOwner()}
+          <details class="strip-technical">
+            <summary>Identity</summary>
+            ${this.renderStripId(this.agent.session_source_id, 'Copy source id')}
+            ${
+              reference
+                ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                    ${this.renderStripId(reference, 'Copy session reference')}`
+                : nothing
+            }
+            ${this.renderStripDevices()} ${this.renderStripOwner()}
+          </details>
           <span class="badge-row">${this.renderHeaderChips()}</span>
         </div>
         <div
@@ -1835,11 +1849,6 @@ export class AgentDetailView extends LitElement {
     const liveCount =
       this.liveActivity.modelCalls + this.liveActivity.toolCalls;
 
-    // "Off" here means the check exists for this kind of agent but has not
-    // proven anything yet: never run, throttled, refused upstream or failed.
-    const liveCheckOff =
-      this.agent.live_validation_supported &&
-      this.agent.live_validation_status !== 'passed';
     const controlOff = control.visible && !control.enabled;
 
     return html`
@@ -1868,15 +1877,6 @@ export class AgentDetailView extends LitElement {
       ${
         liveCount > 0
           ? html`<sl-badge variant="success" pill>Live ${liveCount}</sl-badge>`
-          : nothing
-      }
-      ${
-        liveCheckOff
-          ? html`<sl-tooltip content=${this.getLiveValidationLabel()}>
-              <sl-badge class="capability-chip" variant="warning" pill
-                >Live check: off</sl-badge
-              >
-            </sl-tooltip>`
           : nothing
       }
       ${
@@ -2199,15 +2199,12 @@ export class AgentDetailView extends LitElement {
     const total = this.sessionTotal;
     const firstLoad = this.sessionsLoading && this.sessions.length === 0;
     return html`
-      <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
-      >
-        <div class="stack" style="padding: var(--sl-spacing-large);">
+      <sl-card class="sessions-card" style="width: 100%; --padding: 0;">
+        <div class="stack" style="padding: 0;">
           <div
             class="hero"
             style="margin-bottom: var(--sl-spacing-medium); display: flex; align-items: baseline; justify-content: flex-start; gap: var(--sl-spacing-small);"
           >
-            <div class="hero-title">Session history</div>
             <span class="meta-line" data-testid="session-count"
               >${
                 total !== null
@@ -2250,6 +2247,15 @@ export class AgentDetailView extends LitElement {
                   scope="managed_agent"
                   .scopeId=${this.agentId}
                   .sessions=${this.sessions}
+                  .selectedSessionId=${this.selectedSessionId}
+                  @session-selected=${(
+                    event: CustomEvent<{ sessionId: string }>
+                  ) => {
+                    this.selectedSessionId = event.detail.sessionId;
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('session', event.detail.sessionId);
+                    window.history.replaceState(window.history.state, '', url);
+                  }}
                   .talkAgent=${this.agent}
                   layout="full"
                   defaultReplayMode="timeline"
@@ -2324,9 +2330,7 @@ export class AgentDetailView extends LitElement {
 
   private renderNotesTab() {
     return html`
-      <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
-      >
+      <sl-card class="sessions-card" style="width: 100%; --padding: 0;">
         <div style="padding: var(--sl-spacing-large);">
           <agent-notes-tab
             agent-id=${this.agentId}
@@ -2912,7 +2916,15 @@ export class AgentDetailView extends LitElement {
     const talkCount = actions.filter((action) => action.render).length;
     // Decommission and Remove are rare and destructive: a "More" menu at the
     // end of the row, not two red buttons at Rename's weight.
-    const pinned = new Set(['decommission', 'remove']);
+    const pinned = new Set([
+      'rename',
+      'edit-tags',
+      'change-owner',
+      'pause',
+      'resume',
+      'decommission',
+      'remove',
+    ]);
     return [
       ...actions.slice(0, talkCount),
       ...note,
@@ -3877,8 +3889,17 @@ export class AgentDetailView extends LitElement {
         </div>
       </view-header>
       <div class="page" style="padding-top: 0;">
-        ${this.renderSummaryStrip(aggregate)} ${this.renderSessionConsent()}
-        ${this.renderIdentityHistory()}
+        ${this.renderSummaryStrip(aggregate)}
+        <details class="agent-settings">
+          <summary>
+            ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}
+            Identity and validation
+          </summary>
+          <p>
+            ${this.getLiveValidationLabel()}${this.agent.last_validated_at ? ` · ${formatRelativeTime(this.agent.last_validated_at)}` : ''}
+          </p>
+          ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
+        </details>
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {
@@ -3894,7 +3915,7 @@ export class AgentDetailView extends LitElement {
 
           return html`
             <div
-              style="margin-top: var(--sl-spacing-large); margin-bottom: var(--sl-spacing-large); border-bottom: 1px solid var(--sl-color-neutral-200); padding-bottom: 4px;"
+              style="margin-top: var(--sl-spacing-small); margin-bottom: var(--sl-spacing-small); border-bottom: 1px solid var(--sl-color-neutral-200); padding-bottom: 4px;"
             >
               <sl-tab-group
                 @sl-tab-show=${(e: any) => {
@@ -4264,7 +4285,8 @@ export class AgentDetailView extends LitElement {
               this.activeTab === 'models' && this.editorContextReady
                 ? html`
                     <sl-card
-                      style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
+                      class="sessions-card"
+                      style="width: 100%; --padding: 0;"
                     >
                       <div
                         class="stack"
