@@ -349,7 +349,7 @@ func waitForExecutionUntil(
 		}
 
 		var exec flowExecutionStatus
-		err := client.Get("/api/v1/flows/executions/"+executionID, &exec)
+		err := client.Get(api.RESTPrefix+"/flows/executions/"+executionID, &exec)
 		if err != nil {
 			err = fmt.Errorf("failed to read execution: %w", err)
 		} else {
