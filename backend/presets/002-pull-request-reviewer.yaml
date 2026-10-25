@@ -968,6 +968,12 @@ prompt_template: |
   > **Overview**
   > [2-3 sentence summary of what this PR does]
   >
+  > **Not verified**
+  > - [each behaviour or criterion this review could not verify, and what would verify it (a test, a preview, a measurement)], or "none"
+  >
+  > **Must know**
+  > - [up to three bullets a maintainer needs before merging]
+  >
   > <sup>Written by [Preloop PR Reviewer](https://preloop.ai) for commit {short_sha}. Updates automatically on new commits.</sup>
   <!-- /PRELOOP_SUMMARY -->
   ```
@@ -977,12 +983,17 @@ prompt_template: |
   implications, breaking changes, critical paths); **Critical** (security
   vulnerabilities found — DO NOT MERGE without fixes).
 
+  Under **Not verified**, write "none" when every claim was checked. Under
+  **Must know**, give at most three bullets. Every claim that can cite a path
+  (`path/to/file.py:42`) or a test (`tests/test_x.py::test_y`) does.
+
   **Step 6.5.2: Update PR Description (only when it changed)**
 
   First, get the current PR description from the PR data retrieved in Phase 1.
 
   If the description already contains a `<!-- PRELOOP_SUMMARY -->` block AND
-  the new block's Risk Level and Overview are substantively identical to the
+  the new block's Risk Level, Overview, Not verified and Must know are
+  substantively identical to the
   existing ones (only the commit stamp would change): **skip this step
   entirely — do not call `update_pull_request`.** Identical rewrites are
   invisible to users and waste a round trip.
@@ -990,7 +1001,8 @@ prompt_template: |
   If the description already contains `<!-- PRELOOP_SUMMARY -->` and the
   content DID change:
   - Replace the content between `<!-- PRELOOP_SUMMARY -->` and `<!-- /PRELOOP_SUMMARY -->`
-    with the new summary
+    with the new summary, in place: never add a second block, and keep the
+    commit stamp line
 
   If no existing summary marker:
   - Append the summary block to the end of the current description
@@ -1219,6 +1231,16 @@ prompt_template: |
   - Never file a defect that breaks a feature or loses a user action as LOW or
     MEDIUM "code quality". Trace the consumer first (Step 2.3, Checks A and B).
   - Fewer, correctly-severitied, verified findings are worth more than a long list.
+
+  **Decision record.** For each non-trivial choice you make (a design or
+  approach picked over a real alternative, a severity you
+  assigned on a close call, approving or requesting changes when it was not
+  clear-cut), print one line to your output, for example with `echo`, in the
+  form `PRELOOP_DECISION {"summary": <one line: what you chose>, "reason":
+  <why>, "alternatives": [<options you rejected>]}` with JSON strings in
+  place of the angle brackets, all on a single line. Emit one marker per
+  decision, none for routine edits, and never put secrets in them. Preloop
+  records them on this execution so reports can cite your reasons.
 
   DO NOT SWITCH BRANCHES. Your working copy is on a branch that was cut from the source branch of the PR. Any commits you make should be on that branch.
 
