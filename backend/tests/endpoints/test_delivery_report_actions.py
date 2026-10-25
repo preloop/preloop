@@ -784,3 +784,35 @@ async def test_report_cannot_create_an_already_closed_issue(
     [audit] = _audit_rows(db_session, test_user.account_id)
     assert audit.status == "denied"
     assert audit.details["denied_by"] == "tracker_writes.close=deny"
+
+
+@pytest.mark.parametrize("kind", ["open_issue", "reopen"])
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_client_setup_failure_allows_retry(
+    kind: str,
+    status: int,
+    client,
+    db_session: Session,
+    test_user,
+    tracker: Dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    setup = AsyncMock(
+        side_effect=HTTPException(status_code=status, detail="setup failed")
+    )
+    monkeypatch.setattr(actions, "get_tracker_client", setup)
+    body = (
+        {"kind": "open_issue", "index": 0}
+        if kind == "open_issue"
+        else {"kind": "reopen", "ref": "example/app#7"}
+    )
+    key = "follow_up:0" if kind == "open_issue" else "reopen:example/app#7"
+    url = f"{BASE}/{run.id}/actions"
+    assert client.post(url, json=body).status_code == 502
+    db_session.refresh(run)
+    assert key not in (run.result.get("proposal_actions") or {})
+    assert tracker["fake"].calls == []
+    setup.side_effect = None
+    setup.return_value = tracker["fake"]
+    assert client.post(url, json=body).status_code == 200

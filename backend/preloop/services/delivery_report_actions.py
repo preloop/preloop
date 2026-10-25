@@ -375,25 +375,30 @@ async def open_follow_up(ctx: ActionContext, index: int) -> Dict[str, Any]:
         "allowed_by": "click",
         "project": project.identifier,
     }
+    request_started = False
     try:
         client = await get_tracker_client(
             project.organization_id, project.id, ctx.db, ctx.user
         )
+        payload = IssueCreate.model_validate(
+            {
+                "title": title,
+                "description": follow_up_body(
+                    follow_up, execution_id=ctx.execution.id, label=label
+                ),
+                "labels": [label],
+            }
+        )
+        request_started = True
         issue = await client.create_issue(
-            project_key=project.identifier,
-            issue_data=IssueCreate.model_validate(
-                {
-                    "title": title,
-                    "description": follow_up_body(
-                        follow_up, execution_id=ctx.execution.id, label=label
-                    ),
-                    "labels": [label],
-                }
-            ),
+            project_key=project.identifier, issue_data=payload
         )
     except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
         logger.warning("Opening follow-up %s failed", key, exc_info=True)
-        _release(ctx, key, base, exc)
+        if request_started:
+            _release(ctx, key, base, exc)
+        else:
+            _settle(ctx, key, None)
         _audit(
             ctx.db,
             account_id=ctx.account_id,
@@ -403,7 +408,7 @@ async def open_follow_up(ctx: ActionContext, index: int) -> Dict[str, Any]:
             details={
                 **details,
                 "error": str(exc)[:500],
-                "unconfirmed": _ambiguous(exc),
+                "unconfirmed": request_started and _ambiguous(exc),
             },
         )
         raise ReportActionError(
@@ -513,19 +518,22 @@ async def reopen_issue(ctx: ActionContext, ref: str) -> Dict[str, Any]:
     }
     _claim(ctx, key, base)
     target = issue.key or issue.external_id
+    request_started = False
     try:
         client = await get_tracker_client(
             issue.project.organization_id, issue.project_id, ctx.db, ctx.user
         )
-        await client.update_issue(
-            target, IssueUpdate.model_validate({"status": "open"})
-        )
-        await client.add_comment(
-            target, reopen_comment(request, closed, execution_id=ctx.execution.id)
-        )
+        payload = IssueUpdate.model_validate({"status": "open"})
+        comment = reopen_comment(request, closed, execution_id=ctx.execution.id)
+        request_started = True
+        await client.update_issue(target, payload)
+        await client.add_comment(target, comment)
     except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
         logger.warning("Reopening %s failed", ref, exc_info=True)
-        _release(ctx, key, base, exc)
+        if request_started:
+            _release(ctx, key, base, exc)
+        else:
+            _settle(ctx, key, None)
         _audit(
             ctx.db,
             account_id=ctx.account_id,
@@ -535,7 +543,7 @@ async def reopen_issue(ctx: ActionContext, ref: str) -> Dict[str, Any]:
             details={
                 **details,
                 "error": str(exc)[:500],
-                "unconfirmed": _ambiguous(exc),
+                "unconfirmed": request_started and _ambiguous(exc),
             },
         )
         raise ReportActionError(
