@@ -451,6 +451,11 @@ export class LitApp extends LitElement {
               ),
           },
           { path: '/artifacts', component: 'artifacts-view' },
+          { path: '/delivery-reports', component: 'delivery-reports-view' },
+          {
+            path: '/delivery-reports/:reportId',
+            component: 'delivery-report-view',
+          },
           { path: '/agents', component: 'agents-view' },
           // Before ':agentId' would not matter to Vaadin Router (it matches
           // the full path), but keeping the more specific route first is how
