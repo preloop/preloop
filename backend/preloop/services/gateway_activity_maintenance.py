@@ -1,20 +1,24 @@
 """Bounded maintenance of stored model gateway call rows.
 
-Two passes over ``runtime_session_activity`` rows of type
-``model_gateway_call``, both batched, idempotent and resumable:
+Passes over stored ``model_gateway_call`` rows, all batched, idempotent and
+resumable:
 
 * **Compaction** rewrites rows stored before slim storage into the slim form
   (:func:`preloop.services.gateway_activity_body.slim_gateway_payload`). It
   only visits rows whose stored (compressed) metadata is larger than 2 KB
   and that carry no compaction marker, so a finished backlog costs one index walk and no detoasting.
+* **Flow log compaction** (off by default) does the same for the
+  ``model_gateway_call`` rows of ``flow_execution_log``, which flow runs
+  write instead of session activity rows. Executions under legal hold are
+  skipped.
 * **Body retention** (off by default) strips message content from rows older
   than the account's plan history window, keeping tokens, cost and timing.
   Rows are never deleted here; deleting whole sessions is the retention
   purge's job (``RETENTION_PURGE_ENABLED``).
 
-Sessions under legal hold are skipped by both. Each batch is its own
-transaction, so stopping a pass at any point loses at most one batch of work
-and the next pass carries on. The pass runs hourly from the sync scheduler
+Sessions and flow executions under legal hold are skipped by every pass.
+Each batch is its own transaction, so stopping a pass at any point loses at
+most one batch of work and the next pass carries on. The pass runs hourly from the sync scheduler
 (task ``maintain_gateway_activity``) and can be run by hand::
 
     python -m preloop.services.gateway_activity_maintenance --max-batches 100
@@ -36,6 +40,7 @@ from typing import Any, Callable, Optional
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.models.crud.runtime_session_activity import crud_runtime_session_activity
 from preloop.services.gateway_activity_body import (
     payload_bytes,
@@ -58,12 +63,15 @@ _MIN_STORED_BYTES = 2048
 # finds nothing to rewrite and costs one index scan. The walk restarts from
 # the oldest row once a day so rows it passed over are seen again.
 _compaction_cursor: dict[str, Any] = {}
+# The same walk over flow_execution_log, which flow runs write to instead.
+_flow_log_cursor: dict[str, Any] = {}
 _CURSOR_MAX_AGE_S = 24 * 3600
 
 
 def reset_compaction_cursor() -> None:
-    """Forget the in-process compaction cursor (tests and operators)."""
+    """Forget the in-process compaction cursors (tests and operators)."""
     _compaction_cursor.clear()
+    _flow_log_cursor.clear()
 
 
 @dataclass
@@ -130,23 +138,88 @@ def compact_existing_rows(
         The accumulated counts. ``exhausted`` is True when no candidate rows
         were left.
     """
+    return _compact_walk(
+        db,
+        fetch=lambda after: crud_runtime_session_activity.gateway_call_batch(
+            db, min_stored_bytes=_MIN_STORED_BYTES, limit=batch_size, after=after
+        ),
+        cursor=_compaction_cursor,
+        label="Gateway activity",
+        max_batches=max_batches,
+        max_bytes=max_bytes,
+        dry_run=dry_run,
+        result=result,
+    )
+
+
+def compact_flow_log_rows(
+    db: Session,
+    *,
+    batch_size: int,
+    max_batches: int,
+    max_bytes: Optional[int] = None,
+    dry_run: bool = False,
+    result: Optional[MaintenanceResult] = None,
+) -> MaintenanceResult:
+    """Rewrite legacy ``model_gateway_call`` rows of ``flow_execution_log``.
+
+    Flow runs log each model call on their execution's log instead of a
+    session activity row, with the same payload, so the same slim form
+    applies. Rows of an execution under legal hold are skipped.
+
+    Args:
+        db: Database session. Committed once per batch.
+        batch_size: Rows per batch.
+        max_batches: Batches before returning; the rest waits for next pass.
+        max_bytes: Byte cap for the slim form, defaults to the setting.
+        dry_run: Count what would change, write nothing.
+        result: Accumulator to add to.
+
+    Returns:
+        The accumulated counts. ``exhausted`` is True when no candidate rows
+        were left.
+    """
+    return _compact_walk(
+        db,
+        fetch=lambda after: crud_flow_execution_log.gateway_call_batch(
+            db, min_stored_bytes=_MIN_STORED_BYTES, limit=batch_size, after=after
+        ),
+        cursor=_flow_log_cursor,
+        label="Flow log",
+        max_batches=max_batches,
+        max_bytes=max_bytes,
+        dry_run=dry_run,
+        result=result,
+    )
+
+
+def _compact_walk(
+    db: Session,
+    *,
+    fetch: Callable[[Optional[tuple[datetime, Any]]], list[Any]],
+    cursor: dict[str, Any],
+    label: str,
+    max_batches: int,
+    max_bytes: Optional[int],
+    dry_run: bool,
+    result: Optional[MaintenanceResult],
+) -> MaintenanceResult:
+    """Walk keyset pages from ``fetch`` and slim every row it returns."""
     cap = (
         settings.model_gateway_activity_max_stored_bytes
         if max_bytes is None
         else max_bytes
     )
     result = result or MaintenanceResult(dry_run=dry_run)
-    started_at = _compaction_cursor.get("started_at")
+    started_at = cursor.get("started_at")
     if started_at is None or time.monotonic() - started_at > _CURSOR_MAX_AGE_S:
         # Start a fresh walk at least daily, so rows a walk passed over (a
         # session under legal hold since released) are picked up again.
-        _compaction_cursor.clear()
-        _compaction_cursor["started_at"] = time.monotonic()
-    after: Optional[tuple[datetime, Any]] = _compaction_cursor.get("after")
+        cursor.clear()
+        cursor["started_at"] = time.monotonic()
+    after: Optional[tuple[datetime, Any]] = cursor.get("after")
     for _ in range(max(0, max_batches)):
-        rows = crud_runtime_session_activity.gateway_call_batch(
-            db, min_stored_bytes=_MIN_STORED_BYTES, limit=batch_size, after=after
-        )
+        rows = fetch(after)
         if not rows:
             result.exhausted = True
             break
@@ -161,11 +234,12 @@ def compact_existing_rows(
         # Only after the batch committed: a batch that raised is retried by
         # the next pass instead of being skipped until a restart.
         if not dry_run:
-            _compaction_cursor["after"] = after
+            cursor["after"] = after
         result.compacted_rows += changed
         result.batches += 1
         logger.info(
-            "Gateway activity compaction batch: %d rows, %d rewritten, cursor %s",
+            "%s compaction batch: %d rows, %d rewritten, cursor %s",
+            label,
             len(rows),
             changed,
             after[0].isoformat(),
@@ -233,13 +307,15 @@ def run_gateway_activity_maintenance(
     max_batches: Optional[int] = None,
     compaction: Optional[bool] = None,
     retention: Optional[bool] = None,
+    flow_logs: Optional[bool] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run one bounded maintenance pass with settings as defaults.
 
     Returns:
-        ``{"compaction": {...}, "retention": {...}, "elapsed_s": float}``;
-        a disabled half reports ``None``.
+        ``{"compaction": {...}, "flow_log_compaction": {...},
+        "retention": {...}, "elapsed_s": float}``; a disabled part reports
+        ``None``.
     """
     size = batch_size or settings.gateway_activity_maintenance_batch_size
     batches = (
@@ -257,10 +333,21 @@ def run_gateway_activity_maintenance(
         if retention is None
         else retention
     )
+    do_flow_logs = (
+        settings.flow_log_gateway_compaction_enabled if flow_logs is None else flow_logs
+    )
     started = time.monotonic()
-    summary: dict[str, Any] = {"compaction": None, "retention": None}
+    summary: dict[str, Any] = {
+        "compaction": None,
+        "flow_log_compaction": None,
+        "retention": None,
+    }
     if do_compact:
         summary["compaction"] = compact_existing_rows(
+            db, batch_size=size, max_batches=batches, dry_run=dry_run
+        ).as_dict()
+    if do_flow_logs:
+        summary["flow_log_compaction"] = compact_flow_log_rows(
             db, batch_size=size, max_batches=batches, dry_run=dry_run
         ).as_dict()
     if do_retain:
@@ -286,6 +373,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--no-compaction", action="store_true", help="Skip the compaction pass."
     )
+    parser.add_argument(
+        "--flow-logs",
+        action="store_true",
+        help="Also compact model call rows of flow execution logs.",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     from preloop.models.db.session import get_db_session
@@ -298,6 +390,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_batches=args.max_batches,
             compaction=not args.no_compaction,
             retention=True if args.retention else None,
+            flow_logs=True if args.flow_logs else None,
             dry_run=args.dry_run,
         )
     finally:

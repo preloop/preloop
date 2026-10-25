@@ -1394,7 +1394,8 @@ class Settings(BaseSettings):
         32768,
         description=(
             "Upper bound, in bytes of JSON, for the metadata stored on one "
-            "model_gateway_call row in runtime_session_activity. Each row "
+            "model_gateway_call row in runtime_session_activity or "
+            "flow_execution_log. Each row "
             "keeps only the messages new to that call (replayed history is "
             "already on the session's earlier rows); a call still larger than "
             "this has its tool definitions reduced to names, then its raw "
@@ -1408,6 +1409,15 @@ class Settings(BaseSettings):
             "Run the hourly maintenance pass that rewrites model_gateway_call "
             "rows stored before slim storage into the slim form "
             "(GATEWAY_ACTIVITY_COMPACTION_ENABLED)."
+        ),
+    )
+    flow_log_gateway_compaction_enabled: bool = Field(
+        False,
+        description=(
+            "Also rewrite model_gateway_call rows of flow_execution_log stored "
+            "before slim storage, in the same hourly maintenance pass. Off by "
+            "default because it drops replayed history from existing rows "
+            "(FLOW_LOG_GATEWAY_COMPACTION_ENABLED)."
         ),
     )
     gateway_activity_body_retention_enabled: bool = Field(
@@ -2092,6 +2102,10 @@ class Settings(BaseSettings):
             ),
             gateway_activity_compaction_enabled=os.getenv(
                 "GATEWAY_ACTIVITY_COMPACTION_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_log_gateway_compaction_enabled=os.getenv(
+                "FLOW_LOG_GATEWAY_COMPACTION_ENABLED", "false"
             ).lower()
             in ("true", "1", "t", "yes"),
             gateway_activity_body_retention_enabled=os.getenv(
