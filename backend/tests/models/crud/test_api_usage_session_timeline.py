@@ -276,6 +276,9 @@ def test_list_session_request_keys_pages_real_requests_by_keyset(
             account_id=str(account.id),
             runtime_session_id=str(runtime_session.id),
             meta_data=meta,
+            model_alias="test/task",
+            provider_name="openai",
+            prompt_tokens=123,
         )
         row.timestamp = base + timedelta(minutes=offset)
         if counted:
@@ -321,4 +324,36 @@ def test_list_session_request_keys_pages_real_requests_by_keyset(
         for r in full
         if (r.meta_data or {}).get("purpose")
         not in {"governance_session_digest", "session_title"}
+    ]
+
+    measurements = []
+    cursor = None
+    while page := crud_api_usage.list_session_context_measurements(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        start_date=base + timedelta(minutes=1),
+        end_date=base + timedelta(minutes=3),
+        after=cursor,
+        limit=1,
+    ):
+        assert set(vars(page[0])) == {
+            "id",
+            "timestamp",
+            "ai_model_id",
+            "model_alias",
+            "provider_name",
+            "prompt_tokens",
+        }
+        assert page[0].model_alias == "test/task"
+        assert page[0].provider_name == "openai"
+        assert page[0].prompt_tokens == 123
+        measurements.extend(page)
+        cursor = (page[-1].timestamp, page[-1].id)
+    assert [(row.timestamp, row.id) for row in measurements] == [
+        key
+        for key in expected
+        if base + timedelta(minutes=1)
+        <= key[0].replace(tzinfo=UTC)
+        < base + timedelta(minutes=3)
     ]
