@@ -195,3 +195,15 @@ start multiple threads. Set CPU budgets on the host runner services and leave
 headroom for PostgreSQL and the operating system. Use measured concurrent load,
 not the number of registrations, to size the pool. Tool thread settings are
 hints; the host CPU budget enforces isolation without changing workflow checks.
+
+## Discovery fixture isolation
+
+`discovery-parity.yml` runs Linux discovery fixtures without external network
+access. GitHub-hosted runners use `sudo unshare --net` directly. Self-hosted
+runners instead grant passwordless sudo only for the root-owned
+`/usr/local/sbin/preloop-ci-offline` helper. The helper creates a network
+namespace, enables loopback for local HTTP fixtures, forces
+`PRELOOP_DISABLE_TELEMETRY=true` and `PRELOOP_DISCOVERY_OFFLINE=true`, then
+drops to the invoking runner UID and GID with `setpriv` before executing the
+test binary. Do not grant unrestricted sudo or direct `unshare` access to the
+runner account. A missing helper or denied sudo must fail the check.
