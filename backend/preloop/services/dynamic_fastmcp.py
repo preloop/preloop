@@ -22,9 +22,10 @@ from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import httpx
+import httpx2
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 
 from preloop.services.dynamic_mcp_server import (
@@ -672,7 +673,9 @@ def _proxied_exception_outcome(
     """
     status_code = getattr(getattr(cause, "response", None), "status_code", None)
     reason = _short_reason(cause) or type(cause).__name__
-    if isinstance(cause, httpx.HTTPStatusError) and isinstance(status_code, int):
+    if isinstance(
+        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+    ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
     else:
@@ -1377,14 +1380,13 @@ class DynamicFastMCP(FastMCP):
         *,
         version: Any = None,
         run_middleware: bool = True,
-        task_meta: Any = None,
     ) -> Any:
         if self._restricted_protocol():
             raise PermissionError(
                 "Access denied: restricted runtime resource unsupported"
             )
         return await super().read_resource(
-            uri, version=version, run_middleware=run_middleware, task_meta=task_meta
+            uri, version=version, run_middleware=run_middleware
         )
 
     async def get_prompt(self, name: str, version: Any = None) -> Any:
@@ -2213,7 +2215,6 @@ async def {internal_name}({params_str}):
         *,
         version=None,
         run_middleware: bool = True,
-        task_meta=None,
     ):
         """Override tool execution for access validation and name translation.
 
@@ -2229,7 +2230,6 @@ async def {internal_name}({params_str}):
             arguments: Arguments derived from FastMCP
             version: Optional Tool Version
             run_middleware: Whether to run middleware
-            task_meta: Optional Background Task Metadata
 
         Returns:
             ToolResult from tool execution
@@ -2252,7 +2252,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=False,
-                task_meta=task_meta,
             )
 
         # Extract justification from arguments before it reaches the tool function.
@@ -2292,7 +2291,6 @@ async def {internal_name}({params_str}):
                 self._remap_wrapper_arguments(name, arguments),
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
 
         _grant_dispatch_var.set(None)
@@ -2876,7 +2874,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
             if sensitive_config is not None:
                 result = await self._enforce_sensitive_result_policy(

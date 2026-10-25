@@ -302,9 +302,9 @@ def test_gitlab_tracker_sync(preloop_client, gitlab_client):
             # Try structuredContent first (most reliable) - FastMCP puts Pydantic model fields here
             if (
                 hasattr(create_result, "structuredContent")
-                and create_result.structuredContent
+                and create_result.structured_content
             ):
-                url = create_result.structuredContent.get("url")
+                url = create_result.structured_content.get("url")
                 if url:
                     # Parse GitLab URL: https://gitlab.com/group/project/-/issues/123
                     # Or self-hosted: https://gitlab.example.com/group/project/-/issues/123

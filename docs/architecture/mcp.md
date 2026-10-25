@@ -25,16 +25,18 @@ AI client -> Preloop MCP endpoint -> policy evaluation -> allow / deny / require
 
 ## Endpoint and transport
 
-The endpoint is `https://YOUR_PRELOOP_URL/mcp/v1` over streamable HTTP.
-`preloop agents onboard` writes this entry for supported agents; by hand it
-looks like this:
+The preferred endpoint is `https://YOUR_PRELOOP_URL/mcp` over Streamable HTTP.
+Existing `/mcp/v1` configurations remain supported. Both accept modern discovery
+and legacy initialization; see the [protocol compatibility matrix](mcp-protocol-compatibility.md).
+`preloop agents onboard` currently writes the compatible `/mcp/v1` alias for
+supported agents. To configure the preferred endpoint by hand:
 
 ```bash
 claude mcp add \
   --transport http \
   --header "Authorization: Bearer YOUR_API_KEY" \
   preloop \
-  https://YOUR_PRELOOP_URL/mcp/v1
+  https://YOUR_PRELOOP_URL/mcp
 ```
 
 ## What happens on a tool call
@@ -119,7 +121,7 @@ custom subclass of FastMCP:
 
 **Implementation Details:**
 - **`DynamicFastMCP`** (`preloop/services/dynamic_fastmcp.py`): Extends FastMCP and
-overrides `_list_tools()` and `_mcp_call_tool()` methods
+overrides `list_tools()` and `call_tool()` methods
 - **Tool Visibility:** Default tools (get_issue, create_issue, update_issue, search,
 add_comment, estimate_compliance, improve_compliance) are only visible when the
 authenticated account has one or more trackers configured. A tool whose definition
@@ -133,7 +135,9 @@ context into the request scope
 it in a ContextVar for access during tool listing and execution
 - **StreamableHTTP Transport:** Uses FastMCP's proven `http_app
 (transport="streamable-http")` implementation for bidirectional streaming
-- **Endpoint:** Mounted at `/mcp/v1` with full authentication and lifespan management
+- **Endpoint:** Mounted at `/mcp/v1` with full authentication and lifespan management.
+  `/mcp` is internally rewritten to that mount before routing, without a redirect.
+  The URL suffix is independent of the negotiated protocol and SDK major version.
 
 **Tool Registration:**
 All built-in tools are registered in `preloop/services/initialize_mcp.py` using

@@ -192,6 +192,6 @@ def extract_screenshot(result: Any) -> tuple[str, bytes] | None:
             return None
         if not decoded:
             return None
-        media_type = getattr(item, "mimeType", None) or "image/png"
+        media_type = getattr(item, "mime_type", None) or "image/png"
         return str(media_type), decoded
     return None

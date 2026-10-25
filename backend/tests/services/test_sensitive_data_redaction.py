@@ -707,7 +707,7 @@ def test_tool_redact_rule_is_non_blocking_and_audited(mocker) -> None:
 def test_redact_tool_result_keeps_shape() -> None:
     config = DetectorConfig(types=("email", "iban"))
     assert redact_tool_result(SAMPLE, config) == f"mail {R_EMAIL} and iban {R_IBAN}"
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
 
     result = ToolResult(
         content=[TextContent(type="text", text=SAMPLE)],

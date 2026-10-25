@@ -803,7 +803,7 @@ def redact_tool_result(result: Any, detector_config: DetectorConfig) -> Any:
     text blocks and structured content rewritten; raw content lists are
     rebuilt as text blocks.
     """
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
     from mcp.types import TextContent
 
     from preloop.services.sensitive_data.redact import redact_structure, redact_text
