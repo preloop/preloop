@@ -298,6 +298,7 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
     [
         ("pressure", 2),
         ("current-not-recent", 3),
+        ("older-queued-run", 2),
         ("current-and-recent", 2),
         ("no-pressure", 0),
         ("young", 0),
@@ -351,9 +352,14 @@ if '/jobs?' in endpoint:
     jobs = [] if case == 'no-pressure' else [job] * (30 if case == 'many' else 2)
     if case == 'current-not-recent':
         jobs = [job] * 3 if '/runs/999/' in endpoint else []
+    if case == 'older-queued-run':
+        jobs = [job] * 2 if '/runs/456/' in endpoint else []
     print(json.dumps({'jobs': jobs}))
 elif '/actions/runs?' in endpoint:
-    print('[123]')
+    if case == 'older-queued-run':
+        print('[456]' if 'status=queued' in endpoint else '[]')
+    else:
+        print('[123]')
 else:
     labels = ['self-hosted', 'Linux', 'X64', 'preloop-ci-general']
     if case == 'dedicated':

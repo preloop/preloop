@@ -3,8 +3,8 @@
 CI prefers GitHub-hosted `ubuntu-latest`. General self-hosted runners provide
 optional backend overflow when recent repository runs show hosted jobs queued
 without a runner for at least two minutes. This is a queue-pressure signal,
-not a measurement of GitHub's global capacity. The picker inspects at most ten
-recent runs plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
+not a measurement of GitHub's global capacity. The picker inspects up to five oldest queued and five oldest in-progress
+runs from bounded 100-run API responses, plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
 pressure or inventory cannot be read, the read token is absent, or
 `CI_SELF_HOSTED_TESTS=false`. Fork and Dependabot PRs always remain hosted.
 Trusted same-repository PRs and pushes may use overflow.

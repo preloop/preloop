@@ -256,13 +256,19 @@ jobs:
             emit 0 "secret CI_RUNNER_READ_TOKEN is absent or empty"
           fi
 
-          # Bound API work to ten recent runs plus this run, which may have
-          # aged out of the recent sample while waiting for a hosted runner.
-          # Any incomplete/unreadable response means unknown pressure -> hosted.
-          if ! runs=$(timeout 15s gh api "repos/${REPO}/actions/runs?per_page=10" \
-              --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id]' 2>/dev/null); then
-            emit 0 "could not read hosted queue pressure"
-          fi
+          # Sample older active work, not just the newest runs (which may all
+          # be younger than the pressure threshold). Inspect at most five
+          # runs per status from bounded 100-run API responses, plus this run.
+          runs='[]'
+          for status in queued in_progress; do
+            if ! active=$(timeout 15s gh api "repos/${REPO}/actions/runs?status=${status}&per_page=100" \
+                --jq '[.workflow_runs | sort_by(.created_at) | .[:5][] | .id]' 2>/dev/null); then
+              emit 0 "could not read hosted queue pressure"
+            fi
+            if ! runs=$(printf '%s\n%s' "$runs" "$active" | jq -ces 'if all(.[]; type == "array") then add | unique else error("invalid runs") end' 2>/dev/null); then
+              emit 0 "could not parse hosted queue runs"
+            fi
+          done
           # Include our own blocked jobs even when newer runs fill the sample.
           # Deduplication prevents counting the current run twice.
           if ! runs=$(printf '%s' "$runs" | jq -ce --arg current "$CURRENT_RUN_ID" \
