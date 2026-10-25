@@ -21,7 +21,6 @@ trail, and the decision is stored on the run's result under
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -40,7 +39,12 @@ from preloop.models.crud import (
     crud_project,
 )
 from preloop.schemas.tracker_models import IssueCreate, IssueUpdate
-from preloop.sync.exceptions import TrackerConnectionError
+from preloop.sync.exceptions import (
+    TrackerAuthenticationError,
+    TrackerPermissionError,
+    TrackerRateLimitError,
+    TrackerResponseError,
+)
 from preloop.services.delivery_report import (
     DeliveryReportPolicy,
     resolve_policy,
@@ -228,19 +232,22 @@ def _clearable(existing: Mapping[str, Any]) -> bool:
 def _ambiguous(exc: BaseException) -> bool:
     """Whether a tracker failure leaves it unknown if the write landed.
 
-    A timeout or a dropped connection may arrive after the tracker applied
-    the write; a response that refuses it is definite.
+    Only a response that refuses the write is definite: a 4xx status, an
+    authentication or permission failure, or throttling. A 5xx, a timeout,
+    a dropped connection or any other error may arrive after the tracker
+    applied the write.
     """
-    return isinstance(
+    if isinstance(
         exc,
-        (
-            TrackerConnectionError,
-            httpx.TransportError,
-            asyncio.TimeoutError,
-            TimeoutError,
-            ConnectionError,
-        ),
-    )
+        (TrackerAuthenticationError, TrackerPermissionError, TrackerRateLimitError),
+    ):
+        return False
+    status: Optional[int] = None
+    if isinstance(exc, TrackerResponseError):
+        status = exc.status_code
+    elif isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+    return not (status is not None and 400 <= status < 500)
 
 
 def _claim(

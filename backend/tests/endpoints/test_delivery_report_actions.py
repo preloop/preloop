@@ -374,7 +374,7 @@ def test_a_definite_refusal_frees_the_proposal_for_another_click(
     run = _report_run(db_session, test_user.account_id)
     url = f"{BASE}/{run.id}/actions"
     tracker["fake"].create_issue = AsyncMock(
-        side_effect=TrackerResponseError("Validation failed")
+        side_effect=TrackerResponseError("Validation failed", status_code=422)
     )
     failed = client.post(url, json={"kind": "open_issue", "index": 0})
     assert failed.status_code == 502
@@ -384,16 +384,28 @@ def test_a_definite_refusal_frees_the_proposal_for_another_click(
     assert client.post(url, json={"kind": "open_issue", "index": 0}).status_code == 200
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ReadTimeout("timed out"),
+        TrackerResponseError("Bad gateway", status_code=502),
+        TrackerResponseError("No status"),
+    ],
+    ids=["timeout", "5xx", "no_status"],
+)
 @pytest.mark.parametrize("kind", ["open_issue", "reopen"])
 def test_an_unknown_tracker_outcome_is_kept_until_dismissed(
-    kind: str, client, db_session: Session, test_user, tracker: Dict[str, Any]
+    kind: str,
+    error: Exception,
+    client,
+    db_session: Session,
+    test_user,
+    tracker: Dict[str, Any],
 ) -> None:
     run = _report_run(db_session, test_user.account_id)
     url = f"{BASE}/{run.id}/actions"
     method = "create_issue" if kind == "open_issue" else "update_issue"
-    setattr(
-        tracker["fake"], method, AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
-    )
+    setattr(tracker["fake"], method, AsyncMock(side_effect=error))
     body = (
         {"kind": "open_issue", "index": 0}
         if kind == "open_issue"

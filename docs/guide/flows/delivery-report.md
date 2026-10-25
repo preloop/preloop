@@ -233,10 +233,12 @@ section and each project has an anchor, and a change's or an issue's
 criteria and evidence expand in place.
 
 A reopen request shows as stale once the issue was edited, or new commits
-landed on its closing pull request, after the assessment. The Open issue,
-Reopen and Dismiss buttons are shown disabled for now: the server reports
-which report actions it supports (`actions` on
-`GET /api/v1/delivery-reports/{id}`) and none are implemented yet.
+landed on its closing pull request, after the assessment, and its Reopen
+button is disabled with the reason. Each proposal offers Open issue or
+Reopen and Dismiss (see [Tracker actions](#tracker-actions)); once decided
+it shows the decision instead. The server reports which actions it supports
+(`actions` on `GET /api/v1/delivery-reports/{id}`), and a server that
+reports one as unsupported gets it rendered disabled.
 
 The platform rechecks the agent's verdicts. A verdict that its cited
 evidence does not support is downgraded, and a risk flag with no evidence is
