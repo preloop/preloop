@@ -68,6 +68,7 @@ class RealtimePublisher:
         self._pending_messages = 0
         self._pending_bytes = 0
         self._last_drop_log = 0.0
+        self._last_error_log = float("-inf")
         self._generation = 0
 
     @property
@@ -110,8 +111,6 @@ class RealtimePublisher:
             self._loop = loop
             self._client_getter = client_getter
             self._wakeup = asyncio.Event()
-            if self._queue:
-                self._wakeup.set()
         self._task = loop.create_task(
             self._drain(generation), name="realtime-publisher"
         )
@@ -239,26 +238,40 @@ class RealtimePublisher:
             # nats-py buffers while reconnecting and raises when that buffer is
             # full; a forced flush with no flush_timeout can otherwise wait
             # indefinitely, so every publish is bounded here as well.
+            started = time.monotonic()
             await asyncio.wait_for(
                 client.publish(subject, payload), timeout=self.publish_timeout
             )
+            # nats-py can swallow cancellation in its forced-flush wait. In
+            # that case wait_for returns normally after the deadline, which
+            # must still be reported as a timeout rather than a publication.
+            if time.monotonic() - started >= self.publish_timeout:
+                raise asyncio.TimeoutError
+
         except asyncio.TimeoutError:
             self.stats.timed_out += 1
-            logger.warning(
-                "Realtime NATS publish to %s timed out after %.1fs",
-                subject,
-                self.publish_timeout,
-            )
+            self._report_publish_error(subject, "timed out")
         except asyncio.CancelledError:
             self._record_drop("shutdown")
             raise
         except Exception as exc:  # noqa: BLE001 - best effort, but never silent
             self.stats.failed += 1
-            logger.warning(
-                "Realtime NATS publish to %s failed: %s", subject, type(exc).__name__
-            )
+            self._report_publish_error(subject, f"failed: {type(exc).__name__}")
         else:
             self.stats.published += 1
+
+    def _report_publish_error(self, subject: str, reason: str) -> None:
+        """Rate-limit outage warnings while retaining every failure count."""
+        now = time.monotonic()
+        if now - self._last_error_log >= _DROP_LOG_INTERVAL_SECONDS:
+            self._last_error_log = now
+            logger.warning(
+                "Realtime NATS publish %s: timed_out=%d failed=%d; latest subject=%s",
+                reason,
+                self.stats.timed_out,
+                self.stats.failed,
+                subject,
+            )
 
     def _record_drop(self, reason: str, count: int = 1) -> None:
         with self._lock:

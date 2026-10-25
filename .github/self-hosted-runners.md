@@ -4,7 +4,7 @@ CI prefers GitHub-hosted `ubuntu-latest`. General self-hosted runners provide
 optional backend overflow when recent repository runs show hosted jobs queued
 without a runner for at least two minutes. This is a queue-pressure signal,
 not a measurement of GitHub's global capacity. The picker inspects at most ten
-recent runs, bounds each API request, and leaves every shard hosted when
+recent runs plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
 pressure or inventory cannot be read, the read token is absent, or
 `CI_SELF_HOSTED_TESTS=false`. Fork and Dependabot PRs always remain hosted.
 Trusted same-repository PRs and pushes may use overflow.
@@ -34,6 +34,18 @@ it, and drops that database at the end. It does not stop the server.
 GitHub-hosted `ubuntu-latest` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
+
+## Bootstrap routing
+
+Set `CI_SELF_HOSTED_BOOTSTRAP=true` to run changed-path detection, the runner
+picker and the final CI aggregator on `preloop-ci-general` for trusted
+same-repository PRs and pushes. Forks and Dependabot keep hosted routing.
+This avoids waiting for hosted capacity before selecting idle overflow
+runners. The general pool must provide `gh`, `jq`, Python 3 and coreutils;
+changed-path detection also requires a writable checkout workspace.
+`CI_SELF_HOSTED_TESTS=false` disables this routing as well as shard overflow.
+If the pool goes offline, disable the bootstrap variable and rerun; GitHub
+does not migrate an already queued assignment automatically.
 
 ## Postgres
 

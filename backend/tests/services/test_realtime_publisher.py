@@ -484,3 +484,50 @@ async def test_shared_bus_connect_from_foreign_loop_keeps_owner(
             assert "owned by another event loop" in caplog.text
         finally:
             await event_bus.event_bus_service.close()
+
+
+@pytest.mark.asyncio
+async def test_swallowed_cancellation_still_counts_publish_deadline() -> None:
+    """nats-py can swallow wait_for's timeout cancellation during a flush."""
+
+    class Client:
+        is_closed = False
+
+        async def publish(self, subject: str, payload: bytes) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return
+
+    publisher = RealtimePublisher(publish_timeout=0.01)
+    publisher.start(lambda: Client())
+    try:
+        assert publisher.submit("test", b"payload")
+        await _wait_for(lambda: publisher.pending[0] == 0)
+        assert publisher.stats.timed_out == 1
+        assert publisher.stats.published == 0
+    finally:
+        await publisher.stop()
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_warnings_are_rate_limited(caplog: Any) -> None:
+    """A transport outage records every failure without per-message warnings."""
+
+    class Client:
+        is_closed = False
+
+        async def publish(self, subject: str, payload: bytes) -> None:
+            raise RuntimeError("transport unavailable")
+
+    publisher = RealtimePublisher()
+    publisher.start(lambda: Client())
+    try:
+        for _ in range(20):
+            assert publisher.submit("test", b"payload")
+        await _wait_for(lambda: publisher.pending[0] == 0)
+        assert publisher.stats.failed == 20
+        warnings = [r for r in caplog.records if r.name.endswith("realtime_publisher")]
+        assert len(warnings) == 1
+    finally:
+        await publisher.stop()

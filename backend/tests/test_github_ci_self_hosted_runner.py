@@ -35,13 +35,10 @@ HOSTED_JOBS = (
     "test-runtime-plugins",
 )
 PINNED_JOBS = (
-    "changes",
-    "pick-runner",
     "requirements-resolve",
     "lint",
     "helm-lint",
     "cli-vuln-scan",
-    "ci",
     *HOSTED_JOBS,
 )
 TEST_JOBS = ("test-backend", *HOSTED_JOBS)
@@ -119,13 +116,23 @@ def test_non_test_jobs_stay_on_their_own_runners() -> None:
     assert jobs["test-cli-windows"]["runs-on"] == "windows-latest"
 
 
-def test_pick_runner_decides_on_a_public_runner() -> None:
-    """The chooser cannot depend on the thing it is choosing."""
-    pick = load_ci_jobs()["pick-runner"]
-    assert pick["runs-on"] == "ubuntu-latest"
-    assert pick["outputs"]["backend_plan"] == ("${{ steps.pick.outputs.backend_plan }}")
+def test_bootstrap_uses_opt_in_general_pool_for_trusted_sources() -> None:
+    """Bootstrap can escape hosted queues without moving forks to private VMs."""
+    jobs = load_ci_jobs()
+    for name in ("changes", "pick-runner", "ci"):
+        expression = jobs[name]["runs-on"]
+        assert "CI_SELF_HOSTED_BOOTSTRAP == 'true'" in expression
+        assert "CI_SELF_HOSTED_TESTS != 'false'" in expression
+        assert (
+            "github.event.pull_request.head.repo.full_name == github.repository"
+            in expression
+        )
+        assert "dependabot[bot]" in expression
+        assert "preloop-ci-general" in expression
+        assert "ubuntu-latest" in expression
+    pick = jobs["pick-runner"]
+    assert pick["outputs"]["backend_plan"] == "${{ steps.pick.outputs.backend_plan }}"
     assert "timeout-minutes" in pick
-    assert "test_runner" not in pick["outputs"]
 
 
 def test_pick_runner_falls_back_to_the_public_runner() -> None:
@@ -290,6 +297,8 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
     ("case", "expected"),
     [
         ("pressure", 2),
+        ("current-not-recent", 3),
+        ("current-and-recent", 2),
         ("no-pressure", 0),
         ("young", 0),
         ("assigned", 0),
@@ -339,7 +348,10 @@ if '/jobs?' in endpoint:
     job = dict(status='waiting' if case == 'waiting' else 'queued',
                runner_id=7 if case == 'assigned' else 0,
                labels=['self-hosted', 'ubuntu-latest'] if case == 'private-queue' else ['ubuntu-latest'], created_at=created.strftime('%Y-%m-%dT%H:%M:%SZ'))
-    print(json.dumps({'jobs': [] if case == 'no-pressure' else [job] * (30 if case == 'many' else 2)}))
+    jobs = [] if case == 'no-pressure' else [job] * (30 if case == 'many' else 2)
+    if case == 'current-not-recent':
+        jobs = [job] * 3 if '/runs/999/' in endpoint else []
+    print(json.dumps({'jobs': jobs}))
 elif '/actions/runs?' in endpoint:
     print('[123]')
 else:
@@ -362,6 +374,7 @@ else:
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
         SELF_HOSTED_TESTS="false" if case == "disabled" else "true",
         REPO="example/repository",
+        CURRENT_RUN_ID="999" if case == "current-not-recent" else "123",
         GITHUB_OUTPUT=str(output),
         GITHUB_STEP_SUMMARY=str(tmp_path / "summary"),
     )
