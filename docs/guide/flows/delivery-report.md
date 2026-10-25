@@ -58,40 +58,63 @@ create or update issues, comment, push or open pull requests.
 
 ## Report policy
 
-`DeliveryReportPolicy` in `backend/preloop/services/delivery_report.py`
-holds the defaults:
+Each account has one report policy, and each repository can override part
+of it. Set it on the Account settings page (Delivery Report) and, per
+repository, on the tracker's Projects tab. The API is
+`GET`/`PUT /api/v1/delivery-report/policy` for the account and
+`GET`/`PUT`/`DELETE /api/v1/delivery-report/policy/projects/{project_id}`
+for a repository. A save stores only the fields it changes; the
+effective policy is the defaults, then the account, then the repository
+(`resolve_policy()` in `backend/preloop/services/delivery_report.py`).
 
-| Setting | Default |
-|---|---|
-| Cadence | weekly (Monday 07:00 UTC); daily or manual |
-| Scope | every linked project |
-| Report mode | `assessed`; `deterministic` makes no model call |
-| Per-run budget | $5, applied as `agent_config.limits.max_usd` |
-| Monthly budget | $25 |
-| Drop first when short of budget | risk detail, then assessments beyond 25 changes; the shipped list is never dropped |
-| Open PR window | 7 days |
-| Inactive issue window | 14 days |
-| Criteria source | the issue's triage assessment section, else an "Acceptance" heading |
-| UI screenshot threshold | 40 changed frontend lines |
-| Tracker writes | create follow-up: off (a proposal in the report); reopen: approval; close: always deny |
+| Setting | Default | Who sets it |
+|---|---|---|
+| Report on | yes; one toggle turns it off | account, repository |
+| Cadence | weekly (Monday 07:00 UTC); daily or manual | account |
+| Scope | every linked project | account |
+| Report mode | `deterministic` (no model call) | account |
+| First report assessed | yes, once, under the per-run budget | account |
+| Per-run budget | $5, applied as `agent_config.limits.max_usd` | account |
+| Monthly budget | $25 | account |
+| Drop first when short of budget | risk detail, then assessments beyond 25 changes; the shipped list is never dropped | account |
+| Open PR window | 7 days | account, repository |
+| Inactive issue window | 14 days | account, repository |
+| Criteria source | the issue's triage assessment section, else an "Acceptance" heading | account, repository |
+| UI screenshot threshold | 40 changed frontend lines | account, repository |
+| Tracker writes | create follow-up: off (a proposal in the report); reopen: approval; close: always deny | account |
+| Recipients | the account owner, or a sponsoring lead; anyone can opt out | account |
 
 The deterministic report (shipped, closed, open, the delta and the
-deterministic risk flags) costs nothing. The assessed report adds the model
-pass, which the budgets are meant to cap. The defaults come from a measured
-run on a heavy week. Today the gateway enforces only the per-run budget, the
-same way as any other [execution limit](flow-execution.md). The report mode
-and the monthly budget are recorded in the policy
-(`DeliveryReportPolicy.assessments_allowed()`) but nothing reads them yet:
-there is no policy UI and no month-to-date spend check, so the preset always
-runs assessed under its per-run ceiling. When the run skips assessments for
-budget, the report still goes out and says so in one line
-(`summary.assessments_skipped_for_budget`).
+deterministic risk flags) costs nothing and is on by default. The first
+report is assessed once, capped by the per-run budget, so the account sees
+what an assessment adds. After that, runs stay deterministic until the
+account sets `report_mode: assessed`, which the API accepts only together
+with both budgets. Saving the account policy copies the cadence and the
+per-run budget onto the account's Delivery Report flows; a manual cadence
+turns the flow's schedule off.
+
+When a run starts, the platform decides whether it may pay for a model pass
+(`assessment_decision()`): off, deterministic, assessed, the onboarding
+assessment, or skipped because the month's report spend has reached the
+monthly budget or the hosted credit wallet is empty. A run that may not
+call a model never starts the agent. The platform builds the report from
+what the tracker sync and the pull request ledger already stored, so it
+still goes out, with one line saying assessments were skipped
+(`summary.assessments_skipped_reason`: `budget` or `no_credit`). That
+stored data has no PR title, body or file list, so file-based risk flags
+and change brief gaps appear only in assessed runs. An assessed run gets
+the effective policy as `payload.report_policy`.
+
+A repository can change only its windows, its criteria source and whether
+it is in the report. Budgets, cadence, scope, tracker writes and recipients
+stay on the account, because one run covers every repository and spends
+one budget.
 
 Tracker writes start off. Follow-up issues and reopen requests are proposals
 in the report, and opening one is the approval. Automatic creation is a
 per-account setting (`create_follow_up: allow`), meant to be enabled once
 the proposals have proven precise on that account. The report never closes
-an issue.
+an issue: a policy with `close` set to anything but `deny` is refused.
 
 ## The report
 

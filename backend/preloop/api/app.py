@@ -992,6 +992,7 @@ def _register_control_plane_routes(
         runtime_session_browser_steps,
     )
     from preloop.api.endpoints import search as search_router
+    from preloop.api.endpoints import delivery_report_policy
     from preloop.api.endpoints import (
         security_maintenance,
         security_screen,
@@ -1417,6 +1418,15 @@ def _register_control_plane_routes(
         session_saved_searches.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+
+    # Delivery Report policy (#2020): account layer and per-repository
+    # overrides. Saving the account layer is a budget decision.
+    app.include_router(
+        delivery_report_policy.router,
+        prefix="/api/v1",
+        tags=["Delivery Report"],
         dependencies=[Depends(get_current_active_user)],
     )
 

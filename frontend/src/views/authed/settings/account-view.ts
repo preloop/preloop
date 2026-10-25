@@ -1,5 +1,6 @@
 import '../../../components/runner-policy-settings';
 import '../../../components/weekly-report-settings';
+import '../../../components/delivery-report-policy-settings';
 import { hasPermission, type UserPermissions } from '../../../permissions';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
@@ -788,6 +789,7 @@ export class AccountView extends LitElement {
               : ''
           }
           <weekly-report-settings></weekly-report-settings>
+          <delivery-report-policy-settings></delivery-report-policy-settings>
           <runner-policy-settings></runner-policy-settings>
           ${this._renderSessionArtifactUsage()}
           ${
