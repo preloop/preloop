@@ -46,6 +46,19 @@ export class TalkSessionPicker extends LitElement {
     return this;
   }
 
+  /** Open the list, as `/resume` does. */
+  public async show(): Promise<void> {
+    await this.updateComplete;
+    const dropdown = this.querySelector('sl-dropdown') as
+      (HTMLElement & { show?: () => Promise<void> }) | null;
+    await dropdown?.show?.();
+    // Keyboard lands in the list: arrows pick, Esc closes it.
+    const first = this.querySelector<HTMLElement>(
+      'sl-menu-item[aria-checked="true"], sl-menu-item:not([disabled])'
+    );
+    first?.focus();
+  }
+
   private select(sessionId: string): void {
     this.dispatchEvent(
       new CustomEvent(TALK_SESSION_SELECT_EVENT, {

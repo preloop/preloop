@@ -47,6 +47,22 @@ export class SessionApprovalCard extends LitElement {
       background: var(--sl-color-neutral-50);
       overflow-wrap: anywhere;
     }
+    article:focus-visible {
+      outline: 2px solid var(--sl-color-primary-600);
+      outline-offset: 2px;
+    }
+    .keys {
+      color: var(--console-meta-color, var(--sl-color-neutral-600));
+      font-size: var(--console-text-meta, 0.8125rem);
+    }
+    kbd {
+      font-family: var(
+        --console-font-mono,
+        'JetBrains Mono',
+        ui-monospace,
+        monospace
+      );
+    }
     header,
     .actions {
       display: flex;
@@ -167,6 +183,41 @@ export class SessionApprovalCard extends LitElement {
       if (this.request.id === id) this.busy = false;
     }
   }
+  /** Put keyboard focus on the card, where Y and N decide. */
+  public focusChoices(): boolean {
+    const article = this.renderRoot.querySelector<HTMLElement>(
+      'article[data-keyboard-choices]'
+    );
+    article?.focus({ preventScroll: true });
+    return Boolean(article);
+  }
+
+  /**
+   * The CLI's inline choice, by key: Y or 1 approves, N or 2 denies (still
+   * through the deny confirmation). Keys typed into the comment box or a
+   * form are text, not choices.
+   */
+  private onChoiceKey(event: KeyboardEvent): void {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing)
+      return;
+    const origin = event.composedPath()[0] as HTMLElement | undefined;
+    if (
+      origin &&
+      (origin.isContentEditable ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(origin.tagName) ||
+        origin.closest?.('answer-form, question-answer-panel'))
+    )
+      return;
+    const key = event.key.toLowerCase();
+    if (key === 'y' || key === '1') {
+      event.preventDefault();
+      if (!this.busy && !this.confirming) void this.approve();
+    } else if (key === 'n' || key === '2') {
+      event.preventDefault();
+      void this.deny();
+    }
+  }
+
   private async approve(): Promise<void> {
     const form = this.renderRoot.querySelector<AnswerForm>('answer-form');
     if (form && !form.validate()) return;
@@ -200,7 +251,14 @@ export class SessionApprovalCard extends LitElement {
       !this.forbidden &&
       isUnexpiredPendingRequest(r, this.now) &&
       !this.voted;
-    return html`<article aria-label=${`Approval for ${r.tool_name}`}>
+    const keyboardChoices = enabled && !r.is_question;
+    return html`<article
+      aria-label=${`Approval for ${r.tool_name}`}
+      tabindex=${keyboardChoices ? '0' : nothing}
+      ?data-keyboard-choices=${keyboardChoices}
+      aria-keyshortcuts=${keyboardChoices ? 'Y N 1 2' : nothing}
+      @keydown=${keyboardChoices ? (event: KeyboardEvent) => this.onChoiceKey(event) : nothing}
+    >
       <header>
         <span>${r.tool_name}</span
         ><sl-badge variant=${approvalStatusVariant(r.status)}
@@ -259,6 +317,9 @@ export class SessionApprovalCard extends LitElement {
                       >
                         Deny
                       </sl-button>
+                      <span class="keys" data-testid="approval-keys"
+                        ><kbd>Y</kbd> approve · <kbd>N</kbd> deny</span
+                      >
                     </div>`
             }`
           : nothing
