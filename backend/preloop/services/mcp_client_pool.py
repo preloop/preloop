@@ -51,13 +51,25 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
     return exc
 
 
+class MCPAuthenticationError(PermissionError):
+    """Sanitized upstream auth rejection retaining its HTTP status for audit."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(
+            f"MCP server rejected authentication or authorization (HTTP {status_code}). "
+            "Configure or reconnect authentication in Preloop, then rescan. "
+            "Credentials cached by your local agent may require a separate sign-in."
+        )
+
+
 def describe_mcp_connection_error(exc: BaseException) -> str:
     """Explain the failure without exposing request URLs, headers or credentials."""
     cause = _unwrap_exception_group(exc)
     from preloop.services.upstream_mcp_oauth import OAuthError
     from preloop.models.crud.upstream_mcp_oauth import OAuthContextError
 
-    if isinstance(cause, (OAuthError, OAuthContextError)):
+    if isinstance(cause, (OAuthError, OAuthContextError, MCPAuthenticationError)):
         return str(cause)
     if isinstance(cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)):
         code = cause.response.status_code
@@ -390,6 +402,12 @@ class MCPClient:
             )
             self._connected = False
             if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
                 if self.auth_type == "oauth":
                     raise PermissionError(
                         describe_mcp_connection_error(target_exc)
@@ -452,6 +470,12 @@ class MCPClient:
             )
 
             if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
                 if self.auth_type == "oauth":
                     raise PermissionError(
                         describe_mcp_connection_error(target_exc)
@@ -582,6 +606,12 @@ class MCPClient:
                     "whether to invoke it again. Preloop did not replay the request."
                 ) from None
             if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
                 if self.auth_type == "oauth":
                     raise PermissionError(message) from None
                 raise ConnectionError(message) from None

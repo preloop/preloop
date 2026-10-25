@@ -700,10 +700,16 @@ def _proxied_exception_outcome(
     ``http_<status>`` code; anything else is ``failed``. Transport and auth
     failures are written to the MCP server's ``last_error``.
     """
-    status_code = getattr(getattr(cause, "response", None), "status_code", None)
+    from preloop.services.mcp_client_pool import MCPAuthenticationError
+
+    status_code = (
+        cause.status_code
+        if isinstance(cause, MCPAuthenticationError)
+        else getattr(getattr(cause, "response", None), "status_code", None)
+    )
     reason = _short_reason(cause) or type(cause).__name__
     if isinstance(
-        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError, MCPAuthenticationError)
     ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
