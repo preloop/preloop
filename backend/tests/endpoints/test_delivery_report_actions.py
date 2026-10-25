@@ -306,15 +306,24 @@ def test_dismiss_needs_a_reason_and_blocks_the_action(
 
 
 def test_a_member_without_the_permission_cannot_act(
-    client, db_session: Session, test_user, account_owner: Any, tracker: Dict[str, Any]
+    db_session: Session, test_viewer_user: Any, tracker: Dict[str, Any]
 ) -> None:
-    account_owner.primary_user_id = None
-    db_session.flush()
-    run = _report_run(db_session, test_user.account_id)
-    response = client.post(
-        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
-    )
-    assert response.status_code == 403
+    from fastapi.testclient import TestClient
+
+    from preloop.api.app import create_app
+    from preloop.api.auth import get_current_active_user
+    from preloop.models.db.session import get_db_session
+
+    # The viewer's own account, so only the missing permission can refuse it.
+    run = _report_run(db_session, test_viewer_user.account_id)
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+    with TestClient(app) as viewer_client:
+        response = viewer_client.post(
+            f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
+        )
+    assert response.status_code == 403, response.text
     assert tracker["fake"].calls == []
 
 
