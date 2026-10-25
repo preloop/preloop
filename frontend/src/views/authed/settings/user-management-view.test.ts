@@ -131,10 +131,10 @@ describe('UserManagementView', () => {
     try {
       await waitUntil(() => (element as any).users?.length === 1);
       await element.updateComplete;
-      const card = element.shadowRoot!.querySelector(
-        `sl-card[data-user-id="${sampleUser.id}"]`
+      const row = element.shadowRoot!.querySelector(
+        `tr[data-user-id="${sampleUser.id}"]`
       )!;
-      expect(card.getAttribute('aria-current')).to.equal('true');
+      expect(row.getAttribute('aria-current')).to.equal('true');
     } finally {
       element.remove();
     }
@@ -179,8 +179,73 @@ describe('UserManagementView', () => {
     );
     expect(link.textContent!.trim()).to.equal('Alice Example');
     expect(
-      element.shadowRoot!.querySelectorAll('.user-actions sl-button').length
+      element.shadowRoot!.querySelectorAll('.row-menu sl-menu-item').length
     ).to.be.greaterThan(1);
+  });
+
+  it('lays the people out as a console table, one row per person', async () => {
+    fetchStub = createFetchStub({
+      users: [
+        {
+          ...sampleUser,
+          last_login: new Date(Date.now() - 3 * 86400000).toISOString(),
+          roles: [{ id: 'r-1', name: 'owner' }],
+          inherited_roles: [
+            { id: 'r-2', name: 'team_admin', team_name: 'Founders' },
+            // Held directly as well: one chip, not two.
+            { id: 'r-1', name: 'owner', team_name: 'Founders' },
+          ],
+        },
+        { ...sampleUser, id: 'user-2', email: 'bob@example.com' },
+      ],
+    });
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+    await waitUntil(() => (element as any).users?.length === 2);
+    await element.updateComplete;
+
+    const root = element.shadowRoot!;
+    expect(root.querySelector('sl-card[data-user-id]')).to.equal(null);
+    const headers = [
+      ...root.querySelectorAll('table.styled-table thead th'),
+    ].map((th) => (th.textContent || '').trim());
+    expect(headers).to.deep.equal([
+      'Name',
+      'Email',
+      'Status',
+      'Sign-in',
+      'Roles',
+      'Teams',
+      'Last login',
+      'Actions',
+    ]);
+    const rows = root.querySelectorAll('table.styled-table tbody tr');
+    expect(rows.length).to.equal(2);
+    const first = rows[0] as HTMLTableRowElement;
+    // The team is a column of its own, not micro-text glued to the role.
+    expect(first.querySelector('.teams-cell')!.textContent!.trim()).to.equal(
+      'Founders'
+    );
+    expect(first.querySelector('.roles-cell')!.textContent).to.not.contain('(');
+    const roleChips = [...first.querySelectorAll('.roles-cell sl-badge')];
+    expect(roleChips.map((chip) => chip.textContent!.trim())).to.deep.equal([
+      'Owner',
+      'Team admin',
+    ]);
+    expect(roleChips[1].getAttribute('title')).to.equal('From team: Founders');
+    expect(first.querySelector('.last-login')!.textContent!.trim()).to.equal(
+      '3d ago'
+    );
+    expect(
+      (rows[1] as HTMLElement).querySelector('.last-login')!.textContent!.trim()
+    ).to.equal('Never');
+    // Every chip is the shared tinted pill.
+    root.querySelectorAll('tbody sl-badge').forEach((chip) => {
+      expect(chip.hasAttribute('pill'), chip.textContent || '').to.equal(true);
+      expect(chip.classList.contains('solid')).to.equal(false);
+      expect(chip.getAttribute('variant')).to.not.equal('primary');
+    });
   });
 
   it('labels the sign-in source in words and keeps delete quiet', async () => {
@@ -200,7 +265,7 @@ describe('UserManagementView', () => {
     await element.updateComplete;
 
     const chips = Array.from(
-      element.shadowRoot?.querySelectorAll('.user-meta sl-badge') || []
+      element.shadowRoot?.querySelectorAll('tbody tr sl-badge') || []
     );
     const labels = chips.map((chip) => (chip.textContent || '').trim());
     // A raw enum value is not a label a reader can act on.
@@ -212,16 +277,18 @@ describe('UserManagementView', () => {
       expect(chip.classList.contains('solid')).to.equal(false);
     });
 
-    const del = element.shadowRoot?.querySelector(
-      '.user-actions sl-button[variant="danger"]'
+    // No red button on the row: the destructive action is the last item
+    // of the row's kebab menu, after a divider.
+    expect(
+      element.shadowRoot?.querySelector('tbody sl-button[variant="danger"]')
+    ).to.equal(null);
+    const items = Array.from(
+      element.shadowRoot?.querySelectorAll('.row-menu sl-menu-item') || []
     );
-    expect(del?.hasAttribute('outline')).to.equal(true);
-    expect(del?.classList.contains('danger-action')).to.equal(true);
-    // Last in the row, after the gap.
-    const actions = Array.from(
-      element.shadowRoot?.querySelectorAll('.user-actions sl-button') || []
-    );
-    expect(actions[actions.length - 1]).to.equal(del);
+    const del = items[items.length - 1];
+    expect(del.getAttribute('data-action')).to.equal('deactivate');
+    expect(del.classList.contains('danger-item')).to.equal(true);
+    expect(del.previousElementSibling?.tagName).to.equal('SL-DIVIDER');
   });
 
   it('names sign-in sources and roles without exposing the schema', () => {
@@ -237,7 +304,7 @@ describe('UserManagementView', () => {
     expect(UserManagementView.roleLabel('team_admin')).to.equal('Team admin');
   });
 
-  it('renders an empty grid when there are no users', async () => {
+  it('renders no rows when there are no users', async () => {
     fetchStub = createFetchStub({ users: [] });
     const element = (await fixture(
       html`<user-management-view></user-management-view>`
@@ -246,8 +313,8 @@ describe('UserManagementView', () => {
     await waitUntil(() => !(element as any).isLoading, 'still loading');
     await element.updateComplete;
 
-    const cards = element.shadowRoot?.querySelectorAll('.users-grid sl-card');
-    expect(cards?.length).to.equal(0);
+    const rows = element.shadowRoot?.querySelectorAll('tbody tr[data-user-id]');
+    expect(rows?.length).to.equal(0);
   });
 
   it('shows an error when user loading fails', async () => {
@@ -316,7 +383,7 @@ describe('UserManagementView', () => {
     try {
       const element = await mountWithUser();
       const deactivate = element.shadowRoot!.querySelector(
-        '.user-actions sl-button[variant="danger"]'
+        '.row-menu sl-menu-item[data-action="deactivate"]'
       ) as HTMLElement;
 
       deactivate.click();
@@ -336,12 +403,16 @@ describe('UserManagementView', () => {
     }
   });
 
-  it('names every icon-only action for assistive tech', async () => {
+  it('names the row menu and every action in it', async () => {
     fetchStub = createFetchStub({ users: [sampleUser] });
     const element = await mountWithUser();
+    const trigger = element.shadowRoot!.querySelector(
+      '.row-menu sl-icon-button[slot="trigger"]'
+    )!;
+    expect(trigger.getAttribute('label')).to.equal('Actions for Alice Example');
     const labels = [
-      ...element.shadowRoot!.querySelectorAll('.user-actions sl-icon'),
-    ].map((icon) => icon.getAttribute('label'));
+      ...element.shadowRoot!.querySelectorAll('.row-menu sl-menu-item'),
+    ].map((item) => (item.textContent || '').trim());
     expect(labels).to.deep.equal([
       'Manage roles',
       'Edit account membership',
@@ -460,7 +531,7 @@ describe('UserManagementView subaccount access', () => {
       html`<user-management-view></user-management-view>`
     );
     await waitUntil(
-      () => el.shadowRoot!.querySelector('[data-id], sl-card'),
+      () => el.shadowRoot!.querySelector('tr[data-user-id]'),
       'rows did not render'
     );
     await waitUntil(() => api!.callsTo(SUBS).length > 0, 'no subaccount read');

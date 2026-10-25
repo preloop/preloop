@@ -685,3 +685,16 @@ sl-dialog.large::part(panel) {
     align-items: center;
     height: 400px;
 }
+
+/* The destructive item of a row's kebab menu (DESIGN.md "Destructive
+   actions"): last, after a divider, in danger ink, never a red button on
+   the row itself. */
+sl-menu-item.danger-item::part(base),
+sl-menu-item.danger-item::part(prefix) {
+    color: var(--sl-color-danger-600);
+}
+
+/* A row menu sits in a right-aligned actions cell; its items read left. */
+.row-menu sl-menu {
+    text-align: left;
+}

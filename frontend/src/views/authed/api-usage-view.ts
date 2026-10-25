@@ -1021,12 +1021,16 @@ export class ApiUsageView extends LitElement {
           </div>
           ${
             budget.hard_limit_exceeded
-              ? html`<sl-badge variant="danger">Hard limit exceeded</sl-badge>`
+              ? html`<sl-badge class="chip" pill variant="danger"
+                  >Hard limit exceeded</sl-badge
+                >`
               : budget.soft_limit_exceeded
-                ? html`<sl-badge variant="warning"
+                ? html`<sl-badge class="chip" pill variant="warning"
                     >Soft limit exceeded</sl-badge
                   >`
-                : html`<sl-badge variant="success">Within limits</sl-badge>`
+                : html`<sl-badge class="chip" pill variant="success"
+                    >Within limits</sl-badge
+                  >`
           }
         </div>
 
@@ -1149,11 +1153,13 @@ export class ApiUsageView extends LitElement {
           </div>
           ${
             hasHits
-              ? html`<sl-badge variant="warning">
+              ? html`<sl-badge class="chip" pill variant="warning">
                   ${this.formatNumber(totals.rate_limited_requests)}
                   hit${totals.rate_limited_requests === 1 ? '' : 's'}
                 </sl-badge>`
-              : html`<sl-badge variant="success">No 429s</sl-badge>`
+              : html`<sl-badge class="chip" pill variant="success"
+                  >No 429s</sl-badge
+                >`
           }
         </div>
 
@@ -1725,7 +1731,11 @@ export class ApiUsageView extends LitElement {
               }
             </div>
           </div>
-          <sl-badge variant=${item.outcome === 'error' ? 'danger' : 'success'}>
+          <sl-badge
+            class="chip"
+            pill
+            variant=${item.outcome === 'error' ? 'danger' : 'success'}
+          >
             ${item.outcome}
           </sl-badge>
         </div>

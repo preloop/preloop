@@ -1,8 +1,9 @@
+import { relativeTime } from '../../../utils/relative-time';
+import { formatFutureRelativeTime } from '../../../utils/date';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
-import { LitElement, html, css, unsafeCSS } from 'lit';
-import { relativeTime } from '../../../utils/relative-time';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -22,6 +23,11 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
+import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
@@ -69,63 +75,33 @@ export class InvitationManagementView extends LitElement {
         display: block;
       }
 
-      .invitations-grid {
-        display: grid;
-        gap: 1rem;
-      }
-
-      sl-card {
-        width: 100%;
-      }
-
-      .invitation-card-content {
-        display: grid;
-        grid-template-columns: auto 1fr auto;
-        gap: 1rem;
-        align-items: center;
-      }
-
-      .invitation-icon {
-        font-size: 2rem;
-        width: 48px;
-        height: 48px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--sl-color-primary-50);
-        border-radius: 50%;
-        color: var(--sl-color-primary-600);
-      }
-
-      .invitation-details {
-        flex: 1;
+      /* The console table pattern (DESIGN.md "Tables and views"). */
+      .invitations-table td {
+        vertical-align: middle;
       }
 
       .invitation-email {
         font-weight: 600;
-        font-size: 1rem;
-        margin: 0 0 0.25rem 0;
       }
 
-      .invitation-date {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-        margin: 0 0 0.5rem 0;
+      .date-cell {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        white-space: nowrap;
       }
 
-      .invitation-meta {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
+      .actions-cell {
+        width: 1%;
+        white-space: nowrap;
       }
 
-      .invitation-actions {
-        display: flex;
-        gap: 0.5rem;
-      }
-
-      .invitation-actions .danger-action {
-        margin-left: var(--sl-spacing-large);
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
 
       .form-grid {
@@ -391,94 +367,109 @@ export class InvitationManagementView extends LitElement {
     }
 
     return html`
-      <div class="invitations-grid">
-        ${repeat(
-          invitations,
-          (invitation) => invitation.id,
-          (invitation) => html`
-            <sl-card>
-              <div class="invitation-card-content">
-                <div class="invitation-icon">
-                  <sl-icon name="envelope-fill"></sl-icon>
-                </div>
-                <div class="invitation-details">
-                  <h3 class="invitation-email">${invitation.email}</h3>
-                  <p class="invitation-date">
-                    Sent ${relativeTime(invitation.created_at)}
-                  </p>
-                  <div class="invitation-meta">
-                    <sl-badge
-                      class="status-chip"
-                      variant="${this.getStatusVariant(invitation.status)}"
+      <sl-card class="table-card">
+        <div class="table-scroll">
+          <table
+            class="styled-table invitations-table"
+            aria-label="Invitations"
+          >
+            <thead>
+              <tr>
+                <th scope="col">Email</th>
+                <th scope="col">Status</th>
+                <th scope="col">Sent</th>
+                <th scope="col">Expires</th>
+                <th scope="col">Accepted</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${repeat(
+                invitations,
+                (invitation) => invitation.id,
+                (invitation) => this.renderInvitationRow(invitation)
+              )}
+            </tbody>
+          </table>
+        </div>
+      </sl-card>
+    `;
+  }
+
+  /**
+   * When a pending invitation stops working, as a countdown ("in 7d"). A
+   * column of ages beside a bare date reads as two kinds of fact.
+   */
+  static expiresLabel(value: string, now: Date = new Date()): string {
+    const remaining = parseUTCDate(value).getTime() - now.getTime();
+    if (remaining <= 0) return 'Expired';
+    if (remaining < 86400000) return formatFutureRelativeTime(value, now);
+    return `in ${Math.ceil(remaining / 86400000)}d`;
+  }
+
+  /** A date cell: relative, with the absolute in the tooltip. */
+  private renderDate(value: string | null | undefined, future = false) {
+    if (!value) return nothing;
+    if (!future) return relativeTime(value);
+    const label = InvitationManagementView.expiresLabel(value);
+    return html`<span title=${this.formatDate(value)}>${label}</span>`;
+  }
+
+  private renderInvitationRow(invitation: UserInvitation) {
+    const pending = invitation.status === 'pending';
+    const canInvite = this.editPermissions.allows('invite_users');
+    return html`
+      <tr data-invitation-id=${invitation.id}>
+        <td class="invitation-email">${invitation.email}</td>
+        <td>
+          <sl-badge
+            class="status-chip"
+            pill
+            variant=${this.getStatusVariant(invitation.status)}
+            >${InvitationManagementView.statusLabel(invitation.status)}</sl-badge
+          >
+        </td>
+        <td class="date-cell">${this.renderDate(invitation.created_at)}</td>
+        <td class="date-cell">
+          ${pending ? this.renderDate(invitation.expires_at, true) : nothing}
+        </td>
+        <td class="date-cell">${this.renderDate(invitation.accepted_at)}</td>
+        <td class="actions-cell">
+          ${
+            pending
+              ? html`<sl-dropdown class="row-menu" placement="bottom-end" hoist>
+                  <sl-icon-button
+                    slot="trigger"
+                    name="three-dots-vertical"
+                    label="Actions for ${invitation.email}"
+                  ></sl-icon-button>
+                  <sl-menu>
+                    <sl-menu-item
+                      data-action="resend"
+                      ?disabled=${!canInvite}
+                      title=${canInvite ? '' : 'Requires invite_users'}
+                      @click=${() => this.handleResendInvitation(invitation)}
                     >
-                      ${InvitationManagementView.statusLabel(invitation.status)}
-                    </sl-badge>
-                    ${
-                      invitation.status === 'pending'
-                        ? html`
-                            <sl-badge class="chip" variant="neutral">
-                              Expires ${relativeTime(invitation.expires_at)}
-                            </sl-badge>
-                          `
-                        : ''
-                    }
-                    ${
-                      invitation.accepted_at
-                        ? html`
-                            <sl-badge class="chip" variant="success">
-                              Accepted ${relativeTime(invitation.accepted_at)}
-                            </sl-badge>
-                          `
-                        : ''
-                    }
-                  </div>
-                </div>
-                <div class="invitation-actions">
-                  ${
-                    invitation.status === 'pending'
-                      ? html`
-                          <sl-tooltip
-                            content=${!this.editPermissions.allows('invite_users') ? 'Requires invite_users' : ''}
-                            ><sl-button
-                              ?disabled=${!this.editPermissions.allows('invite_users')}
-                              size="small"
-                              @click=${() =>
-                                this.handleResendInvitation(invitation)}
-                              title="Resend invitation"
-                            >
-                              <sl-icon
-                                name="arrow-repeat"
-                                label="Resend invitation"
-                              ></sl-icon> </sl-button
-                          ></sl-tooltip>
-                          <!-- Outline, last, after a gap (DESIGN.md
-                               "Destructive actions"). -->
-                          <sl-tooltip
-                            content=${!this.editPermissions.allows('invite_users') ? 'Requires invite_users' : ''}
-                            ><sl-button
-                              ?disabled=${!this.editPermissions.allows('invite_users')}
-                              class="danger-action"
-                              size="small"
-                              variant="danger"
-                              outline
-                              @click=${() =>
-                                this.handleCancelInvitation(invitation)}
-                              title="Cancel invitation"
-                            >
-                              <sl-icon
-                                name="x-lg"
-                                label="Cancel invitation"
-                              ></sl-icon> </sl-button
-                          ></sl-tooltip>
-                        `
-                      : ''
-                  }
-                </div>
-              </div>
-            </sl-card>
-          `
-        )}
-      </div>
+                      <sl-icon slot="prefix" name="arrow-repeat"></sl-icon>
+                      Resend invitation
+                    </sl-menu-item>
+                    <sl-divider></sl-divider>
+                    <sl-menu-item
+                      class="danger-item"
+                      data-action="cancel"
+                      ?disabled=${!canInvite}
+                      title=${canInvite ? '' : 'Requires invite_users'}
+                      @click=${() => this.handleCancelInvitation(invitation)}
+                    >
+                      <sl-icon slot="prefix" name="x-lg"></sl-icon>
+                      Cancel invitation
+                    </sl-menu-item>
+                  </sl-menu>
+                </sl-dropdown>`
+              : nothing
+          }
+        </td>
+      </tr>
     `;
   }
 }

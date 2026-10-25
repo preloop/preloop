@@ -82,16 +82,18 @@ export function isExecutionRequestFailureStatus(
 }
 
 /**
- * One taxonomy for every execution chip: green finished, red failed, blue
- * still going, amber waiting on a person, neutral for the rest (pending,
- * cancelled, stopped). Red is reserved for a run that actually broke.
+ * One taxonomy for every execution chip: green finished, red failed, amber
+ * waiting on a person, neutral for everything else, including a run still
+ * going (DESIGN.md Chips: a run in flight is a state, not an outcome; the
+ * pulsing dot beside the chip carries liveness). Red is reserved for a run
+ * that actually broke.
  *
- * WAITING_FOR_HUMAN is amber rather than blue on purpose: nothing is
+ * WAITING_FOR_HUMAN is amber rather than neutral on purpose: nothing is
  * computing, and the thing that unblocks it is a person, not patience.
  */
 export function executionStatusVariant(
   status: string | null | undefined
-): 'success' | 'danger' | 'primary' | 'warning' | 'neutral' {
+): 'success' | 'danger' | 'warning' | 'neutral' {
   const normalized = (status || '').toUpperCase();
   if (EXECUTION_DANGER_STATUSES.has(normalized)) {
     return 'danger';
@@ -103,7 +105,7 @@ export function executionStatusVariant(
     case 'STARTING':
     case 'INITIALIZING':
     case 'RESUMING':
-      return 'primary';
+      return 'neutral';
     case 'WAITING_FOR_HUMAN':
       return 'warning';
     default:
