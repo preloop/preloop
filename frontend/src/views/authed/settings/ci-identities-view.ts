@@ -322,10 +322,6 @@ export class CiIdentitiesView extends LitElement {
           padding: var(--sl-spacing-large);
           color: var(--sl-color-neutral-900);
         }
-        ci-identities-view h1 {
-          font-size: var(--console-text-h1, 1.625rem);
-          font-weight: 600;
-        }
         ci-identities-view h2 {
           font-size: var(--console-text-card-title, 0.9375rem);
           font-weight: 600;

@@ -3447,7 +3447,7 @@ ${execution.model_output_summary}</pre>
                         ? `No log line matches "${query}".`
                         : this.isLoadingLogs
                           ? 'Loading logs…'
-                          : 'Waiting for logs...'
+                          : 'Waiting for logs…'
                     }
                   </p>
                 </div>`

@@ -655,6 +655,18 @@ export class InventoryCard extends LitElement {
           background-color: var(--console-hover-tint);
         }
 
+        .spend-detail {
+          border: 0;
+          padding: 0;
+          background: none;
+          color: inherit;
+          font: inherit;
+          cursor: help;
+        }
+        .spend-detail:focus-visible {
+          outline: 2px solid var(--sl-color-primary-600);
+          outline-offset: 2px;
+        }
         /* Numbers pay less for their gutters than words do: the columns are
          narrow, and "Requests" has to fit its own heading. */
         .inventory-table th.num,
@@ -1383,6 +1395,20 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  /** Compact spend detail available to pointer, keyboard and touch users. */
+  private renderSpend(
+    cost: number | null | undefined,
+    estimate: SubscriptionEstimate | null | undefined,
+    subscriptionRequests: number | undefined
+  ) {
+    const detail = spendTitle(cost, estimate, subscriptionRequests);
+    return html`<sl-tooltip content=${detail} trigger="hover focus click" hoist>
+      <button type="button" class="spend-detail" aria-label=${detail}>
+        ${formatUsd(cost)}
+      </button>
+    </sl-tooltip>`;
+  }
+
   /**
    * One usage number, or the space it will occupy. The skeleton is the width
    * of a number rather than the width of the column, so the cell does not
@@ -1435,8 +1461,8 @@ export class InventoryCard extends LitElement {
         // about 60px, enough for "No model" and an ellipsised alias.
         // 212, not 240: the spend column took 28px for the line under it
         // that says what the spend would be without subscriptions (D-05).
-        // That line now lives in the spend cell's title, so "$ est." is back
-        // to one figure and the name takes the width it was giving up.
+        // The accessible tooltip now holds that line, so "$ est." is one
+        // figure and the name takes the width it was giving up.
         width: 212,
         minWidth: 160,
         truncate: true,
@@ -1509,14 +1535,11 @@ export class InventoryCard extends LitElement {
         width: 72,
         cell: (row) =>
           this.renderUsageCell(
-            html`<span
-              title=${spendTitle(
-                row.cost,
-                row.withoutSubscriptions,
-                row.subscriptionRequests
-              )}
-              >${formatUsd(row.cost)}</span
-            >`
+            this.renderSpend(
+              row.cost,
+              row.withoutSubscriptions,
+              row.subscriptionRequests
+            )
           ),
       },
       {
@@ -1873,7 +1896,7 @@ export class InventoryCard extends LitElement {
                             )}
                           </td>
                           <td class="num" data-label="Spend">
-                            ${this.renderUsageCell(html`<span title=${spendTitle(row.cost, row.withoutSubscriptions, row.subscriptionRequests)}>${formatUsd(row.cost)}</span>`)}
+                            ${this.renderUsageCell(this.renderSpend(row.cost, row.withoutSubscriptions, row.subscriptionRequests))}
                           </td>
                         </tr>
                       `

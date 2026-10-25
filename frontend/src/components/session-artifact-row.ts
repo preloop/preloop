@@ -496,7 +496,7 @@ ${shown}${more ? '\n...' : ''}</pre>
           ?disabled=${this.audioLoading}
           @click=${() => this.playAudio()}
         >
-          ${this.audioLoading ? `Loading ${noun}...` : `Play ${noun}`}
+          ${this.audioLoading ? `Loading ${noun}…` : `Play ${noun}`}
         </button>
         <button class="link" @click=${() => this.download()}>Download</button>
       </div>

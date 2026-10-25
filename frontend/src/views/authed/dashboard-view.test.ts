@@ -2387,11 +2387,11 @@ describe('DashboardView', () => {
         'inventory-card'
       ) as any;
       await inventory.updateComplete;
-      // One figure in the cell; the estimate is in the spend title (UX3-04).
+      // One figure in the cell; the estimate is in the accessible tooltip (UX3-04).
       const cell = inventory.shadowRoot.querySelector(
-        'td[data-label="Spend"] span[title]'
+        'td[data-label="Spend"] sl-tooltip'
       );
-      expect(cell.getAttribute('title')).to.contain(
+      expect(cell.getAttribute('content')).to.contain(
         'Without subscriptions: $2.34.'
       );
     });

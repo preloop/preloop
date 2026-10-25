@@ -4539,7 +4539,7 @@ export class PreloopFlowForm extends LitElement {
         >
           <sl-spinner style="font-size: 2.5rem;"></sl-spinner>
           <div style="color: var(--sl-color-neutral-600);">
-            Loading flow reference models, tools, and trackers...
+            Loading flow reference models, tools, and trackers…
           </div>
         </div>
       `;

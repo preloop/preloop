@@ -1269,7 +1269,7 @@ describe('inventory-card Agents columns', () => {
     );
   });
 
-  it('keeps the without-subscriptions figure in the spend title, not a second line', async () => {
+  it('keeps the without-subscriptions figure in a compact accessible tooltip', async () => {
     const el = await card({
       agentRows: [
         agentRow({
@@ -1290,10 +1290,52 @@ describe('inventory-card Agents columns', () => {
     expect(cell.querySelector('[data-testid="without-subscriptions"]')).to.not
       .exist;
     expect((cell.textContent || '').trim()).to.equal('$0.74');
-    const title = cell.querySelector('span[title]')!.getAttribute('title')!;
+    const title = cell.querySelector('sl-tooltip')!.getAttribute('content')!;
     expect(title).to.contain('Without subscriptions: at least $6,197.29');
     expect(title).to.contain('2 of 3 subscription requests');
   });
+
+  for (const tab of ['agents', 'users']) {
+    it(`opens ${tab} spend details by focus and tap`, async () => {
+      const spend = {
+        cost: 0.74,
+        withoutSubscriptions: {
+          value: 6197.29,
+          partial: false,
+          text: '$6,197.29',
+          title: 'All subscription requests carry an API-equivalent price',
+        },
+        subscriptionRequests: 3,
+      };
+      const el = await card({
+        agentRows: [agentRow(spend)],
+        showUsers: true,
+        usersTotal: 1,
+        userRows: [userRow(spend)],
+      });
+      await showTab(el, tab);
+      const button = el.shadowRoot!.querySelector<HTMLButtonElement>(
+        'button.spend-detail'
+      )!;
+      const tooltip = button.closest('sl-tooltip') as HTMLElement & {
+        open: boolean;
+      };
+      expect(button.getAttribute('aria-label')).to.contain(
+        'Without subscriptions:'
+      );
+      button.focus();
+      await waitUntil(() => tooltip.open, 'keyboard focus opens spend details');
+      button.blur();
+      await waitUntil(
+        () => !tooltip.open,
+        'leaving focus closes spend details'
+      );
+      button.click();
+      await waitUntil(() => tooltip.open, 'tap/click opens spend details');
+      button.click();
+      await waitUntil(() => !tooltip.open, 'a second tap closes spend details');
+    });
+  }
 
   it('keeps a resized width across reloads', async () => {
     const el = await card({ agentRows: [agentRow()] });
