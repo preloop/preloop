@@ -393,3 +393,81 @@ func TestWaitForExecutionTimeout(t *testing.T) {
 		t.Fatalf("expected timeout, got %v", err)
 	}
 }
+
+// A dropped connection while polling says nothing about the execution: the
+// wait keeps going and reports the real verdict (#1683).
+func TestWaitForExecutionRidesOutTransientReadErrors(t *testing.T) {
+	polls := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/logs") {
+			_ = json.NewEncoder(w).Encode(flowLogsResponse{Source: "database"})
+			return
+		}
+		polls++
+		switch polls {
+		case 1:
+			_ = json.NewEncoder(w).Encode(flowExecutionStatus{ID: "exec-t", Status: "RUNNING"})
+		case 2:
+			// Kill the connection mid-response, like a reset HTTP/2 stream.
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		case 3:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			_ = json.NewEncoder(w).Encode(flowExecutionStatus{ID: "exec-t", Status: "SUCCEEDED"})
+		}
+	}))
+	defer server.Close()
+
+	oldSleep := flowSleep
+	flowSleep = func(time.Duration) {}
+	t.Cleanup(func() { flowSleep = oldSleep })
+
+	var out bytes.Buffer
+	client := api.NewClientWithToken(server.URL, "tok")
+	if err := waitForExecution(client, "exec-t", time.Minute, &out); err != nil {
+		t.Fatalf("expected success after transient errors, got %v", err)
+	}
+	if polls != 4 {
+		t.Fatalf("polls = %d, want 4", polls)
+	}
+	if !strings.Contains(out.String(), "status 502") || !strings.Contains(out.String(), "retrying (") {
+		t.Fatalf("retries not reported: %q", out.String())
+	}
+}
+
+func TestWaitForExecutionFailsOnPersistentOrClientErrors(t *testing.T) {
+	oldSleep := flowSleep
+	flowSleep = func(time.Duration) {}
+	t.Cleanup(func() { flowSleep = oldSleep })
+
+	for _, tc := range []struct {
+		name   string
+		code   int
+		polls  int
+		substr string
+	}{
+		{"not found ends at once", http.StatusNotFound, 1, "failed to read execution"},
+		{"persistent 503 is bounded", http.StatusServiceUnavailable, flowPollMaxTransient + 1, "consecutive read failures"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			polls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				polls++
+				w.WriteHeader(tc.code)
+			}))
+			defer server.Close()
+			client := api.NewClientWithToken(server.URL, "tok")
+			err := waitForExecution(client, "exec-x", time.Minute, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.substr) {
+				t.Fatalf("err = %v, want %q", err, tc.substr)
+			}
+			if polls != tc.polls {
+				t.Fatalf("polls = %d, want %d", polls, tc.polls)
+			}
+		})
+	}
+}

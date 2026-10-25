@@ -313,3 +313,105 @@ def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
         "github.event.action != 'unlabeled' || github.event.label.name == 'preloop-skip-review'"
         in condition
     )
+
+
+EXEC_ID = "11111111-2222-4333-8444-555555555555"
+
+
+def _run_trigger(
+    tmp_path: Path, *, cli_exit: int, statuses: list[str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the trigger step with stubbed ``gh``, ``preloop``, ``curl``, ``sleep``.
+
+    The stub CLI prints the trigger line and exits ``cli_exit``. Each ``curl``
+    read returns the next entry of ``statuses``; ``"ERR"`` is a failed read.
+    """
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    (tmp_path / "pr.json").write_text(json.dumps(GITHUB_PR), encoding="utf-8")
+    (tmp_path / "statuses").write_text("\n".join(statuses) + "\n", encoding="utf-8")
+    stubs = {
+        "gh": f"#!/bin/sh\ncat '{tmp_path}/pr.json'\n",
+        "sleep": "#!/bin/sh\nexit 0\n",
+        "curl": (
+            "#!/bin/sh\n"
+            f"f='{tmp_path}/statuses'\n"
+            'next=$(head -n1 "$f"); tail -n +2 "$f" > "$f.n"; mv "$f.n" "$f"\n'
+            '[ -n "$next" ] || exit 7\n'
+            '[ "$next" = ERR ] && exit 92\n'
+            'printf \'{"status":"%s"}\' "$next"\n'
+        ),
+    }
+    for name, body in stubs.items():
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    cli_dir = tmp_path / "preloop-bin"
+    cli_dir.mkdir()
+    cli = cli_dir / "preloop"
+    cli.write_text(
+        "#!/bin/sh\ncat > /dev/null\n"
+        f"echo 'Triggered flow f (execution {EXEC_ID}, status PENDING)'\n"
+        "echo 'Error: failed to read execution: failed to read response body: "
+        "stream error: stream ID 41; INTERNAL_ERROR; received from peer' >&2\n"
+        f"exit {cli_exit}\n",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    env = {
+        "PATH": f"{bin_dir}:{shutil.os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "GH_TOKEN": "x",
+        "GH_REPO": "preloop/preloop",
+        "PRELOOP_TOKEN": "synthetic-token",
+        "PRELOOP_URL": "https://preloop.example.com",
+        "PRELOOP_FLOW": "Pull Request Reviewer",
+        "PR_NUMBER": "1116",
+        "EVENT_HEAD_SHA": "",
+        "EVENT_ACTION": "synchronize",
+        "RUN_URL": "https://github.com/preloop/preloop/actions/runs/1",
+        "PRELOOP_DISABLE_TELEMETRY": "true",
+    }
+    return subprocess.run(
+        ["bash", "-e", "-c", _steps()["trigger"]["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_stream_error_on_a_running_execution_waits_for_its_verdict(
+    tmp_path: Path,
+) -> None:
+    # #1683: the CLI lost its poll to a reset stream while the review was
+    # still running; the step must not fail (and so trigger a stop) for that.
+    out = _run_trigger(
+        tmp_path, cli_exit=1, statuses=["ERR", "RUNNING", "ERR", "SUCCEEDED"]
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"Execution {EXEC_ID} SUCCEEDED" in out.stdout
+
+
+def test_stream_error_after_completion_reports_the_success(tmp_path: Path) -> None:
+    out = _run_trigger(tmp_path, cli_exit=1, statuses=["SUCCEEDED"])
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("status", ["FAILED", "STOPPED", "TIMEOUT"])
+def test_a_genuinely_failed_execution_still_fails(tmp_path: Path, status: str) -> None:
+    out = _run_trigger(tmp_path, cli_exit=1, statuses=["RUNNING", status])
+    assert out.returncode == 1
+    assert f"ended {status}" in out.stderr
+
+
+def test_unreadable_execution_fails_after_bounded_retries(tmp_path: Path) -> None:
+    out = _run_trigger(tmp_path, cli_exit=1, statuses=["ERR"] * 11)
+    assert out.returncode == 1
+    assert "11 times in a row" in out.stderr
+
+
+def test_cli_success_needs_no_extra_read(tmp_path: Path) -> None:
+    out = _run_trigger(tmp_path, cli_exit=0, statuses=[])
+    assert out.returncode == 0, out.stdout + out.stderr
