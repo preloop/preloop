@@ -172,6 +172,10 @@ class TestFetchScope:
             ([{"conclusion": "SUCCESS"}, {"conclusion": "FAILURE"}], "failure"),
             ([{"conclusion": "SUCCESS"}, {"status": "IN_PROGRESS"}], "pending"),
             ([], "unknown"),
+            ([{"conclusion": "SUCCESS"}, {"conclusion": "ACTION_REQUIRED"}], "unknown"),
+            ([{"conclusion": "STALE"}], "unknown"),
+            ([{"conclusion": "STARTUP_FAILURE"}], "unknown"),
+            ([{"conclusion": "NEUTRAL"}, {"conclusion": "SUCCESS"}], "success"),
         ],
     )
     def test_check_conclusion(self, runs: List[Dict[str, Any]], expected: str) -> None:
@@ -262,6 +266,18 @@ class TestParentReferences:
             merged_repo["repo"], "0" * 40, ["router.ts"], ["stub"]
         )
         assert record["error"] == f"cannot resolve {'0' * 40}^1"
+        assert record["paths"] == []
+
+    def test_failed_grep_is_an_error_not_no_reference(self) -> None:
+        def runner(args: List[str]) -> subprocess.CompletedProcess[str]:
+            code = 128 if args[0] == "grep" else 0
+            out = "p" * 40 if args[0] == "rev-parse" else ""
+            return subprocess.CompletedProcess(args, code, out, "fatal")
+
+        record = checks.parent_references(
+            "/nowhere", MERGE, ["router.ts"], ["stub-view"], runner=runner
+        )
+        assert record["error"] == "git grep failed on router.ts"
         assert record["paths"] == []
 
     def test_no_terms_is_an_error(self, merged_repo: Dict[str, str]) -> None:
@@ -369,6 +385,25 @@ class TestApplyParentChecks:
             "nothing needed changing"
         ]
         assert first["parent_check"]["parent_sha"] == PARENT
+        # Only the build criterion is left open: an evidence gap, no miss.
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+
+    def test_accordingly_miss_with_a_reference_stays_a_miss(self) -> None:
+        record = _record(
+            paths=[
+                {
+                    "path": "router.ts",
+                    "exists": True,
+                    "referenced": True,
+                    "hits": [f"{PARENT}:router.ts:3:stub-view"],
+                }
+            ]
+        )
+        purpose = self._closed(
+            {"text": ACCORDINGLY, "met": False, "parent_check": record}
+        )
+        assert purpose["criteria"][0]["met"] is False
+        assert "unchecked" not in purpose["criteria"][0]
         assert purpose["verdict"] == dr.PURPOSE_PARTIAL
 
     def test_accordingly_miss_without_a_check_is_an_evidence_gap(self) -> None:
@@ -407,6 +442,7 @@ class TestApplyParentChecks:
     def test_other_misses_are_left_alone(self) -> None:
         purpose = self._closed({"text": "p95 under 1.5 s", "met": False})
         assert purpose["criteria"][0]["met"] is False
+        assert purpose["verdict"] == dr.PURPOSE_PARTIAL
         assert "unchecked" not in purpose["criteria"][0]
 
     def test_audited_issue_is_not_rewritten(self) -> None:

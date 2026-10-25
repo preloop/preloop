@@ -167,10 +167,16 @@ def check_conclusion(pr: Mapping[str, Any]) -> str:
         return "failure"
     if any(s in ("pending", "in_progress", "queued", "running") for s in states):
         return "pending"
-    return "success" if states else "unknown"
+    if not states:
+        return "unknown"
+    # Only a known pass counts as one; action_required, stale,
+    # startup_failure or a future value is not a pass.
+    passing = ("success", "passed", "neutral", "skipped")
+    return "success" if all(s in passing for s in states) else "unknown"
 
 
-def _words(text: str) -> set[str]:
+def criterion_words(text: str) -> set[str]:
+    """Content words of a criterion or a test name, lower case."""
     return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOP_WORDS}
 
 
@@ -181,13 +187,13 @@ def criterion_has_matching_test(criterion: str, test_names: Sequence[str]) -> bo
     weak a match (most criteria and tests share "issue" or "page"), so two
     are required; a criterion of fewer than two content words needs one.
     """
-    words = _words(criterion)
+    words = criterion_words(criterion)
     if not words:
         return True
     needed = 2 if len(words) >= 2 else 1
     for name in test_names:
         spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).replace("_", " ")
-        if len(words & _words(spaced)) >= needed:
+        if len(words & criterion_words(spaced)) >= needed:
             return True
     return False
 
@@ -357,7 +363,12 @@ def parent_references(
             for term in record["terms"]:
                 args += ["-e", term]
             found = run([*args, parent_sha, "--", path])
-            # git grep exits 1 for no match; that is an answer, not an error.
+            # git grep exits 1 for no match; that is an answer. Anything else
+            # but 0 is a failed check, which must not read as "no reference".
+            if found.returncode not in (0, 1):
+                record["error"] = f"git grep failed on {path}"
+                record["paths"] = []
+                return record
             hits = [ln for ln in found.stdout.splitlines() if ln][:20]
         record["paths"].append(
             {"path": path, "exists": exists, "referenced": bool(hits), "hits": hits}

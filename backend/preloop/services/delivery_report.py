@@ -1007,9 +1007,14 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
 
     * No criteria: ``no_criteria``, whatever the claim.
     * ``covered`` needs every criterion met with evidence.
-    * ``partial`` needs at least one criterion met with evidence.
-    * Anything else, or a claim the evidence does not carry, is
-      ``unverified``. A verdict is never better than its evidence.
+    * ``partial``: at least one criterion is not met (``met: false``). It
+      names a shortfall the evidence shows.
+    * ``unverified``: nothing shows a criterion unmet, but the evidence
+      cannot decide at least one. That is an evidence gap, not a failure,
+      however many of the other criteria are met.
+    A verdict is never better than its evidence. The run may call a
+    covered change ``unverified``; it cannot claim a miss (``partial``)
+    without a criterion shown unmet, nor hide one as an evidence gap.
     """
     # Untrusted agent JSON: anything but a mapping is no assessment at all.
     purpose = dict(purpose) if isinstance(purpose, Mapping) else {}
@@ -1044,17 +1049,13 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
         met_count = sum(1 for c in criteria if c["met"] is True)
         if met_count == len(criteria):
             verdict = PURPOSE_COVERED
-        elif met_count:
+        elif any(c["met"] is False for c in criteria):
             verdict = PURPOSE_PARTIAL
         else:
             verdict = PURPOSE_UNVERIFIED
-        # The agent may be more cautious than the evidence, never less.
-        rank = {PURPOSE_UNVERIFIED: 0, PURPOSE_PARTIAL: 1, PURPOSE_COVERED: 2}
-        if (
-            isinstance(claimed, str)
-            and claimed in rank
-            and rank[claimed] < rank[verdict]
-        ):
+        # The agent may call a covered change unverified. A miss needs a
+        # criterion shown unmet, so a "partial" claim without one is dropped.
+        if claimed == PURPOSE_UNVERIFIED and verdict == PURPOSE_COVERED:
             verdict = claimed
     normalized: Dict[str, Any] = {"verdict": verdict, "criteria": criteria}
     for key in ("source", "revision", "audit_execution_id"):
@@ -1295,12 +1296,12 @@ _ACCORDINGLY_RE = re.compile(
 )
 
 
-def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
-    """Whether a parent-check record shows no named file needed a change.
+def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a parent-check record is a completed check of this merge.
 
-    The record must come from :func:`delivery_report_checks.parent_references`
-    at the closing merge (when that is known), resolve the parent, and find
-    every named file without a reference to the terms.
+    It must come from :func:`delivery_report_checks.parent_references` at
+    the closing merge (when that is known), resolve the parent, and carry a
+    result for at least one named file.
     """
     from preloop.services.delivery_report_checks import PARENT_CHECK_SCHEMA
 
@@ -1311,11 +1312,16 @@ def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
     if merge_sha and record.get("merge_sha") != merge_sha:
         return False
     paths = record.get("paths")
-    if not isinstance(paths, list) or not paths:
+    return isinstance(paths, list) and bool(paths)
+
+
+def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a usable parent-check record shows no named file needed a change."""
+    if not _parent_check_usable(record, merge_sha):
         return False
     return all(
         isinstance(p, Mapping) and p.get("referenced") is False and not p.get("hits")
-        for p in paths
+        for p in record["paths"]
     )
 
 
@@ -1327,9 +1333,10 @@ def apply_parent_checks(
     * A criterion marked not met that carries a ``parent_check`` record
       showing no named file referenced the changed thing at ``<merge>^1``
       is met: nothing needed changing. The record becomes its evidence.
-    * An "update X accordingly" criterion marked not met with no such
+    * An "update X accordingly" criterion marked not met with no usable
       record was never checked against the parent, so it is an evidence gap
-      (``met: null``), not a miss.
+      (``met: null``), not a miss. A usable record that finds a reference
+      keeps the miss: the file did need changing.
 
     Audits and cached assessments are not passed through here.
     """
@@ -1344,7 +1351,8 @@ def apply_parent_checks(
             continue
         criterion = dict(item)
         record = criterion.get("parent_check")
-        if isinstance(record, Mapping) and _parent_check_clears(record, merge_sha):
+        usable = _parent_check_usable(record, merge_sha)
+        if usable and _parent_check_clears(record, merge_sha):
             names = ", ".join(str(p.get("path")) for p in record["paths"])
             terms = ", ".join(_strs(record.get("terms")))
             criterion["met"] = True
@@ -1353,7 +1361,7 @@ def apply_parent_checks(
                 f"{names}: no reference to {terms} at parent "
                 f"{str(record['parent_sha'])[:12]}; nothing needed changing",
             ]
-        elif _ACCORDINGLY_RE.search(str(criterion.get("text") or "")):
+        elif not usable and _ACCORDINGLY_RE.search(str(criterion.get("text") or "")):
             criterion["met"] = None
             criterion["unchecked"] = "parent-commit check not run"
         criteria.append(criterion)

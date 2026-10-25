@@ -146,7 +146,7 @@ class TestFixtureWindow:
         closed = {i["ref"]: i for i in report["closed_issues"]}
         assert set(closed) == {"acme/app#11", "acme/app#12"}
         assert closed["acme/app#11"]["purpose"]["verdict"] == dr.PURPOSE_COVERED
-        assert closed["acme/app#12"]["purpose"]["verdict"] == dr.PURPOSE_PARTIAL
+        assert closed["acme/app#12"]["purpose"]["verdict"] == dr.PURPOSE_UNVERIFIED
         needs = [i for i in report["needs_you"] if i["kind"] == "closed_unverified"]
         assert [i["ref"] for i in needs] == ["acme/app#12"]
         assert needs[0]["unmet_criteria"] == ["Exports respect the date filter"]
@@ -205,7 +205,7 @@ class TestHonestyRules:
         assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
         assert purpose["criteria"][0]["met"] is None
 
-    def test_partial_evidence_is_partial(self) -> None:
+    def test_an_uncited_criterion_is_an_evidence_gap(self) -> None:
         purpose = dr.normalize_purpose(
             {
                 "verdict": "covered",
@@ -215,7 +215,42 @@ class TestHonestyRules:
                 ],
             }
         )
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+
+    def test_a_criterion_shown_unmet_is_partial(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "criteria": [
+                    {"text": "A", "met": True, "evidence": ["a.py:1"]},
+                    {"text": "B", "met": None},
+                    {"text": "C", "met": False, "evidence": ["comment: p95 3 s"]},
+                ],
+            }
+        )
         assert purpose["verdict"] == dr.PURPOSE_PARTIAL
+
+    def test_a_partial_claim_without_a_miss_is_dropped(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "verdict": "partial",
+                "criteria": [
+                    {"text": "A", "met": True, "evidence": ["a.py:1"]},
+                    {"text": "B", "met": None},
+                ],
+            }
+        )
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+        assert purpose["claimed_verdict"] == "partial"
+
+    def test_a_miss_cannot_be_reported_as_an_evidence_gap(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "verdict": "unverified",
+                "criteria": [{"text": "A", "met": False, "evidence": ["x"]}],
+            }
+        )
+        assert purpose["verdict"] == dr.PURPOSE_PARTIAL
+        assert purpose["claimed_verdict"] == "unverified"
 
     def test_agent_may_be_more_cautious(self) -> None:
         purpose = dr.normalize_purpose(
@@ -898,8 +933,8 @@ class TestDenominators:
         assert summary["evidence_availability"] == {"with_evidence": 2, "total": 3}
         assert summary["closed_verdicts"] == {
             "covered": 1,
-            "partial": 1,
-            "unverified": 0,
+            "partial": 0,
+            "unverified": 1,
             "no_criteria": 0,
         }
         assert "score" not in json.dumps(summary)

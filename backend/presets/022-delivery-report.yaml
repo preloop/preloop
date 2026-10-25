@@ -172,9 +172,11 @@ prompt_template: |
   rules are not optional:
   - purpose.verdict is "covered" only when EVERY criterion is met and each
     one cites evidence: a file and line, a test name and its result, or a
-    review comment. "partial" when some are met with evidence.
-    "unverified" when the available evidence cannot decide: that is an
-    evidence gap, not a failure. "no_criteria" when the issue states none.
+    review comment. "partial" when the evidence shows at least one
+    criterion not met (met false). "unverified" when nothing shows a
+    criterion unmet but the evidence cannot decide at least one (met
+    null), however many others are met: that is an evidence gap, not a
+    failure. "no_criteria" when the issue states none.
     Never call a change fine without having looked. An issue without
     criteria is "no_criteria", never "covered".
   - If the most recent comment on the issue measures a criterion as not

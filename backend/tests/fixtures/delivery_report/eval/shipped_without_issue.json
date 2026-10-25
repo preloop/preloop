@@ -1,0 +1,361 @@
+[
+ {
+  "ref": "preloop/preloop#1824",
+  "title": "Add governed native host execution for Codex, OpenCode and DeepSeek",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": "ARCHITECTURE.md",
+    "additions": 11,
+    "deletions": 0
+   },
+   {
+    "filename": "README.md",
+    "additions": 4,
+    "deletions": 0
+   },
+   {
+    "filename": "backend/preloop/agents/runner_launch.py",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "filename": "backend/preloop/models/schemas/flow_runner.py",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "filename": "backend/preloop/services/host_exec.py",
+    "additions": 33,
+    "deletions": 9
+   },
+   {
+    "filename": "backend/preloop/services/model_routing.py",
+    "additions": 16,
+    "deletions": 5
+   },
+   {
+    "filename": "backend/preloop/services/usage_import.py",
+    "additions": 9,
+    "deletions": 2
+   },
+   {
+    "filename": "backend/tests/services/test_host_exec.py",
+    "additions": 109,
+    "deletions": 2
+   },
+   {
+    "filename": "backend/tests/services/test_host_exec_usage.py",
+    "additions": 34,
+    "deletions": 12
+   },
+   {
+    "filename": "cli/internal/cmd/agents_approval_hooks.go",
+    "additions": 32,
+    "deletions": 4
+   },
+   {
+    "filename": "cli/internal/cmd/agents_runtime_install.go",
+    "additions": 8,
+    "deletions": 3
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec.go",
+    "additions": 115,
+    "deletions": 21
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_codex.go",
+    "additions": 148,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_codex_hooks.go",
+    "additions": 191,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_codex_hooks_test.go",
+    "additions": 175,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_codex_test.go",
+    "additions": 88,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_copilot.go",
+    "additions": 6,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_deepseek.go",
+    "additions": 237,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_diagnostics_test.go",
+    "additions": 71,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_extended.go",
+    "additions": 22,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_extended_test.go",
+    "additions": 84,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_flow.go",
+    "additions": 2,
+    "deletions": 1
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_governance.go",
+    "additions": 93,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_governance_test.go",
+    "additions": 83,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_opencode.go",
+    "additions": 169,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_platform.go",
+    "additions": 6,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_platform_test.go",
+    "additions": 22,
+    "deletions": 2
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_protocol_process_test.go",
+    "additions": 375,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_protocol_test.go",
+    "additions": 67,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_host_exec_workspace.go",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "filename": "cli/internal/cmd/runner_inventory.go",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "filename": "cli/internal/cmd/runner_inventory_build.go",
+    "additions": 33,
+    "deletions": 1
+   },
+   {
+    "filename": "cli/internal/cmd/runner_logs.go",
+    "additions": 91,
+    "deletions": 20
+   },
+   {
+    "filename": "docs/architecture/flows.md",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "filename": "docs/guide/runners/quickstart-linux.md",
+    "additions": 96,
+    "deletions": 0
+   },
+   {
+    "filename": "docs/guide/runners/quickstart-windows.md",
+    "additions": 11,
+    "deletions": 1
+   },
+   {
+    "filename": "frontend/src/components/preloop-flow-form-host-exec.test.ts",
+    "additions": 47,
+    "deletions": 2
+   },
+   {
+    "filename": "frontend/src/components/preloop-flow-form.ts",
+    "additions": 28,
+    "deletions": 3
+   },
+   {
+    "filename": "openapi.yaml",
+    "additions": 2,
+    "deletions": 0
+   },
+   {
+    "filename": "runtime-plugins/harness-preloop/README.md",
+    "additions": 12,
+    "deletions": 5
+   }
+  ],
+  "metadata_only_expected": null
+ },
+ {
+  "ref": "preloop/preloop#1836",
+  "title": "ci: prefer hosted runners with verified self-hosted overflow",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": ".github/self-hosted-runners.md",
+    "additions": 30,
+    "deletions": 2
+   },
+   {
+    "filename": ".github/workflows/ci.yml",
+    "additions": 53,
+    "deletions": 51
+   },
+   {
+    "filename": "backend/tests/test_github_ci_self_hosted_runner.py",
+    "additions": 115,
+    "deletions": 15
+   }
+  ],
+  "metadata_only_expected": null
+ },
+ {
+  "ref": "preloop/preloop#1855",
+  "title": "fix(governance): bound stored summary retry candidate reads",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": "backend/preloop/models/alembic/versions/20261023_governance_retry_idx.py",
+    "additions": 44,
+    "deletions": 0
+   },
+   {
+    "filename": "backend/preloop/models/crud/governance_session_candidates.py",
+    "additions": 41,
+    "deletions": 1
+   },
+   {
+    "filename": "backend/preloop/models/models/governance_review.py",
+    "additions": 15,
+    "deletions": 0
+   },
+   {
+    "filename": "backend/tests/models/test_alembic_single_head.py",
+    "additions": 3,
+    "deletions": 1
+   },
+   {
+    "filename": "backend/tests/services/test_governance_session_candidates.py",
+    "additions": 124,
+    "deletions": 0
+   }
+  ],
+  "metadata_only_expected": null
+ },
+ {
+  "ref": "preloop/preloop#1876",
+  "title": "fix(overview): Inventory period select, Devices after Users, no embedded map",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": "frontend/src/components/inventory-card.test.ts",
+    "additions": 83,
+    "deletions": 219
+   },
+   {
+    "filename": "frontend/src/components/inventory-card.ts",
+    "additions": 26,
+    "deletions": 342
+   },
+   {
+    "filename": "frontend/src/views/authed/dashboard-control-plane-view.ts",
+    "additions": 16,
+    "deletions": 15
+   },
+   {
+    "filename": "frontend/src/views/authed/dashboard-view.test.ts",
+    "additions": 22,
+    "deletions": 0
+   }
+  ],
+  "metadata_only_expected": null
+ },
+ {
+  "ref": "preloop/preloop#1904",
+  "title": "chore(deps): bump the npm-minor-patch group in /frontend with 4 updates",
+  "author": "dependabot[bot]",
+  "files": [
+   {
+    "filename": "frontend/package-lock.json",
+    "additions": 71,
+    "deletions": 59
+   },
+   {
+    "filename": "frontend/package.json",
+    "additions": 4,
+    "deletions": 4
+   }
+  ],
+  "metadata_only_expected": "dependabot"
+ },
+ {
+  "ref": "preloop/preloop#1907",
+  "title": "chore(deps): bump the actions-minor-patch group with 3 updates",
+  "author": "dependabot[bot]",
+  "files": [
+   {
+    "filename": ".github/workflows/codeql.yml",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "filename": ".github/workflows/scorecard.yml",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "filename": ".github/workflows/secret-scan.yml",
+    "additions": 2,
+    "deletions": 2
+   }
+  ],
+  "metadata_only_expected": "dependabot"
+ },
+ {
+  "ref": "preloop/preloop#1967",
+  "title": "README: the open-source AI agent control plane and software factory",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": "README.md",
+    "additions": 56,
+    "deletions": 162
+   }
+  ],
+  "metadata_only_expected": "docs_only"
+ },
+ {
+  "ref": "preloop/preloop#1970",
+  "title": "README: follow-ups after the rewrite",
+  "author": "jane-doe",
+  "files": [
+   {
+    "filename": "README.md",
+    "additions": 7,
+    "deletions": 3
+   }
+  ],
+  "metadata_only_expected": "docs_only"
+ }
+]
