@@ -17,6 +17,9 @@ from preloop.services.db_pool_monitor import (
 
 @pytest.fixture(autouse=True)
 def capture_monitor_logs(monkeypatch, caplog):
+    # Other suites may initialize the process-wide credential pool first.
+    # Each monitor test controls which engines exist, including the auth pool.
+    monkeypatch.setattr("preloop.models.db.session._auth_session_factory", None)
     logger = logging.getLogger("preloop.services.db_pool_monitor")
     monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
     # The handler is attached directly; propagation would capture it again at root.
