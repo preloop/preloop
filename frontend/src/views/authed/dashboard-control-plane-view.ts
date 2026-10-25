@@ -4738,7 +4738,6 @@ export class DashboardView extends AuthedElement {
         ?showUsers=${this.canViewUsers}
         .rangeLabel=${this.gatewayRangeLabel}
         .timeRange=${this.gatewayTimeRange}
-        @range-change=${this.onRangeChange}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading}
         .loadingAgents=${this.fetchingAgents}

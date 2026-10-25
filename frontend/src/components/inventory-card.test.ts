@@ -808,25 +808,21 @@ describe('inventory-card', () => {
     expect(footer?.getAttribute('href')).to.equal('/console/agents');
   });
 
-  it('offers the page range as a period select, next to the sort', async () => {
+  it('restates the page range as a muted label, with no select of its own', async () => {
+    // One range per page: the Usage card owns it, the inventory says it.
     const el = await card({ timeRange: 'this-week' });
-    const select = el.shadowRoot?.querySelector('time-range-select') as
-      (HTMLElement & { value: string; options: { value: string }[] }) | null;
-    expect(select, 'period select').to.exist;
-    expect(select!.value).to.equal('this-week');
-    expect(select!.options.map((option) => option.value)).to.include.members([
-      'today',
-      'this-week',
-      'this-month',
-    ]);
-    expect(el.shadowRoot?.querySelector('.range-label')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('time-range-select')).to.not.exist;
+    const label = el.shadowRoot?.querySelector('.range-label');
+    expect(label, 'range label').to.exist;
+    expect(label!.textContent!.trim()).to.equal('This week');
+    expect(label!.getAttribute('title')).to.contain('Usage');
     expect(el.shadowRoot?.querySelector('.sort-select')).to.exist;
   });
 
-  it('ends the header controls at the period select, with no gap', async () => {
+  it('ends the header controls at the range label, with no gap', async () => {
     const el = await card();
     const controls = el.shadowRoot!.querySelector('.header-controls')!;
-    const period = el.shadowRoot!.querySelector('time-range-select')!;
+    const period = el.shadowRoot!.querySelector('.range-label')!;
     const gap =
       controls.getBoundingClientRect().right -
       period.getBoundingClientRect().right;
@@ -846,24 +842,6 @@ describe('inventory-card', () => {
         head.getBoundingClientRect().right + 1
       );
     }
-  });
-
-  it('hands a period change to the page, which owns the range', async () => {
-    const el = await card();
-    const select = el.shadowRoot!.querySelector('time-range-select')!;
-    setTimeout(() =>
-      select.dispatchEvent(
-        new CustomEvent('range-change', {
-          detail: { value: 'today' },
-          bubbles: true,
-          composed: true,
-        })
-      )
-    );
-    const event = (await oneEvent(el, 'range-change')) as CustomEvent<{
-      value: string;
-    }>;
-    expect(event.detail.value).to.equal('today');
   });
 
   it('has no Map view: the fleet map lives on its own page', async () => {
@@ -1031,11 +1009,11 @@ describe('inventory-card', () => {
       expect(labels.at(-2)).to.match(/^Users/);
     });
 
-    it('keeps the period select and the Last seen column', async () => {
+    it('keeps the range label and the Last seen column', async () => {
       const el = await withDevices();
       await showTab(el, 'devices');
       const root = el.shadowRoot!;
-      expect(root.querySelector('time-range-select')).to.exist;
+      expect(root.querySelector('.range-label')).to.exist;
       const headers = Array.from(root.querySelectorAll('th')).map((th) =>
         th.textContent?.trim()
       );

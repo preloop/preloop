@@ -18,7 +18,6 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './user-avatar';
-import './time-range-select';
 import './fleet-map';
 import { getFleetMap, type FleetMapGraph } from '../fleet-map-api';
 import {
@@ -26,7 +25,8 @@ import {
   windowMinutes,
   type FleetMapWindow,
 } from '../utils/fleet-map-activity';
-import { DEFAULT_USAGE_RANGE, USAGE_RANGE_OPTIONS } from './usage-card';
+import { DEFAULT_USAGE_RANGE } from './usage-card';
+import { timeRangePhrase } from '../utils/time-range';
 import { userHref } from '../utils/user-href';
 
 import consoleStyles from '../styles/console-styles.css?inline';
@@ -301,8 +301,9 @@ function timeValue(value: string | null | undefined): number {
  * below it listed the same things in three different shapes. The counts are
  * now the tab labels, and one table shape serves all four inventories: the
  * question "what do I have, and which of it is busy" is answered in one
- * place, at one depth. The range select here is the page range, shared with
- * the Usage card, because a page with two time ranges has two truths.
+ * place, at one depth. The range is the page range, set on the Usage card and
+ * restated here as a muted label, because a page with two time range
+ * controls has two truths (DESIGN.md "Time range and units").
  */
 @customElement('inventory-card')
 export class InventoryCard extends LitElement {
@@ -379,10 +380,7 @@ export class InventoryCard extends LitElement {
   @property({ type: Boolean }) usageLoadingTools: boolean | null = null;
   /** The page range, already worded ("30d"), shown but not editable here. */
   @property({ type: String }) rangeLabel = '30d';
-  /**
-   * The page range key. The select here and the one on the Usage card both
-   * emit `range-change` to the page, which owns the one range for both.
-   */
+  /** The page range key, owned by the page and set on the Usage card. */
   @property({ type: String }) timeRange: string = DEFAULT_USAGE_RANGE;
   /**
    * True when the run counts came off a full page of the most recent 100
@@ -539,12 +537,11 @@ export class InventoryCard extends LitElement {
           padding-block: 0;
         }
 
-        /* The page range, editable here too: it is the same range as the
-         Usage card's, so changing either changes both. */
-        /* A fixed width: the host's min(width, 100%) resolves against the
-           flex row's max-content and left a gap at the card's edge. */
-        .range-select {
-          width: 128px;
+        /* The page range, restated: it is set on the Usage card. */
+        .range-label {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          white-space: nowrap;
         }
 
         .tabs {
@@ -1238,12 +1235,9 @@ export class InventoryCard extends LitElement {
                 >`
             )}
           </sl-select>
-          <time-range-select
-            class="range-select"
-            ariaLabel="Inventory time range"
-            .value=${this.timeRange}
-            .options=${USAGE_RANGE_OPTIONS}
-          ></time-range-select>
+          <span class="range-label" title="Range set on the Usage card"
+            >${timeRangePhrase(this.timeRange)}</span
+          >
         </div>
       </div>
     `;
