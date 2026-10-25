@@ -409,6 +409,7 @@
   "POST /api/v1/issues/{issue_id}/lifecycle/refine": "deny",
   "POST /api/v1/mcp-servers": "deny",
   "POST /api/v1/mcp-servers/{server_id}/oauth/authorize-token": "deny",
+  "POST /api/v1/mcp-servers/{server_id}/oauth/disconnect": "deny",
   "POST /api/v1/mcp-servers/{server_id}/scan": "deny",
   "POST /api/v1/notification-preferences/me/register-device": "deny",
   "POST /api/v1/notification-preferences/me/test-push": "deny",
