@@ -875,26 +875,48 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
     contract_criteria = (
         contract.get("criteria") if isinstance(contract, Mapping) else None
     )
-    outcomes: Dict[str, str] = {}
+    from pydantic import ValidationError
+
+    from preloop.schemas.issue_lifecycle import Criterion, CriterionEvidence
+    from preloop.services.issue_lifecycle import (
+        checked_criterion,
+        runtime_evidence_ids,
+    )
+
+    contract_by_id: Dict[str, Criterion] = {}
     for item in contract_criteria if isinstance(contract_criteria, list) else []:
-        if isinstance(item, Mapping) and item.get("id"):
-            outcomes[str(item["id"])] = str(item.get("outcome") or item["id"])
+        try:
+            criterion = Criterion.model_validate(item)
+        except ValidationError:
+            continue
+        contract_by_id[criterion.id] = criterion
+    supplied = runtime_evidence_ids(envelope.get("runtime_evidence"))
     criteria: List[Dict[str, Any]] = []
     raw_criteria = result.get("criteria")
     for item in raw_criteria if isinstance(raw_criteria, list) else []:
-        if not isinstance(item, Mapping):
+        try:
+            checked = CriterionEvidence.model_validate(item)
+        except ValidationError:
             continue
-        cid = str(item.get("criterion_id") or "")
-        evidence = [
-            *_strs(item.get("code")),
-            *_strs(item.get("tests")),
-            *_strs(item.get("observations")),
-        ]
+        cid = checked.criterion_id
+        # The controller's rule, so the report never counts a citation or a
+        # verdict the published audit dropped.
+        if cid in contract_by_id:
+            checked_criterion(
+                checked, contract_by_id[cid], kind="merge_audit", supplied=supplied
+            )
+        else:
+            checked.verdict = "unknown"
         criteria.append(
             {
-                "text": outcomes.get(cid, cid),
-                "met": _AUDIT_MET.get(str(item.get("verdict")), None),
-                "evidence": evidence,
+                "text": contract_by_id[cid].outcome if cid in contract_by_id else cid,
+                "met": _AUDIT_MET.get(checked.verdict, None),
+                "evidence": [
+                    *checked.code,
+                    *checked.tests,
+                    *checked.observations,
+                    *checked.runtime,
+                ],
             }
         )
     url = envelope.get("issue_url")

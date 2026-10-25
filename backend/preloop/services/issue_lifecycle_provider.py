@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from hashlib import sha256
+import ipaddress
 import json
 import re
 from typing import Any, Protocol
@@ -14,6 +15,32 @@ from urllib.parse import urlparse
 
 PUBLICATION_TIMEOUT_SECONDS = 8.0
 PUBLICATION_MAX_REQUESTS = 128
+# Runtime evidence is bounded so it never starves the audit's own requests.
+EVIDENCE_MAX_WORKFLOW_RUNS = 3
+EVIDENCE_MAX_DEPLOYMENTS = 5
+EVIDENCE_TEXT_LIMIT = 500
+# Own deadline inside the publication deadline, so a slow source is recorded
+# as unavailable instead of cancelling audit scheduling.
+EVIDENCE_TIMEOUT_SECONDS = 3.0
+_EVIDENCE_SOURCES = ("checks", "artifacts", "previews")
+
+
+def preview_url_allowed(url: Any) -> bool:
+    """Accept only http(s) URLs whose host is not a local or private literal.
+
+    Hostnames are resolved later in the sandbox, whose prompt applies the
+    same rule; this drops what is refusable before it reaches the prompt.
+    """
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".internal")):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
 
 
 @dataclass
@@ -92,6 +119,9 @@ class LifecycleProvider(Protocol):
         self, number: int, marker: str, title: str, body: str
     ) -> str:
         """Create the follow-up issue once and return its identity."""
+
+    async def runtime_evidence(self, sha: str) -> dict[str, Any]:
+        """Return CI check runs, artifacts and previews recorded for ``sha``."""
 
 
 class GitHubRequests(Protocol):
@@ -307,3 +337,134 @@ class GitHubLifecycleProvider:
             {"title": title, "body": f"{body}\n\n{marker}", "labels": []},
         )
         return result["html_url"]
+
+    async def runtime_evidence(self, sha: str) -> dict[str, Any]:
+        """Collect the runtime evidence GitHub already holds for one commit.
+
+        Check runs, workflow-run artifacts and the newest successful status
+        of each deployment of ``sha`` (its environment URL is the preview or
+        staging address). Every item gets a stable ``id`` the audit cites.
+        A source that cannot be read is listed under ``unavailable`` with
+        the reason instead of failing the audit; nothing here is probed.
+
+        Args:
+            sha: The merge commit the audit is pinned to.
+
+        Returns:
+            The evidence bundle for the audit envelope.
+        """
+        bundle: dict[str, Any] = {
+            "revision": sha,
+            "checks": [],
+            "artifacts": [],
+            "previews": [],
+            "unavailable": [],
+        }
+
+        def text(value: Any) -> str:
+            return str(value or "")[:EVIDENCE_TEXT_LIMIT]
+
+        async def checks() -> None:
+            raw = await self._request(
+                "GET", f"{self.root}/commits/{sha}/check-runs", params={"per_page": 100}
+            )
+            for run in raw.get("check_runs") or []:
+                output = run.get("output") or {}
+                bundle["checks"].append(
+                    {
+                        "id": f"check:{run['id']}",
+                        "name": text(run.get("name")),
+                        "status": run.get("status"),
+                        "conclusion": run.get("conclusion"),
+                        "url": run.get("html_url"),
+                        "summary": text(output.get("title") or output.get("summary")),
+                    }
+                )
+
+        async def artifacts() -> None:
+            raw = await self._request(
+                "GET",
+                f"{self.root}/actions/runs",
+                params={"head_sha": sha, "per_page": EVIDENCE_MAX_WORKFLOW_RUNS},
+            )
+            runs = (raw.get("workflow_runs") or [])[:EVIDENCE_MAX_WORKFLOW_RUNS]
+            for run in runs:
+                listed = await self._request(
+                    "GET",
+                    f"{self.root}/actions/runs/{run['id']}/artifacts",
+                    params={"per_page": 100},
+                )
+                for artifact in listed.get("artifacts") or []:
+                    bundle["artifacts"].append(
+                        {
+                            "id": f"artifact:{artifact['id']}",
+                            "name": text(artifact.get("name")),
+                            "workflow": text(run.get("name")),
+                            "workflow_conclusion": run.get("conclusion"),
+                            "size_in_bytes": artifact.get("size_in_bytes"),
+                            "expired": bool(artifact.get("expired")),
+                            "url": artifact.get("archive_download_url"),
+                        }
+                    )
+
+        async def previews() -> None:
+            deployments = await self._request(
+                "GET",
+                f"{self.root}/deployments",
+                params={"sha": sha, "per_page": EVIDENCE_MAX_DEPLOYMENTS},
+            )
+            for deployment in list(deployments or [])[:EVIDENCE_MAX_DEPLOYMENTS]:
+                statuses = await self._request(
+                    "GET", f"{self.root}/deployments/{deployment['id']}/statuses"
+                )
+                # GitHub lists statuses newest first.
+                status = next(
+                    (
+                        item
+                        for item in statuses or []
+                        if item.get("state") == "success"
+                        and item.get("environment_url")
+                    ),
+                    None,
+                )
+                if status is None:
+                    continue
+                if not preview_url_allowed(status["environment_url"]):
+                    bundle["unavailable"].append(
+                        {
+                            "source": "previews",
+                            "reason": f"refused preview:{deployment['id']}: "
+                            "not a public http(s) URL",
+                        }
+                    )
+                    continue
+                bundle["previews"].append(
+                    {
+                        "id": f"preview:{deployment['id']}",
+                        "environment": text(deployment.get("environment")),
+                        "url": status["environment_url"],
+                        "log_url": status.get("log_url"),
+                    }
+                )
+
+        pending = dict(
+            zip(_EVIDENCE_SOURCES, (checks, artifacts, previews), strict=False)
+        )
+        deadline = asyncio.timeout(EVIDENCE_TIMEOUT_SECONDS)
+        try:
+            async with deadline:
+                for source, collect in list(pending.items()):
+                    try:
+                        await collect()
+                    except Exception as exc:  # noqa: BLE001 - best-effort
+                        bundle["unavailable"].append(
+                            {"source": source, "reason": repr(exc)}
+                        )
+                    del pending[source]
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            bundle["unavailable"].extend(
+                {"source": source, "reason": "timed out"} for source in pending
+            )
+        return bundle
