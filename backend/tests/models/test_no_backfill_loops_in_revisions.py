@@ -26,6 +26,9 @@ ALLOWED = {
     "20260822_gateway_alias_collision_audit.py",
     # Batched rewrite of legacy account policy rows; account is small.
     "20260912_history_floor.py",
+    # Moves legacy credential columns into secrets under a table lock; the
+    # next revision drops those columns, so it cannot run after the deploy.
+    "20261110_credential_backfill.py",
 }
 
 
