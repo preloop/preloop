@@ -846,9 +846,7 @@ export class AgentTalkView extends LitElement {
         const separator =
           this.liveReply && itemId !== this.liveItemId ? '\n\n' : '';
         this.liveItemId = itemId;
-        this.liveReply = `${this.liveReply}${separator}${delta}`.slice(
-          -20000
-        );
+        this.liveReply = `${this.liveReply}${separator}${delta}`.slice(-20000);
         this.noteAgentTurn();
         return;
       }

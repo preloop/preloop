@@ -197,7 +197,9 @@ async def test_session_progress_target_is_resolved_once_per_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reply_delta_published_only_to_owning_account_with_runtime_session_id() -> None:
+async def test_reply_delta_published_only_to_owning_account_with_runtime_session_id() -> (
+    None
+):
     """A reply delta reaches the owning account's sockets, never another's."""
     from unittest.mock import AsyncMock
 
@@ -234,7 +236,9 @@ def test_session_progress_seq_is_a_bounded_non_negative_int() -> None:
     base = {"kind": "assistant_delta", "delta": "x"}
     assert agent_control._session_progress_payload({**base, "seq": 3})["seq"] == 3
     for bad in (-1, True, "4", 2**40):
-        assert "seq" not in agent_control._session_progress_payload({**base, "seq": bad})
+        assert "seq" not in agent_control._session_progress_payload(
+            {**base, "seq": bad}
+        )
 
 
 @pytest.mark.asyncio

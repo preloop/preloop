@@ -1057,9 +1057,10 @@ describe('agent-talk-view live reply', () => {
   afterEach(() => sinon.restore());
 
   const transcriptReads = () =>
-    fetchStub.getCalls().filter((call) =>
-      String(call.args[0]).includes('/gateway-events')
-    ).length;
+    fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/gateway-events'))
+      .length;
 
   function progress(
     payload: Record<string, unknown>,
