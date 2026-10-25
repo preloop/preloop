@@ -43,6 +43,11 @@ Control WebSocket and drives Claude Code through the
   `~/.claude/projects/**/*.jsonl` and reports presence/telemetry as
   `session_activity` events. Targeting a persisted-but-idle session resumes
   it headlessly. Summaries only; transcripts are not uploaded.
+- **Live reply streaming.** While an owned session answers, the sidecar sends
+  its reply text as numbered `session_progress` deltas, merged to at most four
+  a second. Talk shows the reply as it is written and reads the stored reply
+  when the turn ends. Older plugin versions send no deltas, and Talk falls
+  back to refreshing on activity.
 - **Approvals stay on the hook path.** Tool approvals are handled by the
   PreToolUse hook installed by `preloop agents onboard "Claude Code"
   --approvals`. The sidecar advertises `tool_approval` but never reimplements
