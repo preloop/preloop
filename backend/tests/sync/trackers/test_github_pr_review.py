@@ -1096,7 +1096,7 @@ class TestGetPullRequestReviews(IsolatedAsyncioTestCase):
 
 
 class TestPullRequestEngagement(IsolatedAsyncioTestCase):
-    async def test_paginated_helper_honors_the_page_budget(self):
+    async def test_paginated_helper_honors_the_page_budget(self) -> None:
         tracker = GitHubTracker(
             str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
         )
@@ -1115,7 +1115,7 @@ class TestPullRequestEngagement(IsolatedAsyncioTestCase):
             assert client.return_value.__aenter__.return_value.get.await_count == 2
         assert rows == [{"id": 0}, {"id": 1}]
 
-    async def test_lightweight_read_pages_all_three_event_lists(self):
+    async def test_lightweight_read_pages_all_three_event_lists(self) -> None:
         tracker = GitHubTracker(
             str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
         )
