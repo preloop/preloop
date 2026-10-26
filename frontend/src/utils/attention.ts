@@ -1,4 +1,5 @@
 import type { PreparedExtensionAttentionItem } from './attention-extension';
+import type { DeliveryReportAttention } from '../delivery-reports-api';
 import type { MCPFinding } from '../mcp-findings-api';
 import type { BudgetPolicy } from '../api';
 import type {
@@ -45,6 +46,7 @@ import {
  */
 export type AttentionKind =
   | 'approval'
+  | 'delivery_report'
   | 'agent'
   | 'flow'
   | 'model'
@@ -133,6 +135,7 @@ export interface AttentionBudgetDetail {
  * inbox unactionable.
  */
 export interface AttentionEvidence {
+  deliveryReport?: DeliveryReportAttention;
   mcpFinding?: MCPFinding;
   failedRuns?: AttentionFailedRun[];
   /** "Failed to start agent Job: (409) Conflict" plus how many runs said it. */
@@ -281,6 +284,7 @@ export interface AttentionFlowExecution {
 }
 
 export interface AttentionInputs {
+  deliveryReports?: DeliveryReportAttention[];
   approvals?: AttentionApproval[];
   agents?: ManagedAgentSummary[];
   sessions?: RuntimeSessionSummary[];
@@ -313,6 +317,12 @@ export const ATTENTION_KIND_META: Record<
   AttentionKind,
   { label: string; plural: string; icon: string; sectionHref: string }
 > = {
+  delivery_report: {
+    label: 'Delivery report',
+    plural: 'Delivery report needs you',
+    icon: 'exclamation-triangle',
+    sectionHref: '/console/delivery-reports',
+  },
   approval: {
     label: 'Approval',
     plural: 'Approvals',
@@ -378,6 +388,7 @@ export const ATTENTION_KIND_META: Record<
 /** Section order on the Attention page and in the grouped map. */
 export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'approval',
+  'delivery_report',
   'agent',
   'flow',
   'model',
@@ -1414,6 +1425,20 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
   const now = inputs.now || new Date();
   const dismissals = inputs.dismissals || [];
   const derived: AttentionItem[] = [
+    ...(inputs.deliveryReports || [])
+      .filter((report) => report.proposals.length > 0)
+      .map((report): AttentionItem => ({
+        id: `delivery_report:${report.id}`,
+        kind: 'delivery_report',
+        severity: 'warning',
+        title: report.projects.join(', ') || 'Delivery report',
+        detail: `${report.proposals.length} ${report.proposals.length === 1 ? 'proposal needs' : 'proposals need'} a decision${report.started_at ? ` · ${formatRelativeTime(report.started_at, now)}` : ''}`,
+        href: `/console/delivery-reports/${encodeURIComponent(report.id)}#needs-you`,
+        at: report.started_at,
+        fingerprint: report.fingerprint,
+        dismissable: true,
+        evidence: { deliveryReport: report },
+      })),
     ...approvalItems(inputs.approvals || [], now),
     ...agentItems(inputs.agents || [], inputs.sessions || [], now),
     ...flowItems(inputs.executions || [], now),

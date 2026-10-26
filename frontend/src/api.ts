@@ -5453,7 +5453,12 @@ export async function triggerFlowExecution(
     }
   );
   if (!response.ok) {
-    throw new Error('Failed to trigger flow execution');
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      typeof body?.detail === 'string'
+        ? body.detail
+        : 'Failed to trigger flow execution'
+    );
   }
   return response.json();
 }

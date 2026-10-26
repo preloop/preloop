@@ -1,5 +1,6 @@
 import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
+import type { DeliveryReportAttention } from '../delivery-reports-api';
 
 /** Generic plugin contract; processing and wording belong to the provider. */
 export interface ExtensionAttentionItem {
@@ -10,6 +11,12 @@ export interface ExtensionAttentionItem {
   href: string;
   severity: 'info' | 'action';
   opened_at: string;
+  delivery_report?: DeliveryReportAttention | null;
+}
+
+export interface LoadedExtensionAttention {
+  items: PreparedExtensionAttentionItem[];
+  deliveryReports: DeliveryReportAttention[];
 }
 
 export interface PreparedExtensionAttentionItem extends ExtensionAttentionItem {
@@ -40,22 +47,31 @@ export async function prepareExtensionAttentionItem(
   };
 }
 
-export async function loadExtensionAttentionItems(): Promise<
-  PreparedExtensionAttentionItem[]
-> {
+export async function loadExtensionAttentionItems(): Promise<LoadedExtensionAttention> {
+  const empty: LoadedExtensionAttention = { items: [], deliveryReports: [] };
   try {
     const response = await fetchWithAuth(
-      REST_API_PREFIX + '/attention/extension-items',
+      REST_API_PREFIX +
+        '/attention/extension-items?include_delivery_reports=true',
       {
         passive: true,
       }
     );
-    if (!response.ok) return [];
+    if (!response.ok) return empty;
     const items: unknown = await response.json();
-    return Array.isArray(items)
-      ? await Promise.all(items.map(prepareExtensionAttentionItem))
-      : [];
+    if (!Array.isArray(items)) return empty;
+    const reports = items.filter(
+      (item): item is ExtensionAttentionItem =>
+        item?.source === 'core:delivery_report' && item.delivery_report != null
+    );
+    const extensions = items.filter(
+      (item) => item?.source !== 'core:delivery_report'
+    ) as ExtensionAttentionItem[];
+    return {
+      items: await Promise.all(extensions.map(prepareExtensionAttentionItem)),
+      deliveryReports: reports.map((item) => item.delivery_report!),
+    };
   } catch {
-    return [];
+    return empty;
   }
 }

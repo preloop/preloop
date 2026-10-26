@@ -43,6 +43,61 @@ async def test_no_sources_returns_empty_without_database_reads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shared_read_includes_pending_reports_for_flow_viewers() -> None:
+    """Report proposals use the existing extension read with their evidence."""
+    account_id = uuid4()
+    report_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), account_id=account_id, is_superuser=False)
+    started_at = datetime(2026, 10, 26, 4, 0)
+    execution = SimpleNamespace(
+        id=report_id,
+        start_time=started_at,
+        result={"follow_ups": [{"title": "Review tests"}]},
+    )
+    manager = MagicMock()
+    manager.attention_sources.return_value = []
+    with (
+        patch("preloop.plugins.base.get_plugin_manager", return_value=manager),
+        patch("preloop.api.endpoints.account.crud_account.get", return_value=None),
+        patch(
+            "preloop.api.auth.permissions.has_permission",
+            side_effect=lambda _user, permission, _db: permission == "view_flows",
+        ),
+        patch(
+            "preloop.services.delivery_report_views.crud_flow_execution.delivery_reports_with_proposals",
+            return_value=[execution],
+        ) as candidates,
+    ):
+        items = await list_extension_attention_items(user, MagicMock(), True)
+    candidates.assert_called_once()
+    assert len(items) == 1
+    assert items[0].source == "core:delivery_report"
+    assert items[0].delivery_report is not None
+    assert items[0].delivery_report.started_at == started_at.replace(tzinfo=UTC)
+    assert items[0].opened_at == started_at.replace(tzinfo=UTC)
+    assert items[0].delivery_report.proposals[0].title == "Review tests"
+    assert items[0].href == f"/console/delivery-reports/{report_id}#needs-you"
+
+
+@pytest.mark.asyncio
+async def test_shared_read_excludes_reports_without_flow_permission() -> None:
+    """The shared endpoint applies the report endpoint's read permission."""
+    user = SimpleNamespace(id=uuid4(), account_id=uuid4(), is_superuser=False)
+    manager = MagicMock()
+    manager.attention_sources.return_value = []
+    with (
+        patch("preloop.plugins.base.get_plugin_manager", return_value=manager),
+        patch("preloop.api.endpoints.account.crud_account.get", return_value=None),
+        patch("preloop.api.auth.permissions.has_permission", return_value=False),
+        patch(
+            "preloop.services.delivery_report_views.crud_flow_execution.delivery_reports_with_proposals"
+        ) as candidates,
+    ):
+        assert await list_extension_attention_items(user, MagicMock(), True) == []
+    candidates.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_permission_filter_namespace_dedupe_and_failure_isolation() -> None:
     user = SimpleNamespace(id=uuid4(), account_id=uuid4(), is_superuser=False)
     permitted = AsyncMock(return_value=[item(), item()])

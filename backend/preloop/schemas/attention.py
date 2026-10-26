@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from preloop.schemas.delivery_report import DeliveryReportAttention
+
 #: Maximum snooze, so "remind me later" can never become "never again".
 MAX_SNOOZE_DAYS = 90
 
@@ -60,7 +62,7 @@ class AttentionDismissalListResponse(BaseModel):
 
 
 class ExtensionAttentionItem(BaseModel):
-    """Neutral plugin item. Only local console destinations are accepted."""
+    """Console attention contribution with a local destination."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -71,3 +73,4 @@ class ExtensionAttentionItem(BaseModel):
     href: str = Field(pattern=r"^/console(?:[/?#][^\\\x00-\x20]*)?$")
     severity: Literal["info", "action"]
     opened_at: AwareDatetime
+    delivery_report: Optional[DeliveryReportAttention] = None

@@ -135,7 +135,7 @@ from preloop.services.gateway_event_history import elide_replayed_history
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
 )
-from preloop.services import operator_notes
+from preloop.services import delivery_report_views, operator_notes
 from preloop.services.event_webhooks.emitters import emit_session_ended
 from preloop.services.spend_outliers import (
     record_dismissal as record_spend_outlier_dismissal,
@@ -4444,13 +4444,16 @@ def _resolve_dismissal_usernames(
 def list_extension_attention_items(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
+    include_delivery_reports: bool = False,
 ) -> list[ExtensionAttentionItem]:
     """Bound contribution fan-out while async providers run on the API loop."""
-    return anyio.from_thread.run(_list_extension_attention_items, current_user, db)
+    return anyio.from_thread.run(
+        _list_extension_attention_items, current_user, db, include_delivery_reports
+    )
 
 
 async def _list_extension_attention_items(
-    current_user: UserModel, db: Session
+    current_user: UserModel, db: Session, include_delivery_reports: bool = False
 ) -> list[ExtensionAttentionItem]:
     """Merge enabled plugin sources authorized for the selected membership."""
     from preloop.api.auth.key_scopes import (
@@ -4473,7 +4476,7 @@ async def _list_extension_attention_items(
     if await run_db_off_loop(restricted):
         raise HTTPException(403, "Restricted credentials cannot read attention items")
     sources = get_plugin_manager().attention_sources()
-    if not sources:
+    if not sources and not include_delivery_reports:
         return []
 
     def permitted(permission: str) -> bool:
@@ -4485,6 +4488,35 @@ async def _list_extension_attention_items(
         )
 
     items: dict[tuple[str, str], ExtensionAttentionItem] = {}
+    if include_delivery_reports and await run_db_off_loop(
+        lambda: permitted("view_flows")
+    ):
+        try:
+
+            def report_items() -> list[ExtensionAttentionItem]:
+                contributions = []
+                for report in delivery_report_views.list_report_attention(
+                    db, account_id=current_user.account_id
+                ):
+                    contributions.append(
+                        ExtensionAttentionItem(
+                            id=str(report.id),
+                            source="core:delivery_report",
+                            title="Delivery report needs you",
+                            detail=f"{len(report.proposals)} pending proposals",
+                            href=f"/console/delivery-reports/{report.id}#needs-you",
+                            severity="action",
+                            opened_at=report.started_at or datetime.now(UTC),
+                            delivery_report=report,
+                        )
+                    )
+                return contributions
+
+            for item in await run_db_off_loop(report_items):
+                items[(item.source, item.id)] = item
+        except Exception:
+            await run_db_off_loop(db.rollback)
+            logger.exception("Delivery report attention source failed")
     for plugin_name, source in sources:
         if not await run_db_off_loop(
             lambda permission=source.permission: permitted(permission)

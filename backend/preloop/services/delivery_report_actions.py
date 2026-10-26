@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 import httpx
@@ -50,8 +50,13 @@ from preloop.services.delivery_report import (
     resolve_policy,
 )
 from preloop.services.delivery_report_views import (
-    report_projects,
+    report_work_projects,
     stale_reopen_requests,
+)
+from preloop.services.delivery_report_proposals import (
+    STUCK_PENDING_AFTER,  # noqa: F401 - compatibility for callers
+    UNRESOLVED_STATUSES,
+    needs_confirmation as _clearable,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,32 +208,6 @@ class ActionContext:
         return result if isinstance(result, Mapping) else {}
 
 
-#: How long a ``pending`` claim may sit before Dismiss may clear it. A claim
-#: stays pending when the process died between the claim and the tracker's
-#: answer; nobody knows whether the write landed.
-STUCK_PENDING_AFTER = timedelta(minutes=15)
-
-#: Claims nobody can tell were applied: only Dismiss clears them, so a retry
-#: never opens a second issue or posts a second reopen comment.
-UNRESOLVED_STATUSES = ("unconfirmed", "pending")
-
-
-def _clearable(existing: Mapping[str, Any]) -> bool:
-    """Whether Dismiss may replace a claim whose tracker outcome is unknown."""
-    status = existing.get("status")
-    if status == "unconfirmed":
-        return True
-    if status != "pending":
-        return False
-    try:
-        at = datetime.fromisoformat(str(existing.get("at")))
-    except ValueError:
-        return True
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - at >= STUCK_PENDING_AFTER
-
-
 def _ambiguous(exc: BaseException) -> bool:
     """Whether a tracker failure leaves it unknown if the write landed.
 
@@ -315,7 +294,7 @@ def _project_for_follow_up(ctx: ActionContext, follow_up: Mapping[str, Any]) -> 
     ref = str(follow_up.get("ref") or "")
     if "#" in ref and ref.split("#", 1)[0]:
         names.append(ref.split("#", 1)[0])
-    projects = report_projects(ctx.report)
+    projects = report_work_projects(ctx.report)
     if len(projects) == 1:
         names.append(projects[0])
     for name in names:

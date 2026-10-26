@@ -72,3 +72,34 @@ class DeliveryReportDetail(DeliveryReportRow):
         ),
     )
     actions: DeliveryReportActions = Field(default_factory=DeliveryReportActions)
+    rerun_projects: List[str] = Field(default_factory=list)
+
+
+class DeliveryReportPendingProposal(BaseModel):
+    """A report proposal that still needs a person, not a run in progress."""
+
+    key: str
+    kind: str
+    title: str
+    reason: Optional[str] = None
+    stale_reason: Optional[str] = None
+    unconfirmed: bool = False
+
+
+class DeliveryReportAttention(BaseModel):
+    """Pending decisions from one report; other report findings stay out."""
+
+    id: UUID
+    started_at: Optional[datetime] = None
+    projects: List[str] = Field(default_factory=list)
+    proposals: List[DeliveryReportPendingProposal]
+    fingerprint: str
+
+
+class ExecutionPullRequest(BaseModel):
+    """Forge state and the newest assessment at the PR's current head."""
+
+    url: str
+    state: Optional[str] = None
+    revision: Optional[str] = None
+    purpose_verdict: Optional[str] = None

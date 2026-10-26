@@ -1,4 +1,5 @@
 import type { PreparedExtensionAttentionItem } from '../../utils/attention-extension';
+import type { DeliveryReportAttention } from '../../delivery-reports-api';
 import { decideMCPFinding, type MCPFinding } from '../../mcp-findings-api';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
@@ -120,6 +121,7 @@ export class AttentionView extends AuthedElement {
   @state() private mcpFindingsEnabled = false;
   @state() private mcpFindings: MCPFinding[] = [];
   @state() private extensionItems: PreparedExtensionAttentionItem[] = [];
+  @state() private deliveryReports: DeliveryReportAttention[] = [];
   @state() private policyNotices: AttentionPolicyNotice[] = [];
   @state() private spendOutliers: SpendOutlierFinding[] = [];
   @state() private showSpendSettings = false;
@@ -329,6 +331,12 @@ export class AttentionView extends AuthedElement {
           margin-left: auto;
         }
 
+        .report-proposals a {
+          text-decoration: underline;
+        }
+        .report-proposals li + li {
+          margin-top: 8px;
+        }
         .row-evidence {
           display: flex;
           flex-direction: column;
@@ -781,6 +789,7 @@ export class AttentionView extends AuthedElement {
     this.mcpFindingsEnabled = features?.features?.mcp_findings === true;
 
     this.extensionItems = inputs.extensionItems || [];
+    this.deliveryReports = inputs.deliveryReports || [];
     this.lastUpdatedAt = new Date().toISOString();
     this.loading = false;
     // The header's bell has no budget for these nine requests; it states the
@@ -820,6 +829,7 @@ export class AttentionView extends AuthedElement {
       spendOutliers: this.spendOutliers,
       dismissals: this.dismissals,
       extensionItems: this.extensionItems,
+      deliveryReports: this.deliveryReports,
     });
   }
 
@@ -1758,6 +1768,18 @@ export class AttentionView extends AuthedElement {
 
   private renderEvidence(item: AttentionItem) {
     switch (item.kind) {
+      case 'delivery_report':
+        return html`<ul class="report-proposals">
+          ${item.evidence?.deliveryReport?.proposals.map(
+            (proposal) =>
+              html`<li>
+                <a href=${item.href}>${proposal.title}</a>
+                ${proposal.stale_reason ? html`<sl-badge class="status-chip" pill variant="neutral" title=${proposal.stale_reason}>Stale</sl-badge>` : nothing}
+                ${proposal.unconfirmed ? html`<sl-badge class="status-chip" pill variant="warning">Check tracker</sl-badge>` : nothing}
+                ${proposal.reason ? html`<div>${proposal.reason}</div>` : nothing}
+              </li>`
+          )}
+        </ul>`;
       case 'flow':
         return this.renderFlowEvidence(item);
       case 'agent':
@@ -1783,6 +1805,7 @@ export class AttentionView extends AuthedElement {
     const evidence = item.evidence;
     if (!evidence) return false;
     return Boolean(
+      evidence.deliveryReport?.proposals.length ||
       evidence.failedRuns?.length ||
       evidence.agentReasons?.length ||
       evidence.modelFailures?.length ||

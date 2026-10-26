@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import event
 
 from preloop.models import models
 from preloop.models.crud import (
@@ -502,3 +503,168 @@ def test_leaving_manual_turns_the_schedule_back_on(
     )
     db_session.refresh(flow)
     assert flow.is_enabled is True
+
+
+def test_project_rerun_narrows_scope_and_keeps_policy(db_session, test_user) -> None:
+    _project(db_session, test_user.account_id)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        overrides={
+            "onboarding_assessed_run": False,
+            "per_run_usd": 2.0,
+            "monthly_usd": 9.0,
+            "projects": [REPO, "example/other"],
+        },
+    )
+    flow = SimpleNamespace(id=uuid.uuid4(), account_id=test_user.account_id)
+    run = dr.plan_policy_run(db_session, flow=flow, project=REPO)
+    assert run.policy.projects == [REPO]
+    assert run.policy.per_run_usd == 2.0
+    assert run.policy.monthly_usd == 9.0
+    assert run.policy.tracker_writes.close == "deny"
+    assert not run.calls_model
+    stored = crud_delivery_report_policy.get_overrides(
+        db_session, account_id=test_user.account_id
+    )
+    assert stored["projects"] == [REPO, "example/other"]
+    with pytest.raises(ValueError, match="outside"):
+        dr.plan_policy_run(db_session, flow=flow, project="example/forbidden")
+    with pytest.raises(ValueError, match="connected"):
+        dr.plan_policy_run(db_session, flow=flow, project="example/other")
+
+
+def test_project_rerun_honors_disabled_repository(db_session, test_user) -> None:
+    project = _project(db_session, test_user.account_id)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        project_id=project.id,
+        overrides={"enabled": False},
+    )
+    with pytest.raises(ValueError, match="disabled"):
+        dr.validate_report_project(
+            db_session, account_id=test_user.account_id, project=REPO
+        )
+
+
+def test_rerun_choices_use_bounded_reads_for_multiple_projects(
+    db_session, test_user
+) -> None:
+    from preloop.services.delivery_report_views import rerun_projects
+
+    active = _project(db_session, test_user.account_id)
+    disabled = _project(db_session, test_user.account_id, "example/disabled")
+    disconnected = _project(db_session, test_user.account_id, "example/disconnected")
+    disconnected.is_active = False
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        project_id=disabled.id,
+        overrides={"enabled": False},
+    )
+    db_session.flush()
+    account_id = test_user.account_id
+    projects = [active.slug, disabled.slug, disconnected.slug, "example/missing"]
+    statements = []
+
+    def record(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        allowed = rerun_projects(
+            db_session,
+            account_id=account_id,
+            report={
+                "shipped": [{"project": project} for project in projects],
+            },
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert allowed == [REPO]
+    assert len(statements) <= 3
+
+
+def test_project_rerun_uses_manual_trigger_and_rejects_policy_changes(
+    client, db_session, test_user, monkeypatch
+) -> None:
+    from unittest.mock import AsyncMock
+    from preloop.models.crud import crud_flow
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    _project(db_session, test_user.account_id)
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            account_id=test_user.account_id,
+            name="Delivery Report",
+            prompt_template="Report",
+            agent_type="openhands",
+            agent_config={"report_kind": "delivery_report"},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+        ),
+    )
+    trigger = AsyncMock(return_value={"id": str(uuid.uuid4()), "status": "PENDING"})
+    monkeypatch.setattr(FlowTriggerService, "trigger_flow", trigger)
+    response = client.post(
+        f"/api/v1/flows/{flow.id}/trigger",
+        json={
+            "delivery_report_project": REPO,
+            "payload": {"window": {"to": "2026-10-24T00:00:00Z"}},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        trigger.call_args.kwargs["trigger_event_data"]["delivery_report_project"]
+        == REPO
+    )
+    assert trigger.call_args.kwargs["test_mode"] is True
+    crud_delivery_report_policy.save_overrides(
+        db_session, account_id=test_user.account_id, overrides={"enabled": False}
+    )
+    denied = client.post(
+        f"/api/v1/flows/{flow.id}/trigger", json={"delivery_report_project": REPO}
+    )
+    assert denied.status_code == 422
+    assert trigger.await_count == 1
+
+
+def test_scoped_deterministic_run_contains_only_selected_project(
+    db_session, test_user
+) -> None:
+    from preloop.models.crud.issue_cost import crud_issue_cost
+
+    _project(db_session, test_user.account_id)
+    for repo in [REPO, "example/other"]:
+        pull = crud_issue_cost.get_or_create_pull_request(
+            db_session,
+            account_id=test_user.account_id,
+            pr_key=f"https://github.com/{repo}/pull/1",
+        )
+        pull.state = "merged"
+        pull.head_sha = "revision"
+        pull.merged_at = datetime(2026, 10, 22, tzinfo=UTC)
+    db_session.flush()
+    flow = SimpleNamespace(id=uuid.uuid4(), account_id=test_user.account_id)
+    run = dr.plan_policy_run(db_session, flow=flow, project=REPO)
+    report = dr.deterministic_report(
+        db_session,
+        flow=flow,
+        execution=SimpleNamespace(id=None),
+        run=run,
+        window={"from": "2026-10-17T00:00:00Z", "to": "2026-10-24T00:00:00Z"},
+    )
+    assert [p["project"] for p in report["shipped"]] == [REPO]

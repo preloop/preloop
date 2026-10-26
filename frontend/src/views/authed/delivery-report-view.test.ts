@@ -1,3 +1,4 @@
+import { row, detail } from './test-delivery-report';
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { setViewport } from '@web/test-runner-commands';
@@ -25,124 +26,6 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function row(
-  id: string,
-  extra: Partial<DeliveryReportRow> = {}
-): DeliveryReportRow {
-  return {
-    id,
-    flow_id: 'flow-1',
-    flow_name: 'Delivery Report',
-    status: 'SUCCEEDED',
-    report_status: 'success',
-    started_at: '2026-10-24T07:00:00Z',
-    ended_at: '2026-10-24T07:04:00Z',
-    window: { from: '2026-10-17T07:00:00Z', to: '2026-10-24T07:00:00Z' },
-    projects: ['example/app'],
-    shipped: 3,
-    closed: 2,
-    closed_unverified: 1,
-    proposals: 2,
-    cost_usd: 4.12,
-    ...extra,
-  };
-}
-
-function detail(
-  extra: Partial<DeliveryReportDetail> = {}
-): DeliveryReportDetail {
-  return {
-    ...row('run-1'),
-    stale_reopen_requests: {},
-    actions: { open_issue: false, reopen: false, dismiss: false },
-    report: {
-      status: 'success',
-      summary: {
-        shipped: 3,
-        closed: 2,
-        linkage: { linked: 2, total: 3 },
-        criteria_availability: { with_criteria: 1, total: 2 },
-        evidence_availability: { with_evidence: 1, total: 4 },
-        closed_verdicts: {
-          covered: 1,
-          partial: 0,
-          unverified: 1,
-          no_criteria: 0,
-        },
-      },
-      shipped: [
-        {
-          ref: 'example/app#10',
-          title: 'Add the export button',
-          url: 'https://example.com/example/app/pull/10',
-          project: 'example/app',
-          area: 'frontend',
-          issues: ['example/app#7'],
-          purpose: {
-            verdict: 'unverified',
-            source: 'report',
-            criteria: [
-              { text: 'Export finishes under 2s', met: null, evidence: [] },
-            ],
-          },
-          risk_flags: [
-            { flag: 'ui_without_screenshot', evidence: ['src/export.ts'] },
-          ],
-          evidence_gaps: ['p95 not measured'],
-        },
-        {
-          ref: 'example/app#11',
-          title: 'Fix the login copy',
-          project: 'example/app',
-          purpose: { verdict: 'covered', source: 'audit', criteria: [] },
-        },
-        {
-          ref: 'example/api#3',
-          title: 'Bump a dependency',
-          project: 'example/api',
-          purpose: { verdict: 'no_criteria', source: 'metadata' },
-        },
-      ],
-      closed_issues: [
-        {
-          ref: 'example/app#7',
-          title: 'Export is slow',
-          url: 'https://example.com/example/app/issues/7',
-          closed_by: ['example/app#10'],
-          purpose: { verdict: 'unverified', source: 'report', criteria: [] },
-        },
-        {
-          ref: 'example/app#8',
-          title: 'Login copy',
-          purpose: { verdict: 'covered', source: 'audit', criteria: [] },
-        },
-      ],
-      reopen_requests: [
-        {
-          ref: 'example/app#7',
-          title: 'Export is slow',
-          revision: 'abcdef1234567890',
-          reason: 'The latest comment measures 3.4s',
-          evidence: ['comment by Jane Doe'],
-        },
-      ],
-      follow_ups: [{ title: 'Add a screenshot check to the export view' }],
-      open_past_window: [
-        {
-          kind: 'pull_request',
-          ref: 'example/app#12',
-          title: 'Old PR',
-          age_days: 9,
-        },
-      ],
-      delta: { previous_report: null, open_questions: [] },
-      open_questions: [{ question: 'Is the export measured in CI?' }],
-      spend: { cost_usd: 4.12, total_tokens: 120000, limit_usd: 5 },
-    },
-    ...extra,
-  };
-}
-
 describe('delivery report presentation rules', () => {
   it('never paints unverified red: it is a warning tint called an evidence gap', () => {
     const chip = verdictChip('unverified');
@@ -162,7 +45,7 @@ describe('delivery report presentation rules', () => {
       denominators(summary).map((d) => `${d.part}/${d.total}`)
     ).to.deep.equal(['2/3', '1/2', '1/4']);
     expect(verdictCounts(summary).map((v) => v.count)).to.deep.equal([
-      1, 0, 1, 0,
+      0, 0, 1, 1,
     ]);
   });
 
@@ -207,6 +90,88 @@ describe('delivery-report-view', () => {
     return el;
   }
 
+  it('re-runs only the selected project through the manual path and links the new run', async () => {
+    payload.rerun_projects = ['example/app', 'example/docs'];
+    fetchStub
+      .withArgs('/api/v1/flows/flow-1/trigger')
+      .resolves(json({ id: 'new-run' }));
+    const el = await mount();
+    const select = el.shadowRoot!.querySelector('sl-select')!;
+    select.value = 'example/docs';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await el.updateComplete;
+    (
+      el.shadowRoot!.querySelector('[data-testid="rerun"]') as HTMLElement
+    ).click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="rerun-execution"]')
+    );
+    const request = fetchStub
+      .getCalls()
+      .find((c) => String(c.args[0]).endsWith('/trigger'))!;
+    expect(JSON.parse(request.args[1].body)).to.deep.equal({
+      delivery_report_project: 'example/docs',
+      payload: { window: payload.window },
+    });
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-testid="rerun-execution"]')!
+        .getAttribute('href')
+    ).to.equal('/console/flows/executions/new-run');
+  });
+
+  it('does not offer a rerun when the policy permits no connected project', async () => {
+    payload.rerun_projects = [];
+    const el = await mount();
+    expect(el.shadowRoot!.querySelector('[data-testid="rerun"]')).to.not.exist;
+  });
+
+  it('keeps a failed rerun on the report with a retryable error', async () => {
+    payload.rerun_projects = ['example/app'];
+    fetchStub.withArgs('/api/v1/flows/flow-1/trigger').resolves(json({}, 422));
+    const el = await mount();
+    (
+      el.shadowRoot!.querySelector('[data-testid="rerun"]') as HTMLElement
+    ).click();
+    await waitUntil(() => el.shadowRoot!.querySelector('[role="alert"]'));
+    expect(el.shadowRoot!.querySelector('[data-testid="rerun-execution"]')).to
+      .not.exist;
+    expect(
+      el
+        .shadowRoot!.querySelector('sl-button[data-testid="rerun"]')!
+        .hasAttribute('disabled')
+    ).to.equal(false);
+  });
+
+  it('keeps the report, action controls and verdict chips inside a 375px phone', async () => {
+    await setViewport({ width: 375, height: 800 });
+    try {
+      payload.rerun_projects = ['example/app'];
+      const el = await mount();
+      await expect(el).to.be.accessible();
+      for (const node of el.shadowRoot!.querySelectorAll<HTMLElement>(
+        '.summary-strip, .row-head, .header-actions, section'
+      )) {
+        expect(node.scrollWidth, node.className || node.id).to.be.at.most(
+          node.clientWidth + 1
+        );
+      }
+    } finally {
+      await setViewport({ width: 1024, height: 768 });
+    }
+  });
+
+  it('follows report anchors inside the view', async () => {
+    const el = await mount();
+    const target = el.shadowRoot!.getElementById('needs-you')!;
+    const scroll = sinon.stub(target, 'scrollIntoView');
+    const oldUrl = window.location.href;
+    history.replaceState(null, '', '#needs-you');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(scroll.calledOnce).to.equal(true);
+    history.replaceState(null, '', oldUrl);
+  });
+
   it('renders the four numbers and every section with anchors', async () => {
     const el = await mount();
     const root = el.shadowRoot!;
@@ -217,7 +182,7 @@ describe('delivery-report-view', () => {
     expect(text('denominator-linkage')).to.contain('2 of 3');
     expect(text('denominator-criteria')).to.contain('1 of 2');
     expect(text('denominator-evidence')).to.contain('1 of 4');
-    expect(text('verdict-counts')).to.contain('Covered 1');
+    expect(text('verdict-counts')).to.contain('Covered 0');
     expect(text('verdict-counts')).to.contain('Unverified 1');
     for (const id of [
       'needs-you',
@@ -232,6 +197,7 @@ describe('delivery-report-view', () => {
     }
     expect(root.getElementById('project-example-app')).to.exist;
     expect(root.getElementById('project-example-api')).to.exist;
+    expect(root.getElementById('area-example-app-frontend')).to.exist;
     expect(
       root.querySelectorAll('[data-testid="shipped-change"]').length
     ).to.equal(3);
