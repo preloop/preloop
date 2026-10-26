@@ -135,6 +135,7 @@ effective policy is the defaults, then the account, then the repository
 | Drop first when short of budget | risk detail, then assessments beyond 25 changes; the shipped list is never dropped | account |
 | Open PR window | 7 days | account, repository |
 | Inactive issue window | 14 days | account, repository |
+| Merge audit CI wait | 30 minutes, maximum 24 hours | account, repository |
 | Criteria source | the issue's triage assessment section, else an "Acceptance" heading | account, repository |
 | UI screenshot threshold | 40 changed frontend lines | account, repository |
 | Tracker writes | create follow-up: off (a proposal in the report); reopen: approval; close: always deny | account |

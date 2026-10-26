@@ -31647,6 +31647,12 @@ components:
           minimum: 1.0
           title: Issue Inactive Days
           default: 14
+        audit_ci_max_wait_minutes:
+          type: integer
+          maximum: 1440.0
+          minimum: 1.0
+          title: Audit Ci Max Wait Minutes
+          default: 30
         ui_screenshot_min_lines:
           type: integer
           minimum: 0.0

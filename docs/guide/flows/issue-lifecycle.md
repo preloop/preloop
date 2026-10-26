@@ -146,9 +146,20 @@ verdict, it appends the reason to the criterion.
 Collection has its own 3-second deadline, and a source that does not answer
 in time is listed as `timed out`. A preview URL that is not public http(s)
 (loopback, private, link-local or metadata addresses, other schemes) is refused
-before it reaches the prompt. The bundle is a snapshot taken when the audit is
-scheduled. Checks, artifacts or deployments that finish later are not in it, and
-`/audit/reconcile` reuses it. The Delivery Report applies the same rule when it
+before it reaches the prompt. If check runs at the merge SHA are pending, the
+controller keeps a durable deferred row and the execution monitor retries it
+each minute. Retries read check runs only; the full evidence bundle is fetched
+once checks are terminal or the wait expires. A missing check-run list gets a
+one-minute grace period for GitHub to register the suite. An unreadable list
+waits until the cap. Completed failed or cancelled checks are terminal. The
+report policy's
+`audit_ci_max_wait_minutes` caps the wait (30 minutes by default); at the cap,
+the audit runs with the still-pending checks and records the timeout under
+`runtime_evidence.unavailable`. Pending check ids cannot support a complete
+criterion verdict. A repository with no CI proceeds after the grace period;
+checks registered later than that period are outside this snapshot.
+Once an execution is attached, `/audit/reconcile` reuses its pinned bundle.
+The Delivery Report applies the same rule when it
 reads a stored audit result, so it never counts a citation the controller
 dropped.
 

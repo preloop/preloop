@@ -27,6 +27,7 @@ const DEFAULTS = {
   max_assessed_changes: 25,
   pr_ready_days: 7,
   issue_inactive_days: 14,
+  audit_ci_max_wait_minutes: 30,
   ui_screenshot_min_lines: 40,
   criteria_source: 'triage_assessment',
   tracker_writes: {
@@ -51,6 +52,7 @@ function layer(level: 'account' | 'project', overrides = {}) {
       'criteria_source',
       'enabled',
       'issue_inactive_days',
+      'audit_ci_max_wait_minutes',
       'pr_ready_days',
       'ui_screenshot_min_lines',
     ],
@@ -204,6 +206,25 @@ describe('delivery-report-policy-settings', () => {
     await waitUntil(() => puts.length === 1);
     expect(puts[0].path).to.equal('/api/v1/delivery-report/policy/projects/p1');
     expect(puts[0].body.overrides).to.deep.equal({ enabled: false });
+  });
+
+  it('saves a repository merge audit CI wait', async () => {
+    const { puts } = stubApi();
+    const el = await mount('p1');
+    const wait = el.shadowRoot!.querySelector(
+      'sl-input[data-field="audit_ci_max_wait_minutes"]'
+    ) as HTMLInputElement;
+    expect(wait).to.exist;
+    wait.value = '15';
+    wait.dispatchEvent(new Event('sl-input'));
+    await el.updateComplete;
+    (
+      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
+    ).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0].body.overrides).to.deep.equal({
+      audit_ci_max_wait_minutes: 15,
+    });
   });
 
   it('lets the recipient stop their own email without the permission', async () => {

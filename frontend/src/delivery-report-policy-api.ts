@@ -29,6 +29,7 @@ export interface DeliveryReportPolicy {
   max_assessed_changes: number;
   pr_ready_days: number;
   issue_inactive_days: number;
+  audit_ci_max_wait_minutes: number;
   ui_screenshot_min_lines: number;
   criteria_source: CriteriaSource;
   tracker_writes: {
