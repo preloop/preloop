@@ -4993,6 +4993,7 @@ fi
         source_branch: str,
         target_branch: str,
         trigger_data: Dict[str, Any],
+        use_remote_default: bool = False,
     ) -> str:
         """Build post-clone branch and commit checkout commands."""
 
@@ -5054,6 +5055,17 @@ if ! git checkout -b {q_target}; then
     echo "========================================="
     echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
+    exit 1
+fi
+cd /workspace
+""".strip()
+
+        if use_remote_default:
+            return f"""
+cd {q_path}
+echo Creating agent target branch {q_target} from remote default HEAD
+if ! git checkout -b {q_target}; then
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     exit 1
 fi
 cd /workspace
@@ -5324,10 +5336,15 @@ true
                     source_branch=repo_source,
                     target_branch=repo_target,
                     trigger_data=trigger_data,
+                    use_remote_default=bool(repo_config.get("use_remote_default")),
                 ),
                 self._build_git_clone_validation_shell(
                     full_path=full_path,
-                    source_branch=repo_source,
+                    source_branch=(
+                        "remote HEAD"
+                        if repo_config.get("use_remote_default") and not commit_sha
+                        else repo_source
+                    ),
                     target_branch=repo_target,
                     commit_sha=commit_sha,
                 ),
