@@ -131,6 +131,7 @@ def list_pull_requests(
             p.opened_at,
             p.approved_at,
             p.merged_at,
+            p.state,
             p.ambiguous,
             r.issue_key,
             active.c.at,

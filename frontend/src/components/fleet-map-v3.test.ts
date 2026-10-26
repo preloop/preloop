@@ -385,6 +385,50 @@ describe('fleet-map v3 lifecycle and controls', () => {
 });
 
 describe('fleet-map work geometry', () => {
+  it('shows recorded PR states and reserves unknown for missing evidence', async () => {
+    const graph = sampleFleetMap();
+    const states = [
+      ['Open', 'Open'],
+      ['Closed', 'Closed'],
+      ['Merged', 'Merged'],
+      [null, 'State unknown'],
+    ] as const;
+    const el = await map({
+      graph: {
+        ...graph,
+        nodes: [
+          ...graph.nodes,
+          ...states.map(([status], index) => ({
+            ...graph.nodes[0],
+            id: `work:pull_request:example/widgets#${index + 1}`,
+            type: 'work' as const,
+            resource_id: `example/widgets#${index + 1}`,
+            label: `PR #${index + 1}`,
+            href: `https://example.com/example/widgets/pull/${index + 1}`,
+            status,
+            review_state: status ? 'approved' : null,
+            work_kind: 'pull_request' as const,
+          })),
+        ],
+      },
+      positionsScope: 'pr-state-labels',
+    });
+
+    for (const [index, [status, label]] of states.entries()) {
+      const node = el.shadowRoot!.querySelector<HTMLElement>(
+        `[data-node="work:pull_request:example/widgets#${index + 1}"]`
+      )!;
+      node.click();
+      await el.updateComplete;
+      const chip = el.shadowRoot!.querySelector(
+        '[data-testid="fleet-map-panel"] .chips sl-badge'
+      );
+      expect(chip?.textContent?.trim()).to.equal(label);
+      expect(node.getAttribute('data-status')).to.equal(status);
+      expect(node.querySelector('.sub')?.textContent?.trim()).to.equal(label);
+    }
+  });
+
   it('fits a newly arriving Work column and shows merged state above a prior review', async () => {
     const el = await map({
       spatialOnly: false,

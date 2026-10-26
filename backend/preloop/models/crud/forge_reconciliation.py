@@ -23,9 +23,6 @@ from preloop.models import models
 
 #: How long a refreshed open pull request waits before it is due again.
 REFRESH_REARM = timedelta(minutes=5)
-#: A pull request first seen this long ago and never observed open is not
-#: worth a forge read: four weekly reports look no further back.
-REFRESH_LOOKBACK = timedelta(days=28)
 #: An unpublished delivery claim younger than this belongs to a request that
 #: may still publish; an older one is taken over by the next delivery.
 UNPUBLISHED_CLAIM_GRACE = timedelta(minutes=2)
@@ -42,8 +39,11 @@ class CRUDPullRequestRefresh:
         """Claim up to ``limit`` due pull requests and commit the claim.
 
         Due means ``refresh_due_at`` has passed (re-armed or webhook
-        accelerated), or it is unset on an open pull request, or on one not
-        yet observed that is recent and carries no merge time. Claiming moves
+        accelerated), or it is unset on an open or unobserved pull request.
+        A batch first reserves half its slots for due known-state rows, then
+        fills the rest with unobserved rows. Unused slots go back to known-state
+        rows. This keeps webhook and re-armed reads moving while draining an
+        old unobserved backlog. Claiming moves
         ``refresh_due_at`` one re-arm interval ahead, so a worker that dies
         mid-read only delays the row; concurrent ticks skip locked rows.
 
@@ -53,34 +53,44 @@ class CRUDPullRequestRefresh:
             limit: The batch bound.
 
         Returns:
-            The claimed rows, webhook-accelerated and longest-waiting first.
+            The claimed rows, with known-state due rows first and each group
+            ordered by due time.
         """
         p = models.IssueCostPullRequest
-        rows = list(
+        due = or_(
+            p.refresh_due_at <= now,
+            and_(
+                p.refresh_due_at.is_(None),
+                or_(p.state == "open", p.state.is_(None)),
+            ),
+        )
+        order = (p.refresh_due_at.asc().nulls_last(), p.id)
+        known_query = (
+            select(p)
+            .where(due, p.state.is_not(None))
+            .order_by(*order)
+            .with_for_update(skip_locked=True)
+        )
+        known = list(db.scalars(known_query.limit((limit + 1) // 2)))
+        unobserved = list(
             db.scalars(
                 select(p)
-                .where(
-                    or_(
-                        p.refresh_due_at <= now,
-                        and_(
-                            p.refresh_due_at.is_(None),
-                            or_(
-                                p.state == "open",
-                                and_(
-                                    p.state.is_(None),
-                                    p.merged_at.is_(None),
-                                    p.created_at
-                                    >= (now - REFRESH_LOOKBACK).replace(tzinfo=None),
-                                ),
-                            ),
-                        ),
-                    )
-                )
-                .order_by(p.refresh_due_at.asc().nulls_last(), p.id)
-                .limit(limit)
+                .where(due, p.state.is_(None))
+                .order_by(*order)
+                .limit(limit - len(known))
                 .with_for_update(skip_locked=True)
             )
         )
+        remaining = limit - len(known) - len(unobserved)
+        if remaining:
+            known.extend(
+                db.scalars(
+                    known_query.where(p.id.not_in([row.id for row in known])).limit(
+                        remaining
+                    )
+                )
+            )
+        rows = known + unobserved
         for row in rows:
             row.refresh_due_at = now + REFRESH_REARM
         db.commit()

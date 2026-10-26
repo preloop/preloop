@@ -148,8 +148,8 @@ def build_work_items(
     """Read each persisted source once and merge by kind and canonical key.
 
     Titles come from stored tracker rows or compact run subjects; labels only
-    from tracker snapshots. Current PR state and
-    latest review verdict remain unknown unless there is explicit forge evidence.
+    from tracker snapshots. Current PR state comes from the reconciled record;
+    the latest review verdict remains unknown without explicit forge evidence.
     Actor links must fall inside the same window, with visibility applied before
     their IDs are returned. Agent owners are not inferred to have acted.
     """
@@ -544,14 +544,18 @@ def build_work_items(
             action = "merged"
         elif row.approved_at and _aware(row.approved_at) == row.at:
             action = "reviewed"
+        state = row.state if row.state in {"open", "closed", "merged"} else None
+        if state is None and row.merged_at and _aware(row.merged_at) <= until:
+            state = "merged"
+        # A later merge is not evidence that this window ended merged.
+        if state == "merged" and row.merged_at and _aware(row.merged_at) > until:
+            state = None
         add(
             row.pr_key,
             "pull_request",
             row.at,
             action,
-            state="merged"
-            if row.merged_at and _aware(row.merged_at) <= until
-            else None,
+            state=state,
             related=row.issue_key if not row.ambiguous else None,
         )
         pr_slot = slot_of(row.pr_key, "pull_request")
