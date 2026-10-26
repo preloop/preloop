@@ -4859,9 +4859,11 @@ fi
     ) -> str:
         """Choose the branch passed to ``git clone -b`` for one repository."""
 
+        if repo_config.get("use_remote_default"):
+            return ""
         repo_branch = repo_config.get("branch")
         if repo_branch:
-            return repo_branch
+            return str(repo_branch)
         if commit_sha:
             clone_branch = (
                 self._extract_target_branch_from_trigger(trigger_data) or "main"

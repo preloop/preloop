@@ -2835,19 +2835,23 @@ class FlowExecutionOrchestrator:
             return config
         identity = self._cached_payload_identity()
         if not identity:
-            if is_delivery_report_flow(getattr(self, "flow", None)) and not config.get(
-                "repositories"
+            if (
+                config.get("enabled") is True
+                and is_delivery_report_flow(getattr(self, "flow", None))
+                and not config.get("repositories")
             ):
                 from preloop.models.crud import crud_delivery_report_policy
 
                 run = self._plan_delivery_report_run()
                 if run is not None and run.calls_model:
+                    assert self.flow is not None
                     scope = {name.lower() for name in run.policy.projects}
                     repositories = []
                     for (
                         name,
                         project_id,
                         tracker_id,
+                        branch,
                     ) in crud_delivery_report_policy.code_repositories(
                         self.db, account_id=self.flow.account_id
                     ):
@@ -2856,9 +2860,15 @@ class FlowExecutionOrchestrator:
                         project_policy = run.project_policies.get(name)
                         if project_policy is not None and not project_policy.enabled:
                             continue
-                        repositories.append(
-                            {"project_id": project_id, "tracker_id": tracker_id}
-                        )
+                        entry: Dict[str, Any] = {
+                            "project_id": project_id,
+                            "tracker_id": tracker_id,
+                        }
+                        if branch:
+                            entry["branch"] = branch
+                        else:
+                            entry["use_remote_default"] = True
+                        repositories.append(entry)
                     return {**config, "repositories": repositories}
             return config
 
