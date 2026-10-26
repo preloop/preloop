@@ -259,9 +259,16 @@ def test_tracker_connection_creates_one_default_report_flow(
 ) -> None:
     """A tracker connection activates a schedule even without a model."""
     project = _project(db_session, test_user.account_id)
+    project.meta_data = {"default_branch": "master"}
+    db_session.flush()
     assert crud_delivery_report_policy.code_repositories(
         db_session, account_id=test_user.account_id
-    ) == [(REPO, str(project.id), str(project.organization.tracker_id))]
+    ) == [(REPO, str(project.id), str(project.organization.tracker_id), "master")]
+    project.settings = {"default_branch": "develop"}
+    db_session.flush()
+    assert crud_delivery_report_policy.code_repositories(
+        db_session, account_id=test_user.account_id
+    ) == [(REPO, str(project.id), str(project.organization.tracker_id), "develop")]
     with patch(
         "preloop.api.endpoints.flows._resolve_clone_model_binding",
         side_effect=HTTPException(status_code=422, detail="no model"),
@@ -291,6 +298,48 @@ def test_tracker_connection_creates_one_default_report_flow(
         id=flow.id, account_id=test_user.account_id, ai_model_id=uuid.uuid4()
     )
     assert dr.plan_policy_run(db_session, flow=bound_flow).decision == "onboarding"
+
+
+def test_no_credit_first_run_can_assess_after_top_up(
+    db_session: Session, test_user: Any
+) -> None:
+    """A deterministic no-credit report does not consume onboarding."""
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name=f"Top-up report {uuid.uuid4().hex[:6]}",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            prompt_template="Report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+        ),
+    )
+    bound = SimpleNamespace(
+        id=flow.id, account_id=test_user.account_id, ai_model_id=uuid.uuid4()
+    )
+    with patch(
+        "preloop.models.crud.crud_delivery_report_policy.credit_available",
+        return_value=0.0,
+    ):
+        assert (
+            dr.plan_policy_run(db_session, flow=bound).decision == "skipped_no_credit"
+        )
+    crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            result={"assessment": {"decision": "skipped_no_credit"}},
+        ),
+    )
+    with patch(
+        "preloop.models.crud.crud_delivery_report_policy.credit_available",
+        return_value=2.0,
+    ):
+        assert dr.plan_policy_run(db_session, flow=bound).decision == "onboarding"
 
 
 @pytest.mark.parametrize(

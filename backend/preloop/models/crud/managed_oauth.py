@@ -552,12 +552,11 @@ class CRUDManagedOAuth:
             row.pkce_verifier_encrypted = None
             tracker.is_active = True
             db.flush()
-            if tracker_id is None:
-                from preloop.services.delivery_report_activation import (
-                    ensure_default_report_flow,
-                )
+            from preloop.services.delivery_report_activation import (
+                ensure_default_report_flow,
+            )
 
-                ensure_default_report_flow(db, account_id=account_id)
+            ensure_default_report_flow(db, account_id=account_id)
             return tracker.id
 
     def grant_statuses(

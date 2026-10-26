@@ -1075,6 +1075,36 @@ class TestGitShellQuoting:
             f"{shlex.quote(repo_url)} {shlex.quote(full_path)}"
         ) in shell
 
+    def test_report_checkout_without_known_branch_uses_remote_head(
+        self, container_executor
+    ) -> None:
+        """The clone must not demand main when the remote defaults elsewhere."""
+        context = {
+            "execution_id": "synthetic-report-run",
+            "flow_name": "Delivery Report",
+            "trigger_event_data": {},
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://example.com/app.git",
+                        "clone_path": "/workspace/app",
+                        "use_remote_default": True,
+                    }
+                ],
+            },
+        }
+        shell = container_executor._prepare_git_clone_command(context)
+        assert "git clone https://example.com/app.git /workspace/app" in shell
+        assert "git clone -b main" not in shell
+        repository = context["git_clone_config"]["repositories"][0]
+        repository.pop("use_remote_default")
+        repository["branch"] = "develop"
+        shell = container_executor._prepare_git_clone_command(context)
+        assert (
+            "git clone -b develop https://example.com/app.git /workspace/app" in shell
+        )
+
     def test_git_pre_clone_replaces_unwritable_target(
         self, container_executor, tmp_path
     ):

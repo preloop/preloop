@@ -2669,7 +2669,7 @@ def plan_policy_run(
     decision = assessment_decision(
         policy,
         has_previous_report=previous is not None
-        and previous_decision != "skipped_no_model",
+        and previous_decision not in SKIPPED_DECISIONS,
         spent_this_month_usd=spent,
         credit_available_usd=credit,
         model_available=getattr(flow, "ai_model_id", True) is not None,

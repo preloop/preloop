@@ -744,17 +744,51 @@ class TestOrchestratorPolicy:
         with patch(
             "preloop.models.crud.crud_delivery_report_policy.code_repositories",
             return_value=[
-                ("example/app", "project-1", "tracker-1"),
-                ("example/docs", "project-2", "tracker-2"),
-                ("other/app", "project-3", "tracker-3"),
+                ("example/app", "project-1", "tracker-1", "master"),
+                ("example/docs", "project-2", "tracker-2", None),
+                ("other/app", "project-3", "tracker-3", "main"),
             ],
         ) as read:
             clone = orchestrator._git_clone_config_for_trigger()
         assert clone["repositories"] == [
-            {"project_id": "project-1", "tracker_id": "tracker-1"}
+            {"project_id": "project-1", "tracker_id": "tracker-1", "branch": "master"}
         ]
         assert orchestrator.flow.git_clone_config["repositories"] == []
         read.assert_called_once_with(orchestrator.db, account_id="acct-1")
+
+    def test_assessed_schedule_respects_disabled_checkout(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": False, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="onboarding", policy=dr.DeliveryReportPolicy()
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories"
+        ) as read:
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone == {"enabled": False, "repositories": []}
+        read.assert_not_called()
+
+    def test_unknown_default_branch_uses_remote_head(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="onboarding", policy=dr.DeliveryReportPolicy()
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories",
+            return_value=[("example/app", "project-1", "tracker-1", None)],
+        ):
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == [
+            {
+                "project_id": "project-1",
+                "tracker_id": "tracker-1",
+                "use_remote_default": True,
+            }
+        ]
 
     def test_deterministic_schedule_does_not_clone_repositories(self) -> None:
         orchestrator = self._orchestrator()

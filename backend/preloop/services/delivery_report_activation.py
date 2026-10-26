@@ -35,11 +35,17 @@ def ensure_default_report_flow(db: Session, *, account_id: UUID) -> Any | None:
     Returns:
         The existing or new flow, or None when the preset is unavailable.
     """
+    # Both tracker endpoints commit after this call. Hold the account row
+    # through the lookup and insert so concurrent connections install one flow.
+    crud_delivery_report_policy.lock_account_for_activation(db, account_id=account_id)
     for flow in crud_flow.get_by_account(db, account_id=account_id, limit=1000):
         if is_delivery_report_flow(flow):
             return flow
 
     name = PRESET_SLUGS.get(PRESET_SLUG)
+    if name is None:
+        logger.warning("Delivery Report preset unavailable; no schedule created")
+        return None
     preset_config = next(
         (item for item in FLOW_PRESETS if item.get("name") == name), None
     )
