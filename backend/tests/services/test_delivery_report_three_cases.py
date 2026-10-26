@@ -606,3 +606,38 @@ def test_every_deterministic_risk_proposes_its_own_evidence() -> None:
     for proposal in report["follow_ups"]:
         expected = next(f for f in flags if f["flag"] == proposal["risk_flag"])
         assert proposal["evidence"] == expected["evidence"]
+
+
+@pytest.mark.parametrize("author", ["dependabot[bot]", "renovate[bot]"])
+@pytest.mark.parametrize("path", ["package-lock.json", ".github/workflows/ci.yml"])
+def test_metadata_only_dependency_updates_do_not_propose_follow_ups(
+    author: str, path: str
+) -> None:
+    pr = {
+        "url": f"https://github.com/{REPO}/pull/105",
+        "title": "Update dependency",
+        "author": author,
+        "description": "Routine version bump.",
+        "merged_at": "2026-10-16T12:00:00+00:00",
+        "changes": {"changed_files": [{"filename": path, "additions": 1}]},
+    }
+    assert dr.metadata_only_reason(pr) == "dependabot"
+    assert dr.detect_risk_flags(pr)  # The transport still supplied a flaggable path.
+    report = dr.assemble_report(window=WINDOW, pull_requests=[pr], issues=[])
+    assert len(report["shipped"]) == 1
+    assert report["follow_ups"] == []
+
+
+def test_generated_follow_ups_reach_markdown_and_owner_email(week: Scenario) -> None:
+    proposals = week.report["follow_ups"]
+    needs = [i for i in week.report["needs_you"] if i["kind"] == "follow_up"]
+    assert len(needs) == len(proposals) == 2
+    assert [i["index"] for i in needs] == [0, 1]
+    _, subject, text, body = week.messages[0]
+    assert f"{len(week.report['needs_you'])} need you" in subject
+    for proposal in proposals:
+        assert proposal["title"] in text and proposal["title"] in body
+        assert proposal["title"] in week.report["report_markdown"]
+        assert all(e in week.report["report_markdown"] for e in proposal["evidence"])
+    assert text.count("Proposed follow-up:") == 2
+    assert body.count("Proposed follow-up:") == 2

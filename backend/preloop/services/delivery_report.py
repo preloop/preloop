@@ -1583,7 +1583,7 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
-        for flag in normalize_risk_flags(deterministic):
+        for flag in normalize_risk_flags([] if metadata_only else deterministic):
             label = flag["flag"].replace("_", " ")
             follow_ups.append(
                 {
@@ -1761,6 +1761,19 @@ def _needs_you(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 "url": request.get("url"),
                 "revision": request.get("revision"),
                 "reason": request.get("reason"),
+            }
+        )
+    for index, proposal in enumerate(report.get("follow_ups") or []):
+        if not isinstance(proposal, Mapping):
+            continue
+        items.append(
+            {
+                "kind": "follow_up",
+                "index": index,
+                "ref": proposal.get("ref"),
+                "title": proposal.get("title"),
+                "reason": proposal.get("reason"),
+                "evidence": _evidence(proposal.get("evidence")),
             }
         )
     for issue in report.get("closed_issues") or []:
@@ -2264,6 +2277,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 f"- Proposed reopen (assessed at {item.get('revision')}): "
                 f"{_link(item)}{reason}"
             )
+        elif item["kind"] == "follow_up":
+            reason = f": {item['reason']}" if item.get("reason") else ""
+            lines.append(f"- Proposed follow-up: {_link(item)}{reason}")
+            lines.extend(f"  - {e}" for e in item.get("evidence") or [])
         elif item["kind"] == "closed_unverified":
             open_criteria = (
                 "; ".join(item.get("unmet_criteria") or []) or "criteria unchecked"

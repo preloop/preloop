@@ -343,11 +343,16 @@ async def test_registration_persists_discovered_immutable_repository_id() -> Non
         patch.object(
             trackers.event_bus_service, "publish_task", new_callable=AsyncMock
         ),
+        patch(
+            "preloop.services.delivery_report_activation.ensure_default_report_flow"
+        ) as default_report,
     ):
         result = await trackers.register_tracker(
             body, MagicMock(), current_user=user, db=MagicMock()
         )
     assert result.id == str(created.id)
+    default_report.assert_called_once()
+    assert default_report.call_args.kwargs["account_id"] == account_id
     persisted = create.call_args.kwargs["obj_in"]
     assert persisted["connection_details"] == {
         **DETAILS,
