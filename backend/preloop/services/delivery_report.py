@@ -1184,6 +1184,13 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
         "issue_url": url,
         "issue_title": envelope.get("issue_title"),
         "merge_sha": merge_sha,
+        # Controller-observed PR/merge pairs let the deterministic path pin
+        # proposals even when the PR ledger has only the source head SHA.
+        "merges": [
+            {"url": link.get("url"), "sha": link.get("sha")}
+            for link in envelope.get("merges") or []
+            if isinstance(link, Mapping)
+        ],
         "execution_id": str(getattr(execution, "id", "") or "") or None,
         "assessed_at": started.isoformat() if isinstance(started, datetime) else None,
         "purpose": {"criteria": criteria},
@@ -1412,6 +1419,77 @@ def apply_parent_checks(
 # ---------------------------------------------------------------------------
 
 
+def _audit_closing_revision(
+    issue: Mapping[str, Any],
+    closing_pr: Mapping[str, Any],
+    audits: Sequence[Mapping[str, Any]],
+) -> Optional[str]:
+    """Resolve an unrecorded merge SHA from the controller's closing PR link.
+
+    A source head is not a merge SHA. An audit of another PR or revision
+    must never supply the missing merge identity for a reopen proposal.
+    """
+    known = closing_pr.get("merge_sha")
+    if known:
+        return str(known)
+    audit = _audit_for(issue, audits)
+    if audit is None or not closing_pr.get("url"):
+        return None
+    merged = _parse_time(closing_pr.get("merged_at"))
+    assessed = _parse_time(audit.get("assessed_at"))
+    if merged is None or assessed is None or assessed < merged:
+        return None
+    for link in audit.get("merges") or []:
+        if (
+            isinstance(link, Mapping)
+            and link.get("url") == closing_pr["url"]
+            and link.get("sha") == audit.get("merge_sha")
+            and link.get("sha")
+        ):
+            return str(link["sha"])
+    return None
+
+
+def _audit_reopen_proposal(
+    issue: Mapping[str, Any], audits: Sequence[Mapping[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Propose an audited miss at a known closing revision, without a write.
+
+    Pure evidence gaps do not justify a reopen. Require a cited, not-met
+    criterion, an unchanged criteria snapshot and an audit after the last
+    issue edit. The report retains the issue timestamp and closing head
+    used by the action endpoint's existing stale-request checks.
+    """
+    if not issue.get("closing_sha") or not issue.get("closing_head_sha"):
+        return None
+    audit = _audit_for(issue, audits)
+    if audit is None:
+        return None
+    assessed = _parse_time(audit.get("assessed_at"))
+    updated = _parse_time(issue.get("updated_at"))
+    if assessed is None or updated is None or updated > assessed:
+        return None
+    purpose = normalize_purpose(_audited_purpose(audit))
+    if purpose["verdict"] not in (PURPOSE_PARTIAL, PURPOSE_UNVERIFIED):
+        return None
+    current = normalize_purpose(issue.get("purpose"))
+    if {c["text"] for c in current["criteria"]} != {
+        c["text"] for c in purpose["criteria"]
+    }:
+        return None
+    unmet = [c for c in purpose["criteria"] if c["met"] is False and c["evidence"]]
+    if not unmet:
+        return None
+    return {
+        "ref": issue["ref"],
+        "title": issue.get("title"),
+        "url": issue.get("url"),
+        "revision": audit["merge_sha"],
+        "reason": "Not met: " + "; ".join(c["text"] for c in unmet),
+        "evidence": list(dict.fromkeys(e for c in unmet for e in c["evidence"])),
+    }
+
+
 def assemble_report(
     *,
     window: Mapping[str, Any],
@@ -1467,6 +1545,7 @@ def assemble_report(
     issues = [i for i in issues if policy_for(issue_project(i)).enabled]
 
     shipped: List[Dict[str, Any]] = []
+    follow_ups: List[Dict[str, Any]] = []
     linked_by_issue: Dict[str, List[str]] = {}
     for pr in pull_requests:
         if not pr.get("merged_at") or not _in_window(pr.get("merged_at"), start, end):
@@ -1501,6 +1580,21 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
+        for flag in normalize_risk_flags(deterministic):
+            label = flag["flag"].replace("_", " ")
+            follow_ups.append(
+                {
+                    "ref": ref,
+                    "project": pr_project(pr),
+                    "title": f"Investigate {label}: {ref}",
+                    "reason": (
+                        f"The merged change has a deterministic risk flag: {label}. "
+                        "Check the cited evidence and add verification where needed."
+                    ),
+                    "risk_flag": flag["flag"],
+                    "evidence": flag["evidence"],
+                }
+            )
         changed = _changed_files(pr)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
@@ -1571,7 +1665,9 @@ def assemble_report(
                 "title": issue.get("title"),
                 "url": issue.get("url"),
                 "updated_at": issue.get("updated_at"),
-                "closing_sha": closing_pr.get("merge_sha"),
+                "closing_sha": _audit_closing_revision(
+                    {"ref": key, "url": issue.get("url")}, closing_pr, merge_audits
+                ),
                 "closing_head_sha": closing_pr.get("head_sha"),
                 # The measurement a reopen rule reads: the newest comment
                 # after the last criteria edit, when the issue has criteria.
@@ -1638,7 +1734,12 @@ def assemble_report(
         "shipped": shipped,
         "closed_issues": closed,
         "open_past_window": open_items,
-        "follow_ups": [],
+        "follow_ups": follow_ups,
+        "reopen_requests": [
+            proposal
+            for issue in closed
+            if (proposal := _audit_reopen_proposal(issue, merge_audits)) is not None
+        ],
         "open_questions": [],
     }
     return finalize_delivery_report(
