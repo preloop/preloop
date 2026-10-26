@@ -258,7 +258,10 @@ def test_tracker_connection_creates_one_default_report_flow(
     db_session: Session, test_user: Any
 ) -> None:
     """A tracker connection activates a schedule even without a model."""
-    _project(db_session, test_user.account_id)
+    project = _project(db_session, test_user.account_id)
+    assert crud_delivery_report_policy.code_repositories(
+        db_session, account_id=test_user.account_id
+    ) == [(REPO, str(project.id), str(project.organization.tracker_id))]
     with patch(
         "preloop.api.endpoints.flows._resolve_clone_model_binding",
         side_effect=HTTPException(status_code=422, detail="no model"),
