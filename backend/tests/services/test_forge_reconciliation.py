@@ -319,6 +319,49 @@ async def test_bitbucket_throttling_carries_the_advised_wait() -> None:
     assert raised.value.retry_after == 12.0
 
 
+@pytest.mark.asyncio
+async def test_bitbucket_pr_without_validators_degrades_to_plain_reads() -> None:
+    seen: list[httpx.Request] = []
+    tracker = bitbucket_tracker(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "state": "OPEN",
+                "updated_on": MERGED_AT,
+                "source": {"commit": {"hash": HEAD}},
+            },
+        ),
+        seen,
+    )
+    path = "/repositories/ws/repo/pullrequests/7"
+    first = await tracker.conditional_get(path, '"obsolete"')
+    second = await tracker.conditional_get(path, first.etag)
+    assert first.etag is second.etag is None
+    assert first.status == second.status == 200
+    assert not second.not_modified
+    assert forge_facts("bitbucket", second.body)["head_sha"] == HEAD
+    assert "If-None-Match" not in seen[1].headers
+    assert "If-Modified-Since" not in seen[1].headers
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_uses_an_etag_only_when_the_server_supplies_one() -> None:
+    seen: list[httpx.Request] = []
+    tracker = bitbucket_tracker(
+        lambda request: (
+            httpx.Response(304)
+            if request.headers.get("If-None-Match") == '"v1"'
+            else httpx.Response(200, json={"state": "OPEN"}, headers={"ETag": '"v1"'})
+        ),
+        seen,
+    )
+    path = "/repositories/ws/repo/pullrequests/7"
+    first = await tracker.conditional_get(path, None)
+    second = await tracker.conditional_get(path, first.etag)
+    assert first.etag == second.etag == '"v1"'
+    assert second.not_modified
+
+
 def test_retry_after_accepts_seconds_dates_and_reset_headers() -> None:
     now = 1_700_000_000.0
     assert parse_retry_after({"Retry-After": "5"}, now=now) == 5.0
@@ -465,6 +508,15 @@ GOLDEN: list[tuple[str, Any, FeedbackState, list[Any], str, Any, Any]] = [
         "ci_infrastructure_failure",
     ),
     (
+        "timeout-exhausted",
+        thread(cursor={"ci_infra_attempts": 4}),
+        gate(infra_failures=[TIMEOUT]),
+        [],
+        "blocked",
+        "ci_timeout",
+        "ci_timeout",
+    ),
+    (
         "turns",
         thread(turns=5),
         gate(),
@@ -520,6 +572,27 @@ GOLDEN: list[tuple[str, Any, FeedbackState, list[Any], str, Any, Any]] = [
         "review_or_ci_pending",
     ),
 ]
+# Provider gate failures pass through decide unchanged. Keep their complete
+# vocabulary explicit, including dynamically constructed CI outcome reasons.
+PROVIDER_STOP_REASONS = (
+    "required_checks_missing",
+    "ci_permission_required",
+    "ci_failure_unclassified",
+    "ci_unknown_outcome",
+    "ci_cancelled",
+    "ci_canceled",
+    "ci_action_required",
+    "ci_manual",
+    "ci_error",
+    "ci_stale",
+    "provider_page_limit",
+    "repository_gate_requires_external_evidence",
+    "head_changed_during_reconciliation",
+)
+GOLDEN.extend(
+    (reason, thread(), gate(blocked_reason=reason), [], "blocked", reason, reason)
+    for reason in PROVIDER_STOP_REASONS
+)
 SPLIT = {"pr_merged": "pr_closed_or_merged", "pr_closed": "pr_closed_or_merged"}
 
 
@@ -559,7 +632,15 @@ def test_golden_table_covers_every_stop_reason_decide_returns() -> None:
     }
     covered = {row[5] for row in GOLDEN}
     assert literal <= covered
-    assert {"pr_merged", "pr_closed"} <= covered
+    # These reasons are computed, so the literal-return scan cannot see them.
+    assert {
+        "pr_merged",
+        "pr_closed",
+        "ci_timeout",
+        "ci_timeout_retry",
+        "ci_infrastructure_failure",
+        "ci_infrastructure_failure_retry",
+    } <= covered
 
 
 # --- Retry-After on the feedback tick ---------------------------------------

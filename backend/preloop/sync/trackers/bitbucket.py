@@ -39,13 +39,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_webhook
 from preloop.models.models.organization import Organization
-from preloop.services.managed_credentials import (
-    MANAGED_AUTH_TYPE,
-    CredentialSource,
-    ManagedCredential,
-    ManagedCredentialError,
-    ManagedCredentialUnavailableError,
-)
 from preloop.models.models.project import Project
 from preloop.models.models.webhook import Webhook
 from preloop.schemas.tracker_models import (
@@ -57,14 +50,21 @@ from preloop.schemas.tracker_models import (
     ProjectMetadata,
     TrackerConnection,
 )
+from preloop.services.managed_credentials import (
+    MANAGED_AUTH_TYPE,
+    CredentialSource,
+    ManagedCredential,
+    ManagedCredentialError,
+    ManagedCredentialUnavailableError,
+)
 from preloop.utils.bitbucket import (
     APP_PASSWORD_MESSAGE,
     BITBUCKET_API_BASE_URL,
     BITBUCKET_AUTH_API_TOKEN,
     BITBUCKET_WEBHOOK_EVENTS,
-    BitbucketConfigError,
     COMMIT_STATUS_STATES,
     TOKEN_KIND_API_TOKEN,
+    BitbucketConfigError,
     build_object_attributes,
     looks_like_uuid,
     normalize_uuid,
@@ -421,7 +421,14 @@ class BitbucketTracker(BaseTracker):
     async def conditional_get(
         self, path: str, etag: Optional[str]
     ) -> ConditionalResponse:
-        """GET an API path with ``If-None-Match``; 304 means unchanged.
+        """GET with a server-provided ETag when available; otherwise read plainly.
+
+        Bitbucket Cloud's PR endpoint documents no ETag/Last-Modified contract:
+        https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/
+        We use an ETag only if a response supplies it. Without one the next
+        request is a plain GET. Never manufacture a validator from updated_on
+        or send If-None-Match: * (which tests existence, not content changes).
+        See docs/guide/forge-reconciliation.md for the capability audit.
 
         Args:
             path: Path under the API base URL.

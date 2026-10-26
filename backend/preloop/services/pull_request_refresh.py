@@ -43,9 +43,11 @@ from preloop.sync.trackers.utils import rate_limit_delay
 
 logger = logging.getLogger(__name__)
 
-#: Pull requests read per tick. With a one-minute tick this caps the cadence
-#: at this many forge reads a minute however many pull requests are open.
+#: Pull requests claimed and forge reads per tick. Fallback credentials and
+#: Bitbucket commit lookups consume the same request budget.
 REFRESH_BATCH = 25
+#: Claimed rows that did not fit the request budget retry on the next tick.
+REFRESH_BUDGET_RETRY = timedelta(minutes=1)
 #: Bounds on a provider Retry-After applied to deferred rows.
 RETRY_FLOOR = timedelta(minutes=1)
 RETRY_CEILING = timedelta(hours=1)
@@ -212,12 +214,14 @@ def _not_readable(error: TrackerError) -> bool:
 async def refresh_pull_requests(
     db: Session, *, now: Optional[datetime] = None, limit: int = REFRESH_BATCH
 ) -> dict[str, int]:
-    """Refresh at most ``limit`` due pull request records from their forges.
+    """Refresh at most ``limit`` records using at most ``limit`` forge reads.
 
     Args:
         db: Database session.
         now: Current time; defaults to the wall clock.
-        limit: Batch bound.
+        limit: Bound on claimed rows and API reads, including fallback tracker
+            attempts and Bitbucket commit lookups. Transport authentication
+            retries and redirects remain bounded by each provider client.
 
     Returns:
         Counts: ``claimed``, ``read`` (forge requests sent), ``updated``
@@ -265,8 +269,19 @@ async def refresh_pull_requests(
             )
             counts["deferred"] += 1
             continue
+        if counts["read"] >= limit:
+            crud_pull_request_refresh.defer(
+                db,
+                pull_request_ids=[pull_request_id],
+                until=now + REFRESH_BUDGET_RETRY,
+                claimed_due=claim,
+            )
+            counts["deferred"] += 1
+            continue
         response = client = None
         for tracker in readers.candidates(account_id, ref):
+            if counts["read"] >= limit:
+                break
             try:
                 client = await readers.client(tracker)
                 if client is None or not hasattr(client, "conditional_get"):
@@ -297,6 +312,8 @@ async def refresh_pull_requests(
         if response is None:
             if ref.host in throttled:
                 until, key = throttled[ref.host], "deferred"
+            elif counts["read"] >= limit:
+                until, key = now + REFRESH_BUDGET_RETRY, "deferred"
             else:
                 until, key = now + UNREADABLE_BACKOFF, "unreadable"
             crud_pull_request_refresh.defer(
@@ -329,12 +346,39 @@ async def refresh_pull_requests(
         elif ref.provider == "bitbucket" and head and len(head) < 40:
             # Bitbucket reports a prefix; resolve a changed head once so the
             # record holds the full hash the feedback loop also stores.
+            if counts["read"] >= limit:
+                # Do not cache the PR validator before its canonical head has
+                # been read: a later 304 would leave that head unresolved.
+                crud_pull_request_refresh.defer(
+                    db,
+                    pull_request_ids=[pull_request_id],
+                    until=now + REFRESH_BUDGET_RETRY,
+                    claimed_due=claim,
+                )
+                counts["deferred"] += 1
+                continue
             counts["read"] += 1
             try:
                 facts["head_sha"] = await canonical_bitbucket_head(
                     client, ref.api_path.rsplit("/pullrequests/", 1)[0], head
                 )
-            except (TrackerError, ValueError):
+            except TrackerError as error:
+                delay = rate_limit_delay(error)
+                if delay is not None:
+                    wait = min(
+                        max(timedelta(seconds=delay), RETRY_FLOOR), RETRY_CEILING
+                    )
+                    throttled[ref.host] = now + wait
+                    crud_pull_request_refresh.defer(
+                        db,
+                        pull_request_ids=[pull_request_id],
+                        until=now + wait,
+                        claimed_due=claim,
+                    )
+                    counts["deferred"] += 1
+                    continue
+                facts["head_sha"] = None
+            except ValueError:
                 facts["head_sha"] = None
         recorded, merged_now = crud_pull_request_refresh.record(
             db,

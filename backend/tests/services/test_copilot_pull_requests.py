@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.orm import Session
 
+from preloop.api.endpoints import webhooks
+from preloop.models import models
 from preloop.models.crud import crud_issue_cost
 from preloop.services import issue_cost_rollup as rollup_service
+from preloop.services import pull_request_refresh as refresh
 from preloop.services.copilot_pull_requests import (
     copilot_author_id,
     record_copilot_pull_request,
 )
+from tests.models.crud.test_forge_reconciliation import FakeForge
 from tests.services.test_issue_cost_rollup import World
 
 FIXTURE = (
@@ -130,3 +135,98 @@ def test_other_forges_are_ignored(world: World) -> None:
     event = _event(world)
     event["source"] = "gitlab"
     assert copilot_author_id(event) is None
+
+
+@pytest.mark.asyncio
+async def test_copilot_webhooks_share_dedupe_worker_and_refresh_bound(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import flow_trigger_service
+    from preloop.sync import tasks
+
+    # Keep the real ingress claim and worker path, replacing HTTP preparation
+    # and the queue transport only. The worker must create the Copilot records.
+    def prepare(
+        tracker_type: str,
+        organization_id: str,
+        raw_body: bytes,
+        headers: Any,
+        db: Any,
+        plan: Any,
+    ) -> dict[str, Any]:
+        plan.tracker_id = world.tracker.id
+        plan.queue_task(
+            "process_webhook_event",
+            tracker_id=world.tracker.id,
+            event_type="pull_request",
+            payload=json.loads(raw_body),
+            delivery_id=headers["X-GitHub-Delivery"],
+        )
+        return {"status": "success"}
+
+    async def inline(fn: Any) -> Any:
+        return fn()
+
+    queued: list[dict[str, Any]] = []
+
+    async def publish(name: str, **kwargs: Any) -> object:
+        assert name == "process_webhook_event"
+        queued.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(webhooks, "_prepare_webhook", prepare)
+    monkeypatch.setattr(webhooks, "run_db_off_loop", inline)
+    monkeypatch.setattr(webhooks, "_safe_close_db_session", lambda db: None)
+    monkeypatch.setattr(tasks, "get_db_session", lambda: iter([world.db]))
+    monkeypatch.setattr(world.db, "close", lambda: None)
+    monkeypatch.setattr(
+        flow_trigger_service.crud_flow, "get_by_trigger", lambda *a, **k: []
+    )
+    for number in range(1, 51):
+        event = _event(
+            world, number=number, html_url=PR_KEY.rsplit("/", 1)[0] + f"/{number}"
+        )
+        payload = event["payload"]
+        payload["number"] = number
+        request = MagicMock(
+            body=AsyncMock(return_value=json.dumps(payload).encode()),
+            headers={"X-GitHub-Delivery": f"copilot-{number}"},
+        )
+        bus = MagicMock(publish_task=publish)
+        await webhooks.receive_webhook("github", "org", request, world.db, bus)
+        duplicate = await webhooks.receive_webhook(
+            "github", "org", request, world.db, bus
+        )
+        assert duplicate["status"] == "duplicate"
+    assert len(queued) == 50
+    for task in queued:
+        await tasks.process_webhook_event(**task)
+    rows = (
+        world.db.query(models.IssueCostPullRequest)
+        .filter_by(account_id=world.account.id)
+        .all()
+    )
+    assert len(rows) == 50
+    assert {row.origin for row in rows} == {"copilot"}
+    assert all(_links(world, row) == [world.issue.id] for row in rows)
+    forge = FakeForge()
+    monkeypatch.setattr(
+        refresh, "feedback_tracker_client", AsyncMock(return_value=forge)
+    )
+    now = datetime.now(UTC)
+    counts = [
+        await refresh.refresh_pull_requests(
+            world.db, now=now + timedelta(minutes=minute)
+        )
+        for minute in range(3)
+    ]
+    assert [count["read"] for count in counts] == [25, 25, 0]
+    assert len({path for path, _ in forge.reads}) == 50
+    # Queue replay is also idempotent; it cannot add PR rows or issue links.
+    await tasks.process_webhook_event(**queued[0])
+    assert (
+        world.db.query(models.IssueCostPullRequest)
+        .filter_by(account_id=world.account.id)
+        .count()
+        == 50
+    )
