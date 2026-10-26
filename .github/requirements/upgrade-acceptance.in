@@ -1,0 +1,3 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.12 .github/requirements/upgrade-acceptance.in -o .github/requirements/upgrade-acceptance.txt
+PyYAML==6.0.3
+pytest==9.1.1
