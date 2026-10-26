@@ -9,7 +9,7 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, call
 from unittest import IsolatedAsyncioTestCase
 import httpx
 from uuid import uuid4
@@ -1016,21 +1016,53 @@ class TestGetPullRequestFiles(IsolatedAsyncioTestCase):
         tracker._request = AsyncMock(
             side_effect=[
                 pr_data,
-                [],
-                [],
                 {"total_count": 0, "check_runs": []},
                 {"total_count": 0},
             ]
         )
-        tracker._make_request = AsyncMock(return_value=files)
+        review_comments = [
+            {
+                "id": number,
+                "user": {"id": number, "login": f"reviewer{number}"},
+                "body": "Review comment",
+                "created_at": "2026-10-20T10:00:00Z",
+            }
+            for number in range(35)
+        ]
+        issue_comments = [
+            {
+                "id": number + 100,
+                "user": {"id": number + 100, "login": f"commenter{number}"},
+                "body": "Issue comment",
+                "created_at": "2026-10-20T10:00:00Z",
+            }
+            for number in range(35)
+        ]
+        tracker._make_request = AsyncMock(
+            side_effect=[review_comments, issue_comments, files]
+        )
 
         result = await tracker.get_pull_request("7")
 
-        tracker._make_request.assert_awaited_once_with("repos/owner/repo/pulls/7/files")
+        tracker._make_request.assert_has_awaits(
+            [
+                call(
+                    "/repos/owner/repo/pulls/7/comments",
+                    params={"per_page": 100},
+                ),
+                call(
+                    "/repos/owner/repo/issues/7/comments",
+                    params={"per_page": 100},
+                ),
+                call("repos/owner/repo/pulls/7/files"),
+            ]
+        )
         assert len(result["changes"]["changed_files"]) == 144
         assert result["changes"]["files_changed"] == 144
         assert result["head_sha"] == "a" * 40
         assert result["merge_commit_sha"] == "b" * 40
+        assert len(result["comments"]) == 70
+        assert result["comments"][-1]["author_id"] == "134"
 
 
 class TestGetPullRequestReviews(IsolatedAsyncioTestCase):
@@ -1061,3 +1093,66 @@ class TestGetPullRequestReviews(IsolatedAsyncioTestCase):
         tracker._make_request.assert_awaited_once_with(
             "repos/owner/repo/pulls/7/reviews"
         )
+
+
+class TestPullRequestEngagement(IsolatedAsyncioTestCase):
+    async def test_paginated_helper_honors_the_page_budget(self):
+        tracker = GitHubTracker(
+            str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
+        )
+        tracker._get_auth_headers = AsyncMock(return_value={})
+        pages = []
+        for number in range(3):
+            page = MagicMock(status_code=200)
+            page.json.return_value = [{"id": number}]
+            page.links = {"next": {"url": f"https://api.github.com/page/{number + 1}"}}
+            pages.append(page)
+        with patch("preloop.sync.trackers.github.httpx.AsyncClient") as client:
+            client.return_value.__aenter__.return_value.get = AsyncMock(
+                side_effect=pages
+            )
+            rows = await tracker._make_request("repos/owner/repo/events", max_pages=2)
+            assert client.return_value.__aenter__.return_value.get.await_count == 2
+        assert rows == [{"id": 0}, {"id": 1}]
+
+    async def test_lightweight_read_pages_all_three_event_lists(self):
+        tracker = GitHubTracker(
+            str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
+        )
+        tracker._request = AsyncMock(
+            return_value={
+                "user": {"id": 7},
+                "created_at": "2026-10-20T10:00:00Z",
+                "body": "A change brief",
+            }
+        )
+        tracker._make_request = AsyncMock(
+            side_effect=[
+                [{"user": {"id": 8}, "submitted_at": "2026-10-21T10:00:00Z"}],
+                [{"user": {"id": 9}, "created_at": "2026-10-21T11:00:00Z"}],
+                [{"user": {"id": 10}, "created_at": "2026-10-21T12:00:00Z"}],
+            ]
+        )
+
+        result = await tracker.get_pull_request_engagement("7")
+
+        assert result["author_id"] == "7"
+        assert result["reviews"][0]["user_id"] == "8"
+        assert [row["author_id"] for row in result["comments"]] == ["9", "10"]
+        assert tracker._make_request.await_args_list == [
+            call(
+                "repos/owner/repo/pulls/7/reviews",
+                params={"per_page": 100},
+                max_pages=2,
+            ),
+            call(
+                "repos/owner/repo/pulls/7/comments",
+                params={"per_page": 100},
+                max_pages=2,
+            ),
+            call(
+                "repos/owner/repo/issues/7/comments",
+                params={"per_page": 100},
+                max_pages=2,
+            ),
+        ]

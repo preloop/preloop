@@ -841,6 +841,158 @@ def test_authored_brief_and_issue_participation_use_forge_ids() -> None:
     ]
 
 
+def test_collect_forge_engagement_resolves_owner_and_isolates_reads() -> None:
+    report = {
+        "window": WINDOW,
+        "shipped": [
+            {
+                "ref": f"{REPO}#{number}",
+                "url": f"https://github.com/{REPO}/pull/{number}",
+            }
+            for number in (1, 1, 2, 3)
+        ],
+        "closed_issues": [{"ref": f"{REPO}#{number}"} for number in (4, 4, 5)],
+        "open_past_window": [{"ref": f"{REPO}#6"}],
+    }
+    in_window = "2026-10-20T10:00:00Z"
+    old = "2026-10-01T10:00:00Z"
+    prs = AsyncMock(
+        side_effect=[
+            {
+                "_forge": "github",
+                "reviews": [
+                    {"user_id": "8", "submitted_at": in_window},
+                    {"user_id": "8", "submitted_at": in_window},
+                    {"user_id": "9", "submitted_at": old},
+                ],
+            },
+            RuntimeError("unreadable PR"),
+            {
+                "_forge": "github",
+                "comments": [{"author_id": "10", "created_at": in_window}],
+            },
+        ]
+    )
+
+    def comment(user_id: str, time: str) -> SimpleNamespace:
+        return SimpleNamespace(author=SimpleNamespace(id=user_id), created_at=time)
+
+    client = SimpleNamespace(
+        get_comments=AsyncMock(
+            side_effect=[
+                [
+                    comment("11", in_window),
+                    comment("11", in_window),
+                    comment("12", old),
+                ],
+                RuntimeError("unreadable issue"),
+                [comment("13", in_window)],
+            ]
+        )
+    )
+    project = (
+        SimpleNamespace(id="project"),
+        SimpleNamespace(id="org"),
+        SimpleNamespace(tracker_type="github"),
+    )
+    with (
+        patch.object(
+            crud_account, "get", return_value=SimpleNamespace(primary_user_id="owner")
+        ) as account,
+        patch(
+            "preloop.models.crud.crud_user.get",
+            return_value=SimpleNamespace(id="owner"),
+        ) as owner,
+        patch.object(facts, "_read_forge", prs),
+        patch.object(
+            crud_delivery_report_policy, "project_for_repository", return_value=project
+        ) as lookup,
+        patch(
+            "preloop.api.common.get_tracker_client", new=AsyncMock(return_value=client)
+        ),
+    ):
+        rows = asyncio.run(
+            facts.collect_forge_engagement(object(), account_id="acct", report=report)
+        )
+    assert account.call_args.kwargs["id"] == "acct"
+    assert owner.call_args.kwargs["id"] == "owner"
+    assert prs.await_count == 3
+    assert lookup.call_count == 3
+    assert client.get_comments.await_count == 3
+    assert [(row["kind"], row["user_id"]) for row in rows] == [
+        ("review", "8"),
+        ("comment", "10"),
+        ("issue", "11"),
+        ("issue", "13"),
+    ]
+
+
+def test_collect_forge_engagement_caps_distinct_prs_and_issues() -> None:
+    report = {
+        "window": WINDOW,
+        "shipped": [
+            {"ref": f"{REPO}#1", "url": f"https://github.com/{REPO}/pull/1"},
+            *[
+                {
+                    "ref": f"{REPO}#{number}",
+                    "url": f"https://github.com/{REPO}/pull/{number}",
+                }
+                for number in range(1, 53)
+            ],
+        ],
+        "closed_issues": [{"ref": f"{REPO}#{number}"} for number in range(1, 53)],
+    }
+    client = SimpleNamespace(get_comments=AsyncMock(return_value=[]))
+    project = (
+        SimpleNamespace(id="project"),
+        SimpleNamespace(id="org"),
+        SimpleNamespace(tracker_type="github"),
+    )
+    prs = AsyncMock(return_value={"_forge": "github"})
+    with (
+        patch.object(
+            crud_account, "get", return_value=SimpleNamespace(primary_user_id="owner")
+        ),
+        patch(
+            "preloop.models.crud.crud_user.get",
+            return_value=SimpleNamespace(id="owner"),
+        ),
+        patch.object(facts, "_read_forge", prs),
+        patch.object(
+            crud_delivery_report_policy, "project_for_repository", return_value=project
+        ),
+        patch(
+            "preloop.api.common.get_tracker_client", new=AsyncMock(return_value=client)
+        ),
+    ):
+        rows = asyncio.run(
+            facts.collect_forge_engagement(object(), account_id="acct", report=report)
+        )
+    assert rows == []
+    assert prs.await_count == facts.MAX_ENGAGEMENT_PRS
+    assert client.get_comments.await_count == facts.MAX_ENGAGEMENT_ISSUES
+
+
+def test_collect_forge_engagement_without_primary_owner_reads_nothing() -> None:
+    with (
+        patch.object(
+            crud_account, "get", return_value=SimpleNamespace(primary_user_id=None)
+        ),
+        patch("preloop.models.crud.crud_user.get") as user,
+        patch.object(facts, "_read_forge", new=AsyncMock()) as read,
+    ):
+        rows = asyncio.run(
+            facts.collect_forge_engagement(
+                object(),
+                account_id="acct",
+                report={"window": WINDOW, "shipped": [{"ref": f"{REPO}#1"}]},
+            )
+        )
+    assert rows == []
+    user.assert_not_called()
+    read.assert_not_awaited()
+
+
 def test_orchestrator_sends_only_a_finalized_report() -> None:
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
@@ -871,6 +1023,7 @@ def test_finalized_report_passes_forge_engagement_to_distribution() -> None:
         }
     ]
     with (
+        patch("preloop.plugins.get_plugin_manager") as manager,
         patch(
             "preloop.services.delivery_report_facts.collect_forge_engagement",
             new=AsyncMock(return_value=engagement),
@@ -881,12 +1034,34 @@ def test_finalized_report_passes_forge_engagement_to_distribution() -> None:
             new=AsyncMock(side_effect=lambda report, run: report),
         ) as distribute,
     ):
+        manager.return_value.get_service.return_value = AsyncMock()
         result = asyncio.run(
             orchestrator._send_finalized_delivery_report({"status": "success"})
         )
     assert result["engagement"] == engagement
     read.assert_awaited_once()
     assert distribute.await_args.args[0]["engagement"] == engagement
+
+
+def test_finalized_report_without_plugin_skips_forge_reads() -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator._delivery_report_finalized = True
+    with (
+        patch("preloop.plugins.get_plugin_manager") as manager,
+        patch(
+            "preloop.services.delivery_report_facts.collect_forge_engagement",
+            new=AsyncMock(),
+        ) as read,
+        patch.object(
+            orchestrator, "_distribute_delivery_report", new=AsyncMock()
+        ) as distribute,
+    ):
+        manager.return_value.get_service.return_value = None
+        asyncio.run(orchestrator._send_finalized_delivery_report({"status": "success"}))
+    read.assert_not_awaited()
+    distribute.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

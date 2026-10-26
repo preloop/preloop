@@ -271,15 +271,11 @@ async def _read_forge(
     if "gitlab" in tracker_type:
         response = await client.get_merge_request(str(number))
     elif tracker_type == "github":
-        response = await client.get_pull_request(str(number))
-        if include_reviews and isinstance(response, Mapping):
-            try:
-                response = {
-                    **response,
-                    "reviews": await client.get_pull_request_reviews(str(number)),
-                }
-            except Exception:  # noqa: BLE001 - comments still count if reviews fail
-                logger.info("Could not read reviews for a pull request")
+        response = (
+            await client.get_pull_request_engagement(str(number))
+            if include_reviews
+            else await client.get_pull_request(str(number))
+        )
     # Bitbucket returns the raw object without a file list; the diffstat
     # endpoint is separate and not read here.
     return (
@@ -408,8 +404,10 @@ async def collect_forge_engagement(
 ) -> List[Dict[str, str]]:
     """Read engagement on report changes from their forges, bounded per run.
 
-    The report only stores forge ids. A failed repository read leaves its
-    engagement empty and does not prevent the finished report from sending.
+    The report only stores forge ids. At most 50 PRs and 50 issues are read.
+    Each GitHub PR costs at most seven requests: one PR and two 100-item
+    pages each for reviews and both comment kinds. A failed repository read
+    leaves its engagement empty and does not prevent report distribution.
     """
     from types import SimpleNamespace
 
@@ -427,16 +425,20 @@ async def collect_forge_engagement(
     if owner is None:
         return []
     rows: List[Dict[str, str]] = []
-    for change in (report.get("shipped") or [])[:MAX_ENGAGEMENT_PRS]:
+    seen_prs: set[str] = set()
+    for change in report.get("shipped") or []:
+        if len(seen_prs) >= MAX_ENGAGEMENT_PRS:
+            break
         if not isinstance(change, Mapping):
             continue
         ref = str(change.get("ref") or "")
-        if "#" not in ref:
+        if "#" not in ref or ref in seen_prs:
             continue
         repository, number = ref.rsplit("#", 1)
         url = str(change.get("url") or "")
         if not url or not number.isdigit():
             continue
+        seen_prs.add(ref)
         try:
             pr = await _read_forge(
                 db,

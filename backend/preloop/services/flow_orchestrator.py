@@ -5765,7 +5765,14 @@ class FlowExecutionOrchestrator:
         """Distribute the report once :meth:`_finalize_delivery_report` built it."""
         if not getattr(self, "_delivery_report_finalized", False):
             return merged_result
-        if isinstance(merged_result, dict) and merged_result.get("status") == "success":
+        from preloop.plugins import get_plugin_manager
+
+        distributor = get_plugin_manager().get_service("delivery_report_distributor")
+        if (
+            distributor is not None
+            and isinstance(merged_result, dict)
+            and merged_result.get("status") == "success"
+        ):
             try:
                 from preloop.services.delivery_report_facts import (
                     collect_forge_engagement,
