@@ -406,6 +406,7 @@ describe('fleet-map work geometry', () => {
             label: `PR #${index + 1}`,
             href: `https://example.com/example/widgets/pull/${index + 1}`,
             status,
+            review_state: status ? 'approved' : null,
             work_kind: 'pull_request' as const,
           })),
         ],
@@ -424,6 +425,7 @@ describe('fleet-map work geometry', () => {
       );
       expect(chip?.textContent?.trim()).to.equal(label);
       expect(node.getAttribute('data-status')).to.equal(status);
+      expect(node.querySelector('.sub')?.textContent?.trim()).to.equal(label);
     }
   });
 

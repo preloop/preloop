@@ -221,6 +221,14 @@ const displayLabel = (node: FleetMapNode): string =>
     ? agentKindLabel(node.detail)
     : node.label;
 
+const knownWorkState = (node: FleetMapNode): string | null =>
+  node.type === 'work' &&
+  (node.status === 'Open' ||
+    node.status === 'Closed' ||
+    node.status === 'Merged')
+    ? node.status
+    : null;
+
 /**
  * The fleet as one picture: people, their machines (runners inside them),
  * the agents on them, the models those agents call and the providers behind
@@ -3620,10 +3628,12 @@ export class FleetMap extends LitElement {
     }
     if (node.type === 'runner') return node.status || 'Runner';
     if (node.type === 'flow') return node.status || 'Flow';
-    if (node.type === 'work' && node.status === 'Merged') return 'Merged';
     if (node.type === 'work')
       return (
-        node.review_state?.replace(/_/g, ' ') || node.status || 'State unknown'
+        knownWorkState(node) ||
+        node.review_state?.replace(/_/g, ' ') ||
+        node.status ||
+        'State unknown'
       );
     return node.detail || FLEET_MAP_TYPE_LABEL[node.type];
   }
@@ -3689,7 +3699,7 @@ export class FleetMap extends LitElement {
       class=${classes}
       data-node=${node.id}
       data-kind=${node.type}
-      data-status=${node.status === 'Merged' ? 'Merged' : node.review_state || node.status || nothing}
+      data-status=${knownWorkState(node) || node.review_state || node.status || nothing}
       data-presence=${node.id}
       style="left:${position.x}px;top:${position.y}px;width:${position.w}px;height:${height}px${
         entering
