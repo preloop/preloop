@@ -1867,7 +1867,17 @@ async def test_pending_checks_defer_audit_then_refresh_artifact_and_preview(
     assert "No reachable latency" in assessment.evidence["criteria"][2]["reason"]
     assert await service.schedule_audit(flow, dispatch) is None
     await service.finish_audit(execution)
-    assert len(audit_assessments(service)) == 1
+    assert (
+        len(
+            crud_assessment.get_multi(
+                service.db,
+                account_id=str(service.account_id),
+                issue_id=service.issue.id,
+                revision=SHA,
+            )
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
