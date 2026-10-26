@@ -190,6 +190,13 @@ it is in the report. Budgets, cadence, scope, tracker writes and recipients
 stay on the account, because one run covers every repository and spends
 one budget.
 
+The deterministic report generates follow-up proposals from each risk flag,
+with its file evidence. It also proposes reopening a closed issue when a merge
+audit at its closing revision cites a criterion that was not met. The audit
+must still match the issue's criteria, and the issue must not have been edited
+after the audit. A missing audit, an unpinned revision or a pure evidence gap
+does not produce a reopen proposal. These proposals require no model call.
+
 Tracker writes start off. Follow-up issues and reopen requests are proposals
 in the report, and opening one is the approval. Automatic creation is a
 per-account setting (`create_follow_up: allow`), meant to be enabled once
@@ -320,3 +327,12 @@ The platform rechecks the agent's verdicts. A verdict that its cited
 evidence does not support is downgraded, and a risk flag with no evidence is
 dropped. A markdown rendering of the report is stored as
 `report_markdown`.
+
+
+## Local acceptance tests
+
+The [three-case acceptance test](../../testing/delivery-report-three-cases.md)
+runs the real deterministic orchestrator against PostgreSQL with fake forge,
+tracker and email transports. It exercises one-click reopening and labelled
+follow-up creation through the console API, and records the EE boundary for
+member relevance.
