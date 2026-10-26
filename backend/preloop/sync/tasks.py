@@ -37,6 +37,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "cleanup_flow_workspaces",
     "maintain_gateway_activity",
     "reconcile_flow_feedback",
+    "refresh_pull_request_records",
     "reconcile_security_maintenance",
     "run_data_backfills",
     "evaluate_spend_outliers",
@@ -906,6 +907,17 @@ async def reconcile_flow_feedback() -> int:
     db = next(get_db_session())
     try:
         return await run_feedback_tick(db)
+    finally:
+        db.close()
+
+
+async def refresh_pull_request_records() -> dict[str, int]:
+    """Refresh a bounded batch of pull request records from their forges."""
+    from preloop.services.pull_request_refresh import refresh_pull_requests
+
+    db = next(get_db_session())
+    try:
+        return await refresh_pull_requests(db)
     finally:
         db.close()
 

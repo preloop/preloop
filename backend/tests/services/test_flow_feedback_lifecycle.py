@@ -52,6 +52,15 @@ class ProviderLifecycle:
             _make_request=AsyncMock(side_effect=self.gitlab),
             gl=SimpleNamespace(http_get=object()),
         )
+        from preloop.sync.trackers.utils import ConditionalResponse
+
+        async def conditional_get(
+            path: str, etag: str | None, **options: Any
+        ) -> ConditionalResponse:
+            body = await client._make_request(client.gl.http_get, path, **options)
+            return ConditionalResponse(200, body, etag)
+
+        client.conditional_get = conditional_get
         return FeedbackProvider(
             client,
             SimpleNamespace(

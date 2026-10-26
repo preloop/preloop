@@ -276,6 +276,15 @@ def gitlab_fixture(
         _make_request=AsyncMock(side_effect=request),
         gl=SimpleNamespace(http_get=object()),
     )
+    from preloop.sync.trackers.utils import ConditionalResponse
+
+    async def conditional_get(
+        path: str, etag: str | None, **options: Any
+    ) -> ConditionalResponse:
+        body = await client._make_request(client.gl.http_get, path, **options)
+        return ConditionalResponse(200, body, etag)
+
+    client.conditional_get = conditional_get
     thread = binding("gitlab")
     thread.policy["required_checks"] = [] if required is None else required
     return FeedbackProvider(client, thread), paths

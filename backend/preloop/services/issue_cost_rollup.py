@@ -1314,6 +1314,7 @@ def record_pull_request_event(
         if pull.approved_at is None or stamp < _aware(pull.approved_at):
             pull.approved_at = stamp
     if merged:
+        pull.state = "merged"
         stamp = parse_event_time(
             _dict(payload.get("pull_request")).get("merged_at")
             or attributes.get("merged_at")

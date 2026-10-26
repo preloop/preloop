@@ -179,6 +179,7 @@ from .hosted_credit import (
 )
 
 from .issue_cost import (
+    ForgeWebhookDelivery,
     IssueCostExecution,
     IssueCostPullRequest,
     IssueCostPullRequestIssue,
@@ -246,6 +247,7 @@ __all__ = [
     "HostedCreditTopupSetting",
     "FlowFeedback",
     "FlowThread",
+    "ForgeWebhookDelivery",
     "IssueCostExecution",
     "IssueCostPullRequest",
     "IssueCostRollup",

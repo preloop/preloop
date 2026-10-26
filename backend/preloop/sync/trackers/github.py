@@ -30,6 +30,7 @@ from preloop.schemas.tracker_models import (
 from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
+    TrackerRateLimitError,
     TrackerResponseError,
     TrackerPermissionError,
 )
@@ -43,6 +44,9 @@ from .utils import (
     HTTP_STATUS_UNAUTHORIZED,
     HTTP_STATUS_NOT_FOUND,
     HTTP_STATUS_UNPROCESSABLE_ENTITY,
+    HTTP_STATUS_NOT_MODIFIED,
+    ConditionalResponse,
+    parse_retry_after,
 )
 from ..config import logger
 from preloop.models.models.project import Project
@@ -57,6 +61,25 @@ def _github_link_has_next(link_header: Optional[str]) -> bool:
         if 'rel="next"' in part or "rel=next" in part or "rel='next'" in part:
             return True
     return False
+
+
+def _throttle_delay(response: httpx.Response) -> Optional[float]:
+    """Advised wait of a throttled response, or None when it is not throttled.
+
+    GitHub throttles with 429, or with 403 plus ``Retry-After`` (secondary
+    limits) or ``x-ratelimit-remaining: 0`` (primary limit). A plain 403 is a
+    permission answer and stays None.
+    """
+    if response.status_code == 429 or (
+        response.status_code == 403
+        and (
+            response.headers.get("retry-after")
+            or response.headers.get("x-ratelimit-remaining") == "0"
+        )
+    ):
+        delay = parse_retry_after(response.headers)
+        return 0.0 if delay is None else delay
+    return None
 
 
 class GitHubTracker(BaseTracker):
@@ -283,12 +306,66 @@ class GitHubTracker(BaseTracker):
                     raise error_type(
                         f"GitHub API error: {response.status_code} - {response.text}",
                         status_code=response.status_code,
+                        retry_after=_throttle_delay(response),
                     )
                 if response.status_code == 204:
                     return None, dict(response.headers)
                 return response.json(), dict(response.headers)
             except httpx.RequestError as e:
                 raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+
+    async def conditional_get(
+        self, endpoint: str, etag: Optional[str]
+    ) -> ConditionalResponse:
+        """GET ``endpoint`` with ``If-None-Match`` and report 304 as unchanged.
+
+        GitHub does not count a 304 against the rate limit, which is what
+        keeps a cadence of pull request reads cheap.
+
+        Args:
+            endpoint: API path under the base URL.
+            etag: Validator from the previous read, or None for a plain GET.
+
+        Returns:
+            The status, the body on 200, and the validator for next time.
+
+        Raises:
+            TrackerRateLimitError: On 429, or a 403 the rate limiter sent.
+            TrackerAuthenticationError: On 401.
+            TrackerResponseError: On any other error status.
+            TrackerConnectionError: On network failure.
+        """
+        url = f"{self.API_BASE_URL}/{endpoint.lstrip('/')}"
+        headers = dict(await self._get_auth_headers())
+        if etag:
+            headers["If-None-Match"] = etag
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(url, headers=headers)
+            except httpx.RequestError as e:
+                raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+        if response.status_code == HTTP_STATUS_NOT_MODIFIED:
+            return ConditionalResponse(
+                HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("etag") or etag
+            )
+        if response.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise TrackerAuthenticationError("GitHub authentication failed")
+        delay = _throttle_delay(response)
+        if response.status_code == 429 or (
+            response.status_code == 403 and delay is not None
+        ):
+            raise TrackerRateLimitError(
+                f"GitHub rate limit reached ({response.status_code}).",
+                retry_after=delay,
+            )
+        if response.status_code >= 400:
+            raise TrackerResponseError(
+                f"GitHub API error: {response.status_code}",
+                status_code=response.status_code,
+            )
+        return ConditionalResponse(
+            response.status_code, response.json(), response.headers.get("etag")
+        )
 
     def _parse_github_issue(self, issue_data: Dict[str, Any]) -> Issue:
         """Parse a GitHub issue into our standard format.
