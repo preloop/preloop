@@ -878,7 +878,14 @@ both resource visibility and the permission to view each consumer kind.
 `GET /api/v1/fleet/map` combines the optional device projection with bounded,
 tenant-owned agent, runner, model and user reads, plus the available hosted model
 when enabled. Hosted operator credentials and routing stay private. Each resource
-kind retains its read permission and account visibility checks. Credential references group model
+kind retains its read permission and account visibility checks. The map,
+`/fleet/code-activity` and `/fleet/usage` carry no whole-route permission: any
+member may call them, a source the caller may not read is skipped and named in
+`unavailable` and `restricted` (devices need `view_device_fleet`), code activity
+drops calls from agents the resource authorizer hides before work items are
+built, and usage keys work totals only by the work items that code activity
+returned. Account realtime topics are not filtered per member on the server, so
+the map drops a member's events that name an agent or flow it does not hold. Credential references group model
 accounts without resolving secrets. Configured and observed edges stay distinct;
 explicit impact directions support dependency and affected-owner traversal without
 crossing into unrelated accounts at the same provider. Decommissioned agents are

@@ -1195,7 +1195,7 @@ describe('DashboardView', () => {
       'view-header .updated-at'
     );
     expect(updated, 'the page-level updated line renders').to.exist;
-    expect(updated?.getAttribute('slot')).to.equal('meta');
+    expect(updated?.closest('[slot]')?.getAttribute('slot')).to.equal('meta');
     expect(updated?.textContent).to.contain('Updated');
 
     const manageKeys = element.shadowRoot?.querySelector(
@@ -1548,6 +1548,38 @@ describe('DashboardView', () => {
     // Wave 8: the tab is a list of people, and the API behind it answers only
     // to view_users. Without that permission the tab would open on an error,
     // so it is not offered at all.
+    it('offers the Fleet map in the page header to a member who may view a source', async () => {
+      mePermissions = ['view_agents'];
+      const element = await mountLoaded();
+      const header = element.shadowRoot!.querySelector('view-header')!;
+      const meta = header.querySelector('[slot="meta"]')!;
+      const launcher = meta.querySelector('fleet-map-launcher') as any;
+      expect(launcher, 'the button renders for a non-admin member').to.exist;
+      // Right side, left of the freshness stamp.
+      expect(launcher.nextElementSibling.classList.contains('updated-at')).to.be
+        .true;
+      expect(launcher.instanceAdmin).to.equal(false);
+      // Nothing is fetched until the button is pressed.
+      expect(
+        fetchStub
+          .getCalls()
+          .map((call: any) => String(call.args[0]))
+          .filter((url: string) => url.startsWith('/api/v1/fleet/map'))
+      ).to.deep.equal([]);
+      // The Inventory card is the table, with no map toggle.
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect(inventory.shadowRoot!.querySelector('[data-inventory-view]')).to
+        .not.exist;
+    });
+
+    it('offers no Fleet map to a member who may view none of its sources', async () => {
+      mePermissions = ['view_tools'];
+      const element = await mountLoaded();
+      expect(element.shadowRoot!.querySelector('fleet-map-launcher')).to.not
+        .exist;
+    });
+
     it('hides the Users tab from a reader without view_users', async () => {
       mePermissions = ['view_agents', 'view_flows'];
       const element = await mountLoaded();
@@ -2016,10 +2048,9 @@ describe('DashboardView', () => {
     });
 
     for (const width of [1280, 1440, 1920]) {
-      it(`keeps the Inventory under the Gateway in both views at ${width}px`, async () => {
+      it(`keeps the Inventory under the Gateway at ${width}px`, async () => {
         await setViewport({ width, height: 900 });
         try {
-          // The Map toggle is for instance admins.
           meSuperuser = true;
           const element = await mountLoaded();
           const root = element.shadowRoot!;
@@ -2033,19 +2064,12 @@ describe('DashboardView', () => {
           side.style.minHeight = '2400px';
           const gateway = root.querySelector('.main-column')!
             .firstElementChild as HTMLElement;
-          const check = async (view: 'table' | 'map') => {
-            const toggle = inventory().shadowRoot!.querySelector(
-              `[data-inventory-view="${view}"]`
-            ) as HTMLElement;
-            toggle.click();
+          // The card is the table, always: the map opens full screen.
+          expect(inventory().shadowRoot!.querySelector('[data-inventory-view]'))
+            .to.not.exist;
+          const check = async (view: 'table') => {
             await (inventory() as any).updateComplete;
             await element.updateComplete;
-            expect(
-              inventory()
-                .shadowRoot!.querySelector(`[data-inventory-view="${view}"]`)!
-                .getAttribute('aria-pressed'),
-              `${view}: the toggle switched the card`
-            ).to.equal('true');
             await new Promise((r) => requestAnimationFrame(r));
             const g = gateway.getBoundingClientRect();
             const inv = inventory().getBoundingClientRect();
@@ -2062,8 +2086,6 @@ describe('DashboardView', () => {
               original
             );
           };
-          await check('table');
-          await check('map');
           await check('table');
         } finally {
           for (const key of Object.keys(localStorage))
@@ -2391,8 +2413,8 @@ describe('DashboardView', () => {
       const cell = inventory.shadowRoot.querySelector(
         'td[data-label="Spend"] sl-tooltip'
       );
-      expect(cell.getAttribute('content')).to.contain(
-        'Without subscriptions: $2.34.'
+      expect(cell.querySelector('[slot="content"]').textContent).to.contain(
+        '$2.34 without subscriptions'
       );
     });
 

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -275,15 +275,84 @@ def test_call_cap_marks_truncation(db_session: Session, fleet: dict[str, Any]) -
     assert result.counts[f"agent:{fleet['agent'].id}"].commented == 0
 
 
-def test_without_fleet_permission_it_refuses(
+def test_without_any_permission_it_returns_nothing(
     db_session: Session, fleet: dict[str, Any]
 ) -> None:
-    with (
-        patch.object(fleet_code_activity, "_allowed", return_value=False),
-        pytest.raises(HTTPException) as raised,
+    """A member who may view no source gets an empty answer, not a 403."""
+    with patch.object(fleet_code_activity, "_allowed", return_value=False):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60
+        )
+    assert result.counts == {}
+    assert result.events == [] and result.work == [] and result.flows == []
+
+
+def test_agents_the_caller_cannot_view_leave_no_trace(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """Counts, events and work only name agents the caller's graph can draw."""
+    _call(
+        db_session,
+        fleet["session"],
+        "create_pull_request",
+        2,
+        metadata={
+            "arguments_summary": {
+                "target": "https://github.com/example/hidden/pull/5",
+                "title": "Hidden agent work",
+            }
+        },
+    )
+    db_session.flush()
+    hidden = f"agent:{fleet['agent'].id}"
+
+    def deny_agents(db: Any, user: Any, kind: str, rows: Any) -> list[Any]:
+        return [] if kind == "managed_agent" else list(rows)
+
+    visible = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    assert hidden in visible.counts
+    assert any(item.key == "example/hidden#5" for item in visible.work)
+    with patch(
+        "preloop.plugins.account_hooks.filter_viewable", side_effect=deny_agents
     ):
-        build_code_activity(db_session, user=fleet["user"], active_within_minutes=60)
-    assert raised.value.status_code == 403
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    assert hidden not in result.counts
+    assert f"user:{fleet['user'].id}" not in result.counts
+    assert all(event.node_id != hidden for event in result.events)
+    assert all(hidden not in item.node_ids for item in result.work)
+    assert all(item.key != "example/hidden#5" for item in result.work)
+    assert "Hidden agent work" not in result.model_dump_json()
+    # The flow the caller may view is still counted.
+    assert f"flow:{fleet['flow'].id}" in result.counts
+
+
+def test_without_agent_permission_agent_calls_name_no_work(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    _call(
+        db_session,
+        fleet["session"],
+        "create_pull_request",
+        2,
+        metadata={
+            "arguments_summary": {"target": "https://github.com/example/hidden/pull/6"}
+        },
+    )
+    db_session.flush()
+    with patch.object(
+        fleet_code_activity,
+        "_allowed",
+        side_effect=lambda db, user, permission, owner: permission == "view_flows",
+    ):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    assert all(not key.startswith("agent:") for key in result.counts)
+    assert all(item.key != "example/hidden#6" for item in result.work)
 
 
 def test_the_partial_index_covers_the_read(db_session: Session) -> None:
@@ -805,7 +874,7 @@ def test_work_actor_visibility_follows_the_graph(
     db_session: Session, fleet: dict[str, Any]
 ) -> None:
     def allowed(db: Any, user: Any, permission: str, owner: bool) -> bool:
-        return permission in {"view_device_fleet", "view_agents"}
+        return permission in {"view_device_fleet", "view_agents", "view_issues"}
 
     with patch.object(fleet_code_activity, "_allowed", side_effect=allowed):
         result = build_code_activity(
@@ -1078,3 +1147,38 @@ def test_work_active_pr_cap_cannot_crowd_a_merge_out_of_counts(
         for event in result.events
     )
     assert result.work_truncated is True
+
+
+def test_without_view_issues_only_work_a_visible_actor_touched_is_listed(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """The account's PR and issue snapshots are the issue list's data."""
+    _call(
+        db_session,
+        fleet["session"],
+        "create_pull_request",
+        2,
+        metadata={
+            "arguments_summary": {"target": "https://github.com/example/mine/pull/3"}
+        },
+    )
+    db_session.flush()
+    full = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    # The flow's merged PR is in the account snapshot.
+    assert any(item.key == "acme/api#42" for item in full.work)
+    with patch.object(
+        fleet_code_activity,
+        "_allowed",
+        side_effect=lambda db, user, permission, owner: permission == "view_agents",
+    ):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    keys = {item.key for item in result.work}
+    assert "acme/api#42" not in keys
+    assert "example/mine#3" in keys
+    assert all(item.node_ids for item in result.work)
+    shown = {item.id for item in result.work}
+    assert all(relation.target in shown for relation in result.relations)

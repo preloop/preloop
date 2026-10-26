@@ -1,7 +1,7 @@
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import {
-  withoutSubscriptionsTitle,
+  renderWithoutSubscriptionsTooltip,
   type SubscriptionEstimate,
 } from '../utils/subscription-estimate';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
@@ -18,13 +18,6 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './user-avatar';
-import './fleet-map';
-import { getFleetMap, type FleetMapGraph } from '../fleet-map-api';
-import {
-  loadFleetMapWindow,
-  windowMinutes,
-  type FleetMapWindow,
-} from '../utils/fleet-map-activity';
 import { DEFAULT_USAGE_RANGE } from './usage-card';
 import { timeRangePhrase } from '../utils/time-range';
 import { userHref } from '../utils/user-href';
@@ -288,17 +281,6 @@ const TALL_VIEWPORT = 1000;
 const ROWS_DEFAULT = 6;
 const ROWS_TALL = 8;
 
-/** The exact spend, plus the without-subscriptions sentence when there is one. */
-function spendTitle(
-  cost: number | null | undefined,
-  estimate: SubscriptionEstimate | null | undefined,
-  subscriptionRequests: number | undefined
-): string {
-  const without = withoutSubscriptionsTitle(estimate, subscriptionRequests);
-  const exact = formatUsdExact(cost);
-  return without ? `${exact}. ${without}` : exact;
-}
-
 /**
  * Scrolls a horizontal strip just enough that `item` has `padding` px of
  * room on each side (or sits at the strip's start when it is near it).
@@ -421,22 +403,6 @@ export class InventoryCard extends LitElement {
    */
   @property({ type: Boolean }) flowRunsCapped = false;
 
-  /**
-   * Instance administrators may swap the table for the spatial fleet map.
-   * Everyone else keeps the table and never sees the choice.
-   */
-  @property({ type: Boolean }) instanceAdmin = false;
-  /** Whose inventory view and map positions are stored. */
-  @property({ type: String }) userId = '';
-  @state() private inventoryView: 'table' | 'map' = 'table';
-  @state() private map: FleetMapGraph | null = null;
-  @state() private mapError = '';
-  @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
-  @state() private mapIncludeIdle = false;
-  /** Users the map is scoped to: node ids for the map, ids for `users=`. */
-  @state() private mapUsers: string[] = [];
-  private mapUserIds: string[] = [];
-  private mapController: AbortController | null = null;
   @state() private tab: InventoryTab = 'agents';
   @state() private sorts: Record<InventoryTab, string> = {
     agents: SORT_OPTIONS.agents[0].value,
@@ -508,36 +474,6 @@ export class InventoryCard extends LitElement {
         .title {
           font-size: var(--console-text-card-title);
           font-weight: 600;
-        }
-
-        .inventory-view {
-          display: inline-flex;
-          border: 1px solid var(--console-button-border);
-          border-radius: var(--sl-border-radius-medium);
-          overflow: hidden;
-        }
-        .inventory-view button {
-          font: inherit;
-          font-size: var(--console-text-meta);
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 10px;
-          min-height: 30px;
-          border: 0;
-          background: var(--console-button-face);
-          color: var(--console-meta-color);
-          cursor: pointer;
-        }
-        .inventory-view button[aria-pressed='true'] {
-          color: var(--console-body-color);
-          background: var(--console-hover-tint);
-        }
-        .inventory-map:not([fullscreen]) {
-          --fleet-map-height: clamp(360px, calc(100dvh - 240px), 720px);
-          padding: 0 12px 12px;
-          width: 100%;
-          min-width: 0;
         }
 
         .header-controls {
@@ -655,17 +591,15 @@ export class InventoryCard extends LitElement {
           background-color: var(--console-hover-tint);
         }
 
-        .spend-detail {
-          border: 0;
-          padding: 0;
-          background: none;
-          color: inherit;
-          font: inherit;
-          cursor: help;
-        }
-        .spend-detail:focus-visible {
+        .cost-trigger:focus-visible {
           outline: 2px solid var(--sl-color-primary-600);
           outline-offset: 2px;
+        }
+        .cost-tooltip-content {
+          display: grid;
+          gap: 2px;
+          text-align: left;
+          font-variant-numeric: tabular-nums;
         }
         /* Numbers pay less for their gutters than words do: the columns are
          narrow, and "Requests" has to fit its own heading. */
@@ -943,7 +877,6 @@ export class InventoryCard extends LitElement {
 
   disconnectedCallback(): void {
     window.removeEventListener('resize', this.onResize);
-    this.mapController?.abort();
     super.disconnectedCallback();
   }
 
@@ -1175,129 +1108,7 @@ export class InventoryCard extends LitElement {
     return rows;
   }
 
-  private get inventoryViewKey(): string {
-    return `preloop:inventory:view:${this.userId || 'anonymous'}`;
-  }
-
-  protected willUpdate(changed: Map<string, unknown>): void {
-    super.willUpdate?.(changed);
-    if (changed.has('userId') || changed.has('instanceAdmin')) {
-      let saved: string | null = null;
-      try {
-        saved = localStorage.getItem(this.inventoryViewKey);
-      } catch {
-        saved = null;
-      }
-      this.inventoryView =
-        this.instanceAdmin && saved === 'map' ? 'map' : 'table';
-      if (this.inventoryView === 'map' && !this.map) void this.loadMap();
-    }
-  }
-
-  private setInventoryView(view: 'table' | 'map'): void {
-    if (!this.instanceAdmin || view === this.inventoryView) return;
-    this.inventoryView = view;
-    try {
-      localStorage.setItem(this.inventoryViewKey, view);
-    } catch {
-      // A preference, not a requirement.
-    }
-    if (view === 'map' && !this.map) void this.loadMap();
-  }
-
-  /** ``quiet``: a background refresh keeps the current map on failure. */
-  private async loadMap(quiet = false): Promise<void> {
-    this.mapController?.abort();
-    const controller = (this.mapController = new AbortController());
-    this.mapError = '';
-    try {
-      const map = await getFleetMap(
-        controller.signal,
-        windowMinutes(this.mapWindow),
-        this.mapIncludeIdle,
-        this.mapUserIds
-      );
-      if (!controller.signal.aborted) this.map = map;
-    } catch (error) {
-      if (!controller.signal.aborted && !(quiet && this.map))
-        this.mapError =
-          error instanceof Error
-            ? error.message
-            : 'The fleet map could not be loaded.';
-    }
-  }
-
-  private renderViewChoice() {
-    if (!this.instanceAdmin) return nothing;
-    return html`<div
-      class="inventory-view"
-      role="group"
-      aria-label="Inventory view"
-    >
-      ${(
-        [
-          ['table', 'Table', 'table'],
-          ['map', 'Map', 'diagram-3'],
-        ] as const
-      ).map(
-        ([view, label, icon]) =>
-          html`<button
-            type="button"
-            data-inventory-view=${view}
-            aria-pressed=${this.inventoryView === view ? 'true' : 'false'}
-            @click=${() => this.setInventoryView(view)}
-          >
-            <sl-icon name=${icon} aria-hidden="true"></sl-icon>${label}
-          </button>`
-      )}
-    </div>`;
-  }
-
-  private renderMap() {
-    if (this.mapError)
-      return html`<div class="empty" role="status">${this.mapError}</div>`;
-    if (!this.map)
-      return html`<div class="empty" role="status">Mapping the fleet...</div>`;
-    return html`<fleet-map
-      class="inventory-map"
-      wheel-mode="page"
-      .graph=${this.map}
-      .activityWindow=${this.mapWindow}
-      .includeIdle=${this.mapIncludeIdle}
-      .users=${this.mapUsers}
-      live
-      instance-admin
-      default-arrangement="spatial"
-      positions-scope="inventory"
-      user-id=${this.userId}
-      @fleet-map-window-change=${(
-        event: CustomEvent<{ window: FleetMapWindow }>
-      ) => {
-        this.mapWindow = event.detail.window;
-        void this.loadMap();
-      }}
-      @fleet-map-stale=${() => void this.loadMap(true)}
-      @fleet-map-users-change=${(
-        event: CustomEvent<{ users: string[]; userIds: string[] }>
-      ) => {
-        this.mapUsers = event.detail.users;
-        this.mapUserIds = event.detail.userIds;
-        void this.loadMap();
-      }}
-      @fleet-map-idle-change=${(
-        event: CustomEvent<{ includeIdle: boolean }>
-      ) => {
-        this.mapIncludeIdle = event.detail.includeIdle;
-        void this.loadMap();
-      }}
-    ></fleet-map>`;
-  }
-
   private renderHeader() {
-    if (this.instanceAdmin && this.inventoryView === 'map')
-      return html`<div slot="header" class="card-head">
-        <span class="title">Inventory</span>${this.renderViewChoice()}
-      </div>`;
     const options = SORT_OPTIONS[this.activeTab];
     const sortHeld =
       this.activeTab === 'flows'
@@ -1307,7 +1118,6 @@ export class InventoryCard extends LitElement {
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
         <div class="header-controls">
-          ${this.renderViewChoice()}
           <sl-select
             class="sort-select"
             label="Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by"
@@ -1395,18 +1205,20 @@ export class InventoryCard extends LitElement {
     `;
   }
 
-  /** Compact spend detail available to pointer, keyboard and touch users. */
+  /**
+   * The spend figure; the without-subscriptions fact is a tooltip on it,
+   * offered only where there is subscription traffic.
+   */
   private renderSpend(
     cost: number | null | undefined,
     estimate: SubscriptionEstimate | null | undefined,
     subscriptionRequests: number | undefined
   ) {
-    const detail = spendTitle(cost, estimate, subscriptionRequests);
-    return html`<sl-tooltip content=${detail} trigger="hover focus click" hoist>
-      <button type="button" class="spend-detail" aria-label=${detail}>
-        ${formatUsd(cost)}
-      </button>
-    </sl-tooltip>`;
+    return renderWithoutSubscriptionsTooltip(
+      cost,
+      estimate,
+      subscriptionRequests
+    );
   }
 
   /**
@@ -1459,11 +1271,12 @@ export class InventoryCard extends LitElement {
         // 735px card at 1440, clipping Last seen and leaving Model at 0px.
         // 240 keeps a name and its status chip on one line and leaves Model
         // about 60px, enough for "No model" and an ellipsised alias.
-        // 212, not 240: the spend column took 28px for the line under it
-        // that says what the spend would be without subscriptions (D-05).
-        // The accessible tooltip now holds that line, so "$ est." is one
-        // figure and the name takes the width it was giving up.
-        width: 212,
+        // The spend column once took 28px (240 to 212) for a line under it
+        // saying what the spend would be without subscriptions (D-05). That
+        // fact is a tooltip on the figure now, so "$ est." is one figure and
+        // the name has its 240 back; measured in a 735px card at 1440, the
+        // table still fits with Last seen and Model visible.
+        width: 240,
         minWidth: 160,
         truncate: true,
         cellClass: 'identity-cell',
@@ -2131,12 +1944,6 @@ export class InventoryCard extends LitElement {
   }
 
   render() {
-    if (this.instanceAdmin && this.inventoryView === 'map')
-      return html`
-        <sl-card class="content-card">
-          ${this.renderHeader()} ${this.renderMap()}
-        </sl-card>
-      `;
     return html`
       <sl-card class="content-card">
         ${this.renderHeader()} ${this.renderTabs()} ${this.renderBody()}

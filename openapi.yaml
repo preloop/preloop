@@ -33648,6 +33648,16 @@ components:
             type: string
           type: array
           title: Unavailable
+          description: 'Sources missing from this graph: a source the caller may not
+            view (also listed in restricted) or one that failed to load.'
+        restricted:
+          items:
+            type: string
+          type: array
+          title: Restricted
+          description: 'Sources not shared with the caller (agents, models, runners,
+            users, devices): the permission is missing, or rows exist and the resource
+            authorizer shares none of them.'
         active_within_minutes:
           anyOf:
           - type: integer

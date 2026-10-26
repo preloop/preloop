@@ -1,4 +1,12 @@
-"""Single bounded read for the Fleet Map canvas."""
+"""Single bounded read for the Fleet Map canvas.
+
+The three reads are open to every account member: authorization is per
+source inside the services (``view_agents``, ``view_ai_models``,
+``view_flows``, ``view_users``, ``view_device_fleet`` for devices, plus the
+resource authorizer per row), so a member sees only what they may view and
+a member who may view nothing gets an empty graph naming the sources in
+``unavailable`` instead of a 403.
+"""
 
 from typing import Annotated
 
@@ -17,13 +25,11 @@ from preloop.services.fleet_code_activity import build_code_activity
 from preloop.services.fleet_map import build_fleet_map
 from preloop.services.fleet_scope import parse_users
 from preloop.services.fleet_usage import build_fleet_usage
-from preloop.utils.permissions import require_permission
 
 router = APIRouter()
 
 
 @router.get("/fleet/map", response_model=FleetMapResponse, tags=["Fleet"])
-@require_permission("view_device_fleet")
 def read_fleet_map(
     current_user: Annotated[models.User, Depends(get_current_active_user)],
     limit: int = Query(500, ge=50, le=1000),
@@ -70,7 +76,6 @@ def read_fleet_map(
     response_model=FleetCodeActivityResponse,
     tags=["Fleet"],
 )
-@require_permission("view_device_fleet")
 def read_fleet_code_activity(
     current_user: Annotated[models.User, Depends(get_current_active_user)],
     active_within_minutes: int | None = Query(
@@ -101,7 +106,6 @@ def read_fleet_code_activity(
 
 
 @router.get("/fleet/usage", response_model=FleetUsageResponse, tags=["Fleet"])
-@require_permission("view_device_fleet")
 def read_fleet_usage(
     current_user: Annotated[models.User, Depends(get_current_active_user)],
     active_within_minutes: int | None = Query(
