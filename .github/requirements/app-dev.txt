@@ -428,11 +428,7 @@ bcrypt==5.0.0 \
     --hash=sha256:f8429e1c410b4073944f03bd778a9e066e7fad723564a52ff91841d278dfc822 \
     --hash=sha256:fc746432b951e92b58317af8e0ca746efe93e66555f1b40888865ef5bf56446b
     # via preloop (pyproject.toml)
-beartype==0.22.9 ; python_full_version < '3.15' \
-    --hash=sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f \
-    --hash=sha256:d16c9bbc61ea14637596c5f6fbff2ee99cbe3573e46a716401734ef50c3060c2
-    # via py-key-value-aio
-beartype==0.23.1 ; python_full_version >= '3.15' \
+beartype==0.23.1 \
     --hash=sha256:4461b4dc57e3fdd6c8a8464b22cf118002eea107c33e9fef651c69068ab3cce3 \
     --hash=sha256:8b805f246b32931c74f2b321ea0939fe5bb2ff43c12a3eff19cc4c854b832e1d
     # via
@@ -471,15 +467,15 @@ boolean-py==5.0 \
     --hash=sha256:60cbc4bad079753721d32649545505362c754e121570ada4658b852a3a318d95 \
     --hash=sha256:ef28a70bd43115208441b53a045d1549e2f0ec6e3d08a9d142cbc41c1938e8d9
     # via license-expression
-boto3==1.43.75 \
-    --hash=sha256:08a79edb68e6a0d65d305eb90188639313650e155aed015e86eef59d8475dde0 \
-    --hash=sha256:86da93d3d5b46a58b03fa51b598ffa4aeaff485a3000affacf78491c105e44f0
+boto3==1.43.118 \
+    --hash=sha256:ab8f3d2c622ef039338b4f228d97ea55f1abd573d84bb9b9a5ee8cb6780c0ccd \
+    --hash=sha256:c0620f799e0f0c222ba42c337b65cdbcd3da38a3121187f634d8926cbbb28a9c
     # via
     #   preloop (pyproject.toml)
     #   litellm
-botocore==1.43.75 \
-    --hash=sha256:121abc8b0b529bc4e29a28d1e8b096b20f26708cabe3d5ae4b3446747712aece \
-    --hash=sha256:e8ed6b0f3cd398dfb9e08d7ca3a0b964152166a317a04e89c45ec91003327ffe
+botocore==1.43.118 \
+    --hash=sha256:7f3f9d88cc9e847587690f82a42e3c3c292c3026c92c1e60d68a9310018e003f \
+    --hash=sha256:a45d7ae570674161e4a3542d8c68633bf7503f92d1de781ef7361b79488eda6f
     # via
     #   boto3
     #   s3transfer
@@ -589,6 +585,7 @@ certifi==2026.10.19 \
     #   httpcore
     #   httpx
     #   kubernetes-asyncio
+    #   litellm
     #   requests
     #   sentry-sdk
 cffi==2.1.1 ; platform_python_implementation != 'PyPy' \
@@ -1211,7 +1208,6 @@ filelock==4.2.1 \
     --hash=sha256:c4c937ccac2a813cee448e662a56366cfb374c0f8702e75f295c412cc1c5d5a3
     # via
     #   huggingface-hub
-    #   litellm
     #   python-discovery
     #   virtualenv
 firebase-admin==7.5.0 \
@@ -1759,9 +1755,7 @@ httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscrip
 huggingface-hub==1.28.0 \
     --hash=sha256:46a2e950c09234de54093d587d1675382f0d08dbd600d9fb599b5932f5b2c6cb \
     --hash=sha256:58a8bacb03072edfc38067065e9dc24bbb34805410fcd36a1632de0b329660bb
-    # via
-    #   litellm
-    #   tokenizers
+    # via tokenizers
 hyperframe==6.1.0 \
     --hash=sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5 \
     --hash=sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08
@@ -2118,15 +2112,15 @@ license-expression==30.4.4 \
     --hash=sha256:421788fdcadb41f049d2dc934ce666626265aeccefddd25e162a26f23bcbf8a4 \
     --hash=sha256:73448f0aacd8d0808895bdc4b2c8e01a8d67646e4188f887375398c761f340fd
     # via cyclonedx-python-lib
-litellm==1.105.3 \
-    --hash=sha256:023964ef29ae92deaddd3b42e7510c8d6c61ca5df4911df035aa0cce8bad3174 \
-    --hash=sha256:20e8861af014368d89629fe78b491494dea0ce1eb0e74221cf990d0a63fbccb9 \
-    --hash=sha256:2e0e89f48990f6262beeaa23a654d1b5870d5e7345cecd99f43f76828de0f713 \
-    --hash=sha256:4c2544974217b98153efd0cb7a170b224001a2380f5a914d6a02f916d79d85e0 \
-    --hash=sha256:4f233ce05fff836bfd533f9e11ffbddd289034a4b54b376b1a8aec43759ec67c \
-    --hash=sha256:50f4ec15a9dd113baeb7770f5b8724b5ecb544b4979c952448ab09f0b5648b1d \
-    --hash=sha256:b0715e5c783e887ffcf05b7cb8b352d24c98e27f91f4ff4ebbd7a8aa29d5f1f9 \
-    --hash=sha256:e5e887164ada14698969ca576fc8164e312aec08069935324535f3ed736e17d4
+litellm==1.103.9 \
+    --hash=sha256:3222f34985e389added27e5dc796dfd63d5996c4254605b772b36e6d4ec28c3f \
+    --hash=sha256:7ba71c59404c825c38b5f346077c56ecfa228f9b847617c431d240357a7c3243 \
+    --hash=sha256:987904624a0e05fc974b68673f67c0660d945ecaac5be32068558dd1dc5f0c9b \
+    --hash=sha256:98853dbf04e20f61971fa268be8a378df148c9e6a01c42985645ff682f0b5db3 \
+    --hash=sha256:be071c425260b4717c069bba953153c2336e81d5cc804bc3fa2afb5292ca1c64 \
+    --hash=sha256:c81ab50d7900109e38ab8755f9e6c4ba33449ef68ef346b3be81dfac1aab90bd \
+    --hash=sha256:e7b0eebe85557cb95d1b07bf3347a1b7bd638e7ce446048c2ea8dd9c001f3718 \
+    --hash=sha256:fea6e5e026855173aafa967791e86d1ae3b13764a41806d92235f5ae8c24fcce
     # via preloop (pyproject.toml)
 loguru==0.7.3 \
     --hash=sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6 \
@@ -2808,7 +2802,6 @@ packaging==26.3 \
     #   fastmcp-slim
     #   huggingface-hub
     #   jira
-    #   litellm
     #   pytest
     #   virtualenv
 pathable==0.6.0 \
@@ -3776,7 +3769,6 @@ pyyaml==6.0.3 \
     #   huggingface-hub
     #   jsonschema-path
     #   kubernetes-asyncio
-    #   litellm
     #   pre-commit
     #   pymdown-extensions
     #   uvicorn

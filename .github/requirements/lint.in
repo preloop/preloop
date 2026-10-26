@@ -2,3 +2,5 @@
 pip
 pre-commit
 ruff
+# Security floor for the pre-commit/virtualenv dependency.
+filelock>=4.2.1
