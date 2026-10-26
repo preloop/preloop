@@ -905,3 +905,35 @@ def test_subgroup_report_scope_and_project_override(
     assert [change["ref"] for change in report["shipped"]] == (
         [f"{project}#7"] if enabled else []
     )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "label"),
+    [
+        (dr.PURPOSE_PARTIAL, "Closed, partly covered"),
+        (dr.PURPOSE_UNVERIFIED, "Closed with an evidence gap"),
+    ],
+)
+def test_email_distinguishes_shown_misses_from_evidence_gaps(
+    verdict: str, label: str
+) -> None:
+    report = _report()
+    report["needs_you"] = [
+        {
+            "kind": "closed_unverified",
+            "verdict": verdict,
+            "ref": "example/app#12",
+            "title": "CSV export",
+            "unmet_criteria": ["Exports respect the date filter"],
+        }
+    ]
+    _, text, body = dre.render_email(
+        report, link="https://example.com/report", opt_out="https://example.com/opt-out"
+    )
+    for rendered in (text, body):
+        assert f"{label}: example/app#12 CSV export" in rendered
+        if verdict == dr.PURPOSE_PARTIAL:
+            assert "Not shown met: Exports respect the date filter" in rendered
+            assert "Closed with an evidence gap" not in rendered
+        else:
+            assert "Closed, partly covered" not in rendered
