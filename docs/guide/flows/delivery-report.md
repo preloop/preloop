@@ -12,7 +12,8 @@ days. Additional trackers use the same flow. Its deterministic report still
 runs when the account has no model configured; in that case the email names
 the skipped assessment. Bind a model to the flow to enable its one-time
 onboarding assessment. The account policy can turn the report off or change
-its cadence and scope.
+its cadence and scope. An assessed schedule resolves its enabled, linked
+code-host repositories into read-only checkouts when the run starts.
 
 Pull requests opened by the GitHub Copilot coding agent are recorded too,
 with origin `copilot`, and linked to the synced issues they close or name in

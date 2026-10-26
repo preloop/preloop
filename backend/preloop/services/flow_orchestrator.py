@@ -2820,19 +2820,46 @@ class FlowExecutionOrchestrator:
         return found
 
     def _git_clone_config_for_trigger(self) -> Any:
-        """Clone config reduced to the repository the payload named.
+        """Clone config for the triggered repository or a scheduled report.
 
         The stored config is not modified. Clone entries are a hard selection:
         the payload repository is cloned only when it is one of them (or one
         of the flow's projects). A payload that names something else clears
         the list, so a fixed clone of a different repository is not checked
-        out under the payload's commit. That empty checkout is logged.
+        out under the payload's commit. That empty checkout is logged. A
+        scheduled assessed report with no explicit repositories gets the
+        account's active code-host projects under its policy scope.
         """
         config = self._effective_git_clone_config()
         if not isinstance(config, dict):
             return config
         identity = self._cached_payload_identity()
         if not identity:
+            if is_delivery_report_flow(getattr(self, "flow", None)) and not config.get(
+                "repositories"
+            ):
+                from preloop.models.crud import crud_delivery_report_policy
+
+                run = self._plan_delivery_report_run()
+                if run is not None and run.calls_model:
+                    scope = {name.lower() for name in run.policy.projects}
+                    repositories = []
+                    for (
+                        name,
+                        project_id,
+                        tracker_id,
+                    ) in crud_delivery_report_policy.code_repositories(
+                        self.db, account_id=self.flow.account_id
+                    ):
+                        if scope and name not in scope:
+                            continue
+                        project_policy = run.project_policies.get(name)
+                        if project_policy is not None and not project_policy.enabled:
+                            continue
+                        repositories.append(
+                            {"project_id": project_id, "tracker_id": tracker_id}
+                        )
+                    return {**config, "repositories": repositories}
             return config
 
         project_id = self._resolve_trigger_project_id(
@@ -3223,9 +3250,10 @@ class FlowExecutionOrchestrator:
         Args:
             execution_context: Context to extend in place.
         """
-        repositories = (self._effective_git_clone_config() or {}).get(
-            "repositories", []
-        )
+        clone_config = execution_context.get("git_clone_config")
+        if clone_config is None:
+            clone_config = self._effective_git_clone_config()
+        repositories = (clone_config or {}).get("repositories", [])
         if repositories:
             logger.info(
                 f"Preparing git credentials for {len(repositories)} configured repositories"
