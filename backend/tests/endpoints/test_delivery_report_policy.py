@@ -101,6 +101,7 @@ class TestAccountPolicy:
         assert effective["cadence"] == "weekly"
         assert effective["audit_ci_max_wait_minutes"] == 30
         assert effective["recipients"] == "account_owner"
+        assert effective["per_member_updates"] is False
         assert effective["tracker_writes"]["create_follow_up"] == "deny"
         assert effective["tracker_writes"]["close"] == "deny"
         assert (body["defaults"]["per_run_usd"], body["defaults"]["monthly_usd"]) == (
@@ -122,6 +123,20 @@ class TestAccountPolicy:
         assert body["overrides"] == overrides
         assert body["effective"]["per_run_usd"] == 3.0
         assert body["effective"]["cadence"] == "daily"
+
+    def test_member_update_opt_in_is_account_only(
+        self, client: TestClient, db_session: Session, test_user: Any
+    ) -> None:
+        response = client.put(BASE, json={"overrides": {"per_member_updates": True}})
+        assert response.status_code == 200, response.text
+        assert client.get(BASE).json()["effective"]["per_member_updates"] is True
+        project = _project(db_session, test_user.account_id)
+        refused = client.put(
+            f"{BASE}/projects/{project.id}",
+            json={"overrides": {"per_member_updates": False}},
+        )
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "account_setting"
 
     def test_close_allowed_is_rejected(self, client: TestClient) -> None:
         response = client.put(

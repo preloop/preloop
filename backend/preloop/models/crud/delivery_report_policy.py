@@ -355,6 +355,14 @@ def pull_request_facts(
             "title": row.title,
             "description": row.body,
             "author": row.author_login,
+            "author_id": row.author_id,
+            "forge": (
+                "gitlab"
+                if "/-/merge_requests/" in row.pr_key
+                else "github"
+                if "/pull/" in row.pr_key
+                else ""
+            ),
             "changes": (
                 {
                     "changed_files": list(row.changed_files),
@@ -406,7 +414,14 @@ def pull_requests_missing_files(
 
 
 #: Detail columns a writer may set; anything else in ``details`` is ignored.
-DETAIL_COLUMNS = ("title", "body", "author_login", "changed_files", "files_changed")
+DETAIL_COLUMNS = (
+    "title",
+    "body",
+    "author_login",
+    "author_id",
+    "changed_files",
+    "files_changed",
+)
 
 
 def store_pull_request_details(
@@ -433,6 +448,8 @@ def store_pull_request_details(
     """
     for column in DETAIL_COLUMNS:
         if column in details:
+            if column == "author_id" and pull.author_id is not None:
+                continue
             setattr(pull, column, details[column])
     if observed_at is not None:
         pull.details_observed_at = observed_at

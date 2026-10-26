@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { live } from 'lit/directives/live.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import { getUserProfile, hasPermission } from '../api';
+import { getFeatures, getUserProfile, hasPermission } from '../api';
 import {
   clearDeliveryReportPolicy,
   getDeliveryReportPolicy,
@@ -54,6 +54,7 @@ export class DeliveryReportPolicySettings extends LitElement {
   @state() private layer: DeliveryReportPolicyLayer | null = null;
   @state() private draft: DeliveryReportPolicy | null = null;
   @state() private canManage = false;
+  @state() private memberUpdatesAvailable = false;
   @state() private saving = false;
   @state() private error = '';
   @state() private subscription: DeliveryReportSubscription | null = null;
@@ -136,15 +137,19 @@ export class DeliveryReportPolicySettings extends LitElement {
     const generation = ++this.generation;
     this.error = '';
     try {
-      const [profile, layer] = await Promise.all([
+      const [profile, layer, features] = await Promise.all([
         getUserProfile(),
         getDeliveryReportPolicy(this.projectId || undefined),
+        getFeatures().catch(() => null),
       ]);
       if (generation !== this.generation) return;
       this.canManage = hasPermission(
         profile?.permissions,
         this.isProject ? 'edit_projects' : 'manage_budgets'
       );
+      this.memberUpdatesAvailable =
+        features?.features.delivery_report_member_updates === true &&
+        !this.isProject;
       this.adopt(layer);
       if (!this.isProject) {
         // Each person's own copy; any member may change it.
@@ -473,6 +478,25 @@ export class DeliveryReportPolicySettings extends LitElement {
       </div>
       <div class="group">
         <h3>Recipients</h3>
+        ${
+          this.memberUpdatesAvailable
+            ? html`<sl-switch
+                  data-field="per_member_updates"
+                  .checked=${live(draft.per_member_updates)}
+                  ?disabled=${!this.canManage}
+                  @sl-change=${(event: Event) =>
+                    this.set(
+                      'per_member_updates',
+                      (event.target as HTMLInputElement).checked
+                    )}
+                  >Send short updates to account members</sl-switch
+                >
+                <p class="meta">
+                  Off by default. Each person receives one update per report
+                  period, based on the work they reviewed or discussed.
+                </p>`
+            : nothing
+        }
         <div class="fields">
           <sl-select
             label="Send to"

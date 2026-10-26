@@ -60,6 +60,29 @@ def _discussion_notes(discussion: Any) -> List[Any]:
     return []
 
 
+def _review_from_system_note(note: Any) -> Optional[Dict[str, str]]:
+    """Read a dated GitLab approval note as a forge review event.
+
+    Args:
+        note: A python-gitlab MR note.
+
+    Returns:
+        Immutable user id and approval time, or None for other notes.
+    """
+    author = getattr(note, "author", None)
+    body = str(getattr(note, "body", "") or "").lower()
+    submitted_at = getattr(note, "created_at", None)
+    if (
+        not getattr(note, "system", False)
+        or not body.startswith("approved this merge request")
+        or not isinstance(author, dict)
+        or author.get("id") is None
+        or not submitted_at
+    ):
+        return None
+    return {"user_id": str(author["id"]), "submitted_at": str(submitted_at)}
+
+
 class GitLabTracker(BaseTracker):
     """GitLab tracker implementation using python-gitlab."""
 
@@ -1552,8 +1575,12 @@ class GitLabTracker(BaseTracker):
             )
 
             all_comments = []
+            reviews = []
             for note in notes:
-                if note.system:  # Skip system notes
+                if note.system:
+                    review = _review_from_system_note(note)
+                    if review is not None:
+                        reviews.append(review)
                     continue
 
                 all_comments.append(
@@ -1561,6 +1588,11 @@ class GitLabTracker(BaseTracker):
                         "id": str(note.id),
                         "author": note.author.get("username")
                         if hasattr(note, "author") and isinstance(note.author, dict)
+                        else None,
+                        "author_id": str(note.author["id"])
+                        if hasattr(note, "author")
+                        and isinstance(note.author, dict)
+                        and note.author.get("id") is not None
                         else None,
                         "body": note.body or "",
                         "created_at": note.created_at,
@@ -1617,6 +1649,11 @@ class GitLabTracker(BaseTracker):
                 "author": mr.author.get("username")
                 if hasattr(mr, "author") and isinstance(mr.author, dict)
                 else None,
+                "author_id": str(mr.author["id"])
+                if hasattr(mr, "author")
+                and isinstance(mr.author, dict)
+                and mr.author.get("id") is not None
+                else None,
                 "assignees": [
                     a.get("username")
                     for a in (mr.assignees if hasattr(mr, "assignees") else [])
@@ -1644,6 +1681,7 @@ class GitLabTracker(BaseTracker):
                 if hasattr(mr, "work_in_progress")
                 else False,
                 "comments": all_comments,
+                "reviews": reviews,
                 "changes": changes,
             }
 

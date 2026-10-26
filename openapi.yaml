@@ -31674,6 +31674,10 @@ components:
           - sponsoring_lead
           title: Recipients
           default: account_owner
+        per_member_updates:
+          type: boolean
+          title: Per Member Updates
+          default: false
         sponsoring_lead_user_id:
           anyOf:
           - type: string

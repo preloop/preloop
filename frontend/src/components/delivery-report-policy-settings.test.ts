@@ -37,6 +37,7 @@ const DEFAULTS = {
     follow_up_label: 'preloop:proposed',
   },
   recipients: 'account_owner',
+  per_member_updates: false,
   sponsoring_lead_user_id: null,
   opted_out_user_ids: [],
 };
@@ -65,6 +66,7 @@ function stubApi(
     putStatus?: number;
     subscriptionPutStatus?: number;
     isRecipient?: boolean;
+    memberUpdates?: boolean;
   } = {}
 ) {
   const puts: { path: string; body: any }[] = [];
@@ -78,6 +80,12 @@ function stubApi(
     .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       const path = new URL(url, window.location.origin).pathname;
+      if (path === '/api/v1/features')
+        return json({
+          features: {
+            delivery_report_member_updates: options.memberUpdates ?? false,
+          },
+        });
       if (path === '/api/v1/auth/users/me')
         return json({
           id: 'u1',
@@ -155,6 +163,35 @@ describe('delivery-report-policy-settings', () => {
     expect(follow.checked).to.equal(false);
     const text = root.textContent!.replace(/\s+/g, ' ');
     expect(text).to.contain('The report never closes an issue.');
+  });
+
+  it('shows an account opt-in only when the member update feature is enabled', async () => {
+    const { puts } = stubApi({ memberUpdates: true });
+    const el = await mount();
+    const toggle = el.shadowRoot!.querySelector(
+      'sl-switch[data-field="per_member_updates"]'
+    ) as any;
+    expect(toggle.checked).to.equal(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await el.updateComplete;
+    (
+      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
+    ).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0].body.overrides.per_member_updates).to.equal(true);
+  });
+
+  it('keeps the member opt-in off repository settings and OSS feature sets', async () => {
+    stubApi({ memberUpdates: false });
+    const account = await mount();
+    expect(
+      account.shadowRoot!.querySelector('[data-field="per_member_updates"]')
+    ).to.equal(null);
+    const project = await mount('p1');
+    expect(
+      project.shadowRoot!.querySelector('[data-field="per_member_updates"]')
+    ).to.equal(null);
   });
 
   it('sends both budgets when assessment is turned on', async () => {

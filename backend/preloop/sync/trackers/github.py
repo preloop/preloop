@@ -202,7 +202,11 @@ class GitHubTracker(BaseTracker):
 
     @async_retry()
     async def _make_request(
-        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        max_pages: Optional[int] = None,
     ) -> Any:
         """
         Make a request to the GitHub API, handling pagination.
@@ -211,6 +215,7 @@ class GitHubTracker(BaseTracker):
             params = {}
         params.setdefault("per_page", GITHUB_DEFAULT_PAGE_SIZE)
         results = []
+        pages_read = 0
         url = f"{self.API_BASE_URL}/{endpoint.lstrip('/')}"
         # Get auth headers (may refresh installation token for github_app auth)
         headers = await self._get_auth_headers()
@@ -229,12 +234,15 @@ class GitHubTracker(BaseTracker):
                         )
 
                     data = response.json()
+                    pages_read += 1
                     if isinstance(data, list):
                         results.extend(data)
                     else:
                         return data
 
-                    if "next" in response.links:
+                    if "next" in response.links and (
+                        max_pages is None or pages_read < max_pages
+                    ):
                         url = response.links["next"]["url"]
                     else:
                         url = None
@@ -2102,10 +2110,14 @@ class GitHubTracker(BaseTracker):
 
             # Get PR comments (review comments + issue comments)
             comments_path = f"/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-            review_comments = await self._request("GET", comments_path)
+            review_comments = await self._make_request(
+                comments_path, params={"per_page": GITHUB_DEFAULT_PAGE_SIZE}
+            )
 
             issue_comments_path = f"/repos/{owner}/{repo}/issues/{pr_number}/comments"
-            issue_comments = await self._request("GET", issue_comments_path)
+            issue_comments = await self._make_request(
+                issue_comments_path, params={"per_page": GITHUB_DEFAULT_PAGE_SIZE}
+            )
 
             # Combine all comments
             all_comments = []
@@ -2114,6 +2126,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "review_comment",
@@ -2127,6 +2140,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "issue_comment",
@@ -2171,6 +2185,9 @@ class GitHubTracker(BaseTracker):
                 "description": pr_data.get("body", ""),
                 "state": pr_data["state"],
                 "author": pr_data["user"]["login"],
+                "author_id": str(pr_data["user"]["id"])
+                if pr_data["user"].get("id") is not None
+                else None,
                 "assignees": [a["login"] for a in pr_data.get("assignees", [])],
                 "reviewers": [
                     r["login"] for r in pr_data.get("requested_reviewers", [])
@@ -2193,6 +2210,72 @@ class GitHubTracker(BaseTracker):
         except Exception as e:
             logger.error(f"Error getting pull request {pr_number}: {e}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
+
+    async def get_pull_request_engagement(self, pr_number: str) -> Dict[str, Any]:
+        """Read PR identity and bounded engagement without files or CI checks.
+
+        At most seven GitHub requests are made: one PR and two pages each
+        of reviews, review comments, and issue comments (100 items per page).
+        A Link header controls whether the second page is needed.
+
+        Args:
+            pr_number: Repository-local pull request number.
+
+        Returns:
+            The fields needed for review, comment, and authored-brief facts.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+        prefix = f"repos/{owner}/{repo}"
+        pr = await self._request("GET", f"/{prefix}/pulls/{pr_number}")
+        reviews = await self._make_request(
+            f"{prefix}/pulls/{pr_number}/reviews",
+            params={"per_page": GITHUB_DEFAULT_PAGE_SIZE},
+            max_pages=2,
+        )
+        comments = []
+        for endpoint in (
+            f"{prefix}/pulls/{pr_number}/comments",
+            f"{prefix}/issues/{pr_number}/comments",
+        ):
+            comments.extend(
+                await self._make_request(
+                    endpoint,
+                    params={"per_page": GITHUB_DEFAULT_PAGE_SIZE},
+                    max_pages=2,
+                )
+            )
+        return {
+            "author_id": str(pr["user"]["id"])
+            if pr.get("user", {}).get("id") is not None
+            else None,
+            "created_at": pr.get("created_at"),
+            "description": pr.get("body"),
+            "reviews": [
+                {
+                    "user_id": str(row["user"]["id"]),
+                    "submitted_at": row["submitted_at"],
+                }
+                for row in reviews
+                if isinstance(row, dict)
+                and isinstance(row.get("user"), dict)
+                and row["user"].get("id") is not None
+                and row.get("submitted_at")
+            ],
+            "comments": [
+                {
+                    "author_id": str(row["user"]["id"]),
+                    "created_at": row["created_at"],
+                }
+                for row in comments
+                if isinstance(row, dict)
+                and isinstance(row.get("user"), dict)
+                and row["user"].get("id") is not None
+                and row.get("created_at")
+            ],
+        }
 
     async def list_pull_requests(
         self,

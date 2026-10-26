@@ -265,6 +265,8 @@ class DeliveryReportPolicy(BaseModel):
     tracker_writes: TrackerWritePolicy = Field(default_factory=TrackerWritePolicy)
     #: Who receives the report. Recipients by role are an EE extension.
     recipients: RecipientRule = "account_owner"
+    #: Enterprise editions may use this account-level opt-in for short updates.
+    per_member_updates: bool = False
     #: The sponsoring lead's user id when ``recipients`` names one.
     sponsoring_lead_user_id: Optional[str] = None
     #: Users who asked not to receive the report (the email opt-out link).
@@ -1608,6 +1610,8 @@ def assemble_report(
                 "project": _pr_ref(pr).split("#", 1)[0] or None,
                 "area": _area(pr),
                 "author": pr.get("author"),
+                "author_id": pr.get("author_id"),
+                "forge": pr.get("forge"),
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),

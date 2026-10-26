@@ -140,6 +140,13 @@ effective policy is the defaults, then the account, then the repository
 | UI screenshot threshold | 40 changed frontend lines | account, repository |
 | Tracker writes | create follow-up: off (a proposal in the report); reopen: approval; close: always deny | account |
 | Recipients | the account owner, or a sponsoring lead; anyone can opt out | account |
+| Per-member updates (`per_member_updates`) | off (`false`); short updates require Enterprise Edition | account |
+
+The per-member updates switch appears in account settings only when the
+`delivery_report_member_updates` feature is enabled. A registered
+`delivery_report_distributor` service can use the completed report and its
+forge engagement facts to send these short updates. Without that extension,
+the core distributor sends the standard report email.
 
 The deterministic report (shipped, closed, open, the delta and the
 deterministic risk flags) costs nothing and is on by default. The first
