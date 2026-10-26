@@ -1065,36 +1065,6 @@ class TestGetPullRequestFiles(IsolatedAsyncioTestCase):
         assert result["comments"][-1]["author_id"] == "134"
 
 
-class TestGetPullRequestReviews(IsolatedAsyncioTestCase):
-    """Review engagement uses forge user ids and submission times."""
-
-    async def test_only_submitted_reviews_with_user_ids_are_returned(self):
-        tracker = GitHubTracker(
-            str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
-        )
-        tracker._make_request = AsyncMock(
-            return_value=[
-                {
-                    "user": {"id": 42, "login": "alice"},
-                    "submitted_at": "2026-10-20T10:00:00Z",
-                    "state": "APPROVED",
-                },
-                {"user": {"id": 43}, "submitted_at": None, "state": "PENDING"},
-            ]
-        )
-        rows = await tracker.get_pull_request_reviews("7")
-        assert rows == [
-            {
-                "user_id": "42",
-                "submitted_at": "2026-10-20T10:00:00Z",
-                "state": "APPROVED",
-            }
-        ]
-        tracker._make_request.assert_awaited_once_with(
-            "repos/owner/repo/pulls/7/reviews"
-        )
-
-
 class TestPullRequestEngagement(IsolatedAsyncioTestCase):
     async def test_paginated_helper_honors_the_page_budget(self) -> None:
         tracker = GitHubTracker(
@@ -1128,7 +1098,11 @@ class TestPullRequestEngagement(IsolatedAsyncioTestCase):
         )
         tracker._make_request = AsyncMock(
             side_effect=[
-                [{"user": {"id": 8}, "submitted_at": "2026-10-21T10:00:00Z"}],
+                [
+                    {"user": {"id": 8}, "submitted_at": "2026-10-21T10:00:00Z"},
+                    {"user": {"id": 11}, "submitted_at": None},
+                    {"user": {}, "submitted_at": "2026-10-21T10:00:00Z"},
+                ],
                 [{"user": {"id": 9}, "created_at": "2026-10-21T11:00:00Z"}],
                 [{"user": {"id": 10}, "created_at": "2026-10-21T12:00:00Z"}],
             ]
@@ -1137,7 +1111,9 @@ class TestPullRequestEngagement(IsolatedAsyncioTestCase):
         result = await tracker.get_pull_request_engagement("7")
 
         assert result["author_id"] == "7"
-        assert result["reviews"][0]["user_id"] == "8"
+        assert result["reviews"] == [
+            {"user_id": "8", "submitted_at": "2026-10-21T10:00:00Z"}
+        ]
         assert [row["author_id"] for row in result["comments"]] == ["9", "10"]
         assert tracker._make_request.await_args_list == [
             call(
