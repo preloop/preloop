@@ -23,9 +23,6 @@ from preloop.models import models
 
 #: How long a refreshed open pull request waits before it is due again.
 REFRESH_REARM = timedelta(minutes=5)
-#: A pull request first seen this long ago and never observed open is not
-#: worth a forge read: four weekly reports look no further back.
-REFRESH_LOOKBACK = timedelta(days=28)
 #: An unpublished delivery claim younger than this belongs to a request that
 #: may still publish; an older one is taken over by the next delivery.
 UNPUBLISHED_CLAIM_GRACE = timedelta(minutes=2)
@@ -42,8 +39,9 @@ class CRUDPullRequestRefresh:
         """Claim up to ``limit`` due pull requests and commit the claim.
 
         Due means ``refresh_due_at`` has passed (re-armed or webhook
-        accelerated), or it is unset on an open pull request, or on one not
-        yet observed that is recent and carries no merge time. Claiming moves
+        accelerated), or it is unset on an open or unobserved pull request.
+        Unobserved rows are claimed first so an old backlog cannot be starved
+        by regularly re-armed open rows. Claiming moves
         ``refresh_due_at`` one re-arm interval ahead, so a worker that dies
         mid-read only delays the row; concurrent ticks skip locked rows.
 
@@ -64,19 +62,13 @@ class CRUDPullRequestRefresh:
                         p.refresh_due_at <= now,
                         and_(
                             p.refresh_due_at.is_(None),
-                            or_(
-                                p.state == "open",
-                                and_(
-                                    p.state.is_(None),
-                                    p.merged_at.is_(None),
-                                    p.created_at
-                                    >= (now - REFRESH_LOOKBACK).replace(tzinfo=None),
-                                ),
-                            ),
+                            or_(p.state == "open", p.state.is_(None)),
                         ),
                     )
                 )
-                .order_by(p.refresh_due_at.asc().nulls_last(), p.id)
+                .order_by(
+                    p.state.is_not(None), p.refresh_due_at.asc().nulls_last(), p.id
+                )
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )

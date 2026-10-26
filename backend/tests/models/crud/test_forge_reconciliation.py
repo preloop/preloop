@@ -118,6 +118,81 @@ async def test_fifty_open_pull_requests_stay_within_the_bound(
 
 
 @pytest.mark.asyncio
+async def test_old_null_state_pull_requests_are_refreshed_in_bounded_ticks(
+    db_session: Session, test_user: Any, forge: FakeForge
+) -> None:
+    rows = [
+        make_pr(
+            db_session,
+            test_user.account_id,
+            github_key(number),
+            state=None,
+            created_at=NOW - timedelta(days=90),
+            merged_at=NOW - timedelta(days=60) if number < 2 else None,
+        )
+        for number in range(32)
+    ]
+
+    first = await refresh.refresh_pull_requests(db_session, now=NOW)
+    second = await refresh.refresh_pull_requests(
+        db_session, now=NOW + timedelta(minutes=1)
+    )
+
+    assert (first["claimed"], second["claimed"]) == (25, 7)
+    assert (first["read"], second["read"]) == (25, 7)
+    assert len(forge.reads) == 32
+    for row in rows:
+        db_session.refresh(row)
+        assert row.state == ("merged" if row.merged_at else "open")
+
+
+@pytest.mark.asyncio
+async def test_null_state_refresh_ignores_stale_validator(
+    db_session: Session, test_user: Any, forge: FakeForge
+) -> None:
+    row = make_pr(
+        db_session,
+        test_user.account_id,
+        github_key(33),
+        state=None,
+        created_at=NOW - timedelta(days=90),
+        refresh_etag='"old"',
+    )
+
+    counts = await refresh.refresh_pull_requests(db_session, now=NOW)
+
+    db_session.refresh(row)
+    assert counts["read"] == 1
+    assert forge.reads == [("/repos/acme/widgets/pulls/33", None)]
+    assert row.state == "open"
+
+
+@pytest.mark.asyncio
+async def test_unobserved_record_precedes_rearmed_open_record(
+    db_session: Session, test_user: Any, forge: FakeForge
+) -> None:
+    make_pr(
+        db_session,
+        test_user.account_id,
+        github_key(34),
+        state="open",
+        refresh_due_at=NOW - timedelta(minutes=1),
+    )
+    make_pr(
+        db_session,
+        test_user.account_id,
+        github_key(35),
+        state=None,
+        created_at=NOW - timedelta(days=90),
+    )
+
+    counts = await refresh.refresh_pull_requests(db_session, now=NOW, limit=1)
+
+    assert counts["claimed"] == 1
+    assert forge.reads == [("/repos/acme/widgets/pulls/35", None)]
+
+
+@pytest.mark.asyncio
 async def test_not_modified_changes_only_the_bookkeeping(
     db_session: Session, test_user: Any, forge: FakeForge
 ) -> None:
@@ -288,7 +363,7 @@ async def test_an_unreadable_pull_request_backs_off_for_a_day(
 
 
 @pytest.mark.asyncio
-async def test_old_unobserved_and_merged_records_are_not_refreshed(
+async def test_old_unobserved_and_merged_records_are_refreshed(
     db_session: Session, test_user: Any, forge: FakeForge
 ) -> None:
     account = test_user.account_id
@@ -300,8 +375,10 @@ async def test_old_unobserved_and_merged_records_are_not_refreshed(
 
     counts = await refresh.refresh_pull_requests(db_session, now=NOW)
 
-    assert counts["read"] == 1
-    assert forge.reads[0][0] == "/repos/acme/widgets/pulls/7"
+    assert counts["read"] == 3
+    assert {path for path, _ in forge.reads} == {
+        f"/repos/acme/widgets/pulls/{number}" for number in (5, 6, 7)
+    }
 
 
 # --- delivery dedupe --------------------------------------------------------

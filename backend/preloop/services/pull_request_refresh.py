@@ -234,7 +234,8 @@ async def refresh_pull_requests(
             row.id,
             row.account_id,
             row.pr_key,
-            row.refresh_etag,
+            # A 304 cannot supply the missing state, even with an old validator.
+            row.refresh_etag if row.state is not None else None,
             row.head_sha,
         )
         for row in rows

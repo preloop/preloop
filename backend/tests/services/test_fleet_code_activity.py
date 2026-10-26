@@ -556,6 +556,49 @@ def test_work_lists_a_stored_pr_without_inventing_title_state_or_actor(
     assert result.work_truncated is False
 
 
+@pytest.mark.parametrize(
+    ("state", "merge_offset", "expected"),
+    [
+        ("open", None, "open"),
+        ("closed", None, "closed"),
+        ("merged", -5, "merged"),
+        ("merged", None, "merged"),
+        (None, -5, "merged"),
+        (None, None, None),
+        (None, 5, None),
+        ("merged", 5, None),
+    ],
+)
+def test_work_uses_recorded_pr_state_with_historical_merge_boundary(
+    db_session: Session,
+    fleet: dict[str, Any],
+    state: str | None,
+    merge_offset: int | None,
+    expected: str | None,
+) -> None:
+    db_session.add(
+        models.IssueCostPullRequest(
+            account_id=fleet["user"].account_id,
+            pr_key="https://github.com/example/widgets/pull/77",
+            opened_at=NOW - timedelta(minutes=10),
+            merged_at=(
+                NOW + timedelta(minutes=merge_offset)
+                if merge_offset is not None
+                else None
+            ),
+            state=state,
+        )
+    )
+    db_session.flush()
+
+    result = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+
+    item = next(item for item in result.work if item.key == "example/widgets#77")
+    assert item.state == expected
+
+
 def _work_issue(
     db: Session,
     user: models.User,
