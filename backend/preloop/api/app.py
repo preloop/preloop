@@ -996,6 +996,7 @@ def _register_control_plane_routes(
     )
     from preloop.api.endpoints import search as search_router
     from preloop.api.endpoints import delivery_report_policy
+    from preloop.api.endpoints import delivery_report_subscription
     from preloop.api.endpoints import (
         security_maintenance,
         security_screen,
@@ -1437,6 +1438,20 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Delivery Report"],
         dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        delivery_report_subscription.router,
+        prefix="/api/v1",
+        tags=["Delivery Report"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    # The opt-out link in every report email: the signed token is the
+    # credential, so it is mounted without authentication.
+    app.include_router(
+        delivery_report_subscription.public_router,
+        prefix="/api/v1",
+        tags=["Delivery Report"],
+        include_in_schema=False,
     )
 
     # Per account opt in for embedding session content, including how much of

@@ -5707,7 +5707,7 @@ class FlowExecutionOrchestrator:
             run = getattr(self, "_delivery_report_run", None)
             if run is not None and run.decision == "disabled":
                 return merged_result
-            return finalize_delivery_report_for_execution(
+            merged_result = finalize_delivery_report_for_execution(
                 self.db,
                 flow=self.flow,
                 execution=self.execution_log,
@@ -5717,6 +5717,70 @@ class FlowExecutionOrchestrator:
         except Exception:
             logger.exception("Finalizing the delivery report failed")
             return merged_result
+        self._delivery_report_finalized = True
+        return merged_result
+
+    async def _send_finalized_delivery_report(self, merged_result: Any) -> Any:
+        """Distribute the report once :meth:`_finalize_delivery_report` built it."""
+        if not getattr(self, "_delivery_report_finalized", False):
+            return merged_result
+        run = getattr(self, "_delivery_report_run", None)
+        return await self._distribute_delivery_report(merged_result, run)
+
+    async def _distribute_delivery_report(
+        self, merged_result: Any, run: Optional["PolicyRun"]
+    ) -> Any:
+        """Email the finished report to its recipients and record it (#2020).
+
+        Deterministic and assessed reports both go out here, once per run.
+        A failed send is logged and leaves the report as it is.
+        """
+        from preloop.services.delivery_report_email import (
+            DISTRIBUTION_KEY,
+            distribute_report,
+        )
+
+        if not isinstance(merged_result, dict):
+            return merged_result
+        try:
+            record = await distribute_report(
+                self.db,
+                flow=self.flow,
+                execution=self.execution_log,
+                report=merged_result,
+                policy=run.policy if run is not None else None,
+            )
+        except Exception:
+            logger.exception("Emailing the delivery report failed")
+            return merged_result
+        if record is not None:
+            merged_result = {**merged_result, DISTRIBUTION_KEY: record}
+        return merged_result
+
+    async def _refresh_delivery_report_facts(self) -> None:
+        """Read missing PR file lists before a deterministic report (#2020).
+
+        Bounded forge reads; a failure leaves the ledger as it was and the
+        report is built from what it holds.
+        """
+        from preloop.services.delivery_report import _parse_time, report_window
+        from preloop.services.delivery_report_facts import (
+            refresh_pull_request_details,
+        )
+
+        payload = (self.trigger_event_data or {}).get("payload")
+        window = report_window(payload)
+        end = _parse_time(window.get("to")) or datetime.now(timezone.utc)
+        try:
+            await refresh_pull_request_details(
+                self.db,
+                account_id=self.flow.account_id,
+                start=_parse_time(window.get("from")),
+                end=end,
+            )
+        except Exception:
+            logger.warning("Could not refresh PR details for the report", exc_info=True)
+            self.db.rollback()
 
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
@@ -9617,6 +9681,8 @@ class FlowExecutionOrchestrator:
                         f"Delivery Report (no model call): {report_run.decision}"
                     ),
                 )
+                if report_run.decision != "disabled":
+                    await self._refresh_delivery_report_facts()
                 agent_result = self._run_deterministic_delivery_report(report_run)
             elif backport_plan is not None:
                 await self._update_execution_log(
@@ -9869,6 +9935,7 @@ class FlowExecutionOrchestrator:
             # rules, the delta and the spend to the agent's report. The agent
             # cannot author what the run spent or what the last report asked.
             merged_result = self._finalize_delivery_report(merged_result)
+            merged_result = await self._send_finalized_delivery_report(merged_result)
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):

@@ -1291,8 +1291,10 @@ def record_pull_request_event(
         now=arrival,
     )
     if not approved and not merged:
-        # Any other pull request event only corrects the "opened" time of a
-        # pull request already on record; it never creates one.
+        # Any other pull request event only corrects the "opened" time and
+        # the title, body and author of a pull request already on record;
+        # it never creates one.
+        _stamp_details(db, account_id=account_id, pr_key=subject.url, event=event_data)
         pull = _stamp_forge_opened(
             db, account_id=account_id, pr_key=subject.url, created=created
         )
@@ -1305,6 +1307,7 @@ def record_pull_request_event(
     )
     if created is not None:
         stamp_opened(pull, created, OPENED_FORGE)
+    _stamp_details(db, account_id=account_id, pr_key=subject.url, event=event_data)
     if approved:
         # Bitbucket Cloud states the approval time on ``approval.date``.
         stamp = parse_event_time(
@@ -1358,6 +1361,33 @@ def record_pull_request_event(
 
     schedule_pull_request(db, pull)
     return pull
+
+
+def _stamp_details(
+    db: Session, *, account_id: uuid.UUID, pr_key: str, event: dict[str, Any]
+) -> None:
+    """Store the webhook's title, body and author on a PR already on record.
+
+    The deterministic Delivery Report reads them (#2020). A review event
+    carries the pull request too, so every event keeps them current.
+
+    Args:
+        db: Database session. The caller commits.
+        account_id: Owning account.
+        pr_key: Normalized pull request URL.
+        event: The normalized webhook event.
+    """
+    from preloop.models.crud import crud_delivery_report_policy
+    from preloop.services.delivery_report_facts import details_from_webhook
+
+    details = details_from_webhook(event)
+    if not details:
+        return
+    pull = crud_issue_cost.get_pull_request(db, account_id=account_id, pr_key=pr_key)
+    if pull is not None:
+        crud_delivery_report_policy.store_pull_request_details(
+            db, pull=pull, details=details
+        )
 
 
 def _stamp_forge_opened(

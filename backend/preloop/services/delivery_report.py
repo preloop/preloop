@@ -37,12 +37,18 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequen
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from preloop.services.delivery_report_facts import body_summary
+
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
 REPORT_KIND_KEY = "report_kind"
 DELIVERY_REPORT_KIND = "delivery_report"
 #: Schema id written on every report, so a reader can tell versions apart.
 REPORT_SCHEMA = "preloop.delivery_report/v1"
+#: File names kept per shipped change in the report document.
+MAX_LISTED_FILES = 50
+#: File names rendered per change in the markdown and the email.
+RENDERED_FILES = 8
 
 PURPOSE_COVERED = "covered"
 PURPOSE_PARTIAL = "partial"
@@ -650,6 +656,14 @@ def _changed_files(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _files_observed(pr: Mapping[str, Any]) -> bool:
+    """Whether the PR's file list was read at all, even if empty."""
+    changes = pr.get("changes")
+    return isinstance(changes, Mapping) and isinstance(
+        changes.get("changed_files"), list
+    )
+
+
 def _file_count(pr: Mapping[str, Any]) -> Optional[int]:
     """The PR's own changed-file count, when the response states one."""
     changes = pr.get("changes")
@@ -967,16 +981,13 @@ def _area(pr: Mapping[str, Any]) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
-_PR_URL_RE = re.compile(
-    r"/([^/]+/[^/]+?)(?:/-)?/(?:pull|pulls|merge_requests|pull-requests)/(\d+)"
-)
-
-
 def _pr_ref(pr: Mapping[str, Any]) -> str:
-    """``owner/repo#number``, from the PR URL (the response has no project)."""
-    match = _PR_URL_RE.search(str(pr.get("url") or ""))
-    if match:
-        return f"{match.group(1)}#{match.group(2)}"
+    """Full repository path and PR number, including GitLab subgroups."""
+    from preloop.services.delivery_report_facts import parse_pr_key
+
+    parsed = parse_pr_key(str(pr.get("url") or ""))
+    if parsed is not None:
+        return f"{parsed[0]}#{parsed[1]}"
     return f"{pr.get('project') or ''}#{pr.get('number')}"
 
 
@@ -1363,6 +1374,7 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
+        changed = _changed_files(pr)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
             {
@@ -1375,6 +1387,14 @@ def assemble_report(
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),
+                # What the PR says about itself and what it touched, so the
+                # deterministic report describes a change without a model.
+                "body_summary": body_summary(pr.get("description")),
+                "files": [f["filename"] for f in changed][:MAX_LISTED_FILES],
+                "files_changed": _file_count(pr) if changed else None,
+                # False when the file list was never read, so "no files"
+                # and "file-based flags not checked" stay distinguishable.
+                "files_observed": _files_observed(pr),
                 "purpose": purpose,
                 "risk_flags": risk,
                 "evidence_gaps": evidence_gaps(pr),
@@ -1951,6 +1971,24 @@ def _link(item: Mapping[str, Any]) -> str:
     return f"[{label}]({url})" if url else label
 
 
+def change_detail_lines(change: Mapping[str, Any]) -> List[str]:
+    """The PR's own summary and its files, one line each, when stored."""
+    lines: List[str] = []
+    if change.get("body_summary"):
+        lines.append(str(change["body_summary"]))
+    files = [str(f) for f in change.get("files") or []]
+    if files:
+        total = change.get("files_changed") or len(files)
+        shown = ", ".join(files[:RENDERED_FILES])
+        more = total - min(len(files), RENDERED_FILES)
+        lines.append(
+            f"Files ({total}): {shown}" + (f" and {more} more" if more > 0 else "")
+        )
+    elif change.get("files_observed") is False:
+        lines.append("File list not read: file-based risk flags were not checked")
+    return lines
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     """Render the report as markdown, one heading per section."""
     window = report.get("window") or {}
@@ -2006,6 +2044,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- {_link(change)} ({change.get('area') or 'unknown'}): purpose "
             f"{_VERDICT_LABELS[purpose['verdict']]}" + (f", {source}" if source else "")
         )
+        lines.extend(f"  - {line}" for line in change_detail_lines(change))
         for c in purpose["criteria"]:
             state = {True: "met", False: "not met", None: "evidence gap"}[c["met"]]
             cite = f" ({'; '.join(c['evidence'])})" if c["evidence"] else ""
@@ -2349,9 +2388,10 @@ def deterministic_report(
     """Build the report without a model call, from stored tracker facts.
 
     Shipped and open PRs come from the pull request ledger, closed and open
-    issues from the tracker sync, audits from completed merge audits. The
-    ledger holds no PR title, body or file list, so file-based risk flags
-    and brief gaps only appear on assessed runs.
+    issues from the tracker sync, audits from completed merge audits. PR
+    title, body and file list come from the ledger, stamped by webhooks and
+    filled by a bounded forge read before the run; a PR whose file list was
+    never read is marked so, and its file-based flags are not checked.
 
     Args:
         db: Session.

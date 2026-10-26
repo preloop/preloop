@@ -107,10 +107,40 @@ monthly budget or the hosted credit wallet is empty. A run that may not
 call a model never starts the agent. The platform builds the report from
 what the tracker sync and the pull request ledger already stored, so it
 still goes out, with one line saying assessments were skipped
-(`summary.assessments_skipped_reason`: `budget` or `no_credit`). That
-stored data has no PR title, body or file list, so file-based risk flags
-and change brief gaps appear only in assessed runs. An assessed run gets
-the effective policy as `payload.report_policy`.
+(`summary.assessments_skipped_reason`: `budget` or `no_credit`). An
+assessed run gets the effective policy as `payload.report_policy`.
+
+The pull request ledger keeps each PR's title, body and file list, so the
+deterministic report describes every change and runs the file-based risk
+flags and change brief gaps without a model. Pull request webhooks store
+the title, the body and the author's login. Webhooks carry no file list, so
+before a deterministic run the platform reads it from the forge for up to
+50 merged PRs in the window that have none, once per PR, with the account
+owner's access (GitHub and GitLab). Patches are kept only for migration
+files, which the missing-downgrade rule reads. Each shipped change carries
+`body_summary` (the first prose paragraph of the PR body, outside the brief
+and review summary blocks), `files` and `files_changed`.
+
+### Email
+
+When a run finishes, deterministic or assessed, the report is emailed to
+its recipient: the account owner, or the sponsoring lead when the policy
+names one (the owner when that user is no longer an active member). The
+email has the summary, what needs you, the shipped changes with their
+summary and files, the line saying assessments were skipped when they were,
+and a link to the report page. A run sends once; the outcome is stored on
+the result as `distribution` (`sent`, `failed`, `disabled`, `no_recipients`,
+`not_configured`). `not_configured` means SMTP credentials are missing.
+The `sent_to` and `failed` lists record each recipient's outcome; a `failed`
+record may still have a non-empty `sent_to` when only some recipients were reached.
+
+Every email carries a signed opt-out link, also sent as the
+`List-Unsubscribe` header. Opening it shows a confirmation button, so a
+mail scanner that follows links opts no one out; a POST to it opts out,
+which is also what a mail client's one-click unsubscribe sends. Signed in,
+the recipient can switch their copy off and on in the Delivery Report card
+on Account settings (`GET`/`PUT /api/v1/delivery-report/subscription`).
+Opt-outs belong to each person: saving the account policy keeps them.
 
 A repository can change only its windows, its criteria source and whether
 it is in the report. Budgets, cadence, scope, tracker writes and recipients

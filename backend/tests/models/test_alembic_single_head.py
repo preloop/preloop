@@ -510,4 +510,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert forge_reconciliation.down_revision == "20261110_upstream_mcp_oauth"
     enterprise_sso = script.get_revision("20261112_enterprise_sso")
     assert enterprise_sso.down_revision == "20261112_forge_reconciliation"
-    assert script.get_heads() == ["20261112_enterprise_sso"]
+    pull_request_details = script.get_revision("20261113_pull_request_details")
+    assert pull_request_details.down_revision == "20261112_enterprise_sso"
+    assert script.get_heads() == ["20261113_pull_request_details"]

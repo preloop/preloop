@@ -125,3 +125,48 @@ export async function clearDeliveryReportPolicy(
     'Could not reset the repository policy'
   );
 }
+
+/** Whether the signed-in person receives the report email. */
+export interface DeliveryReportSubscription {
+  opted_out: boolean;
+  is_recipient: boolean;
+  report_enabled: boolean;
+}
+
+const SUBSCRIPTION_PATH = `${REST_API_PREFIX}/delivery-report/subscription`;
+
+async function parseSubscription(
+  response: Response,
+  fallback: string
+): Promise<DeliveryReportSubscription> {
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new DeliveryReportPolicyError(
+      extractErrorMessage(body, fallback),
+      response.status,
+      null
+    );
+  }
+  return body as DeliveryReportSubscription;
+}
+
+export async function getDeliveryReportSubscription(): Promise<DeliveryReportSubscription> {
+  return parseSubscription(
+    await fetchWithAuth(SUBSCRIPTION_PATH),
+    'Could not load your report email setting'
+  );
+}
+
+/** Opt the signed-in person out of, or back into, the report email. */
+export async function saveDeliveryReportSubscription(
+  optedOut: boolean
+): Promise<DeliveryReportSubscription> {
+  return parseSubscription(
+    await fetchWithAuth(SUBSCRIPTION_PATH, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ opted_out: optedOut }),
+    }),
+    'Could not save your report email setting'
+  );
+}
