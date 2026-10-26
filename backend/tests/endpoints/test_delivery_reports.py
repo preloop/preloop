@@ -121,7 +121,7 @@ def test_list_returns_only_report_runs_newest_first_with_server_total(
     assert [row["id"] for row in page_two["items"]] == [str(older.id)]
 
 
-def test_detail_returns_the_report_with_actions_off(
+def test_detail_returns_the_report_with_actions_on(
     client, db_session: Session, test_user
 ) -> None:
     flow = _flow(db_session, test_user.account_id, report=True)
@@ -134,7 +134,7 @@ def test_detail_returns_the_report_with_actions_off(
     assert summary["linkage"] == {"linked": 1, "total": 1}
     assert summary["criteria_availability"] == {"with_criteria": 1, "total": 1}
     assert summary["evidence_availability"] == {"with_evidence": 0, "total": 1}
-    assert body["actions"] == {"open_issue": False, "reopen": False, "dismiss": False}
+    assert body["actions"] == {"open_issue": True, "reopen": True, "dismiss": True}
     assert body["stale_reopen_requests"] == {}
 
 

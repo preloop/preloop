@@ -381,6 +381,7 @@
   "POST /api/v1/cost/copilot/connection/sync": "deny",
   "POST /api/v1/cost/ledger-backfill/csv": "deny",
   "POST /api/v1/cost/reprice": "deny",
+  "POST /api/v1/delivery-reports/{execution_id}/actions": "deny",
   "POST /api/v1/desktop/endpoints/{endpoint_id}/views": "deny",
   "POST /api/v1/desktop/views/{view_id}/control": "deny",
   "POST /api/v1/desktop/views/{view_id}/control/release": "deny",

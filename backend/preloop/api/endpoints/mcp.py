@@ -70,6 +70,7 @@ from preloop.models.crud import (
     CRUDProject,
     CRUDOrganization,
     CRUDIssueComplianceResult,
+    crud_flow_execution,
 )
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
@@ -747,6 +748,77 @@ async def _read_triage_context(
         ) from exc
 
 
+def _delivery_report_execution_id(db: Session, current_user: Any) -> str | None:
+    """The Delivery Report run behind this credential, or None.
+
+    Read from the authenticated credential and the request context, never
+    from tool arguments, like :func:`_triage_execution_id`.
+    """
+    from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+    context = get_current_user_context()
+    key = getattr(current_user, "_auth_api_key", None)
+    credential = getattr(key, "context_data", None)
+    execution_id = (
+        credential.get("flow_execution_id") if isinstance(credential, dict) else None
+    ) or getattr(context, "flow_execution_id", None)
+    if not execution_id:
+        return None
+    try:
+        execution = crud_flow_execution.get_delivery_report(
+            db, execution_id=execution_id, account_id=str(current_user.account_id)
+        )
+    except (ValueError, SQLAlchemyError) as exc:
+        raise HTTPException(
+            status_code=403, detail="Execution authority unavailable"
+        ) from exc
+    return str(execution_id) if execution is not None else None
+
+
+def _guard_delivery_report_write(
+    db: Session,
+    current_user: Any,
+    *,
+    tool: str,
+    target: str | None,
+    status: str | None = None,
+    other_fields: tuple[str, ...] = (),
+) -> str | None:
+    """Apply the report policy to a tracker write made by a report run.
+
+    Returns the run's id when the call comes from a Delivery Report run and
+    the policy allows it, None when the call is not from a report run.
+
+    Raises:
+        HTTPException: 403 when the policy keeps the write a proposal, and
+            always for a close.
+    """
+    from preloop.services.delivery_report_actions import run_write_decision
+
+    execution_id = _delivery_report_execution_id(db, current_user)
+    if execution_id is None:
+        return None
+    allowed, reason = run_write_decision(
+        db,
+        account_id=current_user.account_id,
+        user_id=getattr(current_user, "id", None),
+        execution_id=execution_id,
+        tool=tool,
+        target=target,
+        status=status,
+        other_fields=other_fields,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"The Delivery Report policy refuses this write ({reason}); "
+                "record it as a proposal in the report instead."
+            ),
+        )
+    return execution_id
+
+
 def _triage_execution_id(db: Session, current_user: Any) -> str | None:
     """Resolve triage authority from the authenticated credential, never args."""
     from preloop.services.dynamic_fastmcp_http import get_current_user_context
@@ -949,6 +1021,25 @@ async def create_issue(
     if not project_obj:
         raise HTTPException(status_code=404, detail=f"Project '{project}' not found.")
 
+    report_run = _guard_delivery_report_write(
+        db, current_user, tool="create_issue", target=project, status=status
+    )
+    if report_run is not None:
+        # A follow-up the report opens carries its label and the report link.
+        from preloop.services.delivery_report_actions import (
+            account_policy,
+            report_link,
+        )
+
+        label = account_policy(
+            db, account_id=current_user.account_id
+        ).tracker_writes.follow_up_label
+        labels = [*(labels or []), *([] if label in (labels or []) else [label])]
+        description = (
+            f"{description}\n\nProposed by the Delivery Report "
+            f"({report_link(report_run)})."
+        )
+
     if prevent_duplicates:
         combined_text = f"{title}\n\n{description}"
         try:
@@ -1041,6 +1132,28 @@ async def update_issue(
     """
     db = _get_tool_db()
     current_user = await _tool_user(db)
+    edits = {
+        "title": title,
+        "description": description,
+        "priority": priority,
+        "assignee": assignee,
+        "labels": labels,
+        "add_reaction": add_reaction,
+        "remove_reaction": remove_reaction,
+        "expected_revision": expected_revision,
+        "assessment": assessment,
+        "complexity_label": complexity_label,
+        "risk_label": risk_label,
+        "readiness_label": readiness_label,
+    }
+    _guard_delivery_report_write(
+        db,
+        current_user,
+        tool="update_issue",
+        target=issue,
+        status=status,
+        other_fields=tuple(name for name, value in edits.items() if value is not None),
+    )
 
     triage_requested = any(
         value is not None
@@ -1722,6 +1835,9 @@ async def add_comment(
         current_user = await get_user_from_token_if_valid(token, db)
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    _guard_delivery_report_write(
+        db, current_user, tool="add_comment", target=target.strip()
+    )
 
     target = target.strip()
 

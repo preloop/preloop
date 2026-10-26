@@ -1196,6 +1196,55 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return None
         return row
 
+    def set_delivery_report_action(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        key: str,
+        record: Optional[Dict[str, Any]],
+        claim: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Write or clear one decision in a report's ``proposal_actions``.
+
+        The run's row is locked for the read and the write, so two clicks on
+        the same proposal cannot both claim it. Every other key of the
+        stored result (including the private publication state) is kept.
+
+        Args:
+            db: Session.
+            execution_id: The Delivery Report run.
+            key: The proposal key, ``follow_up:<index>`` or ``reopen:<ref>``.
+            record: The decision to store, or None to clear the key.
+            claim: Only write when the key holds no decision yet.
+
+        Returns:
+            The decision already stored when ``claim`` found one, else None.
+        """
+        row = (
+            db.query(FlowExecution)
+            .filter(FlowExecution.id == execution_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None or not isinstance(row.result, dict):
+            return None
+        result = dict(row.result)
+        raw = result.get("proposal_actions")
+        actions = dict(raw) if isinstance(raw, dict) else {}
+        existing = actions.get(key)
+        if claim and isinstance(existing, dict):
+            db.commit()
+            return existing
+        if record is None:
+            actions.pop(key, None)
+        else:
+            actions[key] = record
+        result["proposal_actions"] = actions
+        row.result = result
+        db.commit()
+        return None
+
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any
     ) -> Optional[str]:
