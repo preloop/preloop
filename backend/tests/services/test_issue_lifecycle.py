@@ -61,6 +61,7 @@ class FakeGitHub:
         self.change_before_label = False
         # Runtime evidence GitHub holds for the merge commit.
         self.check_runs: list[dict[str, Any]] = []
+        self.check_run_total_count: int | None = None
         self.workflow_runs: list[dict[str, Any]] = []
         self.artifacts: dict[int, list[dict[str, Any]]] = {}
         self.deployments: list[dict[str, Any]] = []
@@ -70,6 +71,10 @@ class FakeGitHub:
 
     def merge(self, *, manual: bool = False, multiple: bool = False) -> None:
         self.issues[1]["state"] = "closed"
+        if not self.check_runs:
+            self.check_runs = [
+                {"id": 1, "name": "CI", "status": "completed", "conclusion": "success"}
+            ]
         self.timeline = [{"event": "closed", "commit_id": None if manual else SHA}]
         self.prs = {
             7: {
@@ -118,7 +123,10 @@ class FakeGitHub:
         if any(part in endpoint for part in self.unreadable):
             raise PermissionError("403 Resource not accessible by integration")
         if endpoint == f"{root}/commits/{SHA}/check-runs":
-            return {"check_runs": deepcopy(self.check_runs)}
+            return {
+                "check_runs": deepcopy(self.check_runs),
+                "total_count": self.check_run_total_count,
+            }
         if endpoint == f"{root}/actions/runs":
             assert params and params["head_sha"] == SHA
             return {"workflow_runs": deepcopy(self.workflow_runs)}
@@ -1808,7 +1816,9 @@ async def test_pending_checks_defer_audit_then_refresh_artifact_and_preview(
     await service.refine(contract)
     dispatch = AsyncMock()
     assert await service.schedule_audit(flow, dispatch) is None
-    assert await service.schedule_audit(flow, dispatch) is None
+    transport.calls.clear()
+    assert await service.schedule_audit(flow, dispatch, expected_merge_sha=SHA) is None
+    assert transport.calls == [("GET", f"/repos/{REPO}/commits/{SHA}/check-runs")]
     dispatch.assert_not_awaited()
     row = service._get("merge_audit", SHA)
     assert row.state == "waiting_for_checks" and row.execution_id is None
@@ -1821,7 +1831,7 @@ async def test_pending_checks_defer_audit_then_refresh_artifact_and_preview(
     transport.deployment_statuses = {
         9: [{"state": "success", "environment_url": "https://preview.example.com/7"}]
     }
-    execution = await service.schedule_audit(flow, dispatch)
+    execution = await service.schedule_audit(flow, dispatch, expected_merge_sha=SHA)
     assert execution is not None
     dispatch.assert_awaited_once_with(execution)
     evidence = execution.trigger_event_details["payload"]["lifecycle"][
@@ -1881,6 +1891,57 @@ async def test_pending_checks_defer_audit_then_refresh_artifact_and_preview(
 
 
 @pytest.mark.asyncio
+async def test_empty_check_list_waits_for_registration_then_runs_without_ci(
+    rig: tuple,
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = []
+    await service.refine(await contract_for(service))
+    dispatch = AsyncMock()
+    assert await service.schedule_audit(flow, dispatch) is None
+    row = service._get("merge_audit", SHA)
+    assert row.state == "waiting_for_checks"
+    dispatch.assert_not_awaited()
+
+    data = dict(row.data)
+    data["check_wait"] = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+    }
+    crud_issue_lifecycle.put(
+        service.db,
+        account_id=service.account_id,
+        issue_id=service.issue.id,
+        kind="merge_audit",
+        revision=SHA,
+        state="waiting_for_checks",
+        data=data,
+    )
+    service.db.commit()
+    execution = await service.schedule_audit(flow, dispatch, expected_merge_sha=SHA)
+    assert execution is not None
+    assert (
+        execution.trigger_event_details["payload"]["lifecycle"]["check_wait"]["outcome"]
+        == "no_checks"
+    )
+    dispatch.assert_awaited_once_with(execution)
+
+
+@pytest.mark.asyncio
+async def test_truncated_check_list_cannot_look_terminal(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_run_total_count = 101
+    await service.refine(await contract_for(service))
+    assert await service.schedule_audit(flow, AsyncMock()) is None
+    row = service._get("merge_audit", SHA)
+    assert row.state == "waiting_for_checks"
+    assert row.data["runtime_evidence"]["unavailable"] == [
+        {"source": "checks", "reason": "ValueError('check_runs_truncated')"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_never_terminal_checks_audit_at_policy_max_wait(rig: tuple) -> None:
     service, transport, _, flow = rig
     transport.merge()
@@ -1914,10 +1975,17 @@ async def test_never_terminal_checks_audit_at_policy_max_wait(rig: tuple) -> Non
         "source": "checks",
         "reason": "CI checks did not finish within 2 minutes.",
     }
+    result = runtime_result(contract, ["check:11"], "Build looked successful")
     crud_flow_execution.update(
-        service.db, db_obj=execution, obj_in=FlowExecutionUpdate(status="FAILED")
+        service.db,
+        db_obj=execution,
+        obj_in=FlowExecutionUpdate(status="SUCCEEDED", result=result),
     )
-    await service.finish_audit(execution)
+    summary = await service.finish_audit(execution)
+    criterion = summary["evidence"]["criteria"][0]
+    assert criterion["verdict"] == "unknown"
+    assert criterion["runtime"] == []
+    assert "No reachable evidence" in criterion["reason"]
     assert (
         audit_assessments(service)[0].evidence["runtime"]["unavailable"][-1]["reason"]
         == "CI checks did not finish within 2 minutes."
@@ -1992,12 +2060,42 @@ async def test_deferred_audit_does_not_follow_a_reopened_issue(rig: tuple) -> No
     ]
     assert await service.schedule_audit(flow, AsyncMock()) is None
     transport.issues[1]["state"] = "open"
+    transport.check_runs[0].update(status="completed", conclusion="success")
     assert (
         await service.schedule_audit(flow, AsyncMock(), expected_merge_sha=SHA) is None
     )
     row = service._get("merge_audit", SHA)
     assert row.state == "superseded" and row.execution_id is None
     assert row.data["check_wait"]["outcome"] == "superseded"
+
+
+def test_skipped_waits_rotate_past_the_sweep_limit(rig: tuple) -> None:
+    service, _, _, _ = rig
+    revisions = [f"{index:040x}" for index in range(51)]
+    for revision in revisions:
+        crud_issue_lifecycle.put(
+            service.db,
+            account_id=service.account_id,
+            issue_id=service.issue.id,
+            kind="merge_audit",
+            revision=revision,
+            state="waiting_for_checks",
+            data={},
+        )
+    service.db.commit()
+    first = crud_issue_lifecycle.waiting_merge_audits(service.db, limit=50)
+    assert len(first) == 50
+    unseen = set(revisions) - {row.revision for row in first}
+    assert len(unseen) == 1
+    for row in first:
+        crud_issue_lifecycle.touch_waiting_merge_audit(
+            service.db,
+            account_id=service.account_id,
+            issue_id=service.issue.id,
+            revision=row.revision,
+        )
+    next_rows = crud_issue_lifecycle.waiting_merge_audits(service.db, limit=10)
+    assert unseen <= {row.revision for row in next_rows}
 
 
 @pytest.mark.asyncio
@@ -2069,14 +2167,34 @@ async def test_unreadable_evidence_source_is_recorded_not_fatal(rig: tuple) -> N
     transport.unreadable = {"/check-runs", "/actions/"}
     contract = await contract_for(service)
     await service.refine(contract)
-    execution = await service.schedule_audit(flow, AsyncMock())
+    assert await service.schedule_audit(flow, AsyncMock()) is None
+    row = service._get("merge_audit", SHA)
+    data = dict(row.data)
+    data["check_wait"] = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat()
+    }
+    crud_issue_lifecycle.put(
+        service.db,
+        account_id=service.account_id,
+        issue_id=service.issue.id,
+        kind="merge_audit",
+        revision=SHA,
+        state="waiting_for_checks",
+        data=data,
+    )
+    service.db.commit()
+    execution = await service.schedule_audit(flow, AsyncMock(), expected_merge_sha=SHA)
+    assert execution is not None
     runtime = execution.trigger_event_details["payload"]["lifecycle"][
         "runtime_evidence"
     ]
-    assert [item["source"] for item in runtime["unavailable"]] == [
+    assert [item["source"] for item in runtime["unavailable"]][:2] == [
         "checks",
         "artifacts",
     ]
+    assert runtime["unavailable"][-1]["reason"] == (
+        "CI check runs could not be read within 30 minutes."
+    )
     assert runtime["previews"] == []
     crud_flow_execution.update(
         service.db, db_obj=execution, obj_in=FlowExecutionUpdate(status="FAILED")

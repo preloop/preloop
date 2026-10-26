@@ -52,6 +52,18 @@ def _sweep_deferred_merge_audits_worker() -> None:
             logger.exception(
                 "Could not retry deferred merge audit for issue %s", issue_id
             )
+            try:
+                with factory() as db:
+                    crud_issue_lifecycle.touch_waiting_merge_audit(
+                        db,
+                        account_id=account_id,
+                        issue_id=issue_id,
+                        revision=merge_sha,
+                    )
+            except Exception:
+                logger.exception(
+                    "Could not rotate deferred merge audit for issue %s", issue_id
+                )
 
 
 async def _retry_deferred_merge_audit(
@@ -73,6 +85,12 @@ async def _retry_deferred_merge_audit(
             else None
         )
         if flow is None or not flow.is_enabled or flows_halted(db, account_id):
+            crud_issue_lifecycle.touch_waiting_merge_audit(
+                db,
+                account_id=account_id,
+                issue_id=issue_id,
+                revision=merge_sha,
+            )
             return
         trigger = FlowTriggerService(db)
 
