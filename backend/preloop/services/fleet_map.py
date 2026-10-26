@@ -307,10 +307,15 @@ def build_fleet_map(
             visible_ids = {
                 row.id for row in filter_viewable(db, user, resource_type, owned)
             }
-            return [
+            visible = [
                 row for row in rows if row.account_id is None or row.id in visible_ids
             ]
-        return filter_viewable(db, user, resource_type, rows)
+        else:
+            visible = filter_viewable(db, user, resource_type, rows)
+        if rows and not visible:
+            # Rows exist and the authorizer shares none with this caller.
+            result.restricted.append(name)
+        return visible
 
     agents = read("agents", "view_agents", VISIBLE_MANAGED_AGENT)
     ai_models = read("models", "view_ai_models", VISIBLE_AI_MODEL)

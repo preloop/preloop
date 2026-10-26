@@ -370,7 +370,12 @@ def _node_totals(
     # Devices: the managed agents they host (explicit inventory links).
     from preloop.plugins.base import get_plugin_manager
 
-    service = get_plugin_manager().get_service("device_fleet")
+    # Devices are the device fleet's inventory: only its viewers get totals.
+    service = (
+        get_plugin_manager().get_service("device_fleet")
+        if _allowed(db, user, "view_device_fleet", owner)
+        else None
+    )
     if service is not None and agents:
         try:
             projection = service.read(db, account_id=account_id)

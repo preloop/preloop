@@ -770,3 +770,39 @@ def test_usage_names_only_nodes_the_callers_graph_draws(
     drawn |= {flow.id for flow in activity.flows}
     for totals in (usage.agents, usage.people, usage.flows, usage.devices, usage.work):
         assert set(totals) <= drawn
+
+
+def test_usage_reports_no_devices_without_device_fleet_permission(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from preloop.services import fleet_usage
+
+    user, agent = fleet["user"], fleet["agent"]
+    model = _model(db_session, user.account_id, "device-usage-model")
+    _usage(
+        db_session,
+        user.account_id,
+        model,
+        5,
+        runtime_principal_type="claude_code",
+        runtime_principal_id=agent.session_source_id,
+    )
+    device = {
+        "device_key": "dev-1",
+        "agents": [{"managed_agent_id": str(agent.id)}],
+    }
+    with _devices([device]):
+        shown = build_fleet_usage(
+            db_session, user=user, active_within_minutes=60, now=NOW
+        )
+        assert "device:dev-1" in shown.devices
+        with patch.object(
+            fleet_usage,
+            "_allowed",
+            side_effect=lambda db, user, permission, owner: permission == "view_agents",
+        ):
+            usage = build_fleet_usage(
+                db_session, user=user, active_within_minutes=60, now=NOW
+            )
+    assert f"agent:{agent.id}" in usage.agents
+    assert usage.devices == {}

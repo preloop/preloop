@@ -91,8 +91,9 @@ export class FleetMapLauncher extends LitElement {
         color: var(--console-body-color);
         font-size: var(--console-text-body);
       }
+      /* The button hides on a phone; a map already open stays open. */
       @media (max-width: 640px) {
-        :host {
+        [data-testid='fleet-map-open'] {
           display: none;
         }
       }
@@ -210,6 +211,7 @@ export class FleetMapLauncher extends LitElement {
       default-arrangement="spatial"
       positions-scope="inventory"
       default-onboarded-only
+      .persistWindow=${false}
       user-id=${this.userId}
       @fleet-map-fullscreen=${(event: CustomEvent<{ fullscreen: boolean }>) => {
         if (!event.detail.fullscreen) this.close();

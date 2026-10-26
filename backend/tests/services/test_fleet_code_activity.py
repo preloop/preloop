@@ -874,7 +874,7 @@ def test_work_actor_visibility_follows_the_graph(
     db_session: Session, fleet: dict[str, Any]
 ) -> None:
     def allowed(db: Any, user: Any, permission: str, owner: bool) -> bool:
-        return permission in {"view_device_fleet", "view_agents"}
+        return permission in {"view_device_fleet", "view_agents", "view_issues"}
 
     with patch.object(fleet_code_activity, "_allowed", side_effect=allowed):
         result = build_code_activity(
@@ -1147,3 +1147,38 @@ def test_work_active_pr_cap_cannot_crowd_a_merge_out_of_counts(
         for event in result.events
     )
     assert result.work_truncated is True
+
+
+def test_without_view_issues_only_work_a_visible_actor_touched_is_listed(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """The account's PR and issue snapshots are the issue list's data."""
+    _call(
+        db_session,
+        fleet["session"],
+        "create_pull_request",
+        2,
+        metadata={
+            "arguments_summary": {"target": "https://github.com/example/mine/pull/3"}
+        },
+    )
+    db_session.flush()
+    full = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    # The flow's merged PR is in the account snapshot.
+    assert any(item.key == "acme/api#42" for item in full.work)
+    with patch.object(
+        fleet_code_activity,
+        "_allowed",
+        side_effect=lambda db, user, permission, owner: permission == "view_agents",
+    ):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    keys = {item.key for item in result.work}
+    assert "acme/api#42" not in keys
+    assert "example/mine#3" in keys
+    assert all(item.node_ids for item in result.work)
+    shown = {item.id for item in result.work}
+    assert all(relation.target in shown for relation in result.relations)

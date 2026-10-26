@@ -33401,8 +33401,9 @@ components:
             type: string
           type: array
           title: Restricted
-          description: Sources the caller's permissions do not include (agents, models,
-            runners, users, devices); never read, so never drawn.
+          description: 'Sources not shared with the caller (agents, models, runners,
+            users, devices): the permission is missing, or rows exist and the resource
+            authorizer shares none of them.'
         active_within_minutes:
           anyOf:
           - type: integer

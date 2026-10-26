@@ -1239,3 +1239,12 @@ def test_truncated_device_projection_places_nothing_by_hostname(
     service.read.return_value = dict(truncated=True, items=[_laptop(user_ids=())])
     graph = build_fleet_map(MagicMock(), user=viewer())
     assert not any(e.kind == "hosts" for e in graph.edges)
+
+
+def test_authorizer_sharing_no_rows_marks_the_source_restricted(
+    sources: tuple[MagicMock, MagicMock],
+) -> None:
+    with patch(f"{MODULE}.filter_viewable", return_value=[]):
+        graph = build_fleet_map(MagicMock(), user=viewer())
+    assert {"agents", "models"} <= set(graph.restricted)
+    assert "agents" not in graph.unavailable

@@ -205,6 +205,9 @@ def build_code_activity(
     see_agents = _allowed(db, user, "view_agents", owner)
     see_flows = _allowed(db, user, "view_flows", owner)
     see_users = _allowed(db, user, "view_users", owner)
+    # Tracker and forge snapshots (issue and PR titles) are the issue list's
+    # data: without view_issues only work a visible actor touched is shown.
+    see_work = _allowed(db, user, "view_issues", owner)
     current = now or datetime.now(UTC)
     window = (
         timedelta(minutes=active_within_minutes)
@@ -233,6 +236,9 @@ def build_code_activity(
     )
     result.truncated = len(calls) > CALL_LIMIT
     calls = calls[:CALL_LIMIT]
+    if not see_flows:
+        # A flow run's calls would name work with no actor the caller can see.
+        calls = [c for c in calls if not c.flow_execution_id]
     flow_of_execution: dict[str, str] = {}
     flow_rows: dict[str, tuple[str, Any]] = {}
     if see_flows:
@@ -521,10 +527,34 @@ def build_code_activity(
     # Drop hidden flows before the cap, so visible events backfill it.
     result.events = events
     _drop_hidden_flows(db, user, result)
+    if not see_work:
+        _keep_acted_work(result)
     if scope is not None:
         apply_scope(result, scope)
     result.events = result.events[:EVENT_LIMIT]
     return result
+
+
+def _keep_acted_work(result: FleetCodeActivityResponse) -> None:
+    """Keep only work an actor in this response touched, and its relations.
+
+    For a caller without ``view_issues``: the account's issue and pull
+    request snapshots are not theirs to list, so an item stays only when a
+    visible agent, flow or person acted on it.
+    """
+    actors = {
+        relation.target
+        for relation in result.relations
+        if relation.source.split(":", 1)[0] in {"agent", "flow", "user"}
+    }
+    result.work = [item for item in result.work if item.node_ids or item.id in actors]
+    shown = {item.id for item in result.work}
+    result.relations = [
+        relation
+        for relation in result.relations
+        if relation.target in shown
+        and (not relation.source.startswith("work:") or relation.source in shown)
+    ]
 
 
 def apply_scope(result: FleetCodeActivityResponse, scope: FleetScope) -> None:

@@ -125,13 +125,40 @@ describe('fleet-map-launcher', () => {
     await waitUntil(() => !map(el), 'the map unmounts');
   });
 
-  it('is hidden on a phone', async () => {
+  it('hides the button on a phone but keeps an open map open', async () => {
+    api = mockApi({
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+    });
+    const el = await mount();
+    button(el).click();
+    await waitUntil(() => map(el)?.graph, 'the map opens');
     await setViewport({ width: 600, height: 800 });
     try {
-      const el = await mount();
-      expect(getComputedStyle(el).display).to.equal('none');
+      expect(getComputedStyle(button(el)).display).to.equal('none');
+      expect(map(el)!.getBoundingClientRect().width).to.equal(600);
+      el.close();
+      await waitUntil(() => !map(el), 'the map unmounts');
+      await el.updateComplete;
+      expect(document.body.style.overflow).to.equal('');
     } finally {
       await setViewport({ width: 800, height: 600 });
     }
+  });
+
+  it('keeps a window chosen inside the map out of the shared default', async () => {
+    api = mockApi({
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+    });
+    localStorage.setItem('preloop:fleet-map:window', '7d');
+    const el = await mount();
+    button(el).click();
+    await waitUntil(() => map(el)?.graph, 'the map opens');
+    await map(el)!.updateComplete;
+    map(el)!
+      .shadowRoot!.querySelector<HTMLElement>('[data-window="5m"]')!
+      .click();
+    await waitUntil(() => api!.callsTo('/api/v1/fleet/map').length === 2);
+    expect(map(el)!.activityWindow).to.equal('5m');
+    expect(localStorage.getItem('preloop:fleet-map:window')).to.equal('7d');
   });
 });

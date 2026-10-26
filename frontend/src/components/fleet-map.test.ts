@@ -1504,4 +1504,20 @@ describe('fleet-map onboarded only and the control bar', () => {
     expect(empty).to.contain('not shared with');
     expect(empty).to.not.contain('Device evidence is unavailable');
   });
+
+  it('says so when the authorizer shares no rows of any source', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${{
+          ...sampleFleetMap(),
+          nodes: [],
+          edges: [],
+          unavailable: ['users', 'devices'],
+          restricted: ['agents', 'models', 'runners', 'users', 'devices'],
+        }}
+      ></fleet-map>`
+    );
+    expect(el.shadowRoot!.querySelector('[data-testid="fleet-map-not-shared"]'))
+      .to.exist;
+  });
 });

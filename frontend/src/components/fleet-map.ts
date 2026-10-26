@@ -262,6 +262,11 @@ export class FleetMap extends LitElement {
    */
   @property({ type: Boolean, attribute: 'default-onboarded-only' })
   defaultOnboardedOnly = false;
+  /**
+   * Remember a window chosen here as the shared default. A host that opens
+   * the map on its own period (the Overview) turns this off.
+   */
+  @property({ attribute: false }) persistWindow = true;
   /** Always spatial, with no Columns choice (the Overview inventory map). */
   @property({ type: Boolean, attribute: 'spatial-only' }) spatialOnly = false;
   /** Arrangement until the user picks one (stored per user and scope). */
@@ -1142,7 +1147,7 @@ export class FleetMap extends LitElement {
     )
       return;
     this.activityWindow = value;
-    saveFleetMapWindow(value);
+    if (this.persistWindow) saveFleetMapWindow(value);
     this.dispatchEvent(
       new CustomEvent('fleet-map-window-change', {
         detail: { window: value, minutes: windowMinutes(value) },
