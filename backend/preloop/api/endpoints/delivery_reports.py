@@ -16,8 +16,9 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_or_404
 from preloop.models.crud import crud_flow_execution
 from preloop.models.db.session import get_db_session
-from preloop.models.models.user import User
+from preloop.models import models
 from preloop.schemas.delivery_report import (
+    DeliveryReportAttention,
     DeliveryReportDetail,
     DeliveryReportList,
 )
@@ -40,7 +41,7 @@ def list_delivery_reports(
         None, description="Runs that started at or after this time."
     ),
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportList:
     """Runs of the account's Delivery Report flows that stored a report."""
     account = get_account_or_404(db, current_user)
@@ -52,12 +53,32 @@ def list_delivery_reports(
     )
 
 
+@router.get("/attention", response_model=list[DeliveryReportAttention])
+@require_permission("view_flows")
+def delivery_report_attention(
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> list[DeliveryReportAttention]:
+    """Pending report decisions, across all pages of this account's reports."""
+    account = get_account_or_404(db, current_user)
+    items = []
+    for execution in crud_flow_execution.delivery_reports_with_proposals(
+        db, account_id=str(account.id)
+    ):
+        item = delivery_report_views.report_attention(
+            db, account_id=account.id, execution=execution
+        )
+        if item is not None:
+            items.append(item)
+    return items
+
+
 @router.get("/{execution_id}", response_model=DeliveryReportDetail)
 @require_permission("view_flows")
 def get_delivery_report(
     execution_id: UUID,
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportDetail:
     """One run's full report, with reopen requests that went stale marked."""
     account = get_account_or_404(db, current_user)
@@ -112,7 +133,7 @@ def act_on_delivery_report(
     execution_id: UUID,
     body: DeliveryReportActionRequest,
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportActionResult | JSONResponse:
     """Open a proposed follow-up, reopen an issue, or dismiss a proposal.
 
@@ -124,7 +145,7 @@ def act_on_delivery_report(
     """
 
     @require_permission(_ACTION_PERMISSIONS[body.kind])
-    def authorize_action(*, db: Session, current_user: User) -> None:
+    def authorize_action(*, db: Session, current_user: models.User) -> None:
         ensure_permission_in_oss(db, current_user, _ACTION_PERMISSIONS[body.kind])
 
     authorize_action(db=db, current_user=current_user)

@@ -857,6 +857,21 @@ class TestOrchestratorPolicy:
         ):
             assert orchestrator._plan_delivery_report_run() is None
 
+    def test_scoped_run_passes_project_and_never_falls_back_to_account_scope(
+        self,
+    ) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.execution_log.trigger_event_details = {
+            "delivery_report_project": "example/app"
+        }
+        with patch(
+            "preloop.services.delivery_report.plan_policy_run",
+            side_effect=ValueError("The project is outside the report policy scope"),
+        ) as plan:
+            with pytest.raises(ValueError, match="outside"):
+                orchestrator._plan_delivery_report_run()
+        assert plan.call_args.kwargs["project"] == "example/app"
+
     def test_a_disabled_report_is_not_finalized(self) -> None:
         orchestrator = self._orchestrator()
         orchestrator._delivery_report_run = dr.PolicyRun(

@@ -33,12 +33,72 @@ describe('AttentionView', () => {
   let policyNoticesResponse: any[] = [];
   let spendOutliersResponse: any[];
   let extensionItemsResponse: any[];
+  let deliveryReportsResponse: any[];
 
   const json = (data: unknown) =>
     new Response(JSON.stringify(data), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+
+  it('renders only pending delivery reports, expands proposals, and supports dismissal', async () => {
+    deliveryReportsResponse = [
+      {
+        id: 'report-1',
+        fingerprint: 'pending-1',
+        projects: ['example/app'],
+        started_at: '2026-10-24T07:00:00Z',
+        proposals: [
+          {
+            key: 'reopen:example/app#7',
+            kind: 'reopen',
+            title: 'Reopen example/app#7',
+            reason: 'Criterion needs a measurement',
+            stale_reason: 'New commits landed',
+            unconfirmed: false,
+          },
+        ],
+      },
+    ];
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-item-id="delivery_report:report-1"]')
+    );
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="delivery_report:report-1"]'
+    )!;
+    expect(row.querySelector('.severity-dot.warning')).to.exist;
+    expect(row.textContent).to.include('Reopen example/app#7');
+    expect(row.textContent).to.include('Stale');
+    expect(
+      row.querySelector(
+        'a[href="/console/delivery-reports/report-1#needs-you"]'
+      )
+    ).to.exist;
+    const menu = row.querySelector('sl-menu-item[value="expected"]')!;
+    menu
+      .closest('sl-menu')!
+      .dispatchEvent(
+        new CustomEvent('sl-select', { detail: { item: menu }, bubbles: true })
+      );
+    await waitUntil(() =>
+      dismissalWrites.some((w) => w.body?.fingerprint === 'pending-1')
+    );
+  });
+
+  it('renders no delivery-report section when nothing is pending', async () => {
+    deliveryReportsResponse = [
+      { id: 'report-1', projects: [], proposals: [], fingerprint: 'empty' },
+    ];
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() => !(el as any).loading);
+    expect(el.shadowRoot!.querySelector('#delivery-report-needs-you')).to.not
+      .exist;
+  });
 
   it('renders plugin items with severity, links and the existing dismissal flow', async () => {
     extensionItemsResponse = [
@@ -116,6 +176,7 @@ describe('AttentionView', () => {
     agentDeletes = [];
     spendOutliersResponse = [];
     extensionItemsResponse = [];
+    deliveryReportsResponse = [];
     window.location.hash = '';
 
     approvalsResponse = [
@@ -159,6 +220,8 @@ describe('AttentionView', () => {
 
         if (url.startsWith('/api/v1/attention/extension-items'))
           return json(extensionItemsResponse);
+        if (url === '/api/v1/delivery-reports/attention')
+          return json(deliveryReportsResponse);
         if (url.startsWith('/api/v1/attention/dismissals')) {
           if (!dismissalsSupported) {
             return new Response('{"detail":"Not Found"}', { status: 404 });

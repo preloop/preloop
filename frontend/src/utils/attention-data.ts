@@ -1,4 +1,5 @@
 import { loadExtensionAttentionItems } from './attention-extension';
+import { getDeliveryReportAttention } from '../delivery-reports-api';
 import { loadMCPFindings } from '../mcp-findings-api';
 import {
   getAccountAgents,
@@ -129,6 +130,9 @@ export async function loadAttentionInputs(
 ): Promise<LoadedAttentionInputs> {
   const mcpFindings = loadMCPFindings();
   const extensionItems = loadExtensionAttentionItems();
+  const deliveryReports = getDeliveryReportAttention()
+    .then((reports) => (Array.isArray(reports) ? reports : []))
+    .catch(() => []);
   const now = options.now || new Date();
   const sessionsStart = new Date(
     now.getTime() - ATTENTION_QUERY.sessionsWindowDays * DAY_MS
@@ -227,6 +231,7 @@ export async function loadAttentionInputs(
       : [];
 
   return {
+    deliveryReports: await deliveryReports,
     mcpFindings: await mcpFindings,
     extensionItems: await extensionItems,
     approvals:

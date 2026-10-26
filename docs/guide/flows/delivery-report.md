@@ -1,7 +1,8 @@
 # Delivery Report preset
 
 **Delivery Report** (`backend/presets/022-delivery-report.yaml`, slug
-`delivery-report`) is a scheduled, read-only flow. See what landed, what the
+`delivery-report`) is a scheduled flow with tracker writes off by default.
+See what landed, what the
 available evidence supports against stated criteria, and which gaps deserve
 investigation. It reads tracker and forge data only, so it works whether or
 not a Preloop-managed agent did the work.
@@ -27,6 +28,23 @@ the flow manually at any time. The run covers
 `trigger_event.payload.window` (see
 [the run's time window](flow-triggers.md#the-runs-time-window)). A manual
 run with no window covers the seven days before it starts.
+
+On a report page, choose a project in the header and select **Re-run project**.
+This starts a manual execution for that project and the report's original
+window, with a link to the new execution. The current report policy still
+controls scope, assessment budgets and tracker writes; disconnected or
+disabled projects cannot be re-run from the report.
+
+The console's **Attention** page lists only report proposals that need a
+person: reopen requests, proposed follow-ups, and tracker writes whose
+outcome needs checking. Dismissing an attention item silences that reminder
+until its pending proposals change; deciding or dismissing a proposal takes
+place on the report. Verdicts and evidence gaps alone do not create alerts.
+
+An execution that produced a pull request shows its recorded forge state
+and newest assessment for the PR's current revision. A new revision without
+an assessment says **Not assessed**. **Unverified** means an evidence gap
+and uses the same warning tint as on the report, never a failure colour.
 
 Keep `payload.previous_result_execution_id: last` in the schedule. It makes
 the previous report available to the run as `previous/result.json`.

@@ -517,6 +517,47 @@ describe('FlowExecutionView', () => {
     return element;
   }
 
+  it('shows the PR ledger state and assessment with unverified warning tint, then hides it without a PR', async () => {
+    const el = await load('exec-1');
+    const base = (el as any).execution;
+    for (const state of ['open', 'merged', 'closed']) {
+      for (const verdict of [
+        'covered',
+        'partial',
+        'unverified',
+        'no_criteria',
+      ]) {
+        (el as any).execution = {
+          ...base,
+          pull_request: {
+            url: 'https://example.com/example/app/pull/10',
+            state,
+            revision: 'current',
+            purpose_verdict: verdict,
+          },
+        };
+        await el.updateComplete;
+        expect(stripValue(el, 'pr-state')).to.equal(state);
+        const badge = el.shadowRoot!.querySelector(
+          '[data-testid="pr-verdict"]'
+        )!;
+        expect(badge.getAttribute('variant')).to.equal(
+          verdict === 'covered'
+            ? 'success'
+            : verdict === 'no_criteria'
+              ? 'neutral'
+              : 'warning'
+        );
+        if (verdict === 'unverified')
+          expect(badge.getAttribute('title')).to.include('Evidence gap');
+      }
+    }
+    (el as any).execution = base;
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('[data-testid="strip-pull-request"]'))
+      .to.not.exist;
+  });
+
   it('reads a bounded first page and draws only the newest timeline rows (#1586)', async () => {
     const element = (await fixture(
       html`<flow-execution-view></flow-execution-view>`

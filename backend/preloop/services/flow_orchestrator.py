@@ -5690,13 +5690,19 @@ class FlowExecutionOrchestrator:
             return cached
         from preloop.services.delivery_report import plan_policy_run
 
+        details = getattr(self.execution_log, "trigger_event_details", None) or {}
+        project = details.get("delivery_report_project")
         try:
             run = plan_policy_run(
                 self.db,
                 flow=self.flow,
                 exclude_execution_id=getattr(self.execution_log, "id", None),
+                project=project,
             )
         except Exception:
+            # A scoped manual run must never fall back to an account-wide run.
+            if project is not None:
+                raise
             logger.warning("Could not read the delivery report policy", exc_info=True)
             return None
         self._delivery_report_run = run

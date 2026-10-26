@@ -10,17 +10,24 @@ layer.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import crud_issue
+from preloop.models.crud.assessment import crud_assessment
 from preloop.models.crud.issue_cost import crud_issue_cost
 from preloop.schemas.delivery_report import (
     DeliveryReportDetail,
+    DeliveryReportAttention,
+    DeliveryReportPendingProposal,
     DeliveryReportRow,
     DeliveryReportWindow,
+    ExecutionPullRequest,
 )
 from preloop.services.delivery_report import compute_summary
 from preloop.services.flow_pr_binding import normalize_pr_url
@@ -51,15 +58,21 @@ def _int(value: Any) -> int:
 
 
 def report_projects(report: Mapping[str, Any]) -> List[str]:
-    """The projects a report names, from its shipped and closed rows."""
+    """The projects named by shipped work, issues and proposals in the report."""
     names = set()
     for change in report.get("shipped") or []:
         if isinstance(change, Mapping) and change.get("project"):
             names.add(str(change["project"]))
-    for issue in report.get("closed_issues") or []:
-        ref = issue.get("ref") if isinstance(issue, Mapping) else None
-        if isinstance(ref, str) and "#" in ref and ref.split("#", 1)[0]:
-            names.add(ref.split("#", 1)[0])
+    for section in (
+        "closed_issues",
+        "open_past_window",
+        "reopen_requests",
+        "follow_ups",
+    ):
+        for item in report.get(section) or []:
+            ref = item.get("ref") if isinstance(item, Mapping) else None
+            if isinstance(ref, str) and "#" in ref and ref.split("#", 1)[0]:
+                names.add(ref.split("#", 1)[0])
     return sorted(names)
 
 
@@ -176,4 +189,109 @@ def report_detail(
         stale_reopen_requests=stale_reopen_requests(
             db, account_id=account_id, report=report
         ),
+        rerun_projects=rerun_projects(db, account_id=account_id, report=report),
+    )
+
+
+def rerun_projects(
+    db: Session, *, account_id: Any, report: Mapping[str, Any]
+) -> List[str]:
+    """Connected projects in this report that the current policy permits."""
+    from preloop.services.delivery_report import validate_report_project
+
+    allowed = []
+    for project in report_projects(report):
+        try:
+            validate_report_project(db, account_id=account_id, project=project)
+        except ValueError:
+            continue
+        allowed.append(project)
+    return allowed
+
+
+def report_attention(
+    db: Session, *, account_id: Any, execution: models.FlowExecution
+) -> Optional[DeliveryReportAttention]:
+    """List undecided and unconfirmed proposals; never alert on verdicts."""
+    report = execution.result if isinstance(execution.result, dict) else {}
+    decisions = report.get("proposal_actions") or {}
+    proposals = []
+    stale = stale_reopen_requests(db, account_id=account_id, report=report)
+    for kind, entries in (
+        ("reopen", report.get("reopen_requests") or []),
+        ("follow_up", report.get("follow_ups") or []),
+    ):
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            ref = entry.get("ref")
+            if kind == "reopen" and (not ref or entry.get("applied")):
+                continue
+            if kind == "follow_up" and entry.get("issue_url"):
+                continue
+            key = f"reopen:{ref}" if kind == "reopen" else f"follow_up:{index}"
+            decision = decisions.get(key) or {}
+            if decision.get("status") in {"pending", "applied", "dismissed"}:
+                continue
+            proposals.append(
+                DeliveryReportPendingProposal(
+                    key=key,
+                    kind=kind,
+                    title=(
+                        f"Reopen {ref}: {entry.get('title') or ref}"
+                        if kind == "reopen"
+                        else entry.get("title") or "Proposed follow-up"
+                    ),
+                    reason=entry.get("reason"),
+                    stale_reason=(
+                        stale.get(ref)
+                        if kind == "reopen" and isinstance(ref, str)
+                        else None
+                    ),
+                    unconfirmed=decision.get("status") == "unconfirmed",
+                )
+            )
+    if not proposals:
+        return None
+    return DeliveryReportAttention(
+        id=execution.id,
+        started_at=execution.start_time,
+        projects=report_projects(report),
+        proposals=proposals,
+        fingerprint=hashlib.sha256(
+            json.dumps([p.model_dump() for p in proposals], sort_keys=True).encode()
+        ).hexdigest(),
+    )
+
+
+def execution_pull_request(
+    db: Session, *, account_id: Any, execution: models.FlowExecution
+) -> Optional[ExecutionPullRequest]:
+    """Read the produced PR's state and assessment for its current revision.
+
+    Unknown heads never borrow an assessment from an unrelated revision.
+    The execution result is only a binding; forge facts come from the ledger.
+    """
+    result = execution.result if isinstance(execution.result, dict) else {}
+    url = normalize_pr_url(result.get("pr_url"))
+    if not url:
+        return None
+    pull = crud_issue_cost.get_pull_request(db, account_id=account_id, pr_key=url)
+    if pull is None:
+        return ExecutionPullRequest(url=url)
+    assessment = (
+        crud_assessment.newest(
+            db,
+            account_id=account_id,
+            issue_cost_pull_request_id=pull.id,
+            revision=pull.head_sha,
+        )
+        if pull.head_sha
+        else None
+    )
+    return ExecutionPullRequest(
+        url=url,
+        state=pull.state,
+        revision=pull.head_sha,
+        purpose_verdict=assessment.purpose_verdict if assessment else None,
     )

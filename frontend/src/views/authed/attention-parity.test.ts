@@ -110,6 +110,22 @@ describe('attention count parity', () => {
       .callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
 
+        if (url === '/api/v1/delivery-reports/attention')
+          return json([
+            {
+              id: 'report-1',
+              projects: ['example/app'],
+              started_at: ago(3600_000),
+              fingerprint: 'pending',
+              proposals: [
+                {
+                  key: 'follow_up:0',
+                  kind: 'follow_up',
+                  title: 'Add a measurement',
+                },
+              ],
+            },
+          ]);
         if (url.startsWith('/api/v1/agents')) {
           agentsRequests.push(url);
           const limit = Number(
@@ -239,9 +255,9 @@ describe('attention count parity', () => {
 
     const pageRows = page.shadowRoot!.querySelectorAll('.attention-row').length;
 
-    // 1 live approval + 1 agent + 2 flows (three failed runs of two flows).
+    // 1 live approval + 1 report + 1 agent + 2 flows.
     // The expired-but-still-pending request is on neither side.
-    expect(pageRows).to.equal(4);
+    expect(pageRows).to.equal(5);
     expect(stripCount).to.equal(String(pageRows));
     expect(page['items'].map((item) => item.id)).to.not.contain(
       'approval:approval-expired'

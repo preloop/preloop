@@ -14611,6 +14611,34 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/delivery-reports/attention:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Delivery Report Attention
+      description: Pending report decisions, across all pages of this account's reports.
+      operationId: delivery_report_attention_api_v1_delivery_reports_attention_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/DeliveryReportAttention'
+                type: array
+                title: Response Delivery Report Attention Api V1 Delivery Reports
+                  Attention Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/delivery-reports/{execution_id}:
     get:
       tags:
@@ -14698,7 +14726,7 @@ paths:
         '409':
           description: Conflict
         '422':
-          description: Unprocessable Entity
+          description: Unprocessable Content
         '502':
           description: Bad Gateway
         '401':
@@ -31461,6 +31489,38 @@ components:
         server that reports one as false (an older build) gets it rendered
 
         disabled in the console.'
+    DeliveryReportAttention:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        proposals:
+          items:
+            $ref: '#/components/schemas/DeliveryReportPendingProposal'
+          type: array
+          title: Proposals
+        fingerprint:
+          type: string
+          title: Fingerprint
+      type: object
+      required:
+      - id
+      - proposals
+      - fingerprint
+      title: DeliveryReportAttention
+      description: Pending decisions from one report; other report findings stay out.
     DeliveryReportDetail:
       properties:
         id:
@@ -31539,6 +31599,11 @@ components:
             request, after the assessed revision.'
         actions:
           $ref: '#/components/schemas/DeliveryReportActions'
+        rerun_projects:
+          items:
+            type: string
+          type: array
+          title: Rerun Projects
       type: object
       required:
       - id
@@ -31564,6 +31629,38 @@ components:
       - total
       title: DeliveryReportList
       description: A page of runs and the total that matched the filter.
+    DeliveryReportPendingProposal:
+      properties:
+        key:
+          type: string
+          title: Key
+        kind:
+          type: string
+          title: Kind
+        title:
+          type: string
+          title: Title
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        stale_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stale Reason
+        unconfirmed:
+          type: boolean
+          title: Unconfirmed
+          default: false
+      type: object
+      required:
+      - key
+      - kind
+      - title
+      title: DeliveryReportPendingProposal
+      description: A report proposal that still needs a person, not a run in progress.
     DeliveryReportPolicy:
       properties:
         enabled:
@@ -32723,6 +32820,31 @@ components:
         approvals are stored. A parked run holds no container and no runner: this
 
         is a governance object, not a spinner.'
+    ExecutionPullRequest:
+      properties:
+        url:
+          type: string
+          title: Url
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+        revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Revision
+        purpose_verdict:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose Verdict
+      type: object
+      required:
+      - url
+      title: ExecutionPullRequest
+      description: Forge state and the newest assessment at the PR's current head.
     ExecutionResumeTotals:
       properties:
         total_tokens:
@@ -34961,6 +35083,10 @@ components:
           title: Estimated Cost
           description: Estimated cost in USD for this execution
           default: 0.0
+        pull_request:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionPullRequest'
+          - type: 'null'
         runtime_session_id:
           anyOf:
           - type: string
@@ -51131,7 +51257,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

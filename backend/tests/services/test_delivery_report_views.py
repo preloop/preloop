@@ -123,3 +123,23 @@ def test_second_closing_pr_is_not_compared_to_another_prs_head(
         lambda db, *, account_id, pr_key: pulls.get(pr_key),
     )
     assert views.stale_reopen_requests(None, account_id="a", report=report) == {}
+
+
+def test_pending_attention_marks_stale_requests(state: dict[str, Any]) -> None:
+    state["pull"] = SimpleNamespace(head_sha="new-head")
+    report = views.report_attention(
+        None,
+        account_id="a",
+        execution=SimpleNamespace(id=uuid.uuid4(), start_time=None, result=_report()),
+    )
+    assert report is not None
+    assert "New commits" in report.proposals[0].stale_reason
+
+
+def test_projects_include_open_work_without_any_merges() -> None:
+    assert views.report_projects(
+        {
+            "open_past_window": [{"ref": "example/app#1"}],
+            "follow_ups": [{"ref": "example/docs#2"}],
+        }
+    ) == ["example/app", "example/docs"]

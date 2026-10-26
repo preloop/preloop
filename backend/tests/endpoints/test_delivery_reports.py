@@ -154,3 +154,115 @@ def test_detail_is_404_for_other_flows_and_other_accounts(
     assert client.get(f"{BASE}/{foreign.id}").status_code == 404
     assert client.get(BASE).json()["total"] == 0
     assert client.get(f"{BASE}/{uuid.uuid4()}").status_code == 404
+
+
+def test_attention_only_includes_proposals_that_need_a_person(
+    client, db_session: Session, test_user
+) -> None:
+    flow = _flow(db_session, test_user.account_id, report=True)
+    report = _report()
+    report["follow_ups"] = [
+        {"title": "Decide this"},
+        {"title": "Run applied", "issue_url": "https://example.com/issues/1"},
+        {"title": "Dismissed"},
+        {"title": "In flight"},
+        {"title": "Applied"},
+        {"title": "Check the tracker"},
+    ]
+    report["proposal_actions"] = {
+        "follow_up:2": {"status": "dismissed"},
+        "follow_up:3": {"status": "pending"},
+        "follow_up:4": {"status": "applied"},
+        "follow_up:5": {"status": "unconfirmed"},
+    }
+    older = _run(db_session, flow, hours=0, result=report)
+    # The older proposal must survive more than one collection page.
+    for i in range(26):
+        _run(db_session, flow, hours=i + 1, result={"shipped": [], "closed_issues": []})
+    foreign_account = crud_account.create(
+        db_session, obj_in={"organization_name": "Other", "is_active": True}
+    )
+    foreign = _flow(db_session, foreign_account.id, report=True)
+    _run(db_session, foreign, hours=50, result=_report())
+    body = client.get(f"{BASE}/attention").json()
+    assert [item["id"] for item in body] == [str(older.id)]
+    assert [p["key"] for p in body[0]["proposals"]] == [
+        "reopen:example/app#100",
+        "follow_up:0",
+        "follow_up:5",
+    ]
+    assert body[0]["proposals"][-1]["unconfirmed"] is True
+    fingerprint = body[0]["fingerprint"]
+    assert len(fingerprint) == 64
+    # Deciding one proposal changes the dismissal fingerprint.
+    crud_flow_execution.set_delivery_report_action(
+        db_session,
+        execution_id=older.id,
+        key="follow_up:0",
+        record={"kind": "dismiss", "status": "dismissed", "reason": "Expected"},
+    )
+    assert client.get(f"{BASE}/attention").json()[0]["fingerprint"] != fingerprint
+
+
+def test_attention_is_quiet_for_verdicts_and_run_applied_proposals(
+    client, db_session: Session, test_user
+) -> None:
+    flow = _flow(db_session, test_user.account_id, report=True)
+    report = _report()
+    report["reopen_requests"][0]["applied"] = True
+    report["follow_ups"][0]["issue_url"] = "https://example.com/issues/3"
+    _run(db_session, flow, hours=0, result=report)
+    assert report["summary"]["closed_unverified"] == 1
+    assert client.get(f"{BASE}/attention").json() == []
+
+
+def test_execution_pr_uses_ledger_and_newest_assessment_at_current_revision(
+    client, db_session: Session, test_user
+) -> None:
+    from preloop.models.crud.assessment import crud_assessment
+    from preloop.models.crud.issue_cost import crud_issue_cost
+
+    flow = _flow(db_session, test_user.account_id, report=False)
+    url = "https://github.com/example/app/pull/10"
+    run = _run(db_session, flow, hours=0, result={"pr_url": url, "verdict": "covered"})
+    pull = crud_issue_cost.get_or_create_pull_request(
+        db_session, account_id=test_user.account_id, pr_key=url
+    )
+    pull.state = "merged"
+    pull.head_sha = "current"
+    db_session.flush()
+    for revision, verdict, hours in [
+        ("current", "partial", 1),
+        ("current", "unverified", 2),
+        ("old", "covered", 3),
+    ]:
+        crud_assessment.record(
+            db_session,
+            account_id=test_user.account_id,
+            source="audit",
+            issue_cost_pull_request_id=pull.id,
+            revision=revision,
+            purpose_verdict=verdict,
+            assessed_at=T0 + timedelta(hours=hours),
+        )
+    response = client.get(f"/api/v1/flows/executions/{run.id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["pull_request"] == {
+        "url": url,
+        "state": "merged",
+        "revision": "current",
+        "purpose_verdict": "unverified",
+    }
+    pull.head_sha = "new"
+    db_session.flush()
+    assert (
+        client.get(f"/api/v1/flows/executions/{run.id}").json()["pull_request"][
+            "purpose_verdict"
+        ]
+        is None
+    )
+    run.result = {}
+    db_session.flush()
+    assert (
+        client.get(f"/api/v1/flows/executions/{run.id}").json()["pull_request"] is None
+    )

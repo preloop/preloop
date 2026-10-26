@@ -2600,12 +2600,41 @@ def _month_start(now: datetime) -> datetime:
     )
 
 
+def validate_report_project(db: Any, *, account_id: Any, project: Any) -> str:
+    """Validate a manual run's one-project scope against the stored policy.
+
+    Raises:
+        ValueError: The project is disconnected, disabled or outside scope.
+    """
+    from preloop.models.crud import crud_delivery_report_policy
+
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("Choose one connected project for the report")
+    project = project.strip().lower()
+    account = crud_delivery_report_policy.get_overrides(db, account_id=account_id)
+    if not resolve_policy(account).enabled:
+        raise ValueError("Delivery reports are disabled by the report policy")
+    overrides = crud_delivery_report_policy.project_overrides(db, account_id=account_id)
+    policy = resolve_policy(account, overrides.get(project))
+    if not policy.enabled:
+        raise ValueError("Delivery reports are disabled by the report policy")
+    if policy.projects and project not in {p.lower() for p in policy.projects}:
+        raise ValueError("The project is outside the report policy scope")
+    connected = crud_delivery_report_policy.project_for_repository(
+        db, account_id=account_id, repository=project
+    )
+    if connected is None or not all(row.is_active for row in connected):
+        raise ValueError("The project is no longer connected")
+    return project
+
+
 def plan_policy_run(
     db: Any,
     *,
     flow: Any,
     exclude_execution_id: Any = None,
     now: Optional[datetime] = None,
+    project: Optional[str] = None,
 ) -> PolicyRun:
     """Read the account's stored policy and decide what this run may do.
 
@@ -2618,6 +2647,7 @@ def plan_policy_run(
         exclude_execution_id: The current execution, so it is not its own
             previous report.
         now: Clock for the month boundary.
+        project: Narrow a manual run to one connected project under the policy.
 
     Returns:
         The decision and the effective policies.
@@ -2632,6 +2662,9 @@ def plan_policy_run(
         db, account_id=account_id
     )
     policy = resolve_policy(account_overrides)
+    if project is not None:
+        project = validate_report_project(db, account_id=account_id, project=project)
+        policy = policy.model_copy(update={"projects": [project]})
     projects = {
         name: resolve_policy(account_overrides, overrides)
         for name, overrides in crud_delivery_report_policy.project_overrides(

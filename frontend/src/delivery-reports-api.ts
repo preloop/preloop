@@ -179,6 +179,35 @@ export interface DeliveryReportDetail extends DeliveryReportRow {
   report: DeliveryReportDocument;
   stale_reopen_requests: Record<string, string>;
   actions: DeliveryReportActions;
+  rerun_projects?: string[];
+}
+
+export interface DeliveryReportAttention {
+  fingerprint: string;
+  id: string;
+  started_at: string | null;
+  projects: string[];
+  proposals: {
+    key: string;
+    kind: 'reopen' | 'follow_up';
+    title: string;
+    reason: string | null;
+    stale_reason: string | null;
+    unconfirmed: boolean;
+  }[];
+}
+
+export interface ExecutionPullRequest {
+  url: string;
+  state: 'open' | 'merged' | 'closed' | null;
+  revision: string | null;
+  purpose_verdict: PurposeVerdict | null;
+}
+
+export function getDeliveryReportAttention(): Promise<
+  DeliveryReportAttention[]
+> {
+  return getJson(`${REST_API_PREFIX}/delivery-reports/attention`);
 }
 
 async function getJson<T>(url: string): Promise<T> {

@@ -26,6 +26,7 @@ from sqlalchemy.orm import (
     with_expression,
 )
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.future import select
 
 from preloop.models import models
@@ -1176,6 +1177,38 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
         return rows, total
+
+    def delivery_reports_with_proposals(
+        self, db: Session, *, account_id: str
+    ) -> List[models.FlowExecution]:
+        """All report runs with proposals, including older unhandled decisions."""
+        return (
+            db.query(models.FlowExecution)
+            .join(models.Flow)
+            .options(
+                load_only(
+                    models.FlowExecution.id,
+                    models.FlowExecution.start_time,
+                    models.FlowExecution.result,
+                )
+            )
+            .filter(
+                models.Flow.account_id == account_id,
+                models.Flow.agent_config["report_kind"].as_string()
+                == "delivery_report",
+                or_(
+                    func.jsonb_path_exists(
+                        models.FlowExecution.result, cast("$.follow_ups[*]", JSONPATH)
+                    ),
+                    func.jsonb_path_exists(
+                        models.FlowExecution.result,
+                        cast("$.reopen_requests[*]", JSONPATH),
+                    ),
+                ),
+            )
+            .order_by(models.FlowExecution.start_time.desc())
+            .all()
+        )
 
     def get_delivery_report(
         self, db: Session, *, execution_id: Any, account_id: str
