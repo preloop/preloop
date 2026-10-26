@@ -32,6 +32,7 @@ MAX_PATCH_CHARS = 8000
 #: Forge reads one deterministic run may make.
 MAX_REFRESH_PER_RUN = 50
 MAX_ENGAGEMENT_PRS = 50
+MAX_ENGAGEMENT_ISSUES = 50
 #: Length of the one-paragraph summary shown in the report and the email.
 SUMMARY_CHARS = 280
 
@@ -340,6 +341,65 @@ def engagement_from_forge(
                     "area": area,
                 }
             )
+    from preloop.services.delivery_report import parse_change_brief
+
+    author_id = pr.get("author_id")
+    created_at = _parse_time(pr.get("created_at"))
+    body = pr.get("description") or pr.get("body")
+    if (
+        author_id is not None
+        and isinstance(body, str)
+        and parse_change_brief(body) is not None
+        and created_at is not None
+        and created_at <= end
+        and (start is None or created_at >= start)
+    ):
+        rows.append(
+            {
+                "user_id": str(author_id),
+                "forge": str(pr.get("_forge") or ""),
+                "kind": "spec",
+                "ref": ref,
+                "area": area,
+            }
+        )
+    return rows
+
+
+def issue_engagement_from_forge(
+    comments: List[Any],
+    *,
+    ref: str,
+    forge: str,
+    start: Optional[datetime],
+    end: datetime,
+) -> List[Dict[str, str]]:
+    """Keep in-window issue participation by immutable forge user id."""
+    from preloop.services.delivery_report import _parse_time
+
+    rows: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for comment in comments:
+        author = getattr(comment, "author", None)
+        user_id = getattr(author, "id", None)
+        timestamp = _parse_time(getattr(comment, "created_at", None))
+        if user_id in (None, "None") or timestamp is None or timestamp > end:
+            continue
+        if start is not None and timestamp < start:
+            continue
+        identity = str(user_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        rows.append(
+            {
+                "user_id": identity,
+                "forge": forge,
+                "kind": "issue",
+                "ref": ref,
+                "area": "",
+            }
+        )
     return rows
 
 
@@ -397,6 +457,51 @@ async def collect_forge_engagement(
                     end=end,
                 )
             )
+    from preloop.api.common import get_tracker_client
+    from preloop.models.crud import crud_delivery_report_policy
+
+    issue_rows = [
+        *(report.get("closed_issues") or []),
+        *(report.get("open_past_window") or []),
+    ]
+    seen_issues: set[str] = set()
+    for item in issue_rows:
+        if not isinstance(item, Mapping) or item.get("kind", "issue") != "issue":
+            continue
+        ref = str(item.get("ref") or "")
+        if (
+            ref in seen_issues
+            or "#" not in ref
+            or len(seen_issues) >= MAX_ENGAGEMENT_ISSUES
+        ):
+            continue
+        repository, number = ref.rsplit("#", 1)
+        if not number.isdigit():
+            continue
+        seen_issues.add(ref)
+        try:
+            found = crud_delivery_report_policy.project_for_repository(
+                db, account_id=account_id, repository=repository
+            )
+            if found is None:
+                continue
+            project, organization, tracker = found
+            forge = str(getattr(tracker.tracker_type, "value", tracker.tracker_type))
+            if forge not in ("github", "gitlab"):
+                continue
+            client = await get_tracker_client(organization.id, project.id, db, owner)
+            comments = await client.get_comments(number)
+            rows.extend(
+                issue_engagement_from_forge(
+                    comments,
+                    ref=ref,
+                    forge=forge,
+                    start=start,
+                    end=end,
+                )
+            )
+        except Exception:  # noqa: BLE001 - one issue cannot stop distribution
+            logger.info("Could not read issue engagement from a forge")
     return rows
 
 

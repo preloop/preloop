@@ -789,6 +789,58 @@ def test_forge_engagement_keeps_only_ids_and_in_window_events() -> None:
     ]
 
 
+def test_authored_brief_and_issue_participation_use_forge_ids() -> None:
+    start = datetime.fromisoformat(WINDOW["from"])
+    end = datetime.fromisoformat(WINDOW["to"])
+    authored = facts.engagement_from_forge(
+        {
+            "_forge": "github",
+            "author_id": "404",
+            "created_at": "2026-10-19T10:00:00Z",
+            "description": BODY,
+        },
+        ref="example-org/example-repo#7",
+        area="backend",
+        start=start,
+        end=end,
+    )
+    assert authored == [
+        {
+            "user_id": "404",
+            "forge": "github",
+            "kind": "spec",
+            "ref": "example-org/example-repo#7",
+            "area": "backend",
+        }
+    ]
+    comments = [
+        SimpleNamespace(
+            author=SimpleNamespace(id="505", name="Display Name"),
+            created_at=datetime.fromisoformat("2026-10-20T10:00:00+00:00"),
+        ),
+        SimpleNamespace(
+            author=SimpleNamespace(id="606"),
+            created_at=datetime.fromisoformat("2026-10-01T10:00:00+00:00"),
+        ),
+    ]
+    issue = facts.issue_engagement_from_forge(
+        comments,
+        ref="example-org/example-repo#3",
+        forge="github",
+        start=start,
+        end=end,
+    )
+    assert issue == [
+        {
+            "user_id": "505",
+            "forge": "github",
+            "kind": "issue",
+            "ref": "example-org/example-repo#3",
+            "area": "",
+        }
+    ]
+
+
 def test_orchestrator_sends_only_a_finalized_report() -> None:
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
