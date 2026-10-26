@@ -14631,8 +14631,7 @@ paths:
       - Delivery Reports
       - Delivery Reports
       summary: Delivery Report Attention
-      description: Pending decisions from up to 100 report runs, independent of collection
-        paging.
+      description: Pending decisions from up to 100 runs for standalone API clients.
       operationId: delivery_report_attention_api_v1_delivery_reports_attention_get
       responses:
         '200':

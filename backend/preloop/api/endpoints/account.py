@@ -40,7 +40,6 @@ from preloop.models.crud import (
     crud_audit_log,
     crud_approval_workflow,
     crud_flow,
-    crud_flow_execution,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
     crud_managed_agent_credential,
@@ -4496,14 +4495,9 @@ async def _list_extension_attention_items(
 
             def report_items() -> list[ExtensionAttentionItem]:
                 contributions = []
-                for execution in crud_flow_execution.delivery_reports_with_proposals(
-                    db, account_id=str(current_user.account_id)
+                for report in delivery_report_views.list_report_attention(
+                    db, account_id=current_user.account_id
                 ):
-                    report = delivery_report_views.report_attention(
-                        db, account_id=current_user.account_id, execution=execution
-                    )
-                    if report is None:
-                        continue
                     contributions.append(
                         ExtensionAttentionItem(
                             id=str(report.id),

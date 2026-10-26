@@ -59,18 +59,9 @@ def delivery_report_attention(
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> list[DeliveryReportAttention]:
-    """Pending decisions from up to 100 report runs, independent of collection paging."""
+    """Pending decisions from up to 100 runs for standalone API clients."""
     account = get_account_or_404(db, current_user)
-    items = []
-    for execution in crud_flow_execution.delivery_reports_with_proposals(
-        db, account_id=str(account.id)
-    ):
-        item = delivery_report_views.report_attention(
-            db, account_id=account.id, execution=execution
-        )
-        if item is not None:
-            items.append(item)
-    return items
+    return delivery_report_views.list_report_attention(db, account_id=account.id)
 
 
 @router.get("/{execution_id}", response_model=DeliveryReportDetail)

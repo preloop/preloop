@@ -14,7 +14,6 @@ from preloop.api.endpoints.account import list_extension_attention_items
 from preloop.plugins.attention import AttentionSource
 from preloop.plugins.base import Plugin, PluginManager, PluginMetadata
 from preloop.schemas.attention import ExtensionAttentionItem
-from preloop.schemas.delivery_report import DeliveryReportAttention
 
 
 def item(**changes: object) -> ExtensionAttentionItem:
@@ -49,18 +48,11 @@ async def test_shared_read_includes_pending_reports_for_flow_viewers() -> None:
     account_id = uuid4()
     report_id = uuid4()
     user = SimpleNamespace(id=uuid4(), account_id=account_id, is_superuser=False)
-    report = DeliveryReportAttention(
+    started_at = datetime(2026, 10, 26, 4, 0)
+    execution = SimpleNamespace(
         id=report_id,
-        started_at=datetime.now(UTC),
-        projects=["Example Project"],
-        proposals=[
-            {
-                "key": "follow_up:0",
-                "kind": "follow_up",
-                "title": "Review tests",
-            }
-        ],
-        fingerprint="pending-proposal-1",
+        start_time=started_at,
+        result={"follow_ups": [{"title": "Review tests"}]},
     )
     manager = MagicMock()
     manager.attention_sources.return_value = []
@@ -72,19 +64,18 @@ async def test_shared_read_includes_pending_reports_for_flow_viewers() -> None:
             side_effect=lambda _user, permission, _db: permission == "view_flows",
         ),
         patch(
-            "preloop.api.endpoints.account.crud_flow_execution.delivery_reports_with_proposals",
-            return_value=[SimpleNamespace(id=report_id)],
+            "preloop.services.delivery_report_views.crud_flow_execution.delivery_reports_with_proposals",
+            return_value=[execution],
         ) as candidates,
-        patch(
-            "preloop.api.endpoints.account.delivery_report_views.report_attention",
-            return_value=report,
-        ),
     ):
         items = await list_extension_attention_items(user, MagicMock(), True)
     candidates.assert_called_once()
     assert len(items) == 1
     assert items[0].source == "core:delivery_report"
-    assert items[0].delivery_report == report
+    assert items[0].delivery_report is not None
+    assert items[0].delivery_report.started_at == started_at.replace(tzinfo=UTC)
+    assert items[0].opened_at == started_at.replace(tzinfo=UTC)
+    assert items[0].delivery_report.proposals[0].title == "Review tests"
     assert items[0].href == f"/console/delivery-reports/{report_id}#needs-you"
 
 
@@ -99,7 +90,7 @@ async def test_shared_read_excludes_reports_without_flow_permission() -> None:
         patch("preloop.api.endpoints.account.crud_account.get", return_value=None),
         patch("preloop.api.auth.permissions.has_permission", return_value=False),
         patch(
-            "preloop.api.endpoints.account.crud_flow_execution.delivery_reports_with_proposals"
+            "preloop.services.delivery_report_views.crud_flow_execution.delivery_reports_with_proposals"
         ) as candidates,
     ):
         assert await list_extension_attention_items(user, MagicMock(), True) == []

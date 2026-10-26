@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.crud import crud_issue
+from preloop.models.crud import crud_flow_execution, crud_issue
 from preloop.models.crud.assessment import crud_assessment
 from preloop.models.crud.issue_cost import crud_issue_cost
 from preloop.schemas.delivery_report import (
@@ -285,13 +285,27 @@ def report_attention(
                 proposal.stale_reason = stale.get(proposal.key.removeprefix("reopen:"))
     return DeliveryReportAttention(
         id=execution.id,
-        started_at=execution.start_time,
+        started_at=_parse_time(execution.start_time),
         projects=report_projects(report),
         proposals=proposals,
         fingerprint=hashlib.sha256(
             json.dumps([p.model_dump() for p in proposals], sort_keys=True).encode()
         ).hexdigest(),
     )
+
+
+def list_report_attention(
+    db: Session, *, account_id: Any
+) -> list[DeliveryReportAttention]:
+    """Return pending report proposals across the bounded candidate set."""
+    items = []
+    for execution in crud_flow_execution.delivery_reports_with_proposals(
+        db, account_id=str(account_id)
+    ):
+        item = report_attention(db, account_id=account_id, execution=execution)
+        if item is not None:
+            items.append(item)
+    return items
 
 
 def execution_pull_request(

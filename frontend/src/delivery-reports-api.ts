@@ -204,12 +204,6 @@ export interface ExecutionPullRequest {
   purpose_verdict: PurposeVerdict | null;
 }
 
-export function getDeliveryReportAttention(): Promise<
-  DeliveryReportAttention[]
-> {
-  return getJson(`${REST_API_PREFIX}/delivery-reports/attention`);
-}
-
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetchWithAuth(url);
   if (response.status === 403)
