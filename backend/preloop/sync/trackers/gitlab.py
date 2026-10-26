@@ -1622,6 +1622,11 @@ class GitLabTracker(BaseTracker):
                 "author": mr.author.get("username")
                 if hasattr(mr, "author") and isinstance(mr.author, dict)
                 else None,
+                "author_id": str(mr.author["id"])
+                if hasattr(mr, "author")
+                and isinstance(mr.author, dict)
+                and mr.author.get("id") is not None
+                else None,
                 "assignees": [
                     a.get("username")
                     for a in (mr.assignees if hasattr(mr, "assignees") else [])

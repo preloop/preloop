@@ -2173,6 +2173,9 @@ class GitHubTracker(BaseTracker):
                 "description": pr_data.get("body", ""),
                 "state": pr_data["state"],
                 "author": pr_data["user"]["login"],
+                "author_id": str(pr_data["user"]["id"])
+                if pr_data["user"].get("id") is not None
+                else None,
                 "assignees": [a["login"] for a in pr_data.get("assignees", [])],
                 "reviewers": [
                     r["login"] for r in pr_data.get("requested_reviewers", [])

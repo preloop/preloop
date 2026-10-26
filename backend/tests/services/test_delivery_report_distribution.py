@@ -100,11 +100,13 @@ class TestStoredFiles:
                 "title": "Export",
                 "description": "Body",
                 "author": "jane-doe",
+                "author_id": "42",
                 "changes": {"files_changed": 5, "changed_files": FILES[:1]},
             }
         )
         assert details["files_changed"] == 5
         assert details["author_login"] == "jane-doe"
+        assert details["author_id"] == "42"
         assert [f["filename"] for f in details["changed_files"]] == [
             FILES[0]["filename"]
         ]
@@ -301,6 +303,7 @@ def test_deterministic_report_reads_title_body_and_files_from_the_ledger(
         title="Add CSV export",
         body=BODY,
         author_login="jane-doe",
+        author_id="42",
         changed_files=FILES,
         files_changed=3,
     )
@@ -320,6 +323,8 @@ def test_deterministic_report_reads_title_body_and_files_from_the_ledger(
     change = report["shipped"][0]
     assert change["title"] == "Add CSV export"
     assert change["author"] == "jane-doe"
+    assert change["author_id"] == "42"
+    assert change["forge"] == "github"
     assert change["body_summary"].startswith("Adds CSV export")
     assert len(change["files"]) == 3
     assert dr.RISK_MIGRATION_WITHOUT_DOWNGRADE in {

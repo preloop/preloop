@@ -1610,6 +1610,8 @@ def assemble_report(
                 "project": _pr_ref(pr).split("#", 1)[0] or None,
                 "area": _area(pr),
                 "author": pr.get("author"),
+                "author_id": pr.get("author_id"),
+                "forge": pr.get("forge"),
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),

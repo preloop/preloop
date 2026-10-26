@@ -174,6 +174,8 @@ def details_from_forge(pr: Mapping[str, Any]) -> Dict[str, Any]:
         author = author.get("login") or author.get("username")
     if _text(author):
         details["author_login"] = str(author)[:255]
+    if pr.get("author_id") is not None:
+        details["author_id"] = str(pr["author_id"])[:64]
     changes = pr.get("changes")
     if isinstance(changes, Mapping):
         files = stored_files(changes.get("changed_files"))
@@ -230,6 +232,10 @@ def details_from_webhook(event_data: Mapping[str, Any]) -> Dict[str, Any]:
         details["body"] = bounded_body(body)
     if _text(login):
         details["author_login"] = str(login)[:255]
+    if isinstance(user, Mapping) and user.get("id") is not None:
+        details["author_id"] = str(user["id"])[:64]
+    elif isinstance(gitlab, Mapping) and gitlab.get("author_id") is not None:
+        details["author_id"] = str(gitlab["author_id"])[:64]
     return details
 
 
