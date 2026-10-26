@@ -350,12 +350,15 @@ AssessmentDecision = Literal[
     "deterministic",
     "skipped_budget",
     "skipped_no_credit",
+    "skipped_no_model",
     "disabled",
 ]
 #: Decisions under which the run makes a model call.
 ASSESSING_DECISIONS: frozenset[str] = frozenset({"assessed", "onboarding"})
 #: Decisions that drop assessments the account asked for.
-SKIPPED_DECISIONS: frozenset[str] = frozenset({"skipped_budget", "skipped_no_credit"})
+SKIPPED_DECISIONS: frozenset[str] = frozenset(
+    {"skipped_budget", "skipped_no_credit", "skipped_no_model"}
+)
 
 
 class PolicyOverrideError(ValueError):
@@ -493,6 +496,7 @@ def assessment_decision(
     has_previous_report: bool,
     spent_this_month_usd: Optional[float] = None,
     credit_available_usd: Optional[float] = None,
+    model_available: bool = True,
 ) -> AssessmentDecision:
     """Whether this run may pay for a model pass, and why not.
 
@@ -503,6 +507,7 @@ def assessment_decision(
             unknown (the per-run ceiling still caps the run).
         credit_available_usd: Hosted credit available; None when the
             account does not run on hosted credit.
+        model_available: The flow has a model bound for an assessed run.
 
     Returns:
         ``disabled`` (no report), ``deterministic`` (no model call wanted),
@@ -519,6 +524,8 @@ def assessment_decision(
         return "deterministic"
     if credit_available_usd is not None and credit_available_usd <= 0:
         return "skipped_no_credit"
+    if not model_available:
+        return "skipped_no_model"
     if wanted == "assessed" and not policy.assessments_allowed(spent_this_month_usd):
         return "skipped_budget"
     return wanted
@@ -1983,6 +1990,8 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
     decision = (report.get("assessment") or {}).get("decision")
     if decision == "skipped_no_credit":
         skipped_reason: Optional[str] = "no_credit"
+    elif decision == "skipped_no_model":
+        skipped_reason = "no_model"
     elif skipped or decision == "skipped_budget":
         skipped_reason = "budget"
     else:
@@ -2029,7 +2038,7 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
             )
             for source in ASSESSMENT_SOURCES
         },
-        "assessments_skipped_for_budget": skipped_reason is not None,
+        "assessments_skipped_for_budget": skipped_reason in {"budget", "no_credit"},
         "assessments_skipped_reason": skipped_reason,
     }
 
@@ -2203,6 +2212,12 @@ def _summary_lines(summary: Mapping[str, Any]) -> List[str]:
         lines += [
             "",
             "Assessments were skipped: the account has no credit left. "
+            "Everything above comes from tracker and forge data.",
+        ]
+    elif summary.get("assessments_skipped_reason") == "no_model":
+        lines += [
+            "",
+            "Assessments were skipped: no model is configured for this report. "
             "Everything above comes from tracker and forge data.",
         ]
     elif summary.get("assessments_skipped_for_budget"):
@@ -2637,11 +2652,24 @@ def plan_policy_run(
         credit = crud_delivery_report_policy.credit_available(db, account_id=account_id)
     except Exception:  # noqa: BLE001 - no readable wallet: not on hosted credit
         log.warning("Could not read hosted credit for the report", exc_info=True)
+    previous_result = getattr(previous, "result", None)
+    previous_assessment = (
+        previous_result.get("assessment")
+        if isinstance(previous_result, Mapping)
+        else None
+    )
+    previous_decision = (
+        previous_assessment.get("decision")
+        if isinstance(previous_assessment, Mapping)
+        else None
+    )
     decision = assessment_decision(
         policy,
-        has_previous_report=previous is not None,
+        has_previous_report=previous is not None
+        and previous_decision not in SKIPPED_DECISIONS,
         spent_this_month_usd=spent,
         credit_available_usd=credit,
+        model_available=getattr(flow, "ai_model_id", True) is not None,
     )
     return PolicyRun(decision=decision, policy=policy, project_policies=projects)
 

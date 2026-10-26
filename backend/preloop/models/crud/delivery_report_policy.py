@@ -93,6 +93,81 @@ def project_overrides(db: Session, *, account_id: Any) -> Dict[str, Dict[str, An
     }
 
 
+def lock_account_for_activation(db: Session, *, account_id: Any) -> None:
+    """Serialize an account's report-flow check and insert until commit.
+
+    Args:
+        db: Session that will create the flow and commit afterward.
+        account_id: Owning account.
+
+    Raises:
+        ValueError: The account does not exist.
+    """
+    found = db.scalar(
+        select(models.Account.id)
+        .where(models.Account.id == _uuid(account_id))
+        .with_for_update()
+    )
+    if found is None:
+        raise ValueError("Account not found")
+
+
+def code_repositories(
+    db: Session, *, account_id: Any
+) -> List[tuple[str, str, str, Optional[str]]]:
+    """Active code-host projects available to the account's report checkout.
+
+    Args:
+        db: Session.
+        account_id: Account that owns the trackers.
+
+    Returns:
+        Repository name, project id, tracker id and known default branch,
+        ordered for stable clone paths.
+    """
+    rows = db.execute(
+        select(
+            models.Project.id,
+            models.Project.slug,
+            models.Project.identifier,
+            models.Project.settings,
+            models.Project.meta_data,
+            models.Tracker.id,
+        )
+        .select_from(models.Project)
+        .join(
+            models.Organization,
+            models.Organization.id == models.Project.organization_id,
+        )
+        .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+        .where(
+            models.Tracker.account_id == _uuid(account_id),
+            models.Tracker.is_active.is_(True),
+            models.Tracker.is_deleted.is_(False),
+            models.Project.is_active.is_(True),
+            models.Tracker.tracker_type.in_(
+                ("github", "gitlab", "bitbucket", "bitbucket_dc")
+            ),
+        )
+        .order_by(models.Project.slug, models.Project.id)
+    ).all()
+    seen: set[str] = set()
+    repositories: List[tuple[str, str, str, Optional[str]]] = []
+    for project_id, slug, identifier, settings, meta_data, tracker_id in rows:
+        name = str(slug or identifier or "").lower()
+        if name and name not in seen:
+            branch = None
+            for source in (settings, meta_data):
+                if isinstance(source, dict):
+                    value = source.get("default_branch")
+                    if isinstance(value, str) and value.strip():
+                        branch = value.strip()
+                        break
+            repositories.append((name, str(project_id), str(tracker_id), branch))
+            seen.add(name)
+    return repositories
+
+
 def project_in_account(db: Session, *, account_id: Any, project_id: Any) -> bool:
     """Whether the project belongs to one of the account's trackers.
 

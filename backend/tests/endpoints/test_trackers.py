@@ -9,10 +9,16 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from preloop.api.endpoints.trackers import _unique_tracker_name
-from preloop.models.crud import crud_account, crud_oauth_app_installation, crud_tracker
+from preloop.models.crud import (
+    crud_account,
+    crud_flow,
+    crud_oauth_app_installation,
+    crud_tracker,
+)
 from preloop.models.models.github_app_installation import OAuthAppInstallation
 from preloop.models.models.tracker import Tracker
 from preloop.models import models
+from preloop.services.delivery_report import is_delivery_report_flow
 from sqlalchemy.exc import SQLAlchemyError
 
 
@@ -492,6 +498,9 @@ async def test_register_tracker_success(
     mock_tracker_client = AsyncMock()
     mock_tracker_client.test_connection.return_value.connected = True
     mock_create_tracker_client.return_value = mock_tracker_client
+    account = crud_account.get(db_session, id=test_user.account_id)
+    account.primary_user_id = test_user.id
+    db_session.flush()
 
     tracker_data = {
         "name": "New Test Tracker",
@@ -528,6 +537,16 @@ async def test_register_tracker_success(
     assert created.api_key is None
     assert created.credentials_secret_id is not None
     assert created.credentials_secret is not None
+    reports = [
+        flow
+        for flow in crud_flow.get_by_account(
+            db_session, account_id=test_user.account_id
+        )
+        if is_delivery_report_flow(flow)
+    ]
+    assert len(reports) == 1
+    assert reports[0].is_enabled is True
+    assert reports[0].schedule_config["type"] == "weekly"
     assert created.credentials_secret.encrypted_value not in (None, "new_dummy_key")
     assert created.resolved_api_key == "new_dummy_key"
 
