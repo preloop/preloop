@@ -3,8 +3,8 @@
 Run against an Alembic-migrated local DATABASE_URL with
 PRELOOP_DISABLE_TELEMETRY=true. Only transport boundaries are replaced: the
 orchestrator, CRUD, policy, rendering, distribution and HTTP actions are real.
-Strict xfails describe missing production behavior; no proposals or member
-sections are inserted into a report by the test. Per-member delivery is EE.
+A strict xfail describes the missing per-member hand-off; no proposals or
+member sections are inserted into a report by the test. Member delivery is EE.
 """
 
 from __future__ import annotations
@@ -117,6 +117,7 @@ class WeekTracker(FakeTracker):
     async def create_issue(self, project_key: str, issue_data: Any) -> Any:
         result = await super().create_issue(project_key, issue_data)
         self.created.append(issue_data)
+        result.url = f"https://github.com/{project_key}/issues/99"
         return result
 
 
@@ -135,7 +136,12 @@ class Scenario:
     @property
     def report(self) -> dict[str, Any]:
         assert self.execution is not None
-        return self.execution.result
+        return dict(self.execution.result)
+
+    @property
+    def execution_id(self) -> str:
+        assert self.execution is not None
+        return str(self.execution.id)
 
 
 def seed_week(db: Session, owner: models.User) -> Scenario:
@@ -336,7 +342,7 @@ def test_deterministic_week_reaches_console_with_audit_and_risk(
     assert week.report["assessment"]["decision"] == "deterministic"
     assert week.report["summary"]["shipped"] == 4
     assert week.report["spend"]["total_tokens"] == 0
-    detail = client.get(f"{BASE}/{week.execution.id}")
+    detail = client.get(f"{BASE}/{week.execution_id}")
     assert detail.status_code == 200, detail.text
     report = detail.json()["report"]
     closed = next(i for i in report["closed_issues"] if i["ref"] == EXPORT)
@@ -357,7 +363,7 @@ def test_deterministic_week_reaches_console_with_audit_and_risk(
     )
     assert "backend/app/search.py" in " ".join(flag["evidence"])
     rows = client.get(BASE).json()["items"]
-    assert len(rows) == 1 and rows[0]["id"] == str(week.execution.id)
+    assert len(rows) == 1 and rows[0]["id"] == str(week.execution_id)
     assert rows[0]["shipped"] == 4
 
 
@@ -366,7 +372,7 @@ def test_case_1_fixes_close_reopens_in_one_call(
 ) -> None:
     assert week.report["reopen_requests"], json.dumps(week.report["closed_issues"])
     response = client.post(
-        f"{BASE}/{week.execution.id}/actions", json={"kind": "reopen", "ref": EXPORT}
+        f"{BASE}/{week.execution_id}/actions", json={"kind": "reopen", "ref": EXPORT}
     )
     assert response.status_code == 200, response.text
     assert response.json()["decision"]["allowed_by"] == "click"
@@ -377,7 +383,7 @@ def test_case_1_fixes_close_reopens_in_one_call(
     assert UNMET in comments[0][2]
     assert "2" * 40 in comments[0][2]
     repeat = client.post(
-        f"{BASE}/{week.execution.id}/actions", json={"kind": "reopen", "ref": EXPORT}
+        f"{BASE}/{week.execution_id}/actions", json={"kind": "reopen", "ref": EXPORT}
     )
     assert repeat.status_code == 409
     assert len(week.tracker.calls) == 2
@@ -394,16 +400,26 @@ def test_case_2_hot_path_opens_labelled_follow_up(
     proposal = proposals[index]
     assert "backend/app/search.py" in " ".join(proposal["evidence"])
     response = client.post(
-        f"{BASE}/{week.execution.id}/actions",
+        f"{BASE}/{week.execution_id}/actions",
         json={"kind": "open_issue", "index": index},
     )
     assert response.status_code == 200, response.text
     assert len(week.tracker.created) == 1
     created = week.tracker.created[0]
+    assert (
+        response.json()["decision"]["issue_url"]
+        == f"https://github.com/{REPO}/issues/99"
+    )
     assert created.labels == ["preloop:proposed"]
     assert "backend/app/search.py" in created.description
-    assert email.report_url(week.execution.id) in created.description
+    assert email.report_url(week.execution_id) in created.description
     assert response.json()["decision"]["allowed_by"] == "click"
+    repeated = client.post(
+        f"{BASE}/{week.execution_id}/actions",
+        json={"kind": "open_issue", "index": index},
+    )
+    assert repeated.status_code == 409
+    assert len(week.tracker.created) == 1
 
 
 def test_owner_receives_one_report_link_once(
@@ -413,7 +429,7 @@ def test_owner_receives_one_report_link_once(
     assert len(week.messages) == 1
     recipient, subject, text, body = week.messages[0]
     assert recipient == week.owner.email and recipient != week.member.email
-    link = email.report_url(week.execution.id)
+    link = email.report_url(week.execution_id)
     assert text.count(link) == 1
     assert body.count(f'href="{link}"') == 1
     assert "Stop these emails" in body
@@ -454,3 +470,139 @@ def test_case_3_member_data_selects_only_reviewed_areas(week: Scenario) -> None:
     assert set(person["areas"]) == {"backend"}
     refs = {bullet["ref"] for bullet in person["bullets"]}
     assert HOT_PATH in refs and f"{REPO}#104" not in refs
+
+
+@pytest.mark.parametrize("change", ["issue_edit", "new_commit"])
+def test_generated_reopen_refuses_stale_evidence(
+    week: Scenario, client: TestClient, db_session: Session, change: str
+) -> None:
+    """A real generated request uses the existing action freshness checks."""
+    if change == "issue_edit":
+        issue = crud_issue.get_by_external_url(
+            db_session,
+            external_url=week.tracker.issues[EXPORT]["url"],
+            account_id=str(week.owner.account_id),
+        )
+        crud_issue.update(
+            db_session,
+            db_obj=issue,
+            obj_in={
+                "description": "## Acceptance\n- A different export contract\n",
+            },
+        )
+    else:
+        from preloop.models.crud import crud_issue_cost
+
+        pull = crud_issue_cost.get_pull_request(
+            db_session,
+            account_id=week.owner.account_id,
+            pr_key=week.tracker.prs[102]["url"],
+        )
+        crud_issue_cost.record_pull_request_identity(
+            db_session, row=pull, head_sha="f" * 40
+        )
+        db_session.commit()
+    detail = client.get(f"{BASE}/{week.execution_id}").json()
+    assert EXPORT in detail["stale_reopen_requests"]
+    response = client.post(
+        f"{BASE}/{week.execution_id}/actions", json={"kind": "reopen", "ref": EXPORT}
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "stale"
+    assert week.tracker.calls == []
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "covered",
+        "unknown",
+        "no_evidence",
+        "wrong_revision",
+        "no_revision",
+        "different_closing_pr",
+        "edited_issue",
+        "changed_criteria",
+        "no_head",
+    ],
+)
+def test_reopen_proposals_require_a_current_cited_audit(variant: str) -> None:
+    """Unsafe or unverifiable audit joins must not become actionable requests."""
+    fake = WeekTracker()
+    issue = fake.issues[EXPORT]
+    pr = fake.prs[102]
+    audit = {
+        "issue_ref": EXPORT,
+        "issue_url": issue["url"],
+        "merge_sha": "2" * 40,
+        "assessed_at": "2026-10-14T12:30:00+00:00",
+        "merges": [{"url": pr["url"], "sha": "2" * 40}],
+        "purpose": {
+            "criteria": [
+                {
+                    "text": "CSV export includes headers",
+                    "met": True,
+                    "evidence": ["headers test"],
+                },
+                {"text": UNMET, "met": False, "evidence": ["date-filter test failed"]},
+            ]
+        },
+    }
+    # First prove this fixture qualifies; each variant removes one requirement.
+    good = dr.assemble_report(
+        window=WINDOW, pull_requests=[pr], issues=[issue], merge_audits=[audit]
+    )
+    assert len(good["reopen_requests"]) == 1
+    criterion = audit["purpose"]["criteria"][1]
+    if variant == "covered":
+        criterion["met"] = True
+    elif variant == "unknown":
+        criterion["met"] = None
+    elif variant == "no_evidence":
+        criterion["evidence"] = []
+    elif variant == "wrong_revision":
+        audit["merge_sha"] = "f" * 40
+    elif variant == "no_revision":
+        pr.pop("merge_commit_sha")
+        audit["merges"] = []
+    elif variant == "different_closing_pr":
+        pr.pop("merge_commit_sha")
+        audit["merges"][0]["url"] = f"https://github.com/{REPO}/pull/999"
+    elif variant == "edited_issue":
+        issue["updated_at"] = "2026-10-14T13:00:00+00:00"
+    elif variant == "changed_criteria":
+        issue["description"] += "\n## Acceptance\n- A new requirement\n"
+        # The triage section is authoritative; edit the actual criterion there.
+        issue["description"] = issue["description"].replace(
+            UNMET, "A new export criterion"
+        )
+    elif variant == "no_head":
+        pr.pop("head_sha")
+    report = dr.assemble_report(
+        window=WINDOW, pull_requests=[pr], issues=[issue], merge_audits=[audit]
+    )
+    assert report["reopen_requests"] == []
+
+
+def test_every_deterministic_risk_proposes_its_own_evidence() -> None:
+    """Multiple flags stay distinct; model-supplied flags cannot add proposals."""
+    pr = load_fixture("pull_requests.json")[2]
+    flags = dr.detect_risk_flags(pr)
+    assert {f["flag"] for f in flags} >= {
+        dr.RISK_HOT_PATH_WITHOUT_TESTS,
+        dr.RISK_MIGRATION_WITHOUT_DOWNGRADE,
+    }
+    report = dr.assemble_report(
+        window=WINDOW,
+        pull_requests=[pr],
+        issues=[],
+        assessments={
+            HOT_PATH: {"risk_flags": [{"flag": "model_guess", "evidence": ["claim"]}]}
+        },
+    )
+    assert {(p["ref"], p["risk_flag"]) for p in report["follow_ups"]} == {
+        (HOT_PATH, f["flag"]) for f in flags
+    }
+    for proposal in report["follow_ups"]:
+        expected = next(f for f in flags if f["flag"] == proposal["risk_flag"])
+        assert proposal["evidence"] == expected["evidence"]
