@@ -191,7 +191,8 @@ stay on the account, because one run covers every repository and spends
 one budget.
 
 The deterministic report generates follow-up proposals from each risk flag,
-with its file evidence. It also proposes reopening a closed issue when a merge
+with its file evidence, except for dependency-bot and docs-only PRs reported
+from metadata. Proposals appear in the console, Markdown report and owner email. It also proposes reopening a closed issue when a merge
 audit at its closing revision cites a criterion that was not met. The audit
 must still match the issue's criteria, and the issue must not have been edited
 after the audit. A missing audit, an unpinned revision or a pure evidence gap
