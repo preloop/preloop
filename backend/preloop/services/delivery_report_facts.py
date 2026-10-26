@@ -278,7 +278,7 @@ async def _read_forge(
                     "reviews": await client.get_pull_request_reviews(str(number)),
                 }
             except Exception:  # noqa: BLE001 - comments still count if reviews fail
-                logger.info("Could not read reviews for %s", row.pr_key, exc_info=True)
+                logger.info("Could not read reviews for a pull request")
     # Bitbucket returns the raw object without a file list; the diffstat
     # endpoint is separate and not read here.
     return (
@@ -385,7 +385,7 @@ async def collect_forge_engagement(
                 include_reviews=True,
             )
         except Exception:  # noqa: BLE001 - one forge read cannot stop delivery
-            logger.info("Could not read engagement for %s", ref, exc_info=True)
+            logger.info("Could not read engagement from a forge")
             continue
         if isinstance(pr, Mapping):
             rows.extend(
