@@ -554,7 +554,7 @@ class TestRunWrites:
 
     @pytest.mark.asyncio
     async def test_automatic_creation_tool_adds_label_and_report_link(
-        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+        self, db_session: Session, test_user: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An allowed report tool call creates a labelled, linked follow-up."""
         run = _report_run(db_session, test_user.account_id)
@@ -590,7 +590,7 @@ class TestRunWrites:
         )
         monkeypatch.setattr(mcp, "api_create_issue", create)
 
-        result = await mcp.create_issue.__wrapped__(
+        result = await mcp.create_issue.__wrapped__(  # type: ignore[attr-defined]
             project="example/app",
             title="Add a test for the search hot path",
             description="The hot path changed without a test. backend/search.py:42",
@@ -598,11 +598,13 @@ class TestRunWrites:
         )
 
         assert result.status == "created"
+        assert create.await_args is not None
         issue = create.await_args.kwargs["issue"]
         assert issue.labels == ["preloop:proposed"]
         assert "backend/search.py:42" in issue.description
         assert f"/console/delivery-reports/{run.id}" in issue.description
         last = _audit_rows(db_session, test_user.account_id)[-1]
+        assert isinstance(last.details, dict)
         assert last.details["allowed_by"] == "tracker_writes.create_follow_up=allow"
 
     @pytest.mark.parametrize("status", ["closed", "Done", "resolved"])

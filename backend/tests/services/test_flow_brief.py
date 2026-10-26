@@ -216,6 +216,7 @@ async def test_finished_run_replaces_stored_brief_from_published_body(
     )
 
     async def monitor(session_reference: str, agent_executor: Any) -> dict[str, Any]:
+        assert orchestrator.execution_log is not None
         orchestrator.execution_log.result = {
             "pr_url": "https://example.com/pr/1",
             "brief": parse_brief(_fixture("partial.md")),
@@ -243,6 +244,7 @@ async def test_finished_run_replaces_stored_brief_from_published_body(
     ):
         await orchestrator.run()
 
+    assert orchestrator.execution_log is not None
     db_session.refresh(orchestrator.execution_log)
     assert orchestrator.execution_log.status == "SUCCEEDED"
     assert orchestrator.execution_log.result["brief"] == parse_brief(
