@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -168,12 +168,19 @@ def test_attention_only_includes_proposals_that_need_a_person(
         {"title": "In flight"},
         {"title": "Applied"},
         {"title": "Check the tracker"},
+        {"title": "Abandoned claim"},
+        {"title": "Claim with no timestamp"},
     ]
     report["proposal_actions"] = {
         "follow_up:2": {"status": "dismissed"},
-        "follow_up:3": {"status": "pending"},
+        "follow_up:3": {"status": "pending", "at": datetime.now(UTC).isoformat()},
         "follow_up:4": {"status": "applied"},
         "follow_up:5": {"status": "unconfirmed"},
+        "follow_up:6": {
+            "status": "pending",
+            "at": (datetime.now(UTC) - timedelta(minutes=16)).isoformat(),
+        },
+        "follow_up:7": {"status": "pending"},
     }
     older = _run(db_session, flow, hours=0, result=report)
     # The older proposal must survive more than one collection page.
@@ -190,6 +197,8 @@ def test_attention_only_includes_proposals_that_need_a_person(
         "reopen:example/app#100",
         "follow_up:0",
         "follow_up:5",
+        "follow_up:6",
+        "follow_up:7",
     ]
     assert body[0]["proposals"][-1]["unconfirmed"] is True
     fingerprint = body[0]["fingerprint"]
@@ -202,6 +211,39 @@ def test_attention_only_includes_proposals_that_need_a_person(
         record={"kind": "dismiss", "status": "dismissed", "reason": "Expected"},
     )
     assert client.get(f"{BASE}/attention").json()[0]["fingerprint"] != fingerprint
+
+    detail = client.get(f"{BASE}/{older.id}").json()["report"]["proposal_actions"]
+    assert detail["follow_up:3"]["status"] == "pending"
+    assert detail["follow_up:6"]["status"] == "unconfirmed"
+    assert detail["follow_up:7"]["status"] == "unconfirmed"
+    db_session.refresh(older)
+    assert older.result["proposal_actions"]["follow_up:6"]["status"] == "pending"
+
+
+def test_attention_query_bounds_candidates_after_filtering_settled_reports(
+    db_session: Session, test_user
+) -> None:
+    flow = _flow(db_session, test_user.account_id, report=True)
+    oldest = _run(db_session, flow, hours=0, result={"follow_ups": [{"title": "Old"}]})
+    newest = _run(db_session, flow, hours=1, result={"follow_ups": [{"title": "New"}]})
+    for index in range(3):
+        _run(
+            db_session,
+            flow,
+            hours=index + 2,
+            result={
+                "follow_ups": [{"title": "Settled"}],
+                "proposal_actions": {"follow_up:0": {"status": "dismissed"}},
+            },
+        )
+    rows = crud_flow_execution.delivery_reports_with_proposals(
+        db_session, account_id=str(test_user.account_id), limit=1
+    )
+    assert [row.id for row in rows] == [newest.id]
+    rows = crud_flow_execution.delivery_reports_with_proposals(
+        db_session, account_id=str(test_user.account_id), limit=2
+    )
+    assert [row.id for row in rows] == [newest.id, oldest.id]
 
 
 def test_attention_is_quiet_for_verdicts_and_run_applied_proposals(

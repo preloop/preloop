@@ -146,6 +146,7 @@
   "GET /api/v1/delivery-report/policy/projects/{project_id}": "deny",
   "GET /api/v1/delivery-report/subscription": "deny",
   "GET /api/v1/delivery-reports": "deny",
+  "GET /api/v1/delivery-reports/attention": "deny",
   "GET /api/v1/delivery-reports/{execution_id}": "deny",
   "GET /api/v1/desktop/endpoints": "deny",
   "GET /api/v1/desktop/views/{view_id}": "deny",

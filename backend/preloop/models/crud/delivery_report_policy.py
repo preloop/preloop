@@ -457,6 +457,31 @@ def store_pull_request_details(
     return pull
 
 
+def active_project_repositories(
+    db: Session, *, account_id: Any, repositories: Sequence[str]
+) -> set[str]:
+    """Requested repositories with an active project, organization and tracker."""
+    if not repositories:
+        return set()
+    return set(
+        db.scalars(
+            select(func.lower(models.Project.slug))
+            .join(
+                models.Organization,
+                models.Organization.id == models.Project.organization_id,
+            )
+            .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+            .where(
+                models.Tracker.account_id == _uuid(account_id),
+                func.lower(models.Project.slug).in_([r.lower() for r in repositories]),
+                models.Project.is_active.is_(True),
+                models.Organization.is_active.is_(True),
+                models.Tracker.is_active.is_(True),
+            )
+        )
+    )
+
+
 def project_for_repository(
     db: Session, *, account_id: Any, repository: str
 ) -> Optional[tuple[models.Project, models.Organization, models.Tracker]]:

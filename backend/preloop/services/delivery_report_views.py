@@ -30,6 +30,7 @@ from preloop.schemas.delivery_report import (
     ExecutionPullRequest,
 )
 from preloop.services.delivery_report import compute_summary
+from preloop.services.delivery_report_proposals import needs_confirmation
 from preloop.services.flow_pr_binding import normalize_pr_url
 
 logger = logging.getLogger(__name__)
@@ -57,12 +58,22 @@ def _int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def report_projects(report: Mapping[str, Any]) -> List[str]:
-    """The projects named by shipped work, issues and proposals in the report."""
+def report_work_projects(report: Mapping[str, Any]) -> List[str]:
+    """Work scope used as the fallback target for a follow-up tracker write."""
     names = set()
     for change in report.get("shipped") or []:
         if isinstance(change, Mapping) and change.get("project"):
             names.add(str(change["project"]))
+    for item in report.get("closed_issues") or []:
+        ref = item.get("ref") if isinstance(item, Mapping) else None
+        if isinstance(ref, str) and "#" in ref and ref.split("#", 1)[0]:
+            names.add(ref.split("#", 1)[0])
+    return sorted(names)
+
+
+def report_projects(report: Mapping[str, Any]) -> List[str]:
+    """All named projects for display and reruns, including open work."""
+    names = set(report_work_projects(report))
     for section in (
         "closed_issues",
         "open_past_window",
@@ -183,6 +194,14 @@ def report_detail(
     """The full report of one run, with stale reopen requests marked."""
     row = report_row(execution)
     report = dict(execution.result) if isinstance(execution.result, Mapping) else {}
+    # Project abandoned claims as unconfirmed without changing the persisted
+    # claim: the action service still enforces its no-duplicate-write guard.
+    report["proposal_actions"] = {
+        key: {**decision, "status": "unconfirmed"}
+        if needs_confirmation(decision)
+        else decision
+        for key, decision in (report.get("proposal_actions") or {}).items()
+    }
     return DeliveryReportDetail(
         **row.model_dump(by_alias=True),
         report=report,
@@ -197,16 +216,11 @@ def rerun_projects(
     db: Session, *, account_id: Any, report: Mapping[str, Any]
 ) -> List[str]:
     """Connected projects in this report that the current policy permits."""
-    from preloop.services.delivery_report import validate_report_project
+    from preloop.services.delivery_report import report_project_errors
 
-    allowed = []
-    for project in report_projects(report):
-        try:
-            validate_report_project(db, account_id=account_id, project=project)
-        except ValueError:
-            continue
-        allowed.append(project)
-    return allowed
+    projects = report_projects(report)
+    errors = report_project_errors(db, account_id=account_id, projects=projects)
+    return [project for project in projects if project not in errors]
 
 
 def report_attention(
@@ -216,7 +230,6 @@ def report_attention(
     report = execution.result if isinstance(execution.result, dict) else {}
     decisions = report.get("proposal_actions") or {}
     proposals = []
-    stale = stale_reopen_requests(db, account_id=account_id, report=report)
     for kind, entries in (
         ("reopen", report.get("reopen_requests") or []),
         ("follow_up", report.get("follow_ups") or []),
@@ -231,7 +244,10 @@ def report_attention(
                 continue
             key = f"reopen:{ref}" if kind == "reopen" else f"follow_up:{index}"
             decision = decisions.get(key) or {}
-            if decision.get("status") in {"pending", "applied", "dismissed"}:
+            unconfirmed = needs_confirmation(decision)
+            if decision.get("status") in {"applied", "dismissed"} or (
+                decision.get("status") == "pending" and not unconfirmed
+            ):
                 continue
             proposals.append(
                 DeliveryReportPendingProposal(
@@ -243,16 +259,30 @@ def report_attention(
                         else entry.get("title") or "Proposed follow-up"
                     ),
                     reason=entry.get("reason"),
-                    stale_reason=(
-                        stale.get(ref)
-                        if kind == "reopen" and isinstance(ref, str)
-                        else None
-                    ),
-                    unconfirmed=decision.get("status") == "unconfirmed",
+                    unconfirmed=unconfirmed,
                 )
             )
     if not proposals:
         return None
+    pending_refs = {
+        p.key.removeprefix("reopen:") for p in proposals if p.kind == "reopen"
+    }
+    if pending_refs:
+        stale = stale_reopen_requests(
+            db,
+            account_id=account_id,
+            report={
+                **report,
+                "reopen_requests": [
+                    r
+                    for r in report.get("reopen_requests") or []
+                    if isinstance(r, dict) and r.get("ref") in pending_refs
+                ],
+            },
+        )
+        for proposal in proposals:
+            if proposal.kind == "reopen":
+                proposal.stale_reason = stale.get(proposal.key.removeprefix("reopen:"))
     return DeliveryReportAttention(
         id=execution.id,
         started_at=execution.start_time,

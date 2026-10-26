@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import event
 
 from preloop.models import models
 from preloop.models.crud import (
@@ -545,6 +546,53 @@ def test_project_rerun_honors_disabled_repository(db_session, test_user) -> None
         dr.validate_report_project(
             db_session, account_id=test_user.account_id, project=REPO
         )
+
+
+def test_rerun_choices_use_bounded_reads_for_multiple_projects(
+    db_session, test_user
+) -> None:
+    from preloop.services.delivery_report_views import rerun_projects
+
+    active = _project(db_session, test_user.account_id)
+    disabled = _project(db_session, test_user.account_id, "example/disabled")
+    disconnected = _project(db_session, test_user.account_id, "example/disconnected")
+    disconnected.is_active = False
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        project_id=disabled.id,
+        overrides={"enabled": False},
+    )
+    db_session.flush()
+    account_id = test_user.account_id
+    projects = [active.slug, disabled.slug, disconnected.slug, "example/missing"]
+    statements = []
+
+    def record(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        allowed = rerun_projects(
+            db_session,
+            account_id=account_id,
+            report={
+                "shipped": [{"project": project} for project in projects],
+            },
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert allowed == [REPO]
+    assert len(statements) <= 3
 
 
 def test_project_rerun_uses_manual_trigger_and_rejects_policy_changes(

@@ -2606,26 +2606,43 @@ def validate_report_project(db: Any, *, account_id: Any, project: Any) -> str:
     Raises:
         ValueError: The project is disconnected, disabled or outside scope.
     """
-    from preloop.models.crud import crud_delivery_report_policy
-
     if not isinstance(project, str) or not project.strip():
         raise ValueError("Choose one connected project for the report")
     project = project.strip().lower()
+    errors = report_project_errors(db, account_id=account_id, projects=[project])
+    if project in errors:
+        raise ValueError(errors[project])
+    return project
+
+
+def report_project_errors(
+    db: Any, *, account_id: Any, projects: Sequence[str]
+) -> Dict[str, str]:
+    """Validate rerun choices in three account-scoped reads, independent of count."""
+    from preloop.models.crud import crud_delivery_report_policy
+
+    if not projects:
+        return {}
     account = crud_delivery_report_policy.get_overrides(db, account_id=account_id)
     if not resolve_policy(account).enabled:
-        raise ValueError("Delivery reports are disabled by the report policy")
+        return {
+            p: "Delivery reports are disabled by the report policy" for p in projects
+        }
     overrides = crud_delivery_report_policy.project_overrides(db, account_id=account_id)
-    policy = resolve_policy(account, overrides.get(project))
-    if not policy.enabled:
-        raise ValueError("Delivery reports are disabled by the report policy")
-    if policy.projects and project not in {p.lower() for p in policy.projects}:
-        raise ValueError("The project is outside the report policy scope")
-    connected = crud_delivery_report_policy.project_for_repository(
-        db, account_id=account_id, repository=project
+    connected = crud_delivery_report_policy.active_project_repositories(
+        db, account_id=account_id, repositories=projects
     )
-    if connected is None or not all(row.is_active for row in connected):
-        raise ValueError("The project is no longer connected")
-    return project
+    errors = {}
+    for project in projects:
+        name = project.lower()
+        policy = resolve_policy(account, overrides.get(name))
+        if not policy.enabled:
+            errors[project] = "Delivery reports are disabled by the report policy"
+        elif policy.projects and name not in {p.lower() for p in policy.projects}:
+            errors[project] = "The project is outside the report policy scope"
+        elif name not in connected:
+            errors[project] = "The project is no longer connected"
+    return errors
 
 
 def plan_policy_run(

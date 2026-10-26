@@ -14617,7 +14617,8 @@ paths:
       - Delivery Reports
       - Delivery Reports
       summary: Delivery Report Attention
-      description: Pending report decisions, across all pages of this account's reports.
+      description: Pending decisions from up to 100 report runs, independent of collection
+        paging.
       operationId: delivery_report_attention_api_v1_delivery_reports_attention_get
       responses:
         '200':
@@ -51257,6 +51258,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

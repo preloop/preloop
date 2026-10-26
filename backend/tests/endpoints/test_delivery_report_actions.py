@@ -197,6 +197,25 @@ def test_default_policy_keeps_both_proposals_in_the_report(
     ]
 
 
+def test_follow_up_fallback_uses_shipped_scope_despite_other_open_work(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    report = _fixture_report()
+    report["follow_ups"][0].pop("ref")
+    report["open_past_window"] = [{"ref": "example/other#20"}]
+    run = _run(
+        db_session,
+        _flow(db_session, test_user.account_id, report=True),
+        hours=0,
+        result=report,
+    )
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
+    )
+    assert response.status_code == 200, response.text
+    assert tracker["fake"].calls[0][:2] == ("create_issue", "example/app")
+
+
 def test_open_issue_click_creates_one_labelled_issue(
     client, db_session: Session, test_user, tracker: Dict[str, Any]
 ) -> None:

@@ -72,7 +72,9 @@ const UNVERIFIED_ALLOWANCE = {
   'views/authed/delivery-report-view.ts': 1,
   'views/authed/delivery-reports-view.ts': 1,
   'views/authed/device-fleet-view.ts': 2,
-  'views/authed/flow-execution-view.ts': 2,
+  // PR state uses success/neutral; current-revision verdicts use the shared
+  // success/warning/neutral helper, covered by the execution view state matrix.
+  'views/authed/flow-execution-view.ts': 4,
   'views/authed/flow-executions-view.ts': 1,
   'views/authed/flow-view.ts': 3,
   'views/authed/flows-view.ts': 3,

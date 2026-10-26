@@ -12,7 +12,9 @@ from sqlalchemy import (
     and_,
     cast,
     case,
+    column,
     func,
+    literal,
     literal_column,
     or_,
     true,
@@ -26,7 +28,7 @@ from sqlalchemy.orm import (
     with_expression,
 )
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.dialects.postgresql import JSONPATH
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.future import select
 
 from preloop.models import models
@@ -1179,9 +1181,56 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return rows, total
 
     def delivery_reports_with_proposals(
-        self, db: Session, *, account_id: str
+        self, db: Session, *, account_id: str, limit: int = 100
     ) -> List[models.FlowExecution]:
-        """All report runs with proposals, including older unhandled decisions."""
+        """Newest candidate reports, filtering settled actions before the bound.
+
+        There is no age cutoff: an older undecided report survives any number
+        of newer reports whose proposals are already settled. Staleness and
+        claim liveness are checked by the view only for these bounded rows.
+        """
+        result = models.FlowExecution.result
+
+        def pending(section: str, kind: str) -> ColumnElement[bool]:
+            entries = (
+                func.jsonb_array_elements(
+                    case(
+                        (
+                            func.jsonb_typeof(result[section]) == "array",
+                            result[section],
+                        ),
+                        else_=literal([], type_=JSONB),
+                    )
+                )
+                .table_valued(column("value", JSONB), with_ordinality="ordinality")
+                .render_derived(name=kind)
+            )
+            entry = entries.c.value
+            key = (
+                (literal("reopen:") + entry["ref"].astext)
+                if kind == "reopen"
+                else (literal("follow_up:") + cast(entries.c.ordinality - 1, String))
+            )
+            status = result["proposal_actions"][key]["status"].astext
+            eligible = (
+                and_(
+                    func.coalesce(entry["ref"].astext, "") != "",
+                    func.coalesce(entry["applied"].astext, "false") != "true",
+                )
+                if kind == "reopen"
+                else func.coalesce(entry["issue_url"].astext, "") == ""
+            )
+            return (
+                select(1)
+                .select_from(entries)
+                .where(
+                    eligible,
+                    func.coalesce(status, "").notin_(("applied", "dismissed")),
+                )
+                .correlate(models.FlowExecution)
+                .exists()
+            )
+
         return (
             db.query(models.FlowExecution)
             .join(models.Flow)
@@ -1197,16 +1246,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.Flow.agent_config["report_kind"].as_string()
                 == "delivery_report",
                 or_(
-                    func.jsonb_path_exists(
-                        models.FlowExecution.result, cast("$.follow_ups[*]", JSONPATH)
-                    ),
-                    func.jsonb_path_exists(
-                        models.FlowExecution.result,
-                        cast("$.reopen_requests[*]", JSONPATH),
-                    ),
+                    pending("follow_ups", "follow_up"),
+                    pending("reopen_requests", "reopen"),
                 ),
             )
             .order_by(models.FlowExecution.start_time.desc())
+            .limit(limit)
             .all()
         )
 

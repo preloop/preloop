@@ -59,7 +59,7 @@ def delivery_report_attention(
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> list[DeliveryReportAttention]:
-    """Pending report decisions, across all pages of this account's reports."""
+    """Pending decisions from up to 100 report runs, independent of collection paging."""
     account = get_account_or_404(db, current_user)
     items = []
     for execution in crud_flow_execution.delivery_reports_with_proposals(
