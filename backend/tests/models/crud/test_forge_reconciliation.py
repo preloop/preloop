@@ -168,28 +168,68 @@ async def test_null_state_refresh_ignores_stale_validator(
 
 
 @pytest.mark.asyncio
-async def test_unobserved_record_precedes_rearmed_open_record(
+async def test_webhook_due_record_is_read_during_legacy_backfill(
     db_session: Session, test_user: Any, forge: FakeForge
 ) -> None:
+    for number in range(30):
+        make_pr(
+            db_session,
+            test_user.account_id,
+            github_key(number),
+            state=None,
+            created_at=NOW - timedelta(days=90),
+        )
     make_pr(
         db_session,
         test_user.account_id,
         github_key(34),
-        state="open",
-        refresh_due_at=NOW - timedelta(minutes=1),
-    )
-    make_pr(
-        db_session,
-        test_user.account_id,
-        github_key(35),
-        state=None,
-        created_at=NOW - timedelta(days=90),
+        state="closed",
+        refresh_due_at=NOW - timedelta(seconds=1),
     )
 
-    counts = await refresh.refresh_pull_requests(db_session, now=NOW, limit=1)
+    first = await refresh.refresh_pull_requests(db_session, now=NOW)
+    second = await refresh.refresh_pull_requests(
+        db_session, now=NOW + timedelta(minutes=1)
+    )
 
-    assert counts["claimed"] == 1
-    assert forge.reads == [("/repos/acme/widgets/pulls/35", None)]
+    assert (first["claimed"], second["claimed"]) == (25, 6)
+    assert forge.reads[0] == ("/repos/acme/widgets/pulls/34", None)
+    assert len({path for path, _ in forge.reads}) == 31
+
+
+@pytest.mark.asyncio
+async def test_legacy_backfill_advances_while_open_rows_are_due(
+    db_session: Session, test_user: Any, forge: FakeForge
+) -> None:
+    for number in range(30):
+        make_pr(
+            db_session,
+            test_user.account_id,
+            github_key(number),
+            state=None,
+            created_at=NOW - timedelta(days=90),
+        )
+        make_pr(
+            db_session,
+            test_user.account_id,
+            github_key(number + 100),
+            state="open",
+            refresh_due_at=NOW - timedelta(seconds=1),
+        )
+
+    counts = [
+        await refresh.refresh_pull_requests(
+            db_session, now=NOW + timedelta(minutes=minute)
+        )
+        for minute in range(3)
+    ]
+
+    assert [count["claimed"] for count in counts] == [25, 25, 10]
+    first_known = sum(
+        int(path.rsplit("/", 1)[-1]) >= 100 for path, _ in forge.reads[:25]
+    )
+    assert first_known == 13
+    assert len({path for path, _ in forge.reads}) == 60
 
 
 @pytest.mark.asyncio
