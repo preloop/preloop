@@ -110,20 +110,29 @@ describe('attention count parity', () => {
       .callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
 
-        if (url === '/api/v1/delivery-reports/attention')
+        if (url.startsWith('/api/v1/attention/extension-items'))
           return json([
             {
               id: 'report-1',
-              projects: ['example/app'],
-              started_at: ago(3600_000),
-              fingerprint: 'pending',
-              proposals: [
-                {
-                  key: 'follow_up:0',
-                  kind: 'follow_up',
-                  title: 'Add a measurement',
-                },
-              ],
+              source: 'core:delivery_report',
+              title: 'Delivery report needs you',
+              detail: '1 pending proposal',
+              href: '/console/delivery-reports/report-1#needs-you',
+              severity: 'action',
+              opened_at: ago(3600_000),
+              delivery_report: {
+                id: 'report-1',
+                projects: ['example/app'],
+                started_at: ago(3600_000),
+                fingerprint: 'pending',
+                proposals: [
+                  {
+                    key: 'follow_up:0',
+                    kind: 'follow_up',
+                    title: 'Add a measurement',
+                  },
+                ],
+              },
             },
           ]);
         if (url.startsWith('/api/v1/agents')) {

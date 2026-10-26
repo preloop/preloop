@@ -219,9 +219,19 @@ describe('AttentionView', () => {
         }
 
         if (url.startsWith('/api/v1/attention/extension-items'))
-          return json(extensionItemsResponse);
-        if (url === '/api/v1/delivery-reports/attention')
-          return json(deliveryReportsResponse);
+          return json([
+            ...extensionItemsResponse,
+            ...deliveryReportsResponse.map((report) => ({
+              id: report.id,
+              source: 'core:delivery_report',
+              title: 'Delivery report needs you',
+              detail: `${report.proposals.length} pending proposals`,
+              href: `/console/delivery-reports/${report.id}#needs-you`,
+              severity: 'action',
+              opened_at: report.started_at,
+              delivery_report: report,
+            })),
+          ]);
         if (url.startsWith('/api/v1/attention/dismissals')) {
           if (!dismissalsSupported) {
             return new Response('{"detail":"Not Found"}', { status: 404 });

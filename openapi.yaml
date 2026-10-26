@@ -4387,25 +4387,39 @@ paths:
       description: Bound contribution fan-out while async providers run on the API
         loop.
       operationId: list_extension_attention_items_api_v1_attention_extension_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: include_delivery_reports
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Delivery Reports
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: array
                 items:
                   $ref: '#/components/schemas/ExtensionAttentionItem'
-                type: array
                 title: Response List Extension Attention Items Api V1 Attention Extension
                   Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      security:
-      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/attention/dismissals:
     get:
@@ -33272,6 +33286,10 @@ components:
           type: string
           format: date-time
           title: Opened At
+        delivery_report:
+          anyOf:
+          - $ref: '#/components/schemas/DeliveryReportAttention'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -33283,7 +33301,7 @@ components:
       - severity
       - opened_at
       title: ExtensionAttentionItem
-      description: Neutral plugin item. Only local console destinations are accepted.
+      description: Console attention contribution with a local destination.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:

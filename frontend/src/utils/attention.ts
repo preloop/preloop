@@ -320,7 +320,7 @@ export const ATTENTION_KIND_META: Record<
   delivery_report: {
     label: 'Delivery report',
     plural: 'Delivery report needs you',
-    icon: 'journal-check',
+    icon: 'exclamation-triangle',
     sectionHref: '/console/delivery-reports',
   },
   approval: {
