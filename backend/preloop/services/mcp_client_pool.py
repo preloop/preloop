@@ -8,8 +8,9 @@ import asyncio
 import hashlib
 import json
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional
+from uuid import UUID
 
 import httpx as legacy_httpx
 import httpx2 as httpx
@@ -50,9 +51,26 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
     return exc
 
 
+class MCPAuthenticationError(PermissionError):
+    """Sanitized upstream auth rejection retaining its HTTP status for audit."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(
+            f"MCP server rejected authentication or authorization (HTTP {status_code}). "
+            "Configure or reconnect authentication in Preloop, then rescan. "
+            "Credentials cached by your local agent may require a separate sign-in."
+        )
+
+
 def describe_mcp_connection_error(exc: BaseException) -> str:
     """Explain the failure without exposing request URLs, headers or credentials."""
     cause = _unwrap_exception_group(exc)
+    from preloop.services.upstream_mcp_oauth import OAuthError
+    from preloop.models.crud.upstream_mcp_oauth import OAuthContextError
+
+    if isinstance(cause, (OAuthError, OAuthContextError, MCPAuthenticationError)):
+        return str(cause)
     if isinstance(cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)):
         code = cause.response.status_code
         if code in {401, 403}:
@@ -85,6 +103,10 @@ def describe_mcp_connection_error(exc: BaseException) -> str:
         f"MCP connection failed ({type(cause).__name__}). "
         "Verify the endpoint, authentication and MCP protocol, then rescan."
     )
+
+
+class MCPToolOutcomeUnknownError(ConnectionError):
+    """A dispatched tool may have executed; no transport recovery may replay it."""
 
 
 class UpstreamToolContent(list):
@@ -206,6 +228,9 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._exit_stack: Optional[AsyncExitStack] = None
         self._connected = False
+        self.oauth_server_id: UUID | None = None
+        self.oauth_version: int | None = None
+        self._oauth_recovery_version: int | None = None
         self._protocol_version: str | None = None
         self._protocol_url: str | None = None
         self.config_fingerprint = mcp_client_config_fingerprint(
@@ -248,9 +273,9 @@ class MCPClient:
         return headers, auth
 
     @asynccontextmanager
-    async def _session_context(
+    async def _raw_session_context(
         self, *, sse_read_timeout: float = 60.0
-    ) -> AsyncIterator[tuple[ClientSession, ClientSession]]:
+    ) -> AsyncIterator[tuple[ClientSession, Any]]:
         """Create a short-lived MCP session in the current task."""
         if self.url != self._protocol_url:
             self._protocol_version = None
@@ -290,6 +315,64 @@ class MCPClient:
                     self._protocol_url = self.url
                     yield session, session
 
+    async def _load_oauth(self, *, force_version: int | None = None) -> None:
+        if self.oauth_server_id is None:
+            return
+        from preloop.services.upstream_mcp_oauth import UpstreamMCPOAuthService
+
+        snapshot = await UpstreamMCPOAuthService().credentials(
+            self.oauth_server_id, force_version=force_version
+        )
+        self.url = snapshot.url
+        self.transport = snapshot.transport
+        self.auth_config = snapshot.config
+        self.oauth_version = snapshot.version
+        if self.auth_config.get("introspection") is not None:
+            from preloop.models.schemas.grant_introspection import IntrospectionConfig
+            from preloop.services.grant_introspection import grant_introspector
+
+            result = await grant_introspector.evaluate(
+                self.auth_config.get("access_token"),
+                IntrospectionConfig.model_validate(self.auth_config["introspection"]),
+                server_id=str(self.oauth_server_id),
+            )
+            if result.deny_reason:
+                raise PermissionError(
+                    "OAuth grant is inactive or lacks the required scope. Reconnect the account."
+                )
+
+    @asynccontextmanager
+    async def _session_context(
+        self, *, sse_read_timeout: float = 60.0
+    ) -> AsyncIterator[tuple[ClientSession, Any]]:
+        # A pool entry is only a handle: re-read the credential version before
+        # EVERY session so another worker's rotation/disconnect takes effect.
+        await self._load_oauth(force_version=self._oauth_recovery_version)
+        self._oauth_recovery_version = None
+        for attempt in range(2):
+            yielded = False
+            try:
+                async with self._raw_session_context(
+                    sse_read_timeout=sse_read_timeout
+                ) as session:
+                    yielded = True
+                    yield session
+                return
+            except BaseException as error:
+                cause = _unwrap_exception_group(error)
+                if (
+                    not yielded
+                    and attempt == 0
+                    and self.oauth_server_id is not None
+                    and isinstance(
+                        cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                    )
+                    and cause.response.status_code == 401
+                ):
+                    await self._load_oauth(force_version=self.oauth_version)
+                    continue
+                raise
+
     async def connect(self):
         """Verify the MCP server is reachable.
 
@@ -319,6 +402,16 @@ class MCPClient:
             )
             self._connected = False
             if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
+                if self.auth_type == "oauth":
+                    raise PermissionError(
+                        describe_mcp_connection_error(target_exc)
+                    ) from None
                 raise target_exc from None
             if "cancel scope" in str(target_exc).lower() or isinstance(
                 e, BaseExceptionGroup
@@ -373,10 +466,20 @@ class MCPClient:
             target_exc = _unwrap_exception_group(e)
 
             logger.error(
-                "Error listing tools on %s: %s", self.url, target_exc, exc_info=True
+                "Error listing MCP tools: %s", describe_mcp_connection_error(target_exc)
             )
 
             if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
+                if self.auth_type == "oauth":
+                    raise PermissionError(
+                        describe_mcp_connection_error(target_exc)
+                    ) from None
                 raise target_exc from None
 
             if "cancel scope" in str(target_exc).lower() or type(e).__name__ in (
@@ -384,7 +487,7 @@ class MCPClient:
                 "BaseExceptionGroup",
             ):
                 raise ConnectionError(
-                    f"MCP server '{self.url}' is unavailable: {target_exc}"
+                    "MCP server is unavailable; check connection settings"
                 ) from None
 
             raise e
@@ -408,6 +511,7 @@ class MCPClient:
         if not self._connected:
             raise RuntimeError("Client not connected. Call connect() first.")
 
+        dispatched = False
         try:
             async with self._session_context(sse_read_timeout=60.0) as (
                 session,
@@ -434,6 +538,7 @@ class MCPClient:
                         seen.add(cursor)
                     else:
                         raise ValueError("MCP tool listing exceeded the page limit")
+                dispatched = True
                 # Execute tool call
                 result = await session.call_tool(name=tool_name, arguments=arguments)
 
@@ -476,29 +581,45 @@ class MCPClient:
             # get an actionable message.
             target_exc = _unwrap_exception_group(e)
 
-            if isinstance(target_exc, Exception):
-                logger.error(
-                    "Error calling tool %s on %s: %s",
-                    tool_name,
-                    self.url,
+            if (
+                isinstance(
                     target_exc,
+                    (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError),
                 )
-                raise target_exc from None
-
-            # Pure BaseException (GeneratorExit/cancel scope, etc.): convert the
-            # noisy async-teardown case into a clean ConnectionError, otherwise
-            # re-raise untouched.
-            logger.error(
-                "Error calling tool %s on %s: %s", tool_name, self.url, target_exc
-            )
-            if "cancel scope" in str(target_exc).lower() or type(e).__name__ in (
-                "ExceptionGroup",
-                "BaseExceptionGroup",
+                and target_exc.response.status_code == 401
             ):
-                raise ConnectionError(
-                    f"MCP server '{self.url}' is unavailable: {target_exc}"
+                self._oauth_recovery_version = self.oauth_version
+            if isinstance(target_exc, asyncio.CancelledError):
+                raise
+            message = describe_mcp_connection_error(target_exc)
+            logger.warning("Upstream MCP tool request failed: %s", message)
+            if dispatched and not (
+                isinstance(
+                    target_exc,
+                    (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError),
+                )
+                and target_exc.response.status_code in {401, 403}
+            ):
+                raise MCPToolOutcomeUnknownError(
+                    "The MCP tool request was dispatched but its outcome is unknown. "
+                    "It may have executed. Check the remote result before deciding "
+                    "whether to invoke it again. Preloop did not replay the request."
                 ) from None
-            raise e
+            if isinstance(target_exc, Exception):
+                if isinstance(
+                    target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                ) and target_exc.response.status_code in {401, 403}:
+                    raise MCPAuthenticationError(
+                        target_exc.response.status_code
+                    ) from None
+                if self.auth_type == "oauth":
+                    raise PermissionError(message) from None
+                raise ConnectionError(message) from None
+            if isinstance(e, BaseExceptionGroup):
+                raise MCPToolOutcomeUnknownError(
+                    "MCP tool connection ended; the remote outcome may be unknown. Check it before retrying."
+                ) from None
+            raise
 
 
 class MCPClientPool:
@@ -596,6 +717,8 @@ class MCPClientPool:
                 auth_config=auth_config,
                 transport=transport,
             )
+            if auth_type == "oauth":
+                client.oauth_server_id = UUID(server_id)
             await client.connect()
             self._clients[server_id] = client
             logger.info("Created new MCP client")

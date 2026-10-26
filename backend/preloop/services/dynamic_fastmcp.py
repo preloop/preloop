@@ -578,6 +578,14 @@ async def _evaluate_snapshot_grant(
     auth = snapshot.client_config["auth_config"]
     if not isinstance(auth, dict) or auth.get("introspection") is None:
         return None
+    if snapshot.client_config["auth_type"] == "oauth":
+        from preloop.services.upstream_mcp_oauth import UpstreamMCPOAuthService
+
+        current = await UpstreamMCPOAuthService().credentials(
+            uuid.UUID(snapshot.client_config["server_id"])
+        )
+        auth = current.config
+        snapshot.client_config["auth_config"] = auth
     config = IntrospectionConfig.model_validate(auth["introspection"])
     auth_type = snapshot.client_config["auth_type"]
     if auth_type not in {"bearer", "oauth"}:
@@ -692,10 +700,16 @@ def _proxied_exception_outcome(
     ``http_<status>`` code; anything else is ``failed``. Transport and auth
     failures are written to the MCP server's ``last_error``.
     """
-    status_code = getattr(getattr(cause, "response", None), "status_code", None)
+    from preloop.services.mcp_client_pool import MCPAuthenticationError
+
+    status_code = (
+        cause.status_code
+        if isinstance(cause, MCPAuthenticationError)
+        else getattr(getattr(cause, "response", None), "status_code", None)
+    )
     reason = _short_reason(cause) or type(cause).__name__
     if isinstance(
-        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError, MCPAuthenticationError)
     ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
@@ -2127,6 +2141,7 @@ async def {internal_name}({params_str}):
         from preloop.services.mcp_client_pool import (
             _unwrap_exception_group,
             is_mcp_unavailable_error,
+            MCPToolOutcomeUnknownError,
         )
 
         cause = _unwrap_exception_group(e)
@@ -2139,6 +2154,8 @@ async def {internal_name}({params_str}):
         outcome = _proxied_exception_outcome(
             cause, server_id=locals().get("server_id"), unavailable=unavailable
         )
+        if isinstance(cause, MCPToolOutcomeUnknownError):
+            return _wrapper_tool_error(str(cause), status=outcome)
         if unavailable:
             return _wrapper_tool_error(
                 f"The '{{server_label}}' MCP server is temporarily unavailable, so the "

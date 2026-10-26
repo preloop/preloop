@@ -376,4 +376,102 @@ describe('MCPServerForm', () => {
       expect((prefix as any)?.value).to.equal('');
     });
   });
+  it('keeps saved secrets write-only and saves explicit OAuth setup without reconnecting an unchanged grant', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'connected',
+      auth_config: {
+        client_id: 'synthetic-client',
+        client_secret: '***REDACTED***',
+        issuer: 'https://identity.example.com',
+        scope: 'read write',
+      },
+    };
+    const el = await createForm(server);
+    expect((el as any).oauthClientSecret).to.equal('');
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    const connect = sinon.stub(el as any, '_startOAuthFlow').resolves();
+    await el.handleSave();
+    expect(connect.called).to.equal(false);
+    const config = update.firstCall.args[1].auth_config;
+    expect(config.client_id).to.equal('synthetic-client');
+    expect(config.client_secret).to.equal('***REDACTED***');
+    expect(config.issuer).to.equal('https://identity.example.com');
+    expect(config.scope).to.equal('read write');
+  });
+
+  it('saves an edited OAuth client configuration before opening consent', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'disconnected',
+    };
+    const el = await createForm(server);
+    Object.assign(el, {
+      oauthClientId: 'registered-client',
+      oauthIssuer: 'https://identity.example.com',
+      oauthScope: 'read write',
+      oauthClientSecret: 'synthetic-new-secret',
+    });
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    const connect = sinon.stub(el as any, '_startOAuthFlow').resolves();
+    await el.handleSave(true);
+    expect(update.firstCall.args[1].auth_config.client_secret).to.equal(
+      'synthetic-new-secret'
+    );
+    expect(update.calledBefore(connect)).to.equal(true);
+    expect(connect.calledOnceWithExactly(server.id)).to.equal(true);
+  });
+
+  for (const authConfig of [
+    { client_id: 'synthetic-client', scopes: ['read', 'write'] },
+    { client_id: 'synthetic-client', scope: ['read', 'write'] },
+    { client_id: 'synthetic-client', scope: '', scopes: ['read'] },
+    { client_id: 'synthetic-client' },
+    { access_token: '***REDACTED***' },
+  ]) {
+    it(`preserves unchanged OAuth configuration on rename: ${JSON.stringify(authConfig)}`, async () => {
+      const server = {
+        id: 'synthetic-oauth',
+        name: 'Synthetic OAuth',
+        url: 'https://resource.example.com/mcp',
+        auth_type: 'oauth',
+        connection_state: 'connected',
+        auth_config: authConfig,
+      };
+      const el = await createForm(server);
+      (el as any).serverName = 'Renamed OAuth';
+      const update = sinon.stub().resolves(server);
+      (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+      await el.handleSave();
+      expect(update.firstCall.args[1].auth_config).to.deep.equal(authConfig);
+    });
+  }
+
+  it('replaces the saved scope alias when consent scopes are edited', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'connected',
+      auth_config: { client_id: 'synthetic-client', scopes: ['read'] },
+    };
+    const el = await createForm(server);
+    (el as any).oauthScope = 'read write';
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    await el.handleSave();
+    expect(update.firstCall.args[1].auth_config).to.deep.equal({
+      client_id: 'synthetic-client',
+      scope: 'read write',
+    });
+  });
 });

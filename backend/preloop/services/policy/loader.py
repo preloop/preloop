@@ -1352,8 +1352,9 @@ class PolicyApplier:
     ) -> None:
         """Apply MCP server definitions."""
         from preloop.models.crud import crud_mcp_server
-        from preloop.models.models.mcp_server import MCPServer
+        from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth
         from preloop.models.schemas.mcp_server import merge_auth_config
+        from preloop.utils.redaction import REDACTED_STRING
 
         for server_def in servers:
             # Check if server exists by name
@@ -1371,23 +1372,41 @@ class PolicyApplier:
             if existing:
                 # Update existing server
                 if not dry_run:
-                    existing.url = server_def.url
-                    existing.transport = server_def.transport
-                    existing.auth_type = server_def.auth_type
+                    changes: Dict[str, Any] = {
+                        "url": server_def.url,
+                        "transport": server_def.transport,
+                        "auth_type": server_def.auth_type,
+                    }
                     # Only update auth_config if:
                     # 1. It's provided AND
                     # 2. It's NOT a redaction marker
                     # This prevents rollbacks from wiping credentials
                     if server_def.auth_config and not auth_config_is_redacted:
+                        incoming = server_def.auth_config
+                        if existing.auth_type == "oauth" == server_def.auth_type:
+                            # A policy or snapshot carries only the public OAuth
+                            # fields: keep every stored key it leaves out (client
+                            # secret, grant) so an unchanged binding stays
+                            # connected, even after a token refresh.
+                            stored = crud_upstream_mcp_oauth.config_for_edit(
+                                self.db, existing
+                            )
+                            incoming = {
+                                **{key: REDACTED_STRING for key in stored},
+                                **incoming,
+                            }
                         # Per-key markers keep the stored secret for that key.
-                        existing.auth_config = merge_auth_config(
-                            server_def.auth_config, existing.auth_config
-                        )
+                        changes["auth_config"] = incoming
                     elif auth_config_is_redacted:
                         logger.debug(
                             f"Skipping auth_config update for {server_def.name} "
                             "(redacted in snapshot, preserving existing credentials)"
                         )
+                    # The CRUD keeps OAuth secrets encrypted and invalidates
+                    # grants whose binding changed.
+                    crud_mcp_server.update(
+                        self.db, db_obj=existing, obj_in=changes, commit=False
+                    )
                 self._mcp_server_map[server_def.name] = existing.id
                 self._result.mcp_servers_updated += 1
                 logger.info(f"Updated MCP server: {server_def.name}")
@@ -1406,16 +1425,19 @@ class PolicyApplier:
                             f"Creating MCP server {server_def.name} without credentials "
                             "(redacted in snapshot). Configure auth_config manually."
                         )
-                    new_server = MCPServer(
-                        account_id=self.account_id,
-                        name=server_def.name,
-                        url=server_def.url,
-                        transport=server_def.transport,
-                        auth_type=server_def.auth_type,
-                        auth_config=actual_auth_config,
-                        status="active",
+                    new_server = crud_mcp_server.create(
+                        self.db,
+                        obj_in={
+                            "account_id": self.account_id,
+                            "name": server_def.name,
+                            "url": server_def.url,
+                            "transport": server_def.transport,
+                            "auth_type": server_def.auth_type,
+                            "auth_config": actual_auth_config,
+                            "status": "active",
+                        },
+                        commit=False,
                     )
-                    self.db.add(new_server)
                     self.db.flush()  # Get the ID
                     self._mcp_server_map[server_def.name] = new_server.id
                 self._result.mcp_servers_created += 1

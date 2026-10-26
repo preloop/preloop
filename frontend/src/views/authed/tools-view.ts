@@ -7,6 +7,7 @@ import {
   getTools,
   getToolsSummary,
   getMCPServers,
+  getMCPServer,
   deleteMCPServer,
   scanMCPServer,
   updateMCPServer,
@@ -1510,9 +1511,54 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.editingMCPServer = null;
   }
 
-  private _handleServerEdit(e: CustomEvent) {
-    this.editingMCPServer = e.detail.server;
-    this.isAddingMCPServer = false;
+  private async _handleServerEdit(e: CustomEvent) {
+    const server = e.detail.server ?? e.detail;
+    try {
+      // Lists contain public OAuth config only. Fetch redacted credential
+      // markers on demand so an edit preserves stored write-only secrets.
+      this.editingMCPServer = await getMCPServer(server.id);
+      this.isAddingMCPServer = false;
+    } catch (err: any) {
+      this.error = err.message || 'Failed to load MCP server for editing';
+    }
+  }
+
+  private async _handleConnectOAuth(serverId: string) {
+    this.mcpServers = this.mcpServers.map((server) =>
+      server.id === serverId
+        ? { ...server, connection_state: 'connecting' }
+        : server
+    );
+    try {
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/authorize-token`,
+        { method: 'POST' }
+      );
+      if (!response.ok) throw new Error('Could not start OAuth authorization.');
+      const { authorize_token: token } = await response.json();
+      window.location.assign(
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/authorize?code=${encodeURIComponent(token)}`
+      );
+    } catch {
+      this.oauthAlert = 'error';
+      await this.loadData();
+    }
+  }
+
+  private async _handleDisconnectOAuth(serverId: string) {
+    try {
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/disconnect`,
+        { method: 'POST' }
+      );
+      if (!response.ok) throw new Error('Could not disconnect OAuth.');
+      const updated = await response.json();
+      this.mcpServers = this.mcpServers.map((server) =>
+        server.id === serverId ? updated : server
+      );
+    } catch {
+      this.oauthAlert = 'error';
+    }
   }
 
   private async _handleScanMCPServer(serverId: string) {
@@ -2289,12 +2335,14 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         @policy-created=${this._handlePolicyCreated}
         @reorder-rules=${this._handleReorderRules}
         @tool-updated=${() => this.loadData()}
+        @connect-oauth=${(e: CustomEvent) => this._handleConnectOAuth(e.detail)}
+        @disconnect-oauth=${(e: CustomEvent) => this._handleDisconnectOAuth(e.detail)}
         @scan-server=${(e: CustomEvent) => this._handleScanMCPServer(e.detail)}
         @suggest-starter-policy=${(e: CustomEvent) =>
           this._openStarterPolicySuggestion(e.detail, {
             manual: true,
           })}
-        @edit-server=${(e: CustomEvent) => (this.editingMCPServer = e.detail)}
+        @edit-server=${this._handleServerEdit}
         @delete-server=${(e: CustomEvent) =>
           this._handleDeleteMCPServer(e.detail)}
       ></tools-editor-component>

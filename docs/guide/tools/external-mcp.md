@@ -726,3 +726,23 @@ tools:
 ```
 
 ---
+
+## OAuth connections
+
+Choose **OAuth 2.0** when adding a server. Preloop discovers the protected
+resource and authorization server, then opens provider consent. If public
+registration is unavailable, enter the provider's pre-registered client ID and
+optional client secret. Enter the exact issuer when several authorization
+servers are advertised, and configure any scopes your integration requires.
+
+The server shows **Disconnected**, **Connecting**, **Connected**, or **Reconnect
+required**. Access tokens refresh automatically before expiry. Use **Reconnect**
+when a grant expires, is rejected, or a token exchange cannot be confirmed.
+**Disconnect** removes Preloop's local grant; it does not revoke provider-side
+consent. **Cancel connection** also invalidates pending browser authorization.
+Secret fields remain write-only when editing a connection.
+
+If a dispatched tool times out, its outcome may be unknown. Check the provider
+for the result before invoking it again; Preloop does not replay tool calls.
+For self-hosted callback, network, and migration settings, see the
+[upstream OAuth architecture](../../architecture/upstream-mcp-oauth.md).

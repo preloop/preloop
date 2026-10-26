@@ -55,6 +55,8 @@ const UNVERIFIED_ALLOWANCE = {
   'components/similar-sessions-panel.ts': 1,
   'components/single-issue-detail-view.ts': 2,
   'components/tool-card.ts': 1,
+  // OAuth connection state is limited to success, warning, and neutral.
+  'components/tools-editor-component.ts': 1,
   'utils/agent-display.ts': 1,
   'utils/tracker-status.ts': 2,
   'views/authed/agent-detail-view.ts': 2,

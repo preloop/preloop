@@ -1443,3 +1443,5 @@ parsing, aggregation, API schemas and display. Durable per-day billing status
 snapshots retain retry work independently of the adoption cursor; unavailable
 days replace stale spend and make incomplete range totals unknown. Optional
 extension failures are isolated from core imports with a sanitized warning.
+
+[Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.

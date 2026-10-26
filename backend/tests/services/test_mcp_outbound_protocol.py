@@ -11,7 +11,11 @@ import pytest
 from mcp import MCPError, types
 
 from preloop.services import mcp_client_pool
-from preloop.services.mcp_client_pool import MCPClient
+from preloop.services.mcp_client_pool import (
+    MCPClient,
+    MCPToolOutcomeUnknownError,
+    MCPAuthenticationError,
+)
 
 MODERN = "2026-07-28"
 LEGACY = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -223,14 +227,18 @@ async def test_http_failures_never_become_legacy_fallback(
 ) -> None:
     peer = Peer(probe_status=status)
     client = install_peer(monkeypatch, peer)
-    with pytest.raises((httpx.HTTPStatusError, MCPError)):
+    with pytest.raises(
+        MCPAuthenticationError
+        if status in {401, 403}
+        else (httpx.HTTPStatusError, MCPError)
+    ):
         await client.connect()
     assert peer.methods == ["server/discover"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,code", [(307, None), (401, None), (500, None), (200, -32020)]
+    "status,code", [(307, None), (401, None), (403, None), (500, None), (200, -32020)]
 )
 async def test_dispatched_tool_is_never_replayed(
     monkeypatch: pytest.MonkeyPatch, status: int, code: int | None
@@ -238,8 +246,18 @@ async def test_dispatched_tool_is_never_replayed(
     peer = Peer(call_status=status, call_error=code)
     client = install_peer(monkeypatch, peer)
     await client.connect()
-    with pytest.raises((httpx.HTTPStatusError, MCPError)):
-        await client.call_tool("echo", {})
+    if status in {401, 403}:
+        # An auth rejection is reported as such so the user can reconnect.
+        with pytest.raises(PermissionError, match=f"HTTP {status}") as raised:
+            await client.call_tool("echo", {})
+        assert not isinstance(raised.value, MCPToolOutcomeUnknownError)
+        assert raised.value.status_code == status
+        assert f"HTTP {status}" in mcp_client_pool.describe_mcp_connection_error(
+            raised.value
+        )
+    else:
+        with pytest.raises(MCPToolOutcomeUnknownError, match="may have executed"):
+            await client.call_tool("echo", {})
     assert peer.methods.count("tools/call") == 1
     assert "initialize" not in peer.methods
 
