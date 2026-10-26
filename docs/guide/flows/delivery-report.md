@@ -9,6 +9,10 @@ not a Preloop-managed agent did the work.
 It ships disabled. Open **Flows > New flow**, pick **Delivery Report**, add
 the repositories in scope to its git clone configuration and enable it.
 
+Pull requests opened by the GitHub Copilot coding agent are recorded too,
+with origin `copilot`, and linked to the synced issues they close or name in
+their branch, so they show up in the delivery record and fleet history.
+
 ## Schedule
 
 The default schedule is weekly, Monday 07:00 UTC. For a daily report change
