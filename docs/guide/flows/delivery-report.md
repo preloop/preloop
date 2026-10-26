@@ -6,8 +6,13 @@ available evidence supports against stated criteria, and which gaps deserve
 investigation. It reads tracker and forge data only, so it works whether or
 not a Preloop-managed agent did the work.
 
-It ships disabled. Open **Flows > New flow**, pick **Delivery Report**, add
-the repositories in scope to its git clone configuration and enable it.
+Connecting a tracker creates one enabled Delivery Report flow for the account.
+The first scheduled run is the next weekly slot and covers the prior seven
+days. Additional trackers use the same flow. Its deterministic report still
+runs when the account has no model configured; in that case the email names
+the skipped assessment. Bind a model to the flow to enable its one-time
+onboarding assessment. The account policy can turn the report off or change
+its cadence and scope.
 
 Pull requests opened by the GitHub Copilot coding agent are recorded too,
 with origin `copilot`, and linked to the synced issues they close or name in
@@ -147,11 +152,11 @@ turns the flow's schedule off.
 When a run starts, the platform decides whether it may pay for a model pass
 (`assessment_decision()`): off, deterministic, assessed, the onboarding
 assessment, or skipped because the month's report spend has reached the
-monthly budget or the hosted credit wallet is empty. A run that may not
+monthly budget, the hosted credit wallet is empty, or no model is bound. A run that may not
 call a model never starts the agent. The platform builds the report from
 what the tracker sync and the pull request ledger already stored, so it
 still goes out, with one line saying assessments were skipped
-(`summary.assessments_skipped_reason`: `budget` or `no_credit`). An
+(`summary.assessments_skipped_reason`: `budget`, `no_credit`, or `no_model`). An
 assessed run gets the effective policy as `payload.report_policy`.
 
 The pull request ledger keeps each PR's title, body and file list, so the
