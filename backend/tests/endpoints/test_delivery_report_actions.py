@@ -552,6 +552,59 @@ class TestRunWrites:
         last = _audit_rows(db_session, test_user.account_id)[-1]
         assert last.details["allowed_by"] == "tracker_writes.create_follow_up=allow"
 
+    @pytest.mark.asyncio
+    async def test_automatic_creation_tool_adds_label_and_report_link(
+        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An allowed report tool call creates a labelled, linked follow-up."""
+        run = _report_run(db_session, test_user.account_id)
+        crud_delivery_report_policy.save_overrides(
+            db_session,
+            account_id=test_user.account_id,
+            overrides={"tracker_writes": {"create_follow_up": "allow"}},
+        )
+        project = SimpleNamespace(
+            id=uuid.uuid4(), slug="example/app", identifier="example/app"
+        )
+        create = AsyncMock(
+            return_value=SimpleNamespace(
+                id="synthetic-99", url="https://github.com/example/app/issues/99"
+            )
+        )
+        monkeypatch.setattr(mcp, "_get_tool_db", lambda: db_session)
+        monkeypatch.setattr(
+            mcp,
+            "get_http_request",
+            lambda: SimpleNamespace(headers={"authorization": "Bearer test-token"}),
+        )
+        monkeypatch.setattr(
+            mcp, "get_user_from_token_if_valid", AsyncMock(return_value=test_user)
+        )
+        monkeypatch.setattr(
+            mcp.crud_project,
+            "get_by_slug_or_identifier",
+            lambda db, *, slug_or_identifier, account_id: project,
+        )
+        monkeypatch.setattr(
+            mcp, "_delivery_report_execution_id", lambda db, current_user: str(run.id)
+        )
+        monkeypatch.setattr(mcp, "api_create_issue", create)
+
+        result = await mcp.create_issue.__wrapped__(
+            project="example/app",
+            title="Add a test for the search hot path",
+            description="The hot path changed without a test. backend/search.py:42",
+            prevent_duplicates=False,
+        )
+
+        assert result.status == "created"
+        issue = create.await_args.kwargs["issue"]
+        assert issue.labels == ["preloop:proposed"]
+        assert "backend/search.py:42" in issue.description
+        assert f"/console/delivery-reports/{run.id}" in issue.description
+        last = _audit_rows(db_session, test_user.account_id)[-1]
+        assert last.details["allowed_by"] == "tracker_writes.create_follow_up=allow"
+
     @pytest.mark.parametrize("status", ["closed", "Done", "resolved"])
     def test_close_from_a_run_is_always_refused(
         self,
