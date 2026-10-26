@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
+from sqlalchemy.orm import Session
+
+from preloop.models import models
+from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow_execution import FlowExecutionCreate
 
 from preloop.services.flow_pr_binding import (
     BRIEF_END,
@@ -13,6 +20,7 @@ from preloop.services.flow_pr_binding import (
     MAX_BRIEF_BULLETS,
     MAX_BRIEF_TEXT,
     brief_from_result,
+    merge_result_with_brief,
     merge_result_preserving_pr_binding,
     parse_brief,
 )
@@ -135,6 +143,39 @@ def test_brief_comes_from_the_body_the_publisher_selects() -> None:
     # A body the publisher rejects for a forged provenance region is skipped.
     forged = full + "\n<!-- preloop:executions:start -->"
     assert brief_from_result({"pr_body": forged}) is None
+
+
+def test_fixture_execution_stores_the_parsed_brief(
+    db_session: Session, test_user: models.User, client: Any
+) -> None:
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name="Brief fixture flow",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={},
+            prompt_template="Implement issue",
+            trigger_event_source="github",
+            trigger_event_types=["issue_updated"],
+        ),
+    )
+    execution = crud_flow_execution.create(
+        db_session, obj_in=FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
+    execution.result = merge_result_with_brief(
+        {"pr_url": "https://example.com/pr/1"},
+        {"status": "success", "pr_body": _fixture("full.md")},
+    )
+    db_session.flush()
+    db_session.refresh(execution)
+
+    assert execution.result["brief"] == parse_brief(_fixture("full.md"))
+    assert execution.result["pr_url"] == "https://example.com/pr/1"
+    response = client.get(f"/api/v1/flows/executions/{execution.id}")
+    assert response.status_code == 200
+    assert response.json()["result"]["brief"] == execution.result["brief"]
 
 
 def test_implementation_prompt_asks_for_the_brief_block() -> None:

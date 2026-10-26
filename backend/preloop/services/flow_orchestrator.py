@@ -85,10 +85,9 @@ from preloop.services.flow_pr_binding import (
     DECISION_MARKER,
     PR_OPENED_MARKER,
     MAX_PUBLISHED_PRS,
-    brief_from_result,
     find_bound_execution,
     max_resumes_per_pr,
-    merge_result_preserving_pr_binding,
+    merge_result_with_brief,
     note_resume_started,
     parse_decision_marker,
     parse_pr_opened_marker,
@@ -9937,14 +9936,10 @@ class FlowExecutionOrchestrator:
                     "Could not refresh execution log before merging result",
                     exc_info=True,
                 )
-            merged_result = merge_result_preserving_pr_binding(
+            merged_result = merge_result_with_brief(
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
-            # The change brief the agent wrote into the PR body it published.
-            brief = brief_from_result(agent_result.get("result"))
-            if brief is not None and isinstance(merged_result, dict):
-                merged_result["brief"] = brief
 
             # Only the executor's runtime observation owns this key. Agent
             # result.json claims cannot overwrite or fabricate termination.

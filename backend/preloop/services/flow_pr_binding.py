@@ -669,6 +669,23 @@ def merge_result_preserving_pr_binding(
     return merged
 
 
+def merge_result_with_brief(existing: Any, incoming: Any) -> Any:
+    """Keep the PR binding and parse the brief from the body being published.
+
+    Args:
+        existing: Execution result written by the publisher and marker reader.
+        incoming: The agent's result document.
+
+    Returns:
+        The merged result with a parser-owned ``brief`` when a block exists.
+    """
+    merged = merge_result_preserving_pr_binding(existing, incoming)
+    brief = brief_from_result(incoming)
+    if brief is not None and isinstance(merged, dict):
+        merged["brief"] = brief
+    return merged
+
+
 def record_published_pr(
     db: Session,
     execution_id: Any,
