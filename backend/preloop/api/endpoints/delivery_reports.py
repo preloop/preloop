@@ -126,7 +126,15 @@ _ACTION_PERMISSIONS = {
 @router.post(
     "/{execution_id}/actions",
     response_model=DeliveryReportActionResult,
-    responses={403: {}, 404: {}, 409: {}, 422: {}, 502: {}},
+    responses={
+        403: {},
+        404: {},
+        409: {},
+        # Python 3.11 and 3.13 name HTTP 422 differently. Keep the public
+        # schema stable across development and CI interpreters.
+        422: {"description": "Unprocessable Entity"},
+        502: {},
+    },
 )
 @require_permission("view_flows")
 def act_on_delivery_report(
