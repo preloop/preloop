@@ -84,6 +84,8 @@ def _needs_line(item: Mapping[str, Any]) -> str:
     kind = item.get("kind")
     if kind == "reopen_request":
         return f"Proposed reopen: {_label(item)}"
+    if kind == "follow_up":
+        return f"Proposed follow-up: {_label(item)}"
     if kind == "closed_unverified":
         if item.get("verdict") == PURPOSE_PARTIAL:
             criteria = (
