@@ -31,8 +31,6 @@ async def test_github_response_preserves_checks_and_revisions() -> None:
                 "created_at": "2026-10-25T00:00:00Z",
                 "updated_at": "2026-10-25T00:00:00Z",
             },
-            [],
-            [],
             {
                 "total_count": 1,
                 "check_runs": [
