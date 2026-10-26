@@ -256,6 +256,8 @@ class DeliveryReportPolicy(BaseModel):
     max_assessed_changes: int = Field(default=25, ge=0)
     pr_ready_days: int = Field(default=7, ge=1)
     issue_inactive_days: int = Field(default=14, ge=1)
+    #: Maximum time a merge audit waits for CI checks at its merge SHA.
+    audit_ci_max_wait_minutes: int = Field(default=30, ge=1, le=1440)
     #: Changed lines in rendered frontend files below which a UI change
     #: without a screenshot is not flagged (style and view files always are).
     ui_screenshot_min_lines: int = Field(default=40, ge=0)
@@ -338,6 +340,7 @@ PROJECT_OVERRIDE_FIELDS: frozenset[str] = frozenset(
         "enabled",
         "pr_ready_days",
         "issue_inactive_days",
+        "audit_ci_max_wait_minutes",
         "ui_screenshot_min_lines",
         "criteria_source",
     }

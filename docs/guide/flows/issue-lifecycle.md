@@ -146,9 +146,15 @@ verdict, it appends the reason to the criterion.
 Collection has its own 3-second deadline, and a source that does not answer
 in time is listed as `timed out`. A preview URL that is not public http(s)
 (loopback, private, link-local or metadata addresses, other schemes) is refused
-before it reaches the prompt. The bundle is a snapshot taken when the audit is
-scheduled. Checks, artifacts or deployments that finish later are not in it, and
-`/audit/reconcile` reuses it. The Delivery Report applies the same rule when it
+before it reaches the prompt. If check runs at the merge SHA are pending, the
+controller keeps a durable deferred row and the execution monitor retries it
+each minute. It fetches a fresh bundle when all reported checks are completed,
+including failed or cancelled checks. The report policy's
+`audit_ci_max_wait_minutes` caps the wait (30 minutes by default); at the cap,
+the audit runs with the still-pending checks and records the timeout under
+`runtime_evidence.unavailable`. An empty check-run list is ready immediately.
+Once an execution is attached, `/audit/reconcile` reuses its pinned bundle.
+The Delivery Report applies the same rule when it
 reads a stored audit result, so it never counts a citation the controller
 dropped.
 

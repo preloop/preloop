@@ -18,6 +18,23 @@ from preloop.models.db.triage_lock import triage_lock_connection
 class CRUDIssueLifecycle:
     """Serialize decisions through transaction locks, including first insert."""
 
+    def waiting_merge_audits(
+        self, db: Session, *, limit: int = 50
+    ) -> list[models.IssueLifecycle]:
+        """Return deferred merge audits for the bounded background sweep."""
+        return list(
+            db.scalars(
+                select(models.IssueLifecycle)
+                .where(
+                    models.IssueLifecycle.kind == "merge_audit",
+                    models.IssueLifecycle.state == "waiting_for_checks",
+                    models.IssueLifecycle.execution_id.is_(None),
+                )
+                .order_by(models.IssueLifecycle.updated_at, models.IssueLifecycle.id)
+                .limit(limit)
+            )
+        )
+
     def has_triage_execution(self, db: Session, *, execution_id: Any) -> bool:
         """Classify a trusted worker task without returning tenant data."""
         return (

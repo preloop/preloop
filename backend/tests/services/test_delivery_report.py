@@ -1238,6 +1238,18 @@ class TestPolicyResolution:
         assert policy.tracker_writes.create_follow_up == "allow"
         assert policy.tracker_writes.reopen == "approval"
 
+    def test_merge_audit_wait_is_bounded_and_repository_overridable(self) -> None:
+        assert dr.DeliveryReportPolicy().audit_ci_max_wait_minutes == 30
+        assert (
+            dr.resolve_policy(
+                {"audit_ci_max_wait_minutes": 60},
+                {"audit_ci_max_wait_minutes": 10},
+            ).audit_ci_max_wait_minutes
+            == 10
+        )
+        with pytest.raises(ValueError):
+            dr.DeliveryReportPolicy(audit_ci_max_wait_minutes=1441)
+
     def test_a_stored_layer_that_no_longer_validates_is_skipped(self) -> None:
         policy = dr.resolve_policy({"pr_ready_days": 0, "unknown": 1})
         assert policy.pr_ready_days == 7

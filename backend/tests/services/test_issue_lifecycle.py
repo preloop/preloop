@@ -2,12 +2,13 @@
 
 import asyncio
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models import models
 from preloop.models.crud.base import CRUDBase
@@ -26,7 +27,10 @@ from preloop.schemas.issue_lifecycle import Criterion, ReadinessContract
 from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
-from preloop.services.issue_lifecycle_runtime import lifecycle_execution_finished
+from preloop.services.issue_lifecycle_runtime import (
+    lifecycle_execution_finished,
+    sweep_deferred_merge_audits,
+)
 
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
@@ -1786,6 +1790,204 @@ async def test_build_output_criterion_is_decided_from_ci_artifact(rig: tuple) ->
     # Publication is idempotent, and so is the assessment it appends.
     await service.finish_audit(execution)
     assert len(audit_assessments(service)) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_checks_defer_audit_then_refresh_artifact_and_preview(
+    rig: tuple,
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = [
+        {"id": 11, "name": "build", "status": "in_progress", "conclusion": None}
+    ]
+    contract = await contract_for(service, 3)
+    contract.criteria[0].outcome = "Build emits dist/app.js"
+    contract.criteria[1].outcome = "Settings layout fits a 375px viewport"
+    contract.criteria[2].outcome = "p95 stays below the baseline"
+    await service.refine(contract)
+    dispatch = AsyncMock()
+    assert await service.schedule_audit(flow, dispatch) is None
+    assert await service.schedule_audit(flow, dispatch) is None
+    dispatch.assert_not_awaited()
+    row = service._get("merge_audit", SHA)
+    assert row.state == "waiting_for_checks" and row.execution_id is None
+    assert audit_assessments(service) == []
+
+    transport.check_runs[0].update(status="completed", conclusion="success")
+    transport.workflow_runs = [{"id": 21, "name": "CI", "conclusion": "success"}]
+    transport.artifacts = {21: [{"id": 55, "name": "dist", "size_in_bytes": 120_000}]}
+    transport.deployments = [{"id": 9, "environment": "preview"}]
+    transport.deployment_statuses = {
+        9: [{"state": "success", "environment_url": "https://preview.example.com/7"}]
+    }
+    execution = await service.schedule_audit(flow, dispatch)
+    assert execution is not None
+    dispatch.assert_awaited_once_with(execution)
+    evidence = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert evidence["artifacts"][0]["id"] == "artifact:55"
+    assert evidence["previews"][0]["id"] == "preview:9"
+    assert evidence["revision"] == SHA
+    assert (
+        execution.trigger_event_details["payload"]["lifecycle"]["check_wait"]["outcome"]
+        == "completed"
+    )
+
+    result = runtime_result(contract, [], "")
+    result["criteria"][0].update(
+        runtime=["artifact:55", "check:11"],
+        observations=["dist/app.js is present in the CI artifact"],
+    )
+    result["criteria"][1].update(
+        runtime=["preview:9"],
+        observations=["The preview at 375px has no horizontal overflow"],
+    )
+    result["criteria"][2].update(
+        verdict="unknown",
+        runtime=[],
+        observations=[],
+        reason="No reachable latency measurement for this revision",
+    )
+    crud_flow_execution.update(
+        service.db,
+        db_obj=execution,
+        obj_in=FlowExecutionUpdate(status="SUCCEEDED", result=result),
+    )
+    summary = await service.finish_audit(execution)
+    assert [item["verdict"] for item in summary["evidence"]["criteria"]] == [
+        "complete",
+        "complete",
+        "unknown",
+    ]
+    assessment = audit_assessments(service)[0]
+    assert assessment.revision == SHA
+    assert assessment.purpose_verdict == "partial"
+    assert "No reachable latency" in assessment.evidence["criteria"][2]["reason"]
+    assert await service.schedule_audit(flow, dispatch) is None
+    await service.finish_audit(execution)
+    assert len(audit_assessments(service)) == 1
+
+
+@pytest.mark.asyncio
+async def test_never_terminal_checks_audit_at_policy_max_wait(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = [
+        {"id": 11, "name": "build", "status": "queued", "conclusion": None}
+    ]
+    service.policy["audit_ci_max_wait_minutes"] = 2
+    contract = await contract_for(service)
+    await service.refine(contract)
+    assert await service.schedule_audit(flow, AsyncMock()) is None
+    row = service._get("merge_audit", SHA)
+    data = dict(row.data)
+    data["check_wait"] = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    }
+    crud_issue_lifecycle.put(
+        service.db,
+        account_id=service.account_id,
+        issue_id=service.issue.id,
+        kind="merge_audit",
+        revision=SHA,
+        state="waiting_for_checks",
+        data=data,
+    )
+    service.db.commit()
+    execution = await service.schedule_audit(flow, AsyncMock())
+    assert execution is not None
+    envelope = execution.trigger_event_details["payload"]["lifecycle"]
+    assert envelope["check_wait"]["outcome"] == "timed_out"
+    assert envelope["runtime_evidence"]["unavailable"][-1] == {
+        "source": "checks",
+        "reason": "CI checks did not finish within 2 minutes.",
+    }
+    crud_flow_execution.update(
+        service.db, db_obj=execution, obj_in=FlowExecutionUpdate(status="FAILED")
+    )
+    await service.finish_audit(execution)
+    assert (
+        audit_assessments(service)[0].evidence["runtime"]["unavailable"][-1]["reason"]
+        == "CI checks did not finish within 2 minutes."
+    )
+
+
+@pytest.mark.asyncio
+async def test_deferred_audit_sweep_dispatches_after_checks_finish(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = [
+        {"id": 11, "name": "build", "status": "in_progress", "conclusion": None}
+    ]
+    await service.refine(await contract_for(service))
+    assert await service.schedule_audit(flow, AsyncMock()) is None
+    transport.check_runs[0].update(status="completed", conclusion="failure")
+    transport.workflow_runs = [{"id": 21, "name": "CI", "conclusion": "failure"}]
+    transport.artifacts = {21: [{"id": 55, "name": "build-log"}]}
+
+    async def build_in_test_session(
+        db: Session, *, issue_id: Any, account_id: Any
+    ) -> IssueLifecycleService:
+        issue = crud_issue_lifecycle.get_issue(
+            db, issue_id=issue_id, account_id=account_id
+        )
+        assert issue is not None
+        return IssueLifecycleService(
+            db,
+            account_id=account_id,
+            issue=issue,
+            provider=service.provider,
+            capabilities=service.capabilities,
+            policy=service.policy,
+        )
+
+    monkeypatch.setattr(
+        "preloop.models.db.session.get_session_factory",
+        lambda: sessionmaker(
+            bind=service.db.get_bind(), join_transaction_mode="rollback_only"
+        ),
+    )
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.build_lifecycle_service",
+        build_in_test_session,
+    )
+    dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.dispatch_lifecycle_execution",
+        dispatch,
+    )
+    await sweep_deferred_merge_audits()
+    row = service._get("merge_audit", SHA)
+    assert row.execution_id is not None
+    execution = crud_issue_lifecycle.pickup_execution(service.db, row=row)
+    assert execution is not None
+    evidence = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert evidence["checks"][0]["conclusion"] == "failure"
+    assert evidence["artifacts"][0]["id"] == "artifact:55"
+    dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deferred_audit_does_not_follow_a_reopened_issue(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = [
+        {"id": 11, "name": "build", "status": "queued", "conclusion": None}
+    ]
+    assert await service.schedule_audit(flow, AsyncMock()) is None
+    transport.issues[1]["state"] = "open"
+    assert (
+        await service.schedule_audit(flow, AsyncMock(), expected_merge_sha=SHA) is None
+    )
+    row = service._get("merge_audit", SHA)
+    assert row.state == "superseded" and row.execution_id is None
+    assert row.data["check_wait"]["outcome"] == "superseded"
 
 
 @pytest.mark.asyncio

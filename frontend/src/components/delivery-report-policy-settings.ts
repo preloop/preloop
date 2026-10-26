@@ -272,7 +272,11 @@ export class DeliveryReportPolicySettings extends LitElement {
   private numberInput(
     label: string,
     key:
-      'pr_ready_days' | 'issue_inactive_days' | 'per_run_usd' | 'monthly_usd',
+      | 'pr_ready_days'
+      | 'issue_inactive_days'
+      | 'audit_ci_max_wait_minutes'
+      | 'per_run_usd'
+      | 'monthly_usd',
     min: number,
     step = 1
   ) {
@@ -299,6 +303,7 @@ export class DeliveryReportPolicySettings extends LitElement {
       <div class="fields">
         ${this.numberInput('Open PR after (days)', 'pr_ready_days', 1)}
         ${this.numberInput('Inactive issue after (days)', 'issue_inactive_days', 1)}
+        ${this.numberInput('Merge audit CI wait (minutes)', 'audit_ci_max_wait_minutes', 1)}
         <sl-select
           label="Acceptance criteria from"
           data-field="criteria_source"

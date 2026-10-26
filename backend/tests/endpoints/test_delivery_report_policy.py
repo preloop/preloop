@@ -92,6 +92,7 @@ class TestAccountPolicy:
         assert effective["enabled"] is True
         assert effective["report_mode"] == "deterministic"
         assert effective["cadence"] == "weekly"
+        assert effective["audit_ci_max_wait_minutes"] == 30
         assert effective["recipients"] == "account_owner"
         assert effective["tracker_writes"]["create_follow_up"] == "deny"
         assert effective["tracker_writes"]["close"] == "deny"
@@ -133,14 +134,22 @@ class TestProjectPolicy:
         self, client: TestClient, db_session: Session, test_user: Any
     ) -> None:
         project = _project(db_session, test_user.account_id)
-        client.put(BASE, json={"overrides": {"pr_ready_days": 3}})
+        client.put(
+            BASE,
+            json={"overrides": {"pr_ready_days": 3, "audit_ci_max_wait_minutes": 60}},
+        )
         url = f"{BASE}/projects/{project.id}"
         assert client.get(url).json()["effective"]["pr_ready_days"] == 3
-        saved = client.put(url, json={"overrides": {"pr_ready_days": 10}})
+        saved = client.put(
+            url,
+            json={"overrides": {"pr_ready_days": 10, "audit_ci_max_wait_minutes": 15}},
+        )
         assert saved.status_code == 200, saved.text
         assert saved.json()["effective"]["pr_ready_days"] == 10
+        assert saved.json()["effective"]["audit_ci_max_wait_minutes"] == 15
         cleared = client.delete(url)
         assert cleared.json()["effective"]["pr_ready_days"] == 3
+        assert cleared.json()["effective"]["audit_ci_max_wait_minutes"] == 60
         assert cleared.json()["overrides"] == {}
 
     def test_account_fields_are_refused(
