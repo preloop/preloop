@@ -1562,6 +1562,11 @@ class GitLabTracker(BaseTracker):
                         "author": note.author.get("username")
                         if hasattr(note, "author") and isinstance(note.author, dict)
                         else None,
+                        "author_id": str(note.author["id"])
+                        if hasattr(note, "author")
+                        and isinstance(note.author, dict)
+                        and note.author.get("id") is not None
+                        else None,
                         "body": note.body or "",
                         "created_at": note.created_at,
                         "type": "note",

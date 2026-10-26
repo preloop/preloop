@@ -719,6 +719,71 @@ def test_orchestrator_stores_the_distribution_record() -> None:
     assert distribute.call_args.kwargs["policy"] is None
 
 
+def test_orchestrator_uses_plugin_distributor_instead_of_core_email() -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = object()
+    orchestrator.execution_log = SimpleNamespace(id="exec-1")
+    orchestrator.flow = SimpleNamespace(id="flow-1", account_id="acct-1")
+    extension = AsyncMock(return_value={"status": "sent", "sent_to": ["u"]})
+    with (
+        patch("preloop.plugins.get_plugin_manager") as manager,
+        patch(
+            "preloop.services.delivery_report_email.distribute_report", new=AsyncMock()
+        ) as core,
+    ):
+        manager.return_value.get_service.return_value = extension
+        result = asyncio.run(
+            orchestrator._distribute_delivery_report({"status": "success"}, None)
+        )
+    assert result[dre.DISTRIBUTION_KEY]["sent_to"] == ["u"]
+    extension.assert_awaited_once()
+    core.assert_not_awaited()
+
+
+def test_forge_engagement_keeps_only_ids_and_in_window_events() -> None:
+    pr = {
+        "_forge": "github",
+        "reviews": [
+            {"user_id": "202", "submitted_at": "2026-10-18T10:00:00Z"},
+            {"user_id": "202", "submitted_at": "2026-10-19T10:00:00Z"},
+            {"user_id": "999", "submitted_at": "2026-10-01T10:00:00Z"},
+        ],
+        "comments": [
+            {
+                "author": "Display Name",
+                "author_id": "303",
+                "created_at": "2026-10-20T10:00:00Z",
+            },
+            {"author": "Name Only", "created_at": "2026-10-20T10:00:00Z"},
+        ],
+    }
+    rows = facts.engagement_from_forge(
+        pr,
+        ref="example-org/example-repo#7",
+        area="billing",
+        start=datetime.fromisoformat(WINDOW["from"]),
+        end=datetime.fromisoformat(WINDOW["to"]),
+    )
+    assert rows == [
+        {
+            "user_id": "202",
+            "forge": "github",
+            "kind": "review",
+            "ref": "example-org/example-repo#7",
+            "area": "billing",
+        },
+        {
+            "user_id": "303",
+            "forge": "github",
+            "kind": "comment",
+            "ref": "example-org/example-repo#7",
+            "area": "billing",
+        },
+    ]
+
+
 def test_orchestrator_sends_only_a_finalized_report() -> None:
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 

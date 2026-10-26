@@ -31,6 +31,7 @@ MAX_STORED_FILES = 300
 MAX_PATCH_CHARS = 8000
 #: Forge reads one deterministic run may make.
 MAX_REFRESH_PER_RUN = 50
+MAX_ENGAGEMENT_PRS = 50
 #: Length of the one-paragraph summary shown in the report and the email.
 SUMMARY_CHARS = 280
 
@@ -240,7 +241,9 @@ def parse_pr_key(pr_key: str) -> Optional[tuple[str, int]]:
     return match.group("repo"), int(match.group("number"))
 
 
-async def _read_forge(db: Any, *, row: Any, owner: Any) -> Optional[Dict[str, Any]]:
+async def _read_forge(
+    db: Any, *, row: Any, owner: Any, include_reviews: bool = False
+) -> Optional[Dict[str, Any]]:
     """Read one PR from its repository's tracker, as the account owner."""
     from preloop.api.common import get_tracker_client
     from preloop.models.crud import crud_delivery_report_policy
@@ -262,9 +265,133 @@ async def _read_forge(db: Any, *, row: Any, owner: Any) -> Optional[Dict[str, An
         response = await client.get_merge_request(str(number))
     elif tracker_type == "github":
         response = await client.get_pull_request(str(number))
+        if include_reviews and isinstance(response, Mapping):
+            try:
+                response = {
+                    **response,
+                    "reviews": await client.get_pull_request_reviews(str(number)),
+                }
+            except Exception:  # noqa: BLE001 - comments still count if reviews fail
+                logger.info("Could not read reviews for %s", row.pr_key, exc_info=True)
     # Bitbucket returns the raw object without a file list; the diffstat
     # endpoint is separate and not read here.
-    return dict(response) if isinstance(response, Mapping) else None
+    return (
+        {**dict(response), "_forge": tracker_type}
+        if isinstance(response, Mapping)
+        else None
+    )
+
+
+def engagement_from_forge(
+    pr: Mapping[str, Any],
+    *,
+    ref: str,
+    area: str,
+    start: Optional[datetime],
+    end: datetime,
+) -> List[Dict[str, str]]:
+    """Keep in-window review and comment events with immutable forge user ids.
+
+    Args:
+        pr: A tracker client's PR or MR response.
+        ref: Report PR reference.
+        area: Report area for the PR.
+        start: Inclusive window start.
+        end: Inclusive window end.
+
+    Returns:
+        Distinct engagement rows for relevance scoring.
+    """
+    from preloop.services.delivery_report import _parse_time
+
+    rows: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for collection, kind, time_key, id_key in (
+        (pr.get("reviews"), "review", "submitted_at", "user_id"),
+        (pr.get("comments"), "comment", "created_at", "author_id"),
+    ):
+        if not isinstance(collection, list):
+            continue
+        for event in collection:
+            if not isinstance(event, Mapping):
+                continue
+            user_id = event.get(id_key)
+            timestamp = _parse_time(event.get(time_key))
+            if user_id is None or timestamp is None or timestamp > end:
+                continue
+            if start is not None and timestamp < start:
+                continue
+            key = (str(user_id), kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "user_id": str(user_id),
+                    "forge": str(pr.get("_forge") or ""),
+                    "kind": kind,
+                    "ref": ref,
+                    "area": area,
+                }
+            )
+    return rows
+
+
+async def collect_forge_engagement(
+    db: Any, *, account_id: Any, report: Mapping[str, Any]
+) -> List[Dict[str, str]]:
+    """Read engagement on report changes from their forges, bounded per run.
+
+    The report only stores forge ids. A failed repository read leaves its
+    engagement empty and does not prevent the finished report from sending.
+    """
+    from types import SimpleNamespace
+
+    from preloop.models.crud import crud_account, crud_user
+    from preloop.services.delivery_report import _parse_time
+
+    window = report.get("window") or {}
+    end = _parse_time(window.get("to"))
+    if end is None:
+        return []
+    start = _parse_time(window.get("from"))
+    account = crud_account.get(db, id=account_id)
+    owner_id = getattr(account, "primary_user_id", None)
+    owner = crud_user.get(db, id=owner_id) if owner_id else None
+    if owner is None:
+        return []
+    rows: List[Dict[str, str]] = []
+    for change in (report.get("shipped") or [])[:MAX_ENGAGEMENT_PRS]:
+        if not isinstance(change, Mapping):
+            continue
+        ref = str(change.get("ref") or "")
+        if "#" not in ref:
+            continue
+        repository, number = ref.rsplit("#", 1)
+        url = str(change.get("url") or "")
+        if not url or not number.isdigit():
+            continue
+        try:
+            pr = await _read_forge(
+                db,
+                row=SimpleNamespace(pr_key=url, account_id=account_id),
+                owner=owner,
+                include_reviews=True,
+            )
+        except Exception:  # noqa: BLE001 - one forge read cannot stop delivery
+            logger.info("Could not read engagement for %s", ref, exc_info=True)
+            continue
+        if isinstance(pr, Mapping):
+            rows.extend(
+                engagement_from_forge(
+                    pr,
+                    ref=ref,
+                    area=str(change.get("area") or repository),
+                    start=start,
+                    end=end,
+                )
+            )
+    return rows
 
 
 async def refresh_pull_request_details(

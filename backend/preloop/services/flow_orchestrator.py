@@ -5765,6 +5765,20 @@ class FlowExecutionOrchestrator:
         """Distribute the report once :meth:`_finalize_delivery_report` built it."""
         if not getattr(self, "_delivery_report_finalized", False):
             return merged_result
+        if isinstance(merged_result, dict) and merged_result.get("status") == "success":
+            try:
+                from preloop.services.delivery_report_facts import (
+                    collect_forge_engagement,
+                )
+
+                engagement = await collect_forge_engagement(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    report=merged_result,
+                )
+                merged_result = {**merged_result, "engagement": engagement}
+            except Exception:
+                logger.warning("Could not read report engagement", exc_info=True)
         run = getattr(self, "_delivery_report_run", None)
         return await self._distribute_delivery_report(merged_result, run)
 
@@ -5784,13 +5798,27 @@ class FlowExecutionOrchestrator:
         if not isinstance(merged_result, dict):
             return merged_result
         try:
-            record = await distribute_report(
-                self.db,
-                flow=self.flow,
-                execution=self.execution_log,
-                report=merged_result,
-                policy=run.policy if run is not None else None,
+            from preloop.plugins import get_plugin_manager
+
+            distributor = get_plugin_manager().get_service(
+                "delivery_report_distributor"
             )
+            if distributor is None:
+                record = await distribute_report(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
+            else:
+                record = await distributor(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
         except Exception:
             logger.exception("Emailing the delivery report failed")
             return merged_result

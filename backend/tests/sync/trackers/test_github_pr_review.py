@@ -1031,3 +1031,33 @@ class TestGetPullRequestFiles(IsolatedAsyncioTestCase):
         assert result["changes"]["files_changed"] == 144
         assert result["head_sha"] == "a" * 40
         assert result["merge_commit_sha"] == "b" * 40
+
+
+class TestGetPullRequestReviews(IsolatedAsyncioTestCase):
+    """Review engagement uses forge user ids and submission times."""
+
+    async def test_only_submitted_reviews_with_user_ids_are_returned(self):
+        tracker = GitHubTracker(
+            str(uuid4()), "api-key", {"owner": "owner", "repo": "repo"}
+        )
+        tracker._make_request = AsyncMock(
+            return_value=[
+                {
+                    "user": {"id": 42, "login": "alice"},
+                    "submitted_at": "2026-10-20T10:00:00Z",
+                    "state": "APPROVED",
+                },
+                {"user": {"id": 43}, "submitted_at": None, "state": "PENDING"},
+            ]
+        )
+        rows = await tracker.get_pull_request_reviews("7")
+        assert rows == [
+            {
+                "user_id": "42",
+                "submitted_at": "2026-10-20T10:00:00Z",
+                "state": "APPROVED",
+            }
+        ]
+        tracker._make_request.assert_awaited_once_with(
+            "repos/owner/repo/pulls/7/reviews"
+        )

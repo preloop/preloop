@@ -14698,7 +14698,7 @@ paths:
         '409':
           description: Conflict
         '422':
-          description: Unprocessable Entity
+          description: Unprocessable Content
         '502':
           description: Bad Gateway
         '401':
@@ -31674,6 +31674,10 @@ components:
           - sponsoring_lead
           title: Recipients
           default: account_owner
+        per_member_updates:
+          type: boolean
+          title: Per Member Updates
+          default: false
         sponsoring_lead_user_id:
           anyOf:
           - type: string
@@ -51127,7 +51131,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

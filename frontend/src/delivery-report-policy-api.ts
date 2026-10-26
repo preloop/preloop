@@ -39,6 +39,7 @@ export interface DeliveryReportPolicy {
     follow_up_label: string;
   };
   recipients: RecipientRule;
+  per_member_updates: boolean;
   sponsoring_lead_user_id: string | null;
   opted_out_user_ids: string[];
 }

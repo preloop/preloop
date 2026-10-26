@@ -2114,6 +2114,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "review_comment",
@@ -2127,6 +2128,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "issue_comment",
@@ -2193,6 +2195,35 @@ class GitHubTracker(BaseTracker):
         except Exception as e:
             logger.error(f"Error getting pull request {pr_number}: {e}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
+
+    async def get_pull_request_reviews(self, pr_number: str) -> List[Dict[str, Any]]:
+        """Read submitted reviews with immutable forge user ids.
+
+        Args:
+            pr_number: Repository-local pull request number.
+
+        Returns:
+            Review identities and submission times; pending reviews are omitted.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+        rows = await self._make_request(
+            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        )
+        return [
+            {
+                "user_id": str(row["user"]["id"]),
+                "submitted_at": row["submitted_at"],
+                "state": row.get("state"),
+            }
+            for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("user"), dict)
+            and row["user"].get("id") is not None
+            and row.get("submitted_at")
+        ]
 
     async def list_pull_requests(
         self,
