@@ -802,6 +802,41 @@ def test_orchestrator_sends_only_a_finalized_report() -> None:
     distribute.assert_not_called()
 
 
+def test_finalized_report_passes_forge_engagement_to_distribution() -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = object()
+    orchestrator.flow = SimpleNamespace(account_id="acct-1")
+    orchestrator._delivery_report_finalized = True
+    engagement = [
+        {
+            "user_id": "42",
+            "forge": "github",
+            "kind": "review",
+            "ref": "acme/app#1",
+            "area": "billing",
+        }
+    ]
+    with (
+        patch(
+            "preloop.services.delivery_report_facts.collect_forge_engagement",
+            new=AsyncMock(return_value=engagement),
+        ) as read,
+        patch.object(
+            orchestrator,
+            "_distribute_delivery_report",
+            new=AsyncMock(side_effect=lambda report, run: report),
+        ) as distribute,
+    ):
+        result = asyncio.run(
+            orchestrator._send_finalized_delivery_report({"status": "success"})
+        )
+    assert result["engagement"] == engagement
+    read.assert_awaited_once()
+    assert distribute.await_args.args[0]["engagement"] == engagement
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
