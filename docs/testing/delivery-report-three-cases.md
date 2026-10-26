@@ -59,6 +59,10 @@ full-report link, not one total HTML anchor.
 3. The OSS owner email has the correct report link and reaches only the owner.
    The member-relevance part remains an explicit xfail, described below.
 
+Dependency-bot and docs-only changes remain metadata-only and generate no
+follow-up proposals. Generated proposals also appear in the owner email and
+stored Markdown report.
+
 The default report run makes no tracker writes. Duplicate clicks cannot repeat
 an applied action. Editing the issue or changing the closing PR head after the
 report makes a reopen stale and returns 409 before any tracker call. Additional
