@@ -362,24 +362,25 @@ async def refresh_pull_requests(
                 facts["head_sha"] = await canonical_bitbucket_head(
                     client, ref.api_path.rsplit("/pullrequests/", 1)[0], head
                 )
-            except TrackerError as error:
+            except (TrackerError, ValueError) as error:
                 delay = rate_limit_delay(error)
+                until, key = now + REFRESH_REARM, "unreadable"
                 if delay is not None:
                     wait = min(
                         max(timedelta(seconds=delay), RETRY_FLOOR), RETRY_CEILING
                     )
-                    throttled[ref.host] = now + wait
-                    crud_pull_request_refresh.defer(
-                        db,
-                        pull_request_ids=[pull_request_id],
-                        until=now + wait,
-                        claimed_due=claim,
-                    )
-                    counts["deferred"] += 1
-                    continue
-                facts["head_sha"] = None
-            except ValueError:
-                facts["head_sha"] = None
+                    until, key = now + wait, "deferred"
+                    throttled[ref.host] = until
+                # Retry before caching the new validator. Recording a terminal
+                # state here would also stop refresh with the old head forever.
+                crud_pull_request_refresh.defer(
+                    db,
+                    pull_request_ids=[pull_request_id],
+                    until=until,
+                    claimed_due=claim,
+                )
+                counts[key] += 1
+                continue
         recorded, merged_now = crud_pull_request_refresh.record(
             db,
             claimed_due=claim,

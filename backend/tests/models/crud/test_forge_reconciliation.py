@@ -257,6 +257,82 @@ async def test_bitbucket_commit_throttle_defers_remaining_claims(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["OPEN", "MERGED", "DECLINED"])
+@pytest.mark.parametrize(
+    "error",
+    [TrackerResponseError("unavailable", status_code=503), ValueError("bad hash")],
+    ids=["provider-error", "invalid-head"],
+)
+async def test_failed_bitbucket_head_lookup_retries_before_caching_validator(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    error: Exception,
+) -> None:
+    row = make_pr(
+        db_session,
+        test_user.account_id,
+        "https://bitbucket.org/example/repo/pull-requests/1",
+        head_sha="c" * 40,
+    )
+    body = {
+        "state": state,
+        "updated_on": NOW.isoformat(),
+        "source": {"commit": {"hash": HEAD[:12]}},
+    }
+
+    async def read(path: str, etag: str | None) -> ConditionalResponse:
+        # Caching this validator after a failed canonical lookup would hide
+        # the changed head forever, or stop scheduling a terminal PR entirely.
+        return (
+            ConditionalResponse(304, None, etag)
+            if etag == '"new"'
+            else ConditionalResponse(200, body, '"new"')
+        )
+
+    client = SimpleNamespace(conditional_get=AsyncMock(side_effect=read))
+    tracker = SimpleNamespace(
+        id=uuid.uuid4(),
+        tracker_type="bitbucket",
+        is_active=True,
+        connection_details={},
+        url=None,
+    )
+    monkeypatch.setattr(
+        refresh.crud_tracker, "get_for_account", lambda *a, **k: [tracker]
+    )
+    monkeypatch.setattr(
+        refresh, "feedback_tracker_client", AsyncMock(return_value=client)
+    )
+    canonical = AsyncMock(side_effect=[error, HEAD])
+    monkeypatch.setattr(refresh, "canonical_bitbucket_head", canonical)
+    first = await refresh.refresh_pull_requests(db_session, now=NOW)
+    db_session.refresh(row)
+    assert first["read"] == 2
+    assert first["unreadable"] == 1
+    assert row.refresh_etag is row.refreshed_at is None
+    assert row.refresh_due_at == NOW + timedelta(minutes=5)
+    assert row.head_sha == "c" * 40
+    assert row.state == "open"
+
+    second = await refresh.refresh_pull_requests(
+        db_session, now=NOW + timedelta(minutes=5)
+    )
+    db_session.refresh(row)
+    assert second["read"] == 2
+    assert second["updated"] == 1
+    assert client.conditional_get.await_args.args[1] is None
+    assert canonical.await_count == 2
+    assert row.head_sha == HEAD
+    assert row.refresh_etag == '"new"'
+    assert (
+        row.state == {"OPEN": "open", "MERGED": "merged", "DECLINED": "closed"}[state]
+    )
+    assert row.merged_at == (NOW if state == "MERGED" else None)
+
+
+@pytest.mark.asyncio
 async def test_not_modified_changes_only_the_bookkeeping(
     db_session: Session, test_user: Any, forge: FakeForge
 ) -> None:
