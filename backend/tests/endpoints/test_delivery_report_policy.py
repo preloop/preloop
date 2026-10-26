@@ -6,20 +6,27 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_delivery_report_policy,
+    crud_flow,
+    crud_flow_execution,
     crud_organization,
     crud_project,
     crud_tracker,
 )
+from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services import delivery_report as dr
+from preloop.services.delivery_report_activation import ensure_default_report_flow
 
 BASE = "/api/v1/delivery-report/policy"
 REPO = "example-org/example-repo"
@@ -236,6 +243,96 @@ class TestPolicyRun:
         run = dr.plan_policy_run(db_session, flow=flow)
         assert run.decision == "onboarding"
         assert run.payload()["policy"]["tracker_writes"]["close"] == "deny"
+
+
+def test_tracker_connection_creates_one_default_report_flow(
+    db_session: Session, test_user: Any
+) -> None:
+    """A tracker connection activates a schedule even without a model."""
+    _project(db_session, test_user.account_id)
+    with patch(
+        "preloop.api.endpoints.flows._resolve_clone_model_binding",
+        side_effect=HTTPException(status_code=422, detail="no model"),
+    ):
+        flow = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+        again = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+    assert flow is not None
+    assert again.id == flow.id
+    assert flow.is_enabled is True
+    assert flow.schedule_config["type"] == "weekly"
+    assert flow.schedule_config["payload"] == {"previous_result_execution_id": "last"}
+    assert flow.agent_config["limits"]["max_usd"] == 5.0
+    assert flow.ai_model_id is None
+    run = dr.plan_policy_run(db_session, flow=flow)
+    assert run.decision == "skipped_no_model"
+    assert run.calls_model is False
+
+    crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            result={"assessment": {"decision": "skipped_no_model"}},
+        ),
+    )
+    bound_flow = SimpleNamespace(
+        id=flow.id, account_id=test_user.account_id, ai_model_id=uuid.uuid4()
+    )
+    assert dr.plan_policy_run(db_session, flow=bound_flow).decision == "onboarding"
+
+
+@pytest.mark.parametrize(
+    "prior_at,expected",
+    [
+        (datetime(2026, 10, 20, tzinfo=UTC), "skipped_budget"),
+        (datetime(2026, 9, 30, tzinfo=UTC), "assessed"),
+    ],
+)
+def test_run_planner_reads_this_months_spend(
+    db_session: Session,
+    test_user: Any,
+    prior_at: datetime,
+    expected: str,
+) -> None:
+    """The scheduler decides from stored spend in the current UTC month."""
+    account_id = test_user.account_id
+    flow = crud_flow.create(
+        db_session,
+        account_id=account_id,
+        flow_in=FlowCreate(
+            name=f"Monthly report {uuid.uuid4().hex[:6]}",
+            account_id=account_id,
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            prompt_template="Report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+        ),
+    )
+    prior = crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            start_time=prior_at,
+            estimated_cost=25.0,
+            result={"schema": dr.REPORT_SCHEMA},
+        ),
+    )
+    assert prior.id is not None
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=account_id,
+        overrides={"report_mode": "assessed", "per_run_usd": 5, "monthly_usd": 25},
+    )
+    run = dr.plan_policy_run(
+        db_session,
+        flow=SimpleNamespace(
+            id=flow.id, account_id=account_id, ai_model_id=uuid.uuid4()
+        ),
+        now=datetime(2026, 10, 26, tzinfo=UTC),
+    )
+    assert run.decision == expected
 
 
 def test_saving_the_account_policy_updates_the_report_flow(
