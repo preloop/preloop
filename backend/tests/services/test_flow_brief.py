@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 import yaml
@@ -13,6 +15,7 @@ from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
 from preloop.services.flow_pr_binding import (
     BRIEF_END,
@@ -176,6 +179,76 @@ def test_fixture_execution_stores_the_parsed_brief(
     response = client.get(f"/api/v1/flows/executions/{execution.id}")
     assert response.status_code == 200
     assert response.json()["result"]["brief"] == execution.result["brief"]
+
+
+@pytest.mark.asyncio
+async def test_finished_run_replaces_stored_brief_from_published_body(
+    db_session: Session, test_user: models.User
+) -> None:
+    """The production run path persists the parsed body over an older brief."""
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name="Brief run flow",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={},
+            prompt_template="Implement issue",
+            trigger_event_source="github",
+            trigger_event_types=["issue_updated"],
+        ),
+    )
+    event = {
+        "source": "github",
+        "type": "issue_updated",
+        "event_id": f"brief-{uuid4()}",
+        "payload": {"issue": {"number": 1}, "repository": "example/app"},
+        "account_id": str(test_user.account_id),
+    }
+    nats_client = AsyncMock()
+    nats_client.is_connected = True
+    orchestrator = FlowExecutionOrchestrator(
+        db=db_session,
+        flow_id=flow.id,
+        trigger_event_data=event,
+        nats_client=nats_client,
+    )
+
+    async def monitor(session_reference: str, agent_executor: Any) -> dict[str, Any]:
+        orchestrator.execution_log.result = {
+            "pr_url": "https://example.com/pr/1",
+            "brief": parse_brief(_fixture("partial.md")),
+        }
+        db_session.flush()
+        return {
+            "status": "SUCCEEDED",
+            "result": {"status": "success", "pr_body": _fixture("full.md")},
+            "output_summary": "PR ready",
+            "error_message": None,
+            "exit_code": 0,
+            "actions_taken": [],
+            "mcp_usage_logs": [],
+        }
+
+    executor = AsyncMock()
+    executor.start = AsyncMock(return_value="session-under-test")
+    executor.cleanup = AsyncMock()
+    with (
+        patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ),
+        patch.object(orchestrator, "_monitor_agent_execution", side_effect=monitor),
+    ):
+        await orchestrator.run()
+
+    db_session.refresh(orchestrator.execution_log)
+    assert orchestrator.execution_log.status == "SUCCEEDED"
+    assert orchestrator.execution_log.result["brief"] == parse_brief(
+        _fixture("full.md")
+    )
+    assert orchestrator.execution_log.result["pr_url"] == "https://example.com/pr/1"
 
 
 def test_implementation_prompt_asks_for_the_brief_block() -> None:
