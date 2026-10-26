@@ -136,7 +136,20 @@ class FleetMapResponse(BaseModel):
     truncated: bool = False
     limit: int = 500
     clusters: list[FleetMapCluster] = Field(default_factory=list)
-    unavailable: list[str] = Field(default_factory=list)
+    unavailable: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sources missing from this graph: a source the caller may not view "
+            "(also listed in restricted) or one that failed to load."
+        ),
+    )
+    restricted: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sources the caller's permissions do not include (agents, models, "
+            "runners, users, devices); never read, so never drawn."
+        ),
+    )
     active_within_minutes: int | None = Field(
         default=None,
         description="Activity window applied to the graph; null means any time.",

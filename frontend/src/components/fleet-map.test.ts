@@ -877,7 +877,7 @@ describe('fleet-map labels', () => {
         if (key.startsWith('preloop:fleet-map:')) localStorage.removeItem(key);
     });
 
-    it('is not offered to anyone but an instance administrator', async () => {
+    it('is offered to every viewer and remembered per user', async () => {
       localStorage.setItem('preloop:fleet-map:arrangement:fleet:u1', 'spatial');
       const el = await fixture<FleetMap>(
         html`<fleet-map
@@ -886,9 +886,16 @@ describe('fleet-map labels', () => {
           user-id="u1"
         ></fleet-map>`
       );
-      expect(el.shadowRoot!.querySelector('[data-arrangement]')).to.not.exist;
-      // A stored choice cannot turn it on either: columns still render.
-      expect(el.shadowRoot!.querySelector('.column-title')).to.exist;
+      // A layout preference, not data: no administrator gate.
+      expect(
+        el.shadowRoot!.querySelector(
+          '.canvas-tools [data-testid="fleet-map-arrangement"]'
+        )
+      ).to.exist;
+      expect(el.shadowRoot!.querySelector('.column-title')).to.not.exist;
+      expect(
+        el.shadowRoot!.querySelector('[data-testid="fleet-map-reset-layout"]')
+      ).to.exist;
     });
 
     it('lays nodes out in space and keeps a dragged node where it was dropped', async () => {
@@ -1351,5 +1358,150 @@ describe('fleet-map pass 4 review fixes', () => {
         .shadowRoot!.querySelector('[data-arrangement="spatial"]')!
         .getAttribute('aria-pressed')
     ).to.equal('true');
+  });
+});
+
+describe('fleet-map onboarded only and the control bar', () => {
+  afterEach(() => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith('preloop:fleet-map:')) localStorage.removeItem(key);
+  });
+
+  const countOf = (el: FleetMap) =>
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="fleet-map-count"]'
+    )!;
+  const onboardedItem = (el: FleetMap) =>
+    el.shadowRoot!.querySelector<HTMLElement & { checked: boolean }>(
+      '[data-testid="fleet-map-onboarded"]'
+    )!;
+
+  it('hides agents that are not onboarded, and what only they reached, when the host asks', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
+        default-onboarded-only
+        positions-scope="inventory"
+        user-id="o1"
+      ></fleet-map>`
+    );
+    await allAgents(el);
+    expect(node(el, 'agent:cursor')).to.equal(null);
+    // The account only the hidden agent used goes too; the machine that
+    // still hosts a runner, and its owner, stay.
+    expect(node(el, 'account:dev')).to.equal(null);
+    expect(node(el, 'device:build')).to.exist;
+    expect(node(el, 'user:sam')).to.exist;
+    expect(node(el, 'agent:codex')).to.exist;
+    expect(countOf(el).textContent!.trim()).to.equal(
+      '2 active onboarded agents'
+    );
+    expect(countOf(el).title).to.contain(
+      '1 not onboarded agent hidden by Onboarded only.'
+    );
+    expect(onboardedItem(el).checked).to.equal(true);
+  });
+
+  it('puts Onboarded only first in Show, and remembers the choice per map', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
+        default-onboarded-only
+        positions-scope="inventory"
+        user-id="o2"
+      ></fleet-map>`
+    );
+    const menu = onboardedItem(el).closest('sl-menu')!;
+    expect(menu.querySelector('sl-menu-item')).to.equal(onboardedItem(el));
+    onboardedItem(el).click();
+    await el.updateComplete;
+    expect(node(el, 'agent:cursor')).to.exist;
+    expect(countOf(el).textContent!.trim()).to.match(/active in this\s+window/);
+    expect(
+      localStorage.getItem('preloop:fleet-map:onboarded-only:inventory:o2')
+    ).to.equal('off');
+    const again = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
+        default-onboarded-only
+        positions-scope="inventory"
+        user-id="o2"
+      ></fleet-map>`
+    );
+    expect(node(again, 'agent:cursor')).to.exist;
+    // Another map keeps its own default.
+    const fleet = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
+        user-id="o2"
+      ></fleet-map>`
+    );
+    expect(node(fleet, 'agent:cursor')).to.exist;
+    expect(onboardedItem(fleet).checked).to.equal(false);
+  });
+
+  it("resets filters to the host's default, not to everything", async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
+        default-onboarded-only
+        positions-scope="inventory"
+        user-id="o3"
+      ></fleet-map>`
+    );
+    const reset = el.shadowRoot!.querySelector<
+      HTMLElement & { disabled: boolean }
+    >('[data-testid="fleet-map-reset-filters"]')!;
+    expect(reset.disabled).to.equal(true);
+    onboardedItem(el).click();
+    await el.updateComplete;
+    expect(node(el, 'agent:cursor')).to.exist;
+    expect(reset.disabled).to.equal(false);
+    reset.click();
+    await el.updateComplete;
+    expect(node(el, 'agent:cursor')).to.equal(null);
+    expect(onboardedItem(el).checked).to.equal(true);
+  });
+
+  it('puts Lanes and Canvas at the left of the zoom controls, and full screen only on the bar', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${sampleFleetMap()} user-id="o4"></fleet-map>`
+    );
+    const bar = el.shadowRoot!.querySelector('.canvas-tools')!;
+    expect(bar.firstElementChild!.getAttribute('data-testid')).to.equal(
+      'fleet-map-arrangement'
+    );
+    expect(
+      el.shadowRoot!.querySelector('.toolbar [data-arrangement]')
+    ).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="fleet-map-fullscreen-menu"]')
+    ).to.equal(null);
+    expect(bar.querySelector('[data-testid="fleet-map-fullscreen"]')).to.exist;
+    expect(el.shadowRoot!.querySelector('.privacy-note')).to.exist;
+  });
+
+  it('says so when nothing on the account is shared with the viewer', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${{
+          ...sampleFleetMap(),
+          nodes: [],
+          edges: [],
+          unavailable: ['agents', 'models', 'runners', 'users', 'devices'],
+          restricted: ['agents', 'models', 'runners', 'users', 'devices'],
+        }}
+      ></fleet-map>`
+    );
+    const empty = el.shadowRoot!.querySelector(
+      '[data-testid="fleet-map-empty"]'
+    )!.textContent!;
+    expect(empty).to.contain('not shared with');
+    expect(empty).to.not.contain('Device evidence is unavailable');
   });
 });

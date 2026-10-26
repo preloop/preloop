@@ -33394,6 +33394,15 @@ components:
             type: string
           type: array
           title: Unavailable
+          description: 'Sources missing from this graph: a source the caller may not
+            view (also listed in restricted) or one that failed to load.'
+        restricted:
+          items:
+            type: string
+          type: array
+          title: Restricted
+          description: Sources the caller's permissions do not include (agents, models,
+            runners, users, devices); never read, so never drawn.
         active_within_minutes:
           anyOf:
           - type: integer
@@ -50846,7 +50855,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

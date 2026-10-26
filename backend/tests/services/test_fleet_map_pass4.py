@@ -716,3 +716,57 @@ async def test_a_full_scan_rewrites_the_stamped_jira_row(
         edited if local_edit else datetime(2026, 10, 18, 9, 15, 2, 871000)
     )
     assert stored.created_at == datetime(2026, 10, 18, 9, 12, 44, 120000)
+
+
+def test_usage_names_only_nodes_the_callers_graph_draws(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """A member's totals never key an agent, person or work item they cannot see."""
+    user, agent = fleet["user"], fleet["agent"]
+    model = _model(db_session, user.account_id, "scoped-usage-model")
+    _usage(
+        db_session,
+        user.account_id,
+        model,
+        5,
+        runtime_principal_type="claude_code",
+        runtime_principal_id=agent.session_source_id,
+    )
+    _call(
+        db_session,
+        fleet["session"],
+        "create_pull_request",
+        2,
+        metadata={
+            "arguments_summary": {"target": "https://github.com/example/hidden/pull/8"}
+        },
+    )
+    db_session.flush()
+    hidden = f"agent:{agent.id}"
+
+    def deny_agents(db: Any, user: Any, kind: str, rows: Any) -> list[Any]:
+        return [] if kind == "managed_agent" else list(rows)
+
+    with _devices(None):
+        shown = build_fleet_usage(
+            db_session, user=user, active_within_minutes=60, now=NOW
+        )
+        assert hidden in shown.agents
+        with patch(
+            "preloop.plugins.account_hooks.filter_viewable", side_effect=deny_agents
+        ):
+            usage = build_fleet_usage(
+                db_session, user=user, active_within_minutes=60, now=NOW
+            )
+            graph = build_fleet_map(
+                db_session, user=user, active_within_minutes=60, now=NOW
+            )
+            activity = build_code_activity(
+                db_session, user=user, active_within_minutes=60, now=NOW
+            )
+    assert hidden not in usage.agents
+    assert f"user:{user.id}" not in usage.people
+    drawn = {node.id for node in graph.nodes} | {item.id for item in activity.work}
+    drawn |= {flow.id for flow in activity.flows}
+    for totals in (usage.agents, usage.people, usage.flows, usage.devices, usage.work):
+        assert set(totals) <= drawn

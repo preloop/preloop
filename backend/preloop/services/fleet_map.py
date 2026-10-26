@@ -248,18 +248,18 @@ def build_fleet_map(
     Returns:
         Allowlisted graph with explicit source and output truncation.
 
+    Every member may call this: each source is read only with its own
+    permission (devices need ``view_device_fleet``) and filtered by the
+    resource authorizer, and a denied source is listed in ``unavailable``.
+
     Raises:
-        HTTPException: The caller cannot view the account's fleet.
+        HTTPException: Report-only credentials, or a limit out of range.
     """
     _reject_report_key(user)
     if not 50 <= limit <= 1000:
         raise HTTPException(422, "Fleet map limit must be between 50 and 1000")
     account = crud.crud_account.get(db, id=user.account_id)
     owner = account is not None and str(account.primary_user_id) == str(user.id)
-    if not _allowed(db, user, "view_device_fleet", owner):
-        raise HTTPException(
-            403, "Insufficient permissions. Required: view_device_fleet"
-        )
     result = FleetMapResponse(limit=limit, active_within_minutes=active_within_minutes)
     account_id = str(user.account_id)
     permissions = {
@@ -271,6 +271,7 @@ def build_fleet_map(
             "view_users",
             "edit_ai_models",
             "manage_agents",
+            "view_device_fleet",
         )
     }
 
@@ -281,6 +282,9 @@ def build_fleet_map(
         name: Source, permission: str, resource_type: str | None = None
     ) -> list[Any]:
         if not permissions[permission]:
+            # Say which sources this caller cannot see, rather than a 403.
+            result.unavailable.append(name)
+            result.restricted.append(name)
             return []
         rows = list_resources(
             db,
@@ -588,7 +592,14 @@ def build_fleet_map(
             if len(matches) == 1:
                 model_link(aid, str(matches[0].id), "configured", [])
 
-    service = get_plugin_manager().get_service("device_fleet")
+    # Devices are the device fleet's inventory: only its viewers see them.
+    if not permissions["view_device_fleet"]:
+        result.restricted.append("devices")
+    service = (
+        get_plugin_manager().get_service("device_fleet")
+        if permissions["view_device_fleet"]
+        else None
+    )
     projection: dict[str, Any] | None = None
     if service is not None:
         try:

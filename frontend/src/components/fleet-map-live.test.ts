@@ -216,11 +216,10 @@ describe('fleet-map live canvas', () => {
     expect(el.shadowRoot!.querySelectorAll('[data-toast]').length).to.equal(1);
   });
 
-  it('lights nodes in the columns arrangement too, for admins only', async () => {
+  it('lights nodes in the columns arrangement too, for every viewer', async () => {
     const columns = await fixture<FleetMap>(
       html`<fleet-map
         .graph=${sampleFleetMap()}
-        instance-admin
         user-id="u-columns"
       ></fleet-map>`
     );
@@ -232,18 +231,46 @@ describe('fleet-map live canvas', () => {
         .shadowRoot!.querySelector('[data-node="agent:codex"]')!
         .classList.contains('speaking')
     ).to.equal(true);
+    columns.codeActivity = activity();
+    await columns.updateComplete;
+    expect(columns.shadowRoot!.querySelector('[data-code]')).to.exist;
+  });
+
+  it("drops a member's realtime event for an agent the map does not hold", async () => {
     const viewer = await fixture<FleetMap>(
       html`<fleet-map
         .graph=${sampleFleetMap()}
+        .activityWindow=${'any'}
         user-id="u-viewer"
       ></fleet-map>`
     );
-    viewer.recordActivity('gateway_activity', call);
-    viewer.codeActivity = activity();
+    const hidden = {
+      ...call,
+      payload: { ...call.payload, managed_agent_id: 'not-shared' },
+    };
+    viewer.recordActivity('gateway_activity', hidden);
+    viewer.recordActivity('code_activity', {
+      topic: 'code_activity',
+      payload: {
+        action: 'opened',
+        managed_agent_id: 'not-shared',
+        url: 'https://github.com/example/private/pull/1',
+      },
+    });
     await viewer.updateComplete;
     expect(viewer.litNodes).to.deep.equal([]);
-    expect(viewer.shadowRoot!.querySelector('.speaking')).to.not.exist;
-    expect(viewer.shadowRoot!.querySelector('[data-code]')).to.not.exist;
+    expect(viewer.shadowRoot!.querySelector('[data-toast]')).to.not.exist;
+    expect(viewer.shadowRoot!.textContent).to.not.contain('example/private');
+    // An administrator's map still takes account-wide events as they come.
+    const admin = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="u-admin"
+      ></fleet-map>`
+    );
+    admin.recordActivity('gateway_activity', call);
+    expect(admin.litNodes).to.include('agent:codex');
   });
 
   it('lights nothing for a node folded past the column cap', async () => {
@@ -294,7 +321,7 @@ describe('fleet-map live canvas', () => {
     expect(el.litNodes).to.deep.equal([]);
   });
 
-  it("listens to code activity only on an administrator's live map", async () => {
+  it("listens to code activity on every viewer's live map", async () => {
     const subscribe = stub(unifiedWebSocketManager, 'subscribe').returns(
       () => {}
     );
@@ -302,14 +329,12 @@ describe('fleet-map live canvas', () => {
       await fixture<FleetMap>(
         html`<fleet-map .graph=${sampleFleetMap()} live></fleet-map>`
       );
-      expect(subscribe.args.map((a) => a[0])).to.not.include('code_activity');
-      subscribe.resetHistory();
-      const admin = await fixture<FleetMap>(
-        html`<fleet-map .graph=${sampleFleetMap()} live></fleet-map>`
-      );
-      admin.instanceAdmin = true;
-      await admin.updateComplete;
       expect(subscribe.args.map((a) => a[0])).to.include('code_activity');
+      subscribe.resetHistory();
+      await fixture<FleetMap>(
+        html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
+      );
+      expect(subscribe.args.map((a) => a[0])).to.not.include('code_activity');
     } finally {
       subscribe.restore();
     }

@@ -3,7 +3,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import crud, models
@@ -47,16 +46,17 @@ def build_fleet_usage(
         Model/provider dictionaries keyed exactly as the fleet graph, with
         explicit source truncation and missing-data flags.
 
+    Every member may call this: agent totals cover only agents the resource
+    authorizer lets the caller view, and work totals only the work items the
+    caller's own code activity returns, so no total names a node the
+    caller's graph could not draw.
+
     Raises:
-        HTTPException: The caller cannot read the account's fleet.
+        HTTPException: Report-only credentials.
     """
     _reject_report_key(user)
     account = crud.crud_account.get(db, id=user.account_id)
     owner = account is not None and str(account.primary_user_id) == str(user.id)
-    if not _allowed(db, user, "view_device_fleet", owner):
-        raise HTTPException(
-            403, "Insufficient permissions. Required: view_device_fleet"
-        )
     current = now or datetime.now(UTC)
     current = (
         current.replace(tzinfo=UTC)
@@ -401,6 +401,10 @@ def _node_totals(
         if not any(getattr(item, name) for name in _COUNT_FIELDS):
             continue
         if node.startswith("flow:") and node.removeprefix("flow:") not in shown_flows:
+            continue
+        if node.startswith("work:") and node not in scoped_work:
+            # Work reaches the graph only through code activity, which has
+            # already dropped what a hidden agent touched.
             continue
         if scope is not None and not (
             scope.has(node) or (node.startswith("work:") and node in scoped_work)
