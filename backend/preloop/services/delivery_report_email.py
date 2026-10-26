@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from preloop.services.delivery_report import (
+    PURPOSE_PARTIAL,
     DeliveryReportPolicy,
     _summary_lines,
     change_detail_lines,
@@ -84,6 +85,11 @@ def _needs_line(item: Mapping[str, Any]) -> str:
     if kind == "reopen_request":
         return f"Proposed reopen: {_label(item)}"
     if kind == "closed_unverified":
+        if item.get("verdict") == PURPOSE_PARTIAL:
+            criteria = (
+                "; ".join(item.get("unmet_criteria") or []) or "criteria unchecked"
+            )
+            return f"Closed, partly covered: {_label(item)}. Not shown met: {criteria}"
         return f"Closed with an evidence gap: {_label(item)}"
     if kind == "risk":
         return f"Risk ({', '.join(item.get('flags') or [])}): {_label(item)}"

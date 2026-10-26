@@ -147,6 +147,14 @@ class TestFixtureWindow:
         assert set(closed) == {"acme/app#11", "acme/app#12"}
         assert closed["acme/app#11"]["purpose"]["verdict"] == dr.PURPOSE_COVERED
         assert closed["acme/app#12"]["purpose"]["verdict"] == dr.PURPOSE_PARTIAL
+        criterion = next(
+            c
+            for c in closed["acme/app#12"]["purpose"]["criteria"]
+            if c["text"] == "Exports respect the date filter"
+        )
+        assert criterion["met"] is False
+        assert criterion["evidence"]
+        assert "Closed, partly covered" in report["report_markdown"]
         needs = [i for i in report["needs_you"] if i["kind"] == "closed_unverified"]
         assert [i["ref"] for i in needs] == ["acme/app#12"]
         assert needs[0]["unmet_criteria"] == ["Exports respect the date filter"]
@@ -205,7 +213,7 @@ class TestHonestyRules:
         assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
         assert purpose["criteria"][0]["met"] is None
 
-    def test_partial_evidence_is_partial(self) -> None:
+    def test_an_uncited_criterion_is_an_evidence_gap(self) -> None:
         purpose = dr.normalize_purpose(
             {
                 "verdict": "covered",
@@ -215,7 +223,42 @@ class TestHonestyRules:
                 ],
             }
         )
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+
+    def test_a_criterion_shown_unmet_is_partial(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "criteria": [
+                    {"text": "A", "met": True, "evidence": ["a.py:1"]},
+                    {"text": "B", "met": None},
+                    {"text": "C", "met": False, "evidence": ["comment: p95 3 s"]},
+                ],
+            }
+        )
         assert purpose["verdict"] == dr.PURPOSE_PARTIAL
+
+    def test_a_partial_claim_without_a_miss_is_dropped(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "verdict": "partial",
+                "criteria": [
+                    {"text": "A", "met": True, "evidence": ["a.py:1"]},
+                    {"text": "B", "met": None},
+                ],
+            }
+        )
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+        assert purpose["claimed_verdict"] == "partial"
+
+    def test_a_miss_cannot_be_reported_as_an_evidence_gap(self) -> None:
+        purpose = dr.normalize_purpose(
+            {
+                "verdict": "unverified",
+                "criteria": [{"text": "A", "met": False, "evidence": ["x"]}],
+            }
+        )
+        assert purpose["verdict"] == dr.PURPOSE_PARTIAL
+        assert purpose["claimed_verdict"] == "unverified"
 
     def test_agent_may_be_more_cautious(self) -> None:
         purpose = dr.normalize_purpose(
@@ -633,9 +676,12 @@ class TestMergeAuditReuse:
             data = orchestrator._delivery_report_inputs({"payload": {"window": WINDOW}})
         assert data is not None
         paths = [s["path"] for s in data["payload"]["workspace_files"]]
-        assert paths == ["previous/merge_audits.json"]
+        assert paths == [
+            "tools/delivery_report_checks.py",
+            "previous/merge_audits.json",
+        ]
 
-    def test_a_failed_audit_read_keeps_the_trigger(self) -> None:
+    def test_a_failed_audit_read_still_seeds_the_checks(self) -> None:
         from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
         orchestrator = object.__new__(FlowExecutionOrchestrator)
@@ -646,7 +692,11 @@ class TestMergeAuditReuse:
             "preloop.models.crud.crud_flow_execution.completed_merge_audits",
             side_effect=RuntimeError("db down"),
         ):
-            assert orchestrator._delivery_report_inputs(trigger) is trigger
+            data = orchestrator._delivery_report_inputs(trigger)
+        assert trigger == {"payload": {}}
+        assert data is not None
+        paths = [s["path"] for s in data["payload"]["workspace_files"]]
+        assert paths == ["tools/delivery_report_checks.py"]
 
 
 class TestOrchestratorPolicy:
@@ -888,7 +938,7 @@ class TestDenominators:
         summary = _window_report()["summary"]
         assert summary["linkage"] == {"linked": 3, "total": 4}
         assert summary["criteria_availability"] == {"with_criteria": 2, "total": 2}
-        assert summary["evidence_availability"] == {"with_evidence": 2, "total": 3}
+        assert summary["evidence_availability"] == {"with_evidence": 3, "total": 3}
         assert summary["closed_verdicts"] == {
             "covered": 1,
             "partial": 1,
@@ -903,7 +953,7 @@ class TestDenominators:
         text = report["report_markdown"]
         assert f"Linkage: {summary['linkage']['linked']} of 4 shipped" in text
         assert "Criteria available: 2 of 2 closed issues" in text
-        assert "Evidence available: 2 of 3 of their criteria" in text
+        assert "Evidence available: 3 of 3 of their criteria" in text
         verdicts = summary["closed_verdicts"]
         assert (
             f"{verdicts['covered']} covered, {verdicts['partial']} partial, "
@@ -1008,7 +1058,8 @@ class TestMeasuredRunRules:
             "<!-- PRELOOP_BRIEF -->",
             "the comments after the last comment that",
             "reopen_requests",
-            "the parent commit (<merge>^1)",
+            "tools/delivery_report_checks.py parent-check",
+            "tools/delivery_report_checks.py scope",
             "updated_at and closing PR head SHA",
             "metadata_only",
             "down_revision is a tuple",
@@ -1306,3 +1357,40 @@ def test_reopen_requests_keep_whether_the_run_applied_them() -> None:
         [{**base, "applied": True}, {**base, "ref": "example/app#8", "applied": "yes"}]
     )
     assert [r["applied"] for r in kept] == [True, False]
+
+
+@pytest.mark.parametrize("miss_first", [True, False])
+def test_closed_issue_miss_wins_over_met_duplicate(miss_first: bool) -> None:
+    prs = _load("pull_requests.json")
+    first, second = (101, 102) if miss_first else (102, 101)
+    for pr in prs:
+        if pr["number"] in (101, 102):
+            pr["description"] = "Closes #12"
+    assessments = {
+        f"acme/app#{number}": {
+            "purpose": {
+                "criteria": [
+                    {
+                        "text": "Exports respect the date filter",
+                        "met": met,
+                        "evidence": ["backend/app/export.py:22"],
+                    }
+                ]
+            }
+        }
+        for number, met in ((first, False), (second, True))
+    }
+    report = dr.assemble_report(
+        window=WINDOW,
+        pull_requests=prs,
+        issues=_load("issues.json"),
+        assessments=assessments,
+    )
+    issue = next(i for i in report["closed_issues"] if i["ref"] == "acme/app#12")
+    assert issue["purpose"]["verdict"] == dr.PURPOSE_PARTIAL
+    criterion = next(
+        c
+        for c in issue["purpose"]["criteria"]
+        if c["text"] == "Exports respect the date filter"
+    )
+    assert criterion["met"] is False

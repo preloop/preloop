@@ -27,7 +27,7 @@ const VERDICT_CHIPS: Record<PurposeVerdict, VerdictChip> = {
   partial: {
     variant: 'warning',
     label: 'Partial',
-    title: 'Some stated criteria are met with evidence',
+    title: 'The evidence shows at least one stated criterion not met',
   },
   unverified: {
     variant: 'warning',

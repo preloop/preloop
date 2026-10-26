@@ -5599,19 +5599,23 @@ class FlowExecutionOrchestrator:
     def _delivery_report_inputs(
         self, trigger_event_data: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Seed the window's completed merge audits for a Delivery Report run.
+        """Seed the merge audits and the report checks for a Delivery Report run.
 
-        The run reads them as ``previous/merge_audits.json`` beside the
-        previous report, so an audited closed issue is not assessed again.
-        A failed read leaves the trigger data as it was; the report pass
+        The run reads the window's completed merge audits as
+        ``previous/merge_audits.json`` beside the previous report, so an
+        audited closed issue is not assessed again, and runs the fetch-scope
+        and parent-commit checks from ``tools/delivery_report_checks.py``.
+        A failed audit read seeds the checks only; the report pass
         applies the audits again when the run ends.
         """
         from preloop.services.delivery_report import (
             load_merge_audits,
             with_merge_audits_seed,
+            with_report_checks_seed,
         )
         from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
 
+        trigger_event_data = with_report_checks_seed(trigger_event_data)
         payload = (trigger_event_data or {}).get("payload")
         window = payload.get("window") if isinstance(payload, dict) else None
         run = self._plan_delivery_report_run()

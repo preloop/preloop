@@ -121,10 +121,15 @@ prompt_template: |
     git show <merge>, whose combined diff hides the changes.
   - Read each PR with get_pull_request. Its file list is paginated; if
     changes.files_changed is larger than the files listed, say so.
-  - For a PR without a linked issue, use only the file list, the last
-    <!-- PRELOOP_SUMMARY --> block and the check conclusion. Read review
-    threads only when the PR closes an issue that has criteria, or a
-    CodeQL or severity marker is present.
+  - Save each PR response to a file and run
+    python3 tools/delivery_report_checks.py scope <pr.json>
+    with one --criterion "<text>" per criterion of the issues it closes.
+    Assess from its output only: the file list, the added test names, the
+    last reviewer summary and the check conclusion, plus review threads
+    and diff hunks only when the output includes them (scope says why).
+    A check conclusion of unknown means unavailable or incomplete evidence,
+    never a pass. Keep the closing merge SHA from the forge or git history;
+    a parent-check record cannot clear a criterion without that exact SHA.
   - Dependabot PRs and PRs that only touch docs or the README: report them
     from metadata (set metadata_only to "dependabot" or "docs_only") with
     no assessment and no risk pass.
@@ -170,9 +175,11 @@ prompt_template: |
   rules are not optional:
   - purpose.verdict is "covered" only when EVERY criterion is met and each
     one cites evidence: a file and line, a test name and its result, or a
-    review comment. "partial" when some are met with evidence.
-    "unverified" when the available evidence cannot decide: that is an
-    evidence gap, not a failure. "no_criteria" when the issue states none.
+    review comment. "partial" when the evidence shows at least one
+    criterion not met (met false). "unverified" when nothing shows a
+    criterion unmet but the evidence cannot decide at least one (met
+    null), however many others are met: that is an evidence gap, not a
+    failure. "no_criteria" when the issue states none.
     Never call a change fine without having looked. An issue without
     criteria is "no_criteria", never "covered".
   - If the most recent comment on the issue measures a criterion as not
@@ -180,8 +187,13 @@ prompt_template: |
     met false, not an evidence gap. Propose a reopen in reopen_requests,
     naming the revision you assessed and citing the comment.
   - Before marking "update X accordingly" as not met because X was not
-    touched, check whether X referenced the removed or changed thing at
-    the parent commit (<merge>^1). If it did not, nothing needed changing.
+    touched, run
+    python3 tools/delivery_report_checks.py parent-check --repo <clone>
+      --merge <merge sha> --path X --term <removed or changed name>
+    and put its JSON output on the criterion as "parent_check". The
+    platform marks the criterion met when X had no reference at
+    <merge>^1, and treats an "accordingly" criterion marked not met
+    without the check as an evidence gap.
   - Say which evidence is new in the PR and which already existed on main.
   - Drop a follow-up when a later merged PR in the window references the
     PR or fixes the named symptom.
@@ -211,7 +223,8 @@ prompt_template: |
      "metadata_only": null | "dependabot" | "docs_only",
      "purpose": {"verdict": "covered" | "partial" | "unverified" | "no_criteria",
        "criteria": [{"text": "...", "met": true | false | null,
-         "evidence": ["path/to/file.py:42", "test_name passed", "review comment URL"]}],
+         "evidence": ["path/to/file.py:42", "test_name passed", "review comment URL"],
+         "parent_check": {"<parent-check output, when you ran it>": "..."}}],
        "reason": "..."},
      "risk_flags": [{"flag": "...", "evidence": ["..."]}],
      "evidence_gaps": ["<Not verified bullet from the brief or summary>"],

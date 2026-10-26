@@ -1,0 +1,1794 @@
+[
+ {
+  "ref": "preloop/preloop#1340",
+  "title": "feat(cli): system-context inventory across all local user profiles for MDM-run collection",
+  "closed_by": [
+   "preloop/preloop#1871"
+  ],
+  "criteria": [
+   {
+    "text": "--all-users on inventory/report; elevated enumeration of macOS/Windows/Linux profiles; per-profile scan with known-app tables",
+    "met": true,
+    "evidence": [
+     "Flag already on main before PR (agents.go); PR adds TestLocalProfileEnumerationKeepsRootWhenHomeUnavailable, TestAllUsersInventoryRetainsUnreadableRegistryProfile; existing TestAllUsersInventoryPlatformFixtures"
+    ]
+   },
+   {
+    "text": "Profile reference is salted hash, never clear user name",
+    "met": true,
+    "evidence": [
+     "TestAllUsersInventoryDeviceReference; schema profile_ref HEX_SHA256 pattern; TestAllUsersInventoryReportWireFixture"
+    ]
+   },
+   {
+    "text": "Without elevation errors clearly, never degrades",
+    "met": true,
+    "evidence": [
+     "TestAllUsersInventoryPrivilegeRejectionBeforeIO"
+    ]
+   },
+   {
+    "text": "Offline contract: no network, no credential reads, no writes; per-profile errors as partial entries",
+    "met": true,
+    "evidence": [
+     "TestAllUsersInventoryMachineIdentityIsReadOnly, TestAllUsersInventoryMissingIdentityFailsBeforeCollection, TestInventoryDirectoryProfilesKeepEntriesReadBeforeError (Completeness='partial')"
+    ]
+   },
+   {
+    "text": "Report payload version bump, backward-compatible server",
+    "met": true,
+    "evidence": [
+     "PR body: v2 evidence already on main; discovery_evidence.py profile_ref optional; not changed in this PR"
+    ]
+   },
+   {
+    "text": "Fixture tests on macOS/Windows/Linux with 2+ profiles, one unreadable",
+    "met": true,
+    "evidence": [
+     "TestAllUsersInventoryPlatformFixtures, TestInventoryWindowsProfileListFixtures, TestInventoryWindowsProfilesKeepNamesReadBeforeError; CI Discovery ubuntu/macos/windows SUCCESS"
+    ]
+   },
+   {
+    "text": "Secret canaries prove no user name, home path, env value or token emitted",
+    "met": true,
+    "evidence": [
+     "agents_inventory_profiles_security_test.go (secret-identity-canary), agents_inventory_profiles_test.go credential canaries"
+    ]
+   },
+   {
+    "text": "Partial scans marked partial, never empty",
+    "met": true,
+    "evidence": [
+     "TestAllUsersInventoryRetainsUnreadableRegistryProfile; result.Completeness = \"partial\" in agents_inventory_profiles.go"
+    ]
+   },
+   {
+    "text": "Docs updated in agent-discovery-reporting.md",
+    "met": true,
+    "evidence": [
+     "docs/guide/agent-discovery-reporting.md +23/-4"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false,
+  "note": "Covered, but the feature already existed on main; part of the cited evidence predates the PR. A run should say which evidence is new."
+ },
+ {
+  "ref": "preloop/preloop#1342",
+  "title": "test(cli): macOS and Windows discovery parity matrix in CI",
+  "closed_by": [
+   "preloop/preloop#1995"
+  ],
+  "criteria": [
+   {
+    "text": "Run discovery, inventory and report-builder tests on macos-latest and windows-latest as well as Linux",
+    "met": true,
+    "evidence": [
+     ".github/workflows/discovery-parity.yml (+41/-2); checks show Discovery (ubuntu-latest), (macos-latest), (windows-latest)"
+    ]
+   },
+   {
+    "text": "Parity table asserting every registered app declares darwin and windows paths or unsupported reason",
+    "met": true,
+    "evidence": [
+     "cli/internal/cmd/agents_discovery_parity_test.go::TestDiscoveryRegistryPlatformPaths + testdata/discovery-platform-paths.json"
+    ]
+   },
+   {
+    "text": "Runners offline (PRELOOP_DISABLE_TELEMETRY=true, no network)",
+    "met": true,
+    "evidence": [
+     "TestDiscoveryOfflineNetwork requires PRELOOP_DISABLE_TELEMETRY; workflow uses unshare --net / macOS sandbox discovery-offline.sb"
+    ]
+   },
+   {
+    "text": "CI job green on all three OS runners",
+    "met": true,
+    "evidence": [
+     "statusCheckRollup: Discovery ubuntu/macos/windows SUCCESS; PR body links the three runs"
+    ]
+   },
+   {
+    "text": "A missing Windows path for a registered app fails parity",
+    "met": true,
+    "evidence": [
+     "TestDiscoveryRegistryRejectsMissingWindowsPath; PR body mutation check"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1347",
+  "title": "docs: endpoint AI governance coverage boundaries and threat model",
+  "closed_by": [
+   "preloop/preloop#2001"
+  ],
+  "criteria": [
+   {
+    "text": "Guide page: signals and what each proves, per-OS coverage (mac/Win required, Linux best effort), out of scope items",
+    "met": true,
+    "evidence": [
+     "docs/guide/endpoint-coverage.md sections 'What each signal proves','Platform scope' (line 56: Linux is best effort)"
+    ]
+   },
+   {
+    "text": "Threat model table: admin bypass, personal accounts, API-to-API, browser AI, unmanaged devices, stolen collector key with control and residual risk",
+    "met": true,
+    "evidence": [
+     "endpoint-coverage.md '## Threat model' rows at lines 134-139"
+    ]
+   },
+   {
+    "text": "Data minimisation statement suitable for a DPIA",
+    "met": true,
+    "evidence": [
+     "endpoint-coverage.md 'Data minimization and retention', 'Fields and data paths','Hashing and identity','DPIA decisions still required'"
+    ]
+   },
+   {
+    "text": "Link from discovery reporting guide and recipes (#1181)",
+    "met": true,
+    "evidence": [
+     "agent-discovery-reporting.md and operations/mdm-recipes.md diffs add section links"
+    ]
+   },
+   {
+    "text": "Every claim maps to shipped behaviour or is marked planned with issue link",
+    "met": null,
+    "evidence": [
+     "PR claims 22 pinned source files checked and 'Planned work' section; I did not verify claim-by-claim"
+    ]
+   },
+   {
+    "text": "No vendor disparagement; neutral partner wording",
+    "met": null,
+    "evidence": [
+     "Editorial judgment; automated reviewer found none, not independently read in full"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1675",
+  "title": "Executions on the persistent Agent Control path have no logs or session link in the API/console",
+  "closed_by": [
+   "preloop/preloop#1842"
+  ],
+  "criteria": [
+   {
+    "text": "Persistent (control:) executions serve logs from control-session activities instead of container path",
+    "met": true,
+    "evidence": [
+     "backend/tests/endpoints/test_flows.py::test_control_execution_logs_use_bound_executor; agent_control.py get_logs; ::test_control_execution_log_tail_pagination_has_no_overlap"
+    ]
+   },
+   {
+    "text": "Execution detail resolves/links the runtime session id",
+    "met": true,
+    "evidence": [
+     "flow_execution schema runtime_session_id; frontend flow-execution-actions.test.ts 'links to the tracking session instead of a control command id'; backend/tests/services/test_agent_control_progress.py::test_progress_round_trip_keeps_one_tool_call_in_tracking_session"
+    ]
+   },
+   {
+    "text": "Sidecar forwards bounded stream-json assistant/tool events plus final duration/usage summary",
+    "met": true,
+    "evidence": [
+     "runtime-plugins/claude-preloop/test/sessions.test.mjs 'turn progress forwards bounded assistant/tool output and final usage'"
+    ]
+   },
+   {
+    "text": "Tests for logs source selection and session link",
+    "met": true,
+    "evidence": [
+     "test_flows.py and flow-execution-actions.test.ts above"
+    ]
+   },
+   {
+    "text": "Actually shows output/session on a live persistent run in prod",
+    "met": null,
+    "evidence": [
+     "PR: manual live-provider/production validation not performed"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1681",
+  "title": "Expired approval requests stay status=pending (listed as pending weeks after expires_at)",
+  "closed_by": [
+   "preloop/preloop#1842"
+  ],
+  "criteria": [
+   {
+    "text": "Past-expiry pending rows transition to expired with resolved_at = expires_at",
+    "met": true,
+    "evidence": [
+     "models/crud/approval_request.py (resolved_at: self.model.expires_at); api/endpoints/approval_requests.py calls expire_stale_pending before list/stats"
+    ]
+   },
+   {
+    "text": "Left out of pending list and attention counts",
+    "met": true,
+    "evidence": [
+     "expire_stale_pending invoked on both list and stats reads (lazy transition in place of periodic sweep)"
+    ]
+   },
+   {
+    "text": "Test with fixture past expiry",
+    "met": true,
+    "evidence": [
+     "backend/tests/endpoints/test_approval_requests.py::test_pending_list_expires_past_deadline_rows"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1689",
+  "title": "perf(sessions): session pane loads and renders the whole history (2.7 MB, 38,769 px for a 402-request session)",
+  "closed_by": [
+   "preloop/preloop#1908",
+   "preloop/preloop#1903",
+   "preloop/preloop#1884"
+  ],
+  "criteria": [
+   {
+    "text": "Initial payload for heavy session <= 300 KB",
+    "met": true,
+    "evidence": [
+     "PR 1903 body: first page 762 -> 147 KB and 660 -> 263 KB on prod; issue comment: 273.8 KB for 36e72b61; test_gateway_event_history.py::test_tool_activity_already_carried_is_dropped"
+    ]
+   },
+   {
+    "text": "Pane renders last 20 turns; older via Load earlier",
+    "met": true,
+    "evidence": [
+     "runtime-sessions-view.test.ts 'reads the last 20 turns with a bounded history window (#1689)'; session-chat-view.test.ts 'keeps load-earlier to one compact line'"
+    ]
+   },
+   {
+    "text": "Ready < 2 s cold",
+    "met": null,
+    "evidence": [
+     "Closing PR 1908 body: activity query on prod 8.2 s -> 385 ms (EXPLAIN); test_runtime_session_activity.py::test_timeline_limits_ids_before_reading_metadata. Server path ~1.27 s cold earlier; browser cold-ready never measured, and no post-1908 measurement comment"
+    ]
+   },
+   {
+    "text": "First turn visible at 1440x900 (one filter row, overflow menu, promo remembered)",
+    "met": true,
+    "evidence": [
+     "PR 1903 body: staging first turn y 867 -> 744; runtime-sessions-view.test.ts 'keeps the filters on one row in the 1440 content column (#1689)'; overflow menu and promo from 1884"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1690",
+  "title": "bug(sessions): artifact deep link never settles (spinner over 30 s, shell calls pending)",
+  "closed_by": [],
+  "criteria": [
+   {
+    "text": "Both deep links reach network idle in < 5 s",
+    "met": true,
+    "evidence": [
+     "Issue comment (prod, Chromium 1440x900): heavy 2.02 s, median 2.06 s. PR 1903 body also has a mocked-API measurement 12.3 s -> 3.3 s (not prod)"
+    ]
+   },
+   {
+    "text": "Video/large images load on demand; at most 2 eager previews",
+    "met": true,
+    "evidence": [
+     "session-artifact-row.test.ts 'never loads a large image until it is clicked', 'plays a video only when asked'; session-artifacts.test.ts 'allows two eager previews per session, then asks for a click'; browser-steps-timeline.test.ts 'strip and row thumbnails count against the 2-preview limit'; prod: 2 artifact GETs"
+    ]
+   },
+   {
+    "text": "No shell call pending > 2 s while page loads",
+    "met": true,
+    "evidence": [
+     "session-artifacts.ts MAX_CONCURRENT_ARTIFACT_LOADS=2 (PR 1881 test session-artifacts.test.ts); prod comment: kill-switch 0.11 s, approval-bypasses 0.08 s"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1691",
+  "title": "ux(approvals): approval detail renders a 53 KB diff in full (29 viewports)",
+  "closed_by": [
+   "preloop/preloop#1879"
+  ],
+  "criteria": [
+   {
+    "text": "Diffs and args longer than 40 lines collapse behind 'Show all N lines (+M -K)'",
+    "met": true,
+    "evidence": [
+     "frontend/src/components/args-diff.ts COLLAPSE_LINE_LIMIT=40, label 'Show all ${total} lines'; args-diff.test.ts 'plans collapse only past the limit', 'collapses long raw arguments without diff counts'"
+    ]
+   },
+   {
+    "text": "Agent reasoning and rule context render above the diff",
+    "met": true,
+    "evidence": [
+     "approval-view.ts; approval-view.test.ts 'puts reasoning above a collapsed heavy diff' (shell commands intentionally keep command-first order)"
+    ]
+   },
+   {
+    "text": "The heavy approval is <= 3 viewports by default",
+    "met": null,
+    "evidence": [
+     "No browser measurement; PR body: 'Not measured in a real browser at 1440x900'. 40-line cap is a proxy only"
+    ]
+   },
+   {
+    "text": "A unit test covers a 2,000-line Write",
+    "met": true,
+    "evidence": [
+     "args-diff.test.ts 'collapses a 2,000-line Write to 40 lines behind a counted button'"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1692",
+  "title": "ux: detail pages put forms above primary content (model, flow, flow execution)",
+  "closed_by": [
+   "preloop/preloop#1908",
+   "preloop/preloop#1903",
+   "preloop/preloop#1884",
+   "preloop/preloop#1881"
+  ],
+  "criteria": [
+   {
+    "text": "Primary content within 400 px: usage on model, executions on flow, timeline on execution",
+    "met": null,
+    "evidence": [
+     "Model y292 and flow y232 measured post-deploy (issue comment). Execution tabs measured 453/419 px before 1908; 1908 test flow-execution-first-paint.test.ts 'keeps the PR follow-up action from pushing the Timeline tabs down' is synthetic; no remeasure after 1908"
+    ]
+   },
+   {
+    "text": "Sharing, Tags, Budget in a settings section or collapsed",
+    "met": true,
+    "evidence": [
+     "ai-model-detail-view.test.ts 'puts usage before the Settings section with budget and pricing (#1692)'; staging: chips in header"
+    ]
+   },
+   {
+    "text": "Prompt collapsed to 10 lines",
+    "met": true,
+    "evidence": [
+     "flow-view.test.ts 'collapses a long prompt to 10 lines with a toggle (#1692)'; PR 1908 'collapsed prompt is exactly 10 lines' (earlier measure was ~12 lines; no post-1908 measure)"
+    ]
+   },
+   {
+    "text": "Heavy execution <= 3 viewports",
+    "met": null,
+    "evidence": [
+     "PR 1908 caps finished timeline at calc(200dvh - 400px); test 'keeps a heavy finished run within three viewports (#1692)'. Last real measure 3.15/3.29 viewports (not met) was before 1908; PR 1908 says re-measure still to do"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1693",
+  "title": "perf(audit): audit/chain/status 3.5 to 4.1 s blocks Audit and Records",
+  "closed_by": [
+   "preloop/preloop#1908",
+   "preloop/preloop#1884",
+   "preloop/preloop#1881"
+  ],
+  "criteria": [
+   {
+    "text": "Chain status <= 300 ms, or fetched after table renders",
+    "met": true,
+    "evidence": [
+     "Prod 28 ms first call (issue comment); 1881 cache test_audit_chain.py::test_cached_status_skips_the_row_counts_until_it_expires; 1884 audit-integrity-strip.test.ts 'mounts the chain status chip only after the timeline answers'"
+    ]
+   },
+   {
+    "text": "Audit cold ready < 2 s",
+    "met": false,
+    "evidence": [
+     "Latest issue comment after the previous deploy: Audit cold-ready not met (grouped alone 1.4 to 3.7 s cold); the closing PR adds no newer measurement"
+    ]
+   },
+   {
+    "text": "grouped p95 <= 1.5 s",
+    "met": false,
+    "evidence": [
+     "Latest issue comment: grouped p95 = 3.13 s against 1.5 s, not met; the closing PR is EXPLAIN-only and adds no newer measurement"
+    ]
+   },
+   {
+    "text": "Seal text becomes compact 'Sealed - Verify' chip",
+    "met": true,
+    "evidence": [
+     "audit-integrity-strip.test.ts (PR 1884); issue comment: chip present on staging"
+    ]
+   }
+  ],
+  "reopen_expected": true,
+  "spike_assessor_verdict": "unverified",
+  "corrected": true,
+  "note": "Spike assessor said unverified with a follow-up; the conductor's double-check found the latest measurement says not met, so these are misses and a reopen is expected.",
+  "latest_comment": "Measurement after deploy. Met: chain status 28 ms; chip present. Not met: grouped p95 = 3.13 s (target 1.5 s); Audit cold-ready over 2 s. Leaving this open."
+ },
+ {
+  "ref": "preloop/preloop#1694",
+  "title": "perf: list calls still over 1.5 s (Attention, API keys, Models overview x3, flow executions)",
+  "closed_by": [
+   "preloop/preloop#1908",
+   "preloop/preloop#1903",
+   "preloop/preloop#1884",
+   "preloop/preloop#1881"
+  ],
+  "criteria": [
+   {
+    "text": "Each call <= 1.5 s on prod",
+    "met": false,
+    "evidence": [
+     "Latest issue comment: agents list p95 = 1.88 s against 1.5 s, not met; the closing PR adds an index-only plan test and no newer measurement"
+    ]
+   },
+   {
+    "text": "Models: 1 overview call per range",
+    "met": true,
+    "evidence": [
+     "PR 1881 test_ai_models_overview.py::test_overview_returns_the_prior_window_spend_in_the_same_call; ai-models-view.test.ts (a third call runs only for stale fixed markers)"
+    ]
+   },
+   {
+    "text": "auth/api-keys paged (25); Overview uses a count endpoint",
+    "met": true,
+    "evidence": [
+     "PR 1884 test_api_key_paging.py::test_limit_and_offset_page_the_list_with_a_total, api-keys-view.test.ts 'asks the server for one page of live keys'; PR 1881 test_api_key_count.py, dashboard-view.test.ts 'counts API keys without reading the key list (#1694)'"
+    ]
+   }
+  ],
+  "reopen_expected": true,
+  "spike_assessor_verdict": "unverified",
+  "corrected": true,
+  "note": "Same pattern as #1693: the latest measurement says not met and the closing PR adds no newer one.",
+  "latest_comment": "Measurement after deploy. Met: executions and sessions lists under 1.5 s; one overview call; API keys paged. Not met: agents list p95 = 1.88 s (target 1.5 s). Leaving this open."
+ },
+ {
+  "ref": "preloop/preloop#1695",
+  "title": "perf(console): eager heavy loads on Flows, Policies and Tools lists",
+  "closed_by": [
+   "preloop/preloop#1903",
+   "preloop/preloop#1884",
+   "preloop/preloop#1879"
+  ],
+  "criteria": [
+   {
+    "text": "Presets load only when Create flow opens",
+    "met": true,
+    "evidence": [
+     "flows-view.test.ts 'does not fetch presets or the 200-run sample on first load (#1695)' (PR 1879; also opens on presets UI/Type filter)"
+    ]
+   },
+   {
+    "text": "Flows list does not fetch flows/executions?limit=200",
+    "met": true,
+    "evidence": [
+     "same flows-view.test.ts test; flows/summary carries last_run (PR 1884 test_flow_summary_last_run.py::test_summary_stats_carry_the_last_run)"
+    ]
+   },
+   {
+    "text": "Each list page fetches <= 150 KB API JSON on first load",
+    "met": true,
+    "evidence": [
+     "PR 1903 body (prod-data serialisation): Tools 207 -> 133 KB, Policies ~50 KB, Flows ~31 KB; code: GET /tools/rules (1884 test_tools_summary.py), tools-view default_only (1903 test_ai_models.py::test_list_ai_models_default_only; tools-view.test.ts 'asks only for the default models on first view'). Measured on founder account only"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1696",
+  "title": "ux(cost): Spend chart and Gateway traffic KPIs pushed below the fold",
+  "closed_by": [
+   "preloop/preloop#1879"
+  ],
+  "criteria": [
+   {
+    "text": "First KPI row and first chart within 400 px of page top",
+    "met": null,
+    "evidence": [
+     "cost-view.test.ts 'puts the spend chart before subscription workload and catalog (#1696)' checks DOM order only; no pixel measurement (PR: not measured at 1440x900)"
+    ]
+   },
+   {
+    "text": "Subaccount table hidden or moved below when every subaccount is 0",
+    "met": true,
+    "evidence": [
+     "usage-rollup-panel.test.ts 'hides an all-zero rollup with no open attention (#1696)'; api-usage-view.test.ts 'renders the subaccount rollup below the KPI row (#1696)'"
+    ]
+   },
+   {
+    "text": "Accounting banner is a compact inline notice",
+    "met": true,
+    "evidence": [
+     "cost-view.test.ts 'keeps the accounting notice compact and inline (#1696)' (collapsed <details>)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1785",
+  "title": "Bitbucket repository webhook registration creates duplicate hooks for the same URL",
+  "closed_by": [
+   "preloop/preloop#1879"
+  ],
+  "criteria": [
+   {
+    "text": "Repeated registration and sync leave exactly one managed hook per repo+callback URL",
+    "met": true,
+    "evidence": [
+     "backend/tests/sync/trackers/test_bitbucket.py::test_repeated_registration_keeps_one_hook"
+    ]
+   },
+   {
+    "text": "Existing hook with outdated events is reconciled without a duplicate",
+    "met": true,
+    "evidence": [
+     "test_bitbucket.py::test_outdated_events_are_reconciled; test_secret_rotation_updates_row_so_next_run_skips_put"
+    ]
+   },
+   {
+    "text": "Retry/overlapping registration leaves no duplicate managed hooks",
+    "met": true,
+    "evidence": [
+     "test_bitbucket.py::test_overlapping_registration_converges_on_one_hook"
+    ]
+   },
+   {
+    "text": "Hooks with unrelated callback URLs are preserved",
+    "met": true,
+    "evidence": [
+     "test_bitbucket.py::test_unrelated_urls_preserved_and_duplicates_collapsed"
+    ]
+   },
+   {
+    "text": "Existing duplicates have a documented safe reconciliation path",
+    "met": false,
+    "evidence": [
+     "Behaviour implemented and tested (test_scanner_collapses_preexisting_duplicates, test_removed_duplicate_row_is_committed; bitbucket.py _remove_duplicate_hook docstrings) but no doc/runbook file in the diff"
+    ]
+   },
+   {
+    "text": "Provider event delivered once after reconciliation against a real Bitbucket repo",
+    "met": null,
+    "evidence": [
+     "Only mocked tests; PR notes endpoint test needed DATABASE_URL and was not run locally"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1786",
+  "title": "Policies model I/O hints omit model.name and obscure the UUID meaning of model.id",
+  "closed_by": [
+   "preloop/preloop#1842"
+  ],
+  "criteria": [
+   {
+    "text": "Model I/O editor hint and docs list model.id and model.name with distinct meanings",
+    "met": true,
+    "evidence": [
+     "frontend policies-view.ts hint; docs/guide/policies/back-office-ai.md 'Model identity in CEL'; policies-view.notify.test.ts 'describes both model identities in the condition hint'"
+    ]
+   },
+   {
+    "text": "Documented top-tier/outside-approved-set expression uses model.name and is validated by the real CEL evaluator",
+    "met": true,
+    "evidence": [
+     "backend/tests/services/test_model_content_policy.py::test_model_name_allowlist_preserves_uuid_identity (evaluate_model_io)"
+    ]
+   },
+   {
+    "text": "Tests: unapproved matches, approved does not, non-top-tier does not",
+    "met": true,
+    "evidence": [
+     "same test, 3 parametrized cases"
+    ]
+   },
+   {
+    "text": "Tests preserve UUID semantics for model.id and provider-identifier semantics for model.name",
+    "met": true,
+    "evidence": [
+     "same test asserts model.id == uuid while model.name matches model_identifier"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1787",
+  "title": "Execution and Attention summaries hide failure causes and show Tools 0 for runs using tools",
+  "closed_by": [
+   "preloop/preloop#1842"
+  ],
+  "criteria": [
+   {
+    "text": "Launch failures show actionable config cause in details and Attention with meaningful category",
+    "met": true,
+    "evidence": [
+     "services/test_flow_failure_category.py::test_unsupported_wire_api_is_model_configuration; frontend attention.test.ts 'prefers a terminal cause over startup and recovery notices'"
+    ]
+   },
+   {
+    "text": "Verification refusal shows failed check id and reason",
+    "met": true,
+    "evidence": [
+     "agents/test_failure_analysis.py::test_verification_check_cause_takes_precedence; flow-execution-view.test.ts 'prefers a terminal verification refusal over an earlier gateway failure'"
+    ]
+   },
+   {
+    "text": "Startup lines/recovery notices cannot override known terminal cause; fallback exists",
+    "met": true,
+    "evidence": [
+     "test_failure_analysis.py::test_error_headline_excludes_startup_and_recovery_notice"
+    ]
+   },
+   {
+    "text": "Summaries redact credentials and link to full diagnostics",
+    "met": true,
+    "evidence": [
+     "test_agent_control_progress.py::test_tool_progress_uses_tracking_session_and_redacts_summary; test_flow_execution_logger.py::test_native_tool_names_are_scrubbed_and_excluded_from_service_logs; full diagnostics preserved per PR body (link not separately tested)"
+    ]
+   },
+   {
+    "text": "Correct nonzero tool count, zero for no-tool run, no double count on stream/resume",
+    "met": true,
+    "evidence": [
+     "test_flow_execution_logger.py::test_native_tool_events_count_once_across_stream_replay, ::test_codex_native_tools_and_no_tool_run; test_flow_orchestrator_streaming.py::test_recovered_stream_restores_native_tool_ids"
+    ]
+   },
+   {
+    "text": "UI verification of execution details and Attention",
+    "met": true,
+    "evidence": [
+     "Chromium component tests only (flow-execution-view.test.ts, attention.test.ts); no screenshot or live UI check"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1820",
+  "title": "Runners: report the workstation fingerprint used by agent discovery",
+  "closed_by": [
+   "preloop/preloop#1863"
+  ],
+  "criteria": [
+   {
+    "text": "Runner and discover --report on same machine/account store equal fingerprints (Go + backend test)",
+    "met": true,
+    "evidence": [
+     "backend/tests/endpoints/test_runner_discovery_fingerprint.py::test_runner_and_discovery_store_equal_account_scoped_fingerprints; cli/internal/cmd/runner_fingerprint_test.go (PR body: actual discovery report parity). Storage/migration itself landed earlier (#1828), not in this PR"
+    ]
+   },
+   {
+    "text": "Different accounts on one machine produce different fingerprints",
+    "met": true,
+    "evidence": [
+     "same backend test uses two account salts (PR body: 'storage equality across two account salts')"
+    ]
+   },
+   {
+    "text": "Older CLIs without the field still register (null stored)",
+    "met": false,
+    "evidence": [
+     "No test in PR 1863 diff; column is nullable on main (runners.py) from earlier PR, not verified by a test here"
+    ]
+   },
+   {
+    "text": "OpenAPI regenerated; field documented as correlation key, not device identity",
+    "met": true,
+    "evidence": [
+     "openapi.yaml already has workstation_fingerprint (schemas/flow_runner.py descriptions say 'correlation key, not attested'); docs/security/personal-runners.md +20 lines; PR says OpenAPI has no diff"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1821",
+  "title": "Attention: generic plugin-contributed attention items",
+  "closed_by": [
+   "preloop/preloop#1865"
+  ],
+  "criteria": [
+   {
+    "text": "Fixture provider item renders, links, and can be dismissed (component test)",
+    "met": true,
+    "evidence": [
+     "frontend/src/views/authed/attention-view.test.ts::'renders plugin items with severity, links and the existing dismissal flow'; attention.test.ts::'keeps dismissals until displayed evidence or the incident changes'"
+    ]
+   },
+   {
+    "text": "No providers: no failing request and no empty section",
+    "met": true,
+    "evidence": [
+     "attention-view.test.ts::'does not render an empty extension section'; backend test_extension_attention.py::test_no_sources_returns_empty_without_database_reads"
+    ]
+   },
+   {
+    "text": "action severity is the only amber; info neutral",
+    "met": true,
+    "evidence": [
+     "attention.test.ts::'maps action to warning and info to neutral low' (visual amber under DESIGN.md not checked in a browser)"
+    ]
+   },
+   {
+    "text": "OpenAPI regenerated",
+    "met": true,
+    "evidence": [
+     "openapi.yaml +75 in merge diff (adds /api/v1/attention/extension-items)"
+    ]
+   },
+   {
+    "text": "Plugin.get_attention_sources + permission-filtered endpoint merging providers",
+    "met": true,
+    "evidence": [
+     "backend/preloop/plugins/base.py::get_attention_sources/attention_sources; test_permission_filter_namespace_dedupe_and_failure_isolation"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1830",
+  "title": "Local and OpenAI-compatible models for hosted flows: verified Ollama, vLLM and LM Studio path through the gateway, plus docs",
+  "closed_by": [
+   "preloop/preloop#1838"
+  ],
+  "criteria": [
+   {
+    "text": "Reviewer run against local Ollama Qwen completes through gateway on pinned image with cost zero/metered",
+    "met": null,
+    "evidence": [
+     "PR body: execution 1d489110 SUCCEEDED, 55,684 tokens, $0.00 (author-reported; used a concise custom prompt, stock Qwen3 reviewer prompt failed)"
+    ]
+   },
+   {
+    "text": "Issue Implementation run on local model",
+    "met": null,
+    "evidence": [
+     "PR body: execution c23cef80 SUCCEEDED (author-reported, concise prompt)"
+    ]
+   },
+   {
+    "text": "Fix blockers: Responses-to-chat bridging, private hostname handling, Ollama model listing",
+    "met": false,
+    "evidence": [
+     "Diff only changes sampling defaults (openai_gateway.py::test_compatible_chat_sampling_defaults) and codex.py MCP required startup (test_attached_mcp_is_ready_before_inference); no code for hostname or Ollama listing; docs say hostnames already work"
+    ]
+   },
+   {
+    "text": "Verify Gemini by API key and Claude on Vertex; document",
+    "met": false,
+    "evidence": [
+     "docs/guide/providers/local-models.md 'Gemini and Claude on Vertex AI' documents paths but states runtime checks need credentials; not verified"
+    ]
+   },
+   {
+    "text": "Docs page for Ollama/vLLM/LM Studio/llama.cpp incl. NetworkPolicy egress and smaller-model limits, linked from providers index",
+    "met": true,
+    "evidence": [
+     "docs/guide/providers/local-models.md, providers/index.md, mkdocs.yml"
+    ]
+   },
+   {
+    "text": "Red/green tests for backend changes",
+    "met": true,
+    "evidence": [
+     "test_openai_gateway.py::test_compatible_chat_sampling_defaults; test_agent_codex.py (PR body states red/green)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1832",
+  "title": "GitLab self-hosted: setup guide (bot user, token scopes, roles, webhooks, network) and an end-to-end rehearsal of review and issue-to-MR on GitLab CE",
+  "closed_by": [
+   "preloop/preloop#1840"
+  ],
+  "criteria": [
+   {
+    "text": "Rehearse review (fail+pass MR) and issue-to-MR on GitLab CE with webhook auto-registration",
+    "met": null,
+    "evidence": [
+     "PR body: live GitLab CE 19.3.5, changes-requested and approval MRs, labeled issue to MR (author-reported)"
+    ]
+   },
+   {
+    "text": "Rehearsal report with per-step results, screenshots, cost and timing, defect list",
+    "met": false,
+    "evidence": [
+     "No report/screenshots committed in the diff; PR says report records elapsed time/tokens; local model pricing unknown, not measured"
+    ]
+   },
+   {
+    "text": "Fix defects found (scheme/port preservation, provenance, webhook secret, review_body)",
+    "met": true,
+    "evidence": [
+     "test_gitlab_self_hosted_publication.py, test_optional_product_provenance.py, test_webhook_secret_concurrency.py/test_webhook_secret_ordering.py, test_mcp.py::test_update_pull_request_approve_gitlab"
+    ]
+   },
+   {
+    "text": "Candidate defects: hook registration failure only logged; host-kind detection needs gitlab label",
+    "met": false,
+    "evidence": [
+     "Not fixed in diff; docs guide/gitlab-self-hosted.md only documents the hostname-label requirement"
+    ]
+   },
+   {
+    "text": "Setup guide (bot, scopes, roles, approvals, branches, webhook, network) linked from trackers",
+    "met": true,
+    "evidence": [
+     "docs/guide/gitlab-self-hosted.md; mkdocs.yml nav entry"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1833",
+  "title": "Runner-proxied local models: discover local model servers in the CLI, register them to the account, and proxy gateway requests through the runner websocket",
+  "closed_by": [
+   "preloop/preloop#1837",
+   "preloop/preloop#1839"
+  ],
+  "criteria": [
+   {
+    "text": "Spec committed under docs",
+    "met": true,
+    "evidence": [
+     "docs/architecture/runner-local-models.md (1837)"
+    ]
+   },
+   {
+    "text": "CLI/runner detects Ollama/LM Studio/vLLM/llama.cpp, lists models, offers registration; runner implements proxy messages",
+    "met": true,
+    "evidence": [
+     "cli/internal/cmd/runner_models.go; runner_models_test.go::TestRunnerModelDiscovery, ::TestRunnerModelStreamPullAndCancellation, ::TestRunnerModelAllowlist"
+    ]
+   },
+   {
+    "text": "Backend registration via runner, gateway dispatch, offline handling without hang, account-scoped security",
+    "met": true,
+    "evidence": [
+     "services/runner_model_proxy.py; test_runner_model_proxy.py::test_offline_runner_never_uses_direct_http; test_runner_model_registration.py::test_registration_rejects_cross_account_runner; alembic migration 20261021_runner_model_endpoint.py"
+    ]
+   },
+   {
+    "text": "Docs guide page",
+    "met": true,
+    "evidence": [
+     "docs/guide/runner-local-models.md"
+    ]
+   },
+   {
+    "text": "Tests on both Go and Python sides",
+    "met": true,
+    "evidence": [
+     "runner_models_test.go (14 tests) and backend/tests/services/test_runner_model_proxy.py, endpoints/test_runner_models.py"
+    ]
+   },
+   {
+    "text": "Streaming gateway chat completion end to end on local stack; fails fast when runner offline",
+    "met": null,
+    "evidence": [
+     "Issue comments: HTTP 200 11 SSE events, 503 runner_offline in ~1.05s on compose apw-runner with host Ollama (author-reported)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1843",
+  "title": "CLI writes an alias outside the new agent credential's allowlist",
+  "closed_by": [
+   "preloop/preloop#1850"
+  ],
+  "criteria": [
+   {
+    "text": "Written config, persisted model choice and credential allowlist agree after alias collision (Claude Code and Codex)",
+    "met": true,
+    "evidence": [
+     "cli/internal/cmd/agents_alias_collision_test.go::TestManagedGatewayAliasCollision; agents_openclaw.go fix"
+    ]
+   },
+   {
+    "text": "Claude sibling aliases handled",
+    "met": true,
+    "evidence": [
+     "::TestClaudeSiblingAliasCollision; agents_claude_family_sync.go"
+    ]
+   },
+   {
+    "text": "Regression covers repeat onboarding",
+    "met": true,
+    "evidence": [
+     "collision tests assert no rename / no duplicate models on repeat onboarding"
+    ]
+   },
+   {
+    "text": "Confirmed on current main; real backend returns 200 for corrected selector",
+    "met": null,
+    "evidence": [
+     "PR: reproduced via local HTTP API fixture, not live backend or provider"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1844",
+  "title": "Stored policy simulator awaits a synchronous SQLAlchemy result",
+  "closed_by": [
+   "preloop/preloop#1851"
+  ],
+  "criteria": [
+   {
+    "text": "Stored policy simulation no longer 500s; same decision as live dispatch without side effects",
+    "met": true,
+    "evidence": [
+     "services/policy_evaluator.py sync firewall path; backend/tests/endpoints/test_policy_simulation.py::test_stored_evaluation_uses_sync_firewall_without_recording"
+    ]
+   },
+   {
+    "text": "Regression with real sync dependency, authenticated, not a mocked evaluator",
+    "met": true,
+    "evidence": [
+     "::test_authenticated_stored_simulation_with_sync_dependency (real JWT, allow/deny/approval)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1845",
+  "title": "Advertised MCP property `value` is rejected by generated wrapper",
+  "closed_by": [
+   "preloop/preloop#1852"
+  ],
+  "criteria": [
+   {
+    "text": "Reserved Python local names aliased internally, external property preserved",
+    "met": true,
+    "evidence": [
+     "services/dynamic_fastmcp.py; test_dynamic_fastmcp.py::test_wrapper_aliases_reserved_local_params, ::test_call_tool_forwards_original_property_key"
+    ]
+   },
+   {
+    "text": "Regression compares list-tools schema with accepted invocation args",
+    "met": true,
+    "evidence": [
+     "test_dynamic_fastmcp.py::test_wrapper_aliases_exec_namespace_tool_name_and_param_names (per PR body discovers wrapper, compares schema, dispatches to synthetic upstream)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1846",
+  "title": "OSS deep link leaks weekly-review copy",
+  "closed_by": [
+   "preloop/preloop#1852"
+  ],
+  "criteria": [
+   {
+    "text": "Unavailable governance tab normalized before computing page copy",
+    "met": true,
+    "evidence": [
+     "frontend/src/views/authed/policies-view.ts (_activeTab reset to rules; copy gated by hasCapability)"
+    ]
+   },
+   {
+    "text": "Regression with governance_review=false asserts tab absent and ordinary subtitle",
+    "met": true,
+    "evidence": [
+     "policies-view.test.ts 'normalizes an unavailable governance deep link before rendering copy'"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1847",
+  "title": "Opening Spend triggers unrelated paid reconciliation modal",
+  "closed_by": [
+   "preloop/preloop#1852"
+  ],
+  "criteria": [
+   {
+    "text": "Free account opening Spend does not open global upgrade dialog for unused sections",
+    "met": true,
+    "evidence": [
+     "frontend/src/api.ts getProviderBillingConnections({passive}); cost-view.test.ts 'keeps paid connection discovery passive when opening Spend'"
+    ]
+   },
+   {
+    "text": "Explicit Reconciliation access keeps paid gate",
+    "met": true,
+    "evidence": [
+     "PR body states retained; not separately seen as a test"
+    ]
+   },
+   {
+    "text": "Seen in a real free Cloud browser session",
+    "met": null,
+    "evidence": [
+     "Chromium component test only"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1848",
+  "title": "MCP notice is labeled as model requests",
+  "closed_by": [
+   "preloop/preloop#1852"
+  ],
+  "criteria": [
+   {
+    "text": "Target-aware display for tool.args, tool.result, model.request, model.response",
+    "met": true,
+    "evidence": [
+     "backend/tests/services/test_policy_notice_labels.py::test_notice_and_digest_name_the_matched_target (4 targets); frontend attention-policy.test.ts 'names ${target} activity accurately'"
+    ]
+   },
+   {
+    "text": "Attention and digest name tool inputs/MCP activity",
+    "met": true,
+    "evidence": [
+     "policy_notices.py, policy_notice_delivery.py, attention-policy.ts; EE digest companion tracked in separate EE MR #219 (not in this repo)"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1849",
+  "title": "Test harness: minimal Claude install fixture omits required settings file",
+  "closed_by": [
+   "preloop/preloop#1852"
+  ],
+  "criteria": [
+   {
+    "text": "Fixture plants settings.json (decision: fixture, not product)",
+    "met": true,
+    "evidence": [
+     "scripts/e2e-rig/ci_cli_onboard.py writes .claude/settings.json"
+    ]
+   },
+   {
+    "text": "Regression against genuinely empty home",
+    "met": true,
+    "evidence": [
+     "scripts/e2e-rig/tests/test_rig_units.py::test_ci_claude_install_has_required_settings_in_empty_home"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1861",
+  "title": "Agent notes: choose and display target sessions in console and transcript",
+  "closed_by": [
+   "preloop/preloop#1864"
+  ],
+  "criteria": [
+   {
+    "text": "Session picker with alias, harness, start time; defaults to the only live session; explicit next-session option",
+    "met": true,
+    "evidence": [
+     "agent-notes-tab.test.ts::'aims the box at the only live session','makes the operator choose between several live sessions','offers the next session as a target of its own'"
+    ]
+   },
+   {
+    "text": "Preserve existing send_note targets and account validation",
+    "met": true,
+    "evidence": [
+     "test_operator_notes_api.py::test_session_principal_cannot_attach_a_foreign_agent, test_note_targets_unknown_and_foreign_agents_are_404"
+    ]
+   },
+   {
+    "text": "Note history shows session links, author, delivery state/time, with session filter",
+    "met": true,
+    "evidence": [
+     "agent-notes-tab.test.ts::'names and links the session each note went to','narrows the list to one session'; backend test_session_note_is_in_its_agents_history_and_filter"
+    ]
+   },
+   {
+    "text": "Delivered notes appear inline in the session transcript; deep links repaired",
+    "met": true,
+    "evidence": [
+     "test_hook_note_enters_session_activity_only_after_delivery_ack; test_focused_note_is_included_beyond_recent_activity_page; session-chat-view/observer tests 'jumps to a delivered note named by its note id'"
+    ]
+   },
+   {
+    "text": "Regression tests: session isolation, next-session delivery, history filters, inline delivery events",
+    "met": true,
+    "evidence": [
+     "test_explicit_next_session_excludes_existing_runs, test_next_session_requires_an_agent, test_note_targets_exclude_identity_and_page_live_conversations"
+    ]
+   },
+   {
+    "text": "Backend/API/OpenAPI and frontend delivered together",
+    "met": true,
+    "evidence": [
+     "openapi.yaml +123, operator_notes.py, agent-notes-tab.ts in one PR"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1862",
+  "title": "Fleet Map: bounded dependency graph for devices, agents and model accounts",
+  "closed_by": [
+   "preloop/preloop#1866"
+  ],
+  "criteria": [
+   {
+    "text": "Table | Map view on Device fleet",
+    "met": true,
+    "evidence": [
+     "device-fleet-view.test.ts::'switches to the map, loads it once, and remembers the choice'"
+    ]
+   },
+   {
+    "text": "Map connects owners, devices, runners, agents, models, accounts, providers",
+    "met": true,
+    "evidence": [
+     "backend/tests/services/test_fleet_map.py::test_account_grouping_and_provenance_are_explicit, test_fleet_projection_has_gaps_and_owner_impact"
+    ]
+   },
+   {
+    "text": "Blast radius, gap markers, finding markers, detail links",
+    "met": true,
+    "evidence": [
+     "fleet-map.test.ts::'selecting a node dims the rest and lists its blast radius with actions','counts each gap kind and lights the nodes that carry it'"
+    ]
+   },
+   {
+    "text": "Type/owner/provider filters",
+    "met": true,
+    "evidence": [
+     "fleet-map.test.ts::'filters by owner and counts honestly'; fleet-map-api.test.ts::'filters by provider keeping the chain that reaches it'"
+    ]
+   },
+   {
+    "text": "Actionable empty/loading/error states",
+    "met": true,
+    "evidence": [
+     "fleet-map.test.ts::'says what to do when there is nothing to map'; device-fleet-view.test.ts::'offers retry and the table when the map fails' (loading state: no named test)"
+    ]
+   },
+   {
+    "text": "One org-scoped, permission-filtered, bounded endpoint; configured vs observed distinguished",
+    "met": true,
+    "evidence": [
+     "test_fleet_map_sources.py::test_source_window_is_owned_ordered_bounded_and_one_query; test_resource_visibility_is_applied_before_linking; test_caps_have_clusters_and_no_dangling_edges; 'uses solid configured and dashed observed relationships'"
+    ]
+   },
+   {
+    "text": "No N+1 queries, no credential values",
+    "met": true,
+    "evidence": [
+     "constant-query-count test (PR body: 'constant query count'); test_built_in_binding_preserves_impact_without_operator_credentials"
+    ]
+   },
+   {
+    "text": "Look and feel per DESIGN.md / reuses canvas patterns",
+    "met": null,
+    "evidence": [
+     "visual review claimed in PR body; not verifiable from diff"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1878",
+  "title": "Fleet Map v2: show the current fleet readably (filters, containment, full screen)",
+  "closed_by": [
+   "preloop/preloop#1880"
+  ],
+  "criteria": [
+   {
+    "text": "Exclude decommissioned agents; default to onboarded recently active; filters for discovered and inactive",
+    "met": true,
+    "evidence": [
+     "test_decommissioned_agents_are_excluded_and_counted, test_agents_carry_onboarded_or_inactive_state; fleet-map.test.ts::'shows onboarded agents by default and counts the rest behind filters'"
+    ]
+   },
+   {
+    "text": "Canonical models deduplicated across accounts; agent-to-model edge names account; accounts nested in providers (collapsible)",
+    "met": true,
+    "evidence": [
+     "test_model_instances_collapse_to_one_canonical_model, test_canonical_model_labels; 'nests accounts in their provider and folds them'"
+    ]
+   },
+   {
+    "text": "Legible fit, top-aligned columns, +N more rows",
+    "met": true,
+    "evidence": [
+     "'puts each column directly under its header','collapses long columns into a +N more row that expands' (legible-fit scale of 60% min asserted by no named test; PR reports 83% zoom locally)"
+    ]
+   },
+   {
+    "text": "Search, focus mode, gaps-only filter",
+    "met": true,
+    "evidence": [
+     "'search highlights matches and Enter selects the first','focus mode hides everything unrelated','gaps only keeps gap nodes and their neighbours'"
+    ]
+   },
+   {
+    "text": "Full-screen toggle",
+    "met": true,
+    "evidence": [
+     "'toggles full screen from its own button and leaves it on Esc'"
+    ]
+   },
+   {
+    "text": "Keep blast radius, gap markers, click-through",
+    "met": true,
+    "evidence": [
+     "existing fleet-map tests retained; test_provider_impact_goes_through_its_accounts_not_a_shared_model"
+    ]
+   },
+   {
+    "text": "Map is actually viewable by founder (83 nodes at 25% zoom problem)",
+    "met": null,
+    "evidence": [
+     "PR body reports 84 nodes at 28% -> 15 agents at 83% on a seeded local stack; screenshots are in an external folder, not in the repo"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1919",
+  "title": "Fleet Map v3: readable viewport, stable layout and useful live work metadata",
+  "closed_by": [
+   "preloop/preloop#1924"
+  ],
+  "criteria": [
+   {
+    "text": "One collection toolbar and visible viewport controls",
+    "met": true,
+    "evidence": [
+     "fleet-map-v3.test.ts::'uses the collection toolbar and stays quiet when there are no gaps','keeps navigation inside a short host and makes the legend a disclosure'; list-toolbar.ts compact density"
+    ]
+   },
+   {
+    "text": "Columns and Spatial both work in Device fleet, Overview and full screen",
+    "met": true,
+    "evidence": [
+     "'shows current flow events and attached work in both arrangements'; fleet-map-canvas/live tests (full-screen and Overview not named in a test)"
+    ]
+   },
+   {
+    "text": "Manual layouts survive refresh/membership changes; Reset with Undo",
+    "met": true,
+    "evidence": [
+     "'owns the whole arrangement after a drag, across refresh and membership changes','resets a complete manual layout and restores it with Undo without moving the camera'"
+    ]
+   },
+   {
+    "text": "Consumes model/tool/approval/flow/code events and degrades honestly when refs/verdicts/actors absent",
+    "met": true,
+    "evidence": [
+     "fleet-map-event-log.test.ts::'keeps independent concurrent requests...','scrubs credential values...'; 'shows measured model content and never invents an answers bubble'; fleet-map-story.test.ts"
+    ]
+   },
+   {
+    "text": "Small flow-context projection and native managed-agent identity, no new content capture",
+    "met": true,
+    "evidence": [
+     "backend/services/fleet_flow_context.py; tests test_selects_subject_without_raw_content_or_title, test_publisher_attaches_context_without_copying_trigger; 'counts native tools...'"
+    ]
+   },
+   {
+    "text": "Real local screenshots at 1440x900 and 1920x1080 in both themes",
+    "met": null,
+    "evidence": [
+     "Only 4 webp files committed (before/after at 1440x900, work-spatial, work-columns); PR body claims both sizes and themes run locally; 1920x1080 and dark theme images not in repo"
+    ]
+   },
+   {
+    "text": "Frontend/backend behavior verified",
+    "met": true,
+    "evidence": [
+     "PR body: full frontend suite 5,289 passed, backend 18 shards pass; checks all SUCCESS"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1955",
+  "title": "Normalise Anthropic input tokens to cache-inclusive at ingestion",
+  "closed_by": [
+   "preloop/preloop#1958"
+  ],
+  "criteria": [
+   {
+    "text": "Store Anthropic input cache-inclusive in _normalize_usage",
+    "met": true,
+    "evidence": [
+     "backend/preloop/services/openai_gateway.py::_normalize_usage + usage_token_details.anthropic_cache_input_tokens; tests/services/test_anthropic_cache_inclusive_input.py::test_normalize_usage_makes_raw_anthropic_input_cache_inclusive"
+    ]
+   },
+   {
+    "text": "Keep raw provider figures in meta_data.usage_details",
+    "met": true,
+    "evidence": [
+     "PR body + test_passthrough_records_cache_inclusive_input (not independently diffed)"
+    ]
+   },
+   {
+    "text": "Cost estimation prices cached input at cache rate",
+    "met": true,
+    "evidence": [
+     "test_cache_inclusive_input_keeps_cache_prices, test_catalog_price_of_cache_inclusive_input_uses_cache_rates"
+    ]
+   },
+   {
+    "text": "Decide/document backfill vs read-time guard",
+    "met": true,
+    "evidence": [
+     "PR body 'Backfill decision'; ARCHITECTURE.md +31; migration 20261106_anthropic_cache_inclusive_input.py (upgrade/downgrade) + services/anthropic_cache_input_repair.py"
+    ]
+   },
+   {
+    "text": "Tests: normalisation, cost, aggregate hit<=in, miss=in-hit",
+    "met": true,
+    "evidence": [
+     "test_anthropic_cache_inclusive_input.py (passthrough row/aggregate), test_anthropic_cache_input_migration.py::test_backfill_upgrade_is_idempotent_and_downgrade_reverts, test_anthropic_cache_input_repair.py"
+    ]
+   },
+   {
+    "text": "Clamp tests in test_cache_accounting.py still pass or updated",
+    "met": true,
+    "evidence": [
+     "PR body says pass unchanged; file not in diff; CI result not re-run by me"
+    ]
+   },
+   {
+    "text": "Remove frontend compensation in token-figures.ts",
+    "met": true,
+    "evidence": [
+     "frontend/src/components/token-figures.ts +4/-60; token-figures.test.ts 'does not inflate input from the cache counts'"
+    ]
+   },
+   {
+    "text": "Backfill correct on production data volume",
+    "met": null,
+    "evidence": [
+     "migration scans api_usage; needs real DB run"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1956",
+  "title": "Model detail page still labels a model Healthy when most requests failed",
+  "closed_by": [
+   "preloop/preloop#1958"
+  ],
+  "criteria": [
+   {
+    "text": "Extract health rule into shared helper, used by detail page",
+    "met": true,
+    "evidence": [
+     "frontend/src/utils/model-health.ts; imported in ai-models-view.ts and ai-model-detail-view.ts"
+    ]
+   },
+   {
+    "text": "Same 5% threshold, copy, title marker",
+    "met": true,
+    "evidence": [
+     "model-health.ts HEALTHY_FAILURE_RATE=0.05; model-health.test.ts 'turns Acknowledged at a 5% failure rate', 'states the failure share only above the threshold'"
+    ]
+   },
+   {
+    "text": "Red/green detail-page test for acknowledged model with majority failures",
+    "met": true,
+    "evidence": [
+     "ai-model-detail-view.test.ts 'reads Acknowledged, not Healthy, when most requests failed (#1956)'"
+    ]
+   },
+   {
+    "text": "Rendering looks right in browser",
+    "met": null,
+    "evidence": [
+     "no screenshot in PR"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1957",
+  "title": "Remove the legacy issue duplicates and assignments stub views",
+  "closed_by": [
+   "preloop/preloop#1958"
+  ],
+  "criteria": [
+   {
+    "text": "Delete two stub views, lazy loaders and their tests",
+    "met": true,
+    "evidence": [
+     "duplicates-view.ts/assignments-view.ts and .test.ts deleted; console-route-loaders.ts -2 entries"
+    ]
+   },
+   {
+    "text": "Keep redirects in lit-app.ts",
+    "met": true,
+    "evidence": [
+     "lit-app.ts only comment changed (+2/-2); redirects retained"
+    ]
+   },
+   {
+    "text": "Update the route and lazy-route tests (router.test.ts, lazy-routes.test.ts, capability-routes.test.ts) accordingly.",
+    "met": true,
+    "evidence": [
+     "router.test.ts, lazy-routes.test.ts and capability-routes.test.ts have no reference to the removed stubs at <merge>^1 (parent-commit check), so nothing needed changing"
+    ]
+   },
+   {
+    "text": "npm run build drops the chunks",
+    "met": null,
+    "evidence": [
+     "PR body claims 2.14 kB + 0.58 kB chunks gone; build not run by me"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": true,
+  "note": "Spike assessor said partial because the named test files were untouched; at the parent commit none of them referenced the stubs."
+ },
+ {
+  "ref": "preloop/preloop#1976",
+  "title": "Reviewer preset misses GitLab update events in incremental scope",
+  "closed_by": [
+   "preloop/preloop#1982"
+  ],
+  "criteria": [
+   {
+    "text": "Incremental scope accepts merge_request_updated like pull_request_updated",
+    "met": true,
+    "evidence": [
+     "backend/presets/002-pull-request-reviewer.yaml INCREMENTAL text now lists both"
+    ]
+   },
+   {
+    "text": "Keep previous-review and reviewed-SHA safeguards",
+    "met": true,
+    "evidence": [
+     "YAML change only widens event type; other conditions untouched in diff"
+    ]
+   },
+   {
+    "text": "Regression covering GitLab event and rendered preset scope",
+    "met": true,
+    "evidence": [
+     "backend/tests/test_pull_request_reviewer_preset.py::test_incremental_scope_accepts_native_update_events"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "covered",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1977",
+  "title": "Flow preset selection drops webhook configuration and supersession flag",
+  "closed_by": [
+   "preloop/preloop#1982"
+  ],
+  "criteria": [
+   {
+    "text": "Preset webhook config (supersede_on_update) survives selection in UI",
+    "met": true,
+    "evidence": [
+     "preloop-flow-form.ts supportedWebhookConfig(preset.webhook_config) on selection"
+    ]
+   },
+   {
+    "text": "Survives creation without overriding explicit operator choices",
+    "met": true,
+    "evidence": [
+     "api/endpoints/flows.py inherits only when webhook_config omitted; test_flows.py::test_create_from_preset_inherits_only_omitted_webhook_config"
+    ]
+   },
+   {
+    "text": "Survives reload and editing",
+    "met": true,
+    "evidence": [
+     "preloop-flow-form-presets.test.ts 'keeps the saved webhook settings when a preset flow is reopened and edited', 'keeps an explicitly disabled supersession setting while editing'"
+    ]
+   },
+   {
+    "text": "UI/API coverage for persisted flag",
+    "met": true,
+    "evidence": [
+     "tests above"
+    ]
+   },
+   {
+    "text": "End-to-end UI create then inspect stored config",
+    "met": null,
+    "evidence": [
+     "component tests only; no real browser/stack run shown"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1978",
+  "title": "Multi-repository flow exposes only the first published PR or MR",
+  "closed_by": [
+   "preloop/preloop#1983"
+  ],
+  "criteria": [
+   {
+    "text": "Persist all PR/MR outputs, deduplicated, with repo/branch context",
+    "met": true,
+    "evidence": [
+     "flow_orchestrator.py _note_opened_pr + flow_pr_binding.record_published_pr; test_published_pr_collection_keeps_primary_and_deduplicates_url"
+    ]
+   },
+   {
+    "text": "Backward-compatible primary pr_url; no rebinding of single-repo flows",
+    "met": true,
+    "evidence": [
+     "test_runner_handoff_records_second_pr_without_rebinding_primary, test_two_markers_publish_distinct_results_and_keep_first_binding"
+    ]
+   },
+   {
+    "text": "Replay/recovery does not lose or duplicate",
+    "met": true,
+    "evidence": [
+     "test_published_prs_survive_terminal_result_merge, test_multiple_markers_are_deduplicated_and_replayed"
+    ]
+   },
+   {
+    "text": "Two events yield two inspectable links in API and UI",
+    "met": true,
+    "evidence": [
+     "flow-execution-view.test.ts 'shows each published repository and branch without changing follow-up' (UI); API via result.published_prs"
+    ]
+   },
+   {
+    "text": "Legacy single-PR rendering/continuation still works",
+    "met": true,
+    "evidence": [
+     "first pr_url remains binding; no dedicated legacy-render test name found"
+    ]
+   },
+   {
+    "text": "Real two-repo run on live GitLab",
+    "met": null,
+    "evidence": [
+     "issue originated from live run; PR validated with unit/Chromium tests only"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1979",
+  "title": "Restricted GitLab CI event lacks metadata required by the reviewer preset",
+  "closed_by": [
+   "preloop/preloop#1982"
+  ],
+  "criteria": [
+   {
+    "text": "Restricted GitLab CI trigger yields validated MR metadata (URL etc.) for reviewer",
+    "met": true,
+    "evidence": [
+     "schemas/ci_execution.py +80; test_ci_execution_admission.py::test_gitlab_ci_review_renders_verified_mr_metadata_from_bound_host"
+    ]
+   },
+   {
+    "text": "Derive only from trusted bound tracker/repo, never job-supplied host URL",
+    "met": true,
+    "evidence": [
+     "PR body: provider web_url ignored, URL from bound host+repo+IID; PR body says URL substitution rejection tested (specific test name not located)"
+    ]
+   },
+   {
+    "text": "Preserve repo/MR binding and current-head authorization, fail-closed",
+    "met": true,
+    "evidence": [
+     "test_gitlab_dispatch_accepts_edited_metadata_or_legacy_binding, test_old_gitlab_ci_binding_keeps_its_original_canonical_event; admission compares immutable repo/MR/head"
+    ]
+   },
+   {
+    "text": "Regression through event rendering incl. mismatched project/IID or hostile URL",
+    "met": true,
+    "evidence": [
+     "test_ci_execution_admission.py (148 added lines); hostile-URL case claimed in PR body, not individually confirmed by name"
+    ]
+   },
+   {
+    "text": "Metadata fetch works against a real GitLab",
+    "met": null,
+    "evidence": [
+     "title/description/author fetched from provider; only mocked tests seen"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "unverified",
+  "corrected": false
+ },
+ {
+  "ref": "preloop/preloop#1981",
+  "title": "Session tool summary stays zero after observed native Codex commands",
+  "closed_by": [
+   "preloop/preloop#1984"
+  ],
+  "criteria": [
+   {
+    "text": "Determine whether native events are missing from ingestion or aggregate MCP-only",
+    "met": true,
+    "evidence": [
+     "PR body: events already parsed into tool log; session count read only activity/harness reports"
+    ]
+   },
+   {
+    "text": "Session tool count includes observed native commands, source labelled",
+    "met": true,
+    "evidence": [
+     "runtime_session.py +75, runtime_session_explorer.py; test_runtime_session_list_filters.py::test_codex_native_events_count_on_linked_runtime_session; native source kept in stored event provenance"
+    ]
+   },
+   {
+    "text": "Deduplicate replay/resume",
+    "met": true,
+    "evidence": [
+     "flow_execution_log.py/execution_metrics.py call_id match; test_flow_execution_totals.py::test_codex_command_is_not_counted_twice_from_persisted_event_copy"
+    ]
+   },
+   {
+    "text": "No counts inferred from token usage or fabricated events",
+    "met": true,
+    "evidence": [
+     "counts come from parsed flow events only (PR body)"
+    ]
+   },
+   {
+    "text": "Regression with real-shaped completed command_execution event and replay",
+    "met": true,
+    "evidence": [
+     "two tests above; replay of start/completion asserted per PR body, fixture shape not inspected"
+    ]
+   },
+   {
+    "text": "Native vs MCP counts exposed separately in UI",
+    "met": false,
+    "evidence": [
+     "no frontend files changed; only a combined count; schemas/gateway_usage.py +2/-2"
+    ]
+   },
+   {
+    "text": "Counts correct on live Codex session",
+    "met": null,
+    "evidence": [
+     "needs a real Codex flow run"
+    ]
+   }
+  ],
+  "reopen_expected": false,
+  "spike_assessor_verdict": "partial",
+  "corrected": false
+ }
+]

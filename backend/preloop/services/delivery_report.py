@@ -39,6 +39,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from preloop.services.delivery_report_facts import body_summary
 
+from preloop.services.delivery_report_checks import fetch_scope
+
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
 REPORT_KIND_KEY = "report_kind"
@@ -1005,9 +1007,14 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
 
     * No criteria: ``no_criteria``, whatever the claim.
     * ``covered`` needs every criterion met with evidence.
-    * ``partial`` needs at least one criterion met with evidence.
-    * Anything else, or a claim the evidence does not carry, is
-      ``unverified``. A verdict is never better than its evidence.
+    * ``partial``: at least one criterion is not met (``met: false``). It
+      names a shortfall the evidence shows.
+    * ``unverified``: nothing shows a criterion unmet, but the evidence
+      cannot decide at least one. That is an evidence gap, not a failure,
+      however many of the other criteria are met.
+    A verdict is never better than its evidence. The run may call a
+    covered change ``unverified``; it cannot claim a miss (``partial``)
+    without a criterion shown unmet, nor hide one as an evidence gap.
     """
     # Untrusted agent JSON: anything but a mapping is no assessment at all.
     purpose = dict(purpose) if isinstance(purpose, Mapping) else {}
@@ -1025,9 +1032,15 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
             met = None
         if met not in (True, False):
             met = None
-        criteria.append(
-            {"text": str(item["text"]).strip(), "met": met, "evidence": evidence}
-        )
+        criterion: Dict[str, Any] = {
+            "text": str(item["text"]).strip(),
+            "met": met,
+            "evidence": evidence,
+        }
+        for key in ("parent_check", "unchecked"):
+            if item.get(key):
+                criterion[key] = item[key]
+        criteria.append(criterion)
 
     claimed = purpose.get("verdict")
     if not criteria:
@@ -1036,17 +1049,13 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
         met_count = sum(1 for c in criteria if c["met"] is True)
         if met_count == len(criteria):
             verdict = PURPOSE_COVERED
-        elif met_count:
+        elif any(c["met"] is False for c in criteria):
             verdict = PURPOSE_PARTIAL
         else:
             verdict = PURPOSE_UNVERIFIED
-        # The agent may be more cautious than the evidence, never less.
-        rank = {PURPOSE_UNVERIFIED: 0, PURPOSE_PARTIAL: 1, PURPOSE_COVERED: 2}
-        if (
-            isinstance(claimed, str)
-            and claimed in rank
-            and rank[claimed] < rank[verdict]
-        ):
+        # The agent may call a covered change unverified. A miss needs a
+        # criterion shown unmet, so a "partial" claim without one is dropped.
+        if claimed == PURPOSE_UNVERIFIED and verdict == PURPOSE_COVERED:
             verdict = claimed
     normalized: Dict[str, Any] = {"verdict": verdict, "criteria": criteria}
     for key in ("source", "revision", "audit_execution_id"):
@@ -1280,6 +1289,117 @@ def comments_after_last_criteria_edit(
     return [dict(c) for c in comments[start:]]
 
 
+#: A criterion that asks for a dependent file to follow the change. Marking
+#: it not met because the file was not touched needs the parent-commit check.
+_ACCORDINGLY_RE = re.compile(
+    r"\b(update|adjust|align|change|fix)\b.*\baccordingly\b", re.IGNORECASE
+)
+
+
+def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a parent-check record is a completed check of this merge.
+
+    It must come from :func:`delivery_report_checks.parent_references` at
+    the known closing merge, resolve the parent, and carry a
+    result for at least one named file.
+    """
+    from preloop.services.delivery_report_checks import PARENT_CHECK_SCHEMA
+
+    if not isinstance(record, Mapping) or record.get("schema") != PARENT_CHECK_SCHEMA:
+        return False
+    if record.get("error") or not record.get("parent_sha"):
+        return False
+    if not merge_sha or record.get("merge_sha") != merge_sha:
+        return False
+    paths = record.get("paths")
+    return isinstance(paths, list) and bool(paths)
+
+
+def _parent_check_matches_criterion(record: Mapping[str, Any], text: str) -> bool:
+    """Only explicit dependent-file criteria can be cleared by parent evidence."""
+    if not _ACCORDINGLY_RE.search(text):
+        return False
+    paths = record.get("paths") or []
+    terms = _strs(record.get("terms"))
+    if (
+        not paths
+        or not terms
+        or any(
+            not isinstance(p, Mapping)
+            or not isinstance(p.get("path"), str)
+            or not p["path"]
+            for p in paths
+        )
+    ):
+        return False
+    # Require the criterion itself to name both the checked files and the
+    # references they should follow. Generic wording remains unverified.
+    return all(
+        re.search(
+            r"(?<![\w./-])" + re.escape(name) + r"(?![\w./-])", text, re.IGNORECASE
+        )
+        for name in [*(p["path"] for p in paths), *terms]
+    )
+
+
+def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a usable parent-check record shows no named file needed a change."""
+    if not _parent_check_usable(record, merge_sha):
+        return False
+    return all(
+        isinstance(p, Mapping) and p.get("referenced") is False and not p.get("hits")
+        for p in record["paths"]
+    )
+
+
+def apply_parent_checks(
+    purpose: Any, *, merge_sha: Optional[str] = None
+) -> Dict[str, Any]:
+    """Apply the parent-commit rule to the run's own criterion verdicts.
+
+    * An explicit "accordingly" criterion naming the checked paths and terms,
+      marked not met and carrying a ``parent_check`` record
+      showing no named file referenced the changed thing at ``<merge>^1``
+      is met: nothing needed changing. The record becomes its evidence.
+    * An "update X accordingly" criterion marked not met with no usable
+      record was never checked against the parent, so it is an evidence gap
+      (``met: null``), not a miss. A usable record that finds a reference
+      keeps the miss: the file did need changing.
+
+    Audits and cached assessments are not passed through here.
+    """
+    out: Dict[str, Any] = dict(purpose) if isinstance(purpose, Mapping) else {}
+    raw = out.get("criteria")
+    if not isinstance(raw, list):
+        return out
+    criteria: List[Any] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or item.get("met") is not False:
+            criteria.append(item)
+            continue
+        criterion = dict(item)
+        record = criterion.get("parent_check")
+        text = str(criterion.get("text") or "")
+        usable = _parent_check_usable(
+            record, merge_sha
+        ) and _parent_check_matches_criterion(record, text)
+        if usable and _parent_check_clears(record, merge_sha):
+            names = ", ".join(str(p.get("path")) for p in record["paths"])
+            terms = ", ".join(_strs(record.get("terms")))
+            criterion["met"] = True
+            criterion["evidence"] = [
+                *_strs(criterion.get("evidence")),
+                f"{names}: no reference to {terms} at parent "
+                f"{str(record['parent_sha'])[:12]}; nothing needed changing",
+            ]
+        elif not usable and _ACCORDINGLY_RE.search(str(criterion.get("text") or "")):
+            criterion["met"] = None
+            criterion["unchecked"] = "parent-commit check not run"
+        criteria.append(criterion)
+    out["criteria"] = criteria
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
@@ -1400,6 +1520,7 @@ def assemble_report(
                 "evidence_gaps": evidence_gaps(pr),
                 "metadata_only": metadata_only,
                 "needs_model_risk_pass": needs_model_risk_pass(pr, deterministic),
+                "fetch_scope": fetch_scope(pr, criteria=criteria),
                 "head_sha": pr.get("head_sha"),
                 "merge_sha": pr.get("merge_commit_sha"),
                 "cost_usd": agent.get("cost_usd"),
@@ -1426,7 +1547,11 @@ def assemble_report(
             if change["ref"] not in prs:
                 continue
             for c in normalize_purpose(change["purpose"])["criteria"]:
-                if c["met"] is True:
+                # A shown miss must survive aggregation, even when another
+                # linked PR marks the same criterion met.
+                if c["met"] is False:
+                    met[c["text"]] = c
+                elif c["met"] is True:
                     met.setdefault(c["text"], c)
         closing = [c for c in shipped if c["ref"] in prs]
         closing_pr = closing[-1] if closing else {}
@@ -1851,7 +1976,11 @@ def finalize_delivery_report(
         if audit is not None:
             change["purpose"] = normalize_purpose(_audited_purpose(audit))
         else:
-            purpose = normalize_purpose(change.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    change.get("purpose"), merge_sha=change.get("merge_sha")
+                )
+            )
             fallback = SOURCE_METADATA if metadata_only else SOURCE_NONE
             purpose["source"] = _assessed_source(purpose, fallback)
             change["purpose"] = purpose
@@ -1876,7 +2005,11 @@ def finalize_delivery_report(
         elif cached is not None:
             issue["purpose"] = normalize_purpose(cached)
         else:
-            purpose = normalize_purpose(issue.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    issue.get("purpose"), merge_sha=issue.get("closing_sha")
+                )
+            )
             purpose["source"] = _assessed_source(purpose, SOURCE_NONE)
             issue["purpose"] = purpose
         closed.append(issue)
@@ -2154,9 +2287,35 @@ def with_merge_audits_seed(
     and a seed that would break the workspace caps is left out (the
     platform still applies every audit when it finalizes the report).
     """
+    import json
+
+    content = json.dumps(document, default=str).encode("utf-8")
+    return _with_seed(trigger_event_data, MERGE_AUDITS_WORKSPACE_PATH, content)
+
+
+def with_report_checks_seed(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data that seeds the run's deterministic checks.
+
+    The source of :mod:`preloop.services.delivery_report_checks` lands at
+    ``tools/delivery_report_checks.py``, so the run computes the fetch scope
+    and the parent-commit check with the platform's own code.
+    """
+    from pathlib import Path
+
+    from preloop.services import delivery_report_checks
+
+    source = Path(delivery_report_checks.__file__).read_bytes()
+    return _with_seed(trigger_event_data, delivery_report_checks.WORKSPACE_PATH, source)
+
+
+def _with_seed(
+    trigger_event_data: Optional[Dict[str, Any]], path: str, content: bytes
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data with one more ``workspace_files`` seed."""
     import base64
     import copy
-    import json
 
     from preloop.utils.workspace_seed import (
         WORKSPACE_FILES_KEY,
@@ -2176,15 +2335,11 @@ def with_merge_audits_seed(
         target = data.setdefault("payload", {})
     seeds = target.get(WORKSPACE_FILES_KEY)
     seeds = list(seeds) if isinstance(seeds, list) else []
-    if any(
-        isinstance(seed, Mapping) and seed.get("path") == MERGE_AUDITS_WORKSPACE_PATH
-        for seed in seeds
-    ):
+    if any(isinstance(seed, Mapping) and seed.get("path") == path for seed in seeds):
         return trigger_event_data
-    content = json.dumps(document, default=str).encode("utf-8")
     seeds.append(
         {
-            "path": MERGE_AUDITS_WORKSPACE_PATH,
+            "path": path,
             "content_base64": base64.b64encode(content).decode("ascii"),
         }
     )

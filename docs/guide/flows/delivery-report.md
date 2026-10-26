@@ -54,6 +54,49 @@ The report does not pay twice for a judgement that already exists.
 Only closed issues with no audit and no unchanged previous assessment, and
 PRs with neither a brief nor a summary, go to the model (source `report`).
 
+## Deterministic checks
+
+The run receives `tools/delivery_report_checks.py`, the source of
+`backend/preloop/services/delivery_report_checks.py` (standard library
+only), and calls it instead of following prose rules:
+
+- `scope <pr.json> --criterion "..."` gives the bounded input for one PR:
+  the file list, the added test names, the last `PRELOOP_SUMMARY` block and
+  the check conclusion. Review threads are included only when the PR closes
+  an issue that states criteria, or a code-scanning alert or a HIGH or
+  CRITICAL finding is present. Source diff hunks are included only for
+  criteria that no added test name matches, capped at 200 lines per file
+  and 400 lines across the PR. Truncation is marked in the scope output.
+- `parent-check --repo <clone> --merge <sha> --path <file> --term <name>`
+  looks for the removed or changed name in each file at `<merge>^1`. The
+  run puts the output on the criterion as `parent_check`. When the platform
+  finalizes the report, only an explicit "update X accordingly" criterion
+  naming the checked paths and search terms can become met from a matching
+  record showing no references at the known closing merge. Other misses
+  remain misses. An "accordingly" criterion without usable, matching evidence
+  becomes an evidence gap; never rewrite the source criterion to fit a record.
+
+## Measuring prompt changes
+
+`backend/tests/fixtures/delivery_report/eval/` holds the first measured
+week of this repository's report: 40 closed issues with the right `met`
+value for every criterion, checked by hand (15 covered, 7 partial, 18
+unverified), whether a reopen is the right proposal, and 8 merged PRs
+without an issue (`no_criteria`; dependency bumps and docs-only changes are
+metadata-only). Score a run's `result.json` against it with:
+
+```bash
+cd backend && python -m preloop.services.delivery_report_eval result.json
+```
+
+Add `--min-accuracy 0.9` to use it as a gate: the command exits 1 when
+verdict accuracy is below the value. Without it, it only prints the score.
+
+The score covers verdict accuracy and a confusion table, criterion
+agreement, reopen proposals (correct, false, missed) and the shipped rows.
+`baseline_spike_assessors.json` is the week's first assessor output: it
+scores 37 of 40 verdicts and misses both reopens.
+
 ## Tools
 
 The run can call `search_issues`, `get_issue`, `get_pull_request` and
@@ -214,10 +257,13 @@ finalizes it:
   verdict:
   - `covered`: every criterion is met, each with cited evidence (a file and
     line, a test result or a review comment).
-  - `partial`: some criteria are met with evidence.
-  - `unverified`: an evidence gap. The available evidence cannot decide
-    the criteria. It is not a failure and never triggers a reopen by
-    itself.
+  - `partial`: the evidence shows at least one criterion not met, for
+    example the issue's latest measurement misses its target and the
+    closing PR adds no newer one.
+  - `unverified`: an evidence gap. Nothing shows a criterion unmet, but
+    the available evidence cannot decide at least one of them, however
+    many others are met. It is not a failure and never triggers a reopen
+    by itself.
   - `no_criteria`: the issue states no criteria. Such an issue is never
     reported as `covered`.
 
