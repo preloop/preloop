@@ -66,7 +66,7 @@
     "@open-wc/testing": "^5.0.0",
     "@playwright/test": "^1.64.1",
     "@types/mocha": "^10.0.10",
-    "@types/sinon": "^22.0.0",
+    "@types/sinon": "^22.0.1",
     "@vitest/browser-playwright": "^4.1.12",
     "@web/dev-server-esbuild": "^2.0.0",
     "@web/test-runner": "^1.0.0",
@@ -79,7 +79,7 @@
     "prettier": "^3.9.10",
     "sinon": "^22.1.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vite-plugin-css-injected-by-js": "^5.0.2",
     "vitest": "^4.1.12",
     "ws": "^8.22.0"
