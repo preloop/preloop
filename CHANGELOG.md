@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Telemetry
+
+- **OTLP model-call span timestamps are UTC-correct.** `ApiUsage.timestamp`
+  is a naive UTC column; the exporter read it as host local time, so chat
+  spans were shifted by the host UTC offset on processes not running in UTC.
+  The timestamp is now read as UTC. It is written when the call completes, so
+  it stays the span end, with start = end - duration.
+- **New metric `gen_ai.client.token.usage`** (experimental, GenAI semconv):
+  histogram in `{token}` with GenAI semconv bucket boundaries (1 to 4^13),
+  one point per model call for
+  `gen_ai.token.type=input` and `output`, with the same operation, provider
+  and model dimensions as `gen_ai.client.operation.duration`.
+- **New metric `preloop.usage.cost`** (stable): counter in `USD` of the
+  recorded cost per model call.
+- OTLP guide: Gigapipe destination section.
+- **Docker Compose forwards `OTLP_*` from `.env`** to the `api` and `gateway`
+  services in `docker-compose.yml` and `docker-compose.release.yaml`; export
+  stays off unless `OTLP_ENABLED=true` and `OTLP_ENDPOINT` is set.
+
 ### Breaking or behavior changes
 
 - **Flow runs store model calls slim too.** The `model_gateway_call` rows a

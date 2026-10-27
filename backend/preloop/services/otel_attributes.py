@@ -44,11 +44,15 @@ EXPERIMENTAL_SPAN_ATTRIBUTES: dict[str, str] = {
 STABLE_METRICS: dict[str, str] = {
     "preloop.api_usage.dropped": "ApiUsage rows dropped before the database.",
     "preloop.api_usage.failed": "ApiUsage rows that failed to persist.",
+    "preloop.usage.cost": "Recorded cost of governed model calls, in USD.",
 }
 
 EXPERIMENTAL_METRICS: dict[str, str] = {
     "gen_ai.client.operation.duration": (
         "Duration of a governed model or tool call, in seconds."
+    ),
+    "gen_ai.client.token.usage": (
+        "Input and output tokens per governed model call ({token})."
     ),
     "db.client.connections.usage": "Checked-out database connections per engine.",
     "db.client.connections.overflow": "Overflow database connections in use.",
@@ -58,6 +62,11 @@ EXPERIMENTAL_METRICS: dict[str, str] = {
 STABLE_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "preloop.api_usage.dropped": (),
     "preloop.api_usage.failed": (),
+    "preloop.usage.cost": (
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
+        "gen_ai.request.model",
+    ),
 }
 
 EXPERIMENTAL_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
@@ -65,6 +74,12 @@ EXPERIMENTAL_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "gen_ai.operation.name",
         "gen_ai.provider.name",
         "gen_ai.request.model",
+    ),
+    "gen_ai.client.token.usage": (
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
+        "gen_ai.request.model",
+        "gen_ai.token.type",
     ),
     "db.client.connections.usage": ("preloop.db.engine",),
     "db.client.connections.overflow": ("preloop.db.engine",),
