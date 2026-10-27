@@ -77,8 +77,8 @@ Agent harnesses receive supported [context and output settings](docs/guide/model
 from model-row parameters and the vendored catalog. Hosted Codex adds a
 version-pinned local catalog for unknown custom models, preserving its generic
 instructions and labeling an unknown context as a CLI fallback. The model
-gateway controls Codex's upstream output allowance; native Codex profiles stay
-intact. No provider capacity is inferred from an unknown model name.
+gateway controls Codex's upstream output allowance when enabled; direct provider
+runs retain provider defaults. Native Codex profiles stay intact. No provider capacity is inferred from an unknown model name.
 
 [Reviewed price feeds](docs/guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and

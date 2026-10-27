@@ -8,8 +8,9 @@ early compaction: the harness drops what it just read and then reads it again,
 which costs tokens and loses detail.
 
 Preloop supplies known limits using each harness's supported configuration.
-Codex receives `model_context_window`; its upstream output allowance is enforced
-by the model gateway. Codex 0.153.4 does not support a
+Codex receives `model_context_window`. For gateway-enabled runs, its upstream
+output allowance is enforced by the model gateway; direct custom-provider runs
+rely on Codex/provider defaults. Codex 0.153.4 does not support a
 `model_max_output_tokens` configuration key. OpenCode receives `limit.context`
 and `limit.output` in its provider model entry. An unknown provider limit is
 not inferred from a similar model name.
@@ -70,13 +71,18 @@ When the provider window is unknown, Preloop preserves this version's generic
 accurate registered `context_window` for a model not in the vendored catalog.
 The `PRELOOP_CODEX_MODEL_METADATA` startup line records the CLI version, resolved
 CLI window, source, and whether the provider context is known. Output allowance
-remains separate; gateway request diagnostics describe its effective settings.
+remains separate; gateway-enabled runs expose its effective settings in gateway
+request diagnostics. Direct provider runs have no gateway-enforced ceiling.
 
 The local entry preserves the pinned CLI's generic instructions and tool schemas.
 Hosted runs explicitly retain the default disabled `update_plan` tool; the prompt
 omits its checklist guidance exactly as the pinned CLI does without a catalog.
 The custom catalog contains only the selected model, so the subagent tool no
-longer advertises bundled OpenAI model overrides for that custom provider. It does not borrow another model's instructions or assert new provider
+longer advertises bundled OpenAI model overrides for that custom provider. The catalog accepts the pinned CLI's standard reasoning-effort values
+(including role overrides such as `none` and `xhigh`) so Codex can validate subagent/role settings. These are
+pass-through inputs, not inferred upstream capabilities, and no default effort
+is imposed. Arbitrary provider-specific effort strings are not registered by this
+generic catalog. Provider support is still required. It does not borrow another model's instructions or assert new provider
 capabilities. Built-in model profiles, including the CLI's supported single
 namespace aliases, remain untouched. Removing the metadata warning does not
 prove a review will finish within its flow timeout or that a provider supports

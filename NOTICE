@@ -10,3 +10,8 @@ This product includes software and text from third parties:
   https://github.com/JetBrains/JetBrainsMono. Copyright 2020 The JetBrains
   Mono Project Authors. Latin woff2 subsets in frontend/public/fonts/
   jetbrains-mono, license text in OFL.txt beside them.
+- Generic fallback instructions from openai/codex
+  codex-rs/models-manager/prompt.md (Apache-2.0), tag rust-v0.153.4,
+  https://github.com/openai/codex. Copyright OpenAI.
+  Copied in backend/preloop/agents/codex_0_153_4_defaults.py; hosted rendering
+  omits disabled update_plan guidance as the pinned CLI does.

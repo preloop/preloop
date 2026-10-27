@@ -109,7 +109,10 @@ def test_startup_marker_labels_unknown_context_and_gateway_output_owner() -> Non
     assert marker["context_source"] == "codex_fallback"
     assert marker["provider_context_known"] is False
     assert marker["instruction_and_tool_profile"] == "codex_cli_fallback"
-    assert marker["upstream_output_allowance"] == "controlled_separately_by_gateway"
+    assert (
+        marker["upstream_output_allowance"]
+        == "gateway_when_enabled_otherwise_provider_defaults"
+    )
 
 
 def test_hosted_prompt_matches_pinned_cli_default_request() -> None:
@@ -156,3 +159,21 @@ def test_startup_marker_reports_registered_context_source() -> None:
     assert marker["context_source"] == "model_row"
     assert marker["provider_context_known"] is True
     assert marker["cli_context_window"] == 1_000_000
+
+
+def test_custom_catalog_allows_existing_effort_overrides_without_new_default() -> None:
+    catalog = custom_model_catalog("example/custom", None)
+    assert catalog is not None
+    entry = catalog["models"][0]
+    assert entry["default_reasoning_level"] is None
+    assert [preset["effort"] for preset in entry["supported_reasoning_levels"]] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+        "persistent",
+    ]

@@ -13,6 +13,20 @@ from .codex_0_153_4_defaults import BASE_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
+# Standard variants in rust-v0.153.4/codex-rs/protocol/src/openai_models.rs.
+# Preserve role overrides as pass-through inputs without inferring provider support.
+CODEX_CLI_REASONING_EFFORTS = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+    "persistent",
+)
+
 CODEX_CATALOG_VERSION = "0.153.4"
 CODEX_FALLBACK_CONTEXT_WINDOW = 272_000
 # Exact slugs in rust-v0.153.4/codex-rs/models-manager/models.json. Codex
@@ -68,7 +82,7 @@ def custom_model_catalog(
     context_window = limits.context_window or CODEX_FALLBACK_CONTEXT_WINDOW
     logger.info(
         "Codex custom model metadata: model=%s context_window=%s source=%s "
-        "CLI=%s; output allowance is enforced by the model gateway",
+        "CLI=%s; output allowance is separate (gateway when enabled, otherwise provider defaults)",
         model,
         context_window,
         limits.context_window_source or "codex_fallback_not_provider_capacity",
@@ -82,7 +96,16 @@ def custom_model_catalog(
         "display_name": model,
         "description": None,
         "default_reasoning_level": None,
-        "supported_reasoning_levels": [],
+        # Codex validates role/subagent overrides for known catalog entries.
+        # These are pinned CLI pass-through inputs, not inferred
+        # provider capabilities. Keep the inherited default unset.
+        "supported_reasoning_levels": [
+            {
+                "effort": effort,
+                "description": "Pass through explicit effort to provider",
+            }
+            for effort in CODEX_CLI_REASONING_EFFORTS
+        ],
         "shell_type": "unified_exec",
         "visibility": "none",
         "supported_in_api": True,
@@ -133,7 +156,7 @@ def catalog_materialization_shell(
             "context_source": source,
             "provider_context_known": known_context,
             "instruction_and_tool_profile": "codex_cli_fallback",
-            "upstream_output_allowance": "controlled_separately_by_gateway",
+            "upstream_output_allowance": "gateway_when_enabled_otherwise_provider_defaults",
         },
         ensure_ascii=True,
     )

@@ -908,7 +908,7 @@ exit $CODEX_EXIT_CODE
                 "No context window known for model %s "
                 "(neither the model row nor the vendored price catalog has "
                 "one); Codex keeps its own fallback window. "
-                "Output allowance is controlled separately by the gateway",
+                "Output allowance is separate: gateway when enabled, otherwise provider defaults",
                 model,
             )
             return ""
