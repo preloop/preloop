@@ -379,6 +379,46 @@ describe('usage-card', () => {
     });
   });
 
+  it('distinguishes repriced estimates from the budget enforcement counter', async () => {
+    localStorage.setItem(USAGE_UNIT_STORAGE_KEY, 'dollars');
+    const element = await renderCard({
+      timeRange: 'this-month',
+      summary: summaryFixture({ estimated_cost: 80 }),
+      policies: [policyFixture({ current_spend_usd: 120 })],
+    });
+
+    expect(text(element, '.primary-value')).to.equal('$80.00');
+    expect(text(element, '.budget-row-value')).to.equal('$120.00 / $300.00');
+    expect(text(element, '.budget-basis')).to.contain('Budget usage');
+    expect(text(element, '.budget-basis')).to.contain('request-time prices');
+    expect(text(element, '.budget-basis')).to.contain('UTC');
+    expect(text(element, '.budget-basis')).to.contain(
+      'repricing or reconciliation'
+    );
+    // The meter must still represent the counter that enforces the limit.
+    expect(
+      element
+        .shadowRoot!.querySelector('.budget-track')!
+        .getAttribute('aria-valuenow')
+    ).to.equal('40');
+  });
+
+  it('does not describe legacy analytics totals as request-time budget usage', async () => {
+    const element = await renderCard({
+      summary: summaryFixture({
+        budget: {
+          monthly_limit_usd: 300,
+          soft_limit_usd: null,
+          current_spend_usd: 80,
+          soft_limit_exceeded: false,
+          hard_limit_exceeded: false,
+        },
+      }),
+    });
+    expect(text(element, '.budget-row-value')).to.equal('$80.00 / $300.00');
+    expect(element.shadowRoot!.querySelector('.budget-basis')).to.not.exist;
+  });
+
   it('shows a budget row per global policy with the spend meter', async () => {
     const element = await renderCard({
       policies: [

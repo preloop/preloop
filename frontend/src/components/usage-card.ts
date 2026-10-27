@@ -385,6 +385,16 @@ export class UsageCard extends LitElement {
         gap: var(--sl-spacing-small);
       }
 
+      .budget-basis {
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      .budget-basis strong {
+        display: block;
+        color: var(--sl-color-neutral-800);
+      }
+
       .budget-row {
         display: flex;
         flex-direction: column;
@@ -1145,6 +1155,15 @@ export class UsageCard extends LitElement {
 
     return html`
       <div class="budgets">
+        ${
+          globals.length > 0
+            ? html`<p class="budget-basis muted">
+                <strong>Budget usage</strong>
+                Uses request-time prices and UTC periods. Later repricing or
+                reconciliation changes usage estimates, not this limit counter.
+              </p>`
+            : nothing
+        }
         ${rows}
         ${
           scoped.length > 0
