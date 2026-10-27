@@ -225,10 +225,12 @@ export async function loadAttentionInputs(
     dismissals.value !== DISMISSALS_UNSUPPORTED
       ? (dismissals.value as AttentionDismissal[])
       : [];
+  const extensions = await extensionItems;
 
   return {
+    deliveryReports: extensions.deliveryReports,
     mcpFindings: await mcpFindings,
-    extensionItems: await extensionItems,
+    extensionItems: extensions.items,
     approvals:
       approvals.status === 'fulfilled' && Array.isArray(approvals.value)
         ? (approvals.value as AttentionApproval[]).filter((approval) =>

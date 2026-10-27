@@ -393,4 +393,37 @@ describe('fleet-map window history seeding', () => {
     });
     expect(works(story)).to.have.length(1);
   });
+
+  it('maps recorded PR states to capitalized work node statuses', () => {
+    const story = new FleetStory();
+    const states = ['open', 'closed', 'merged', null] as const;
+    story.seedWork({
+      ...base,
+      events: [],
+      work: states.map((state, index) => ({
+        key: `example/widgets#${index + 1}`,
+        kind: 'pull_request' as const,
+        reference: `#${index + 1}`,
+        repo: 'example/widgets',
+        title: null,
+        url: null,
+        state,
+        last_action: 'opened' as const,
+        last_at: new Date(Date.now() - 60_000).toISOString(),
+        review_state: null,
+        labels: [],
+        related_issue: null,
+        node_ids: [],
+      })),
+    });
+
+    expect(
+      works(story).map((node) => [node.resource_id, node.status])
+    ).to.deep.equal([
+      ['example/widgets#1', 'Open'],
+      ['example/widgets#2', 'Closed'],
+      ['example/widgets#3', 'Merged'],
+      ['example/widgets#4', null],
+    ]);
+  });
 });

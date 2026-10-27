@@ -85,10 +85,9 @@ from preloop.services.flow_pr_binding import (
     DECISION_MARKER,
     PR_OPENED_MARKER,
     MAX_PUBLISHED_PRS,
-    brief_from_result,
     find_bound_execution,
     max_resumes_per_pr,
-    merge_result_preserving_pr_binding,
+    merge_result_with_brief,
     note_resume_started,
     parse_decision_marker,
     parse_pr_opened_marker,
@@ -2820,19 +2819,56 @@ class FlowExecutionOrchestrator:
         return found
 
     def _git_clone_config_for_trigger(self) -> Any:
-        """Clone config reduced to the repository the payload named.
+        """Clone config for the triggered repository or a scheduled report.
 
         The stored config is not modified. Clone entries are a hard selection:
         the payload repository is cloned only when it is one of them (or one
         of the flow's projects). A payload that names something else clears
         the list, so a fixed clone of a different repository is not checked
-        out under the payload's commit. That empty checkout is logged.
+        out under the payload's commit. That empty checkout is logged. A
+        scheduled assessed report with no explicit repositories gets the
+        account's active code-host projects under its policy scope.
         """
         config = self._effective_git_clone_config()
         if not isinstance(config, dict):
             return config
         identity = self._cached_payload_identity()
         if not identity:
+            if (
+                config.get("enabled") is True
+                and is_delivery_report_flow(getattr(self, "flow", None))
+                and not config.get("repositories")
+            ):
+                from preloop.models.crud import crud_delivery_report_policy
+
+                run = self._plan_delivery_report_run()
+                if run is not None and run.calls_model:
+                    assert self.flow is not None
+                    scope = {name.lower() for name in run.policy.projects}
+                    repositories = []
+                    for (
+                        name,
+                        project_id,
+                        tracker_id,
+                        branch,
+                    ) in crud_delivery_report_policy.code_repositories(
+                        self.db, account_id=self.flow.account_id
+                    ):
+                        if scope and name not in scope:
+                            continue
+                        project_policy = run.project_policies.get(name)
+                        if project_policy is not None and not project_policy.enabled:
+                            continue
+                        entry: Dict[str, Any] = {
+                            "project_id": project_id,
+                            "tracker_id": tracker_id,
+                        }
+                        if branch:
+                            entry["branch"] = branch
+                        else:
+                            entry["use_remote_default"] = True
+                        repositories.append(entry)
+                    return {**config, "repositories": repositories}
             return config
 
         project_id = self._resolve_trigger_project_id(
@@ -2865,10 +2901,20 @@ class FlowExecutionOrchestrator:
             return narrowed
 
         if project_id:
-            entry: Dict[str, Any] = {
-                "project_id": project_id,
-                "clone_path": "/workspace",
-            }
+            # A tracker-only entry configures auto-detected clones. Preserve its
+            # credentials and checkout options, but only after the payload has
+            # resolved to a permitted project. Explicit repository matches above
+            # take precedence; entries for other repositories are never defaults.
+            auto_detect = next(
+                (
+                    repo
+                    for repo in repositories
+                    if not repo.get("project_id") and not repo.get("repository_url")
+                ),
+                {},
+            )
+            entry: Dict[str, Any] = {"clone_path": "/workspace", **auto_detect}
+            entry["project_id"] = project_id
             if identity.get("clone_url"):
                 entry["repository_url"] = identity["clone_url"]
             narrowed = dict(config)
@@ -3223,9 +3269,10 @@ class FlowExecutionOrchestrator:
         Args:
             execution_context: Context to extend in place.
         """
-        repositories = (self._effective_git_clone_config() or {}).get(
-            "repositories", []
-        )
+        clone_config = execution_context.get("git_clone_config")
+        if clone_config is None:
+            clone_config = self._effective_git_clone_config()
+        repositories = (clone_config or {}).get("repositories", [])
         if repositories:
             logger.info(
                 f"Preparing git credentials for {len(repositories)} configured repositories"
@@ -5653,13 +5700,19 @@ class FlowExecutionOrchestrator:
             return cached
         from preloop.services.delivery_report import plan_policy_run
 
+        details = getattr(self.execution_log, "trigger_event_details", None) or {}
+        project = details.get("delivery_report_project")
         try:
             run = plan_policy_run(
                 self.db,
                 flow=self.flow,
                 exclude_execution_id=getattr(self.execution_log, "id", None),
+                project=project,
             )
         except Exception:
+            # A scoped manual run must never fall back to an account-wide run.
+            if project is not None:
+                raise
             logger.warning("Could not read the delivery report policy", exc_info=True)
             return None
         self._delivery_report_run = run
@@ -5728,6 +5781,27 @@ class FlowExecutionOrchestrator:
         """Distribute the report once :meth:`_finalize_delivery_report` built it."""
         if not getattr(self, "_delivery_report_finalized", False):
             return merged_result
+        from preloop.plugins import get_plugin_manager
+
+        distributor = get_plugin_manager().get_service("delivery_report_distributor")
+        if (
+            distributor is not None
+            and isinstance(merged_result, dict)
+            and merged_result.get("status") == "success"
+        ):
+            try:
+                from preloop.services.delivery_report_facts import (
+                    collect_forge_engagement,
+                )
+
+                engagement = await collect_forge_engagement(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    report=merged_result,
+                )
+                merged_result = {**merged_result, "engagement": engagement}
+            except Exception:
+                logger.warning("Could not read report engagement", exc_info=True)
         run = getattr(self, "_delivery_report_run", None)
         return await self._distribute_delivery_report(merged_result, run)
 
@@ -5747,13 +5821,27 @@ class FlowExecutionOrchestrator:
         if not isinstance(merged_result, dict):
             return merged_result
         try:
-            record = await distribute_report(
-                self.db,
-                flow=self.flow,
-                execution=self.execution_log,
-                report=merged_result,
-                policy=run.policy if run is not None else None,
+            from preloop.plugins import get_plugin_manager
+
+            distributor = get_plugin_manager().get_service(
+                "delivery_report_distributor"
             )
+            if distributor is None:
+                record = await distribute_report(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
+            else:
+                record = await distributor(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
         except Exception:
             logger.exception("Emailing the delivery report failed")
             return merged_result
@@ -9899,14 +9987,10 @@ class FlowExecutionOrchestrator:
                     "Could not refresh execution log before merging result",
                     exc_info=True,
                 )
-            merged_result = merge_result_preserving_pr_binding(
+            merged_result = merge_result_with_brief(
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
-            # The change brief the agent wrote into the PR body it published.
-            brief = brief_from_result(agent_result.get("result"))
-            if brief is not None and isinstance(merged_result, dict):
-                merged_result["brief"] = brief
 
             # Only the executor's runtime observation owns this key. Agent
             # result.json claims cannot overwrite or fabricate termination.

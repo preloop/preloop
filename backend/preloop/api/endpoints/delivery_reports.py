@@ -16,8 +16,9 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_or_404
 from preloop.models.crud import crud_flow_execution
 from preloop.models.db.session import get_db_session
-from preloop.models.models.user import User
+from preloop.models import models
 from preloop.schemas.delivery_report import (
+    DeliveryReportAttention,
     DeliveryReportDetail,
     DeliveryReportList,
 )
@@ -40,7 +41,7 @@ def list_delivery_reports(
         None, description="Runs that started at or after this time."
     ),
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportList:
     """Runs of the account's Delivery Report flows that stored a report."""
     account = get_account_or_404(db, current_user)
@@ -52,12 +53,23 @@ def list_delivery_reports(
     )
 
 
+@router.get("/attention", response_model=list[DeliveryReportAttention])
+@require_permission("view_flows")
+def delivery_report_attention(
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> list[DeliveryReportAttention]:
+    """Pending decisions from up to 100 runs for standalone API clients."""
+    account = get_account_or_404(db, current_user)
+    return delivery_report_views.list_report_attention(db, account_id=account.id)
+
+
 @router.get("/{execution_id}", response_model=DeliveryReportDetail)
 @require_permission("view_flows")
 def get_delivery_report(
     execution_id: UUID,
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportDetail:
     """One run's full report, with reopen requests that went stale marked."""
     account = get_account_or_404(db, current_user)
@@ -105,14 +117,22 @@ _ACTION_PERMISSIONS = {
 @router.post(
     "/{execution_id}/actions",
     response_model=DeliveryReportActionResult,
-    responses={403: {}, 404: {}, 409: {}, 422: {}, 502: {}},
+    responses={
+        403: {},
+        404: {},
+        409: {},
+        # Python 3.11 and 3.13 name HTTP 422 differently. Keep the public
+        # schema stable across development and CI interpreters.
+        422: {"description": "Unprocessable Entity"},
+        502: {},
+    },
 )
 @require_permission("view_flows")
 def act_on_delivery_report(
     execution_id: UUID,
     body: DeliveryReportActionRequest,
     db: Session = Depends(get_db_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
 ) -> DeliveryReportActionResult | JSONResponse:
     """Open a proposed follow-up, reopen an issue, or dismiss a proposal.
 
@@ -124,7 +144,7 @@ def act_on_delivery_report(
     """
 
     @require_permission(_ACTION_PERMISSIONS[body.kind])
-    def authorize_action(*, db: Session, current_user: User) -> None:
+    def authorize_action(*, db: Session, current_user: models.User) -> None:
         ensure_permission_in_oss(db, current_user, _ACTION_PERMISSIONS[body.kind])
 
     authorize_action(db=db, current_user=current_user)

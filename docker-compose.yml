@@ -87,6 +87,14 @@ services:
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
       PRELOOP_SERVICE_ROLE: api
+      # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
+      # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
+      OTLP_ENABLED: ${OTLP_ENABLED:-false}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      OTLP_PROTOCOL: ${OTLP_PROTOCOL:-http/protobuf}
+      OTLP_HEADERS: ${OTLP_HEADERS:-}
+      OTLP_SERVICE_NAME: ${OTLP_SERVICE_NAME:-preloop}
+      OTLP_DEPLOYMENT_ENVIRONMENT: ${OTLP_DEPLOYMENT_ENVIRONMENT:-}
     ports:
       - "8000:8000"
     volumes:
@@ -119,6 +127,14 @@ services:
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
       PRELOOP_SERVICE_ROLE: gateway
+      # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
+      # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
+      OTLP_ENABLED: ${OTLP_ENABLED:-false}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      OTLP_PROTOCOL: ${OTLP_PROTOCOL:-http/protobuf}
+      OTLP_HEADERS: ${OTLP_HEADERS:-}
+      OTLP_SERVICE_NAME: ${OTLP_SERVICE_NAME:-preloop}
+      OTLP_DEPLOYMENT_ENVIRONMENT: ${OTLP_DEPLOYMENT_ENVIRONMENT:-}
     ports:
       - "8001:8000"
     volumes:

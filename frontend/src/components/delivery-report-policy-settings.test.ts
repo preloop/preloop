@@ -27,6 +27,7 @@ const DEFAULTS = {
   max_assessed_changes: 25,
   pr_ready_days: 7,
   issue_inactive_days: 14,
+  audit_ci_max_wait_minutes: 30,
   ui_screenshot_min_lines: 40,
   criteria_source: 'triage_assessment',
   tracker_writes: {
@@ -36,6 +37,7 @@ const DEFAULTS = {
     follow_up_label: 'preloop:proposed',
   },
   recipients: 'account_owner',
+  per_member_updates: false,
   sponsoring_lead_user_id: null,
   opted_out_user_ids: [],
 };
@@ -51,6 +53,7 @@ function layer(level: 'account' | 'project', overrides = {}) {
       'criteria_source',
       'enabled',
       'issue_inactive_days',
+      'audit_ci_max_wait_minutes',
       'pr_ready_days',
       'ui_screenshot_min_lines',
     ],
@@ -63,6 +66,7 @@ function stubApi(
     putStatus?: number;
     subscriptionPutStatus?: number;
     isRecipient?: boolean;
+    memberUpdates?: boolean;
   } = {}
 ) {
   const puts: { path: string; body: any }[] = [];
@@ -76,6 +80,12 @@ function stubApi(
     .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       const path = new URL(url, window.location.origin).pathname;
+      if (path === '/api/v1/features')
+        return json({
+          features: {
+            delivery_report_member_updates: options.memberUpdates ?? false,
+          },
+        });
       if (path === '/api/v1/auth/users/me')
         return json({
           id: 'u1',
@@ -155,6 +165,35 @@ describe('delivery-report-policy-settings', () => {
     expect(text).to.contain('The report never closes an issue.');
   });
 
+  it('shows an account opt-in only when the member update feature is enabled', async () => {
+    const { puts } = stubApi({ memberUpdates: true });
+    const el = await mount();
+    const toggle = el.shadowRoot!.querySelector(
+      'sl-switch[data-field="per_member_updates"]'
+    ) as any;
+    expect(toggle.checked).to.equal(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await el.updateComplete;
+    (
+      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
+    ).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0].body.overrides.per_member_updates).to.equal(true);
+  });
+
+  it('keeps the member opt-in off repository settings and OSS feature sets', async () => {
+    stubApi({ memberUpdates: false });
+    const account = await mount();
+    expect(
+      account.shadowRoot!.querySelector('[data-field="per_member_updates"]')
+    ).to.equal(null);
+    const project = await mount('p1');
+    expect(
+      project.shadowRoot!.querySelector('[data-field="per_member_updates"]')
+    ).to.equal(null);
+  });
+
   it('sends both budgets when assessment is turned on', async () => {
     const { puts } = stubApi();
     const el = await mount();
@@ -204,6 +243,25 @@ describe('delivery-report-policy-settings', () => {
     await waitUntil(() => puts.length === 1);
     expect(puts[0].path).to.equal('/api/v1/delivery-report/policy/projects/p1');
     expect(puts[0].body.overrides).to.deep.equal({ enabled: false });
+  });
+
+  it('saves a repository merge audit CI wait', async () => {
+    const { puts } = stubApi();
+    const el = await mount('p1');
+    const wait = el.shadowRoot!.querySelector(
+      'sl-input[data-field="audit_ci_max_wait_minutes"]'
+    ) as HTMLInputElement;
+    expect(wait).to.exist;
+    wait.value = '15';
+    wait.dispatchEvent(new Event('sl-input'));
+    await el.updateComplete;
+    (
+      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
+    ).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0].body.overrides).to.deep.equal({
+      audit_ci_max_wait_minutes: 15,
+    });
   });
 
   it('lets the recipient stop their own email without the permission', async () => {

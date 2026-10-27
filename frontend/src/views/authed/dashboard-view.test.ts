@@ -65,6 +65,7 @@ describe('DashboardView', () => {
   /** Merged into `GET /api/v1/features`. */
   let extraFeatures: Record<string, boolean>;
   let fleetResponse: any;
+  let deliveryReportsResponse: any[];
   /** `is_superuser` on the profile: instance admins get the Map toggle. */
   let meSuperuser: boolean;
 
@@ -84,6 +85,7 @@ describe('DashboardView', () => {
     failNext = new Map();
     extraFeatures = {};
     fleetResponse = null;
+    deliveryReportsResponse = [];
     meSuperuser = false;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -555,8 +557,19 @@ describe('DashboardView', () => {
           return json({ active: 3 });
         }
 
-        if (url === '/api/v1/attention/extension-items') {
-          return json([]);
+        if (url.startsWith('/api/v1/attention/extension-items')) {
+          return json(
+            deliveryReportsResponse.map((report) => ({
+              id: report.id,
+              source: 'core:delivery_report',
+              title: 'Delivery report needs you',
+              detail: '1 pending proposal',
+              href: `/console/delivery-reports/${report.id}#needs-you`,
+              severity: 'action',
+              opened_at: report.started_at,
+              delivery_report: report,
+            }))
+          );
         }
 
         if (url === '/api/v1/auth/users/me') {
@@ -2913,6 +2926,24 @@ describe('DashboardView', () => {
     });
 
     it('keeps the first-paint budget with one shared extension read', async () => {
+      deliveryReportsResponse = [
+        {
+          id: 'report-1',
+          started_at: new Date().toISOString(),
+          projects: ['Example Project'],
+          proposals: [
+            {
+              key: 'follow_up:0',
+              kind: 'follow_up',
+              title: 'Review tests',
+              reason: 'Missing coverage',
+              stale_reason: null,
+              unconfirmed: false,
+            },
+          ],
+          fingerprint: 'pending-proposal-1',
+        },
+      ];
       const element = await mountDashboard();
       await waitUntil(
         () =>
@@ -2935,6 +2966,7 @@ describe('DashboardView', () => {
       // findings once (#960), so the set is 29. The Usage card's chart
       // reads /cost/timeseries once (#1610): 30. Generic plugin Attention
       // adds one shared /attention/extension-items read (#1821): 31.
+      // Pending delivery reports ride in that same response.
       const pageUrls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
@@ -2947,9 +2979,21 @@ describe('DashboardView', () => {
         );
       expect(pageUrls.length, pageUrls.join('\n')).to.equal(31);
       expect(
-        pageUrls.filter((url) => url === '/api/v1/attention/extension-items')
-          .length
+        pageUrls.filter((url) =>
+          url.startsWith('/api/v1/attention/extension-items')
+        ).length
       ).to.equal(1);
+      expect(
+        pageUrls.filter((url) =>
+          url.startsWith('/api/v1/delivery-reports/attention')
+        )
+      ).to.have.length(0);
+      expect(
+        element['attentionItems'].some(
+          (item) =>
+            item.kind === 'delivery_report' && item.title === 'Example Project'
+        )
+      ).to.be.true;
       expect(
         pageUrls.filter((url) => url.startsWith('/api/v1/cost/timeseries'))
           .length

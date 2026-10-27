@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
@@ -730,6 +730,109 @@ class TestOrchestratorPolicy:
         assert block["decision"] == "onboarding"
         assert block["policy"]["tracker_writes"]["close"] == "deny"
 
+    def test_assessed_schedule_clones_only_enabled_repositories(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="onboarding",
+            policy=dr.DeliveryReportPolicy(projects=["example/app", "example/docs"]),
+            project_policies={
+                "example/docs": dr.resolve_policy(None, {"enabled": False})
+            },
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories",
+            return_value=[
+                ("example/app", "project-1", "tracker-1", "master"),
+                ("example/docs", "project-2", "tracker-2", None),
+                ("other/app", "project-3", "tracker-3", "main"),
+            ],
+        ) as read:
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == [
+            {"project_id": "project-1", "tracker_id": "tracker-1", "branch": "master"}
+        ]
+        assert orchestrator.flow.git_clone_config["repositories"] == []
+        read.assert_called_once_with(orchestrator.db, account_id="acct-1")
+
+    def test_assessed_schedule_respects_disabled_checkout(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": False, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="onboarding", policy=dr.DeliveryReportPolicy()
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories"
+        ) as read:
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone == {"enabled": False, "repositories": []}
+        read.assert_not_called()
+
+    def test_unknown_default_branch_uses_remote_head(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="onboarding", policy=dr.DeliveryReportPolicy()
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories",
+            return_value=[("example/app", "project-1", "tracker-1", None)],
+        ):
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == [
+            {
+                "project_id": "project-1",
+                "tracker_id": "tracker-1",
+                "use_remote_default": True,
+            }
+        ]
+
+    def test_deterministic_schedule_does_not_clone_repositories(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator._cached_payload_identity = lambda: None
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="deterministic", policy=dr.DeliveryReportPolicy()
+        )
+        with patch(
+            "preloop.models.crud.crud_delivery_report_policy.code_repositories"
+        ) as read:
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == []
+        read.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dynamic_report_checkout_gets_its_trackers_credentials(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.flow.git_clone_config = {"enabled": True, "repositories": []}
+        context: Dict[str, Any] = {
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {"project_id": "project-1", "tracker_id": "tracker-1"}
+                ],
+            }
+        }
+        with (
+            patch.object(
+                orchestrator,
+                "_get_tracker_credentials_by_id",
+                new_callable=AsyncMock,
+                return_value={"token": "synthetic"},
+            ) as credentials,
+            patch.object(
+                orchestrator,
+                "_attach_trigger_tracker_credentials",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await orchestrator._attach_git_credentials(context)
+        credentials.assert_awaited_once_with("tracker-1")
+        assert context["git_credentials_map"]["tracker-1"] == {"token": "synthetic"}
+
     def test_a_run_that_may_not_call_a_model_builds_the_report_itself(self) -> None:
         orchestrator = self._orchestrator()
         run = dr.PolicyRun(
@@ -753,6 +856,21 @@ class TestOrchestratorPolicy:
             side_effect=RuntimeError("db down"),
         ):
             assert orchestrator._plan_delivery_report_run() is None
+
+    def test_scoped_run_passes_project_and_never_falls_back_to_account_scope(
+        self,
+    ) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator.execution_log.trigger_event_details = {
+            "delivery_report_project": "example/app"
+        }
+        with patch(
+            "preloop.services.delivery_report.plan_policy_run",
+            side_effect=ValueError("The project is outside the report policy scope"),
+        ) as plan:
+            with pytest.raises(ValueError, match="outside"):
+                orchestrator._plan_delivery_report_run()
+        assert plan.call_args.kwargs["project"] == "example/app"
 
     def test_a_disabled_report_is_not_finalized(self) -> None:
         orchestrator = self._orchestrator()
@@ -1237,6 +1355,18 @@ class TestPolicyResolution:
         assert policy.per_run_usd == 5.0
         assert policy.tracker_writes.create_follow_up == "allow"
         assert policy.tracker_writes.reopen == "approval"
+
+    def test_merge_audit_wait_is_bounded_and_repository_overridable(self) -> None:
+        assert dr.DeliveryReportPolicy().audit_ci_max_wait_minutes == 30
+        assert (
+            dr.resolve_policy(
+                {"audit_ci_max_wait_minutes": 60},
+                {"audit_ci_max_wait_minutes": 10},
+            ).audit_ci_max_wait_minutes
+            == 10
+        )
+        with pytest.raises(ValueError):
+            dr.DeliveryReportPolicy(audit_ci_max_wait_minutes=1441)
 
     def test_a_stored_layer_that_no_longer_validates_is_skipped(self) -> None:
         policy = dr.resolve_policy({"pr_ready_days": 0, "unknown": 1})

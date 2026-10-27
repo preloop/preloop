@@ -1566,6 +1566,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       await scanMCPServer(serverId);
       await this.loadData();
     } catch (err: any) {
+      // A failed scan still updates server health and keeps its cached tools.
+      await this.loadData();
       this.error = err.message || 'Failed to scan MCP server';
     }
   }

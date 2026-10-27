@@ -1,6 +1,7 @@
 """Readiness transitions and merge-linked independent completion auditing."""
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
@@ -28,18 +29,40 @@ _NO_EVIDENCE_REASON = (
     "observation nor supplied CI or preview evidence with an observation."
 )
 _DEPLOYMENT_REASON = "Needs the separate deployment audit at a deployed revision."
+DEFAULT_AUDIT_CI_MAX_WAIT_MINUTES = 30
+EMPTY_CHECK_GRACE = timedelta(minutes=1)
+
+
+def check_wait_state(bundle: dict[str, Any]) -> str:
+    """Distinguish terminal checks, pending checks, no checks, and unreadable CI."""
+    if any(item.get("source") == "checks" for item in bundle.get("unavailable", [])):
+        return "unavailable"
+    checks = bundle.get("checks") or []
+    if not checks:
+        return "empty"
+    if any(
+        item.get("status") != "completed" or item.get("conclusion") is None
+        for item in checks
+    ):
+        return "pending"
+    return "terminal"
 
 
 def runtime_evidence_ids(bundle: Any) -> set[str]:
     """Ids of the CI checks, artifacts and previews supplied to an audit."""
     if not isinstance(bundle, dict):
         return set()
-    return {
-        str(item["id"])
-        for section in ("checks", "artifacts", "previews")
-        for item in bundle.get(section) or []
-        if isinstance(item, dict) and item.get("id")
-    }
+    supplied: set[str] = set()
+    for section in ("checks", "artifacts", "previews"):
+        for item in bundle.get(section) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            if section == "checks" and (
+                item.get("status") != "completed" or item.get("conclusion") is None
+            ):
+                continue
+            supplied.add(str(item["id"]))
+    return supplied
 
 
 def checked_criterion(
@@ -420,83 +443,200 @@ class IssueLifecycleService:
         self,
         flow: models.Flow,
         dispatch: Callable[[models.FlowExecution], Awaitable[None]],
+        *,
+        expected_merge_sha: str | None = None,
     ) -> models.FlowExecution | None:
         """Revalidate closure, create one independent run and dispatch durably."""
         if str(flow.id) != str(self.policy.get("audit_flow_id")):
             return None
+        if (
+            flow.account_id != self.account_id
+            or (flow.agent_config or {}).get("lifecycle_kind") != "merge_audit"
+        ):
+            raise ValueError("invalid_audit_flow")
+        git = flow.git_clone_config or {}
+        repos = git.get("repositories") or []
+        if (
+            not git.get("enabled")
+            or git.get("create_pull_request")
+            or len(repos) != 1
+            or str(repos[0].get("project_id")) != str(self.issue.project_id)
+        ):
+            raise ValueError(
+                "audit_requires_exact_project_checkout_without_publication"
+            )
+        if flow.allowed_mcp_servers or flow.allowed_mcp_tools:
+            raise ValueError("audit_requires_independent_read_only_tool_scope")
         async with (
             crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id),
             publication_budget(),
         ):
+            polled: dict[str, Any] | None = None
+            if expected_merge_sha:
+                waiting = self._get("merge_audit", expected_merge_sha)
+                if (
+                    waiting
+                    and waiting.state == "waiting_for_checks"
+                    and not waiting.execution_id
+                ):
+                    polled = await self.provider.check_evidence(expected_merge_sha)
+                    if self._defer_until_checks(
+                        expected_merge_sha, dict(waiting.data), polled
+                    ):
+                        return None
             current = await self.provider.issue(self.number)
             links = await self.provider.merged_links(self.number)
             if current.state != "closed" or not links:
+                if expected_merge_sha:
+                    self._supersede_deferred_audit(expected_merge_sha)
                 return None
             merge = links[-1]
-            if (
-                flow.account_id != self.account_id
-                or (flow.agent_config or {}).get("lifecycle_kind") != "merge_audit"
-            ):
-                raise ValueError("invalid_audit_flow")
-            git = flow.git_clone_config or {}
-            repos = git.get("repositories") or []
-            if (
-                not git.get("enabled")
-                or git.get("create_pull_request")
-                or len(repos) != 1
-                or str(repos[0].get("project_id")) != str(self.issue.project_id)
-            ):
-                raise ValueError(
-                    "audit_requires_exact_project_checkout_without_publication"
-                )
-            if flow.allowed_mcp_servers or flow.allowed_mcp_tools:
-                raise ValueError("audit_requires_independent_read_only_tool_scope")
+            if expected_merge_sha and merge.sha != expected_merge_sha:
+                self._supersede_deferred_audit(expected_merge_sha)
+                return None
             row = self._get("merge_audit", merge.sha)
             if row and row.state == "published":
                 return None
-            if row is None:
-                ready = self._get("readiness", current.revision)
-                contract = (
-                    ready.data["contract"]
-                    if ready
-                    else ReadinessContract(issue_revision=current.revision).model_dump()
+            execution: models.FlowExecution | None
+            if row and row.execution_id:
+                execution = crud_issue_lifecycle.create_execution(
+                    self.db, row=row, flow_id=flow.id, event={}
                 )
-                pickup = self._get("pickup", "once")
-                data = {
-                    "issue_revision": current.revision,
-                    "pickup_revision": pickup.data.get("issue_revision")
-                    if pickup
-                    else None,
-                    "contract": contract,
-                    "issue_url": current.url,
-                    "issue_title": current.title,
-                    "issue_body": current.body,
-                    "merge_sha": merge.sha,
-                    "merges": [
-                        {"number": link.number, "sha": link.sha, "url": link.url}
-                        for link in links
-                    ],
-                    "runtime_evidence": await self.provider.runtime_evidence(merge.sha),
-                }
-                row = self._put("merge_audit", merge.sha, "queued", data)
-            event = {
-                "source": str(self.issue.tracker_id),
-                "type": "issue_closed",
-                "project_id": str(self.issue.project_id),
-                "payload": {
-                    "sha": merge.sha,
-                    "repository": {"full_name": self.issue.key.rsplit("#", 1)[0]},
-                    "lifecycle": {"issue_id": str(self.issue.id), **row.data},
-                },
-            }
-            execution = crud_issue_lifecycle.create_execution(
-                self.db, row=row, flow_id=flow.id, event=event
-            )
+            else:
+                execution = await self._queue_ready_audit(
+                    row, current, links, merge, flow, polled=polled
+                )
+                if execution is None:
+                    return None
+        assert execution is not None
         # The durable PENDING execution is recoverable if dispatch fails. The
         # normal worker's execution claim also tolerates repeated delivery.
         if execution.status == "PENDING":
             await dispatch(execution)
         return execution
+
+    def _supersede_deferred_audit(self, merge_sha: str) -> None:
+        """Stop retrying a wait whose closing revision is no longer current."""
+        row = self._get("merge_audit", merge_sha)
+        if row and row.state == "waiting_for_checks" and not row.execution_id:
+            self._put(
+                "merge_audit",
+                merge_sha,
+                "superseded",
+                {
+                    **row.data,
+                    "check_wait": {
+                        **(row.data.get("check_wait") or {}),
+                        "outcome": "superseded",
+                        "reason": "The issue no longer closes at this merge revision.",
+                    },
+                },
+            )
+
+    async def _queue_ready_audit(
+        self,
+        row: models.IssueLifecycle | None,
+        current: Any,
+        links: list[Any],
+        merge: Any,
+        flow: models.Flow,
+        *,
+        polled: dict[str, Any] | None = None,
+    ) -> models.FlowExecution | None:
+        """Collect the full pinned bundle only after a cheap check-run poll."""
+        if row is None:
+            ready = self._get("readiness", current.revision)
+            contract = (
+                ready.data["contract"]
+                if ready
+                else ReadinessContract(issue_revision=current.revision).model_dump()
+            )
+            pickup = self._get("pickup", "once")
+            data = {
+                "issue_revision": current.revision,
+                "pickup_revision": pickup.data.get("issue_revision")
+                if pickup
+                else None,
+                "contract": contract,
+                "issue_url": current.url,
+                "issue_title": current.title,
+                "issue_body": current.body,
+                "merge_sha": merge.sha,
+                "merges": [
+                    {"number": link.number, "sha": link.sha, "url": link.url}
+                    for link in links
+                ],
+            }
+        else:
+            data = dict(row.data)
+        checks = polled or await self.provider.check_evidence(merge.sha)
+        if self._defer_until_checks(merge.sha, data, checks):
+            return None
+        bundle = await self.provider.runtime_evidence(merge.sha)
+        if self._defer_until_checks(merge.sha, data, bundle):
+            return None
+        data["runtime_evidence"] = bundle
+        row = self._put("merge_audit", merge.sha, "queued", data)
+        event = {
+            "source": str(self.issue.tracker_id),
+            "type": "issue_closed",
+            "project_id": str(self.issue.project_id),
+            "payload": {
+                "sha": merge.sha,
+                "repository": {"full_name": self.issue.key.rsplit("#", 1)[0]},
+                "lifecycle": {"issue_id": str(self.issue.id), **row.data},
+            },
+        }
+        return crud_issue_lifecycle.create_execution(
+            self.db, row=row, flow_id=flow.id, event=event
+        )
+
+    def _defer_until_checks(
+        self, merge_sha: str, data: dict[str, Any], bundle: dict[str, Any]
+    ) -> bool:
+        """Persist a waiting row, or record why the final check read was bounded."""
+        now = datetime.now(timezone.utc)
+        wait = dict(data.get("check_wait") or {})
+        started = datetime.fromisoformat(wait.get("started_at", now.isoformat()))
+        wait.setdefault("started_at", started.isoformat())
+        wait["last_checked_at"] = now.isoformat()
+        minutes = int(
+            self.policy.get(
+                "audit_ci_max_wait_minutes", DEFAULT_AUDIT_CI_MAX_WAIT_MINUTES
+            )
+        )
+        state = check_wait_state(bundle)
+        deadline = started + timedelta(minutes=minutes)
+        if state == "terminal":
+            wait["outcome"] = "completed"
+        elif state == "empty" and now >= min(started + EMPTY_CHECK_GRACE, deadline):
+            wait["outcome"] = "no_checks"
+            wait["reason"] = "No check runs appeared during the initial wait."
+        elif now >= deadline:
+            wait["outcome"] = "timed_out"
+            wait["reason"] = (
+                f"CI check runs could not be read within {minutes} minutes."
+                if state == "unavailable"
+                else f"CI checks did not finish within {minutes} minutes."
+            )
+            bundle.setdefault("unavailable", []).append(
+                {"source": "checks", "reason": wait["reason"]}
+            )
+        else:
+            wait.pop("outcome", None)
+            wait.pop("reason", None)
+            data["check_wait"] = wait
+            data["runtime_evidence"] = {
+                "revision": merge_sha,
+                "checks": bundle.get("checks") or [],
+                "artifacts": [],
+                "previews": [],
+                "unavailable": bundle.get("unavailable") or [],
+            }
+            self._put("merge_audit", merge_sha, "waiting_for_checks", data)
+            return True
+        data["check_wait"] = wait
+        return False
 
     async def schedule_deployment_audit(
         self,

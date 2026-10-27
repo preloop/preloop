@@ -272,3 +272,137 @@ def test_provider_init_failure_is_sticky(monkeypatch: pytest.MonkeyPatch) -> Non
         assert otel_export.is_enabled() is False
     finally:
         shutdown_otel()
+
+
+_UTC_REQUEST = (2026, 10, 27, 0, 57, 33, 647204)
+
+
+@pytest.fixture
+def madrid_tz(monkeypatch: pytest.MonkeyPatch):
+    import time
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset unavailable on this platform")
+    monkeypatch.setenv("TZ", "Europe/Madrid")
+    time.tzset()
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def _utc_ns() -> int:
+    from datetime import datetime, timezone
+
+    return int(datetime(*_UTC_REQUEST, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
+
+
+def test_span_timestamps_read_naive_timestamp_as_utc_end(madrid_tz) -> None:
+    from datetime import datetime
+
+    usage = _usage(timestamp=datetime(*_UTC_REQUEST), duration=1.5)
+    start_ns, end_ns = otel_export._span_timestamps(usage)
+    assert end_ns == _utc_ns()
+    assert start_ns == end_ns - 1_500_000_000
+
+
+def test_span_timestamps_aware_timestamp_matches_naive(madrid_tz) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    aware = datetime(*_UTC_REQUEST, tzinfo=timezone.utc).astimezone(
+        timezone(timedelta(hours=1))
+    )
+    start_ns, end_ns = otel_export._span_timestamps(
+        _usage(timestamp=aware, duration=1.5)
+    )
+    assert end_ns == _utc_ns()
+    assert start_ns == end_ns - 1_500_000_000
+
+
+def test_span_timestamps_fall_back_to_now_without_timestamp(monkeypatch) -> None:
+    monkeypatch.setattr(otel_export, "_now_ns", lambda: 10_000_000_000)
+    start_ns, end_ns = otel_export._span_timestamps(_usage(duration=2.0))
+    assert end_ns == 10_000_000_000
+    assert start_ns == 8_000_000_000
+
+
+class _RecordingInstrument:
+    def __init__(self, sink: list, name: str) -> None:
+        self._sink = sink
+        self._name = name
+
+    def record(self, value, attributes=None) -> None:
+        self._sink.append((self._name, value, dict(attributes or {})))
+
+    add = record
+
+
+class _RecordingMeter:
+    def __init__(self, sink: list) -> None:
+        self._sink = sink
+        self.units: dict[str, str] = {}
+
+    def create_histogram(self, name, unit="", **kwargs):
+        self.units[name] = unit
+        self.buckets = getattr(self, "buckets", {})
+        self.buckets[name] = kwargs.get("explicit_bucket_boundaries_advisory")
+        return _RecordingInstrument(self._sink, name)
+
+    create_counter = create_histogram
+
+
+def test_model_call_emits_token_usage_and_cost_metrics(
+    otel_memory_exporter, monkeypatch
+) -> None:
+    sink: list = []
+    meter = _RecordingMeter(sink)
+    monkeypatch.setattr(otel_export.metrics, "get_meter", lambda *_a, **_k: meter)
+    emit_gateway_usage(_usage())
+    tokens = [
+        (value, attrs)
+        for name, value, attrs in sink
+        if name == "gen_ai.client.token.usage"
+    ]
+    assert meter.units["gen_ai.client.token.usage"] == "{token}"
+    buckets = meter.buckets["gen_ai.client.token.usage"]
+    assert buckets[0] == 1 and buckets[-1] == 67_108_864
+    expected_dims = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "openai/gpt-5",
+    }
+    assert sorted(tokens, key=lambda t: t[1]["gen_ai.token.type"]) == [
+        (11, {**expected_dims, "gen_ai.token.type": "input"}),
+        (7, {**expected_dims, "gen_ai.token.type": "output"}),
+    ]
+    cost = [(v, a) for n, v, a in sink if n == "preloop.usage.cost"]
+    assert meter.units["preloop.usage.cost"] == "USD"
+    assert cost == [(pytest.approx(0.00025), expected_dims)]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_empty_endpoint_and_headers_are_unset(monkeypatch, enabled: bool) -> None:
+    """Compose forwards ``OTLP_ENDPOINT=""``/``OTLP_HEADERS=""`` when unset."""
+    otlp = SimpleNamespace(
+        enabled=enabled,
+        endpoint="",
+        protocol="http/protobuf",
+        headers="",
+        service_name="preloop",
+        service_namespace="",
+        deployment_environment="",
+        sampler_ratio=1.0,
+    )
+    monkeypatch.setattr(otel_export.settings, "otlp", otlp)
+    monkeypatch.setattr(otel_export._state, "force_enabled", False)
+    monkeypatch.setattr(otel_export._state, "init_failed", False)
+    monkeypatch.setattr(otel_export._state, "provider", None)
+    built: list = []
+    monkeypatch.setattr(
+        otel_export, "_build_otlp_span_exporter", lambda *a: built.append(a)
+    )
+    assert is_enabled() is False
+    emit_gateway_usage(_usage())
+    assert built == []
+    assert otel_export.parse_otlp_headers("") == {}

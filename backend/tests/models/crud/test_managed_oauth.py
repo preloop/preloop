@@ -20,6 +20,7 @@ from preloop.models.crud.managed_oauth import (
     TokenPair,
 )
 from preloop.models.crud.oauth_token import crud_oauth_token
+from preloop.services.delivery_report_activation import ensure_default_report_flow
 from preloop.utils.encryption import decrypt_value
 
 CALLBACK = "https://example.com/oauth/callback"
@@ -107,6 +108,10 @@ def storage() -> Iterator[tuple[CRUDManagedOAuth, list[tuple[UUID, UUID]]]]:
     finally:
         with engine.begin() as conn:
             for account_id, _ in owners:
+                # Connecting a tracker now installs the account's report flow.
+                conn.execute(
+                    delete(models.Flow).where(models.Flow.account_id == account_id)
+                )
                 conn.execute(
                     delete(models.Account).where(models.Account.id == account_id)
                 )
@@ -166,6 +171,72 @@ def active(
     tracker = crud.complete_connection(**binding, tracker_name="Synthetic tracker")
     grant = crud.get_grant(account_id=owner[0], tracker_id=tracker)
     return binding, grant, config
+
+
+def test_managed_connection_installs_the_default_report_flow(storage: tuple) -> None:
+    crud, owners = storage
+    active(crud, owners[0])
+    with crud._session() as db:
+        flows = db.scalars(
+            select(models.Flow).where(models.Flow.account_id == owners[0][0])
+        ).all()
+        assert len(flows) == 1
+        assert flows[0].agent_config["report_kind"] == "delivery_report"
+        assert flows[0].schedule_config["type"] == "weekly"
+
+
+def test_reconnect_installs_a_missing_default_report_flow(storage: tuple) -> None:
+    """A reconnect repairs accounts connected before report activation."""
+    crud, owners = storage
+    _, grant, config = active(crud, owners[0])
+    with crud._session() as db, db.begin():
+        db.execute(delete(models.Flow).where(models.Flow.account_id == owners[0][0]))
+    binding, _, _ = pending(crud, owners[0], config)
+    crud.complete_connection(
+        **binding,
+        tracker_name="Reconnect",
+        tracker_id=grant["tracker_id"],
+        expected_rotation_version=0,
+    )
+    with crud._session() as db:
+        flows = db.scalars(
+            select(models.Flow).where(models.Flow.account_id == owners[0][0])
+        ).all()
+        assert len(flows) == 1
+        assert flows[0].agent_config["report_kind"] == "delivery_report"
+
+
+def test_concurrent_report_activation_installs_one_flow(storage: tuple) -> None:
+    """The account row lock serializes simultaneous tracker connections."""
+    crud, owners = storage
+    engine = crud._engine
+    assert engine is not None
+    account_id = owners[0][0]
+
+    def install() -> UUID:
+        with Session(engine) as db, db.begin():
+            flow = ensure_default_report_flow(db, account_id=account_id)
+            assert flow is not None
+            return flow.id
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with Session(engine) as first_db, first_db.begin():
+            first = ensure_default_report_flow(first_db, account_id=account_id)
+            assert first is not None
+            first_id = first.id
+            with LockWaiter(engine) as waiter:
+                second = pool.submit(waiter.run, install)
+                waiter.wait_until_blocked()
+        assert second.result(timeout=10) == first_id
+    with Session(engine) as db:
+        assert (
+            len(
+                db.scalars(
+                    select(models.Flow).where(models.Flow.account_id == account_id)
+                ).all()
+            )
+            == 1
+        )
 
 
 def test_tenant_isolation_ciphertext_and_legacy_lookup(storage: tuple) -> None:
@@ -506,6 +577,7 @@ def test_expired_cleanup_and_account_delete(storage: tuple) -> None:
     assert crud.get_grant(account_id=owners[0][0], grant_id=grant["id"]) is None
     _, active_grant, _ = active(crud, owners[0])
     with crud._session() as db, db.begin():
+        db.execute(delete(models.Flow).where(models.Flow.account_id == owners[0][0]))
         db.execute(delete(models.Account).where(models.Account.id == owners[0][0]))
     assert crud.get_grant(account_id=owners[0][0], grant_id=active_grant["id"]) is None
 

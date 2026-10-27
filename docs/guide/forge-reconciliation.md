@@ -13,6 +13,11 @@ records that did not fit the request budget retry on the next tick. Webhooks
 accelerate known records, including reopened PRs. Copilot PRs use this same
 record, refresh task and webhook delivery dedupe.
 
+Legacy records without a known state are also refreshed, regardless of age.
+Each batch reserves half its slots for due known-state records before filling
+from the unobserved backlog, so backfill and webhook updates both progress.
+Unobserved records ignore stored ETags until a full response supplies state.
+
 A `304` changes only refresh bookkeeping. A `429` defers the remaining
 claimed records on that forge according to `Retry-After`, with a one-minute
 floor and one-hour ceiling. This also applies when Bitbucket throttles the

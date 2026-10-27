@@ -1,13 +1,20 @@
 # Delivery Report preset
 
 **Delivery Report** (`backend/presets/022-delivery-report.yaml`, slug
-`delivery-report`) is a scheduled, read-only flow. See what landed, what the
+`delivery-report`) is a scheduled flow with tracker writes off by default.
+See what landed, what the
 available evidence supports against stated criteria, and which gaps deserve
 investigation. It reads tracker and forge data only, so it works whether or
 not a Preloop-managed agent did the work.
 
-It ships disabled. Open **Flows > New flow**, pick **Delivery Report**, add
-the repositories in scope to its git clone configuration and enable it.
+Connecting a tracker creates one enabled Delivery Report flow for the account.
+The first scheduled run is the next weekly slot and covers the prior seven
+days. Additional trackers use the same flow. Its deterministic report still
+runs when the account has no model configured; in that case the email names
+the skipped assessment. Bind a model to the flow to enable its one-time
+onboarding assessment. The account policy can turn the report off or change
+its cadence and scope. An assessed schedule resolves its enabled, linked
+code-host repositories into read-only checkouts when the run starts.
 
 Pull requests opened by the GitHub Copilot coding agent are recorded too,
 with origin `copilot`, and linked to the synced issues they close or name in
@@ -21,6 +28,23 @@ the flow manually at any time. The run covers
 `trigger_event.payload.window` (see
 [the run's time window](flow-triggers.md#the-runs-time-window)). A manual
 run with no window covers the seven days before it starts.
+
+On a report page, choose a project in the header and select **Re-run project**.
+This starts a manual execution for that project and the report's original
+window, with a link to the new execution. The current report policy still
+controls scope, assessment budgets and tracker writes; disconnected or
+disabled projects cannot be re-run from the report.
+
+The console's **Attention** page lists only report proposals that need a
+person: reopen requests, proposed follow-ups, and tracker writes whose
+outcome needs checking. Dismissing an attention item silences that reminder
+until its pending proposals change; deciding or dismissing a proposal takes
+place on the report. Verdicts and evidence gaps alone do not create alerts.
+
+An execution that produced a pull request shows its recorded forge state
+and newest assessment for the PR's current revision. A new revision without
+an assessment says **Not assessed**. **Unverified** means an evidence gap
+and uses the same warning tint as on the report, never a failure colour.
 
 Keep `payload.previous_result_execution_id: last` in the schedule. It makes
 the previous report available to the run as `previous/result.json`.
@@ -129,10 +153,18 @@ effective policy is the defaults, then the account, then the repository
 | Drop first when short of budget | risk detail, then assessments beyond 25 changes; the shipped list is never dropped | account |
 | Open PR window | 7 days | account, repository |
 | Inactive issue window | 14 days | account, repository |
+| Merge audit CI wait | 30 minutes, maximum 24 hours | account, repository |
 | Criteria source | the issue's triage assessment section, else an "Acceptance" heading | account, repository |
 | UI screenshot threshold | 40 changed frontend lines | account, repository |
 | Tracker writes | create follow-up: off (a proposal in the report); reopen: approval; close: always deny | account |
 | Recipients | the account owner, or a sponsoring lead; anyone can opt out | account |
+| Per-member updates (`per_member_updates`) | off (`false`); short updates require Enterprise Edition | account |
+
+The per-member updates switch appears in account settings only when the
+`delivery_report_member_updates` feature is enabled. A registered
+`delivery_report_distributor` service can use the completed report and its
+forge engagement facts to send these short updates. Without that extension,
+the core distributor sends the standard report email.
 
 The deterministic report (shipped, closed, open, the delta and the
 deterministic risk flags) costs nothing and is on by default. The first
@@ -146,11 +178,11 @@ turns the flow's schedule off.
 When a run starts, the platform decides whether it may pay for a model pass
 (`assessment_decision()`): off, deterministic, assessed, the onboarding
 assessment, or skipped because the month's report spend has reached the
-monthly budget or the hosted credit wallet is empty. A run that may not
+monthly budget, the hosted credit wallet is empty, or no model is bound. A run that may not
 call a model never starts the agent. The platform builds the report from
 what the tracker sync and the pull request ledger already stored, so it
 still goes out, with one line saying assessments were skipped
-(`summary.assessments_skipped_reason`: `budget` or `no_credit`). An
+(`summary.assessments_skipped_reason`: `budget`, `no_credit`, or `no_model`). An
 assessed run gets the effective policy as `payload.report_policy`.
 
 The pull request ledger keeps each PR's title, body and file list, so the
@@ -189,6 +221,14 @@ A repository can change only its windows, its criteria source and whether
 it is in the report. Budgets, cadence, scope, tracker writes and recipients
 stay on the account, because one run covers every repository and spends
 one budget.
+
+The deterministic report generates follow-up proposals from each risk flag,
+with its file evidence, except for dependency-bot and docs-only PRs reported
+from metadata. Proposals appear in the console, Markdown report and owner email. It also proposes reopening a closed issue when a merge
+audit at its closing revision cites a criterion that was not met. The audit
+must still match the issue's criteria, and the issue must not have been edited
+after the audit. A missing audit, an unpinned revision or a pure evidence gap
+does not produce a reopen proposal. These proposals require no model call.
 
 Tracker writes start off. Follow-up issues and reopen requests are proposals
 in the report, and opening one is the approval. Automatic creation is a
@@ -320,3 +360,12 @@ The platform rechecks the agent's verdicts. A verdict that its cited
 evidence does not support is downgraded, and a risk flag with no evidence is
 dropped. A markdown rendering of the report is stored as
 `report_markdown`.
+
+
+## Local acceptance tests
+
+The [three-case acceptance test](../../testing/delivery-report-three-cases.md)
+runs the real deterministic orchestrator against PostgreSQL with fake forge,
+tracker and email transports. It exercises one-click reopening and labelled
+follow-up creation through the console API, and records the EE boundary for
+member relevance.

@@ -4387,25 +4387,39 @@ paths:
       description: Bound contribution fan-out while async providers run on the API
         loop.
       operationId: list_extension_attention_items_api_v1_attention_extension_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: include_delivery_reports
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Delivery Reports
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: array
                 items:
                   $ref: '#/components/schemas/ExtensionAttentionItem'
-                type: array
                 title: Response List Extension Attention Items Api V1 Attention Extension
                   Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      security:
-      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/attention/dismissals:
     get:
@@ -5264,8 +5278,9 @@ paths:
       summary: Scan Mcp Server
       description: "Trigger a tool discovery scan for an MCP server.\n\nArgs:\n  \
         \  server_id: MCP server ID\n    current_user: Current authenticated user\n\
-        \    db: Database session\n\nReturns:\n    Success message with tool count\n\
-        \nRaises:\n    HTTPException: If server not found or scan fails"
+        \    db: Database session\n\nReturns:\n    Success message with tool count;\
+        \ failed scans return HTTP 502.\n\nRaises:\n    HTTPException: If server not\
+        \ found or scan fails"
       operationId: scan_mcp_server_api_v1_mcp_servers__server_id__scan_post
       security:
       - bearerAuth: []
@@ -14610,6 +14625,34 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/delivery-reports/attention:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Delivery Report Attention
+      description: Pending decisions from up to 100 runs for standalone API clients.
+      operationId: delivery_report_attention_api_v1_delivery_reports_attention_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/DeliveryReportAttention'
+                type: array
+                title: Response Delivery Report Attention Api V1 Delivery Reports
+                  Attention Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/delivery-reports/{execution_id}:
     get:
@@ -31461,6 +31504,38 @@ components:
         server that reports one as false (an older build) gets it rendered
 
         disabled in the console.'
+    DeliveryReportAttention:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        proposals:
+          items:
+            $ref: '#/components/schemas/DeliveryReportPendingProposal'
+          type: array
+          title: Proposals
+        fingerprint:
+          type: string
+          title: Fingerprint
+      type: object
+      required:
+      - id
+      - proposals
+      - fingerprint
+      title: DeliveryReportAttention
+      description: Pending decisions from one report; other report findings stay out.
     DeliveryReportDetail:
       properties:
         id:
@@ -31539,6 +31614,11 @@ components:
             request, after the assessed revision.'
         actions:
           $ref: '#/components/schemas/DeliveryReportActions'
+        rerun_projects:
+          items:
+            type: string
+          type: array
+          title: Rerun Projects
       type: object
       required:
       - id
@@ -31564,6 +31644,38 @@ components:
       - total
       title: DeliveryReportList
       description: A page of runs and the total that matched the filter.
+    DeliveryReportPendingProposal:
+      properties:
+        key:
+          type: string
+          title: Key
+        kind:
+          type: string
+          title: Kind
+        title:
+          type: string
+          title: Title
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        stale_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stale Reason
+        unconfirmed:
+          type: boolean
+          title: Unconfirmed
+          default: false
+      type: object
+      required:
+      - key
+      - kind
+      - title
+      title: DeliveryReportPendingProposal
+      description: A report proposal that still needs a person, not a run in progress.
     DeliveryReportPolicy:
       properties:
         enabled:
@@ -31647,6 +31759,12 @@ components:
           minimum: 1.0
           title: Issue Inactive Days
           default: 14
+        audit_ci_max_wait_minutes:
+          type: integer
+          maximum: 1440.0
+          minimum: 1.0
+          title: Audit Ci Max Wait Minutes
+          default: 30
         ui_screenshot_min_lines:
           type: integer
           minimum: 0.0
@@ -31668,6 +31786,10 @@ components:
           - sponsoring_lead
           title: Recipients
           default: account_owner
+        per_member_updates:
+          type: boolean
+          title: Per Member Updates
+          default: false
         sponsoring_lead_user_id:
           anyOf:
           - type: string
@@ -32713,6 +32835,31 @@ components:
         approvals are stored. A parked run holds no container and no runner: this
 
         is a governance object, not a spinner.'
+    ExecutionPullRequest:
+      properties:
+        url:
+          type: string
+          title: Url
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+        revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Revision
+        purpose_verdict:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose Verdict
+      type: object
+      required:
+      - url
+      title: ExecutionPullRequest
+      description: Forge state and the newest assessment at the PR's current head.
     ExecutionResumeTotals:
       properties:
         total_tokens:
@@ -33139,6 +33286,10 @@ components:
           type: string
           format: date-time
           title: Opened At
+        delivery_report:
+          anyOf:
+          - $ref: '#/components/schemas/DeliveryReportAttention'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -33150,7 +33301,7 @@ components:
       - severity
       - opened_at
       title: ExtensionAttentionItem
-      description: Neutral plugin item. Only local console destinations are accepted.
+      description: Console attention contribution with a local destination.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -34951,6 +35102,10 @@ components:
           title: Estimated Cost
           description: Estimated cost in USD for this execution
           default: 0.0
+        pull_request:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionPullRequest'
+          - type: 'null'
         runtime_session_id:
           anyOf:
           - type: string

@@ -1,15 +1,20 @@
 # Self-hosted runners
 
-CI prefers GitHub-hosted `ubuntu-latest`. General self-hosted runners provide
-optional backend overflow when recent repository runs show hosted jobs queued
-without a runner for at least two minutes. This is a queue-pressure signal,
-not a measurement of GitHub's global capacity. The picker inspects up to five oldest queued and five oldest in-progress
-runs from bounded 100-run API responses, plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
-pressure or inventory cannot be read, the read token is absent, or
-`CI_SELF_HOSTED_TESTS=false`. Fork and Dependabot PRs always remain hosted.
-Trusted same-repository PRs and pushes may use overflow.
+CI distributes backend shards across available capacity at dispatch. Each
+online idle general self-hosted runner takes one shard immediately, up to the
+matrix size; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
+no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
+an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
+Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
+pushes may use the general pool.
 
-Overflow requires **all** of `self-hosted`, `Linux`, `X64`, and
+Reserve hosted-image labels for GitHub-hosted capacity: never attach
+`ubuntu-latest` or `ubuntu-24.04` to a private runner. Label matching can route a
+nominally hosted job to that private machine. This workflow uses `ubuntu-24.04`
+for hosted jobs and retries, avoiding legacy private `ubuntu-latest` aliases;
+keep `ubuntu-24.04` absent from private registrations.
+
+General capacity requires **all** of `self-hosted`, `Linux`, `X64`, and
 `preloop-ci-general`, online and idle at selection time. Never give
 `preloop-ci-general` to the dedicated `gce-tests-only` pool. That pool is
 explicitly excluded from inventory even if it also carries default labels.
@@ -18,34 +23,59 @@ Python setup, writable workspaces, Docker access, and PostgreSQL/pgvector.
 Ubuntu 24.04 uses setup-python's Ubuntu build when system Python is not 3.11;
 it does not need a misleading `ubuntu-latest` label or a hosted toolcache.
 
-The picker assigns at most one overflow shard per observed idle runner,
-at most the number of delayed hosted jobs, and never more than half the
-backend matrix. Other jobs and at least half the backend shards stay hosted.
-This snapshot is not a reservation: another run can consume the runner or a VM
-can stop after selection. GitHub does not automatically move an already queued
-self-hosted job to hosted, and job timeouts do not bound queue time. If that
-happens, disable overflow with `CI_SELF_HOSTED_TESTS=false`, cancel the stalled
-run, and rerun it on hosted capacity. There is no VM provisioning in this flow.
+The picker assigns at most one shard per observed idle runner, up to the
+backend matrix size. Other jobs stay hosted. A runner registration represents
+a configured slot, not a CPU; provision slots to fit the host's measured capacity.
+This snapshot is not a reservation: another run can consume a slot or a spot
+VM can stop after selection. GitHub cannot migrate an assigned job between
+runner labels. The hosted recovery workflow watches trusted PRs and main pushes
+for 30 minutes. After a general-pool backend shard waits unassigned for three
+minutes, or its assigned runner is reported offline/missing, it cancels the
+current run and retries failed/canceled jobs and their dependents once on hosted
+runners. A completed failure without offline/missing-runner evidence stops
+automatic recovery, including when it appears during cancellation. It waits
+up to two minutes for cancellation to finish. Successful jobs are retained;
+work in progress at cancellation may repeat. It never provisions a VM.
+
+The watchdog also handles completed failed/timed-out backend jobs when their
+assigned runner is offline/missing. This is an infrastructure inference, not
+proof of why a test failed; the hosted retry must still pass the same checks.
+Without the optional existing `CI_RUNNER_READ_TOKEN`, queue recovery works but
+offline-runner inference is unavailable. API failures stop further mutations.
+Second attempts, forks, Dependabot, closed/superseded PR heads, and user-canceled
+runs are not automatically recovered. All backend retry attempts use hosted
+capacity even when a successful picker output was retained by GitHub.
+
+The listener runs trusted code pinned to its default-branch workflow commit,
+with `actions: write` for cancellation/retry, `pull-requests: read` to verify
+current PR heads, and `contents: read` for that code.
+It never checks out the PR head or reads job logs. It activates only after
+`ci-hosted-recovery.yml` and its script land on the default branch, and hosted
+queue delays can delay the watchdog itself. Job queue/run transitions are not
+atomic with API cancellation; the watchdog rechecks current head/state before
+each mutation but cannot eliminate every cancellation race. If its bounded
+watch ends or recovery fails, disable self-hosted routing with
+`CI_SELF_HOSTED_TESTS=false`, cancel the stalled run, and rerun it manually.
 
 Backend CI prefers a Postgres that is already listening on the runner. The
 job creates a database named `preloop_ci_<run>_<attempt>_<shard>`, migrates
 it, and drops that database at the end. It does not stop the server.
 
-GitHub-hosted `ubuntu-latest` has no Postgres, so the same step starts
+GitHub-hosted `ubuntu-24.04` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
 
-## Bootstrap routing
+## Hosted control jobs
 
-Set `CI_SELF_HOSTED_BOOTSTRAP=true` to run changed-path detection, the runner
-picker and the final CI aggregator on `preloop-ci-general` for trusted
-same-repository PRs and pushes. Forks and Dependabot keep hosted routing.
-This avoids waiting for hosted capacity before selecting idle overflow
-runners. The general pool must provide `gh`, `jq`, Python 3 and coreutils;
-changed-path detection also requires a writable checkout workspace.
-`CI_SELF_HOSTED_TESTS=false` disables this routing as well as shard overflow.
-If the pool goes offline, disable the bootstrap variable and rerun; GitHub
-does not migrate an already queued assignment automatically.
+Changed-path detection, the runner picker and the final CI aggregator always
+run on GitHub-hosted `ubuntu-24.04`. The general pool is optional spot capacity,
+so an offline pool must not prevent the picker from selecting hosted shards or
+the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
+existing repository values have no effect on this workflow.
+
+Only backend shards may use the general pool, under the capacity rules above.
+`CI_SELF_HOSTED_TESTS=false` disables that routing. An offline or
+empty runner inventory keeps all shards hosted without provisioning a VM.
 
 ## Postgres
 
@@ -164,7 +194,7 @@ group). If neither works, the step fails with
 
 `gce-tests-only` is the registration label for the repository-scoped isolated
 test pool. Its runners must never carry `preloop-ci-general`; the backend
-overflow selector also explicitly rejects `gce-tests-only`, whether or not
+capacity selector also explicitly rejects `gce-tests-only`, whether or not
 the runner carries default labels. Only a manual dispatch of
 `fuzz.yml` with `execution_host_tests: true` selects this pool; PRs and schedules
 keep their existing hosted routing.

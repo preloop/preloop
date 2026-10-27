@@ -8297,6 +8297,15 @@ class OpenAIGatewayService:
                 kwargs["messages"] = deepcopy(messages)
             if thinking_options:
                 kwargs["extra_body"] = thinking_options
+        if _is_openrouter_upstream(ai_model):
+            # OpenRouter's chat API accepts reasoning.effort. Send its native
+            # body field so LiteLLM does not drop it for models missing from
+            # its capability catalog. Responses-only summary is not portable.
+            reasoning = payload.get("reasoning")
+            reasoning = reasoning if isinstance(reasoning, dict) else {}
+            effort = payload.get("reasoning_effort", reasoning.get("effort"))
+            if effort is not None:
+                kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": effort}
         if _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled():
             # Ask OpenRouter to include the request's actual cost in the
             # response usage payload (usage accounting). litellm forwards
@@ -8340,6 +8349,15 @@ class OpenAIGatewayService:
             for key in ("temperature", "top_p"):
                 if key not in kwargs and model_parameters.get(key) is not None:
                     kwargs[key] = model_parameters[key]
+        if (
+            _is_openrouter_upstream(ai_model)
+            and "max_tokens" not in kwargs
+            and isinstance(model_parameters, dict)
+        ):
+            for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+                if model_parameters.get(key) is not None:
+                    kwargs["max_tokens"] = model_parameters[key]
+                    break
         if payload.get("stop") is not None:
             kwargs["stop"] = payload["stop"]
         # Intentional global default, not zai-only. Matches aux generation.

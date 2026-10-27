@@ -93,7 +93,9 @@ renaming one goes through the deprecation window.
 | ------ | ----- | ---------- |
 | `preloop.api_usage.dropped` | Stable | none |
 | `preloop.api_usage.failed` | Stable | none |
+| `preloop.usage.cost` | Stable | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` |
 | `gen_ai.client.operation.duration` | Experimental | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` |
+| `gen_ai.client.token.usage` | Experimental | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.token.type` |
 | `db.client.connections.usage` | Experimental | `preloop.db.engine` |
 | `db.client.connections.overflow` | Experimental | `preloop.db.engine` |
 | `db.client.connections.max` | Experimental | `preloop.db.engine` |

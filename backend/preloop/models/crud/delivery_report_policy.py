@@ -93,6 +93,81 @@ def project_overrides(db: Session, *, account_id: Any) -> Dict[str, Dict[str, An
     }
 
 
+def lock_account_for_activation(db: Session, *, account_id: Any) -> None:
+    """Serialize an account's report-flow check and insert until commit.
+
+    Args:
+        db: Session that will create the flow and commit afterward.
+        account_id: Owning account.
+
+    Raises:
+        ValueError: The account does not exist.
+    """
+    found = db.scalar(
+        select(models.Account.id)
+        .where(models.Account.id == _uuid(account_id))
+        .with_for_update()
+    )
+    if found is None:
+        raise ValueError("Account not found")
+
+
+def code_repositories(
+    db: Session, *, account_id: Any
+) -> List[tuple[str, str, str, Optional[str]]]:
+    """Active code-host projects available to the account's report checkout.
+
+    Args:
+        db: Session.
+        account_id: Account that owns the trackers.
+
+    Returns:
+        Repository name, project id, tracker id and known default branch,
+        ordered for stable clone paths.
+    """
+    rows = db.execute(
+        select(
+            models.Project.id,
+            models.Project.slug,
+            models.Project.identifier,
+            models.Project.settings,
+            models.Project.meta_data,
+            models.Tracker.id,
+        )
+        .select_from(models.Project)
+        .join(
+            models.Organization,
+            models.Organization.id == models.Project.organization_id,
+        )
+        .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+        .where(
+            models.Tracker.account_id == _uuid(account_id),
+            models.Tracker.is_active.is_(True),
+            models.Tracker.is_deleted.is_(False),
+            models.Project.is_active.is_(True),
+            models.Tracker.tracker_type.in_(
+                ("github", "gitlab", "bitbucket", "bitbucket_dc")
+            ),
+        )
+        .order_by(models.Project.slug, models.Project.id)
+    ).all()
+    seen: set[str] = set()
+    repositories: List[tuple[str, str, str, Optional[str]]] = []
+    for project_id, slug, identifier, settings, meta_data, tracker_id in rows:
+        name = str(slug or identifier or "").lower()
+        if name and name not in seen:
+            branch = None
+            for source in (settings, meta_data):
+                if isinstance(source, dict):
+                    value = source.get("default_branch")
+                    if isinstance(value, str) and value.strip():
+                        branch = value.strip()
+                        break
+            repositories.append((name, str(project_id), str(tracker_id), branch))
+            seen.add(name)
+    return repositories
+
+
 def project_in_account(db: Session, *, account_id: Any, project_id: Any) -> bool:
     """Whether the project belongs to one of the account's trackers.
 
@@ -280,6 +355,14 @@ def pull_request_facts(
             "title": row.title,
             "description": row.body,
             "author": row.author_login,
+            "author_id": row.author_id,
+            "forge": (
+                "gitlab"
+                if "/-/merge_requests/" in row.pr_key
+                else "github"
+                if "/pull/" in row.pr_key
+                else ""
+            ),
             "changes": (
                 {
                     "changed_files": list(row.changed_files),
@@ -331,7 +414,14 @@ def pull_requests_missing_files(
 
 
 #: Detail columns a writer may set; anything else in ``details`` is ignored.
-DETAIL_COLUMNS = ("title", "body", "author_login", "changed_files", "files_changed")
+DETAIL_COLUMNS = (
+    "title",
+    "body",
+    "author_login",
+    "author_id",
+    "changed_files",
+    "files_changed",
+)
 
 
 def store_pull_request_details(
@@ -358,11 +448,38 @@ def store_pull_request_details(
     """
     for column in DETAIL_COLUMNS:
         if column in details:
+            if column == "author_id" and pull.author_id is not None:
+                continue
             setattr(pull, column, details[column])
     if observed_at is not None:
         pull.details_observed_at = observed_at
     db.flush()
     return pull
+
+
+def active_project_repositories(
+    db: Session, *, account_id: Any, repositories: Sequence[str]
+) -> set[str]:
+    """Requested repositories with an active project, organization and tracker."""
+    if not repositories:
+        return set()
+    return set(
+        db.scalars(
+            select(func.lower(models.Project.slug))
+            .join(
+                models.Organization,
+                models.Organization.id == models.Project.organization_id,
+            )
+            .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+            .where(
+                models.Tracker.account_id == _uuid(account_id),
+                func.lower(models.Project.slug).in_([r.lower() for r in repositories]),
+                models.Project.is_active.is_(True),
+                models.Organization.is_active.is_(True),
+                models.Tracker.is_active.is_(True),
+            )
+        )
+    )
 
 
 def project_for_repository(

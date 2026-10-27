@@ -14,6 +14,7 @@ import {
   type ShippedChange,
 } from '../../delivery-reports-api';
 import { PermissionError } from '../../permissions';
+import { triggerFlowExecution } from '../../api';
 import { formatRelativeTime, parseUTCDate } from '../../utils/date';
 import {
   denominators,
@@ -31,6 +32,8 @@ import '../../components/permission-denied';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
 
 /** Why a proposal action is disabled on a server that cannot act on it. */
 export const ACTIONS_UNAVAILABLE =
@@ -76,7 +79,7 @@ export class DeliveryReportView extends LitElement {
         font-size: var(--console-text-meta);
       }
       a {
-        color: var(--sl-color-primary-700);
+        color: var(--console-link-color);
         text-decoration: none;
       }
       a:hover,
@@ -87,6 +90,21 @@ export class DeliveryReportView extends LitElement {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
+        align-items: center;
+      }
+      .header-actions sl-select {
+        max-width: 100%;
+        min-width: 0;
+      }
+      .header-actions sl-select::part(form-control) {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .header-actions sl-select::part(form-control-label) {
+        margin: 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
       }
       .summary-strip {
         display: flex;
@@ -100,6 +118,7 @@ export class DeliveryReportView extends LitElement {
       }
       .strip-item {
         display: flex;
+        flex-wrap: wrap;
         align-items: baseline;
         gap: 6px;
       }
@@ -165,6 +184,7 @@ export class DeliveryReportView extends LitElement {
       .row-head .end {
         margin-left: auto;
         display: inline-flex;
+        flex-wrap: wrap;
         gap: 8px;
         align-items: baseline;
         font-variant-numeric: tabular-nums;
@@ -180,6 +200,7 @@ export class DeliveryReportView extends LitElement {
       }
       .ref {
         font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
       }
       .detail {
         margin: 8px 0 0 22px;
@@ -265,6 +286,12 @@ export class DeliveryReportView extends LitElement {
         border: 0;
       }
       @media (max-width: 640px) {
+        section > h2 {
+          flex-wrap: wrap;
+        }
+        section > h2 .meta {
+          margin-left: 0;
+        }
         .row-head .end,
         .proposal-actions {
           margin-left: 0;
@@ -289,6 +316,10 @@ export class DeliveryReportView extends LitElement {
   @state() private dismissKey: string | null = null;
   @state() private dismissReason = '';
   @state() private actionError: { key: string; message: string } | null = null;
+  @state() private rerunProject = '';
+  @state() private rerunning = false;
+  @state() private rerunError: string | null = null;
+  @state() private rerunExecution: string | null = null;
 
   /** Vaadin Router hands the route params over before the view connects. */
   onBeforeEnter(location: { params: Record<string, unknown> }): void {
@@ -297,8 +328,25 @@ export class DeliveryReportView extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener('hashchange', this.scrollToAnchor);
     void this.load();
   }
+
+  disconnectedCallback(): void {
+    window.removeEventListener('hashchange', this.scrollToAnchor);
+    super.disconnectedCallback();
+  }
+
+  /** Native fragment navigation cannot see the console view's shadow root. */
+  private scrollToAnchor = (): void => {
+    try {
+      const id = decodeURIComponent(window.location.hash.slice(1));
+      if (id)
+        this.renderRoot.querySelector(`#${CSS.escape(id)}`)?.scrollIntoView();
+    } catch {
+      // A malformed fragment still opens the report normally.
+    }
+  };
 
   async load(): Promise<void> {
     if (!this.reportId) {
@@ -309,6 +357,8 @@ export class DeliveryReportView extends LitElement {
     this.loading = true;
     try {
       this.detail = await getDeliveryReport(this.reportId);
+      if (!this.detail.rerun_projects?.includes(this.rerunProject))
+        this.rerunProject = this.detail.rerun_projects?.[0] ?? '';
       this.error = null;
     } catch (error) {
       if (error instanceof PermissionError) {
@@ -318,6 +368,27 @@ export class DeliveryReportView extends LitElement {
       }
     } finally {
       this.loading = false;
+    }
+    await this.updateComplete;
+    this.scrollToAnchor();
+  }
+
+  private async rerun(): Promise<void> {
+    if (!this.detail || !this.rerunProject || this.rerunning) return;
+    this.rerunning = true;
+    this.rerunError = null;
+    this.rerunExecution = null;
+    try {
+      const execution = await triggerFlowExecution(this.detail.flow_id, {
+        delivery_report_project: this.rerunProject,
+        payload: { window: this.detail.window },
+      });
+      this.rerunExecution = execution.id;
+    } catch (error) {
+      this.rerunError =
+        error instanceof Error ? error.message : 'Could not start the report.';
+    } finally {
+      this.rerunning = false;
     }
   }
 
@@ -725,11 +796,11 @@ export class DeliveryReportView extends LitElement {
     </li>`;
   }
 
-  private renderChange(change: ShippedChange) {
+  private renderChange(change: ShippedChange, areaAnchor = '') {
     const key = `pr-${change.ref}`;
     const open = this.expanded.has(key);
     const flags = change.risk_flags ?? [];
-    return html`<li data-testid="shipped-change">
+    return html`<li data-testid="shipped-change" id=${areaAnchor || nothing}>
       <div class="row-head">
         ${this.expander(key, change.ref)}
         ${this.external(change.url, change.ref.split('#').length > 1 ? `#${change.ref.split('#').pop()}` : change.ref)}
@@ -828,7 +899,17 @@ export class DeliveryReportView extends LitElement {
               ([project, changes]) =>
                 html`<h3 id=${anchorId('project', project)}>${project}</h3>
                   <ul class="rows">
-                    ${changes.map((c) => this.renderChange(c))}
+                    ${changes.map((c, index) =>
+                      this.renderChange(
+                        c,
+                        c.area &&
+                          changes.findIndex(
+                            (other) => other.area === c.area
+                          ) === index
+                          ? anchorId('area', `${project}-${c.area}`)
+                          : ''
+                      )
+                    )}
                   </ul>`
             )
       }
@@ -1058,6 +1139,36 @@ export class DeliveryReportView extends LitElement {
           ${failed ? this.chip('neutral', detail.status) : nothing}</span
         >
         <div slot="meta" class="header-actions">
+          ${
+            detail.rerun_projects?.length
+              ? html`
+                  <sl-select
+                    size="small"
+                    label="Project"
+                    .value=${this.rerunProject}
+                    ?disabled=${this.rerunning}
+                    @sl-change=${(event: Event) => {
+                      this.rerunProject = (
+                        event.target as HTMLSelectElement
+                      ).value;
+                    }}
+                  >
+                    ${detail.rerun_projects.map((project) => html`<sl-option value=${project}>${project}</sl-option>`)}
+                  </sl-select>
+                  <sl-button
+                    size="small"
+                    variant="primary"
+                    data-testid="rerun"
+                    ?loading=${this.rerunning}
+                    ?disabled=${!this.rerunProject || this.rerunning}
+                    @click=${() => void this.rerun()}
+                    >Re-run project</sl-button
+                  >
+                `
+              : nothing
+          }
+          ${this.rerunExecution ? html`<a data-testid="rerun-execution" href="/console/flows/executions/${encodeURIComponent(this.rerunExecution)}">Open new execution</a>` : nothing}
+          ${this.rerunError ? html`<span role="alert">${this.rerunError}</span>` : nothing}
           <sl-button size="small" href="/console/flows/${detail.flow_id}"
             >Open flow</sl-button
           >

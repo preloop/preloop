@@ -256,6 +256,8 @@ class DeliveryReportPolicy(BaseModel):
     max_assessed_changes: int = Field(default=25, ge=0)
     pr_ready_days: int = Field(default=7, ge=1)
     issue_inactive_days: int = Field(default=14, ge=1)
+    #: Maximum time a merge audit waits for CI checks at its merge SHA.
+    audit_ci_max_wait_minutes: int = Field(default=30, ge=1, le=1440)
     #: Changed lines in rendered frontend files below which a UI change
     #: without a screenshot is not flagged (style and view files always are).
     ui_screenshot_min_lines: int = Field(default=40, ge=0)
@@ -263,6 +265,8 @@ class DeliveryReportPolicy(BaseModel):
     tracker_writes: TrackerWritePolicy = Field(default_factory=TrackerWritePolicy)
     #: Who receives the report. Recipients by role are an EE extension.
     recipients: RecipientRule = "account_owner"
+    #: Enterprise editions may use this account-level opt-in for short updates.
+    per_member_updates: bool = False
     #: The sponsoring lead's user id when ``recipients`` names one.
     sponsoring_lead_user_id: Optional[str] = None
     #: Users who asked not to receive the report (the email opt-out link).
@@ -338,6 +342,7 @@ PROJECT_OVERRIDE_FIELDS: frozenset[str] = frozenset(
         "enabled",
         "pr_ready_days",
         "issue_inactive_days",
+        "audit_ci_max_wait_minutes",
         "ui_screenshot_min_lines",
         "criteria_source",
     }
@@ -350,12 +355,15 @@ AssessmentDecision = Literal[
     "deterministic",
     "skipped_budget",
     "skipped_no_credit",
+    "skipped_no_model",
     "disabled",
 ]
 #: Decisions under which the run makes a model call.
 ASSESSING_DECISIONS: frozenset[str] = frozenset({"assessed", "onboarding"})
 #: Decisions that drop assessments the account asked for.
-SKIPPED_DECISIONS: frozenset[str] = frozenset({"skipped_budget", "skipped_no_credit"})
+SKIPPED_DECISIONS: frozenset[str] = frozenset(
+    {"skipped_budget", "skipped_no_credit", "skipped_no_model"}
+)
 
 
 class PolicyOverrideError(ValueError):
@@ -493,6 +501,7 @@ def assessment_decision(
     has_previous_report: bool,
     spent_this_month_usd: Optional[float] = None,
     credit_available_usd: Optional[float] = None,
+    model_available: bool = True,
 ) -> AssessmentDecision:
     """Whether this run may pay for a model pass, and why not.
 
@@ -503,6 +512,7 @@ def assessment_decision(
             unknown (the per-run ceiling still caps the run).
         credit_available_usd: Hosted credit available; None when the
             account does not run on hosted credit.
+        model_available: The flow has a model bound for an assessed run.
 
     Returns:
         ``disabled`` (no report), ``deterministic`` (no model call wanted),
@@ -519,6 +529,8 @@ def assessment_decision(
         return "deterministic"
     if credit_available_usd is not None and credit_available_usd <= 0:
         return "skipped_no_credit"
+    if not model_available:
+        return "skipped_no_model"
     if wanted == "assessed" and not policy.assessments_allowed(spent_this_month_usd):
         return "skipped_budget"
     return wanted
@@ -1177,6 +1189,13 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
         "issue_url": url,
         "issue_title": envelope.get("issue_title"),
         "merge_sha": merge_sha,
+        # Controller-observed PR/merge pairs let the deterministic path pin
+        # proposals even when the PR ledger has only the source head SHA.
+        "merges": [
+            {"url": link.get("url"), "sha": link.get("sha")}
+            for link in envelope.get("merges") or []
+            if isinstance(link, Mapping)
+        ],
         "execution_id": str(getattr(execution, "id", "") or "") or None,
         "assessed_at": started.isoformat() if isinstance(started, datetime) else None,
         "purpose": {"criteria": criteria},
@@ -1405,6 +1424,77 @@ def apply_parent_checks(
 # ---------------------------------------------------------------------------
 
 
+def _audit_closing_revision(
+    issue: Mapping[str, Any],
+    closing_pr: Mapping[str, Any],
+    audits: Sequence[Mapping[str, Any]],
+) -> Optional[str]:
+    """Resolve an unrecorded merge SHA from the controller's closing PR link.
+
+    A source head is not a merge SHA. An audit of another PR or revision
+    must never supply the missing merge identity for a reopen proposal.
+    """
+    known = closing_pr.get("merge_sha")
+    if known:
+        return str(known)
+    audit = _audit_for(issue, audits)
+    if audit is None or not closing_pr.get("url"):
+        return None
+    merged = _parse_time(closing_pr.get("merged_at"))
+    assessed = _parse_time(audit.get("assessed_at"))
+    if merged is None or assessed is None or assessed < merged:
+        return None
+    for link in audit.get("merges") or []:
+        if (
+            isinstance(link, Mapping)
+            and link.get("url") == closing_pr["url"]
+            and link.get("sha") == audit.get("merge_sha")
+            and link.get("sha")
+        ):
+            return str(link["sha"])
+    return None
+
+
+def _audit_reopen_proposal(
+    issue: Mapping[str, Any], audits: Sequence[Mapping[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Propose an audited miss at a known closing revision, without a write.
+
+    Pure evidence gaps do not justify a reopen. Require a cited, not-met
+    criterion, an unchanged criteria snapshot and an audit after the last
+    issue edit. The report retains the issue timestamp and closing head
+    used by the action endpoint's existing stale-request checks.
+    """
+    if not issue.get("closing_sha") or not issue.get("closing_head_sha"):
+        return None
+    audit = _audit_for(issue, audits)
+    if audit is None:
+        return None
+    assessed = _parse_time(audit.get("assessed_at"))
+    updated = _parse_time(issue.get("updated_at"))
+    if assessed is None or updated is None or updated > assessed:
+        return None
+    purpose = normalize_purpose(_audited_purpose(audit))
+    if purpose["verdict"] not in (PURPOSE_PARTIAL, PURPOSE_UNVERIFIED):
+        return None
+    current = normalize_purpose(issue.get("purpose"))
+    if {c["text"] for c in current["criteria"]} != {
+        c["text"] for c in purpose["criteria"]
+    }:
+        return None
+    unmet = [c for c in purpose["criteria"] if c["met"] is False and c["evidence"]]
+    if not unmet:
+        return None
+    return {
+        "ref": issue["ref"],
+        "title": issue.get("title"),
+        "url": issue.get("url"),
+        "revision": audit["merge_sha"],
+        "reason": "Not met: " + "; ".join(c["text"] for c in unmet),
+        "evidence": list(dict.fromkeys(e for c in unmet for e in c["evidence"])),
+    }
+
+
 def assemble_report(
     *,
     window: Mapping[str, Any],
@@ -1460,6 +1550,7 @@ def assemble_report(
     issues = [i for i in issues if policy_for(issue_project(i)).enabled]
 
     shipped: List[Dict[str, Any]] = []
+    follow_ups: List[Dict[str, Any]] = []
     linked_by_issue: Dict[str, List[str]] = {}
     for pr in pull_requests:
         if not pr.get("merged_at") or not _in_window(pr.get("merged_at"), start, end):
@@ -1494,6 +1585,21 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
+        for flag in normalize_risk_flags([] if metadata_only else deterministic):
+            label = flag["flag"].replace("_", " ")
+            follow_ups.append(
+                {
+                    "ref": ref,
+                    "project": pr_project(pr),
+                    "title": f"Investigate {label}: {ref}",
+                    "reason": (
+                        f"The merged change has a deterministic risk flag: {label}. "
+                        "Check the cited evidence and add verification where needed."
+                    ),
+                    "risk_flag": flag["flag"],
+                    "evidence": flag["evidence"],
+                }
+            )
         changed = _changed_files(pr)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
@@ -1504,6 +1610,8 @@ def assemble_report(
                 "project": _pr_ref(pr).split("#", 1)[0] or None,
                 "area": _area(pr),
                 "author": pr.get("author"),
+                "author_id": pr.get("author_id"),
+                "forge": pr.get("forge"),
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),
@@ -1564,7 +1672,9 @@ def assemble_report(
                 "title": issue.get("title"),
                 "url": issue.get("url"),
                 "updated_at": issue.get("updated_at"),
-                "closing_sha": closing_pr.get("merge_sha"),
+                "closing_sha": _audit_closing_revision(
+                    {"ref": key, "url": issue.get("url")}, closing_pr, merge_audits
+                ),
                 "closing_head_sha": closing_pr.get("head_sha"),
                 # The measurement a reopen rule reads: the newest comment
                 # after the last criteria edit, when the issue has criteria.
@@ -1631,7 +1741,12 @@ def assemble_report(
         "shipped": shipped,
         "closed_issues": closed,
         "open_past_window": open_items,
-        "follow_ups": [],
+        "follow_ups": follow_ups,
+        "reopen_requests": [
+            proposal
+            for issue in closed
+            if (proposal := _audit_reopen_proposal(issue, merge_audits)) is not None
+        ],
         "open_questions": [],
     }
     return finalize_delivery_report(
@@ -1650,6 +1765,19 @@ def _needs_you(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 "url": request.get("url"),
                 "revision": request.get("revision"),
                 "reason": request.get("reason"),
+            }
+        )
+    for index, proposal in enumerate(report.get("follow_ups") or []):
+        if not isinstance(proposal, Mapping):
+            continue
+        items.append(
+            {
+                "kind": "follow_up",
+                "index": index,
+                "ref": proposal.get("ref"),
+                "title": proposal.get("title"),
+                "reason": proposal.get("reason"),
+                "evidence": _evidence(proposal.get("evidence")),
             }
         )
     for issue in report.get("closed_issues") or []:
@@ -1869,6 +1997,8 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
     decision = (report.get("assessment") or {}).get("decision")
     if decision == "skipped_no_credit":
         skipped_reason: Optional[str] = "no_credit"
+    elif decision == "skipped_no_model":
+        skipped_reason = "no_model"
     elif skipped or decision == "skipped_budget":
         skipped_reason = "budget"
     else:
@@ -1915,7 +2045,7 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
             )
             for source in ASSESSMENT_SOURCES
         },
-        "assessments_skipped_for_budget": skipped_reason is not None,
+        "assessments_skipped_for_budget": skipped_reason in {"budget", "no_credit"},
         "assessments_skipped_reason": skipped_reason,
     }
 
@@ -2091,6 +2221,12 @@ def _summary_lines(summary: Mapping[str, Any]) -> List[str]:
             "Assessments were skipped: the account has no credit left. "
             "Everything above comes from tracker and forge data.",
         ]
+    elif summary.get("assessments_skipped_reason") == "no_model":
+        lines += [
+            "",
+            "Assessments were skipped: no model is configured for this report. "
+            "Everything above comes from tracker and forge data.",
+        ]
     elif summary.get("assessments_skipped_for_budget"):
         lines += ["", "Assessments were skipped for budget; see the spend section."]
     return lines
@@ -2145,6 +2281,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 f"- Proposed reopen (assessed at {item.get('revision')}): "
                 f"{_link(item)}{reason}"
             )
+        elif item["kind"] == "follow_up":
+            reason = f": {item['reason']}" if item.get("reason") else ""
+            lines.append(f"- Proposed follow-up: {_link(item)}{reason}")
+            lines.extend(f"  - {e}" for e in item.get("evidence") or [])
         elif item["kind"] == "closed_unverified":
             open_criteria = (
                 "; ".join(item.get("unmet_criteria") or []) or "criteria unchecked"
@@ -2460,12 +2600,58 @@ def _month_start(now: datetime) -> datetime:
     )
 
 
+def validate_report_project(db: Any, *, account_id: Any, project: Any) -> str:
+    """Validate a manual run's one-project scope against the stored policy.
+
+    Raises:
+        ValueError: The project is disconnected, disabled or outside scope.
+    """
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("Choose one connected project for the report")
+    project = project.strip().lower()
+    errors = report_project_errors(db, account_id=account_id, projects=[project])
+    if project in errors:
+        raise ValueError(errors[project])
+    return project
+
+
+def report_project_errors(
+    db: Any, *, account_id: Any, projects: Sequence[str]
+) -> Dict[str, str]:
+    """Validate rerun choices in three account-scoped reads, independent of count."""
+    from preloop.models.crud import crud_delivery_report_policy
+
+    if not projects:
+        return {}
+    account = crud_delivery_report_policy.get_overrides(db, account_id=account_id)
+    if not resolve_policy(account).enabled:
+        return {
+            p: "Delivery reports are disabled by the report policy" for p in projects
+        }
+    overrides = crud_delivery_report_policy.project_overrides(db, account_id=account_id)
+    connected = crud_delivery_report_policy.active_project_repositories(
+        db, account_id=account_id, repositories=projects
+    )
+    errors = {}
+    for project in projects:
+        name = project.lower()
+        policy = resolve_policy(account, overrides.get(name))
+        if not policy.enabled:
+            errors[project] = "Delivery reports are disabled by the report policy"
+        elif policy.projects and name not in {p.lower() for p in policy.projects}:
+            errors[project] = "The project is outside the report policy scope"
+        elif name not in connected:
+            errors[project] = "The project is no longer connected"
+    return errors
+
+
 def plan_policy_run(
     db: Any,
     *,
     flow: Any,
     exclude_execution_id: Any = None,
     now: Optional[datetime] = None,
+    project: Optional[str] = None,
 ) -> PolicyRun:
     """Read the account's stored policy and decide what this run may do.
 
@@ -2478,6 +2664,7 @@ def plan_policy_run(
         exclude_execution_id: The current execution, so it is not its own
             previous report.
         now: Clock for the month boundary.
+        project: Narrow a manual run to one connected project under the policy.
 
     Returns:
         The decision and the effective policies.
@@ -2492,6 +2679,9 @@ def plan_policy_run(
         db, account_id=account_id
     )
     policy = resolve_policy(account_overrides)
+    if project is not None:
+        project = validate_report_project(db, account_id=account_id, project=project)
+        policy = policy.model_copy(update={"projects": [project]})
     projects = {
         name: resolve_policy(account_overrides, overrides)
         for name, overrides in crud_delivery_report_policy.project_overrides(
@@ -2519,11 +2709,24 @@ def plan_policy_run(
         credit = crud_delivery_report_policy.credit_available(db, account_id=account_id)
     except Exception:  # noqa: BLE001 - no readable wallet: not on hosted credit
         log.warning("Could not read hosted credit for the report", exc_info=True)
+    previous_result = getattr(previous, "result", None)
+    previous_assessment = (
+        previous_result.get("assessment")
+        if isinstance(previous_result, Mapping)
+        else None
+    )
+    previous_decision = (
+        previous_assessment.get("decision")
+        if isinstance(previous_assessment, Mapping)
+        else None
+    )
     decision = assessment_decision(
         policy,
-        has_previous_report=previous is not None,
+        has_previous_report=previous is not None
+        and previous_decision not in SKIPPED_DECISIONS,
         spent_this_month_usd=spent,
         credit_available_usd=credit,
+        model_available=getattr(flow, "ai_model_id", True) is not None,
     )
     return PolicyRun(decision=decision, policy=policy, project_policies=projects)
 
