@@ -1,10 +1,10 @@
 import hashlib
 import hmac
-import logging
 import json
+import logging
 import uuid
-from dataclasses import dataclass, field
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -20,27 +20,25 @@ from preloop.models.crud import (
     crud_organization,
     crud_project,
     crud_tracker,
-    crud_webhook,
     crud_tracker_scope_rule,
+    crud_webhook,
 )
-from preloop.models.db.session import get_db_session, _safe_close_db_session
 from preloop.models.crud.project import find_repository_projects, repository_host
+from preloop.models.db.session import _safe_close_db_session, get_db_session
+from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.services.managed_credentials import (
     get_managed_webhook_verifier,
     is_managed_tracker,
 )
-from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.sync.scanner.core import TrackerClient
-
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
-
 from preloop.utils.bitbucket import (
     BITBUCKET_DELIVERY_HEADER,
     BITBUCKET_EVENT_HEADER,
     BITBUCKET_SIGNATURE_HEADER,
     BITBUCKET_WEBHOOK_EVENTS,
-    verify_signature as verify_bitbucket_signature,
 )
+from preloop.utils.bitbucket import verify_signature as verify_bitbucket_signature
 from preloop.utils.bitbucket_dc import (
     BITBUCKET_DC_TRACKER_TYPE,
     BitbucketDCConfigError,
@@ -54,8 +52,14 @@ from preloop.utils.bitbucket_dc_webhooks import (
     BITBUCKET_DC_SIGNATURE_HEADER,
     BITBUCKET_DC_WEBHOOK_MAX_BYTES,
     BitbucketDCWebhookRejectedError,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     delivery_identity as bitbucket_dc_delivery_identity,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     normalize_delivery as normalize_bitbucket_dc_delivery,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     verify_webhook_signature as verify_bitbucket_dc_signature,
 )
 
@@ -115,6 +119,7 @@ class _WebhookPlan:
     organization_id: Any = None
     db_processed: Optional[bool] = None
     received_organization_ids: list[str] = field(default_factory=list)
+    forge_claimed_at: Optional[datetime] = None
 
     def queue_task(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.tasks.append((name, args, kwargs))
@@ -147,11 +152,12 @@ async def _claim_forge_delivery(
 
     def claim() -> bool:
         try:
+            plan.forge_claimed_at = datetime.now(timezone.utc)
             return crud_forge_webhook_delivery.claim(
                 db,
                 tracker_id=uuid.UUID(str(plan.tracker_id)),
                 delivery_id=delivery_id,
-                now=datetime.now(timezone.utc),
+                now=plan.forge_claimed_at,
             )
         finally:
             _safe_close_db_session(db)
@@ -183,7 +189,8 @@ async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> Non
     execution-level delivery dedupe absorbs.
     """
     delivery_id = _queued_delivery_id(plan)
-    if delivery_id is None:
+    claimed_at = plan.forge_claimed_at
+    if delivery_id is None or claimed_at is None:
         return
 
     def mark() -> None:
@@ -193,6 +200,7 @@ async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> Non
                 tracker_id=uuid.UUID(str(plan.tracker_id)),
                 delivery_id=delivery_id,
                 now=datetime.now(timezone.utc),
+                claimed_at=claimed_at,
             )
         finally:
             _safe_close_db_session(db)
@@ -206,7 +214,8 @@ async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> Non
 async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
     """Drop the claim of a delivery whose task was not acknowledged."""
     delivery_id = _queued_delivery_id(plan)
-    if delivery_id is None:
+    claimed_at = plan.forge_claimed_at
+    if delivery_id is None or claimed_at is None:
         return
 
     def release() -> None:
@@ -215,6 +224,7 @@ async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
                 db,
                 tracker_id=uuid.UUID(str(plan.tracker_id)),
                 delivery_id=delivery_id,
+                claimed_at=claimed_at,
             )
         finally:
             _safe_close_db_session(db)
@@ -644,6 +654,7 @@ def _prepare_shared_jira_webhook(
 ) -> dict[str, Any]:
     """Dispatch a signed shared callback only to explicit registration owners."""
     from urllib.parse import urljoin
+
     from preloop.config import settings
     from preloop.utils.tracker_scope import project_scope_identifiers
 

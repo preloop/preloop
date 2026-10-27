@@ -160,8 +160,10 @@ class CRUDPullRequestRefresh:
                 row.head_sha = head_sha
             if merged_at is not None and row.merged_at is None:
                 row.merged_at = merged_at
-        if etag:
-            row.refresh_etag = etag[:255]
+        if etag or not not_modified:
+            # A plain 200 can stop offering validators. Never keep sending a
+            # validator for an older representation in that case.
+            row.refresh_etag = etag[:255] if etag else None
         row.refreshed_at = now
         if not marked_mid_read:
             row.refresh_due_at = (
@@ -259,23 +261,49 @@ class CRUDForgeWebhookDelivery:
         return claimed is not None
 
     def mark_published(
-        self, db: Session, *, tracker_id: uuid.UUID, delivery_id: str, now: datetime
+        self,
+        db: Session,
+        *,
+        tracker_id: uuid.UUID,
+        delivery_id: str,
+        now: datetime,
+        claimed_at: datetime,
     ) -> None:
-        """Record that the claimed delivery's task was acknowledged."""
+        """Acknowledge only the holder identified by ``claimed_at``.
+
+        A late acknowledgement after takeover cannot publish the newer claim.
+        """
         d = models.ForgeWebhookDelivery
         db.execute(
             update(d)
-            .where(d.tracker_id == tracker_id, d.delivery_id == delivery_id[:255])
+            .where(
+                d.tracker_id == tracker_id,
+                d.delivery_id == delivery_id[:255],
+                d.received_at == claimed_at,
+            )
             .values(published_at=now)
         )
         db.commit()
 
-    def release(self, db: Session, *, tracker_id: uuid.UUID, delivery_id: str) -> None:
-        """Drop a claim whose task was never queued, so a redelivery is."""
+    def release(
+        self,
+        db: Session,
+        *,
+        tracker_id: uuid.UUID,
+        delivery_id: str,
+        claimed_at: datetime,
+    ) -> None:
+        """Drop this holder's unpublished claim so a redelivery can retry.
+
+        A late failure after takeover cannot erase the newer holder's claim.
+        """
         d = models.ForgeWebhookDelivery
         db.execute(
             delete(d).where(
-                d.tracker_id == tracker_id, d.delivery_id == delivery_id[:255]
+                d.tracker_id == tracker_id,
+                d.delivery_id == delivery_id[:255],
+                d.received_at == claimed_at,
+                d.published_at.is_(None),
             )
         )
         db.commit()
