@@ -813,7 +813,7 @@ class TestCodexContextLimits:
     the real numbers from the model row or the vendored price catalog.
     """
 
-    def test_config_carries_both_limits_from_the_catalog(self):
+    def test_config_carries_supported_context_limit_from_the_catalog(self):
         agent = CodexAgent({})
         auth_block = agent._build_codex_auth_config(
             "gpt-5.4",
@@ -822,7 +822,7 @@ class TestCodexContextLimits:
             limits_for_execution({"model_identifier": "gpt-5.4"}),
         )
         assert "model_context_window = 1050000" in auth_block
-        assert "model_max_output_tokens = 128000" in auth_block
+        assert "model_max_output_tokens" not in auth_block
 
     def test_the_model_row_overrides_the_catalog(self):
         """An operator's provisioned deployment can be smaller than the
@@ -840,8 +840,8 @@ class TestCodexContextLimits:
             ),
         )
         assert "model_context_window = 262144" in auth_block
-        # The ceiling the row said nothing about still comes from the catalog.
-        assert "model_max_output_tokens = 128000" in auth_block
+        # Output caps belong to the gateway; Codex ignores that TOML key.
+        assert "model_max_output_tokens" not in auth_block
 
     def test_an_unknown_model_gets_no_limits_and_one_info_line(self, caplog):
         """Nothing is guessed: Codex keeps its own defaults."""
@@ -858,7 +858,7 @@ class TestCodexContextLimits:
         unknown = [
             record
             for record in caplog.records
-            if "No context window or output ceiling known" in record.getMessage()
+            if "No context window known" in record.getMessage()
         ]
         assert len(unknown) == 1
 
@@ -881,7 +881,7 @@ class TestCodexContextLimits:
             }
         )
         assert "model_context_window = 1050000" in script
-        assert "model_max_output_tokens = 128000" in script
+        assert "model_max_output_tokens" not in script
 
     def test_limits_sit_under_the_model_line_and_above_rmcp_client(self):
         """A key in the wrong table is a key Codex reads as someone else's."""
@@ -898,7 +898,7 @@ class TestCodexContextLimits:
         assert auth_block.index("model_context_window") < auth_block.index(
             "rmcp_client = true"
         )
-        assert auth_block.index("model_max_output_tokens") < auth_block.index(
+        assert auth_block.index("model_context_window") < auth_block.index(
             "[model_providers.preloop]"
         )
 
