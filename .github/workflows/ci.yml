@@ -43,7 +43,7 @@ jobs:
 
   changes:
     name: Detect changed paths
-    runs-on: ${{ fromJSON(vars.CI_SELF_HOSTED_BOOTSTRAP == 'true' && vars.CI_SELF_HOSTED_TESTS != 'false' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","Linux","X64","preloop-ci-general"]' || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.out.outputs.backend }}
       frontend: ${{ steps.out.outputs.frontend }}
@@ -162,8 +162,8 @@ jobs:
   # ==========================================================================
   # Where do the test jobs run?
   # ==========================================================================
-  # Bootstrap can opt into the general pool for trusted sources using
-  # CI_SELF_HOSTED_BOOTSTRAP=true; disable it if that pool is unavailable.
+  # Bootstrap and aggregation always run hosted: optional spot capacity must
+  # not gate the picker that decides whether self-hosted overflow is available.
   # Hosted first for shards. Self-hosted is optional overflow when this repository
   # has ubuntu-latest jobs queued without a runner for at least two minutes.
   # That is observable queue pressure, not GitHub's global capacity (there is
@@ -186,7 +186,7 @@ jobs:
   # venv; Ubuntu can download its matching build. No job container is used.
   pick-runner:
     name: Pick test runner
-    runs-on: ${{ fromJSON(vars.CI_SELF_HOSTED_BOOTSTRAP == 'true' && vars.CI_SELF_HOSTED_TESTS != 'false' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","Linux","X64","preloop-ci-general"]' || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
@@ -1081,7 +1081,7 @@ jobs:
   # so a checkout/filter crash cannot leave this job green with no tests.
   ci:
     name: CI
-    runs-on: ${{ fromJSON(vars.CI_SELF_HOSTED_BOOTSTRAP == 'true' && vars.CI_SELF_HOSTED_TESTS != 'false' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","Linux","X64","preloop-ci-general"]' || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     if: always() && !cancelled()
     needs:
       - changes

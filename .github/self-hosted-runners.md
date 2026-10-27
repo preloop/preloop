@@ -37,15 +37,15 @@ afterwards. A self-hosted VM that already runs the server skips that start.
 
 ## Bootstrap routing
 
-Set `CI_SELF_HOSTED_BOOTSTRAP=true` to run changed-path detection, the runner
-picker and the final CI aggregator on `preloop-ci-general` for trusted
-same-repository PRs and pushes. Forks and Dependabot keep hosted routing.
-This avoids waiting for hosted capacity before selecting idle overflow
-runners. The general pool must provide `gh`, `jq`, Python 3 and coreutils;
-changed-path detection also requires a writable checkout workspace.
-`CI_SELF_HOSTED_TESTS=false` disables this routing as well as shard overflow.
-If the pool goes offline, disable the bootstrap variable and rerun; GitHub
-does not migrate an already queued assignment automatically.
+Changed-path detection, the runner picker and the final CI aggregator always
+run on GitHub-hosted `ubuntu-latest`. The general pool is optional spot capacity,
+so an offline pool must not prevent the picker from selecting hosted shards or
+the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
+existing repository values have no effect on this workflow.
+
+Only backend shards may use the general pool, under the hosted-first overflow
+rules above. `CI_SELF_HOSTED_TESTS=false` disables that overflow. An offline or
+empty runner inventory keeps all shards hosted without provisioning a VM.
 
 ## Postgres
 

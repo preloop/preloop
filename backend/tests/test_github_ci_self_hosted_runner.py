@@ -134,20 +134,11 @@ def test_helm_checks_install_pinned_helm_before_rendering() -> None:
     )
 
 
-def test_bootstrap_uses_opt_in_general_pool_for_trusted_sources() -> None:
-    """Bootstrap can escape hosted queues without moving forks to private VMs."""
+def test_bootstrap_and_aggregation_do_not_depend_on_optional_capacity() -> None:
+    """An offline spot pool must not prevent the fallback picker from running."""
     jobs = load_ci_jobs()
     for name in ("changes", "pick-runner", "ci"):
-        expression = jobs[name]["runs-on"]
-        assert "CI_SELF_HOSTED_BOOTSTRAP == 'true'" in expression
-        assert "CI_SELF_HOSTED_TESTS != 'false'" in expression
-        assert (
-            "github.event.pull_request.head.repo.full_name == github.repository"
-            in expression
-        )
-        assert "dependabot[bot]" in expression
-        assert "preloop-ci-general" in expression
-        assert "ubuntu-latest" in expression
+        assert jobs[name]["runs-on"] == "ubuntu-latest", name
     pick = jobs["pick-runner"]
     assert pick["outputs"]["backend_plan"] == "${{ steps.pick.outputs.backend_plan }}"
     assert "timeout-minutes" in pick
@@ -324,6 +315,7 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         ("waiting", 0),
         ("private-queue", 0),
         ("offline", 0),
+        ("absent", 0),
         ("busy", 0),
         ("dedicated", 0),
         ("unlabeled", 0),
@@ -386,7 +378,8 @@ else:
         labels.remove('preloop-ci-general')
     runner = dict(status='offline' if case == 'offline' else 'online',
                   busy=case == 'busy', labels=[{'name': name} for name in labels])
-    print(json.dumps({'runners': [runner] * (30 if case == 'many' else 3)}))
+    runners = [] if case == 'absent' else [runner] * (30 if case == 'many' else 3)
+    print(json.dumps({'runners': runners}))
 """)
     gh.chmod(0o755)
     output = tmp_path / "output"
