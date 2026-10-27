@@ -120,7 +120,8 @@ jobs:
           )
         )
       )
-    runs-on: ubuntu-latest
+    # Avoid legacy private ubuntu-latest aliases; keep this label hosted-only.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Gate (rollout switch, state, draft, label, fork author)

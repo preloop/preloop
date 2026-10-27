@@ -33,7 +33,8 @@ permissions:
 jobs:
   build:
     name: mkdocs build --strict
-    runs-on: ubuntu-latest
+    # Avoid legacy private ubuntu-latest aliases; keep this label hosted-only.
+    runs-on: ubuntu-24.04
     env:
       # Silence the MkDocs 2 notice printed by mkdocs-material.
       NO_MKDOCS_2_WARNING: 'true'
