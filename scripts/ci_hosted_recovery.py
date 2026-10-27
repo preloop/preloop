@@ -15,7 +15,7 @@ POLL_SECONDS = 30
 QUEUE_GRACE_SECONDS = 180
 WATCH_SECONDS = 30 * 60
 CANCEL_SECONDS = 120
-BACKEND_JOB = re.compile(r"Backend Tests \(\d+/18\)\Z")
+BACKEND_JOB = re.compile(r"Backend Tests \(\d+/\d+\)\Z")
 GENERAL_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-general"}
 
 
@@ -142,6 +142,50 @@ def needs_recovery(jobs: list[dict], runners: list[dict] | None, now: datetime) 
     return False
 
 
+def recovery_snapshot(api: GitHub, path: str) -> tuple[list[dict], list[dict] | None]:
+    """Read current jobs and inventory only when assigned private jobs need it."""
+    jobs = api.pages(f"{path}/attempts/1/jobs", "jobs")
+    runners = None
+    if any(
+        self_hosted_backend(job)
+        and job.get("runner_id")
+        and (
+            job.get("status") == "in_progress"
+            or job.get("conclusion") in {"failure", "timed_out"}
+        )
+        for job in jobs
+    ):
+        try:
+            runners = api.pages("actions/runners", "runners", inventory=True)
+        except ApiError:
+            pass
+    return jobs, runners
+
+
+def unrelated_failure(jobs: list[dict], runners: list[dict] | None) -> bool:
+    """Do not use a capacity retry to retry an unrelated completed failure."""
+    online = (
+        {runner["id"] for runner in runners if runner.get("status") == "online"}
+        if runners is not None
+        else None
+    )
+    for job in jobs:
+        if job.get("conclusion") not in {"failure", "timed_out"}:
+            continue
+        # CI is the dependent aggregate check; the failing source jobs below
+        # establish whether the failure is eligible for recovery.
+        if job.get("name") == "CI":
+            continue
+        if not (
+            self_hosted_backend(job)
+            and online is not None
+            and job.get("runner_id")
+            and job["runner_id"] not in online
+        ):
+            return True
+    return False
+
+
 def recover(api: GitHub, run_id: int) -> str:
     """Watch one run, cancel only a current active run, then retry once hosted."""
     path = f"actions/runs/{run_id}"
@@ -152,27 +196,22 @@ def recover(api: GitHub, run_id: int) -> str:
             return "not a current trusted first attempt"
         if run.get("conclusion") in {"cancelled", "success", "skipped", "neutral"}:
             return "run already finished or was canceled"
-        jobs = api.pages(f"{path}/attempts/1/jobs", "jobs")
-        runners = None
-        if any(
-            self_hosted_backend(job)
-            and job.get("runner_id")
-            and (
-                job.get("status") == "in_progress"
-                or job.get("conclusion") in {"failure", "timed_out"}
-            )
-            for job in jobs
-        ):
-            try:
-                runners = api.pages("actions/runners", "runners", inventory=True)
-            except ApiError:
-                pass
+        jobs, runners = recovery_snapshot(api, path)
+        if unrelated_failure(jobs, runners):
+            return "completed failure needs investigation; no capacity retry"
         if needs_recovery(jobs, runners, datetime.now(timezone.utc)):
             # Recheck immediately before every mutation: a new PR push or a
             # user cancellation must not be undone by an old watchdog.
             fresh = api.request(path)
             if not current_trusted_run(api, fresh):
                 return "run superseded before recovery"
+            latest_jobs, latest_runners = recovery_snapshot(api, path)
+            if unrelated_failure(latest_jobs, latest_runners):
+                return "completed failure appeared before recovery"
+            if not needs_recovery(
+                latest_jobs, latest_runners, datetime.now(timezone.utc)
+            ):
+                return "capacity recovered before cancellation"
             if fresh.get("status") == "completed":
                 if fresh.get("conclusion") not in {"failure", "timed_out"}:
                     return "run finished before recovery"
@@ -198,8 +237,11 @@ def recover(api: GitHub, run_id: int) -> str:
                 return "run changed before retry"
             if fresh.get("conclusion") not in {"cancelled", "failure", "timed_out"}:
                 return "run no longer needs retry"
+            latest_jobs, latest_runners = recovery_snapshot(api, path)
+            if unrelated_failure(latest_jobs, latest_runners):
+                return "completed failure appeared during cancellation; no retry"
             api.request(f"{path}/rerun-failed-jobs", method="POST")
-            return "requested one hosted retry of unfinished jobs"
+            return "requested one hosted retry of failed/canceled jobs"
         if run.get("status") == "completed":
             return "completed without evidence of unavailable runners"
         time.sleep(POLL_SECONDS)

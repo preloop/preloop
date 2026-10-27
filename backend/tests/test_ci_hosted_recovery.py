@@ -102,7 +102,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> None:
     ("changes", "runners", "expected"),
     [
         ({}, [], True),
-        ({"created_at": datetime.now(timezone.utc).isoformat()}, [], False),
+        ({"age_seconds": 0}, [], False),
         ({"status": "in_progress", "runner_id": 10}, [], True),
         (
             {"status": "in_progress", "runner_id": 10},
@@ -133,10 +133,13 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_recovery_requires_queue_pressure_or_lost_runner(
     changes: dict, runners: list[dict] | None, expected: bool
 ) -> None:
-    assert (
-        recovery.needs_recovery([job(**changes)], runners, datetime.now(timezone.utc))
-        is expected
-    )
+    now = datetime.now(timezone.utc)
+    changes = dict(changes)
+    if "age_seconds" in changes:
+        changes["created_at"] = (
+            now - timedelta(seconds=changes.pop("age_seconds"))
+        ).isoformat()
+    assert recovery.needs_recovery([job(**changes)], runners, now) is expected
 
 
 @pytest.mark.parametrize(
@@ -163,7 +166,10 @@ def test_untrusted_stale_retried_and_finished_runs_never_mutate(changes: dict) -
 def test_queued_shard_cancels_then_retries_only_after_confirmation() -> None:
     canceled = run(status="completed", conclusion="cancelled")
     api = FakeGitHub([run(), run(), run(), canceled, canceled])
-    assert recovery.recover(api, 123) == "requested one hosted retry of unfinished jobs"
+    assert (
+        recovery.recover(api, 123)
+        == "requested one hosted retry of failed/canceled jobs"
+    )
     assert api.mutations == [
         "actions/runs/123/cancel",
         "actions/runs/123/rerun-failed-jobs",
@@ -326,3 +332,75 @@ def test_inventory_pagination_includes_later_pages(
     monkeypatch.setattr(api, "request", request)
     assert len(api.pages("actions/runners", "runners", inventory=True)) == 101
     assert paths[-1].endswith("page=2")
+
+
+@pytest.mark.parametrize("failed_name", ["Backend Tests (2/18)", "Frontend Tests"])
+def test_mixed_queue_and_completed_failure_does_not_retry(failed_name: str) -> None:
+    api = FakeGitHub()
+    api.jobs.append(
+        job(
+            name=failed_name,
+            labels=["ubuntu-latest"],
+            status="completed",
+            conclusion="failure",
+            runner_id=20,
+        )
+    )
+    assert (
+        recovery.recover(api, 123)
+        == "completed failure needs investigation; no capacity retry"
+    )
+    assert api.mutations == []
+
+
+def test_failure_appearing_during_cancellation_is_not_retried() -> None:
+    canceled = run(status="completed", conclusion="cancelled")
+    api = FakeGitHub([run(), run(), canceled, canceled])
+    original_pages = api.pages
+    reads = [0]
+
+    def pages(path: str, key: str, **kwargs: Any) -> list[dict]:
+        if key == "jobs":
+            reads[0] += 1
+            if reads[0] >= 3:
+                return [
+                    job(
+                        status="completed",
+                        conclusion="failure",
+                        labels=["ubuntu-latest"],
+                        runner_id=20,
+                    )
+                ]
+        return original_pages(path, key, **kwargs)
+
+    api.pages = pages
+    assert (
+        recovery.recover(api, 123)
+        == "completed failure appeared during cancellation; no retry"
+    )
+    assert api.mutations == ["actions/runs/123/cancel"]
+
+
+def test_recovery_handles_matrix_size_changes() -> None:
+    from tests.test_github_ci_backend_shards import BACKEND_TEST_SPLITS
+
+    for size in (BACKEND_TEST_SPLITS, BACKEND_TEST_SPLITS + 1):
+        candidate = job(name=f"Backend Tests (1/{size})")
+        assert recovery.needs_recovery([candidate], [], datetime.now(timezone.utc))
+
+
+def test_capacity_recovering_before_cancel_does_not_interrupt_work() -> None:
+    api = FakeGitHub()
+    original_pages = api.pages
+    reads = [0]
+
+    def pages(path: str, key: str, **kwargs: Any) -> list[dict]:
+        if key == "jobs":
+            reads[0] += 1
+            if reads[0] >= 2:
+                return [job(status="completed", conclusion="success", runner_id=10)]
+        return original_pages(path, key, **kwargs)
+
+    api.pages = pages
+    assert recovery.recover(api, 123) == "capacity recovered before cancellation"
+    assert api.mutations == []

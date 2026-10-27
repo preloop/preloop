@@ -25,7 +25,9 @@ VM can stop after selection. GitHub cannot migrate an assigned job between
 runner labels. The hosted recovery workflow watches trusted PRs and main pushes
 for 30 minutes. After a general-pool backend shard waits unassigned for three
 minutes, or its assigned runner is reported offline/missing, it cancels the
-current run and retries only unfinished jobs once on hosted runners. It waits
+current run and retries failed/canceled jobs and their dependents once on hosted
+runners. A completed failure without offline/missing-runner evidence stops
+automatic recovery, including when it appears during cancellation. It waits
 up to two minutes for cancellation to finish. Successful jobs are retained;
 work in progress at cancellation may repeat. It never provisions a VM.
 
