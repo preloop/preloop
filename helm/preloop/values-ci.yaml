@@ -1,0 +1,66 @@
+# Small test/review installations. Production retains values.yaml defaults.
+api:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+gateway:
+  replicaCount: 1
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+worker:
+  resources:
+    limits:
+      cpu: 250m
+      memory: 768Mi
+database:
+  cnpg:
+    instances: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    parameters:
+      shared_buffers: 256MB
+      effective_cache_size: 768MB
+      maintenance_work_mem: 64MB
+      work_mem: 4MB
+nats:
+  natsBox:
+    enabled: false
+  container:
+    merge:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 512Mi
+  reloader:
+    merge:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 50m
+          memory: 128Mi
+monitor:
+  resources:
+    limits:
+      cpu: 250m
+scheduler:
+  resources:
+    limits:
+      cpu: 250m
+console:
+  resources:
+    limits:
+      cpu: 100m

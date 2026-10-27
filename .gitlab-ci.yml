@@ -660,6 +660,7 @@ test:coverage:
           --set database.cnpg.resilience.enabled=true"
       fi
     - helm upgrade --install ${ENV_NAME} ./helm/preloop
+      --values ./helm/preloop/values-ci.yaml
       --namespace ${NAMESPACE}
       --timeout 20m
       --wait
