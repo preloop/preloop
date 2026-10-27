@@ -58,9 +58,12 @@ adapter sets the SDK manager's body limit to that same artifact ceiling.
 The SDK owns the remaining schema validation and request dispatch.
 
 Outbound negotiation uses `ClientSession.discover()` before any operation.
-Only an HTTP 400 discovery rejection **without a recognized modern error**
-permits fallback to `initialize`. Authentication failures, redirects, outages,
-and modern errors do not cause a downgrade. Supported modern version selection
+An HTTP 400 discovery rejection **without a recognized modern error**, or an
+HTTP 200 JSON-RPC `-32601` (method not found) without an explicit modern response
+version header, permits fallback to `initialize`. The latter supports legacy
+JSON-RPC servers that report unknown methods with HTTP 200. Authentication
+failures, redirects, outages, and modern errors (including HTTP 404 / `-32601`)
+do not cause a downgrade. Supported modern version selection
 and its bounded discovery retry are provided by the SDK. Legacy era selection
 is cached on the pool entry; changing connection configuration invalidates that
 entry. Modern connections discover on each short-lived session.
@@ -79,6 +82,10 @@ upstream invocation, and allowed calls dispatch once. SSE progress remains
 request-scoped; disconnecting a modern response stream cancels its handler.
 The existing OAuth discovery, consent, authorization and approval regression
 suites run with the new packages.
+
+Manual scans return HTTP 502 when discovery fails, even if cached tools remain.
+The console refreshes the server's unhealthy status and displays the diagnostic;
+a cached inventory is never reported as a successful new scan.
 
 ## Python API migration
 

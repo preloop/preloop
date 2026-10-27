@@ -219,6 +219,22 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('refreshes unhealthy server state and shows a failed scan diagnostic', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).loading);
+    const diagnostic = 'Scan failed. Cached tools were retained. HTTP 401.';
+    fetchStub
+      .withArgs('/api/v1/mcp-servers/example-server/scan')
+      .resolves(
+        new Response(JSON.stringify({ detail: diagnostic }), { status: 502 })
+      );
+    const reload = sinon.spy(el as any, 'loadData');
+    await (el as any)._handleScanMCPServer('example-server');
+    expect(reload.calledOnce).to.equal(true);
+    expect((el as any).error).to.equal(diagnostic);
+    reload.restore();
+  });
+
   it('fetches OAuth edit details on demand and preserves credential markers', async () => {
     const detail = {
       id: 'oauth-server',
