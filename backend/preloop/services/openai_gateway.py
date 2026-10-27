@@ -8392,8 +8392,11 @@ class OpenAIGatewayService:
         limit = kwargs.get("max_tokens")
         if isinstance(limit, int) and not isinstance(limit, bool):
             self._last_upstream_parameters["max_tokens"] = limit
-        reasoning = (kwargs.get("extra_body") or {}).get("reasoning")
+        extra_body = kwargs.get("extra_body") or {}
+        reasoning = extra_body.get("reasoning")
         effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        if effort is None:
+            effort = extra_body.get("reasoning_effort")
         if effort is None:
             effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str) and effort in {
@@ -8403,6 +8406,7 @@ class OpenAIGatewayService:
             "medium",
             "high",
             "xhigh",
+            "max",
         }:
             self._last_upstream_parameters["reasoning_effort"] = effort
         return kwargs

@@ -532,3 +532,29 @@ def test_real_litellm_stream_preserves_reported_counters(
     assert service._usage_warnings(terminal) == (
         ["reasoning_tokens_exceed_output_tokens"] if reported_reasoning > 10 else []
     )
+
+
+@pytest.mark.parametrize("effort", ["low", "max"])
+@pytest.mark.parametrize("location", ["reasoning_effort", "reasoning", "extra_body"])
+def test_model_studio_effective_effort_is_recorded(effort: str, location: str) -> None:
+    service = _service()
+    payload = (
+        {
+            "reasoning_effort": effort,
+        }
+        if location == "reasoning_effort"
+        else {
+            location: {
+                "effort" if location == "reasoning" else "reasoning_effort": effort
+            }
+        }
+    )
+    with patch("preloop.services.openai_gateway.get_secret_service") as secret:
+        secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+            credential_type="api_key", value="synthetic-secret"
+        )
+        kwargs = service._build_completion_kwargs(
+            _model(), messages=[], payload=payload, stream=True, provider="openai"
+        )
+    assert kwargs["extra_body"]["reasoning_effort"] == effort
+    assert service._last_upstream_parameters == {"reasoning_effort": effort}
