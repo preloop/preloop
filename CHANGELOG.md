@@ -12,10 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OTLP model-call span timestamps are UTC-correct.** `ApiUsage.timestamp`
   is a naive UTC column; the exporter read it as host local time, so chat
   spans were shifted by the host UTC offset on processes not running in UTC.
-  It also used the request time as the span end. The timestamp is now read as
-  UTC and used as the span start, with end = start + duration.
+  The timestamp is now read as UTC. It is written when the call completes, so
+  it stays the span end, with start = end - duration.
 - **New metric `gen_ai.client.token.usage`** (experimental, GenAI semconv):
-  histogram in `{token}`, one point per model call for
+  histogram in `{token}` with GenAI semconv bucket boundaries (1 to 4^13),
+  one point per model call for
   `gen_ai.token.type=input` and `output`, with the same operation, provider
   and model dimensions as `gen_ai.client.operation.duration`.
 - **New metric `preloop.usage.cost`** (stable): counter in `USD` of the

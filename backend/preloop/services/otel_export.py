@@ -52,6 +52,9 @@ ATTR_SERVER_NAME = "preloop.mcp.server_name"
 # Metric-only dimension (not a span attribute) for gen_ai.client.token.usage.
 _TOKEN_TYPE_KEY = "gen_ai.token.type"
 
+# GenAI semconv advisory buckets for gen_ai.client.token.usage: 1, 4, ... 4**13.
+_TOKEN_BUCKETS: tuple[float, ...] = tuple(float(4**i) for i in range(14))
+
 _FORBIDDEN_ATTR_KEYS = frozenset(
     {
         "gen_ai.prompt",
@@ -484,6 +487,7 @@ def _record_usage_metrics(attrs: Mapping[str, Any]) -> None:
             "gen_ai.client.token.usage",
             unit="{token}",
             description="Tokens used by a Preloop-governed model call",
+            explicit_bucket_boundaries_advisory=_TOKEN_BUCKETS,
         )
         for token_type, key in (
             ("input", ATTR_INPUT_TOKENS),
@@ -546,26 +550,26 @@ def _operation_name(endpoint_kind: str) -> str:
 def _span_timestamps(usage: Any) -> tuple[int, int]:
     """Return ``(start_ns, end_ns)`` for an ApiUsage row.
 
-    ``ApiUsage.timestamp`` records when the request was made, in a naive
-    UTC ``DateTime`` column. A naive value is read as UTC (not host local
-    time) and used as the span start; the end is start + duration.
+    ``ApiUsage.timestamp`` is written when the usage row is logged, after the
+    upstream call completes, and is stored in a naive UTC ``DateTime``
+    column. A naive value is read as UTC (not host local time) and used as
+    the span end; the start is end - duration.
     """
     duration_ns = max(
         int(float(getattr(usage, "duration", 0.0) or 0.0) * 1_000_000_000), 0
     )
     timestamp = getattr(usage, "timestamp", None)
-    start_ns: Optional[int] = None
+    end_ns: Optional[int] = None
     if isinstance(timestamp, datetime):
         try:
             if timestamp.tzinfo is None:
                 timestamp = timestamp.replace(tzinfo=timezone.utc)
-            start_ns = int(timestamp.timestamp() * 1_000_000_000)
+            end_ns = int(timestamp.timestamp() * 1_000_000_000)
         except Exception:
-            start_ns = None
-    if start_ns is None or start_ns <= 0:
+            end_ns = None
+    if end_ns is None or end_ns <= 0:
         end_ns = _now_ns()
-        return max(end_ns - duration_ns, 1), end_ns
-    return start_ns, start_ns + duration_ns
+    return max(end_ns - duration_ns, 1), end_ns
 
 
 def _now_ns() -> int:

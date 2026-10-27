@@ -298,13 +298,13 @@ def _utc_ns() -> int:
     return int(datetime(*_UTC_REQUEST, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
 
 
-def test_span_timestamps_read_naive_timestamp_as_utc_start(madrid_tz) -> None:
+def test_span_timestamps_read_naive_timestamp_as_utc_end(madrid_tz) -> None:
     from datetime import datetime
 
     usage = _usage(timestamp=datetime(*_UTC_REQUEST), duration=1.5)
     start_ns, end_ns = otel_export._span_timestamps(usage)
-    assert start_ns == _utc_ns()
-    assert end_ns == start_ns + 1_500_000_000
+    assert end_ns == _utc_ns()
+    assert start_ns == end_ns - 1_500_000_000
 
 
 def test_span_timestamps_aware_timestamp_matches_naive(madrid_tz) -> None:
@@ -316,8 +316,8 @@ def test_span_timestamps_aware_timestamp_matches_naive(madrid_tz) -> None:
     start_ns, end_ns = otel_export._span_timestamps(
         _usage(timestamp=aware, duration=1.5)
     )
-    assert start_ns == _utc_ns()
-    assert end_ns == start_ns + 1_500_000_000
+    assert end_ns == _utc_ns()
+    assert start_ns == end_ns - 1_500_000_000
 
 
 def test_span_timestamps_fall_back_to_now_without_timestamp(monkeypatch) -> None:
@@ -343,8 +343,10 @@ class _RecordingMeter:
         self._sink = sink
         self.units: dict[str, str] = {}
 
-    def create_histogram(self, name, unit="", **_kwargs):
+    def create_histogram(self, name, unit="", **kwargs):
         self.units[name] = unit
+        self.buckets = getattr(self, "buckets", {})
+        self.buckets[name] = kwargs.get("explicit_bucket_boundaries_advisory")
         return _RecordingInstrument(self._sink, name)
 
     create_counter = create_histogram
@@ -363,6 +365,8 @@ def test_model_call_emits_token_usage_and_cost_metrics(
         if name == "gen_ai.client.token.usage"
     ]
     assert meter.units["gen_ai.client.token.usage"] == "{token}"
+    buckets = meter.buckets["gen_ai.client.token.usage"]
+    assert buckets[0] == 1 and buckets[-1] == 67_108_864
     expected_dims = {
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
