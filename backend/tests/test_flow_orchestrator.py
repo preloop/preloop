@@ -3782,6 +3782,30 @@ class TestInPlaceCompletionNudge:
         assert outcomes[0]["details"]["channel"] == "inplace_failure_report"
 
     @pytest.mark.asyncio
+    async def test_in_place_failure_uses_live_logs_when_refetch_fails(
+        self, mock_nats_client, event_data
+    ):
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(side_effect=RuntimeError("logs unavailable"))
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+        orchestrator._start_agent_session = AsyncMock()
+        await self._stream(
+            orchestrator,
+            [
+                AGENT_EXEC_START_MARKER,
+                COMPLETION_NUDGE_MARKER,
+                f"{FLOW_FAILURE_REPORT_PREFIX} finalizer was not invoked",
+                f"{COMPLETION_NUDGE_RESULT_MARKER} exit=0",
+            ],
+        )
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+        assert result["status"] == "FAILED"
+        assert "finalizer was not invoked" in result["error_message"]
+        orchestrator._start_agent_session.assert_not_awaited()
+        outcomes = _milestones(orchestrator, "confirmation_nudge_used")
+        assert outcomes[0]["details"]["outcome"] == "explicit_failure"
+
+    @pytest.mark.asyncio
     async def test_in_place_failure_quoted_in_tool_output_is_not_a_report(
         self, mock_nats_client, event_data
     ):
