@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx2 as httpx
 from mcp import types
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
 # Review/staging hosts often share a wildcard certificate (*.test.preloop.ai).
 # HTTP/2 connection coalescing can reuse a TLS session negotiated for one
@@ -17,7 +18,7 @@ _STREAMABLE_MCP_LIMITS = httpx.Limits(max_keepalive_connections=0, max_connectio
 
 @dataclass
 class MCPResponsePolicy:
-    """Remember only whether discovery received an unrecognized HTTP 400.
+    """Remember whether discovery received a legacy-compatible rejection.
 
     The SDK maps HTTP errors to JSON-RPC errors, losing the status needed for
     transport-specific fallback and OAuth recovery. Keep that distinction at
@@ -37,7 +38,14 @@ class MCPResponsePolicy:
         if response.request.headers.get("mcp-method") != "server/discover":
             return
         self.legacy_probe_rejected = False
-        if response.status_code != 400:
+        if response.status_code not in {200, 400}:
+            return
+        if response.status_code == 200 and (
+            response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            != "application/json"
+        ):
+            # Successful discovery may be SSE: leave its incremental stream
+            # to the SDK instead of blocking here until the server closes it.
             return
         await response.aread()
         try:
@@ -46,6 +54,18 @@ class MCPResponsePolicy:
             body = None
         error = body.get("error") if isinstance(body, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
+        if response.status_code == 200:
+            # Legacy JSON-RPC servers commonly report an unknown method with
+            # HTTP 200. A modern HTTP server uses 404 for METHOD_NOT_FOUND.
+            # Explicit modern version evidence must never permit a downgrade.
+            self.legacy_probe_rejected = (
+                isinstance(body, dict)
+                and body.get("jsonrpc") == "2.0"
+                and code == types.METHOD_NOT_FOUND
+                and response.headers.get("mcp-protocol-version")
+                not in MODERN_PROTOCOL_VERSIONS
+            )
+            return
         modern_error = (
             isinstance(body, dict)
             and body.get("jsonrpc") == "2.0"

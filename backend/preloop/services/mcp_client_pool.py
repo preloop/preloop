@@ -18,6 +18,7 @@ from mcp import MCPError, types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
+from pydantic import ValidationError
 
 from preloop.services.mcp_httpx_client import (
     MCPResponsePolicy,
@@ -98,6 +99,17 @@ def describe_mcp_connection_error(exc: BaseException) -> str:
             "Could not connect to the MCP server. Check its address and network "
             "reachability from Preloop. A localhost endpoint must run where Preloop "
             "is hosted or be exposed through a reachable address."
+        )
+    if isinstance(cause, MCPError):
+        return (
+            f"MCP server rejected the request (JSON-RPC {cause.code}). "
+            "Verify the endpoint and MCP protocol compatibility, then rescan."
+        )
+    if isinstance(cause, ValidationError):
+        return (
+            "MCP server returned an invalid MCP response "
+            f"({cause.error_count()} validation error(s)). "
+            "Verify the server's MCP protocol compatibility, then rescan."
         )
     return (
         f"MCP connection failed ({type(cause).__name__}). "
@@ -303,8 +315,8 @@ class MCPClient:
                         try:
                             await session.discover()
                         except MCPError:
-                            # Only a read-only probe with an unrecognized HTTP
-                            # 400 permits fallback. Never downgrade recognized
+                            # Only a read-only probe rejected in a legacy form
+                            # permits fallback. Never downgrade recognized
                             # modern errors or retry a dispatched tools/call.
                             if not response_policy.legacy_probe_rejected:
                                 raise

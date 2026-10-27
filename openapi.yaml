@@ -5278,8 +5278,9 @@ paths:
       summary: Scan Mcp Server
       description: "Trigger a tool discovery scan for an MCP server.\n\nArgs:\n  \
         \  server_id: MCP server ID\n    current_user: Current authenticated user\n\
-        \    db: Database session\n\nReturns:\n    Success message with tool count\n\
-        \nRaises:\n    HTTPException: If server not found or scan fails"
+        \    db: Database session\n\nReturns:\n    Success message with tool count;\
+        \ failed scans return HTTP 502.\n\nRaises:\n    HTTPException: If server not\
+        \ found or scan fails"
       operationId: scan_mcp_server_api_v1_mcp_servers__server_id__scan_post
       security:
       - bearerAuth: []

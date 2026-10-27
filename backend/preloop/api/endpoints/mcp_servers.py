@@ -578,7 +578,7 @@ async def scan_mcp_server(
         db: Database session
 
     Returns:
-        Success message with tool count
+        Success message with tool count; failed scans return HTTP 502.
 
     Raises:
         HTTPException: If server not found or scan fails
@@ -613,6 +613,15 @@ async def scan_mcp_server(
 
         tools = await scan_mcp_server_tools(server_id, db, user=current_user)
 
+        if server.status == "error":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Scan failed. Cached tools were retained. "
+                    + (server.last_error or "Check the server connection and rescan.")
+                ),
+            )
+
         logger.info(
             f"Scan complete for MCP server {server_id}: {len(tools)} tools discovered"
         )
@@ -623,6 +632,8 @@ async def scan_mcp_server(
             "warnings": server_warnings(db, server),
         }
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

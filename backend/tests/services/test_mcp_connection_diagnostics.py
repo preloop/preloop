@@ -69,3 +69,28 @@ def test_non_http_diagnostics_omit_raw_exception(
     assert expected in diagnostic
     assert "private" not in diagnostic
     assert "TaskGroup" not in diagnostic
+
+
+@pytest.mark.parametrize("code", [-32601, -32020, -32022, -32000])
+def test_rpc_diagnostic_preserves_code_without_untrusted_message(code: int) -> None:
+    from mcp import MCPError
+
+    error = MCPError(code=code, message="token=private", data={"secret": "private"})
+    diagnostic = describe_mcp_connection_error(error)
+    assert str(code) in diagnostic
+    assert "JSON-RPC" in diagnostic
+    assert "private" not in diagnostic
+    assert "secret" not in diagnostic
+
+
+def test_validation_diagnostic_omits_inputs_and_server_controlled_paths() -> None:
+    from pydantic import ValidationError
+
+    error = ValidationError.from_exception_data(
+        "private-model",
+        [{"type": "int_parsing", "loc": ("private-field",), "input": "private-value"}],
+    )
+    diagnostic = describe_mcp_connection_error(error)
+    assert "invalid MCP response" in diagnostic
+    assert "1 validation error" in diagnostic
+    assert "private" not in diagnostic
