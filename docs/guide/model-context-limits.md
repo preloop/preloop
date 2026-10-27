@@ -97,3 +97,23 @@ are from `openai/codex` tag `rust-v0.153.4`, under Apache-2.0.
 
 See the official [Codex model catalog specification](https://learn.chatgpt.com/docs/model-catalogs)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+## A response reaches its output limit
+
+For streaming Chat Completions providers routed through the Responses gateway,
+`finish_reason=length` with partial text or tool arguments becomes
+`response.incomplete` with reason `max_output_tokens`. Partial evidence and usage
+remain available, but truncated tool calls are not dispatched and the response
+is not reported as a completed review. Empty-output budget exhaustion retains
+its explicit error handling.
+
+Codex can retry incomplete streams according to its configured stream retry
+limit. This can repeat provider work; the gateway does not add another retry.
+A larger output allowance does not guarantee that a review finishes within the
+flow's wall-clock timeout.
+
+A completion reminder only collects the outcome of work already attempted. It
+does not restart a review or guarantee a finalizer call. An explicit failure
+reported in that round is retained in terminal diagnostics. Read-only Codex
+runs retain their sandbox and disabled shell tool when resumed for reminders,
+stream recovery, or restored sessions.

@@ -262,12 +262,14 @@ class TestCodexBuildScript:
                 "completion_nudge_enabled": True,
             }
         )
-        assert script.count("--sandbox read-only") >= 3
+        assert script.count("-c 'sandbox_mode=\"read-only\"'") >= 3
+        assert "--sandbox read-only" not in script
         assert script.count("--disable shell_tool") >= 3
         assert 'approval_policy = "never"' in script
         assert 'sandbox_mode = "read-only"' in script
         assert "--yolo" not in script
-        assert "--sandbox read-only" in agent.live_nudge_command
+        assert 'sandbox_mode="read-only"' in agent.live_nudge_command
+        assert "--sandbox read-only" not in agent.live_nudge_command
         assert "--disable shell_tool" in agent.live_nudge_command
         assert "--yolo" not in agent.live_nudge_command
 

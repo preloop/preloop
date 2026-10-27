@@ -4077,6 +4077,7 @@ def _run_full_turn1_stream(upstream_chunks):
                 }
             )
         ]
+        service.flush_deferred_stream_record()
     return events, record
 
 
@@ -4973,3 +4974,96 @@ def test_compatible_chat_sampling_defaults(
         key: kwargs[key] for key in ("temperature", "top_p") if key in kwargs
     } == expected
     assert "num_ctx" not in kwargs
+
+
+def test_stream_partial_text_at_output_limit_is_incomplete_not_completed() -> None:
+    events, record = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"content": "Review still in progress"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 32768,
+                    "total_tokens": 32868,
+                },
+            },
+        ]
+    )
+    terminal = next(
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.incomplete"
+    )
+    assert not any(
+        isinstance(e, dict) and e.get("type") == "response.completed" for e in events
+    )
+    response = terminal["response"]
+    assert response["status"] == "incomplete"
+    assert response["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert response["output_text"] == "Review still in progress"
+    assert response["usage"]["output_tokens"] == 32768
+
+    record.assert_called_once()
+    saved = record.call_args.kwargs
+    assert saved["response_payload"]["status"] == "incomplete"
+    assert saved["response_payload"]["incomplete_details"] == {
+        "reason": "max_output_tokens"
+    }
+    assert saved["upstream_response"]["choices"] == [{"finish_reason": "length"}]
+    assert saved["upstream_response"]["usage"]["completion_tokens"] == 32768
+    assert saved["accumulated_output_text"] == "Review still in progress"
+
+
+def test_stream_truncated_tool_arguments_are_not_dispatched() -> None:
+    arguments = '{"cmd":"echo unfinished'
+    events, _ = _run_full_turn1_stream(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_fixture",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "exec_command",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "length"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "total_tokens": 30,
+                },
+            },
+        ]
+    )
+    assert not any(
+        isinstance(e, dict)
+        and e.get("type")
+        in {
+            "response.output_item.done",
+            "response.function_call_arguments.done",
+            "response.completed",
+        }
+        for e in events
+    )
+    terminal = next(
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.incomplete"
+    )
+    assert terminal["response"]["output"][0]["arguments"] == arguments
+    assert terminal["response"]["output"][0]["status"] == "incomplete"

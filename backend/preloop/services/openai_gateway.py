@@ -4032,6 +4032,8 @@ class OpenAIGatewayService:
                     )
 
                 full_text = "".join(assistant_parts)
+                output_incomplete = upstream_finish_reason == "length"
+                output_status = "incomplete" if output_incomplete else "completed"
                 if reasoning_bridge is not None and reasoning_output_index is not None:
                     reasoning_item = reasoning_bridge.output_item(
                         reasoning_buffer.getvalue(),
@@ -4054,7 +4056,7 @@ class OpenAIGatewayService:
                     output_items[text_output_index] = {
                         "id": text_item_id,
                         "type": "message",
-                        "status": "completed",
+                        "status": output_status,
                         "role": "assistant",
                         "content": [{"type": "output_text", "text": full_text}],
                     }
@@ -4086,6 +4088,16 @@ class OpenAIGatewayService:
                 for state in sorted(
                     tool_call_states.values(), key=lambda item: item["output_index"]
                 ):
+                    if output_incomplete:
+                        # Preserve partial arguments as evidence, but never
+                        # dispatch a tool from an output-budget-truncated turn.
+                        # Codex dispatches on output_item.done, not deltas.
+                        state["item"]["status"] = "incomplete"
+                        if state["item"]["type"] == "custom_tool_call":
+                            state["item"]["input"] = state["arguments"]
+                        else:
+                            state["item"]["arguments"] = state["arguments"]
+                        continue
                     if not state["announced"]:
                         # A tool call whose name never arrived. Announce it as
                         # it stands rather than dropping it silently.
@@ -4133,14 +4145,22 @@ class OpenAIGatewayService:
                     "object": "response",
                     "created_at": created_at,
                     "model": requested_model,
-                    "status": "completed",
+                    "status": output_status,
                     "output": output_items,
                     "output_text": full_text,
                     "usage": final_usage,
                 }
+                if output_incomplete:
+                    response_payload["incomplete_details"] = {
+                        "reason": "max_output_tokens"
+                    }
                 yield self._sse_event(
                     {
-                        "type": "response.completed",
+                        "type": (
+                            "response.incomplete"
+                            if output_incomplete
+                            else "response.completed"
+                        ),
                         "response": response_payload,
                     }
                 )
