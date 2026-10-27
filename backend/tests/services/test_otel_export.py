@@ -380,9 +380,7 @@ def test_model_call_emits_token_usage_and_cost_metrics(
 @pytest.mark.parametrize("enabled", [False, True])
 def test_empty_endpoint_and_headers_are_unset(monkeypatch, enabled: bool) -> None:
     """Compose forwards ``OTLP_ENDPOINT=""``/``OTLP_HEADERS=""`` when unset."""
-    from types import SimpleNamespace as NS
-
-    otlp = NS(
+    otlp = SimpleNamespace(
         enabled=enabled,
         endpoint="",
         protocol="http/protobuf",
