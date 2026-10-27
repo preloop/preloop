@@ -2,11 +2,17 @@
 
 CI distributes backend shards across available capacity at dispatch. Each
 online idle general self-hosted runner takes one shard immediately, up to the
-matrix size; the remaining shards use GitHub-hosted `ubuntu-latest`. There is
+matrix size; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
 no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
 an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
 Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
 pushes may use the general pool.
+
+Reserve hosted-image labels for GitHub-hosted capacity: never attach
+`ubuntu-latest` or `ubuntu-24.04` to a private runner. Label matching can route a
+nominally hosted job to that private machine. This workflow uses `ubuntu-24.04`
+for hosted jobs and retries, avoiding legacy private `ubuntu-latest` aliases;
+keep `ubuntu-24.04` absent from private registrations.
 
 General capacity requires **all** of `self-hosted`, `Linux`, `X64`, and
 `preloop-ci-general`, online and idle at selection time. Never give
@@ -55,14 +61,14 @@ Backend CI prefers a Postgres that is already listening on the runner. The
 job creates a database named `preloop_ci_<run>_<attempt>_<shard>`, migrates
 it, and drops that database at the end. It does not stop the server.
 
-GitHub-hosted `ubuntu-latest` has no Postgres, so the same step starts
+GitHub-hosted `ubuntu-24.04` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
 
 ## Hosted control jobs
 
 Changed-path detection, the runner picker and the final CI aggregator always
-run on GitHub-hosted `ubuntu-latest`. The general pool is optional spot capacity,
+run on GitHub-hosted `ubuntu-24.04`. The general pool is optional spot capacity,
 so an offline pool must not prevent the picker from selecting hosted shards or
 the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
 existing repository values have no effect on this workflow.

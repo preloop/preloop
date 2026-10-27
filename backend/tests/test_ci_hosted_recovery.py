@@ -126,7 +126,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         ({"status": "completed", "conclusion": "success", "runner_id": 10}, [], False),
         ({"name": "Lint & Format"}, [], False),
-        ({"labels": ["ubuntu-latest"]}, [], False),
+        ({"labels": ["ubuntu-24.04"]}, [], False),
         ({"labels": sorted(recovery.GENERAL_LABELS | {"gce-tests-only"})}, [], False),
     ],
 )
@@ -266,18 +266,18 @@ def test_workflow_uses_trusted_code_and_hosted_retry_override() -> None:
         "pull-requests": "read",
     }
     watcher = workflow["jobs"]["recover"]
-    assert watcher["runs-on"] == "ubuntu-latest"
+    assert watcher["runs-on"] == "ubuntu-24.04"
     assert watcher["steps"][0]["with"]["ref"] == "${{ github.workflow_sha }}"
     assert watcher["steps"][0]["with"]["persist-credentials"] is False
     assert "workflow_run.head_sha" not in str(watcher["steps"])
     assert "run_attempt == 1" in watcher["if"]
     runner = load_ci_jobs()["test-backend"]["runs-on"]
-    assert "github.run_attempt > 1 && 'ubuntu-latest'" in runner
+    assert "github.run_attempt > 1 && 'ubuntu-24.04'" in runner
 
 
 def test_hosted_only_run_does_not_read_runner_inventory() -> None:
     api = FakeGitHub([run(status="completed", conclusion="failure")])
-    api.jobs = [job(labels=["ubuntu-latest"], status="completed", conclusion="failure")]
+    api.jobs = [job(labels=["ubuntu-24.04"], status="completed", conclusion="failure")]
     original_pages = api.pages
 
     def pages(path: str, key: str, **kwargs: Any) -> list[dict]:
@@ -340,7 +340,7 @@ def test_mixed_queue_and_completed_failure_does_not_retry(failed_name: str) -> N
     api.jobs.append(
         job(
             name=failed_name,
-            labels=["ubuntu-latest"],
+            labels=["ubuntu-24.04"],
             status="completed",
             conclusion="failure",
             runner_id=20,
@@ -367,7 +367,7 @@ def test_failure_appearing_during_cancellation_is_not_retried() -> None:
                     job(
                         status="completed",
                         conclusion="failure",
-                        labels=["ubuntu-latest"],
+                        labels=["ubuntu-24.04"],
                         runner_id=20,
                     )
                 ]

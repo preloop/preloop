@@ -43,7 +43,7 @@ jobs:
 
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       backend: ${{ steps.out.outputs.backend }}
       frontend: ${{ steps.out.outputs.frontend }}
@@ -178,13 +178,13 @@ jobs:
   # Python: setup-python has no Debian 12 builds. Jobs use
   # .github/actions/setup-ci-python, which venvs a matching system
   # interpreter (needs python3.11-venv on Debian) and only then falls
-  # back to setup-python. Hosted ubuntu-latest has no system 3.11, so
+  # back to setup-python. Hosted ubuntu-24.04 has no system 3.11, so
   # those jobs still download from the Ubuntu manifest. Self-hosted
   # backend shards use the same action: Debian needs system Python and
   # venv; Ubuntu can download its matching build. No job container is used.
   pick-runner:
     name: Pick test runner
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
@@ -225,13 +225,13 @@ jobs:
               def slot($runner): {runner:$runner};
               ($ENV.IDLE|tonumber) as $idle
               | ($ENV.SPLITS|tonumber) as $splits
-              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64","preloop-ci-general"]) else slot("ubuntu-latest") end]
+              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64","preloop-ci-general"]) else slot("ubuntu-24.04") end]
             ') || plan=""
 
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest"}]*18))')
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-24.04"}]*18))')
             fi
 
             {
@@ -305,7 +305,7 @@ jobs:
   # thing those do. Measured cold-cache locally: 47s for all ten lock files.
   requirements-resolve:
     name: Requirements Resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.requirements == 'true'
     timeout-minutes: 10
@@ -354,7 +354,7 @@ jobs:
 
   lint:
     name: Lint & Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -403,7 +403,7 @@ jobs:
 
   helm-lint:
     name: Helm Chart Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.helm == 'true'
     steps:
@@ -411,8 +411,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # A self-hosted runner may also carry the ubuntu-latest label, so install
-      # the chart tool explicitly before running the render and guard checks.
+      # Install pinned Helm before render checks instead of relying on the image.
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -456,7 +455,7 @@ jobs:
     name: Backend Tests (${{ matrix.group }}/18)
     # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
     # rerun a successful picker. Recovery must never requeue a lost spot slot.
-    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-latest' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
+    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     needs: [changes, pick-runner]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 15
@@ -570,7 +569,7 @@ jobs:
 
   test-backend-coverage:
     name: Backend Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, test-backend]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 20
@@ -634,7 +633,7 @@ jobs:
 
   test-frontend:
     name: Frontend Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 45
@@ -739,7 +738,7 @@ jobs:
 
   test-runtime-plugins:
     name: Runtime Plugin Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
@@ -906,7 +905,7 @@ jobs:
 
   test-egress-proxy:
     name: Egress Proxy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.egress == 'true'
     defaults:
@@ -938,7 +937,7 @@ jobs:
 
   test-browser-profile:
     name: Browser profile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.browser == 'true'
     timeout-minutes: 30
@@ -1010,7 +1009,7 @@ jobs:
 
   cli-vuln-scan:
     name: CLI Vulnerability Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: cli
@@ -1041,7 +1040,7 @@ jobs:
   # so a checkout/filter crash cannot leave this job green with no tests.
   ci:
     name: CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: always() && !cancelled()
     needs:
       - changes

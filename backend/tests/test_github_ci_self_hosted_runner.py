@@ -1,12 +1,12 @@
 """Guard the self-hosted runner routing in the GitHub CI workflow.
 
 Idle private VMs take backend shards immediately; remaining work uses
-ubuntu-latest. GitHub will wait forever on a self-hosted ``runs-on`` rather
+ubuntu-24.04. GitHub will wait forever on a self-hosted ``runs-on`` rather
 than fall back to hosted, so sending every test job to three VMs serializes
 the suite. Two properties matter enough to pin down here:
 
 1. Routing reaches only backend shards, per group. Frontend, plugins, and
-   coverage stay on ubuntu-latest and must not wait for pick-runner.
+   coverage stay on ubuntu-24.04 and must not wait for pick-runner.
 2. The fallback is unconditional. ``pick-runner`` must never fail the
    workflow and must never leave ``backend_plan`` unset: a missing secret,
    a token without ``administration: read``, or an API error all have to
@@ -55,8 +55,8 @@ def _pick_script() -> str:
 
 
 def _hosted_slot() -> dict[str, Any]:
-    """Public ubuntu-latest shard. Postgres is the machine's, not a service."""
-    return {"runner": "ubuntu-latest"}
+    """Public ubuntu-24.04 shard. Postgres is the machine's, not a service."""
+    return {"runner": "ubuntu-24.04"}
 
 
 def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
@@ -104,7 +104,7 @@ def test_extra_suites_stay_on_hosted_and_do_not_wait() -> None:
     jobs = load_ci_jobs()
     for name in HOSTED_JOBS:
         job = jobs[name]
-        assert job["runs-on"] == "ubuntu-latest", name
+        assert job["runs-on"] == "ubuntu-24.04", name
         assert "pick-runner" not in job["needs"], name
 
 
@@ -112,12 +112,12 @@ def test_non_test_jobs_stay_on_their_own_runners() -> None:
     """Code-quality jobs and the Windows CLI job are not rerouted."""
     jobs = load_ci_jobs()
     for name in PINNED_JOBS:
-        assert jobs[name]["runs-on"] == "ubuntu-latest", name
+        assert jobs[name]["runs-on"] == "ubuntu-24.04", name
     assert jobs["test-cli-windows"]["runs-on"] == "windows-latest"
 
 
 def test_helm_checks_install_pinned_helm_before_rendering() -> None:
-    """An ubuntu-latest label does not guarantee Helm on a self-hosted runner."""
+    """Use the pinned Helm version rather than the runner image default."""
     steps = load_ci_jobs()["helm-lint"]["steps"]
     setup_index = next(
         index for index, step in enumerate(steps) if step.get("name") == "Set up Helm"
@@ -138,14 +138,14 @@ def test_bootstrap_and_aggregation_do_not_depend_on_optional_capacity() -> None:
     """An offline spot pool must not prevent the fallback picker from running."""
     jobs = load_ci_jobs()
     for name in ("changes", "pick-runner", "ci"):
-        assert jobs[name]["runs-on"] == "ubuntu-latest", name
+        assert jobs[name]["runs-on"] == "ubuntu-24.04", name
     pick = jobs["pick-runner"]
     assert pick["outputs"]["backend_plan"] == "${{ steps.pick.outputs.backend_plan }}"
     assert "timeout-minutes" in pick
 
 
 def test_pick_runner_falls_back_to_the_public_runner() -> None:
-    """Missing secret, disabled variable, or API error all mean ubuntu-latest."""
+    """Missing secret, disabled variable, or API error all mean ubuntu-24.04."""
     script = _pick_script()
     pick = load_ci_jobs()["pick-runner"]
     assert "CI_SELF_HOSTED_TESTS" in str(pick)
@@ -197,7 +197,7 @@ def test_three_idle_runners_only_overflow_the_last_three_shards() -> None:
     assert len(plan) == BACKEND_TEST_SPLITS + 1
     hosted = plan[1:16]
     overflow = plan[16:]
-    assert all(slot["runner"] == "ubuntu-latest" for slot in hosted)
+    assert all(slot["runner"] == "ubuntu-24.04" for slot in hosted)
     assert all("container" not in slot for slot in hosted)
     assert all(
         slot["runner"] == ["self-hosted", "Linux", "X64", "preloop-ci-general"]
@@ -212,9 +212,7 @@ def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
     assert plan[0] is None
     assert len(plan) == BACKEND_TEST_SPLITS + 1
     shards = plan[1:]
-    assert all(
-        slot is not None and slot["runner"] == "ubuntu-latest" for slot in shards
-    )
+    assert all(slot is not None and slot["runner"] == "ubuntu-24.04" for slot in shards)
     assert all(slot is not None and "container" not in slot for slot in shards)
 
 
@@ -312,6 +310,7 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         ("busy", 0),
         ("dedicated", 0),
         ("unlabeled", 0),
+        ("hosted-alias", 0),
         ("fork", 0),
         ("api-error", 0),
         ("malformed", 0),
@@ -340,8 +339,10 @@ if case == 'malformed':
 labels = ['self-hosted', 'Linux', 'X64', 'preloop-ci-general']
 if case == 'dedicated':
     labels.append('gce-tests-only')
-if case == 'unlabeled':
+if case in {'unlabeled', 'hosted-alias'}:
     labels.remove('preloop-ci-general')
+if case == 'hosted-alias':
+    labels.append('ubuntu-latest')
 runner = dict(status='offline' if case == 'offline' else 'online',
               busy=case == 'busy', labels=[{'name': name} for name in labels])
 runners = [] if case == 'absent' else [runner] * (30 if case == 'many' else 3)
@@ -376,6 +377,6 @@ print(json.dumps({'runners': runners}))
     private = [slot for slot in plan[1:] if isinstance(slot["runner"], list)]
     assert len(private) == expected
     assert all("preloop-ci-general" in slot["runner"] for slot in private)
-    assert sum(slot["runner"] == "ubuntu-latest" for slot in plan[1:]) == (
+    assert sum(slot["runner"] == "ubuntu-24.04" for slot in plan[1:]) == (
         BACKEND_TEST_SPLITS - expected
     )
