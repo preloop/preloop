@@ -197,3 +197,152 @@ def test_public_openai_completion_does_not_set_ssl_verify(monkeypatch, tmp_path)
     kwargs = _build_kwargs(model)
     assert "ssl_verify" not in kwargs
     assert "api_base" not in kwargs
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai-compatible"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "cap_key", [None, "max_output_tokens", "max_completion_tokens", "max_tokens"]
+)
+def test_openrouter_responses_preserves_reasoning_and_output_cap(
+    provider: str, stream: bool, cap_key: str | None
+) -> None:
+    """Responses controls survive translation, with client caps taking precedence."""
+    model = SimpleNamespace(
+        provider_name=provider,
+        model_identifier="deepseek/deepseek-v4-flash-0731",
+        api_endpoint="https://openrouter.ai/api/v1",
+        model_parameters={"max_output_tokens": 8192},
+        endpoint_type="direct",
+    )
+    payload = {"reasoning": {"effort": "low", "summary": "auto"}}
+    if cap_key:
+        payload[cap_key] = 1024
+    with patch("preloop.services.openai_gateway.get_secret_service") as secrets:
+        secrets.return_value.resolve_ai_model_credentials.return_value = _creds()
+        kwargs = _service()._build_completion_kwargs(
+            model, messages=[], payload=payload, stream=stream, provider="openai"
+        )
+    assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+    assert kwargs["max_tokens"] == (1024 if cap_key else 8192)
+    assert kwargs.get("stream", False) is stream
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai-compatible"])
+def test_openrouter_controls_reach_litellm_http_body(provider: str) -> None:
+    """The locked adapter must not drop reasoning for an unlisted model."""
+    import json
+
+    import httpx
+    import litellm
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    bodies = []
+
+    def respond(*, url: str, data: str, **_kwargs: object) -> httpx.Response:
+        bodies.append(json.loads(data))
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "example/unlisted-reasoning-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    model = SimpleNamespace(
+        provider_name=provider,
+        model_identifier="example/unlisted-reasoning-model",
+        api_endpoint="https://openrouter.ai/api/v1",
+        model_parameters={"max_output_tokens": 8192},
+    )
+    kwargs = _build_kwargs(model, {"reasoning": {"effort": "low", "summary": "auto"}})
+    with (
+        patch.object(HTTPHandler, "post", side_effect=respond),
+        patch.object(
+            httpx.Client, "send", side_effect=AssertionError("Unexpected HTTP request")
+        ),
+    ):
+        litellm.completion(**kwargs)
+    assert len(bodies) == 1
+    assert bodies[0]["reasoning"] == {"effort": "low"}
+    assert bodies[0]["max_tokens"] == 8192
+    assert bodies[0]["usage"] == {"include": True}
+
+
+def test_openrouter_chat_effort_precedes_responses_effort() -> None:
+    model = SimpleNamespace(
+        provider_name="openrouter",
+        model_identifier="example/model",
+        api_endpoint=None,
+    )
+    kwargs = _build_kwargs(
+        model, {"reasoning_effort": "high", "reasoning": {"effort": "low"}}
+    )
+    assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+    assert "max_tokens" not in kwargs
+
+
+def test_openrouter_controls_do_not_leak_to_other_providers() -> None:
+    model = SimpleNamespace(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+        model_parameters={"max_output_tokens": 8192},
+    )
+    kwargs = _build_kwargs(model, {"reasoning": {"effort": "low"}})
+    assert "reasoning" not in kwargs.get("extra_body", {})
+    assert "max_tokens" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "default_key", ["max_completion_tokens", "max_output_tokens", "max_tokens"]
+)
+def test_openrouter_registered_output_cap_aliases(default_key: str) -> None:
+    model = SimpleNamespace(
+        provider_name="openrouter",
+        model_identifier="example/model",
+        api_endpoint=None,
+        model_parameters={default_key: 8192},
+    )
+    assert _build_kwargs(model, {"max_output_tokens": None})["max_tokens"] == 8192
+
+
+def test_openrouter_output_cap_alias_precedence() -> None:
+    model = SimpleNamespace(
+        provider_name="openrouter",
+        model_identifier="example/model",
+        api_endpoint=None,
+        model_parameters={
+            "max_completion_tokens": 8192,
+            "max_output_tokens": 4096,
+            "max_tokens": 2048,
+        },
+    )
+    assert _build_kwargs(model)["max_tokens"] == 8192
+    assert (
+        _build_kwargs(
+            model,
+            {
+                "max_completion_tokens": 1024,
+                "max_output_tokens": 512,
+                "max_tokens": 256,
+            },
+        )["max_tokens"]
+        == 1024
+    )
