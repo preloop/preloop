@@ -255,3 +255,306 @@ def test_alias_precedence_matches_budget_estimate(
             _model(), messages=[], payload=payload, stream=True, provider="openai"
         )
     assert kwargs["max_tokens"] == expected
+
+
+@pytest.mark.parametrize("client_cap,expected_cap", [(None, 8192), (256, 256)])
+def test_exhaustion_retains_upstream_evidence_and_effective_controls(
+    client_cap: int | None, expected_cap: int
+) -> None:
+    import json
+
+    service = _service()
+    model = _model(
+        provider_name="openrouter",
+        model_identifier="deepseek/example-reasoning-model",
+        api_endpoint="https://openrouter.ai/api/v1",
+        model_parameters={"max_output_tokens": 8192},
+        meta_data={},
+        account_id="account",
+    )
+    reported_usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": expected_cap,
+        "total_tokens": 100 + expected_cap,
+        "completion_tokens_details": {"reasoning_tokens": expected_cap},
+    }
+
+    def upstream(*args: object, **kwargs: object) -> object:
+        service._build_completion_kwargs(
+            model,
+            messages=[],
+            payload=kwargs["payload"],
+            stream=True,
+            provider="openai",
+        )
+        return iter(
+            [
+                {
+                    "id": "gen-example",
+                    "choices": [{"delta": {}, "finish_reason": "length"}],
+                },
+                {"id": "gen-example", "choices": [], "usage": reported_usage},
+            ]
+        )
+
+    payload = {
+        "model": "example-model",
+        "input": "Review",
+        "reasoning": {"effort": "low", "summary": "auto"},
+    }
+    if client_cap is not None:
+        payload["max_output_tokens"] = client_cap
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", side_effect=upstream),
+        patch.object(service, "_record_gateway_request") as record,
+        patch("preloop.services.openai_gateway.get_secret_service") as secret,
+    ):
+        secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+            credential_type="api_key", value="synthetic-secret"
+        )
+        events = [
+            json.loads(event.split("data: ", 1)[1])
+            for event in service.stream_response(payload)
+            if "[DONE]" not in event
+        ]
+    error = next(event for event in events if event.get("type") == "error")
+    recorded = record.call_args.kwargs
+    assert recorded["upstream_response"]["usage"] == reported_usage
+    assert recorded["upstream_response"]["id"] == "gen-example"
+    assert service._extract_finish_reason(recorded["upstream_response"]) == "length"
+    assert f"max_output_tokens={expected_cap}" in error["message"]
+    assert "reasoning_effort=low" in error["message"]
+    assert service._gateway_request_id in error["message"]
+    assert "synthetic-secret" not in error["message"]
+    assert not any(event.get("type") == "response.completed" for event in events)
+
+
+def test_success_preserves_real_upstream_id_and_finish_reason() -> None:
+    service = _service()
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=_model()),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(
+            service,
+            "_call_litellm",
+            return_value=iter(
+                [
+                    {
+                        "id": "gen-example",
+                        "choices": [
+                            {"delta": {"content": "Done"}, "finish_reason": "stop"}
+                        ],
+                    },
+                    {
+                        "id": "gen-example",
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 10,
+                            "total_tokens": 110,
+                        },
+                    },
+                ]
+            ),
+        ),
+        patch.object(service, "_record_gateway_request") as record,
+    ):
+        list(service.stream_response({"model": "example-model", "input": "Review"}))
+        service.flush_deferred_stream_record()
+    upstream = record.call_args.kwargs["upstream_response"]
+    assert upstream["id"] == "gen-example"
+    assert service._extract_finish_reason(upstream) == "stop"
+    assert record.call_args.kwargs["response_payload"]["id"].startswith("resp_")
+
+
+def test_upstream_controls_do_not_leak_into_a_subsequent_request() -> None:
+    service = _service()
+    with patch("preloop.services.openai_gateway.get_secret_service") as secret:
+        secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+            credential_type="api_key", value="synthetic-secret"
+        )
+        service._build_completion_kwargs(
+            _model(provider_name="openrouter"),
+            messages=[],
+            payload={"max_tokens": 1024, "reasoning": {"effort": "low"}},
+            stream=True,
+            provider="openai",
+        )
+        assert service._last_upstream_parameters == {
+            "max_tokens": 1024,
+            "reasoning_effort": "low",
+        }
+        service._build_completion_kwargs(
+            _model(), messages=[], payload={}, stream=False, provider="openai"
+        )
+        assert service._last_upstream_parameters == {}
+        service._last_upstream_parameters = {"max_tokens": 1024}
+        service._begin_request_accounting()
+        assert service._last_upstream_parameters == {}
+
+
+@pytest.mark.parametrize(
+    "completion,reasoning,expected",
+    [
+        (10, 12, ["reasoning_tokens_exceed_output_tokens"]),
+        (10, 10, []),
+        (10, 0, []),
+        (10, None, []),
+        (None, 12, []),
+    ],
+)
+def test_usage_inconsistency_is_flagged_without_inventing_tokens(
+    completion: int | None, reasoning: int | None, expected: list[str]
+) -> None:
+    from copy import deepcopy
+
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": completion,
+        "completion_tokens_details": {"reasoning_tokens": reasoning},
+    }
+    original = deepcopy(usage)
+    normalized = OpenAIGatewayService._normalize_usage(
+        usage, prompt_key="prompt_tokens", completion_key="completion_tokens"
+    )
+    client = OpenAIGatewayService._responses_api_usage(usage, normalized)
+    assert OpenAIGatewayService._usage_warnings(usage) == expected
+    assert usage == original
+    assert client["output_tokens"] == (completion or 0)
+    assert client["output_tokens_details"]["reasoning_tokens"] == (reasoning or 0)
+
+
+@pytest.mark.parametrize("reported_reasoning", [8, 12])
+def test_real_litellm_stream_preserves_reported_counters(
+    reported_reasoning: int,
+) -> None:
+    """The adapter accumulator, not only a usage helper, preserves evidence."""
+    import json
+
+    import httpx
+    import litellm
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    reported = {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "total_tokens": 110,
+        "completion_tokens_details": {"reasoning_tokens": reported_reasoning},
+    }
+    frames = [
+        {
+            "id": "gen-example",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "example/model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning": "Synthetic reasoning"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "gen-example",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "example/model",
+            "choices": [
+                {"index": 0, "delta": {"content": "Done"}, "finish_reason": "stop"}
+            ],
+        },
+        {
+            "id": "gen-example",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "example/model",
+            "choices": [],
+            "usage": reported,
+        },
+    ]
+    body = (
+        "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
+        + "data: [DONE]\n\n"
+    )
+
+    def response(*, url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            content=body.encode(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    with (
+        patch.object(HTTPHandler, "post", side_effect=response),
+        patch.object(
+            httpx.Client, "send", side_effect=AssertionError("Unexpected HTTP request")
+        ),
+        patch.object(litellm, "disable_streaming_logging", True),
+        patch(
+            "litellm.litellm_core_utils.streaming_chunk_builder_utils.token_counter",
+            return_value=41,
+        ),
+    ):
+        stream = litellm.completion(
+            model="openrouter/example/model",
+            messages=[{"role": "user", "content": "Example"}],
+            api_key="sk-test",
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        chunks = list(stream)
+    terminal = next(
+        chunk.usage.model_dump()
+        for chunk in reversed(chunks)
+        if getattr(chunk, "usage", None)
+    )
+    retained = next(
+        chunk.usage.model_dump()
+        for chunk in reversed(stream.chunks)
+        if getattr(chunk, "usage", None)
+    )
+    for usage in (retained, terminal):
+        assert usage["completion_tokens"] == 10
+        assert (
+            usage["completion_tokens_details"]["reasoning_tokens"] == reported_reasoning
+        )
+    service = _service()
+    normalized = service._normalize_usage(
+        terminal, prompt_key="prompt_tokens", completion_key="completion_tokens"
+    )
+    client = service._responses_api_usage(terminal, normalized)
+    assert client["output_tokens"] == 10
+    assert client["output_tokens_details"]["reasoning_tokens"] == reported_reasoning
+    assert service._usage_warnings(terminal) == (
+        ["reasoning_tokens_exceed_output_tokens"] if reported_reasoning > 10 else []
+    )
+
+
+@pytest.mark.parametrize("effort", ["low", "max"])
+@pytest.mark.parametrize("location", ["reasoning_effort", "reasoning", "extra_body"])
+def test_model_studio_effective_effort_is_recorded(effort: str, location: str) -> None:
+    service = _service()
+    payload = (
+        {
+            "reasoning_effort": effort,
+        }
+        if location == "reasoning_effort"
+        else {
+            location: {
+                "effort" if location == "reasoning" else "reasoning_effort": effort
+            }
+        }
+    )
+    with patch("preloop.services.openai_gateway.get_secret_service") as secret:
+        secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+            credential_type="api_key", value="synthetic-secret"
+        )
+        kwargs = service._build_completion_kwargs(
+            _model(), messages=[], payload=payload, stream=True, provider="openai"
+        )
+    assert kwargs["extra_body"]["reasoning_effort"] == effort
+    assert service._last_upstream_parameters == {"reasoning_effort": effort}

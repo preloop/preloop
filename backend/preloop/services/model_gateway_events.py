@@ -367,6 +367,8 @@ class ModelGatewayEventEmitter:
                 # duration, and makes provider flakiness countable.
                 "retried": int(meta_data.get("upstream_retries") or 0),
                 "finish_reason": meta_data.get("finish_reason"),
+                "upstream_parameters": meta_data.get("upstream_parameters"),
+                "usage_warnings": meta_data.get("usage_warnings"),
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,

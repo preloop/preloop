@@ -243,6 +243,7 @@ def test_responses_usage_reaches_usage_row_through_gateway(
         "input_tokens_details": {"cached_tokens": 80},
         "output_tokens_details": {"reasoning_tokens": 5},
     }
+    service._last_upstream_parameters = {"max_tokens": 8192, "reasoning_effort": "low"}
     service._record_gateway_request_inner(
         endpoint="/openai/v1/responses",
         method="POST",
@@ -260,6 +261,11 @@ def test_responses_usage_reaches_usage_row_through_gateway(
     assert row.cache_read_tokens == 80
     assert row.reasoning_tokens == 5
     assert row.cache_creation_tokens is None
+    assert row.meta_data["upstream_parameters"] == {
+        "max_tokens": 8192,
+        "reasoning_effort": "low",
+    }
+    assert row.meta_data["usage_warnings"] is None
 
 
 @pytest.mark.parametrize(

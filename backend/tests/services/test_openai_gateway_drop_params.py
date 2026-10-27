@@ -230,7 +230,10 @@ def test_openrouter_responses_preserves_reasoning_and_output_cap(
 
 
 @pytest.mark.parametrize("provider", ["openrouter", "openai-compatible"])
-def test_openrouter_controls_reach_litellm_http_body(provider: str) -> None:
+@pytest.mark.parametrize("client_cap,expected_cap", [(None, 8192), (256, 256)])
+def test_openrouter_controls_reach_litellm_http_body(
+    provider: str, client_cap: int | None, expected_cap: int
+) -> None:
     """The locked adapter must not drop reasoning for an unlisted model."""
     import json
 
@@ -271,7 +274,10 @@ def test_openrouter_controls_reach_litellm_http_body(provider: str) -> None:
         api_endpoint="https://openrouter.ai/api/v1",
         model_parameters={"max_output_tokens": 8192},
     )
-    kwargs = _build_kwargs(model, {"reasoning": {"effort": "low", "summary": "auto"}})
+    payload = {"reasoning": {"effort": "low", "summary": "auto"}}
+    if client_cap is not None:
+        payload["max_output_tokens"] = client_cap
+    kwargs = _build_kwargs(model, payload)
     with (
         patch.object(HTTPHandler, "post", side_effect=respond),
         patch.object(
@@ -281,7 +287,7 @@ def test_openrouter_controls_reach_litellm_http_body(provider: str) -> None:
         litellm.completion(**kwargs)
     assert len(bodies) == 1
     assert bodies[0]["reasoning"] == {"effort": "low"}
-    assert bodies[0]["max_tokens"] == 8192
+    assert bodies[0]["max_tokens"] == expected_cap
     assert bodies[0]["usage"] == {"include": True}
 
 
