@@ -249,6 +249,10 @@ _APPROVAL_CANCEL_ON_TERMINAL = frozenset(
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
 
+# Cleanup only: preserve artifacts before Kubernetes stop deletes the Job.
+# This does not change the execution deadline or turn a timeout into success.
+TIMEOUT_ARTIFACT_CAPTURE_SECONDS = 10
+
 # Marker printed by the agent script immediately before the agent command runs.
 # Sentinel detection is suppressed until this marker is seen in the logs,
 # preventing false positives from the prompt echo that contains the sentinel
@@ -4581,7 +4585,11 @@ class FlowExecutionOrchestrator:
         return archive
 
     async def _capture_result_artifact(
-        self, agent_executor: Any, session_reference: str
+        self,
+        agent_executor: Any,
+        session_reference: str,
+        *,
+        timeout_seconds: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Capture the agent's structured result artifact, if any.
 
@@ -4595,28 +4603,64 @@ class FlowExecutionOrchestrator:
         persistence at finalize time. It must happen here because both
         artifacts are only readable before the executor is cleaned up, and
         this method is called on every terminal path.
+
+        Timeout cleanup supplies ``timeout_seconds`` to bound transfers and
+        prioritize result.json over bulk captures. An already read result is
+        retained and validated even when a later transfer exceeds that bound.
         """
         from preloop.services.flow_artifacts import (
             extract_result_json,
             sanitize_captured_result,
         )
 
-        await self._capture_evidence_archive(agent_executor, session_reference)
-        await self._capture_workspace_snapshot(agent_executor, session_reference)
-        getter = getattr(agent_executor, "get_result_artifact", None)
         artifact: Optional[Dict[str, Any]] = None
-        if callable(getter):
+
+        async def collect() -> None:
+            nonlocal artifact
+            # Normal terminal capture retains its original ordering. Timeout
+            # cleanup prioritizes the small result so a slow snapshot/evidence
+            # transfer cannot discard a document already available to read.
+            if timeout_seconds is None:
+                await self._capture_evidence_archive(agent_executor, session_reference)
+                await self._capture_workspace_snapshot(
+                    agent_executor, session_reference
+                )
+            getter = getattr(agent_executor, "get_result_artifact", None)
+            if callable(getter):
+                try:
+                    captured = await getter(session_reference)
+                except Exception as e:
+                    logger.warning(f"Failed to capture result artifact: {e}")
+                    captured = None
+                if isinstance(captured, dict):
+                    artifact = captured
+            if timeout_seconds is not None:
+                await self._capture_evidence_archive(agent_executor, session_reference)
+            if not isinstance(artifact, dict):
+                archive = await self._evidence_bytes_for_result_extract()
+                if archive:
+                    artifact = extract_result_json(archive)
+            if timeout_seconds is not None:
+                await self._capture_workspace_snapshot(
+                    agent_executor, session_reference
+                )
+
+        if timeout_seconds is None:
+            await collect()
+        else:
             try:
-                captured = await getter(session_reference)
-            except Exception as e:
-                logger.warning(f"Failed to capture result artifact: {e}")
-                captured = None
-            if isinstance(captured, dict):
-                artifact = captured
-        if not isinstance(artifact, dict):
-            archive = await self._evidence_bytes_for_result_extract()
-            if archive:
-                artifact = extract_result_json(archive)
+                await asyncio.wait_for(collect(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed-out execution artifact capture exceeded cleanup bound"
+                )
+            except Exception as capture_error:
+                logger.warning(
+                    "Timed-out execution artifact capture failed (%s)",
+                    type(capture_error).__name__,
+                )
+        # Keep validation outside the cancellable transfers. A document read
+        # before a later transfer stalled still goes through the same boundary.
         sanitized = sanitize_captured_result(artifact)
         persisted = self._persist_cra_result_boundary(
             sanitized, session_reference=session_reference
@@ -7962,18 +8006,25 @@ class FlowExecutionOrchestrator:
                     "elapsed_seconds": elapsed,
                 },
             )
-            await agent_executor.stop(session_reference)
+            # Docker retains stopped containers, but Kubernetes stop deletes
+            # the Job and its pods. Read available artifacts first, within a
+            # short cleanup bound, and always stop even if capture fails or
+            # this monitor is canceled. The execution still failed its budget.
+            try:
+                result_artifact = await self._capture_result_artifact(
+                    agent_executor,
+                    session_reference,
+                    timeout_seconds=TIMEOUT_ARTIFACT_CAPTURE_SECONDS,
+                )
+            finally:
+                await agent_executor.stop(session_reference)
 
-            # A timed-out eval run may still have written result.json; the
-            # stopped container is kept, so the artifact is reachable.
             timeout_result = {
                 "status": "FAILED",
                 "error_message": timeout_budget.timeout_message(elapsed),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                "result": await self._capture_result_artifact(
-                    agent_executor, session_reference
-                ),
+                "result": result_artifact,
             }
             self._name_stream_stall(timeout_result, timeout_budget)
             return timeout_result
