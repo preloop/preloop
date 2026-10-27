@@ -260,7 +260,8 @@ def test_workflow_uses_trusted_code_and_hosted_retry_override() -> None:
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github/workflows/ci-hosted-recovery.yml").read_text()
     )
-    assert workflow["permissions"] == {
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["jobs"]["recover"]["permissions"] == {
         "contents": "read",
         "actions": "write",
         "pull-requests": "read",
@@ -404,3 +405,46 @@ def test_capacity_recovering_before_cancel_does_not_interrupt_work() -> None:
     api.pages = pages
     assert recovery.recover(api, 123) == "capacity recovered before cancellation"
     assert api.mutations == []
+
+
+def test_hosted_only_matrix_releases_watchdog_runner_immediately() -> None:
+    api = FakeGitHub()
+    api.jobs = [
+        job(name=f"Backend Tests ({i}/18)", labels=["ubuntu-24.04"])
+        for i in range(1, 19)
+    ]
+    assert (
+        recovery.recover(api, 123)
+        == "all optional runner work finished or routed hosted"
+    )
+    assert api.mutations == []
+
+
+def test_partial_hosted_snapshot_does_not_end_watch_early() -> None:
+    assert not recovery.optional_capacity_finished([job(labels=["ubuntu-24.04"])])
+    assert not recovery.optional_capacity_finished([])
+
+
+def test_watch_continues_until_last_optional_shard_finishes() -> None:
+    jobs = [
+        job(name=f"Backend Tests ({i}/18)", labels=["ubuntu-24.04"])
+        for i in range(1, 18)
+    ]
+    jobs.append(job(name="Backend Tests (18/18)", status="in_progress"))
+    assert not recovery.optional_capacity_finished(jobs)
+    jobs[-1].update(status="completed", conclusion="failure")
+    assert not recovery.optional_capacity_finished(jobs)
+    jobs[-1].update(conclusion="success")
+    assert recovery.optional_capacity_finished(jobs)
+
+
+def test_unknown_labels_do_not_prove_hosted_routing() -> None:
+    assert not recovery.optional_capacity_finished(
+        [job(name="Backend Tests (1/1)", labels=[])]
+    )
+
+
+def test_oversized_job_name_total_does_not_allocate_a_matrix() -> None:
+    assert not recovery.optional_capacity_finished(
+        [job(name="Backend Tests (1/1000000000)", labels=["ubuntu-24.04"])]
+    )
