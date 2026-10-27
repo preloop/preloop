@@ -442,3 +442,9 @@ def test_unknown_labels_do_not_prove_hosted_routing() -> None:
     assert not recovery.optional_capacity_finished(
         [job(name="Backend Tests (1/1)", labels=[])]
     )
+
+
+def test_oversized_job_name_total_does_not_allocate_a_matrix() -> None:
+    assert not recovery.optional_capacity_finished(
+        [job(name="Backend Tests (1/1000000000)", labels=["ubuntu-24.04"])]
+    )

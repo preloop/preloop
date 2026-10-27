@@ -203,7 +203,9 @@ def optional_capacity_finished(jobs: list[dict]) -> bool:
     if len(totals) != 1:
         return False
     total = totals.pop()
-    if total < 1 or set(shards) != set(range(1, total + 1)):
+    # A job-name-controlled total must never allocate more than the observed
+    # shard count. Reject missing/impossibly large matrices before range().
+    if total < 1 or total != len(shards) or set(shards) != set(range(1, total + 1)):
         return False
     return all(
         (set(job.get("labels") or []) == {"ubuntu-24.04"})
