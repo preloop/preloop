@@ -746,3 +746,24 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     # The live event still carries the whole replayed conversation.
     assert len(published) == 1
     assert len(published[0]["payload"]["request"]["messages"]) == len(history)
+
+
+def test_event_keeps_safe_upstream_diagnostics_when_content_capture_is_disabled() -> (
+    None
+):
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        meta_data={
+            "upstream_parameters": {"max_tokens": 8192, "reasoning_effort": "low"},
+            "usage_warnings": ["reasoning_tokens_exceed_output_tokens"],
+        }
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        payload = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )["payload"]
+    assert payload["upstream_parameters"] == {
+        "max_tokens": 8192,
+        "reasoning_effort": "low",
+    }
+    assert payload["usage_warnings"] == ["reasoning_tokens_exceed_output_tokens"]
