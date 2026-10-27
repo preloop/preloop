@@ -419,6 +419,31 @@ describe('usage-card', () => {
     expect(element.shadowRoot!.querySelector('.budget-basis')).to.not.exist;
   });
 
+  it('keeps a legacy monthly row outside the request-time policy group', async () => {
+    const element = await renderCard({
+      policies: [policyFixture({ period: 'daily', current_spend_usd: 12 })],
+      summary: summaryFixture({
+        budget: {
+          monthly_limit_usd: 300,
+          soft_limit_usd: null,
+          current_spend_usd: 80,
+          soft_limit_exceeded: false,
+          hard_limit_exceeded: false,
+        },
+      }),
+    });
+    const basis = element.shadowRoot!.querySelector('.budget-basis')!;
+    const group = basis.parentElement!;
+    const rows = group.querySelectorAll('.budget-row');
+    expect(rows.length).to.equal(1);
+    expect(rows[0].textContent).to.contain('Daily budget');
+    expect(rows[0].textContent).to.contain('$12.00');
+    const legacy = element.shadowRoot!.querySelector('.budget-row')!;
+    expect(legacy.textContent).to.contain('Monthly budget');
+    expect(legacy.textContent).to.contain('$80.00');
+    expect(group.contains(legacy)).to.be.false;
+  });
+
   it('shows a budget row per global policy with the spend meter', async () => {
     const element = await renderCard({
       policies: [

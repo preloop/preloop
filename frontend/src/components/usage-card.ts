@@ -379,7 +379,8 @@ export class UsageCard extends LitElement {
         }
       }
 
-      .budgets {
+      .budgets,
+      .policy-budgets {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
@@ -1141,30 +1142,33 @@ export class UsageCard extends LitElement {
       )
     );
 
-    if (!hasGlobalMonthly && legacyLimit > 0) {
-      rows.unshift(
-        this.renderBudgetRow(
-          budgetPeriodLabel('monthly'),
-          'monthly',
-          this.summary?.budget?.current_spend_usd || 0,
-          this.summary?.budget?.soft_limit_usd || 0,
-          legacyLimit
-        )
-      );
-    }
+    const legacyRow =
+      !hasGlobalMonthly && legacyLimit > 0
+        ? this.renderBudgetRow(
+            budgetPeriodLabel('monthly'),
+            'monthly',
+            this.summary?.budget?.current_spend_usd || 0,
+            this.summary?.budget?.soft_limit_usd || 0,
+            legacyLimit
+          )
+        : nothing;
 
     return html`
       <div class="budgets">
+        ${legacyRow}
         ${
           globals.length > 0
-            ? html`<p class="budget-basis muted">
-                <strong>Budget usage</strong>
-                Uses request-time prices and UTC periods. Later repricing or
-                reconciliation changes usage estimates, not this limit counter.
-              </p>`
+            ? html`<div class="policy-budgets">
+                <p class="budget-basis muted">
+                  <strong>Budget usage</strong>
+                  Uses request-time prices and UTC periods. Later repricing or
+                  reconciliation changes usage estimates, not this limit
+                  counter.
+                </p>
+                ${rows}
+              </div>`
             : nothing
         }
-        ${rows}
         ${
           scoped.length > 0
             ? html`
