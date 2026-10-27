@@ -20,11 +20,34 @@ it does not need a misleading `ubuntu-latest` label or a hosted toolcache.
 The picker assigns at most one shard per observed idle runner, up to the
 backend matrix size. Other jobs stay hosted. A runner registration represents
 a configured slot, not a CPU; provision slots to fit the host's measured capacity.
-This snapshot is not a reservation: another run can consume the runner or a VM
-can stop after selection. GitHub does not automatically move an already queued
-self-hosted job to hosted, and job timeouts do not bound queue time. If that
-happens, disable self-hosted routing with `CI_SELF_HOSTED_TESTS=false`, cancel the stalled
-run, and rerun it on hosted capacity. There is no VM provisioning in this flow.
+This snapshot is not a reservation: another run can consume a slot or a spot
+VM can stop after selection. GitHub cannot migrate an assigned job between
+runner labels. The hosted recovery workflow watches trusted PRs and main pushes
+for 30 minutes. After a general-pool backend shard waits unassigned for three
+minutes, or its assigned runner is reported offline/missing, it cancels the
+current run and retries only unfinished jobs once on hosted runners. It waits
+up to two minutes for cancellation to finish. Successful jobs are retained;
+work in progress at cancellation may repeat. It never provisions a VM.
+
+The watchdog also handles completed failed/timed-out backend jobs when their
+assigned runner is offline/missing. This is an infrastructure inference, not
+proof of why a test failed; the hosted retry must still pass the same checks.
+Without the optional existing `CI_RUNNER_READ_TOKEN`, queue recovery works but
+offline-runner inference is unavailable. API failures stop further mutations.
+Second attempts, forks, Dependabot, closed/superseded PR heads, and user-canceled
+runs are not automatically recovered. All backend retry attempts use hosted
+capacity even when a successful picker output was retained by GitHub.
+
+The listener runs trusted code pinned to its default-branch workflow commit,
+with `actions: write` for cancellation/retry, `pull-requests: read` to verify
+current PR heads, and `contents: read` for that code.
+It never checks out the PR head or reads job logs. It activates only after
+`ci-hosted-recovery.yml` and its script land on the default branch, and hosted
+queue delays can delay the watchdog itself. Job queue/run transitions are not
+atomic with API cancellation; the watchdog rechecks current head/state before
+each mutation but cannot eliminate every cancellation race. If its bounded
+watch ends or recovery fails, disable self-hosted routing with
+`CI_SELF_HOSTED_TESTS=false`, cancel the stalled run, and rerun it manually.
 
 Backend CI prefers a Postgres that is already listening on the runner. The
 job creates a database named `preloop_ci_<run>_<attempt>_<shard>`, migrates
@@ -34,7 +57,7 @@ GitHub-hosted `ubuntu-latest` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
 
-## Bootstrap routing
+## Hosted control jobs
 
 Changed-path detection, the runner picker and the final CI aggregator always
 run on GitHub-hosted `ubuntu-latest`. The general pool is optional spot capacity,

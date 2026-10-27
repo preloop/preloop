@@ -169,7 +169,7 @@ jobs:
   # inventory, absent credentials, forks and disabled routing select hosted.
   # A selection-time snapshot cannot reserve capacity or guarantee acquisition
   # if another run takes a slot or a spot VM stops afterwards; see
-  # .github/self-hosted-runners.md for the race and recovery procedure.
+  # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
   # CI_RUNNER_READ_TOKEN needs repository administration:read.
   # CI_SELF_HOSTED_TESTS=false disables self-hosted shards without a commit.
   # preloop-ci-general is an explicit readiness label; never apply it to the
@@ -454,7 +454,9 @@ jobs:
   # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
     name: Backend Tests (${{ matrix.group }}/18)
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
+    # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
+    # rerun a successful picker. Recovery must never requeue a lost spot slot.
+    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-latest' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     needs: [changes, pick-runner]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 15
