@@ -1,0 +1,41 @@
+name: CI hosted recovery
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [requested, completed]
+
+# The listener uses the default branch. Never check out or execute the PR head.
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: ci-hosted-recovery-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: >-
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.actor.login != 'dependabot[bot]' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci_hosted_recovery.py
+          sparse-checkout-cone-mode: false
+      - name: Recover unavailable general-runner capacity once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: python3 scripts/ci_hosted_recovery.py

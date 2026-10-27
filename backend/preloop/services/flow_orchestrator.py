@@ -2901,10 +2901,20 @@ class FlowExecutionOrchestrator:
             return narrowed
 
         if project_id:
-            entry: Dict[str, Any] = {
-                "project_id": project_id,
-                "clone_path": "/workspace",
-            }
+            # A tracker-only entry configures auto-detected clones. Preserve its
+            # credentials and checkout options, but only after the payload has
+            # resolved to a permitted project. Explicit repository matches above
+            # take precedence; entries for other repositories are never defaults.
+            auto_detect = next(
+                (
+                    repo
+                    for repo in repositories
+                    if not repo.get("project_id") and not repo.get("repository_url")
+                ),
+                {},
+            )
+            entry: Dict[str, Any] = {"clone_path": "/workspace", **auto_detect}
+            entry["project_id"] = project_id
             if identity.get("clone_url"):
                 entry["repository_url"] = identity["clone_url"]
             narrowed = dict(config)
