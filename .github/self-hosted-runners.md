@@ -29,7 +29,9 @@ a configured slot, not a CPU; provision slots to fit the host's measured capacit
 This snapshot is not a reservation: another run can consume a slot or a spot
 VM can stop after selection. GitHub cannot migrate an assigned job between
 runner labels. The hosted recovery workflow watches trusted PRs and main pushes
-for 30 minutes. After a general-pool backend shard waits unassigned for three
+for up to 30 minutes. It releases its hosted runner as soon as the complete
+backend matrix is visible and every optional-runner shard has succeeded or
+all shards are assigned to hosted runners; unrelated hosted jobs can continue. After a general-pool backend shard waits unassigned for three
 minutes, or its assigned runner is reported offline/missing, it cancels the
 current run and retries failed/canceled jobs and their dependents once on hosted
 runners. A completed failure without offline/missing-runner evidence stops
@@ -258,3 +260,19 @@ back to a downloaded interpreter, it verifies that Python can start without
 `LD_LIBRARY_PATH` and repairs its tool-cache loader path if needed. The isolated
 shell tests intentionally clear that variable, so a missing loader path must
 fail before the test suite rather than produce unrelated test failures.
+
+## Token permissions and Scorecard
+
+The recovery listener defaults to `contents: read`; only its trusted `recover`
+job receives `actions: write` and `pull-requests: read`. Closed-PR cancellation
+also needs job-scoped Actions write. Removing that permission breaks the API
+operations; substituting a long-lived PAT does not reduce privilege.
+
+Scorecard 5.6 flags those job-scoped grants, and its release allowlist does not
+recognize `softprops/action-gh-release`. The tag-only release publisher requires
+Contents write to create the draft, attach verified assets and publish it. Keep
+that grant on the publishing job. VirusTotal only submits binaries now and has
+read-only Contents permission; it no longer edits release notes. These changes
+remove unnecessary access but do not make all Token-Permissions findings vanish.
+The remaining grants require a documented security exception or a separately
+provisioned GitHub App design, not an assertion that the scanner passed.

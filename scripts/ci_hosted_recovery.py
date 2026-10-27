@@ -186,6 +186,36 @@ def unrelated_failure(jobs: list[dict], runners: list[dict] | None) -> bool:
     return False
 
 
+def optional_capacity_finished(jobs: list[dict]) -> bool:
+    """Stop holding a hosted slot once the complete matrix needs no recovery.
+
+    Job creation is asynchronous. Require every shard before concluding that
+    missing self-hosted jobs do not exist; a partial API snapshot is not proof.
+    """
+    shards: dict[int, dict] = {}
+    totals: set[int] = set()
+    for job in jobs:
+        match = re.fullmatch(r"Backend Tests \((\d+)/(\d+)\)", job.get("name", ""))
+        if match:
+            index, total = map(int, match.groups())
+            shards[index] = job
+            totals.add(total)
+    if len(totals) != 1:
+        return False
+    total = totals.pop()
+    if total < 1 or set(shards) != set(range(1, total + 1)):
+        return False
+    return all(
+        (set(job.get("labels") or []) == {"ubuntu-24.04"})
+        or (
+            self_hosted_backend(job)
+            and job.get("status") == "completed"
+            and job.get("conclusion") in {"success", "skipped", "neutral"}
+        )
+        for job in shards.values()
+    )
+
+
 def recover(api: GitHub, run_id: int) -> str:
     """Watch one run, cancel only a current active run, then retry once hosted."""
     path = f"actions/runs/{run_id}"
@@ -199,6 +229,8 @@ def recover(api: GitHub, run_id: int) -> str:
         jobs, runners = recovery_snapshot(api, path)
         if unrelated_failure(jobs, runners):
             return "completed failure needs investigation; no capacity retry"
+        if optional_capacity_finished(jobs):
+            return "all optional runner work finished or routed hosted"
         if needs_recovery(jobs, runners, datetime.now(timezone.utc)):
             # Recheck immediately before every mutation: a new PR push or a
             # user cancellation must not be undone by an old watchdog.
