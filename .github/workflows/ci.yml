@@ -163,19 +163,17 @@ jobs:
   # Where do the test jobs run?
   # ==========================================================================
   # Bootstrap and aggregation always run hosted: optional spot capacity must
-  # not gate the picker that decides whether self-hosted overflow is available.
-  # Hosted first for shards. Self-hosted is optional overflow when this repository
-  # has ubuntu-latest jobs queued without a runner for at least two minutes.
-  # That is observable queue pressure, not GitHub's global capacity (there is
-  # no capacity API). Unknown pressure, absent credentials, forks, disabled
-  # routing, or no idle general CI runners all select hosted.
-  # At least half the backend shards always remain hosted. A selection-time
-  # snapshot cannot guarantee acquisition if a VM stops afterwards; see
+  # not gate the picker that decides whether self-hosted capacity is available.
+  # Use online idle general CI runners immediately, one backend shard per
+  # available slot, with remaining shards on GitHub-hosted capacity. Missing
+  # inventory, absent credentials, forks and disabled routing select hosted.
+  # A selection-time snapshot cannot reserve capacity or guarantee acquisition
+  # if another run takes a slot or a spot VM stops afterwards; see
   # .github/self-hosted-runners.md for the race and recovery procedure.
-  # CI_RUNNER_READ_TOKEN needs repository administration:read. The normal
-  # GITHUB_TOKEN reads Actions queue data. CI_SELF_HOSTED_TESTS=false disables
-  # overflow without a commit. preloop-ci-general is an explicit readiness
-  # label; never apply it to the gce-tests-only execution pool.
+  # CI_RUNNER_READ_TOKEN needs repository administration:read.
+  # CI_SELF_HOSTED_TESTS=false disables self-hosted shards without a commit.
+  # preloop-ci-general is an explicit readiness label; never apply it to the
+  # gce-tests-only execution pool.
   #
   # Python: setup-python has no Debian 12 builds. Jobs use
   # .github/actions/setup-ci-python, which venvs a matching system
@@ -188,20 +186,16 @@ jobs:
     name: Pick test runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      actions: read
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
     steps:
-      - name: Assign overflow backend shards to idle self-hosted runners
+      - name: Assign backend shards to available runner capacity
         id: pick
         env:
           # Empty on forks and Dependabot: secrets are not exposed there.
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
         run: |
           set -uo pipefail
@@ -225,7 +219,7 @@ jobs:
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt "$((SPLITS / 2))" ]; then idle=$((SPLITS / 2)); fi
+            if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
 
             plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
               def slot($runner): {runner:$runner};
@@ -246,8 +240,8 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
-            echo "overflow shards on self-hosted: $idle / $SPLITS"
-            echo "- overflow self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "shards on self-hosted: $idle / $SPLITS"
+            echo "- self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
@@ -258,41 +252,6 @@ jobs:
 
           if [ -z "${RUNNER_READ_TOKEN:-}" ]; then
             emit 0 "secret CI_RUNNER_READ_TOKEN is absent or empty"
-          fi
-
-          # Sample older active work, not just the newest runs (which may all
-          # be younger than the pressure threshold). Inspect at most five
-          # runs per status from bounded 100-run API responses, plus this run.
-          runs='[]'
-          for status in queued in_progress; do
-            if ! active=$(timeout 15s gh api "repos/${REPO}/actions/runs?status=${status}&per_page=100" \
-                --jq '[.workflow_runs | sort_by(.created_at) | .[:5][] | .id]' 2>/dev/null); then
-              emit 0 "could not read hosted queue pressure"
-            fi
-            if ! runs=$(printf '%s\n%s' "$runs" "$active" | jq -ces 'if all(.[]; type == "array") then add | unique else error("invalid runs") end' 2>/dev/null); then
-              emit 0 "could not parse hosted queue runs"
-            fi
-          done
-          # Include our own blocked jobs even when newer runs fill the sample.
-          # Deduplication prevents counting the current run twice.
-          if ! runs=$(printf '%s' "$runs" | jq -ce --arg current "$CURRENT_RUN_ID" \
-              'if type != "array" then error("invalid run list") else . + [($current | tonumber)] | unique end' 2>/dev/null); then
-            emit 0 "could not parse hosted queue runs"
-          fi
-          pressure=0
-          for run_id in $(printf '%s' "$runs" | jq -r '.[]' 2>/dev/null); do
-            if ! jobs=$(timeout 15s gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" --paginate 2>/dev/null); then
-              emit 0 "could not read hosted queued jobs"
-            fi
-            queued=$(printf '%s' "$jobs" | jq -s '[.[].jobs[]?
-              | select(.status == "queued" and ((.runner_id // 0) == 0))
-              | select((.labels | index("ubuntu-latest")) != null
-                   and (.labels | index("self-hosted")) == null)
-              | select((now - (.created_at | fromdateiso8601)) >= 120)] | length' 2>/dev/null) || emit 0 "could not parse hosted queued jobs"
-            pressure=$((pressure + queued))
-          done
-          if [ "$pressure" -eq 0 ]; then
-            emit 0 "no observed hosted queue pressure"
           fi
 
           if ! runners=$(GH_TOKEN="$RUNNER_READ_TOKEN" timeout 15s gh api "repos/${REPO}/actions/runners" --paginate 2>/dev/null); then
@@ -318,10 +277,9 @@ jobs:
               ;;
           esac
 
-          echo "observed delayed hosted jobs: $pressure; idle general runners: $available"
+          echo "idle general runners: $available"
           if [ "$available" -ge 1 ]; then
-            if [ "$available" -gt "$pressure" ]; then available=$pressure; fi
-            emit "$available" "observed hosted queue pressure; idle general CI runners take overflow"
+            emit "$available" "idle general CI runners take shards immediately; hosted takes the remainder"
           fi
 
           emit 0 "no idle self-hosted Linux/X64 runner is online"
@@ -489,8 +447,8 @@ jobs:
   # pgvector/pgvector:pg16 and the drop step removes that container.
   # Runner setup: .github/self-hosted-runners.md.
   #
-  # Runner: ubuntu-latest is the default. pick-runner may send the last
-  # N shards (idle self-hosted count) to private VMs as overflow. Shards
+  # Runner: pick-runner assigns the last N shards (idle self-hosted count)
+  # to general private VMs immediately; hosted takes the remaining shards. They
   # run on the machine, not in a nested container, so that address is the
   # VM's Postgres. The VM needs Docker for the fallback start, and the
   # runner user in the docker group. A persistent server avoids the pull.

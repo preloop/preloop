@@ -1,15 +1,14 @@
 # Self-hosted runners
 
-CI prefers GitHub-hosted `ubuntu-latest`. General self-hosted runners provide
-optional backend overflow when recent repository runs show hosted jobs queued
-without a runner for at least two minutes. This is a queue-pressure signal,
-not a measurement of GitHub's global capacity. The picker inspects up to five oldest queued and five oldest in-progress
-runs from bounded 100-run API responses, plus the current run (deduplicated), bounds each API request, and leaves every shard hosted when
-pressure or inventory cannot be read, the read token is absent, or
-`CI_SELF_HOSTED_TESTS=false`. Fork and Dependabot PRs always remain hosted.
-Trusted same-repository PRs and pushes may use overflow.
+CI distributes backend shards across available capacity at dispatch. Each
+online idle general self-hosted runner takes one shard immediately, up to the
+matrix size; the remaining shards use GitHub-hosted `ubuntu-latest`. There is
+no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
+an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
+Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
+pushes may use the general pool.
 
-Overflow requires **all** of `self-hosted`, `Linux`, `X64`, and
+General capacity requires **all** of `self-hosted`, `Linux`, `X64`, and
 `preloop-ci-general`, online and idle at selection time. Never give
 `preloop-ci-general` to the dedicated `gce-tests-only` pool. That pool is
 explicitly excluded from inventory even if it also carries default labels.
@@ -18,13 +17,13 @@ Python setup, writable workspaces, Docker access, and PostgreSQL/pgvector.
 Ubuntu 24.04 uses setup-python's Ubuntu build when system Python is not 3.11;
 it does not need a misleading `ubuntu-latest` label or a hosted toolcache.
 
-The picker assigns at most one overflow shard per observed idle runner,
-at most the number of delayed hosted jobs, and never more than half the
-backend matrix. Other jobs and at least half the backend shards stay hosted.
+The picker assigns at most one shard per observed idle runner, up to the
+backend matrix size. Other jobs stay hosted. A runner registration represents
+a configured slot, not a CPU; provision slots to fit the host's measured capacity.
 This snapshot is not a reservation: another run can consume the runner or a VM
 can stop after selection. GitHub does not automatically move an already queued
 self-hosted job to hosted, and job timeouts do not bound queue time. If that
-happens, disable overflow with `CI_SELF_HOSTED_TESTS=false`, cancel the stalled
+happens, disable self-hosted routing with `CI_SELF_HOSTED_TESTS=false`, cancel the stalled
 run, and rerun it on hosted capacity. There is no VM provisioning in this flow.
 
 Backend CI prefers a Postgres that is already listening on the runner. The
@@ -43,8 +42,8 @@ so an offline pool must not prevent the picker from selecting hosted shards or
 the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
 existing repository values have no effect on this workflow.
 
-Only backend shards may use the general pool, under the hosted-first overflow
-rules above. `CI_SELF_HOSTED_TESTS=false` disables that overflow. An offline or
+Only backend shards may use the general pool, under the capacity rules above.
+`CI_SELF_HOSTED_TESTS=false` disables that routing. An offline or
 empty runner inventory keeps all shards hosted without provisioning a VM.
 
 ## Postgres
@@ -164,7 +163,7 @@ group). If neither works, the step fails with
 
 `gce-tests-only` is the registration label for the repository-scoped isolated
 test pool. Its runners must never carry `preloop-ci-general`; the backend
-overflow selector also explicitly rejects `gce-tests-only`, whether or not
+capacity selector also explicitly rejects `gce-tests-only`, whether or not
 the runner carries default labels. Only a manual dispatch of
 `fuzz.yml` with `execution_host_tests: true` selects this pool; PRs and schedules
 keep their existing hosted routing.
