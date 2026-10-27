@@ -73,10 +73,12 @@ The [account kill switch](docs/guide/account-kill-switch.md) serializes halt tra
 Database worker ownership, row-lock compatibility, and cancellation rules are
 documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
 
-Agent harnesses are told the [context window and output ceiling](docs/guide/model-context-limits.md)
-of the model they run on, taken per field from `model_parameters` on the model
-row and then from the vendored catalog. An unknown limit is omitted rather
-than guessed, so the harness keeps its own default.
+Agent harnesses receive supported [context and output settings](docs/guide/model-context-limits.md)
+from model-row parameters and the vendored catalog. Hosted Codex adds a
+version-pinned local catalog for unknown custom models, preserving its generic
+instructions and labeling an unknown context as a CLI fallback. The model
+gateway controls Codex's upstream output allowance when enabled; direct provider
+runs retain provider defaults. Native Codex profiles stay intact. No provider capacity is inferred from an unknown model name.
 
 [Reviewed price feeds](docs/guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and
