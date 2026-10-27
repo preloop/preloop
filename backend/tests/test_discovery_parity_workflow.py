@@ -39,3 +39,16 @@ def test_linux_discovery_uses_narrow_self_hosted_helper() -> None:
         'sudo -n /usr/local/sbin/preloop-ci-offline "$RUNNER_TEMP/discovery.test.exe" '
         '-test.run "$DISCOVERY_TESTS" -test.v -test.count=1 -test.timeout=10m'
     )
+
+
+def test_discovery_linux_avoids_private_alias_without_changing_other_platforms() -> (
+    None
+):
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    job = workflow["jobs"]["discovery-parity"]
+    assert job["strategy"]["matrix"]["os"] == [
+        "ubuntu-24.04",
+        "macos-latest",
+        "windows-latest",
+    ]
+    assert job["runs-on"] == "${{ matrix.os }}"

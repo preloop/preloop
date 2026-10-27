@@ -68,3 +68,9 @@ def test_go_codeql_sets_up_go_before_autobuild() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Initialize CodeQL"
     )
+
+
+def test_codeql_avoids_private_ubuntu_latest_alias() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    assert workflow["jobs"]["changes"]["runs-on"] == "ubuntu-24.04"
+    assert workflow["jobs"]["analyze"]["runs-on"] == "ubuntu-24.04"

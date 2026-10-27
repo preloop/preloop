@@ -30,10 +30,12 @@ concurrency:
 permissions:
   contents: read
 
+# Use the hosted-only label; legacy private runners also advertise ubuntu-latest.
+# Keep ubuntu-24.04 absent from private registrations (self-hosted-runners.md).
 jobs:
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.out.outputs.matrix }}
     steps:
@@ -95,7 +97,7 @@ jobs:
 
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     permissions:
       security-events: write
