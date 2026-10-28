@@ -21,6 +21,9 @@ import {
   getDeviceFleet,
   getFleetDevice,
   getFleetRules,
+  getFleetRoster,
+  replaceFleetRosterCsv,
+  type FleetRoster,
   osLabel,
   runnerStateChip,
   saveFleetRules,
@@ -153,6 +156,14 @@ export class DeviceFleetView extends LitElement {
     new URLSearchParams(location.search).get('tab') || 'devices';
   @state() private search = '';
   @state() private runnerState = '';
+  @state() private governance = '';
+  @state() private rosterState = '';
+  @state() private roster: FleetRoster | null = null;
+  @state() private rosterFile: File | null = null;
+  @state() private rosterConfirmed = false;
+  @state() private retainDisplayNames = false;
+  @state() private rosterSaving = false;
+  @state() private rosterError = '';
   @state() private saving = false;
   @state() private sortKey: SortKey = 'device';
   @state() private sortDescending = false;
@@ -177,6 +188,11 @@ export class DeviceFleetView extends LitElement {
     this.routeSearch = context.search;
     this.tab = new URLSearchParams(context.search).get('tab') || 'devices';
     this.device = null;
+    this.rosterFile = null;
+    this.rosterConfirmed = false;
+    this.retainDisplayNames = false;
+    this.rosterError = '';
+    this.notice = '';
     if (this.isConnected) void this.load();
   }
 
@@ -449,6 +465,35 @@ export class DeviceFleetView extends LitElement {
         padding: 8px;
         border-radius: var(--sl-border-radius-medium);
       }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .roster-form .check-option {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .roster-form input[type='checkbox'] {
+        flex: none;
+        min-height: 16px;
+        width: 16px;
+        height: 16px;
+        margin: 2px 0 0;
+      }
+      input[type='file'] {
+        max-width: 100%;
+      }
+      summary {
+        cursor: pointer;
+      }
       .limits {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
@@ -554,27 +599,32 @@ export class DeviceFleetView extends LitElement {
       this.manage = access.manage;
       this.instanceAdmin = access.instanceAdmin === true;
       this.userId = access.userId ?? '';
-      if (this.tab === 'settings' && !access.manage) this.tab = 'devices';
+      if (['settings', 'roster'].includes(this.tab) && !access.manage)
+        this.tab = 'devices';
       const key = new URLSearchParams(this.routeSearch).get('device');
-      if (!key && this.tab !== 'settings' && this.view === 'canvas') {
+      if (!key && this.tab === 'devices' && this.view === 'canvas') {
         await this.loadMap();
         return;
       }
       // The device page does not need the whole fleet, and a fleet that
       // fails to load must not take a readable device page down with it.
-      const [page, device, rules] = await Promise.all([
-        key || this.tab === 'settings'
+      const [page, device, rules, roster] = await Promise.all([
+        key || this.tab !== 'devices'
           ? null
           : getDeviceFleet(controller.signal),
         key ? getFleetDevice(key, controller.signal) : null,
         access.manage && this.tab === 'settings'
           ? getFleetRules(controller.signal)
           : null,
+        access.manage && this.tab === 'roster'
+          ? getFleetRoster(controller.signal)
+          : null,
       ]);
       if (controller.signal.aborted) return;
       this.page = page;
       this.device = device;
       this.rules = rules?.items || [];
+      this.roster = roster;
       if (page && this.view === 'canvas') void this.loadMap();
     } catch (error) {
       if (!controller.signal.aborted)
@@ -760,6 +810,14 @@ export class DeviceFleetView extends LitElement {
     const devices = page.items.filter(
       (device) =>
         (!this.runnerState || device.runner_state === this.runnerState) &&
+        (!this.rosterState || device.roster_state === this.rosterState) &&
+        (!this.governance ||
+          (this.governance === 'governed' && device.agents_onboarded > 0) ||
+          (this.governance === 'ungoverned' &&
+            device.agents_not_onboarded > 0) ||
+          (this.governance === 'none' &&
+            !device.agents_onboarded &&
+            !device.agents_not_onboarded)) &&
         [
           device.hostname,
           device.device_key,
@@ -876,7 +934,7 @@ export class DeviceFleetView extends LitElement {
       >
       <span class="empty-command">
         <code>preloop runner fg</code>
-        <sl-copy-button value="preloop runner fg"></sl-copy-button>
+        ${this.copyButton('preloop runner fg', 'Copy runner command')}
       </span>`;
     // No devices: say how to get the first one, even when agents have
     // already been seen in traffic. Filters over nothing would only mislead.
@@ -889,7 +947,9 @@ export class DeviceFleetView extends LitElement {
         ${this.renderUnassigned(page.unassigned_agents)}`;
 
     const devices = this.filteredDevices(page);
-    const filtered = Boolean(this.search || this.runnerState);
+    const filtered = Boolean(
+      this.search || this.runnerState || this.governance || this.rosterState
+    );
     return html`${this.renderStrip(page)}
       <div class="filters">
         <label
@@ -910,6 +970,32 @@ export class DeviceFleetView extends LitElement {
             ${RUNNER_STATES.map((state) => html`<option value=${state}>${runnerStateChip(state).label}</option>`)}
           </select></label
         >
+        <label
+          >Agents
+          <select
+            id="governance-filter"
+            .value=${this.governance}
+            @change=${(e: Event) => (this.governance = (e.target as HTMLSelectElement).value)}
+          >
+            <option value="">Any agents</option>
+            <option value="governed">With governed agents</option>
+            <option value="ungoverned">With ungoverned agents</option>
+            <option value="none">No agents reported</option>
+          </select>
+        </label>
+        <label
+          >Roster
+          <select
+            id="roster-filter"
+            .value=${this.rosterState}
+            @change=${(e: Event) => (this.rosterState = (e.target as HTMLSelectElement).value)}
+          >
+            <option value="">Any roster state</option>
+            <option value="expected">On roster, seen</option>
+            <option value="expected_missing">Expected, never seen</option>
+            <option value="not_on_roster">Not on roster</option>
+          </select>
+        </label>
         <span class="count" aria-live="polite"
           >${filtered ? `${devices.length} of ${page.total}` : page.total}
           device${page.total === 1 ? '' : 's'}</span
@@ -950,6 +1036,8 @@ export class DeviceFleetView extends LitElement {
                   @click=${() => {
                     this.search = '';
                     this.runnerState = '';
+                    this.governance = '';
+                    this.rosterState = '';
                   }}
                   >Clear filters</sl-button
                 >
@@ -957,6 +1045,165 @@ export class DeviceFleetView extends LitElement {
         }
       </sl-card>
       ${this.renderUnassigned(page.unassigned_agents)}`;
+  }
+
+  private copyButton(value: string, label: string, className = '') {
+    // copy-label names the tooltip; slotted text names the native button.
+    return html`<sl-copy-button
+      class=${className}
+      value=${value}
+      copy-label=${label}
+    >
+      <span slot="copy-icon"
+        ><sl-icon name="copy" aria-hidden="true"></sl-icon
+        ><span class="sr-only">${label}</span></span
+      >
+    </sl-copy-button>`;
+  }
+
+  private selectRoster(event: Event): void {
+    const file = (event.target as HTMLInputElement).files?.[0] || null;
+    this.rosterConfirmed = false;
+    this.rosterError = '';
+    this.notice = '';
+    this.rosterFile = null;
+    if (file && file.size > 1_048_576) {
+      this.rosterError = 'Roster CSV must be at most 1 MiB.';
+      return;
+    }
+    if (file && !file.size) {
+      this.rosterError =
+        'Choose a CSV with device_ref and platform headers. A header-only CSV clears the roster.';
+      return;
+    }
+    this.rosterFile = file;
+  }
+
+  private async replaceRoster(event: Event): Promise<void> {
+    event.preventDefault();
+    if (
+      !this.manage ||
+      this.rosterSaving ||
+      !this.rosterConfirmed ||
+      !this.rosterFile ||
+      !this.roster
+    )
+      return;
+    const controller = this.controller;
+    this.rosterSaving = true;
+    this.rosterError = '';
+    this.notice = '';
+    try {
+      const roster = await replaceFleetRosterCsv(
+        this.rosterFile,
+        this.retainDisplayNames,
+        controller?.signal
+      );
+      if (!this.isConnected || controller?.signal.aborted) return;
+      this.roster = roster;
+      this.rosterFile = null;
+      this.rosterConfirmed = false;
+      this.retainDisplayNames = false;
+      const input =
+        this.shadowRoot?.querySelector<HTMLInputElement>('#roster-file');
+      if (input) input.value = '';
+      this.page = null;
+      this.map = null;
+      this.notice = `Roster replaced: ${roster.total} device${roster.total === 1 ? '' : 's'}.`;
+    } catch (error) {
+      if (this.isConnected && !controller?.signal.aborted) {
+        this.rosterError =
+          error instanceof Error
+            ? error.message
+            : 'Roster replacement could not be confirmed. Refresh before retrying.';
+        this.rosterConfirmed = false;
+      }
+    } finally {
+      this.rosterSaving = false;
+    }
+  }
+
+  private renderRoster() {
+    if (!this.manage || !this.roster) return nothing;
+    return html`<sl-card
+      ><div slot="header" class="card-title">Expected device roster</div>
+      <p>
+        Current roster: ${this.roster.total}
+        device${this.roster.total === 1 ? '' : 's'}.
+      </p>
+      <p>
+        Upload a complete CSV snapshot, up to 1 MiB and 5,000 devices. Required
+        columns: <code>device_ref,platform</code>. Optional columns:
+        <code>primary_user,groups</code>; separate groups with semicolons.
+        Platforms: darwin, linux, windows, other, unknown.
+      </p>
+      <p>
+        Device references should match the identifiers reported by your
+        collector. The roster describes expected devices; it does not prove that
+        software is installed.
+      </p>
+      <form class="roster-form" @submit=${this.replaceRoster}>
+        <p>
+          <label for="roster-file">Roster CSV</label><br />
+          <input
+            id="roster-file"
+            type="file"
+            accept=".csv,text/csv"
+            ?disabled=${this.rosterSaving}
+            @change=${this.selectRoster}
+          />
+        </p>
+        <p>
+          <label class="check-option"
+            ><input
+              id="retain-roster-names"
+              type="checkbox"
+              .checked=${this.retainDisplayNames}
+              ?disabled=${this.rosterSaving}
+              @change=${(e: Event) => {
+                this.retainDisplayNames = (
+                  e.target as HTMLInputElement
+                ).checked;
+                this.rosterConfirmed = false;
+              }}
+            />
+            Retain person and group display names</label
+          ><br />
+          <span class="meta"
+            >Off by default. Device, person and group identifiers are stored as
+            tenant-specific hashes. Opting in also stores person and group
+            names.</span
+          >
+        </p>
+        ${this.rosterFile ? html`<p role="status">Ready to replace with <strong>${this.rosterFile.name}</strong> (${this.rosterFile.size.toLocaleString()} bytes).</p>` : nothing}
+        <p>
+          This replaces the entire roster. Devices omitted from this CSV are
+          removed. A CSV containing only headers clears the roster. Invalid or
+          duplicate rows reject the whole snapshot.
+        </p>
+        <p>
+          <label class="check-option"
+            ><input
+              id="roster-confirm"
+              type="checkbox"
+              .checked=${this.rosterConfirmed}
+              ?disabled=${this.rosterSaving || !this.rosterFile}
+              @change=${(e: Event) => (this.rosterConfirmed = (e.target as HTMLInputElement).checked)}
+            />
+            I reviewed this file and want to replace the current roster.</label
+          >
+        </p>
+        ${this.rosterError ? html`<p role="alert">${this.rosterError}</p>` : nothing}
+        <sl-button
+          id="replace-roster"
+          type="submit"
+          variant="primary"
+          ?loading=${this.rosterSaving}
+          ?disabled=${this.rosterSaving || !this.rosterFile || !this.rosterConfirmed}
+          >Replace roster</sl-button
+        >
+      </form>
+    </sl-card>`;
   }
 
   private renderUnassigned(agents: FleetAgent[]) {
@@ -1004,12 +1251,7 @@ export class DeviceFleetView extends LitElement {
               <sl-tooltip
                 content="Run this on the machine to put the agent under Preloop"
               >
-                <sl-copy-button
-                  class="onboard"
-                  value=${onboardCommand(agent)}
-                  copy-label="Copy onboard command"
-                  success-label="Onboard command copied"
-                ></sl-copy-button>
+                ${this.copyButton(onboardCommand(agent), 'Copy onboard command', 'onboard')}
               </sl-tooltip>
               <code>${onboardCommand(agent)}</code>
             </span>`
@@ -1037,10 +1279,7 @@ export class DeviceFleetView extends LitElement {
         <span class="meta" title=${device.device_key}
           >${device.device_key.slice(0, 16)}…</span
         >
-        <sl-copy-button
-          value=${device.device_key}
-          copy-label="Copy device key"
-        ></sl-copy-button>
+        ${this.copyButton(device.device_key, 'Copy device key')}
         <sl-tooltip
           content="Everything here is self-reported by software on the machine."
         >
@@ -1095,7 +1334,7 @@ export class DeviceFleetView extends LitElement {
                   </p>
                   <span class="empty-command">
                     <code>preloop runner fg</code>
-                    <sl-copy-button value="preloop runner fg"></sl-copy-button>
+                    ${this.copyButton('preloop runner fg', 'Copy runner command')}
                   </span>
                 </div>`
           }
@@ -1261,6 +1500,7 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       </div>`;
     if (this.error) return this.renderError();
     if (this.tab === 'settings') return this.renderSettings();
+    if (this.tab === 'roster') return this.renderRoster();
     return this.device ? this.renderDevice(this.device) : this.renderDevices();
   }
 
@@ -1284,7 +1524,7 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
               >`
             : nothing
         }
-        ${!onDevice && this.tab !== 'settings' ? html`<div slot="main-column">${this.renderViewSwitch()}</div>` : nothing}
+        ${!onDevice && this.tab === 'devices' ? html`<div slot="main-column">${this.renderViewSwitch()}</div>` : nothing}
         <div slot="description">
           ${
             device
@@ -1294,7 +1534,7 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
         </div>
       </view-header>
       <div
-        class="content ${!onDevice && this.tab !== 'settings' && this.view === 'canvas' ? 'map-content' : ''}"
+        class="content ${!onDevice && this.tab === 'devices' && this.view === 'canvas' ? 'map-content' : ''}"
       >
         ${
           onDevice
@@ -1302,27 +1542,51 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
             : html`<nav class="section-nav" aria-label="Device fleet sections">
                 <a
                   href=${fleetHref()}
-                  aria-current=${this.tab !== 'settings' ? 'page' : 'false'}
+                  aria-current=${this.tab === 'devices' ? 'page' : 'false'}
                   >Devices</a
                 >${
                   this.manage
                     ? html`<a
-                        href="/console/settings/device-fleet?tab=settings"
-                        aria-current=${this.tab === 'settings' ? 'page' : 'false'}
-                        >Alert settings</a
-                      >`
+                          href="/console/settings/device-fleet?tab=settings"
+                          aria-current=${this.tab === 'settings' ? 'page' : 'false'}
+                          >Alert settings</a
+                        >
+                        <a
+                          href="/console/settings/device-fleet?tab=roster"
+                          aria-current=${this.tab === 'roster' ? 'page' : 'false'}
+                          >Roster</a
+                        >`
                     : nothing
                 }<a href="/console/settings/runners">Runners</a>
               </nav>`
         }
         ${this.notice ? html`<p role="status">${this.notice}</p>` : nothing}
         ${this.renderBody()}
-        <p class="limits" data-testid="fleet-limits">
-          What this page shows is self-reported by Preloop software and is not
-          attestation. A machine that never ran Preloop is invisible unless it
-          is on the roster, and nothing here proves traffic did not bypass
-          Preloop.
-        </p>
+        <div class="limits" data-testid="fleet-limits">
+          <p>
+            Self-reported observations, not attestation. Devices without Preloop
+            are invisible unless they are on the roster.
+          </p>
+          <details>
+            <summary>What this page can and cannot prove</summary>
+            <p>
+              Runner heartbeats, collector reports and governed traffic describe
+              what Preloop last observed. Sources have independent freshness
+              windows; stale or missing reports do not establish a machine's
+              current state.
+            </p>
+            <p>
+              The roster supplies an expected inventory. “Expected, never seen”
+              means no matching observation is available, not proof that a
+              device is offline. Hostname similarities are hints, not verified
+              device identity.
+            </p>
+            <p>
+              Nothing here proves that traffic did not bypass Preloop or that
+              all agents on a device are governed.
+            </p>
+          </details>
+        </div>
       </div>`;
   }
 }
