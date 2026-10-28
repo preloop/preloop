@@ -120,7 +120,27 @@ async def test_scoped_lease_binds_exact_repo_and_revision_without_broad_resolver
     assert repository["commit"] == binding.head_sha
     assert "repository_url" not in flow.git_clone_config["repositories"][0]
     executor = ContainerAgentExecutor.__new__(ContainerAgentExecutor)
+    executor.logger = MagicMock()
     assert executor._resolve_repository_token(repository, context)[0] == "only-read"
+    # Exercise the final native clone generator with conflicting moving-PR
+    # metadata. The controller pin must survive branch autodetection (#2095).
+    context["trigger_event_data"] = {
+        "payload": {
+            "pull_request": {
+                "number": 7,
+                "head": {"sha": "b" * 40, "ref": "moving-pr"},
+                "base": {"ref": "moving-default"},
+            }
+        }
+    }
+    command = executor._prepare_git_clone_command(context)
+    assert "git clone --no-checkout https://github.com/example/project.git" in command
+    assert f"git fetch --filter=blob:none origin {binding.head_sha}" in command
+    assert f"git checkout --force {binding.head_sha}" in command
+    assert f'"$(git rev-parse HEAD)" != {binding.head_sha}' in command
+    assert "b" * 40 not in command
+    assert "git clone -b" not in command
+    assert executor._wrap_clone_with_workspace_restore(command, context) == command
     with patch.object(executor, "_get_token_from_project") as fallback:
         with pytest.raises(ValueError):
             executor._resolve_repository_token(
