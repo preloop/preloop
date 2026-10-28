@@ -201,8 +201,11 @@ def test_auth_events_are_searchable_and_exported_for_only_their_account(
 
 def test_scim_actor_retains_only_the_token_prefix() -> None:
     assert sanitize_auth_payload(
-        {"scim_token_prefix": "synthetic-token-secret-value"}
-    ) == {"scim_token_prefix": "synthetic-to"}
+        {
+            "scim_token_prefix": "synthetic-token-secret-value",
+            "prefix": "synthetic-token-secret-value",
+        }
+    ) == {"scim_token_prefix": "synthetic-to", "prefix": "synthetic-to"}
 
 
 def test_audit_storage_failure_never_echoes_credential_material(caplog) -> None:
@@ -244,3 +247,68 @@ def test_long_forwarded_header_cannot_suppress_failed_login_audit(
     )
     assert len(rows) == 1
     assert rows[0].ip_address is None
+
+
+def test_sso_identifier_labels_survive_without_protocol_secrets() -> None:
+    person_id = uuid4()
+    clean = sanitize_auth_payload(
+        {
+            "name": "Client-secret rotation configuration",
+            "domain": "identity.example",
+            "idp_group": "api_key_admins",
+            "oidc_issuer": "https://user:synthetic-secret@idp.example:8443/issuer?client_secret=synthetic-query#synthetic-fragment",
+            "saml_idp_entity_id": "urn:example:client-secret-rotation",
+            "changed": [
+                "oidc_client_secret",
+                "name",
+                "synthetic-raw-token",
+                {"token": "secret"},
+            ],
+            "break_glass_owner_ids": [
+                person_id,
+                "synthetic-invalid-id",
+                {"token": "secret"},
+            ],
+            "oidc_client_secret": "synthetic-secret",
+            "assertion": "synthetic-assertion",
+        }
+    )
+    assert clean == {
+        "name": "Client-secret rotation configuration",
+        "domain": "identity.example",
+        "idp_group": "api_key_admins",
+        "oidc_issuer": "https://idp.example:8443/issuer",
+        "saml_idp_entity_id": "urn:example:client-secret-rotation",
+        "changed": ["name", "oidc_client_secret"],
+        "break_glass_owner_ids": [str(person_id)],
+    }
+    assert "synthetic-secret" not in str(clean)
+    assert "synthetic-query" not in str(clean)
+    assert "synthetic-fragment" not in str(clean)
+
+
+def test_sso_audit_identifiers_and_owner_lists_are_bounded() -> None:
+    owner = str(uuid4())
+    clean = sanitize_auth_payload(
+        {
+            "name": "a" * 300,
+            "domain": "b" * 300,
+            "idp_group": "c" * 600,
+            "break_glass_owner_ids": [owner] * 101,
+        }
+    )
+    assert len(clean["name"]) == 255
+    assert len(clean["domain"]) == 253
+    assert len(clean["idp_group"]) == 512
+    assert clean["break_glass_owner_ids"] == [owner] * 100
+    assert clean["break_glass_owner_ids_total"] == 101
+
+
+@pytest.mark.parametrize("field", ["oidc_issuer", "saml_idp_entity_id"])
+def test_identity_urls_remove_assertions_and_tokens(field: str) -> None:
+    clean = sanitize_auth_payload(
+        {
+            field: "https://user:synthetic-password@idp.example/identity?SAMLResponse=synthetic-assertion&id_token=synthetic-token#synthetic-fragment"
+        }
+    )
+    assert clean == {field: "https://idp.example/identity"}
