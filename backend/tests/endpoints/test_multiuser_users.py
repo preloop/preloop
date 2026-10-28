@@ -337,8 +337,8 @@ def test_tenant_admin_cannot_update_another_person_identity(
     )
 
 
-def test_update_user_response_serializes_roles(test_user: User, db_session: Session):
-    """Test updating a user with roles returns serialized role data."""
+def test_update_user_response_hides_legacy_roles(test_user: User, db_session: Session):
+    """Stored commercial roles are not exposed as OSS access controls."""
     target_user = crud_user.create(
         db_session,
         obj_in={
@@ -377,20 +377,14 @@ def test_update_user_response_serializes_roles(test_user: User, db_session: Sess
 
     data = response.model_dump()
     assert data["is_active"] is False
-    assert data["roles"] == [
-        {
-            "id": str(role.id),
-            "name": "Role Update Tester",
-            "description": "Role used to verify update responses",
-            "team_name": None,
-        }
-    ]
+    assert data["roles"] == []
+    assert data["inherited_roles"] == []
 
 
-def test_admin_user_response_batches_direct_role_loads(
+def test_core_user_response_does_not_load_legacy_roles(
     test_user: User, db_session: Session
 ):
-    """Building one admin response should not use per-role CRUD lookups."""
+    """OSS profiles do not load the stored commercial role assignments."""
     target_user = crud_user.create(
         db_session,
         obj_in={
@@ -432,18 +426,17 @@ def test_admin_user_response_batches_direct_role_loads(
     db_session.flush()
 
     from preloop.api.endpoints.users import _build_admin_user_response
+    from preloop.models.crud.identity_directory import identity_directory
 
     with patch.object(
-        crud_role,
-        "get",
-        side_effect=AssertionError("direct role lookup should be batched"),
+        identity_directory,
+        "role_context",
+        side_effect=AssertionError("core profiles should not load roles"),
     ):
         response = _build_admin_user_response(db_session, target_user)
 
-    assert {role.name for role in response.roles} == {
-        "Batch Role One",
-        "Batch Role Two",
-    }
+    assert response.roles == []
+    assert response.inherited_roles == []
 
 
 def test_update_user_not_found(

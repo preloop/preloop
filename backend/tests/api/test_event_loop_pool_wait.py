@@ -68,7 +68,6 @@ CONSOLE_HOT_PATHS: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/account/telemetry/dashboard"),
     ("GET", "/api/v1/attention/dismissals"),
     ("GET", "/api/v1/attention/extension-items"),
-    ("GET", "/api/v1/roles"),
     ("GET", "/api/v1/users"),
     ("GET", "/api/v1/teams"),
     ("GET", "/api/v1/invitations"),

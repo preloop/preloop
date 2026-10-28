@@ -65,7 +65,9 @@ def test_unknown_identity_is_logged_without_tenant_or_raw_identifier(caplog) -> 
 
 
 @pytest.mark.parametrize("path", ["/token", "/token/json"])
-@pytest.mark.parametrize("outcome", ["success", "invalid_password", "policy_rejected"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "invalid_password", "policy_rejected", "internal_error"]
+)
 def test_password_routes_record_one_final_outcome(path: str, outcome: str) -> None:
     app = FastAPI()
     app.include_router(router, prefix="/auth")
@@ -83,10 +85,15 @@ def test_password_routes_record_one_final_outcome(path: str, outcome: str) -> No
     gate = AsyncMock(return_value=user)
     if outcome == "policy_rejected":
         gate.side_effect = HTTPException(403, "synthetic policy refusal")
+    authentication = AsyncMock(
+        return_value=None if outcome == "invalid_password" else user
+    )
+    if outcome == "internal_error":
+        authentication.side_effect = RuntimeError("synthetic storage failure")
     with (
         patch(
             "preloop.api.auth.router.authenticate_user",
-            AsyncMock(return_value=None if outcome == "invalid_password" else user),
+            authentication,
         ),
         patch("preloop.api.auth.router._landing_row", gate),
         patch("preloop.api.auth.router.crud_person.resolve_login", return_value=person),
@@ -97,14 +104,19 @@ def test_password_routes_record_one_final_outcome(path: str, outcome: str) -> No
         patch("preloop.services.auth_audit.crud_audit_log.log_action") as write,
     ):
         body = {"username": "jane@example.com", "password": "synthetic-password"}
-        with TestClient(app) as client:
+        with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post(
                 "/auth" + path,
                 **({"data": body} if path == "/token" else {"json": body}),
             )
     assert (
         response.status_code
-        == {"success": 200, "invalid_password": 401, "policy_rejected": 403}[outcome]
+        == {
+            "success": 200,
+            "invalid_password": 401,
+            "policy_rejected": 403,
+            "internal_error": 500,
+        }[outcome]
     )
     write.assert_called_once()
     event = write.call_args.kwargs
@@ -119,6 +131,7 @@ def test_password_routes_record_one_final_outcome(path: str, outcome: str) -> No
         assert event["details"]["reason_code"] in {
             "invalid_credentials",
             "identity_or_policy_rejected",
+            "internal_error",
         }
 
 
@@ -201,3 +214,33 @@ def test_audit_storage_failure_never_echoes_credential_material(caplog) -> None:
         record_auth_event(MagicMock(), account_id=uuid4(), action="auth.login.failed")
     assert "Authentication audit write failed" in caplog.text
     assert "synthetic-secret-from-database-error" not in caplog.text
+
+
+@pytest.mark.parametrize("forwarded", ["x" * 200, "not-an-ip"])
+def test_long_forwarded_header_cannot_suppress_failed_login_audit(
+    db_session, test_user, forwarded: str
+) -> None:
+    app = FastAPI()
+    app.include_router(router, prefix="/auth")
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    account_id = test_user.account_id
+    with patch(
+        "preloop.api.auth.router.authenticate_user", AsyncMock(return_value=None)
+    ):
+        with TestClient(app) as client:
+            response = client.post(
+                "/auth/token/json",
+                headers={"X-Forwarded-For": forwarded},
+                json={
+                    "username": test_user.username,
+                    "password": "synthetic-wrong-password",
+                },
+            )
+    assert response.status_code == 401
+    from preloop.models.crud import crud_audit_log
+
+    rows = crud_audit_log.get_by_account(
+        db_session, account_id=account_id, action="auth.login.failed"
+    )
+    assert len(rows) == 1
+    assert rows[0].ip_address is None

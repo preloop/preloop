@@ -112,6 +112,19 @@ trail and period exports; attempts without a trustworthy account emit a
 content-free service security log, never a caller-selected tenant row. Existing
 `user.login` activity events remain available for cohort metrics.
 
+Authentication audit volume is intentionally one outcome per attempt, without
+sampling or deduplication. Password login and passkey verification have no
+built-in attempt limiter, so operators should enforce ingress limits on
+`/api/v1/auth/token`, `/api/v1/auth/token/json`, and
+`/api/v1/auth/webauthn/authenticate/verify` using the trusted proxy's client
+address. Incoming forwarded headers alone are not a rate-limit identity.
+A known-account failure adds one audit row; sustained attempts therefore grow
+the account's retained audit history and period exports linearly. The ordinary
+audit retention policy applies, and the period export row cap requires smaller
+periods for high-volume accounts. Unknown-account failures grow service logs;
+apply the same ingress limits and log rotation there. Limit attempts before
+authentication, rather than suppressing required compliance events afterward.
+
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
 Customer-facing gateway reports exclude replay validation and every
@@ -758,6 +771,12 @@ that request roles answer 402 `upgrade_required` in core, and roles stored on
 an invitation by a commercial edition are not granted on acceptance. Bulk hard
 deletion still skips the primary user of an account with other members,
 because an account needs a primary user.
+
+The role catalog route (`GET /api/v1/roles`) is registered only by the commercial
+RBAC plugin. Core user/team responses retain the `roles`/`inherited_roles` fields
+for API compatibility but return empty lists without its access-control service;
+legacy invitation metadata likewise does not advertise commercial role grants.
+Team membership labels remain descriptive and grant no account privileges.
 
 `preloop.services.multiuser` resolves optional services through PluginManager:
 `multiuser_seat_gate`, `multiuser_billing_service`, `multiuser_membership` and

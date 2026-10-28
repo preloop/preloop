@@ -29,6 +29,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models import models
 
 from preloop.utils.permissions import require_permission
+from preloop.services import multiuser
 
 from preloop.services.multiuser import membership_module
 from preloop.services.multiuser import enforce_seat_available
@@ -149,7 +150,7 @@ def create_invitation(
     if account:
         # Get role names (already validated above, but double-check for email)
         role_names = []
-        if invitation.role_ids:
+        if invitation.role_ids and multiuser.access_control() is not None:
             from preloop.models.crud import crud_role
 
             role_ids = [
@@ -392,7 +393,7 @@ def resend_invitation(
     if account:
         # Get role names (with account validation for defense in depth)
         role_names = []
-        if invitation.role_ids:
+        if invitation.role_ids and multiuser.access_control() is not None:
             from preloop.models.crud import crud_role
 
             role_ids = [
@@ -516,7 +517,7 @@ def get_invitation_info(
 
     # Get role names
     role_names = []
-    if invitation.role_ids:
+    if invitation.role_ids and multiuser.access_control() is not None:
         from preloop.models.crud import crud_role
         from uuid import UUID
 

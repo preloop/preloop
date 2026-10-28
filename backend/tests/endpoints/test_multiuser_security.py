@@ -22,6 +22,7 @@ from preloop.models.crud import (
     crud_account,
     crud_role,
     crud_team,
+    crud_team_role,
     crud_user,
     crud_user_invitation,
     crud_user_role,
@@ -306,12 +307,12 @@ def test_role_helpers_grant_every_member_everything(
     ensure_permission_in_oss(db_session, member, "decide_approvals")
 
 
-def test_role_listing_cannot_leak_other_accounts(
+def test_core_has_no_role_catalog(
     client: TestClient,
     db_session: Session,
     secured: None,
 ) -> None:
-    """The role catalogue never exposes another tenant's custom roles."""
+    """Core cannot expose role metadata, including other accounts' roles."""
     account = crud_account.create(
         db_session, obj_in={"organization_name": "Private account"}
     )
@@ -319,8 +320,8 @@ def test_role_listing_cannot_leak_other_accounts(
         db_session, obj_in={"account_id": account.id, "name": "private_role"}
     )
     response = client.get("/api/v1/roles")
-    assert response.status_code == 200, response.text
-    assert str(role.id) not in [item["id"] for item in response.json()["roles"]]
+    assert response.status_code == 404, response.text
+    assert str(role.id) not in response.text
 
 
 class _RecordingAccessControl:
@@ -389,3 +390,26 @@ def test_access_control_overlay_is_consulted(
     db_session.refresh(member)
     assert member.is_active
     assert overlay.calls == ["validate", "apply", "remove", "remove", "remove"]
+
+
+def test_core_responses_do_not_advertise_stored_commercial_roles(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    secured: None,
+) -> None:
+    """Edition changes preserve role storage without exposing active core roles."""
+    owner = crud_role.get_by_name(db_session, name="owner")
+    assert owner is not None
+    team = crud_team.create(
+        db_session, obj_in={"account_id": test_user.account_id, "name": "Example"}
+    )
+    crud_team_role.assign_role(db_session, team_id=team.id, role_id=owner.id)
+    profile = client.get("/api/v1/users/me").json()
+    assert profile["roles"] == []
+    assert profile["inherited_roles"] == []
+    listed = client.get("/api/v1/users").json()["users"]
+    assert all(row["roles"] == [] and row["inherited_roles"] == [] for row in listed)
+    teams = client.get("/api/v1/teams").json()["teams"]
+    assert teams[0]["roles"] == []
+    assert crud_team_role.get_team_roles(db_session, team_id=team.id) == [owner]

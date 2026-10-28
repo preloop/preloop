@@ -1076,7 +1076,11 @@ async def _audited_password_login(
 ) -> UserModel | None:
     """Audit the final password result, including landing-policy refusals."""
     from preloop.api.loop_safety import run_db_off_loop
-    from preloop.services.auth_audit import login_subject, record_login_event
+    from preloop.services.auth_audit import (
+        login_failure_reason,
+        login_subject,
+        record_login_event,
+    )
 
     user = None
     succeeded = False
@@ -1088,6 +1092,9 @@ async def _audited_password_login(
             user = await _landing_row(user, db)
             succeeded = True
         return user
+    except Exception as exc:
+        reason_code = login_failure_reason(exc, method="password")
+        raise
     finally:
 
         def record() -> None:

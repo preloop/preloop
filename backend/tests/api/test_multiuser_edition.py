@@ -16,6 +16,7 @@ app = create_app()
 paths = app.openapi()["paths"]
 for path in ("/api/v1/users", "/api/v1/teams", "/api/v1/invitations", "/api/v1/invitations/public/{token}", "/api/v1/invitations/accept"):
     assert path in paths, path
+assert "/api/v1/roles" not in paths
 assert "/api/v1/teams/{team_id}/roles" not in paths
 assert "/api/v1/users/{user_id}/roles" not in paths
 assert "/api/v1/users/{user_id}/roles/{role_id}" not in paths

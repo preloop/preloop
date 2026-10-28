@@ -25,6 +25,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models import models
 
 from preloop.utils.permissions import require_permission
+from preloop.services import multiuser
 
 
 Team = models.Team
@@ -140,7 +141,11 @@ def list_teams(
         }
 
         # Get team's roles
-        team_roles = crud_team_role.get_team_roles(db=db, team_id=team.id)
+        team_roles = (
+            crud_team_role.get_team_roles(db=db, team_id=team.id)
+            if multiuser.access_control() is not None
+            else []
+        )
         team_dict["roles"] = [
             {
                 "id": str(role.id),

@@ -30,6 +30,7 @@ from preloop.models.crud.person import IdentityConflictError, IdentityUnavailabl
 from preloop.services.multiuser import email_exists
 from preloop.models.db.session import get_db_session
 from preloop.utils.permissions import require_permission
+from preloop.services import multiuser
 
 from preloop.services.multiuser import membership_module
 from preloop.services.multiuser import enforce_seat_available
@@ -54,11 +55,15 @@ def _build_admin_user_response(
     profile = profile or identity_directory.profile_for_membership(
         db, membership_id=user.id
     )
-    roles, inherited_roles = (
-        role_context
-        if role_context is not None
-        else identity_directory.role_context(db, membership_id=user.id)
-    )
+    # Preserve response fields for commercial clients without advertising
+    # stored legacy roles as access controls in the core edition.
+    roles, inherited_roles = [], []
+    if multiuser.access_control() is not None:
+        roles, inherited_roles = (
+            role_context
+            if role_context is not None
+            else identity_directory.role_context(db, membership_id=user.id)
+        )
 
     return AdminUserResponse(
         id=user.id,

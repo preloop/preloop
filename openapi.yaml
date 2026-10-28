@@ -24218,30 +24218,6 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
-  /api/v1/roles:
-    get:
-      tags:
-      - Roles
-      summary: List Roles
-      description: "List all available roles.\n\nArgs:\n    current_user: Current\
-        \ authenticated user\n    db: Database session\n\nReturns:\n    dict: List\
-        \ of roles with their permissions"
-      operationId: list_roles_api_v1_roles_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      security:
-      - bearerAuth: []
-      x-restricted-ci: deny
 components:
   schemas:
     AIModelAgentLink:

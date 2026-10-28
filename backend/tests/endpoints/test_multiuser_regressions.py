@@ -270,7 +270,7 @@ def test_public_invitation_details_hide_foreign_metadata(
     )
     response = client.get(f"/api/v1/invitations/public/{invitation.token}")
     assert response.status_code == 200, response.text
-    assert response.json()["role_names"] == ["admin"]
+    assert response.json()["role_names"] == []
     assert response.json()["team_names"] == ["Visible team"]
 
 

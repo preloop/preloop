@@ -231,7 +231,6 @@
   "GET /api/v1/retention/holds": "deny",
   "GET /api/v1/retention/purge-preview": "deny",
   "GET /api/v1/retention/settings": "deny",
-  "GET /api/v1/roles": "deny",
   "GET /api/v1/runners": "deny",
   "GET /api/v1/runners/fleet-summary": "deny",
   "GET /api/v1/runners/{runner_id}": "deny",
