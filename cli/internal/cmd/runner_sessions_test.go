@@ -678,7 +678,16 @@ func TestRunnerSessionRestartReportsInterruptedTurnAndIgnoresRedelivery(t *testi
 	h.adapter.block = make(chan struct{})
 	h.m.handle(startMsg(sessTestID))
 	h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "a", Text: "long"})
-	h.waitFor(isState("running"))
+	// Running is emitted before the adapter goroutine starts. Its first
+	// event proves it captured the block channel and recorded the original
+	// call, so a delayed first append cannot be mistaken for redelivery.
+	messages := h.waitFor(isState("running"))
+	started := func(msg map[string]any) bool {
+		return msg["type"] == "session_event" && msg["turn_id"] == "a"
+	}
+	if findMsg(messages, started) == nil {
+		h.waitFor(started)
+	}
 	// The process dies without finishing the turn: the old turn stays
 	// blocked forever and its manager is abandoned.
 	h.adapter.mu.Lock()
