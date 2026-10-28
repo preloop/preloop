@@ -5,7 +5,10 @@ member can do everything in it. Accounts stay isolated from each other, roles
 are a commercial overlay, and the overlay hooks are honoured when registered.
 """
 
+import sys
+from types import ModuleType
 from typing import Any
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -272,12 +275,18 @@ def test_member_profile_reports_unrestricted_access(
     app: Any,
     member: models.User,
     secured: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The console receives no permission list, so it shows every control."""
+    """An installed but disabled plugin cannot restrict the core profile."""
+    plugin = ModuleType("preloop.plugins.proprietary.rbac.permissions")
+    permission_lookup = Mock(return_value=[])
+    plugin.get_user_permissions = permission_lookup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, plugin.__name__, plugin)
     app.dependency_overrides[get_current_active_user] = lambda: member
     response = client.get("/api/v1/auth/users/me")
     assert response.status_code == 200, response.text
     assert response.json()["permissions"] is None
+    permission_lookup.assert_not_called()
 
 
 def test_role_helpers_grant_every_member_everything(

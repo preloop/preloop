@@ -4,10 +4,21 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
+
 from preloop.api.auth import router as auth_router
 from preloop.config import settings
+from preloop.utils import permissions
 
 _RBAC_PERMS_MOD = "preloop.plugins.proprietary.rbac.permissions"
+
+
+@pytest.fixture(autouse=True)
+def active_rbac_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Optional-resolution cases exercise the installed access-control layer."""
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda func: func
+    )
 
 
 def test_resolve_user_permissions_disable_rbac(monkeypatch):

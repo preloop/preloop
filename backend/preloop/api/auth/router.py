@@ -235,7 +235,9 @@ def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str
     Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
     still returns the core profile when optional permissions cannot be loaded.
     """
-    if settings.disable_rbac:
+    from preloop.utils.permissions import members_have_full_access
+
+    if settings.disable_rbac or members_have_full_access():
         return None
 
     try:

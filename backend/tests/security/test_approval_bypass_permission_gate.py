@@ -126,6 +126,7 @@ def _rbac_plugin_state(monkeypatch):
 
         return decorator
 
+    monkeypatch.setenv("DISABLE_PROPRIETARY_PLUGINS", "false")
     module = types.ModuleType("preloop.plugins.proprietary.rbac.permissions")
     module.require_permission = plugin_require_permission  # type: ignore[attr-defined]
     monkeypatch.setitem(
