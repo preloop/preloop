@@ -68,6 +68,20 @@ async function login(page: Page, creds: Creds): Promise<void> {
 test.describe('T2 upgrade flow (mocked Stripe boundary)', () => {
   test.skip(IS_STAGING, 'CI-only: staging runs the real-Stripe script instead');
 
+  test.beforeEach(async ({ page }) => {
+    // The local stack is self-hosted by default. Upgrade prompts intentionally
+    // do not open there, so this mocked billing boundary must also declare the
+    // hosted capability. Do not enable real hosted billing/Stripe on the server.
+    await page.route('**/api/v1/features', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...body, features: { ...body.features, billing: true } },
+      });
+    });
+  });
+
   test('402 opens the feature-named modal; upgrade goes to the plan page', async ({
     page,
   }) => {

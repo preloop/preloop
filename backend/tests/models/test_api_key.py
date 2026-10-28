@@ -220,3 +220,19 @@ def test_deactivate_runtime_keys_for_flow_execution(
     assert [key.id for key in deactivated] == [runtime_key.id]
     assert runtime_key.is_active is False
     assert other_key.is_active is True
+
+
+def test_runtime_key_long_names_and_collisions(db_session, create_account, create_user):
+    """Generated agent credential labels fit PostgreSQL, including collisions."""
+    account = create_account()
+    user = create_user(account=account)
+    name = "Managed Agent Credential: " + "long agent name " * 20
+    keys = [
+        crud_api_key.create_runtime_key(
+            db_session, name=name, account_id=account.id, user_id=user.id
+        )[0]
+        for _ in range(2)
+    ]
+    assert all(len(key.name) <= 100 for key in keys)
+    assert keys[0].name == name[:100]
+    assert keys[0].name != keys[1].name
