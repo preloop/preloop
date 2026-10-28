@@ -182,6 +182,8 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     assert actual["POST /api/v1/chat/setup"] == "deny"
     assert actual["POST /api/v1/chat/setup/{draft_id}/finish"] == "deny"
     assert actual["POST /api/v1/chat/setup/slack/oauth"] == "deny"
+    assert actual["GET /api/v1/overview/bootstrap"] == "deny"
+    assert actual["GET /api/v1/overview/shell"] == "deny"
     assert actual["GET /docs/api"] == "deny"
     assert actual["MOUNT /mcp"] == "deny"
     assert actual["MOUNT /static"] == "deny"
@@ -251,6 +253,8 @@ def test_real_routes_deny_valid_requests_without_side_effects(
         ),
         ("GET", "/api/v1/runtime-sessions", None),
         ("GET", "/api/v1/runners", None),
+        ("GET", "/api/v1/overview/bootstrap", None),
+        ("GET", "/api/v1/overview/shell", None),
         ("POST", "/api/v1/auth/refresh", {"refresh_token": token}),
     ]
     requests.extend(

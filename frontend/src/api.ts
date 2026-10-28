@@ -1,3 +1,7 @@
+import {
+  readOverviewInput,
+  invalidateOverviewLoads,
+} from './utils/overview-bootstrap';
 import { REST_API_PREFIX } from './api-path';
 import { LitElement } from 'lit';
 import { ownerConsentRequest } from './utils/owner-consent-request';
@@ -197,6 +201,7 @@ export function invalidateApiCaches(): void {
   // Drop coalesced GETs so a later caller cannot join a response that started
   // under a previous session or fetch stub.
   inFlightGets.clear();
+  invalidateOverviewLoads();
   if (typeof sessionStorage !== 'undefined') {
     try {
       sessionStorage.removeItem('preloop.agents.gateway_summary.v1');
@@ -565,6 +570,7 @@ export async function fetchWithAuth(
     // caller that asks again after this must get a request of its own, not
     // join one that started before the change.
     inFlightGets.clear();
+    invalidateOverviewLoads();
   }
   // Only plain reads: a body, a signal or a custom header makes the call the
   // caller's own, and anything that is not a GET may change something.
@@ -668,7 +674,17 @@ async function performFetchWithAuth(
   headers.set('Authorization', `Bearer ${accessToken}`);
   options.headers = headers;
 
-  let response = await fetch(url, options);
+  const overviewRead =
+    (options.method || 'GET').toUpperCase() === 'GET' &&
+    !options.signal &&
+    !options.body &&
+    !requested.headers &&
+    options.cache !== 'reload' &&
+    options.cache !== 'no-store'
+      ? readOverviewInput(url, accessToken)
+      : null;
+  const overviewResponse = overviewRead ? await overviewRead : null;
+  let response = overviewResponse ?? (await fetch(url, options));
 
   if (response.status === 401) {
     // Check if the 401 is actually a gateway upstream error (e.g., invalid Anthropic or OpenAI API key).
@@ -8001,7 +8017,14 @@ export async function getFeatures(): Promise<FeaturesResponse> {
   const epoch = featuresEpoch;
   featuresInflight = (async () => {
     try {
-      const response = await fetchPublic(REST_API_PREFIX + '/features');
+      const overview = localStorage.getItem('accessToken')
+        ? await readOverviewInput(
+            REST_API_PREFIX + '/features',
+            localStorage.getItem('accessToken')!
+          )
+        : null;
+      const response =
+        overview ?? (await fetchPublic(REST_API_PREFIX + '/features'));
       if (!response.ok) {
         throw new Error('Failed to fetch features');
       }

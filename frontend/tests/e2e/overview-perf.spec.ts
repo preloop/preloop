@@ -228,7 +228,8 @@ async function measureLoad(page: Page, cold: boolean): Promise<RunResult> {
         const stats = root.querySelector('.plane-stats');
         if (!stats || stats.getAttribute('aria-busy') === 'true') return false;
         const text = stats.textContent || '';
-        return /\d[\d.,KM]*\s+requests/.test(text) || /No traffic yet/.test(text)
+        return /\d[\d.,KM]*\s+requests/.test(text) ||
+          /No traffic yet/.test(text)
           ? performance.now()
           : false;
       },
@@ -342,6 +343,22 @@ test.describe('Overview performance', () => {
   });
 
   test('stays quiet while the gateway is busy', async ({ page, request }) => {
+    let gatewayEvents = 0;
+    page.on('websocket', (socket) => {
+      socket.on('framereceived', ({ payload }) => {
+        try {
+          const message = JSON.parse(String(payload));
+          if (
+            message.topic === 'gateway_activity' &&
+            message.type !== 'subscription_ack' &&
+            message.type !== 'subscription_error'
+          )
+            gatewayEvents += 1;
+        } catch {
+          /* Non-JSON control frames do not carry activity. */
+        }
+      });
+    });
     await login(page, resolveCreds());
     await measureLoad(page, true);
 
@@ -350,28 +367,47 @@ test.describe('Overview performance', () => {
     // gateway_activity event to the open page.
     const burst = (async () => {
       for (let call = 0; call < 20; call += 1) {
-        await request.post('/openai/v1/chat/completions', {
+        const response = await request.post('/openai/v1/chat/completions', {
           headers: { Authorization: `Bearer ${key}` },
           data: {
             model: GATEWAY_MODEL,
             messages: [{ role: 'user', content: 'perf burst' }],
           },
         });
+        expect(
+          response.ok(),
+          'fake gateway must accept burst requests'
+        ).toBeTruthy();
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
     })();
 
     let count = 0;
+    const burstPaths: string[] = [];
     const onRequest = (req: { url: () => string }) => {
-      if (req.url().includes('/api/v1')) count += 1;
+      if (req.url().includes('/api/v1')) {
+        count += 1;
+        burstPaths.push(new URL(req.url()).pathname);
+      }
     };
     page.on('request', onRequest);
     await burst;
+    await expect
+      .poll(() => gatewayEvents, {
+        timeout: 5_000,
+        message:
+          'gateway events must reach the browser; enable the isolated realtime test lifecycle',
+      })
+      .toBeGreaterThan(0);
     // The refresh floor is ten seconds per topic; watch three of them.
     await page.waitForTimeout(30_000);
     page.off('request', onRequest);
 
-    console.log(`burst: ${count} API requests over the 40s window`);
+    console.log(
+      `burst: ${count} API requests over the 40s window, ${gatewayEvents} delivered gateway events`
+    );
+    if (count > BUDGET.requestsAfterBurst)
+      console.log(JSON.stringify(burstPaths));
     expect(count).toBeLessThanOrEqual(BUDGET.requestsAfterBurst);
   });
 });

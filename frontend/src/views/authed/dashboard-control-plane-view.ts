@@ -1,3 +1,8 @@
+import {
+  beginOverviewLoad,
+  closeOverviewShell,
+  type OverviewLoad,
+} from '../../utils/overview-bootstrap';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 
@@ -1702,6 +1707,7 @@ export class DashboardView extends AuthedElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.overviewLoad?.close();
     ++this.dashboardLoadGeneration;
     this.pendingTopicRefreshes.clear();
     this.queuedDashboardRefresh = null;
@@ -2189,49 +2195,67 @@ export class DashboardView extends AuthedElement {
     const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow();
-    const [summary, priorSummary, rateLimitReport, interactions] =
-      await Promise.all([
-        this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: startDateStr,
-            includeBreakdown: false,
-          }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: priorWindow.startDate,
-            endDate: priorWindow.endDate,
-            includeBreakdown: false,
-          }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountRateLimitReport({ startDate: startDateStr }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountGatewayUsageSearch({
-            limit: GATEWAY_FAILURES_REFRESH_LIMIT,
-            startDate: startDateStr,
-          }),
-          { items: [] } as unknown as Awaited<
-            ReturnType<typeof getAccountGatewayUsageSearch>
-          >
-        ),
-      ]);
-    if (range !== this.gatewayTimeRange) return;
-    void this.loadUsageSeries(range, { force: true });
-    // Merge, never replace: the breakdown on screen came from a heavier
-    // request that this one does not make.
-    this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
-      this.gatewayUsageRange === range ? this.gatewaySummary : null,
-      summary
-    );
-    if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
-    this.priorGatewaySummary = priorSummary;
-    this.rateLimitReport = rateLimitReport;
-    this.gatewayInteractions = interactions.items || [];
+
+    const load = ['/console', '/console/'].includes(window.location.pathname)
+      ? beginOverviewLoad(
+          {
+            start_date: startDateStr,
+            prior_start: priorWindow.startDate,
+            prior_end: priorWindow.endDate,
+            now: new Date().toISOString(),
+          },
+          'gateway'
+        )
+      : null;
+    this.overviewLoad = load;
+    try {
+      const [summary, priorSummary, rateLimitReport, interactions] =
+        await Promise.all([
+          this.catchWith403Handling(
+            getAccountGatewayUsageSummary({
+              startDate: startDateStr,
+              includeBreakdown: false,
+            }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountGatewayUsageSummary({
+              startDate: priorWindow.startDate,
+              endDate: priorWindow.endDate,
+              includeBreakdown: false,
+            }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountRateLimitReport({ startDate: startDateStr }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountGatewayUsageSearch({
+              limit: GATEWAY_FAILURES_REFRESH_LIMIT,
+              startDate: startDateStr,
+            }),
+            { items: [] } as unknown as Awaited<
+              ReturnType<typeof getAccountGatewayUsageSearch>
+            >
+          ),
+        ]);
+      if (range !== this.gatewayTimeRange) return;
+      void this.loadUsageSeries(range, { force: true });
+      // Merge, never replace: the breakdown on screen came from a heavier
+      // request that this one does not make.
+      this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+        this.gatewayUsageRange === range ? this.gatewaySummary : null,
+        summary
+      );
+      if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
+      this.priorGatewaySummary = priorSummary;
+      this.rateLimitReport = rateLimitReport;
+      this.gatewayInteractions = interactions.items || [];
+    } finally {
+      load?.close();
+      if (this.overviewLoad === load) this.overviewLoad = null;
+    }
   }
 
   /** What a session or agent event can change. */
@@ -2600,6 +2624,9 @@ export class DashboardView extends AuthedElement {
    * used to sit between the wave and `loading = false`, so the whole page
    * waited on a request only the Usage card and the checklist read.
    */
+  private overviewLoad: OverviewLoad | null = null;
+  private overviewLoadTime: Date | undefined;
+
   private async fetchDashboardData(
     options: { preserveLoadingState?: boolean } = {}
   ) {
@@ -2646,6 +2673,18 @@ export class DashboardView extends AuthedElement {
     const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow();
+    if (
+      !options.preserveLoadingState &&
+      ['/console', '/console/'].includes(window.location.pathname)
+    ) {
+      this.overviewLoadTime = new Date();
+      this.overviewLoad = beginOverviewLoad({
+        start_date: startDateStr,
+        prior_start: priorWindow.startDate,
+        prior_end: priorWindow.endDate,
+        now: this.overviewLoadTime.toISOString(),
+      });
+    }
 
     // The chart's own small request, alongside the headline rather than
     // behind the breakdown wave (#1610). Not awaited: nothing else reads it.
@@ -2869,6 +2908,10 @@ export class DashboardView extends AuthedElement {
       this.loading = false;
     } finally {
       if (loadCoveredTopics) this.armTopicFloorAfterLongLoad();
+      closeOverviewShell();
+      this.overviewLoad?.close();
+      this.overviewLoad = null;
+      this.overviewLoadTime = undefined;
       releaseKillSwitchPoll();
       this.refreshInFlight = false;
       this.flushPendingTopicRefreshes();
@@ -3690,6 +3733,7 @@ export class DashboardView extends AuthedElement {
   ): Promise<void> {
     try {
       this.attentionInputs = await loadAttentionInputs({
+        now: this.overviewLoadTime,
         prefetched: {
           approvals: this.pendingApprovals as AttentionApproval[],
           agents: this.managedAgents,
@@ -4890,6 +4934,7 @@ export class DashboardView extends AuthedElement {
   private renderActivityFeed() {
     return html`
       <activity-feed
+        .parallelHistory=${true}
         .flows=${this.flows}
         .agents=${this.managedAgents}
         .executions=${this.flowExecutions}

@@ -4,6 +4,101 @@ info:
   description: REST API for Preloop issue tracking management
   version: 0.17.1
 paths:
+  /api/v1/overview/bootstrap:
+    get:
+      tags:
+      - overview
+      summary: Overview Bootstrap
+      description: 'Stream independently authorized results, with no cross-request
+        cache.
+
+
+        Every read traverses its ordinary route and dependency chain, including
+
+        tenant filters, permissions and licensed capabilities. The manifest is
+
+        fixed, read-only and bounded. No URL or method is accepted from a caller.'
+      operationId: overview_bootstrap_api_v1_overview_bootstrap_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Start Date
+      - name: prior_start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Prior Start
+      - name: prior_end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Prior End
+      - name: now
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Now
+      - name: phase
+        in: query
+        required: false
+        schema:
+          enum:
+          - full
+          - gateway
+          type: string
+          default: full
+          title: Phase
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/x-ndjson: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/overview/shell:
+    get:
+      tags:
+      - overview
+      summary: Overview Shell
+      description: Read the Overview shell in parallel without cross-user caching.
+      operationId: overview_shell_api_v1_overview_shell_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/x-ndjson: {}
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/auth/register:
     post:
       tags:

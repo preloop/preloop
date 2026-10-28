@@ -1,3 +1,7 @@
+import {
+  beginOverviewShell,
+  closeOverviewShell,
+} from '../../utils/overview-bootstrap';
 import { hasFleetPermission } from '../../device-fleet-api';
 import '../../components/runner-policy-banner';
 import {
@@ -624,6 +628,7 @@ export class ConsoleShell extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    beginOverviewShell();
     window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
     window.addEventListener('show-toast', this._handleShowToast);
     this.addEventListener('keydown', this._handleKeydown);
@@ -1079,6 +1084,7 @@ export class ConsoleShell extends LitElement {
   }
 
   disconnectedCallback() {
+    closeOverviewShell();
     document.body.style.overflow = '';
     window.removeEventListener(
       'show-upgrade-modal',

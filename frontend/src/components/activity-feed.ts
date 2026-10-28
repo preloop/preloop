@@ -1309,6 +1309,8 @@ export class ActivityFeed extends LitElement {
   @property({ type: Array }) budgetPolicies: FeedContext['budgetPolicies'] = [];
   /** Skips the audit fetch in tests and in previews. */
   @property({ type: Boolean }) autoload = true;
+  /** Overview trades one bounded speculative slice for one fewer round trip. */
+  @property({ type: Boolean }) parallelHistory = false;
   /**
    * The account's people, when the host already has them.
    *
@@ -1887,8 +1889,12 @@ export class ActivityFeed extends LitElement {
    * after the other. A fourth page was two more round trips for rows that
    * were already off the bottom of a 20-row rail.
    */
-  private async fillNews(into: FeedEvent[]): Promise<void> {
-    const firstPage = await this.fetchAuditPage(0, null, AUDIT_NEWS_ACTIONS);
+  private async fillNews(
+    into: FeedEvent[],
+    prefetched?: Promise<AuditGroupLike[] | null>
+  ): Promise<void> {
+    const firstPage = await (prefetched ??
+      this.fetchAuditPage(0, null, AUDIT_NEWS_ACTIONS));
     if (firstPage === null) return;
     this.rowsFrom(firstPage, into);
     if (firstPage.length < AUDIT_PAGE_SIZE) return;
@@ -1917,6 +1923,9 @@ export class ActivityFeed extends LitElement {
         Date.now() - AUDIT_WINDOW_HOURS * 60 * 60 * 1000
       ).toISOString();
       const events: FeedEvent[] = [];
+      const newsPage = this.parallelHistory
+        ? this.fetchAuditPage(0, null, AUDIT_NEWS_ACTIONS).catch(() => null)
+        : undefined;
       // The last day first, because on a busy account that is both the news
       // and the cheaper query. The timeline and the actor names are asked
       // for at the same time: the names used to be awaited first, so the
@@ -1940,7 +1949,7 @@ export class ActivityFeed extends LitElement {
         // name rather than by paging, because paging past a gateway doing
         // thousands of calls a day is not a walk that terminates.
         if (foldRows(events).length < FEED_INITIAL_ROWS) {
-          await this.fillNews(events);
+          await this.fillNews(events, newsPage);
         }
       }
       // Rows read here are history by definition: the socket had nothing to
