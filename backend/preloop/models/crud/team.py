@@ -63,6 +63,7 @@ class CRUDTeam(CRUDBase[Team]):
     ) -> TeamMembership:
         """Update a team member's label without changing account privileges."""
         membership.role = role
+        membership.manually_granted = True
         db.commit()
         db.refresh(membership)
         return membership
