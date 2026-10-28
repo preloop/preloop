@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub App lease. Review workers can use inference and their own evidence upload,
   but cannot use MCP, account/runtime administration, push, or publish. Publication
   requires a separate trusted publisher.
+- Read-only native review also runs on a private runner pool with a Codex
+  `host_exec_profile`, so the host's own Codex login (for example a ChatGPT
+  subscription) serves the review. The runner clones the admitted SHA with the
+  delivered read lease only (host git config and credential helpers disabled),
+  revokes the lease before starting `codex exec --sandbox read-only`, and
+  reports a receipt the control plane requires for success. Runners advertise
+  the `host_read_only_review` profile capability; older runners are not assigned
+  this work.
 
 ### Telemetry
 

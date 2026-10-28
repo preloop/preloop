@@ -11,7 +11,10 @@ OIDC or federation exchange in this version.
 Use an existing GitHub or GitLab tracker and synced project, then create a hosted
 review flow as a human administrator through the usual Flows API or console.
 The project needs a provider repository identifier and slug. The flow must be
-enabled, use `runner_pool: "server"`, and trigger on exactly that project.
+enabled, use `runner_pool: "server"`, and trigger on exactly that project. The
+one exception is a
+[read-only review on a private runner](#read-only-review-on-a-private-runner),
+which names its private pool instead.
 Use the human `PUT /api/v1/flows/{flow_id}` endpoint to set the dedicated clone
 binding. Replace the synthetic IDs below with your disposable resources:
 
@@ -29,7 +32,8 @@ binding. Replace the synthetic IDs below with your disposable resources:
 }
 ```
 
-Do not supply an arbitrary repository URL, a second repository or a runner pool.
+Do not supply an arbitrary repository URL, a second repository or another
+runner pool.
 The server verifies the actual project, tracker and flow rather than trusting
 the selector. If the repository identity changes, provision a new principal;
 its stored project/flow/repository snapshot is immutable. Configure the flow
@@ -38,23 +42,38 @@ example below.
 
 ## Model eligibility
 
-The dedicated hosted flow must use a model its execution credential can invoke.
+On the hosted executor, the flow must use a model its execution credential can
+invoke.
 An agent-bound Codex or Claude subscription model is not eligible: selecting
 its registration does not attach its owning agent to the CI execution. Use a
 server-usable API-key or hosted model; Codex also requires Responses support.
 Admission returns HTTP 422 before creating an execution for this incompatible
 selection. Active credentials alone do not establish eligibility, and
 `supports_server_side_generation` is not a complete executor compatibility check.
+To review with a subscription, run the read-only review on a private runner
+Codex host profile instead; there the host's own Codex login serves the model.
 See [subscription credentials and execution identity](model-routing.md#subscription-credentials-and-execution-identity).
 
 ## Read-only native GitHub App review
 
 For a review that must clone source without provider write credentials, set
 `git_clone_config.publication_mode` to `"read_only"` on the dedicated flow above.
-Select `agent_type: codex`, the supported hosted native executor in this initial
-mode. The default `openhands` executor is rejected because
-its checkout does not implement this capability. Persistent execution, private
-runners, host profiles and harness routing are unsupported in this initial mode.
+Select `agent_type: codex`. Two executors are supported:
+
+- **Hosted:** `runner_pool: "server"`, the ephemeral hosted Codex executor. The
+  model must be a server-usable API-key or hosted model (see
+  [Model eligibility](#model-eligibility)).
+- **Private runner:** a named private runner pool plus
+  `agent_config.host_exec_profile` naming a Codex host profile. Codex runs on
+  the runner host with that host's own Codex login, so a ChatGPT (or other
+  Codex) subscription can serve the review. See
+  [Read-only review on a private runner](#read-only-review-on-a-private-runner).
+
+The default `openhands` executor is rejected because its checkout does not
+implement this capability. Persistent execution, harness routing
+(`agent_config.harness`), `runner_pool: "auto"` or an unset pool, an authorized
+host directory (`agent_config.workspace`) and a host profile on the server pool
+are rejected at provisioning, admission, lease issuance and launch.
 Keep the repository's existing owning GitHub App tracker ID. A different tracker,
 arbitrary URL, shared flow, or second repository is rejected. The flow must be
 enabled for preview and provisioning; enabling a flow does not issue a CI key or
@@ -101,10 +120,114 @@ remain separate capabilities. GitLab, PAT and alternate-tracker bindings are not
 supported by this mode. Local tests use a synthetic provider; they do not certify
 an installation's live GitHub permissions.
 
+## Read-only review on a private runner
+
+A read-only review can run on your own machine with the Codex CLI already
+logged in there (for example with a ChatGPT subscription). Preloop never sees
+that login; it sends the runner the prompt, a model alias and a short-lived
+read-only clone credential, and the runner starts Codex locally.
+
+What the runner enforces for this mode:
+
+- **Clone:** exactly one repository at the admitted pull request head SHA, with
+  the delivered GitHub App lease (`contents: read` on that one repository). The
+  host's own git configuration is not used for the checkout: system and global
+  git config and credential helpers are disabled, so a missing or rejected lease
+  fails the run instead of falling back to your own git login. After checkout
+  the runner verifies `HEAD` equals the admitted SHA.
+- **Lease:** the runner revokes the lease as soon as the checkout is verified,
+  before Codex starts. The control plane revokes it again at completion, and
+  GitHub's expiry (normally one hour) is the fallback.
+- **Codex:** `codex exec --sandbox read-only` with `approval_policy="never"`. No
+  MCP server, no publication, no session resume and no setup commands.
+- **Receipt:** the completion carries a runner receipt (admitted commit,
+  `read-only` sandbox, whether the lease was revoked). A successful completion
+  without a matching receipt is recorded as `FAILED`. The control plane stores
+  it on the result as `host_read_only_review`.
+
+Runners that do not advertise the `host_read_only_review` profile capability
+(older CLIs, or a Codex profile without `allow_checkout`) are never assigned
+this work; the run waits in the queue for a capable runner.
+
+### Step by step
+
+1. **On the runner host**, install a Preloop CLI release that includes
+   this capability and the Codex CLI. Log Codex in as the
+   user that will run the runner: `codex login`, then check with
+   `codex login status`.
+2. Install the Preloop approval hook for Codex and trust it, as for any Codex
+   host profile:
+   `preloop agents onboard "Codex CLI" --approvals`, then open `codex`, run
+   `/hooks` and trust the Preloop `PreToolUse` hook. The runner checks the hook
+   is enabled and trusted before every run.
+3. Add a Codex profile with checkout enabled to
+   `~/.preloop/runner-host-profiles.json`:
+
+    ```json
+    {
+      "profiles": [
+        {
+          "name": "codex-review",
+          "executable": "codex",
+          "allow_checkout": true,
+          "timeout_seconds": 1200,
+          "model_map": {"review-model": "<a model your Codex login offers>"}
+        }
+      ]
+    }
+    ```
+
+    `model_map` maps the model the flow selects (its `model_identifier`) to the
+    model name your Codex login accepts. If the flow selects no model, omit
+    `model_map` and Codex uses its own default model.
+
+4. Start the runner in a named pool, for example
+   `preloop runner fg --labels review-hosts` (or install it as a service). Run
+   `preloop runner inventory --refresh` after editing profiles. In **Runners**
+   the profile should list the `host_read_only_review` capability.
+5. **In Preloop**, set the dedicated review flow to:
+
+    ```json
+    {
+      "agent_type": "codex",
+      "runner_pool": "review-hosts",
+      "agent_config": {"host_exec_profile": "codex-review"},
+      "allowed_mcp_tools": [],
+      "allowed_mcp_servers": [],
+      "trigger_project_ids": ["00000000-0000-4000-8000-000000000001"],
+      "git_clone_config": {
+        "enabled": true,
+        "publication_mode": "read_only",
+        "repositories": [{
+          "project_id": "00000000-0000-4000-8000-000000000001",
+          "tracker_id": "00000000-0000-4000-8000-000000000002"
+        }]
+      }
+    }
+    ```
+
+    The model may be any registration, including an agent-bound subscription
+    model: on a host profile it only names the alias the runner maps, and no
+    gateway credential is issued for it. Give the flow a prompt that asks for a
+    review of the checked-out change and does not ask Codex to edit files
+    (the sandbox would refuse).
+6. Provision the CI identity as below (**Settings → CI identities** lists the
+   flow; the preview shows your private pool), add the completion subscription,
+   and trigger reviews exactly as for the hosted executor.
+
+Limits of a host run compared with the hosted container: the Codex sandbox and
+the approval hook are the only boundaries between the review and the runner
+user's account. Codex's read-only sandbox blocks writes and network access for
+the commands it runs, but the process still runs as your OS user and can read
+whatever that user can read. Use a dedicated OS user or VM for repositories you
+do not trust. Usage is not metered by the gateway (the run uses your own
+login), so results are marked `gateway_metered: false`.
+
 ## Console and CLI setup
 
 Open **Settings → CI identities**. The console uses the common human permissions
-API, stays in OSS, and offers only actually dedicated hosted bindings. Preview
+API, stays in OSS, and offers only actually dedicated bindings (hosted, or a
+read-only review on a private runner host profile). Preview
 the chosen grant before creation. Choose an expiry and the least actions needed.
 The backend capability check prevents issuance during an incomplete rollout.
 EE adds `view_ci_identities` and `manage_ci_identities`, intersected with current
