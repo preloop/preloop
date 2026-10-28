@@ -213,6 +213,9 @@ class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
             if key in CONNECTION_UPDATABLE_FIELDS:
                 setattr(connection, key, value)
         connection.updated_by_user_id = user_id
+        # Secret rotation may retain the same reference id. Invalidate protocol
+        # flows and admin test proofs even when all other fields are unchanged.
+        connection.updated_at = utc_now()
         db.flush()
         return connection
 

@@ -1556,3 +1556,16 @@ days replace stale spend and make incomplete range totals unknown. Optional
 extension failures are isolated from core imports with a sanitized warning.
 
 [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.
+
+
+### Enterprise authentication persistence boundary
+
+`preloop.models.crud.sso_login` supplies account-scoped identity lookup, serialized
+provider-subject enrollment, membership persistence and expiring administrator
+proof lookup for enterprise protocols. Verified IdP email only resolves an existing
+destination-account member whose canonical address is already verified; matching another account's email cannot establish
+identity. Known provider subjects can identify a person independently of email.
+The caller owns seat admission and authorization; these core helpers assign no
+roles and create no accounts. Connection updates advance their revision even
+when a write-only secret retains the same secret-reference id. Protocol handling,
+role policy and token issuance remain in the enterprise SSO plugin.
