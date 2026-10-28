@@ -150,7 +150,9 @@ func codexHookMetadataReady(result json.RawMessage, workspace string) bool {
 		return false
 	}
 	for _, hook := range entry.Hooks {
-		if hook.Event != "PreToolUse" || hook.Handler != "command" || hook.Async || !hook.Enabled || (hook.Trust != "trusted" && hook.Trust != "managed") {
+		// Codex reports the event as "PreToolUse" in older releases and
+		// "preToolUse" from 0.164.
+		if !strings.EqualFold(hook.Event, "PreToolUse") || hook.Handler != "command" || hook.Async || !hook.Enabled || (hook.Trust != "trusted" && hook.Trust != "managed") {
 			continue
 		}
 		if hook.Matcher != nil && *hook.Matcher != "" && *hook.Matcher != "*" && *hook.Matcher != ".*" {

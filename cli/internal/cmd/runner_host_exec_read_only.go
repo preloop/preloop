@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,7 +98,7 @@ func validateHostExecReadOnlyJob(plan *hostExecReadOnly, harness string, profile
 // identity: no system or global config, no credential helper. Only the
 // delivered lease (an URL-scoped header) can authenticate.
 func hostExecReadOnlyGitEnv(env []string) []string {
-	out := make([]string, 0, len(env)+4)
+	var out []string
 	count := 0
 	for _, entry := range env {
 		upper := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
@@ -105,7 +106,9 @@ func hostExecReadOnlyGitEnv(env []string) []string {
 			continue
 		}
 		if upper == "GIT_CONFIG_COUNT" {
-			fmt.Sscanf(strings.SplitN(entry, "=", 2)[1], "%d", &count)
+			if n, err := strconv.Atoi(strings.SplitN(entry, "=", 2)[1]); err == nil && n >= 0 && n < 64 {
+				count = n
+			}
 			continue
 		}
 		out = append(out, entry)
