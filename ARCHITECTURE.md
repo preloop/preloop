@@ -768,7 +768,11 @@ can do everything in the account. Without the RBAC plugin
 `preloop.utils.permissions.members_have_full_access()` is true, so
 `user_holds_permission` grants every permission, `ensure_permission_in_oss`
 and the kill-switch toggle admit every member, and `/auth/users/me` reports a
-null permission list. Endpoints keep their `@require_permission` decorators;
+null permission list. Explicitly disabling commercial plugins uses the same
+boolean flag parser for loading and authorization. Missing optional RBAC packages
+mean core; broken installed RBAC imports refuse startup, and failed commercial
+profile permission lookups return an empty list rather than unrestricted access.
+Endpoints keep their `@require_permission` decorators;
 they are no-ops in core and enforced by the RBAC plugin. Tenant isolation is
 not an access control between users and stays: controllers validate account
 ownership before reading or mutating users, teams or invitations. Invitations

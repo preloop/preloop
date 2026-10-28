@@ -337,7 +337,7 @@ def test_dismiss_needs_a_reason_and_blocks_the_action(
         {"kind": "dismiss", "key": "follow_up:0", "reason": "Known"},
     ],
 )
-def test_a_member_without_the_permission_cannot_act(
+def test_member_actions_follow_edition_permissions(
     db_session: Session,
     test_viewer_user: Any,
     tracker: Dict[str, Any],
@@ -380,12 +380,20 @@ def test_a_member_without_the_permission_cannot_act(
     app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
     with TestClient(app) as viewer_client:
         response = viewer_client.post(f"{BASE}/{run.id}/actions", json=action)
-    assert response.status_code == 403, response.text
-    assert tracker["fake"].calls == []
+    assert response.status_code == (403 if plugin_present else 200), response.text
     if plugin_present:
+        assert tracker["fake"].calls == []
         assert (
             "create_issues" if action["kind"] == "open_issue" else "edit_issues"
         ) in checked
+
+    else:
+        decision = response.json()["decision"]
+        assert decision["user_id"] == str(test_viewer_user.id)
+        assert decision["status"] == (
+            "dismissed" if action["kind"] == "dismiss" else "applied"
+        )
+        assert bool(tracker["fake"].calls) is (action["kind"] != "dismiss")
 
 
 def test_actions_are_404_for_a_foreign_or_unknown_run(

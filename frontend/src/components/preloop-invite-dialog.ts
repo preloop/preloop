@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { getTeams, getRoles, createInvitation } from '../api';
+import { getTeams, getRoles, getFeatures, createInvitation } from '../api';
 import type { Team, Role } from '../types';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
@@ -60,6 +60,9 @@ export class PreloopInviteDialog extends LitElement {
   open = false;
 
   @state()
+  private advancedRolesEnabled = false;
+
+  @state()
   private emailsText = '';
 
   @state()
@@ -109,9 +112,13 @@ export class PreloopInviteDialog extends LitElement {
   async loadData() {
     this.isLoading = true;
     try {
+      const features = await getFeatures();
+      this.advancedRolesEnabled = features.features?.rbac === true;
       const [teamsRes, rolesRes] = await Promise.all([
         getTeams(0, 100).catch(() => ({ teams: [] })),
-        getRoles().catch(() => ({ roles: [] })),
+        this.advancedRolesEnabled
+          ? getRoles().catch(() => ({ roles: [] }))
+          : Promise.resolve({ roles: [] }),
       ]);
       this.teams = teamsRes.teams || [];
       this.roles = rolesRes.roles || [];
@@ -123,7 +130,8 @@ export class PreloopInviteDialog extends LitElement {
   }
 
   get showPermissionWarning(): boolean {
-    if (this.selectedRoleIds.length === 0) return false;
+    if (!this.advancedRolesEnabled || this.selectedRoleIds.length === 0)
+      return false;
     const selectedRoles = this.roles.filter((r) =>
       this.selectedRoleIds.includes(r.id)
     );
@@ -170,7 +178,7 @@ export class PreloopInviteDialog extends LitElement {
       return;
     }
 
-    if (this.selectedRoleIds.length === 0) {
+    if (this.advancedRolesEnabled && this.selectedRoleIds.length === 0) {
       this.error = 'Choose at least one role for the people you invite.';
       return;
     }
@@ -181,7 +189,9 @@ export class PreloopInviteDialog extends LitElement {
         emails.map((email) =>
           createInvitation({
             email,
-            role_ids: this.selectedRoleIds,
+            role_ids: this.advancedRolesEnabled
+              ? this.selectedRoleIds
+              : undefined,
             team_ids:
               this.selectedTeamIds.length > 0
                 ? this.selectedTeamIds
@@ -277,26 +287,52 @@ export class PreloopInviteDialog extends LitElement {
             ?disabled=${this.isSending}
           ></sl-textarea>
 
-          <sl-select
-            label="Roles"
-            placeholder="Select roles for the invited users"
-            multiple
-            clearable
-            .value=${this.selectedRoleIds}
-            @sl-change=${(e: any) => {
-              this.selectedRoleIds = e.target.value;
-            }}
-            ?disabled=${this.isSending || this.isLoading}
-          >
-            ${this.roles.map(
-              (role) => html`
-                <sl-option .value=${role.id} title=${role.description || ''}>
-                  ${roleLabel(role.name)}
-                </sl-option>
-              `
-            )}
-          </sl-select>
-
+          ${
+            this.advancedRolesEnabled
+              ? html`<sl-select
+                  label="Roles"
+                  placeholder="Select roles for the invited users"
+                  multiple
+                  clearable
+                  .value=${this.selectedRoleIds}
+                  @sl-change=${(e: any) => {
+                    this.selectedRoleIds = e.target.value;
+                  }}
+                  ?disabled=${this.isSending || this.isLoading}
+                >
+                  ${this.roles.map(
+                    (role) => html`
+                      <sl-option
+                        .value=${role.id}
+                        title=${role.description || ''}
+                      >
+                        ${roleLabel(role.name)}
+                      </sl-option>
+                    `
+                  )}
+                </sl-select>`
+              : html`
+                  <div>
+                    <p>
+                      Role permissions are available in Preloop Cloud and
+                      Enterprise.
+                    </p>
+                    <sl-button
+                      data-testid="upgrade-invitation-roles"
+                      @click=${() =>
+                        window.dispatchEvent(
+                          new CustomEvent('show-upgrade-modal', {
+                            detail: {
+                              code: 'upgrade_required',
+                              feature: 'rbac',
+                            },
+                          })
+                        )}
+                      >Explore role permissions</sl-button
+                    >
+                  </div>
+                `
+          }
           ${
             this.showPermissionWarning
               ? html`

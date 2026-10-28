@@ -15,12 +15,15 @@ describe('PreloopInviteDialog', () => {
     });
   }
 
-  function createFetchStub(opts: { failFor?: string[] } = {}) {
+  function createFetchStub(opts: { failFor?: string[]; rbac?: boolean } = {}) {
     return sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
+        if (url.includes('/api/v1/features')) {
+          return json({ features: { rbac: opts.rbac !== false } });
+        }
         if (url.includes('/api/v1/teams')) {
           return json({ teams: [], total: 0 });
         }
@@ -102,6 +105,45 @@ describe('PreloopInviteDialog', () => {
       .map((call) => String(call.args[0]))
       .filter((url) => url.includes('/teams') || url.includes('/roles'));
     expect(lists).to.have.length(2);
+  });
+
+  it('invites in OSS without a role request and offers a role upgrade', async () => {
+    fetchStub = createFetchStub({ rbac: false });
+    const element = await fixture<PreloopInviteDialog>(
+      html`<preloop-invite-dialog open></preloop-invite-dialog>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/api/v1/roles'))
+    ).to.equal(false);
+    expect(
+      element.shadowRoot!.querySelector('sl-select[label="Roles"]')
+    ).to.equal(null);
+    const upgrade = sinon.spy();
+    window.addEventListener('show-upgrade-modal', upgrade);
+    try {
+      (
+        element.shadowRoot!.querySelector(
+          '[data-testid="upgrade-invitation-roles"]'
+        ) as HTMLElement
+      ).click();
+      expect(upgrade.calledOnce).to.equal(true);
+      expect(upgrade.firstCall.args[0].detail.feature).to.equal('rbac');
+    } finally {
+      window.removeEventListener('show-upgrade-modal', upgrade);
+    }
+    (element as any).emailsText = 'jane@example.com';
+    await element.handleSendInvitations();
+    expect(posts()).to.deep.equal(['jane@example.com']);
+    const post = fetchStub
+      .getCalls()
+      .find((call) => call.args[1]?.method === 'POST')!;
+    expect(JSON.parse(String(post.args[1].body))).not.to.have.property(
+      'role_ids'
+    );
   });
 
   it('labels roles by their display names', async () => {

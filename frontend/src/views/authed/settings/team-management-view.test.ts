@@ -230,7 +230,11 @@ describe('TeamManagementView', () => {
       expect(
         fetchStub
           .getCalls()
-          .some((call) => String(call.args[0]).includes('/teams/team-1/roles'))
+          .some(
+            (call) =>
+              String(call.args[0]).includes('/teams/team-1/roles') ||
+              String(call.args[0]).includes('/api/v1/roles')
+          )
       ).to.equal(false);
     } finally {
       window.removeEventListener('show-upgrade-modal', upgrade);
