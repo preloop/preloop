@@ -25,7 +25,8 @@ def test_native_output_materializes_exact_schema_without_shell_interpolation() -
     assert "$(touch" not in setup
     assert "--output-schema" in arguments
     assert "--output-last-message /workspace/result.json" in arguments
-    assert "cannot resume" in setup
+    assert 'CODEX_RESUME_ARGS=""' in setup
+    assert "starts cold" in setup
 
 
 @pytest.mark.parametrize(
@@ -33,7 +34,6 @@ def test_native_output_materializes_exact_schema_without_shell_interpolation() -
     [
         {},
         {"result_schema": SCHEMA, "validate_result": False},
-        {"result_schema": SCHEMA, "cli_session_restore_archive": "archive"},
     ],
 )
 def test_native_result_does_not_silently_drop_schema(extra: dict) -> None:
@@ -69,53 +69,98 @@ def test_native_script_disables_unconstrained_followup_and_clears_stale_result()
 
 @pytest.mark.parametrize(
     "policy",
-    [
-        {"feedback": {"enabled": True}},
-        {"max_resumes_per_pr": 2},
-        {"cli_session_restore_archive": "archive"},
-        {"native_session_reference": {"session_id": "prior"}},
-        {"confirmation_nudge": True},
-    ],
+    [{"feedback": {"enabled": True}}, {"max_resumes_per_pr": 2}],
 )
-def test_native_result_save_rejects_resume_policies(policy: dict) -> None:
-    from pydantic import ValidationError
+def test_native_result_save_accepts_follow_up_policies(policy: dict) -> None:
+    """Follow-up rounds start cold, so feedback policies remain valid."""
     from preloop.models.schemas.flow import FlowCreate, FlowUpdate
 
     config = {"native_result": True, **policy}
-    with pytest.raises(ValidationError, match="native_result"):
-        FlowCreate(
-            name="Review",
-            prompt_template="Review",
-            agent_type="codex",
-            agent_config=config,
-            result_schema=SCHEMA,
-        )
-    with pytest.raises(ValidationError, match="native_result"):
-        FlowUpdate(agent_config=config)
-
-
-def test_native_result_admission_refuses_historical_resume_without_cold_fallback() -> (
-    None
-):
-    from types import SimpleNamespace
-    from preloop.services.native_result import validate_native_result_admission
-
-    flow = SimpleNamespace(
-        agent_config={"native_result": True, "max_resumes_per_pr": 0}
+    FlowCreate(
+        name="Review",
+        prompt_template="Review",
+        agent_type="codex",
+        agent_config=config,
+        result_schema=SCHEMA,
     )
-    validate_native_result_admission(flow, {})
-    with pytest.raises(ValueError, match="cold start"):
-        validate_native_result_admission(
-            flow,
-            {
-                "_resume": {
-                    "execution_id": "prior",
-                    "cli_session": {"session_id": "prior"},
-                }
-            },
-        )
-    flow.agent_config["feedback"] = {"enabled": True}
-    with pytest.raises(ValueError, match="feedback"):
-        validate_native_result_admission(flow)
+    FlowUpdate(agent_config=config)
+
+
+def test_native_result_cold_start_detects_resumed_rounds() -> None:
+    from types import SimpleNamespace
+
+    from preloop.services.native_result import native_result_cold_start
+
+    flow = SimpleNamespace(agent_config={"native_result": True})
+    assert not native_result_cold_start(flow, {})
+    assert native_result_cold_start(flow, {"_resume": {"execution_id": "prior"}})
     flow.agent_config["native_result"] = False
-    validate_native_result_admission(flow, {"_resume": {"execution_id": "prior"}})
+    assert not native_result_cold_start(flow, {"_resume": {"execution_id": "prior"}})
+
+
+def _resumed_context() -> dict:
+    return {
+        "prompt": "Return native result",
+        "execution_id": "fixture",
+        "flow_name": "fixture",
+        "agent_config": {"native_result": True},
+        "result_schema": SCHEMA,
+        "cli_session_restore_archive": b"archive-bytes",
+        "native_session_reference": {"artifact_id": "prior"},
+        "trigger_event_data": {
+            "_resume": {
+                "execution_id": "prior",
+                "cli_session": {
+                    "agent_type": "codex",
+                    "session_id": "019a0000-0000-7000-8000-000000000000",
+                },
+            }
+        },
+    }
+
+
+def test_native_result_resume_builds_cold_start_script() -> None:
+    """A resumed round builds a cold command instead of raising."""
+    context = _resumed_context()
+    agent = CodexAgent({})
+    script = agent._build_codex_script(context)
+    assert "--output-schema /tmp/preloop-native-result-schema.json" in script
+    assert "starts cold" in script
+    assert context["cli_session_restore_archive"] == b"archive-bytes"
+    plain = CodexAgent({})._build_codex_script(
+        {**context, "agent_config": {}, "result_schema": None}
+    )
+    # The archive restore is only present when native_result is off.
+    assert script.count("base64 -d") < plain.count("base64 -d")
+
+
+def test_native_result_runtime_guard_clears_resume_instead_of_exiting(
+    tmp_path,
+) -> None:
+    """A session restored at runtime (Docker volume) is not resumed or fatal."""
+    import subprocess
+
+    import preloop.agents.codex as codex_module
+
+    setup, _ = CodexAgent._native_result_output(
+        {"agent_config": {"native_result": True}, "result_schema": SCHEMA}
+    )
+    log = tmp_path / "agent.log"
+    setup = setup.replace(str(codex_module.AGENT_OUTPUT_LOG_PATH), str(log))
+    setup = setup.replace("/tmp/preloop-native-result-schema.json", str(tmp_path / "s"))
+    setup = setup.replace("/workspace/result.json", str(tmp_path / "r"))
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -e; CODEX_RESUME_ARGS="resume prior"; PRELOOP_CLI_SESSION_RESTORED=1\n'
+            + setup
+            + 'echo "args=[$CODEX_RESUME_ARGS] restored=$PRELOOP_CLI_SESSION_RESTORED"',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "args=[] restored=0" in result.stdout
+    assert "starts cold" in log.read_text()

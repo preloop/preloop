@@ -17215,8 +17215,15 @@ paths:
       tags:
       - Flows
       summary: Get Execution Tool Evidence
-      description: Read bounded tool-only evidence; never grant general execution-log
+      description: 'Read bounded tool-only evidence; never grant general execution-log
         access.
+
+
+        A page holds at most 10 records and at most 8 MiB of encoded records; the
+
+        first record is always returned. When the byte budget cuts a page short,
+
+        ``has_more`` is true and ``next_skip`` gives the offset of the next page.'
       operationId: get_execution_tool_evidence_api_v1_flows_executions__execution_id__tool_evidence_get
       security:
       - bearerAuth: []
@@ -17241,7 +17248,7 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 25
+          maximum: 10
           minimum: 1
           default: 10
           title: Limit

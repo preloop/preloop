@@ -1,4 +1,4 @@
-"""Provisioning cannot grant a historical native flow an unsupported resume policy."""
+"""Native-result flows with follow-up policies provision; follow-ups start cold."""
 
 from typing import Any
 
@@ -16,7 +16,7 @@ def ci_resources(db_session: Session) -> tuple[Any, ...]:
     return create_ci_resources.__wrapped__(db_session)
 
 
-def test_provision_rejects_historical_native_resume_policy(
+def test_provision_accepts_native_result_with_feedback(
     db_session: Session, ci_resources: tuple[Any, ...]
 ) -> None:
     flow = ci_resources[2]
@@ -25,5 +25,5 @@ def test_provision_rejects_historical_native_resume_policy(
         db_obj=flow,
         obj_in={"agent_config": {"native_result": True, "feedback": {"enabled": True}}},
     )
-    with pytest.raises(ValueError, match="native_result.*feedback"):
-        provision(db_session, ci_resources)
+    principal, _, token = provision(db_session, ci_resources)
+    assert principal.id and token

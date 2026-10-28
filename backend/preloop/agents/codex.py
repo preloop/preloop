@@ -442,6 +442,19 @@ fi
         Returns:
             Shell script to execute
         """
+        from preloop.services.native_result import (
+            COLD_START_MESSAGE,
+            cold_start_context,
+        )
+
+        # Native-result rounds always start cold: resume has no schema flag.
+        execution_context, stripped = cold_start_context(execution_context)
+        if stripped:
+            logger.warning(
+                "%s (execution %s)",
+                COLD_START_MESSAGE,
+                execution_context.get("execution_id"),
+            )
         # Pin the CLI independently of the universal toolchain image. A version
         # upgrade is explicit; manifests reject incompatible restored state.
         cli_version = str(
@@ -975,33 +988,26 @@ exit $CODEX_EXIT_CODE
 
         A schema does not guarantee provider support or timely completion.
         Capture/finalization still validate the document and terminal outcome.
-        Native restoration is refused because exec resume has no output-schema
-        flag in the pinned CLI and must not silently downgrade this contract.
+        Exec resume has no output-schema flag in the pinned CLI, so a session
+        restored at runtime (for example from a Docker volume) is not resumed:
+        the round starts cold and says so in the agent log.
         """
         import base64
         from preloop.services.flow_result_schema import check_result_schema
+        from preloop.services.native_result import COLD_START_MESSAGE
 
         if (context.get("agent_config") or {}).get("native_result") is not True:
             return "", ""
         if context.get("validate_result") is False or not context.get("result_schema"):
             raise ValueError("native_result requires an enabled result_schema")
-        if any(
-            context.get(key)
-            for key in (
-                "cli_session_restore_archive",
-                "native_session_reference",
-                "confirmation_nudge",
-            )
-        ):
-            raise ValueError(
-                "native_result does not support native session restoration"
-            )
         schema = check_result_schema(context["result_schema"])
         encoded = base64.b64encode(json.dumps(schema).encode()).decode("ascii")
         path = "/tmp/preloop-native-result-schema.json"
         setup = (
             'if [ -n "$CODEX_RESUME_ARGS" ]; then '
-            'echo "native_result cannot resume without its schema" >&2; exit 2; fi\n'
+            f"echo {shlex.quote(COLD_START_MESSAGE)} "
+            f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" >&2; '
+            'CODEX_RESUME_ARGS=""; PRELOOP_CLI_SESSION_RESTORED=0; fi\n'
             f"printf %s {shlex.quote(encoded)} | base64 -d > {path}\n"
             "rm -f -- /workspace/result.json\n"
         )

@@ -377,7 +377,7 @@ def test_native_responses_schema_is_forwarded_without_silent_drop() -> None:
         "type": "json_schema",
         "json_schema": {"name": "review", "schema": schema, "strict": True},
     }
-    assert kwargs["drop_params"] is False
+    assert kwargs["drop_params"] is True
 
 
 def test_schema_keeps_selective_dropping_for_unrelated_unsupported_flags() -> None:
@@ -397,10 +397,29 @@ def test_schema_keeps_selective_dropping_for_unrelated_unsupported_flags() -> No
             },
         )
     assert kwargs["response_format"] == {"type": "json_object"}
-    assert kwargs["drop_params"] is False
-    assert "parallel_tool_calls" not in kwargs
+    # drop_params stays on, so LiteLLM still drops unrelated unsupported flags.
+    assert kwargs["drop_params"] is True
     assert kwargs["temperature"] == 0.1
     assert kwargs["messages"] and kwargs["model"]
+
+
+def test_build_completion_kwargs_keeps_drop_params_for_zai_with_schema() -> None:
+    """A schema never switches drop_params off for unrelated z.ai flags."""
+    model = SimpleNamespace(
+        provider_name="zai",
+        model_identifier="glm-5.3",
+        api_endpoint="https://api.z.ai/api/paas/v4",
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.get_supported_openai_params",
+        return_value=["response_format", "tools"],
+    ):
+        kwargs = _build_kwargs(
+            model,
+            {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
+        )
+    assert kwargs["drop_params"] is True
+    assert kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_zai_schema_rejects_unsupported_format_explicitly() -> None:
@@ -416,3 +435,22 @@ def test_zai_schema_rejects_unsupported_format_explicitly() -> None:
             model,
             {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
         )
+
+
+def test_schema_keeps_connection_and_auth_kwargs() -> None:
+    """Structured output never strips the credential or the upstream base."""
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="llama-3",
+        api_endpoint="https://gateway.example.com/v1",
+    )
+    kwargs = _build_kwargs(
+        model,
+        {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
+    )
+    assert kwargs["api_key"] == "sk-test"
+    assert kwargs["api_base"] == "https://gateway.example.com/v1"
+    assert kwargs["timeout"] == 600
+    assert kwargs["extra_headers"]
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["drop_params"] is True
