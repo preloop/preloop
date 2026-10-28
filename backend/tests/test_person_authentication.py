@@ -167,8 +167,9 @@ def clean_limits() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_denies", [False, True])
 async def test_one_provisional_person_one_mail_one_verification(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, policy_denies: bool
 ) -> None:
     source, child = memberships(db_session)
     monkeypatch.setattr(settings, "require_email_verification", True)
@@ -181,10 +182,29 @@ async def test_one_provisional_person_one_mail_one_verification(
     person = crud_person.resolve_for_membership(db_session, membership_id=source.id)
     assert mail["username"] == person.username == source.username
     assert verify_user_token(mail["token"], "email_verification").person_id == person.id
+    if policy_denies:
+        from unittest.mock import Mock
+        from preloop.services import authentication_policy
+
+        gate = Mock()
+        gate.authorize.side_effect = HTTPException(403, "SSO required")
+        monkeypatch.setattr(
+            authentication_policy,
+            "get_plugin_manager",
+            lambda: Mock(get_service=Mock(return_value=gate)),
+        )
+        with pytest.raises(HTTPException, match="SSO required"):
+            await verify_email(
+                EmailVerificationRequest(token=mail["token"]), db_session
+            )
+        assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["email_link"]
+        return
     result = await verify_email(
         EmailVerificationRequest(token=mail["token"]), db_session
     )
     assert result["access_token"]
+    assert decode_token(result["access_token"]).claims["amr"] == ["email_link"]
+    assert decode_token(result["refresh_token"]).claims["amr"] == ["email_link"]
     for member in (source, child):
         require_active_identity(db_session, member)
         email_verification.enforce_verified_email(member, db_session)
@@ -471,8 +491,11 @@ def test_password_reset_invalidates_outstanding_passkey_registration(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_denies", [False, True])
 async def test_onboarding_claim_consumption_and_canonical_password_are_atomic(
     db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    policy_denies: bool,
 ) -> None:
     """A valid claim sets one canonical password and cannot be replayed."""
     source, child = memberships(db_session)
@@ -496,8 +519,25 @@ async def test_onboarding_claim_consumption_and_canonical_password_are_atomic(
         full_name="Claimed Person",
         claim_token=token,
     )
+    if policy_denies:
+        from unittest.mock import Mock
+        from preloop.services import authentication_policy
+
+        gate = Mock()
+        gate.authorize.side_effect = HTTPException(403, "SSO required")
+        monkeypatch.setattr(
+            authentication_policy,
+            "get_plugin_manager",
+            lambda: Mock(get_service=Mock(return_value=gate)),
+        )
+        with pytest.raises(HTTPException, match="SSO required"):
+            await complete_onboarding(body, db_session)
+        assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["password"]
+        return
     result = await complete_onboarding(body, db_session)
     assert result["access_token"] and result["refresh_token"]
+    assert decode_token(result["access_token"]).claims["amr"] == ["password"]
+    assert decode_token(result["refresh_token"]).claims["amr"] == ["password"]
     db_session.refresh(source)
     assert source.onboarding_claim_hash is None
     person = crud_person.credential_owner(db_session, membership_id=child.id)

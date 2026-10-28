@@ -1600,3 +1600,11 @@ and completion bind the same optional account UUID. This makes owner recovery
 reachable after a different account was last active without treating an existing
 session switch as fresh credential proof. Unknown and unavailable destinations
 share one refusal.
+
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.

@@ -212,10 +212,26 @@ class ChatBroker:
             )
         elif route.startswith("/api/v1/approval-requests/"):
             self.authorize_resource("approval_request", route.split("/")[4], permission)
+        from preloop.services.authentication_policy import (
+            authorize_authentication,
+            non_sso_generation,
+        )
+
+        auth_context = authorize_authentication(
+            self.db,
+            user,
+            claims={
+                "amr": ["chat"],
+                "auth_account_id": str(user.account_id),
+                "nsg": non_sso_generation(user),
+            },
+            purpose="exchange",
+        )
         token = create_access_token(
             {"sub": str(user.id)},
             timedelta(seconds=90),
             auth_generation=user.auth_generation,
+            auth_context=auth_context,
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app),

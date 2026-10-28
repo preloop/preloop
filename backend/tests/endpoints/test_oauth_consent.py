@@ -519,3 +519,77 @@ class TestSignInByASharedEmail:
 
         assert response.status_code == 200
         provider.create_authorization_code_for_user.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind", ["missing", "basic", "refresh", "different_user", "scoped"]
+)
+def test_spa_consent_rejects_non_session_bearers(client, app, monkeypatch, kind):
+    from preloop.api.auth.jwt import (
+        create_access_token,
+        create_refresh_token,
+        get_current_active_user,
+    )
+    from preloop.api.endpoints import oauth_consent
+
+    user = SimpleNamespace(id=uuid4(), account_id=uuid4(), username="consenter")
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    provider = MagicMock()
+    monkeypatch.setattr(oauth_consent, "_get_oauth_provider", lambda: provider)
+    monkeypatch.setattr(
+        oauth_consent, "_validate_client_and_redirect", lambda *args: {"error": None}
+    )
+    headers = {}
+    if kind == "basic":
+        headers["Authorization"] = "Basic synthetic"
+    elif kind == "refresh":
+        headers["Authorization"] = "Bearer " + create_refresh_token(str(user.id))
+    elif kind == "different_user":
+        headers["Authorization"] = "Bearer " + create_access_token(
+            {"sub": str(uuid4())}
+        )
+    elif kind == "scoped":
+        headers["Authorization"] = "Bearer " + create_access_token(
+            {"sub": str(user.id), "purpose": "mcp_oauth_authorize"}
+        )
+    response = client.post(
+        "/api/v1/auth/oauth-consent",
+        json={"client_id": "cli", "redirect_uri": _CLI_MANUAL_REDIRECT_URI},
+        headers=headers,
+    )
+    assert response.status_code == 401
+    provider.create_authorization_code_for_user.assert_not_called()
+
+
+def test_spa_consent_preserves_only_verified_assurance(client, app, monkeypatch):
+    from preloop.api.auth.jwt import create_access_token, get_current_active_user
+    from preloop.api.endpoints import oauth_consent
+
+    user = SimpleNamespace(id=uuid4(), account_id=uuid4(), username="consenter")
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    provider = MagicMock()
+    provider.create_authorization_code_for_user.return_value = "synthetic-code"
+    monkeypatch.setattr(oauth_consent, "_get_oauth_provider", lambda: provider)
+    monkeypatch.setattr(
+        oauth_consent, "_validate_client_and_redirect", lambda *args: {"error": None}
+    )
+    context = {
+        "amr": ["sso", "oidc"],
+        "sso_connection_id": str(uuid4()),
+        "auth_account_id": str(user.account_id),
+        "nsg": 3,
+        "auth_nsg": 3,
+    }
+    token = create_access_token(
+        {"sub": str(user.id), "untrusted_extra": "discard"}, auth_context=context
+    )
+    response = client.post(
+        "/api/v1/auth/oauth-consent",
+        json={"client_id": "cli", "redirect_uri": _CLI_MANUAL_REDIRECT_URI},
+        headers={"Authorization": "Bearer " + token},
+    )
+    assert response.status_code == 200
+    assert (
+        provider.create_authorization_code_for_user.call_args.kwargs["auth_context"]
+        == context
+    )

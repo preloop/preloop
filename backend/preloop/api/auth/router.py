@@ -872,11 +872,15 @@ async def verify_email(
         response: Dict[str, Any] = {"message": "Email verified successfully"}
         user = login_membership(session, person)
         if user is not None:
+            from preloop.services.authentication_policy import new_authentication
+
+            auth_context = new_authentication(db, user, method="email_link")
             generation = user_auth_generation(user)
             access_token = create_access_token(
                 data={"sub": str(user.id), "scopes": []},
                 expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
                 auth_generation=generation,
+                auth_context=auth_context,
             )
             response.update(
                 {
@@ -885,6 +889,7 @@ async def verify_email(
                         sub=str(user.id),
                         scopes=[],
                         auth_generation=generation,
+                        auth_context=auth_context,
                     ),
                     "token_type": "bearer",
                     "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -2562,6 +2567,9 @@ async def complete_onboarding(
         session.rollback()
         raise _refuse_claim()
 
+    from preloop.services.authentication_policy import new_authentication
+
+    auth_context = new_authentication(db, user, method="password")
     # Create access and refresh tokens for auto-login
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     generation = user_auth_generation(user)
@@ -2569,9 +2577,13 @@ async def complete_onboarding(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {
