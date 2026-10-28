@@ -484,6 +484,10 @@ class GitCloneConfig(BaseModel):
             "GitHub App clone and no provider publication or MCP authority."
         ),
     )
+    ci_project_selection: bool = Field(
+        default=False,
+        description="For read_only restricted CI, select only the principal's repository from the administrator-approved project list.",
+    )
     publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(
         default=None,
         description=(

@@ -3656,6 +3656,8 @@ class FlowExecutionOrchestrator:
             "prompt": resolved_prompt,
             "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
+            "result_schema": getattr(self.flow, "result_schema", None),
+            "validate_result": getattr(self.flow, "validate_result", True),
             # The wall clock this run may spend. Harnesses keep their own
             # waits (the Codex stream idle timeout) inside it.
             "flow_timeout_seconds": self._execution_timeout_budget().seconds,

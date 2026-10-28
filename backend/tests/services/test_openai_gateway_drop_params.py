@@ -352,3 +352,29 @@ def test_openrouter_output_cap_alias_precedence() -> None:
         )["max_tokens"]
         == 1024
     )
+
+
+def test_native_responses_schema_is_forwarded_without_silent_drop() -> None:
+    model = SimpleNamespace(
+        provider_name="openrouter",
+        model_identifier="deepseek/test",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    schema = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+    native_format = {
+        "type": "json_schema",
+        "name": "review",
+        "schema": schema,
+        "strict": True,
+    }
+    kwargs = _build_kwargs(model, payload={"text": {"format": native_format}})
+    assert kwargs["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "review", "schema": schema, "strict": True},
+    }
+    assert kwargs["drop_params"] is False

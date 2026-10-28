@@ -358,3 +358,29 @@ register) instead of asking the operator to download the archive.
   simply says nothing about an area produces no claim at all.
 - Freeze-floor enforcement is reported by the run and owned by
   downstream validation; the agent never self-grades the floor.
+
+## Native Codex structured results
+
+A hosted Codex flow can opt into `agent_config.native_result: true` with a
+`result_schema` and `validate_result: true`. The adapter passes the schema to the
+pinned CLI's `--output-schema` and captures its final answer with
+`--output-last-message /workspace/result.json`. The normal capture-time schema
+and completion-status gates still decide success. Setting a schema alone keeps
+the existing file-writing contract.
+
+For Responses requests translated to Chat Completions, the gateway maps
+`text.format` to `response_format`. Explicit structured output disables silent
+parameter dropping: an unsupported provider/model returns an error instead of
+silently removing the schema. Native session restoration, unconstrained recovery
+rounds and completion reminders are disabled for this opt-in mode because the
+pinned CLI resume command lacks the schema flag. Native schema output cannot
+ensure completion within a token/time budget, or execute an arbitrary trusted
+helper. Consumers requiring a helper-bound diff/challenge must still verify those
+requirements independently; a valid JSON shape is insufficient.
+
+Preset **003 Observe / Eval** now includes the documented
+`preloop.eval.result/v1` schema. It requires schema, status, summary, numeric
+metrics, named boolean checks with details, and string artifact references.
+Sync the global preset through the normal preset-sync deployment operation;
+existing customized account flows are not silently rewritten. Native generation
+is an explicit separate opt-in and is not enabled by the preset schema.

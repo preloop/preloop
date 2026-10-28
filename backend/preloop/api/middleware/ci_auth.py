@@ -49,6 +49,10 @@ CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType(
         ("GET", "/api/v1/flows/executions/{execution_id}"): CiAction.READ_EXECUTION,
         ("GET", "/api/v1/flows/executions/{execution_id}/result"): CiAction.READ_RESULT,
         (
+            "GET",
+            "/api/v1/flows/executions/{execution_id}/tool-evidence",
+        ): CiAction.READ_EVIDENCE,
+        (
             "POST",
             "/api/v1/flows/executions/{execution_id}/command",
         ): CiAction.STOP_EXECUTION,

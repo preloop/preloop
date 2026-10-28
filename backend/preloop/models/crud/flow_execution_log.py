@@ -195,6 +195,14 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         query = select(models.FlowExecutionLog).filter(
             models.FlowExecutionLog.execution_id == execution_id,
         )
+        # Full tool-evidence chunks have a separate paginated scoped contract.
+        # They must never inflate console history or websocket startup payloads.
+        query = query.filter(
+            or_(
+                models.FlowExecutionLog.log_type.is_(None),
+                models.FlowExecutionLog.log_type != "execution_tool_evidence",
+            )
+        )
         if log_types is not None:
             # Filter in SQL so the tail counts only the requested rows: a long
             # run's agent log lines must not push its model calls out of it.
@@ -336,6 +344,14 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
                 log_data.get("message") or payload.get("line") or payload.get("message")
             )
             metadata = payload or log_data.get("metadata") or log_data.get("data")
+            if log_data.get("type") == "agent_log_line":
+                from preloop.models.crud.execution_tool_evidence import (
+                    persist_native_command_evidence,
+                )
+
+                persist_native_command_evidence(
+                    db, execution_id=execution_id, line=message
+                )
             rows.append(
                 {
                     "id": uuid.UUID(log_data["_persistence_id"]),
@@ -369,6 +385,12 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
             log_data.get("message") or payload.get("line") or payload.get("message")
         )
         metadata = payload or log_data.get("metadata") or log_data.get("data")
+        if log_data.get("type") == "agent_log_line":
+            from preloop.models.crud.execution_tool_evidence import (
+                persist_native_command_evidence,
+            )
+
+            persist_native_command_evidence(db, execution_id=execution_id, line=message)
 
         log_entry = models.FlowExecutionLog(
             execution_id=execution_id,

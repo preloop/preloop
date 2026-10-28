@@ -469,6 +469,9 @@ fi
             f"{codex_event_filter_command()} >> {LIVE_NUDGE_LOG_PATH}"
         )
         event_filter = codex_event_filter_command()
+        native_result_setup, native_result_args = self._native_result_output(
+            execution_context
+        )
         prompt = execution_context["prompt"]
         native_resume_guard = (
             '"0"'
@@ -635,6 +638,14 @@ fi
                 "    fi"
             ),
         )
+        self.supports_confirmation_nudge = not bool(native_result_args)
+        if native_result_args:
+            self.live_nudge_command = ""
+            # Resume does not accept --output-schema in the pinned CLI. Do not
+            # turn a failed native-result request into an unconstrained round.
+            stream_recovery_block = ""
+            completion_nudge_block = ""
+
         script = f"""
 set -e
 
@@ -743,7 +754,8 @@ echo "PRELOOP_AGENT_EXEC_START"
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
-cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS --json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+{native_result_setup}
+cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS {native_result_args} --json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-1}}
 if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
@@ -956,6 +968,47 @@ exit $CODEX_EXIT_CODE
         if not isinstance(config, dict):
             return False
         return config.get("sandbox_type") == "read-only"
+
+    @staticmethod
+    def _native_result_output(context: Dict[str, Any]) -> tuple[str, str]:
+        """Opt in to the CLI's schema-constrained final answer capture.
+
+        A schema does not guarantee provider support or timely completion.
+        Capture/finalization still validate the document and terminal outcome.
+        Native restoration is refused because exec resume has no output-schema
+        flag in the pinned CLI and must not silently downgrade this contract.
+        """
+        import base64
+        from preloop.services.flow_result_schema import check_result_schema
+
+        if (context.get("agent_config") or {}).get("native_result") is not True:
+            return "", ""
+        if context.get("validate_result") is False or not context.get("result_schema"):
+            raise ValueError("native_result requires an enabled result_schema")
+        if any(
+            context.get(key)
+            for key in (
+                "cli_session_restore_archive",
+                "native_session_reference",
+                "confirmation_nudge",
+            )
+        ):
+            raise ValueError(
+                "native_result does not support native session restoration"
+            )
+        schema = check_result_schema(context["result_schema"])
+        encoded = base64.b64encode(json.dumps(schema).encode()).decode("ascii")
+        path = "/tmp/preloop-native-result-schema.json"
+        setup = (
+            'if [ -n "$CODEX_RESUME_ARGS" ]; then '
+            'echo "native_result cannot resume without its schema" >&2; exit 2; fi\n'
+            f"printf %s {shlex.quote(encoded)} | base64 -d > {path}\n"
+            "rm -f -- /workspace/result.json\n"
+        )
+        return (
+            setup,
+            f"--output-schema {path} --output-last-message /workspace/result.json",
+        )
 
     def _codex_sandbox_flags(self, shell_locked: bool) -> str:
         """Preserve read-only restrictions across both exec and exec resume.

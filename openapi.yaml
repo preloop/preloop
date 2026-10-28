@@ -17077,6 +17077,64 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/tool-evidence:
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Tool Evidence
+      description: Read bounded tool-only evidence; never grant general execution-log
+        access.
+      operationId: get_execution_tool_evidence_api_v1_flows_executions__execution_id__tool_evidence_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 25
+          minimum: 1
+          default: 10
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Tool Evidence Api V1 Flows Executions  Execution
+                  Id  Tool Evidence Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: execution:evidence:read
   /api/v1/flows/executions/{execution_id}/result:
     get:
       tags:
@@ -29834,6 +29892,7 @@ components:
       - flow:trigger
       - execution:read
       - execution:result:read
+      - execution:evidence:read
       - execution:stop
       - subscription:create
       - subscription:read
@@ -37382,6 +37441,12 @@ components:
             Read_only is a dedicated restricted CI review with a scoped read-only
             GitHub App clone and no provider publication or MCP authority.
           default: legacy
+        ci_project_selection:
+          type: boolean
+          title: Ci Project Selection
+          description: For read_only restricted CI, select only the principal's repository
+            from the administrator-approved project list.
+          default: false
         publication_approval:
           anyOf:
           - type: boolean
@@ -37519,6 +37584,12 @@ components:
             Read_only is a dedicated restricted CI review with a scoped read-only
             GitHub App clone and no provider publication or MCP authority.
           default: legacy
+        ci_project_selection:
+          type: boolean
+          title: Ci Project Selection
+          description: For read_only restricted CI, select only the principal's repository
+            from the administrator-approved project list.
+          default: false
         publication_approval:
           anyOf:
           - type: boolean

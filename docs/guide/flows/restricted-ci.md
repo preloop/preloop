@@ -1,7 +1,7 @@
 # Native restricted CI setup
 
 Restricted CI credentials are available in OSS for an account's human owner.
-They identify a stable machine principal bound to one project and its dedicated
+They identify a stable machine principal bound to one project and an approved
 hosted flow. They are not account keys with scope strings. Existing account keys
 remain broader; adding a scope or renaming one never converts it. There is no
 OIDC or federation exchange in this version.
@@ -56,7 +56,8 @@ mode. The default `openhands` executor is rejected because
 its checkout does not implement this capability. Persistent execution, private
 runners, host profiles and harness routing are unsupported in this initial mode.
 Keep the repository's existing owning GitHub App tracker ID. A different tracker,
-arbitrary URL, shared flow, or second repository is rejected. The flow must be
+arbitrary URL, or unapproved repository is rejected. Shared flows require the
+explicit project-selection mode below. The flow must be
 enabled for preview and provisioning; enabling a flow does not issue a CI key or
 trigger a review.
 
@@ -95,16 +96,76 @@ credential refresh. Operator-supplied images, setup commands and workspace input
 must not inject independent provider secrets; this mode narrows the credentials
 Preloop supplies, not credentials supplied separately by an administrator.
 
-This solves clone access for a dedicated project flow. Shared-flow authorization,
-scoped attested audit evidence and publication of human-owned historical runs
-remain separate capabilities. GitLab, PAT and alternate-tracker bindings are not
+Human-owned historical executions retain their human ownership. These CI
+permissions do not authorize reading or publishing another execution. Historic
+result recovery/publication needs separate human authorization and revision checks. GitLab, PAT and alternate-tracker bindings are not
 supported by this mode. Local tests use a synthetic provider; they do not certify
 an installation's live GitHub permissions.
+
+## Shared read-only review flows
+
+An administrator can explicitly set `git_clone_config.ci_project_selection: true`
+together with `publication_mode: read_only`. List the approved project IDs in
+`trigger_project_ids` and exactly one repository entry for each project, using its
+owning tracker ID. Repository URLs and duplicate projects are rejected. Each CI
+principal is still bound to exactly one project. Admission verifies that project's
+current provider identity; launch selects only its repository and mints only its
+read lease. Caller payloads cannot select another repository. Removing the
+principal's repository invalidates its authority. The selection mode is snapshotted
+when provisioning, so changing an existing dedicated identity to shared mode needs
+explicit reprovisioning.
+
+## Own-execution tool evidence
+
+Grant the separate action `execution:evidence:read` to retrieve
+`GET /api/v1/flows/executions/{id}/tool-evidence?skip=0&limit=10` (maximum 25 records
+per page). Fresh principal, project, flow and execution ownership checks apply to
+every page. General logs, artifacts, prompts and other principals' executions
+remain unavailable to the CI credential. Key rotation retains principal ownership;
+revocation or binding changes deny subsequent reads.
+
+New gateway requests retain tool-only observations before console preview clipping.
+Codex native command events are captured before the ordinary log-string cap.
+Gateway call IDs and native item IDs are distinct namespaces; match only actual
+correlation data, never infer that a model-requested call executed. Native exit
+codes are runtime observations, not a successful execution or accepted review.
+The capture excludes general conversation text. Capture-disabled content is absent;
+credential and account storage-redaction rules still apply.
+
+Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
+keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
+usage IDs are inside that document. `page_sha256` hashes the returned `records`
+array using the same encoding. These authenticated-server digests verify retained
+representations; they are not an independent signature or a proof of unobserved
+process activity. `captured_result_sha256` uses the same encoding of the restricted
+`/result` projection, which strips private controller fields.
+
+Read all pages and require `integrity_valid`, `capture_complete`, no `redacted`, no
+`truncated`, and no `storage_redacted` when exact bytes are an acceptance condition.
+A request record is limited to 512 observations and 2 MiB; omitted observations set
+`capture_complete: false`. Oversized native commands are explicitly marked absent.
+`missing_gateway_requests` compares capture with retained usage rows. `coverage`
+is `missing`, `captured`, or `unavailable`; it is not an assertion of successful
+execution. Native command coverage is explicitly `observed_events_only`. A running
+execution can acquire more records after a page read. For a terminal audit, verify
+stable totals and record IDs across the completed export.
+
+The endpoint also returns safe `terminal_deliveries` for that principal: delivery
+ID, state, attempt count, HTTP status and next-attempt time. No receiver URL, secret,
+response body or another principal's delivery is exposed. An empty list does not
+identify the cause of a missing callback. A stopped execution now queues its
+completion in the same transaction as the stop, using the existing deduplication
+key, without relying on a surviving orchestrator. Delivery still requires current
+principal authority and an eligible subscription.
+
+Previously clipped arguments cannot be recovered by this feature. Historic runs
+without capture records report unavailable/missing coverage; the API never invents
+a command, verdict, helper challenge or accepted result.
 
 ## Console and CLI setup
 
 Open **Settings → CI identities**. The console uses the common human permissions
-API, stays in OSS, and offers only actually dedicated hosted bindings. Preview
+API, stays in OSS, and offers only currently admissible project/flow bindings. Preview
 the chosen grant before creation. Choose an expiry and the least actions needed.
 The backend capability check prevents issuance during an incomplete rollout.
 EE adds `view_ci_identities` and `manage_ci_identities`, intersected with current
