@@ -38,6 +38,8 @@ export class SsoSettings extends LitElement {
   @state() private editor: Partial<SsoConnection> | null = null;
   @state() private mappingConnection = '';
   @state() private newToken = '';
+  @state() private showSigningKey = false;
+  private newTokenId = '';
   @state() private metadataPreview: SamlMetadataPreview | null = null;
   private accountId = '';
   private generation = 0;
@@ -119,6 +121,15 @@ export class SsoSettings extends LitElement {
       .danger {
         margin-left: var(--sl-spacing-large);
       }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
       .copy {
         display: flex;
         align-items: center;
@@ -150,11 +161,26 @@ export class SsoSettings extends LitElement {
     `,
   ];
 
+  private clearNewToken(): void {
+    this.newToken = '';
+    this.newTokenId = '';
+  }
+
+  private async revokeToken(token: ScimToken): Promise<void> {
+    const generation = this.generation;
+    await this.confirmRemove('Revoke SCIM token', async () => {
+      await ssoApi.revokeToken(this.accountId, token.id);
+      if (this.current(generation) && this.newTokenId === token.id)
+        this.clearNewToken();
+    });
+  }
+
   private readonly accountChanged = () => {
     this.busy = false;
-    this.newToken = '';
+    this.clearNewToken();
     this.editor = null;
     this.metadataPreview = null;
+    this.showSigningKey = false;
     this.connections = [];
     this.domains = [];
     this.tokens = [];
@@ -176,9 +202,10 @@ export class SsoSettings extends LitElement {
     window.removeEventListener('auth-change', this.accountChanged);
     this.generation++;
     this.mappingGeneration++;
-    this.newToken = '';
+    this.clearNewToken();
     this.editor = null;
     this.metadataPreview = null;
+    this.showSigningKey = false;
     this.allowed = false;
     this.accountId = '';
     super.disconnectedCallback();
@@ -188,7 +215,7 @@ export class SsoSettings extends LitElement {
     const generation = ++this.generation;
     this.loading = true;
     this.loaded = false;
-    this.newToken = '';
+    this.clearNewToken();
     this.error = '';
     try {
       const features = await getFeatures();
@@ -327,7 +354,7 @@ export class SsoSettings extends LitElement {
       jit_enabled: data.has('jit_enabled'),
       groups_claim: value('groups_claim') || null,
     };
-    if (body.default_role === 'owner') {
+    if (String(body.default_role).trim().toLowerCase() === 'owner') {
       this.error = 'Single sign-on cannot grant the owner role.';
       return;
     }
@@ -375,6 +402,7 @@ export class SsoSettings extends LitElement {
       if (!this.current(generation)) return;
       this.editor = null;
       this.metadataPreview = null;
+      this.showSigningKey = false;
       await this.refresh(generation);
       if (this.current(generation)) showToast('Connection saved.', 'success');
     });
@@ -501,6 +529,7 @@ export class SsoSettings extends LitElement {
                       : value;
                   }
                   this.metadataPreview = null;
+                  this.showSigningKey = false;
                 }}
                 >Apply metadata to editor</sl-button
               >`
@@ -515,6 +544,7 @@ export class SsoSettings extends LitElement {
     const url = String(data.get('metadata_url') ?? '').trim();
     const xml = String(data.get('metadata_xml') ?? '').trim();
     this.metadataPreview = null;
+    this.showSigningKey = false;
     if (!!url === !!xml) {
       this.error = 'Provide either a metadata URL or XML.';
       return;
@@ -575,10 +605,18 @@ export class SsoSettings extends LitElement {
                   >SP signing key (PEM; leave blank to keep saved key)<textarea
                     data-secret
                     name="saml_sp_signing_key"
+                    style=${this.showSigningKey ? '' : '-webkit-text-security: disc;'}
                     autocomplete="off"
                     ?disabled=${this.busy}
                   ></textarea>
                 </label>
+                <sl-button
+                  ?disabled=${this.busy}
+                  @click=${() => {
+                    this.showSigningKey = !this.showSigningKey;
+                  }}
+                  >${this.showSigningKey ? 'Hide signing key' : 'Show signing key'}</sl-button
+                >
                 <label class="check"
                   ><input
                     type="checkbox"
@@ -624,15 +662,20 @@ export class SsoSettings extends LitElement {
     </form>`;
   }
 
+  private copyButton(label: string, value: string) {
+    // Shoelace copy-label names its tooltip; slotted text names the button.
+    return html`<sl-copy-button .value=${value} copy-label=${label}>
+      <span slot="copy-icon" aria-hidden="true">⧉</span>
+      <span slot="copy-icon" class="sr-only">${label}</span>
+    </sl-copy-button>`;
+  }
+
   private copyUrl(label: string, value: string | null | undefined) {
     // URL display is safe text; navigation only uses a validated local start URL.
     return value
       ? html`<div class="copy">
           <span>${label}: <code>${value}</code></span
-          ><sl-copy-button
-            .value=${value}
-            copy-label=${`Copy ${label}`}
-          ></sl-copy-button>
+          >${this.copyButton(`Copy ${label}`, value)}
         </div>`
       : nothing;
   }
@@ -659,10 +702,7 @@ export class SsoSettings extends LitElement {
                     row.saml_sp_certificate
                       ? html`<p>Public SP certificate</p>
                           <pre>${row.saml_sp_certificate}</pre>
-                          <sl-copy-button
-                            .value=${row.saml_sp_certificate}
-                            copy-label="Copy public SP certificate"
-                          ></sl-copy-button>`
+                          ${this.copyButton('Copy public SP certificate', row.saml_sp_certificate)}`
                       : nothing
                   }
                   ${!row.oidc_callback_url && row.protocol === 'oidc' ? html`<p>The callback URL will appear when sign-in is available.</p>` : nothing}
@@ -672,6 +712,7 @@ export class SsoSettings extends LitElement {
                       ?disabled=${this.busy}
                       @click=${() => {
                         this.metadataPreview = null;
+                        this.showSigningKey = false;
                         this.editor = { ...row };
                       }}
                       >Edit connection</sl-button
@@ -700,6 +741,7 @@ export class SsoSettings extends LitElement {
           ?disabled=${this.busy}
           @click=${() => {
             this.metadataPreview = null;
+            this.showSigningKey = false;
             this.editor = { protocol: 'oidc' };
           }}
           >Add OIDC connection</sl-button
@@ -707,6 +749,7 @@ export class SsoSettings extends LitElement {
           ?disabled=${this.busy}
           @click=${() => {
             this.metadataPreview = null;
+            this.showSigningKey = false;
             this.editor = { protocol: 'saml' };
           }}
           >Add SAML connection</sl-button
@@ -730,11 +773,15 @@ export class SsoSettings extends LitElement {
                 html`<div class="row">
                   <div class="identity">
                     <strong>${domain.domain}</strong>
-                    <sl-badge
-                      pill
-                      variant=${domain.verified ? 'success' : 'neutral'}
-                      >${domain.verified ? 'Verified' : 'Awaiting verification'}</sl-badge
-                    >
+                    ${
+                      domain.verified
+                        ? html`<sl-badge pill variant="success"
+                            >Verified</sl-badge
+                          >`
+                        : html`<sl-badge pill variant="neutral"
+                            >Awaiting verification</sl-badge
+                          >`
+                    }
                     ${
                       !domain.verified
                         ? html`<p>
@@ -742,10 +789,7 @@ export class SsoSettings extends LitElement {
                             </p>
                             <div class="copy">
                               <code>${domain.txt_record_value}</code
-                              ><sl-copy-button
-                                .value=${domain.txt_record_value}
-                                copy-label="Copy DNS TXT value"
-                              ></sl-copy-button>
+                              >${this.copyButton('Copy DNS TXT value', domain.txt_record_value)}
                             </div>
                             <small
                               >DNS changes may take time to propagate.</small
@@ -884,11 +928,8 @@ export class SsoSettings extends LitElement {
               <p>Save this token now. It cannot be shown again.</p>
               <div class="copy">
                 <code>${this.newToken}</code
-                ><sl-copy-button
-                  .value=${this.newToken}
-                  copy-label="Copy new SCIM token"
-                ></sl-copy-button
-                ><sl-button @click=${() => (this.newToken = '')}
+                >${this.copyButton('Copy new SCIM token', this.newToken)}
+                <sl-button @click=${() => (this.newToken = '')}
                   >I have saved the token</sl-button
                 >
               </div>
@@ -906,12 +947,7 @@ export class SsoSettings extends LitElement {
               variant="danger"
               outline
               ?disabled=${this.busy || !!token.revoked_at}
-              @click=${() => {
-                this.newToken = '';
-                void this.confirmRemove('Revoke SCIM token', () =>
-                  ssoApi.revokeToken(this.accountId, token.id)
-                );
-              }}
+              @click=${() => this.revokeToken(token)}
               >Revoke</sl-button
             >
           </div>`
@@ -924,9 +960,10 @@ export class SsoSettings extends LitElement {
           if (!form.reportValidity()) return;
           const name = String(new FormData(form).get('name')).trim();
           void this.run(async (generation) => {
-            this.newToken = '';
+            this.clearNewToken();
             const created = await ssoApi.createToken(this.accountId, name);
             if (this.current(generation)) {
+              this.newTokenId = created.id;
               this.newToken = created.token;
               form.reset();
               await this.refresh(generation);

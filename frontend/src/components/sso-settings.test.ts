@@ -157,6 +157,11 @@ describe('SSO account settings', () => {
     }
   }
 
+  it('gives copy controls an accessible button name', async () => {
+    await mount();
+    await expect(element).to.be.accessible();
+  });
+
   it('offers the existing upgrade action without calling admin APIs when the feature is off', async () => {
     enabled = false;
     const listener = sinon.spy();
@@ -353,6 +358,111 @@ describe('SSO account settings', () => {
     await element.updateComplete;
     expect(element.shadowRoot!.innerHTML).not.to.contain(
       'scim_one_time_synthetic'
+    );
+  });
+
+  it('keeps a one-time token visible when revocation is cancelled', async () => {
+    await mount();
+    fill('name', 'Directory sync');
+    submit('#token-form');
+    await waitUntil(() =>
+      element.shadowRoot!.textContent!.includes('scim_one_time_synthetic')
+    );
+    click('Revoke');
+    await answerConfirmDialog(false);
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.contain(
+      'scim_one_time_synthetic'
+    );
+    expect(requests.revokeToken).not.to.have.been.called;
+  });
+
+  it('preserves an unrelated one-time token after an existing token is revoked', async () => {
+    requests.createToken.resolves({
+      ...token,
+      id: 'new-token',
+      token: 'scim_one_time_synthetic',
+    });
+    await mount();
+    fill('name', 'Directory sync');
+    submit('#token-form');
+    await waitUntil(() =>
+      element.shadowRoot!.textContent!.includes('scim_one_time_synthetic')
+    );
+    click('Revoke');
+    await answerConfirmDialog(true);
+    await waitUntil(() => requests.revokeToken.calledOnce);
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.contain(
+      'scim_one_time_synthetic'
+    );
+  });
+
+  for (const role of ['Owner', ' OWNER ']) {
+    it(`rejects the reserved default role ${role} before requesting a save`, async () => {
+      await mount();
+      await editor();
+      fill('default_role', role);
+      submit('#connection-form');
+      await element.updateComplete;
+      expect(element.shadowRoot!.textContent).to.contain(
+        'cannot grant the owner role'
+      );
+      expect(requests.saveConnection).not.to.have.been.called;
+    });
+  }
+
+  it('hides a SAML signing key by default and supports explicit temporary disclosure', async () => {
+    await mount();
+    await editor('SAML');
+    const input = element.shadowRoot!.querySelector<HTMLTextAreaElement>(
+      '[name=saml_sp_signing_key]'
+    )!;
+    input.value = 'synthetic-private-key';
+    expect(
+      getComputedStyle(input).getPropertyValue('-webkit-text-security')
+    ).to.equal('disc');
+    click('Show signing key');
+    await element.updateComplete;
+    expect(
+      getComputedStyle(input).getPropertyValue('-webkit-text-security')
+    ).to.equal('none');
+    click('Hide signing key');
+    await element.updateComplete;
+    expect(
+      getComputedStyle(input).getPropertyValue('-webkit-text-security')
+    ).to.equal('disc');
+    submit('#connection-form');
+    await waitUntil(() => requests.saveConnection.calledOnce);
+    expect(input.value).to.equal('');
+  });
+
+  for (const owners of [[], ['legacy-owner']]) {
+    it(`keeps the all-owner emergency-access guarantee for informational legacy list ${JSON.stringify(owners)}`, async () => {
+      requests.policy.resolves(policy({ break_glass_owner_ids: owners }));
+      const root = await mount();
+      expect(root.textContent!.replace(/\s+/g, ' ')).to.contain(
+        'All account owners retain emergency password or passkey sign-in'
+      );
+    });
+  }
+
+  it('clears the displayed token only after that token is successfully revoked', async () => {
+    await mount();
+    fill('name', 'Directory sync');
+    submit('#token-form');
+    await waitUntil(() =>
+      element.shadowRoot!.textContent!.includes('scim_one_time_synthetic')
+    );
+    click('Revoke');
+    await answerConfirmDialog(true);
+    await waitUntil(
+      () =>
+        !element.shadowRoot!.textContent!.includes('scim_one_time_synthetic')
+    );
+    expect(requests.revokeToken).to.have.been.calledWith(
+      'account-a',
+      'token-a'
     );
   });
 
