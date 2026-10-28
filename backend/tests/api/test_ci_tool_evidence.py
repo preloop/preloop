@@ -436,7 +436,8 @@ def test_evidence_failure_keeps_usage_row_and_log_batch(
         db_session,
         usage=usage,
         document=capture_tools(
-            {}, {"output": [{"type": "function_call", "call_id": "c", "name": "n"}]},
+            {},
+            {"output": [{"type": "function_call", "call_id": "c", "name": "n"}]},
             capture_content=True,
         ),
     )
@@ -551,5 +552,5 @@ def test_replayed_request_history_is_stored_once(
             if o["kind"] == "result"
         ]
         assert [o["call_id"] for o in results] == [f"c{i}" for i in range(turn + 1)]
-    growth = [b - a for a, b in zip(sizes, sizes[1:])]
+    growth = [b - a for a, b in zip(sizes, sizes[1:], strict=False)]
     assert max(growth) == min(growth), sizes
