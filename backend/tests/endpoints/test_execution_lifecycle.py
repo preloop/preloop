@@ -238,20 +238,15 @@ async def test_runner_and_gateway_publishers_preserve_shared_cursor() -> None:
     assert json.loads(publish.call_args.args[1])["seq"] == 42
 
 
-@pytest.mark.asyncio
-async def test_lifecycle_recovery_checks_permission_before_read() -> None:
+def test_lifecycle_recovery_checks_permission_before_read() -> None:
     from fastapi import HTTPException
 
-    async def off_loop(operation: object) -> object:
-        return operation()
-
     with (
-        patch.object(ws, "run_db_off_loop", off_loop),
         patch.object(ws, "ensure_permission_in_oss", side_effect=HTTPException(403)),
         patch.object(ws.crud_realtime, "lifecycle_snapshot") as read,
     ):
         with pytest.raises(HTTPException) as error:
-            await ws.get_execution_lifecycle(
+            ws.get_execution_lifecycle(
                 uuid4(), socket().scope["state"]["user"], MagicMock()
             )
     assert error.value.status_code == 403
@@ -293,3 +288,20 @@ async def test_cursor_failure_preserves_delivery_and_explicitly_requests_recover
             projected = execution_realtime.lifecycle_event(result)
             assert projected["resync_required"] is True
             assert "seq" not in projected
+
+
+def test_lifecycle_recovery_runs_synchronously_and_preserves_domain() -> None:
+    """FastAPI dispatches this session-owning handler on its worker threadpool."""
+    import inspect
+
+    assert not inspect.iscoroutinefunction(ws.get_execution_lifecycle)
+    snapshot = {"seq": 19, "lifecycle_seq": 4, "sequence_domain": "execution"}
+    with (
+        patch.object(ws, "ensure_permission_in_oss"),
+        patch.object(ws.crud_realtime, "lifecycle_snapshot", return_value=snapshot),
+    ):
+        result = ws.get_execution_lifecycle(
+            uuid4(), socket().scope["state"]["user"], MagicMock(), "lifecycle"
+        )
+    assert result["seq"] == 4
+    assert result["sequence_domain"] == "lifecycle"
