@@ -755,7 +755,7 @@ set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
 {native_result_setup}
-cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS {native_result_args} --json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS {native_result_args + " " if native_result_args else ""}--json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-1}}
 if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
