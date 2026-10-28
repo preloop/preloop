@@ -12,6 +12,18 @@ depends_on = None
 
 def upgrade() -> None:
     """Existing assignments remain manual; new SSO assignments carry claims."""
+    # Previous checks rejected only literal "owner". Preserve upgradeability
+    # while removing unsafe aliases before validating the stronger constraints.
+    for table, column in (
+        ("account_sso_connection", "default_role"),
+        ("sso_group_mapping", "role"),
+    ):
+        op.execute(
+            sa.text(
+                f"UPDATE {table} SET {column} = 'member' "
+                f"WHERE lower(btrim({column})) = 'owner'"
+            )
+        )
     for table, name, condition in (
         (
             "account_sso_connection",

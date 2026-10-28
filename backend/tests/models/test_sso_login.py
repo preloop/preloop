@@ -108,6 +108,25 @@ def test_proof_scope_revision_and_expiration(db_session, test_user):
         now=now,
     )
     assert sso_login.has_test_proof(db_session, **args)
+    batch = dict(
+        account_id=test_user.account_id,
+        admin_id=test_user.id,
+        revisions={connection.id: "revision"},
+        now=now,
+    )
+    assert sso_login.valid_test_proof_connections(db_session, **batch) == {
+        connection.id
+    }
+    for overrides in (
+        {"account_id": test_user.id},
+        {"admin_id": test_user.account_id},
+        {"revisions": {connection.id: "changed"}},
+        {"now": now + timedelta(hours=24)},
+    ):
+        assert (
+            sso_login.valid_test_proof_connections(db_session, **{**batch, **overrides})
+            == set()
+        )
     assert not sso_login.has_test_proof(db_session, **{**args, "revision": "changed"})
     assert not sso_login.has_test_proof(
         db_session, **{**args, "account_id": test_user.id}
@@ -325,6 +344,15 @@ def test_secret_revision_scope_rotation_status_and_proof(db_session, test_user):
     args = dict(account_id=test_user.account_id, secret_id=reference.id)
     original = sso_login.secret_revision(db_session, **args)
     assert original and original.endswith(":active")
+    assert sso_login.secret_revisions(
+        db_session, account_id=test_user.account_id, secret_ids={reference.id, uuid4()}
+    ) == {reference.id: original}
+    assert (
+        sso_login.secret_revisions(
+            db_session, account_id=uuid4(), secret_ids={reference.id}
+        )
+        == {}
+    )
     assert (
         sso_login.secret_revision(db_session, **{**args, "account_id": uuid4()}) is None
     )

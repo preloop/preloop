@@ -1033,3 +1033,31 @@ def test_connection_list_batches_listener_and_identity_reads(fixture_db) -> None
         row for row in result["connections"] if row["id"] == str(rig.connection.id)
     )
     assert original["linked"] and original["worker_ready"]
+
+
+@pytest.mark.asyncio
+async def test_chat_policy_denial_prevents_bearer_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import authentication_policy, chat_assistant
+
+    user = SimpleNamespace(
+        id=uuid4(), account_id=uuid4(), auth_generation=0, non_sso_auth_generation=0
+    )
+    monkeypatch.setattr(crud_chat, "principal", lambda *args: user)
+    monkeypatch.setattr(chat_assistant, "has_permission", lambda *args: True)
+    gate = MagicMock()
+    gate.authorize.side_effect = HTTPException(403, "SSO required")
+    monkeypatch.setattr(
+        authentication_policy,
+        "get_plugin_manager",
+        lambda: MagicMock(get_service=MagicMock(return_value=gate)),
+    )
+    mint = MagicMock()
+    monkeypatch.setattr(chat_assistant, "create_access_token", mint)
+    broker = ChatBroker(MagicMock(), MagicMock(), "synthetic-user", None)
+    with pytest.raises(HTTPException, match="SSO required"):
+        await broker.request("GET", "/api/v1/ai-models", "view_ai_models")
+    mint.assert_not_called()
+    assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["chat"]
+    assert gate.authorize.call_args.kwargs["purpose"] == "exchange"

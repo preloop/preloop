@@ -228,3 +228,55 @@ def lock_account(db: Session, *, account_id: uuid.UUID) -> models.Account | None
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+
+
+def secret_revisions(
+    db: Session, *, account_id: uuid.UUID, secret_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Batch current non-secret revisions with the same tenant boundary."""
+    if not secret_ids:
+        return {}
+    rows = db.execute(
+        select(
+            models.SecretReference.id,
+            models.SecretReference.updated_at,
+            models.SecretReference.status,
+        ).where(
+            models.SecretReference.id.in_(secret_ids),
+            models.SecretReference.account_id == account_id,
+        )
+    )
+    return {row.id: f"{row.updated_at}:{row.status}" for row in rows}
+
+
+def valid_test_proof_connections(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    revisions: dict[uuid.UUID, str],
+    now: datetime,
+) -> set[uuid.UUID]:
+    """Batch proof checks without trusting foreign-account connection ids."""
+    if not revisions:
+        return set()
+    rows = db.execute(
+        select(models.SsoReplayGuard.connection_id, models.SsoReplayGuard.guard_id)
+        .join(
+            models.AccountSsoConnection,
+            models.AccountSsoConnection.id == models.SsoReplayGuard.connection_id,
+        )
+        .where(
+            models.AccountSsoConnection.account_id == account_id,
+            models.SsoReplayGuard.connection_id.in_(revisions),
+            models.SsoReplayGuard.guard_id.startswith(
+                f"test:{admin_id}:", autoescape=True
+            ),
+            models.SsoReplayGuard.expires_at > now,
+        )
+    )
+    return {
+        row.connection_id
+        for row in rows
+        if row.guard_id.startswith(f"test:{admin_id}:{revisions[row.connection_id]}:")
+    }

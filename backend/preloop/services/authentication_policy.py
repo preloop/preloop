@@ -17,7 +17,9 @@ from preloop.models import models
 from preloop.plugins.base import get_plugin_manager
 
 AuthenticationPurpose = Literal["login", "access", "refresh", "switch", "exchange"]
-_METHODS = frozenset({"password", "passkey", "social", "sso", "oidc", "saml"})
+_METHODS = frozenset(
+    {"password", "passkey", "social", "email_link", "chat", "sso", "oidc", "saml"}
+)
 _UUID_CLAIMS = ("sso_connection_id", "auth_account_id")
 _INTEGER_CLAIMS = ("nsg", "auth_nsg", "auth_time")
 
@@ -189,3 +191,20 @@ def select_authenticated_membership(
                 ) from exc
             return candidate
     raise HTTPException(status_code=401, detail="Invalid account selection")
+
+
+def request_authentication_context(request: Any, user: models.User) -> dict[str, Any]:
+    """Project the verified person session used for a browser token exchange."""
+    from preloop.api.auth.jwt import decode_token
+
+    scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Person session required")
+    token_data = decode_token(bearer)
+    if (
+        token_data.refresh
+        or token_data.sub != str(user.id)
+        or token_data.claims.get("purpose")
+    ):
+        raise HTTPException(status_code=401, detail="Person session required")
+    return authentication_claims(token_data.claims)

@@ -41,48 +41,71 @@ def permission_names(db: Session, role: models.Role) -> frozenset[str]:
     )
 
 
-def validate_role(db: Session, *, account_id: UUID, role: models.Role) -> None:
-    """Reject foreign/unowned roles and owner-only privileges.
+class GrantValidator:
+    """One snapshot's tenant boundary and owner-only permission catalog.
 
-    Billing management and account closure are documented owner-only system
-    permissions. Catalog differences also protect future owner-only additions.
+    Construct afresh for each operation, so permission edits become effective
+    on the next reconciliation. No session/global cache can outlive a snapshot.
     """
-    if (
-        role.name.strip().lower() == "owner"
-        or role.account_id not in (account_id, None)
-        or (role.account_id is None and not role.is_system_role)
-    ):
-        raise GrantValidationError("unsafe_role")
-    forbidden = {"manage_billing", "close_account"}
-    owner = crud_role.get_by_name(db, name="owner")
-    admin = crud_role.get_by_name(db, name="admin")
-    if owner and admin and owner.is_system_role and admin.is_system_role:
-        forbidden.update(permission_names(db, owner) - permission_names(db, admin))
-    if forbidden & permission_names(db, role):
-        raise GrantValidationError("owner_permissions")
+
+    def __init__(self, db: Session, *, account_id: UUID) -> None:
+        self.db = db
+        self.account_id = account_id
+        forbidden = {"manage_billing", "close_account"}
+        owner = crud_role.get_by_name(db, name="owner")
+        admin = crud_role.get_by_name(db, name="admin")
+        if owner and admin and owner.is_system_role and admin.is_system_role:
+            forbidden.update(permission_names(db, owner) - permission_names(db, admin))
+        self._forbidden = frozenset(forbidden)
+
+    def validate_role(self, role: models.Role) -> None:
+        """Reject foreign/unowned roles and owner-only privileges."""
+        if (
+            role.name.strip().lower() == "owner"
+            or role.account_id not in (self.account_id, None)
+            or (role.account_id is None and not role.is_system_role)
+        ):
+            raise GrantValidationError("unsafe_role")
+        if self._forbidden & permission_names(self.db, role):
+            raise GrantValidationError("owner_permissions")
+
+    def resolve_role(self, name: str) -> models.Role:
+        """Reserved member always means system viewer; custom names win otherwise."""
+        if name == "member":
+            role = crud_role.get_by_name(self.db, name="viewer")
+        else:
+            role = crud_role.get_by_name(
+                self.db, name=name, account_id=str(self.account_id)
+            )
+            role = role or crud_role.get_by_name(self.db, name=name)
+        if role is None:
+            raise GrantValidationError("role_unavailable")
+        self.validate_role(role)
+        return role
+
+    def validate_team(self, team_id: UUID) -> models.Team:
+        """Validate team ownership and all inherited roles using this catalog."""
+        team = self.db.get(models.Team, team_id)
+        if team is None or team.account_id != self.account_id:
+            raise GrantValidationError("team_unavailable")
+        for role in crud_team_role.get_team_roles(self.db, team_id=team.id):
+            self.validate_role(role)
+        return team
+
+
+def validate_role(db: Session, *, account_id: UUID, role: models.Role) -> None:
+    """Validate a standalone role without reusing another operation's catalog."""
+    GrantValidator(db, account_id=account_id).validate_role(role)
 
 
 def resolve_role(db: Session, *, account_id: UUID, name: str) -> models.Role:
-    """Resolve a configured role; reserved member always means system viewer."""
-    if name == "member":
-        role = crud_role.get_by_name(db, name="viewer")
-    else:
-        role = crud_role.get_by_name(db, name=name, account_id=str(account_id))
-        role = role or crud_role.get_by_name(db, name=name)
-    if role is None:
-        raise GrantValidationError("role_unavailable")
-    validate_role(db, account_id=account_id, role=role)
-    return role
+    """Resolve and validate a standalone configured role."""
+    return GrantValidator(db, account_id=account_id).resolve_role(name)
 
 
 def validate_team(db: Session, *, account_id: UUID, team_id: UUID) -> models.Team:
-    """Validate team ownership and every inherited role before granting it."""
-    team = db.get(models.Team, team_id)
-    if team is None or team.account_id != account_id:
-        raise GrantValidationError("team_unavailable")
-    for role in crud_team_role.get_team_roles(db, team_id=team.id):
-        validate_role(db, account_id=account_id, role=role)
-    return team
+    """Validate a standalone team and every inherited role."""
+    return GrantValidator(db, account_id=account_id).validate_team(team_id)
 
 
 def _remove_claims(
@@ -162,13 +185,14 @@ def reconcile_grants(
         or member.account_id != account_id
     ):
         raise GrantValidationError("invalid_scope")
+    validator = GrantValidator(db, account_id=account_id)
     for role_id in role_ids:
         role = db.get(models.Role, role_id)
         if role is None:
             raise GrantValidationError("role_unavailable")
-        validate_role(db, account_id=account_id, role=role)
+        validator.validate_role(role)
     for team_id in team_ids:
-        validate_team(db, account_id=account_id, team_id=team_id)
+        validator.validate_team(team_id)
     claims = list(
         db.scalars(
             select(models.SsoProvisioningGrant).where(
