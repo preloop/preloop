@@ -1232,6 +1232,40 @@ class FlowExecutionOrchestrator:
                 f"Failed to publish execution warning: {publish_error}",
             )
 
+    async def _revoke_read_only_review_leases(self) -> None:
+        """Revoke read-only review leases once the execution is terminal.
+
+        Covers leases this orchestrator minted for the hosted executor and
+        leases this process delivered to a private runner. A lease that is
+        not revoked here still expires at GitHub's deadline.
+        """
+        leases = getattr(self, "_read_only_review_leases", [])
+        if (
+            getattr(self, "_read_only_review_execution", False)
+            and self.execution_log is not None
+            and self._execution_reached_terminal_state()
+        ):
+            from preloop.services.read_only_review import (
+                revoke_delivered_read_leases,
+            )
+
+            await revoke_delivered_read_leases(self.execution_log.id)
+        if leases and self._execution_reached_terminal_state():
+            import httpx
+            from preloop.services.publication_credentials import (
+                revoke_repository_lease,
+            )
+            from preloop.services.trusted_publisher import PublicationError
+
+            async with httpx.AsyncClient() as client:
+                for lease in leases:
+                    try:
+                        await revoke_repository_lease(lease, client)
+                    except PublicationError:
+                        logger.warning(
+                            "Read-only review lease revocation failed; expiry remains enforced"
+                        )
+
     def _read_only_review_mode(self) -> bool:
         """Retain the startup capability even if the flow is edited later."""
         from preloop.services.read_only_review import read_only_review
@@ -10414,31 +10448,6 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            leases = getattr(self, "_read_only_review_leases", [])
-            if (
-                getattr(self, "_read_only_review_execution", False)
-                and self.execution_log is not None
-                and self._execution_reached_terminal_state()
-            ):
-                from preloop.services.read_only_review import (
-                    revoke_delivered_read_leases,
-                )
-
-                await revoke_delivered_read_leases(self.execution_log.id)
-            if leases and self._execution_reached_terminal_state():
-                import httpx
-                from preloop.services.publication_credentials import (
-                    revoke_repository_lease,
-                )
-                from preloop.services.trusted_publisher import PublicationError
-
-                async with httpx.AsyncClient() as client:
-                    for lease in leases:
-                        try:
-                            await revoke_repository_lease(lease, client)
-                        except PublicationError:
-                            logger.warning(
-                                "Read-only review lease revocation failed; expiry remains enforced"
-                            )
+            await self._revoke_read_only_review_leases()
             # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

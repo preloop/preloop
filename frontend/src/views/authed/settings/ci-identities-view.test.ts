@@ -182,7 +182,44 @@ describe('restricted CI settings view', () => {
             {
               ...flow,
               id: 'host-review',
+              agent_type: 'codex',
               runner_pool: 'local',
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-wrapped',
+              agent_type: 'codex',
+              runner_pool: 'local',
+              agent_config: {
+                agent_config: { host_exec_profile: 'codex-review' },
+              },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-openhands',
+              agent_type: 'openhands',
+              runner_pool: 'local',
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-mcp',
+              agent_type: 'codex',
+              runner_pool: 'local',
+              allowed_mcp_servers: ['preloop'],
               agent_config: { host_exec_profile: 'codex-review' },
               git_clone_config: {
                 ...flow.git_clone_config,
@@ -218,7 +255,7 @@ describe('restricted CI settings view', () => {
       [...element.querySelectorAll('#ci-flow option')].map(
         (option) => (option as HTMLOptionElement).value
       )
-    ).to.eql(['', 'flow-a', 'host-review']);
+    ).to.eql(['', 'flow-a', 'host-review', 'host-wrapped']);
     expect(
       (element.querySelector('#ci-create') as HTMLButtonElement).disabled
     ).to.equal(true);

@@ -494,3 +494,45 @@ def test_subscription_model_admitted_for_codex_host_profile(
         flow.agent_config = {}
         with pytest.raises(FlowModelPrincipalError, match="host_exec_profile"):
             validate_execution_model_principal(MagicMock(), flow, {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [True, False])
+async def test_orchestrator_cleanup_revokes_delivered_leases_when_terminal(
+    review: tuple[Any, Any], terminal: bool
+) -> None:
+    _, flow = review
+    orch = FlowExecutionOrchestrator(MagicMock(), str(flow.id), {}, AsyncMock())
+    orch.flow = flow
+    orch.execution_log = SimpleNamespace(id=uuid4())
+    orch._read_only_review_execution = True
+    with (
+        patch.object(orch, "_execution_reached_terminal_state", return_value=terminal),
+        patch(
+            "preloop.services.read_only_review.revoke_delivered_read_leases",
+            AsyncMock(return_value=1),
+        ) as revoke,
+    ):
+        await orch._revoke_read_only_review_leases()
+    if terminal:
+        revoke.assert_awaited_once_with(orch.execution_log.id)
+    else:
+        revoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_run_always_reaches_lease_cleanup(
+    review: tuple[Any, Any],
+) -> None:
+    _, flow = review
+    orch = FlowExecutionOrchestrator(MagicMock(), str(flow.id), {}, AsyncMock())
+    with (
+        patch.object(orch, "_get_flow_details", side_effect=RuntimeError("boom")),
+        patch.object(orch, "_revoke_read_only_review_leases", AsyncMock()) as cleanup,
+        patch.object(orch, "_cleanup_temporary_api_token"),
+    ):
+        try:
+            await orch.run()
+        except RuntimeError:
+            pass
+    cleanup.assert_awaited_once()
