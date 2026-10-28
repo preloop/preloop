@@ -275,3 +275,117 @@ def test_pinned_cli_read_only_resume_preserves_sandbox(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_pinned_cli_native_result_schema_writes_complete_document(
+    tmp_path: Path,
+) -> None:
+    """A fake local provider proves native schema delivery and result-file capture."""
+    binary = os.environ.get("PRELOOP_TEST_CODEX_BINARY")
+    if not binary:
+        pytest.skip("requires a local pinned Codex binary")
+    assert (
+        subprocess.check_output([binary, "--version"], text=True).strip()
+        == "codex-cli 0.153.4"
+    )
+    schema = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}, "verdict": {"type": "string"}},
+        "required": ["status", "verdict"],
+        "additionalProperties": False,
+    }
+    document = {"status": "success", "verdict": "fixture verified"}
+    requests: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            requests.append(
+                json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+            item = {
+                "id": "msg_fixture",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(document),
+                        "annotations": [],
+                    }
+                ],
+            }
+            response = {
+                "id": "resp_fixture",
+                "object": "response",
+                "created_at": 1,
+                "status": "completed",
+                "output": [item],
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            }
+            events = [
+                {
+                    "type": "response.created",
+                    "response": {**response, "output": [], "status": "in_progress"},
+                },
+                {"type": "response.output_item.done", "output_index": 0, "item": item},
+                {"type": "response.completed", "response": response},
+            ]
+            data = "".join(
+                "data: " + json.dumps(event) + "\n\n" for event in events
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        (tmp_path / "schema.json").write_text(json.dumps(schema))
+        (tmp_path / "models.json").write_text(
+            json.dumps(custom_model_catalog("example/custom", None))
+        )
+        (tmp_path / "config.toml").write_text(
+            'model = "example/custom"\nmodel_provider = "fixture"\n'
+            f'model_catalog_json = "{tmp_path}/models.json"\n'
+            'approval_policy = "never"\nsandbox_mode = "read-only"\n'
+            '[model_providers.fixture]\nname = "Offline fixture"\nwire_api = "responses"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n'
+            'env_key = "FIXTURE_API_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+        )
+        completed = subprocess.run(
+            [
+                binary,
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--output-schema",
+                str(tmp_path / "schema.json"),
+                "--output-last-message",
+                str(tmp_path / "result.json"),
+                "Return fixture result",
+            ],
+            cwd=tmp_path,
+            env={
+                "PATH": os.environ["PATH"],
+                "CODEX_HOME": str(tmp_path),
+                "FIXTURE_API_KEY": "dummy",
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads((tmp_path / "result.json").read_text()) == document
+        assert requests[0]["text"]["format"]["schema"] == schema
+        assert requests[0]["text"]["format"]["type"] == "json_schema"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

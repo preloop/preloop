@@ -130,6 +130,20 @@ class ModelGatewayEventEmitter:
         )
         execution_id = str(usage.flow_execution_id) if usage.flow_execution_id else None
         if execution_id:
+            from preloop.models.crud.execution_tool_evidence import (
+                persist_tool_evidence,
+            )
+            from preloop.services.execution_tool_evidence import capture_tools
+
+            persist_tool_evidence(
+                self.db,
+                usage=usage,
+                document=capture_tools(
+                    request_payload,
+                    response_payload,
+                    capture_content=settings.model_gateway_capture_content,
+                ),
+            )
             # Stored slim, like the session activity row below: only what
             # this call added, bounded in bytes. The live event published to
             # NATS further down still carries the full payload.

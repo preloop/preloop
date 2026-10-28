@@ -8401,6 +8401,43 @@ class OpenAIGatewayService:
         # forwards client flags the provider rejects. Drop those instead of
         # failing the whole request.
         kwargs["drop_params"] = True
+        text_config = payload.get("text")
+        native_format = (
+            text_config.get("format") if isinstance(text_config, dict) else None
+        )
+        response_format = payload.get("response_format")
+        if isinstance(native_format, dict) and native_format.get("type") not in (
+            None,
+            "text",
+        ):
+            if native_format.get("type") == "json_schema":
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        key: value
+                        for key, value in native_format.items()
+                        if key != "type"
+                    },
+                }
+            elif native_format.get("type") == "json_object":
+                response_format = {"type": "json_object"}
+            else:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Unsupported structured response format",
+                )
+            if payload.get("response_format") not in (None, response_format):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Conflicting structured response formats",
+                )
+        if response_format is not None:
+            # Structured output is an explicit contract. Unsupported providers
+            # must reject it instead of LiteLLM silently dropping the schema.
+            kwargs["response_format"] = response_format
+            kwargs["drop_params"] = False
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.
