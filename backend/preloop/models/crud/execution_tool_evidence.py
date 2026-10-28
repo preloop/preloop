@@ -96,15 +96,23 @@ def _observation_key(observation: dict[str, Any]) -> str | None:
 def _seen_request_keys(db: Session, execution_id: UUID) -> set[str]:
     """Load request-side observation keys already stored for an execution.
 
-    Reads only the small ``request_keys`` metadata entry on the execution's
-    indexed evidence rows, never the stored documents.
+    The keys live in the evidence row's ``message`` column, which PostgreSQL
+    stores and detoasts separately from ``metadata``. Selecting only that
+    column on the indexed execution rows never reads the stored documents.
     """
-    rows = db.query(models.FlowExecutionLog.metadata_["request_keys"]).filter(
+    import json
+
+    rows = db.query(models.FlowExecutionLog.message).filter(
         models.FlowExecutionLog.execution_id == execution_id,
         models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
+        models.FlowExecutionLog.message.isnot(None),
     )
     seen: set[str] = set()
-    for (keys,) in rows:
+    for (encoded,) in rows:
+        try:
+            keys = json.loads(encoded)
+        except (TypeError, ValueError):
+            continue
         if isinstance(keys, list):
             seen.update(key for key in keys if isinstance(key, str))
     return seen
@@ -191,8 +199,17 @@ def _persist_document(
     if cleaned != document:
         cleaned["storage_redacted"] = True
     document = cleaned
+    import json
+
     encoded = canonical_bytes(document).decode("utf-8")
     sha256 = digest(document)
+    request_keys = sorted(
+        {
+            key
+            for item in document.get("observations") or []
+            if isinstance(item, dict) and (key := _observation_key(item))
+        }
+    )
     identity = uuid5(
         NAMESPACE_URL,
         f"preloop:tool-evidence:{execution_id}:{source}:{source_id}:{sha256}",
@@ -203,18 +220,13 @@ def _persist_document(
             id=identity,
             execution_id=execution_id,
             log_type=EVIDENCE_TYPE,
+            # Dedupe keys only; kept out of metadata so lookups skip chunks.
+            message=json.dumps(request_keys) if request_keys else None,
             metadata_={
                 "source": source,
                 "api_usage_id": source_id if source == "gateway" else None,
                 "sha256": sha256,
                 "capture_complete": document.get("capture_complete", False),
-                "request_keys": sorted(
-                    {
-                        key
-                        for item in document.get("observations") or []
-                        if isinstance(item, dict) and (key := _observation_key(item))
-                    }
-                ),
                 "chunks": [
                     encoded[i : i + 16000] for i in range(0, len(encoded), 16000)
                 ],
