@@ -111,7 +111,11 @@ sequence is below a snapshot watermark. The console tracks the most recent
 4,096 activity sequences for duplicate suppression and merges retained logs,
 bounded gateway metadata and tool activity during recovery. Overlapping log
 pages are deduplicated while their pagination offset advances by stored rows
-read. Discard a late snapshot whose cursor is below the local cursor.
+read. Runner log broadcasts and stored-log responses share `log_id`, the stable
+persisted row ID, so deduplication survives the `line`/`message` payload difference
+and storage/publish timestamp differences. Distinct row IDs preserve identical
+consecutive lines. Legacy sources without a shared ID remain best-effort; the
+console does not collapse them by text alone. Discard a late snapshot whose cursor is below the local cursor.
 The console refreshes on initial subscription and reconnection as well. Core
 NATS provides no durable replay; a missed final event with no later sequence
 cannot itself announce a gap. Consumers needing eventual terminal state must

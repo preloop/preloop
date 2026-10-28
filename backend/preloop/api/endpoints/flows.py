@@ -2148,6 +2148,7 @@ async def get_flow_execution_logs(
         logs = [
             {
                 "execution_id": str(row.execution_id),
+                "log_id": str(row.id),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
                 "type": row.log_type or "log",
                 "payload": _log_payload(row.metadata_, row.message),

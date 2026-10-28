@@ -669,3 +669,47 @@ def test_dedupe_lookup_never_reads_stored_documents(
     # The exact retry of large-1 stored no observation; large-2 is new.
     stored = [len(r.metadata_["chunks"]) > 1 for r in rows]
     assert sum(stored) == 2, stored
+
+
+@pytest.mark.parametrize("fail_capture", [False, True])
+def test_native_failure_identity_is_parsed_only_after_capture_fails(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_capture: bool,
+) -> None:
+    import json
+    from unittest.mock import Mock
+    from preloop.models.crud import execution_tool_evidence as evidence
+
+    _, _, _, _, execution = owned_run(db_session, ci_resources)
+    line = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "lazy-identity",
+                "type": "command_execution",
+                "command": "echo fixture",
+                "exit_code": 0,
+            },
+        }
+    )
+    lookup = Mock(wraps=evidence._native_item_id)
+    monkeypatch.setattr(evidence, "_native_item_id", lookup)
+    if fail_capture:
+        monkeypatch.setattr(
+            evidence,
+            "_persist_native_command_evidence",
+            Mock(side_effect=ValueError("synthetic capture failure")),
+        )
+    evidence.persist_native_command_evidence(
+        db_session, execution_id=str(execution.id), line=line
+    )
+    if fail_capture:
+        lookup.assert_called_once_with(line)
+    else:
+        lookup.assert_not_called()
+    page = evidence.evidence_page(db_session, execution=execution, skip=0, limit=10)
+    assert len(page["records"]) == 1
+    assert page["records"][0]["integrity_valid"]
+    assert page["records"][0]["document"].get("capture_failed", False) is fail_capture

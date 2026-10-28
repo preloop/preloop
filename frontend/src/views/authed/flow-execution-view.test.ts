@@ -2915,25 +2915,35 @@ describe('FlowExecutionView', () => {
     expect(state.logsSkip).to.equal(4);
   });
   for (const flush of ['flushLogBuffer', 'stopBufferFlush'] as const) {
-    it(`deduplicates late persisted lines during ${flush}`, async () => {
+    it(`deduplicates live and persisted row identities during ${flush}`, async () => {
       const element = await load('exec-running');
       const state = element as any;
       const retained = {
+        log_id: 'row-a',
         type: 'agent_log_line',
         timestamp: '2026-10-28T10:00:01Z',
-        payload: { line: 'retained' },
+        payload: { message: 'retained' },
       };
-      const fresh = {
+      const late = {
+        log_id: 'row-a',
         type: 'agent_log_line',
         timestamp: '2026-10-28T10:00:02Z',
-        payload: { line: 'fresh' },
+        payload: { line: 'retained' },
+        seq: 9,
+      };
+      const fresh = {
+        log_id: 'row-b',
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'same text' },
       };
       state.logs = [retained];
-      state.logBuffer = [{ ...retained, seq: 9 }, fresh, fresh];
+      state.logBuffer = [late, fresh, fresh, { ...fresh, log_id: 'row-c' }];
       element[flush]();
-      expect(state.logs.map((log: any) => log.payload.line)).to.deep.equal([
-        'retained',
-        'fresh',
+      expect(state.logs.map((log: any) => log.log_id)).to.deep.equal([
+        'row-a',
+        'row-b',
+        'row-c',
       ]);
       expect(state.logBuffer).to.have.length(0);
     });

@@ -30,7 +30,7 @@ def _fail_soft(
     *,
     execution_id: Any,
     source: str,
-    source_id: str | None,
+    source_id: str | Callable[[], str | None] | None,
     write: Callable[[], None],
 ) -> None:
     """Run an evidence write in a savepoint so a failure never aborts the caller.
@@ -43,7 +43,7 @@ def _fail_soft(
         db: Session of the surrounding transaction.
         execution_id: Execution the evidence belongs to.
         source: ``gateway`` or ``native``.
-        source_id: Usage id or native item id, when known.
+        source_id: Usage id, or lazy native item id used only after failure.
         write: Callable performing the evidence insert.
     """
     try:
@@ -57,9 +57,10 @@ def _fail_soft(
             source,
             type(exc).__name__,
         )
-    if not source_id:
-        return
     try:
+        source_id = source_id() if callable(source_id) else source_id
+        if not source_id:
+            return
         with db.begin_nested():
             _persist_document(
                 db,
@@ -254,7 +255,7 @@ def persist_native_command_evidence(
         db,
         execution_id=execution_id,
         source="native",
-        source_id=_native_item_id(line),
+        source_id=lambda: _native_item_id(line),
         write=lambda: _persist_native_command_evidence(
             db, execution_id=execution_id, line=line
         ),
