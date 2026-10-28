@@ -519,7 +519,7 @@ async def flow_execution_websocket(
 
 @router.get("/flow-executions/{execution_id}/lifecycle")
 @require_permission("view_flows")
-async def get_execution_lifecycle(
+def get_execution_lifecycle(
     execution_id: uuid.UUID,
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -527,13 +527,10 @@ async def get_execution_lifecycle(
 ) -> dict:
     """Authoritative, small snapshot for realtime gap recovery (no log replay)."""
 
-    def read_snapshot() -> dict | None:
-        ensure_permission_in_oss(db, current_user, "view_flows")
-        return crud_realtime.lifecycle_snapshot(
-            db, execution_id, current_user.account_id
-        )
-
-    snapshot = await run_db_off_loop(read_snapshot)
+    ensure_permission_in_oss(db, current_user, "view_flows")
+    snapshot = crud_realtime.lifecycle_snapshot(
+        db, execution_id, current_user.account_id
+    )
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Execution not found")
     if sequence_domain == "lifecycle":
