@@ -6,6 +6,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libpq-dev \
+    libxml2 \
+    libxmlsec1-openssl \
     build-essential \
     curl \
     vim \

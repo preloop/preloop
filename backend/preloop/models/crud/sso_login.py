@@ -19,10 +19,12 @@ from preloop.models.crud.user import crud_user
 from preloop.models.models.person import normalize_email
 
 
-def lock_subject(db: Session, *, provider: str, subject: str) -> None:
+def lock_subject(
+    db: Session, *, provider: str, subject: str, source: str = "oidc"
+) -> None:
     """Serialize first sign-ins for a provider subject until the caller commits."""
     key = int.from_bytes(
-        hashlib.sha256(f"oidc\0{provider}\0{subject}".encode()).digest()[:8],
+        hashlib.sha256(f"{source}\0{provider}\0{subject}".encode()).digest()[:8],
         "big",
         signed=True,
     )
@@ -37,6 +39,7 @@ def resolve_identity(
     subject: str,
     email: str,
     email_verified: bool,
+    source: str = "oidc",
 ) -> tuple[models.Person | None, models.User | None]:
     """Link by provider proof or verified email of an existing tenant member.
 
@@ -45,7 +48,7 @@ def resolve_identity(
     """
     normalized_email = normalize_email(email)
     person = crud_person.get_by_provider(
-        db, source="oidc", provider=provider, subject=subject
+        db, source=source, provider=provider, subject=subject
     )
     linked_subject = person is not None
     if person is None:
@@ -85,7 +88,7 @@ def resolve_identity(
         # Repair locks this same person before retiring provider identities.
         # Never restore a subject link that was removed while login waited.
         current_owner = crud_person.get_by_provider(
-            db, source="oidc", provider=provider, subject=subject
+            db, source=source, provider=provider, subject=subject
         )
         if current_owner is None or current_owner.id != person.id:
             raise IdentityConflictError("identity_enrollment_required")
@@ -118,6 +121,7 @@ def create_membership(
     person: models.Person | None,
     email: str,
     full_name: str | None,
+    source: str = "oidc",
 ) -> models.User:
     """Create only a destination membership; caller handles admission and roles."""
     fields = {
@@ -127,7 +131,7 @@ def create_membership(
         "full_name": full_name,
         "is_active": True,
         "email_verified": True,
-        "user_source": "oidc",
+        "user_source": source,
     }
     if person is not None:
         fields.update(

@@ -34,6 +34,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -70,6 +71,7 @@ class AccountSsoConnection(Base):
         saml_idp_metadata_url: Optional IdP metadata URL.
         saml_idp_certs: PEM signing certificates; several allow rotation.
         saml_sp_signing_key_ref_id: ``secret_reference`` holding the SP key.
+        saml_sp_certificate: Public certificate paired with the SP private key.
         saml_want_assertions_signed: Require signed assertions.
         default_role: Role given to JIT-provisioned members; never ``owner``.
         jit_enabled: Create a membership on first sign-in.
@@ -125,6 +127,7 @@ class AccountSsoConnection(Base):
         ForeignKey("secret_reference.id", ondelete="SET NULL"),
         nullable=True,
     )
+    saml_sp_certificate: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     saml_want_assertions_signed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
