@@ -103,6 +103,15 @@ caller's machine. See [Evidence storage and signed records](docs/guide/flows/evi
 The chain proves order and non-deletion in the range it names, not that the
 records were true when written; the signing key lives beside the records.
 
+Password and passkey sign-in record one final `auth.login.succeeded` or
+`auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
+plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
+Payloads retain only bounded identity metadata; tokens, assertions and nested
+provider payloads are excluded. Known identities route to their account audit
+trail and period exports; attempts without a trustworthy account emit a
+content-free service security log, never a caller-selected tenant row. Existing
+`user.login` activity events remain available for cohort metrics.
+
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
 Customer-facing gateway reports exclude replay validation and every

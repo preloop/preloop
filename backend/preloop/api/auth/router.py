@@ -1069,6 +1069,48 @@ async def reset_password(
         )
 
 
+async def _audited_password_login(
+    username: str, password: str, db: Session, source_ip: str | None
+) -> UserModel | None:
+    """Audit the final password result, including landing-policy refusals."""
+    from preloop.api.loop_safety import run_db_off_loop
+    from preloop.services.auth_audit import login_subject, record_login_event
+
+    user = None
+    succeeded = False
+    reason_code = "invalid_credentials"
+    try:
+        user = await authenticate_user(username, password, source_ip=source_ip, db=db)
+        if user is not None:
+            reason_code = "identity_or_policy_rejected"
+            user = await _landing_row(user, db)
+            succeeded = True
+        return user
+    finally:
+
+        def record() -> None:
+            subject = user
+            if subject is None:
+                try:
+                    person = crud_person.resolve_login(db, identifier=username)
+                except IdentityConflictError:
+                    person = None
+                subject = login_subject(db, person)
+            record_login_event(
+                db,
+                user=subject,
+                method="password",
+                succeeded=succeeded,
+                reason_code=None if succeeded else reason_code,
+                source_ip=source_ip,
+            )
+
+        try:
+            await run_db_off_loop(record)
+        except Exception:
+            logger.warning("Authentication audit submission failed")
+
+
 async def _landing_row(user: UserModel, db: Session) -> UserModel:
     """Select an eligible membership and always gate its identity off the loop."""
     from preloop.api.loop_safety import run_db_off_loop
@@ -1104,8 +1146,8 @@ async def login_form(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await authenticate_user(
-        form_data.username, form_data.password, source_ip=get_client_ip(request), db=db
+    user = await _audited_password_login(
+        form_data.username, form_data.password, db, get_client_ip(request)
     )
     if not user:
         raise HTTPException(
@@ -1113,7 +1155,6 @@ async def login_form(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1160,8 +1201,8 @@ async def login_json(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await authenticate_user(
-        request.username, request.password, source_ip=get_client_ip(http_request), db=db
+    user = await _audited_password_login(
+        request.username, request.password, db, get_client_ip(http_request)
     )
     if not user:
         raise HTTPException(
@@ -1169,7 +1210,6 @@ async def login_json(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
