@@ -456,6 +456,10 @@ def test_emit_for_usage_does_not_require_running_event_loop():
             "preloop.services.model_gateway_events.crud_flow_execution.append_log"
         ) as mock_append_log,
         patch("preloop.services.model_gateway_events.publish_realtime") as publish,
+        patch(
+            "preloop.services.execution_realtime.stamp_execution_event",
+            side_effect=lambda e: {**e, "seq": 1},
+        ),
     ):
         emitter.emit_for_usage(
             usage=usage,
@@ -480,7 +484,13 @@ def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_large()
             "already_minimal_but_huge": "x" * 1_000_001,
         },
     }
-    with patch("preloop.services.model_gateway_events.publish_realtime") as publish:
+    with (
+        patch("preloop.services.model_gateway_events.publish_realtime") as publish,
+        patch(
+            "preloop.services.execution_realtime.stamp_execution_event",
+            side_effect=lambda e: {**e, "seq": 1},
+        ),
+    ):
         emitter._publish_to_nats(event)
 
     publish.assert_not_called()

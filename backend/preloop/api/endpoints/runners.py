@@ -720,6 +720,11 @@ async def _publish_flow_update(execution_id: str, payload: Dict[str, Any]) -> No
     try:
         from preloop.sync.services.event_bus import get_nats_client
 
+        from preloop.services.execution_realtime import stamp_execution_event_async
+
+        payload = await stamp_execution_event_async(
+            {**payload, "execution_id": execution_id}
+        )
         nats_client = await get_nats_client()
         await nats_client.publish(
             f"flow-updates.{execution_id}", json.dumps(payload).encode("utf-8")

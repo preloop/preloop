@@ -274,6 +274,9 @@ class ModelGatewayEventEmitter:
         if not execution_id:
             return
         try:
+            from preloop.services.execution_realtime import stamp_execution_event
+
+            event = stamp_execution_event(event)
             payload_bytes = encode_realtime_event_for_nats(
                 event,
                 context=f"execution {execution_id}",

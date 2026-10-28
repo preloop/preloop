@@ -1,3 +1,4 @@
+import { ExecutionSequence } from '../../utils/execution-sequence';
 import { randomUuid } from '../../utils/random-uuid';
 import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -19,6 +20,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import {
   getFlowExecution,
+  getFlowExecutionLifecycle,
   getFlow,
   sendCommandToExecution,
   getFlowExecutionMetrics,
@@ -1157,9 +1159,106 @@ export class FlowExecutionView extends LitElement {
   private metadataRefreshTimer?: number;
   private metadataRefreshRunning = false;
   private metadataRefreshPending = false;
+  private realtimeSequence = new ExecutionSequence();
+  private realtimeRecovery?: Promise<void>;
+  private realtimeRecoveryTimer?: number;
+  private realtimeRecoveryPending = false;
+
+  private scheduleRealtimeRecovery() {
+    if (!this.isConnected) return;
+    if (this.realtimeRecovery) {
+      this.realtimeRecoveryPending = true;
+      return;
+    }
+    if (this.realtimeRecoveryTimer !== undefined) return;
+    this.realtimeRecoveryTimer = window.setTimeout(() => {
+      this.realtimeRecoveryTimer = undefined;
+      const generation = this.executionGeneration;
+      this.realtimeRecoveryPending = false;
+      this.realtimeRecovery = this.recoverRealtime().finally(() => {
+        if (generation !== this.executionGeneration) return;
+        this.realtimeRecovery = undefined;
+        if (this.realtimeRecoveryPending) this.scheduleRealtimeRecovery();
+      });
+    }, 100);
+  }
+
+  private async recoverRealtime() {
+    const executionId = this.executionId;
+    const generation = this.executionGeneration;
+    if (!executionId) return;
+    const current = () =>
+      this.isConnected &&
+      this.executionId === executionId &&
+      this.executionGeneration === generation;
+    const [snapshot, persisted] = await Promise.allSettled([
+      getFlowExecutionLifecycle(executionId),
+      getFlowExecutionLogs(executionId, {
+        tail: INITIAL_LOGS_TAIL,
+        excludeModelCalls: true,
+      }),
+    ]);
+    if (!current()) return;
+    if (snapshot.status === 'fulfilled')
+      this.applyLifecycleSnapshot(snapshot.value);
+    this.scheduleMetadataRefresh();
+    if (
+      persisted.status === 'fulfilled' &&
+      Array.isArray(persisted.value?.logs)
+    ) {
+      // Persistence is best effort. Merge retained records without discarding
+      // live lines that arrived while the recovery request was in flight.
+      const key = (log: any) =>
+        JSON.stringify([log.type, log.timestamp, log.payload]);
+      const seen = new Set([...this.logs, ...this.logBuffer].map(key));
+      const recovered = persisted.value.logs.filter((log: any) => {
+        const id = key(log);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      this.logs = [...recovered, ...this.logs].sort((a, b) =>
+        (a.timestamp || '').localeCompare(b.timestamp || '')
+      );
+    }
+  }
+
+  private applyLifecycleSnapshot(snapshot: any) {
+    if (
+      !this.execution ||
+      snapshot.execution_id !== this.executionId ||
+      !Number.isSafeInteger(snapshot.seq) ||
+      (this.realtimeSequence.value !== undefined &&
+        snapshot.seq < this.realtimeSequence.value)
+    )
+      return;
+    this.realtimeSequence.value = snapshot.seq;
+    this.metadataRevision++;
+    const fields = [
+      'status',
+      'agent_session_reference',
+      'start_time',
+      'end_time',
+      'stop_requested_at',
+      'stop_confirmed_at',
+    ];
+    const values = Object.fromEntries(
+      fields
+        .filter((field) =>
+          Object.prototype.hasOwnProperty.call(snapshot, field)
+        )
+        .map((field) => [field, snapshot[field]])
+    );
+    this.execution = { ...this.execution, ...values };
+  }
 
   private invalidateExecutionRequests() {
     this.executionGeneration++;
+    this.realtimeSequence = new ExecutionSequence();
+    window.clearTimeout(this.realtimeRecoveryTimer);
+    this.realtimeRecoveryTimer = undefined;
+    this.realtimeRecovery = undefined;
+    this.realtimeRecoveryPending = false;
     this.timelineRowsShown = TIMELINE_ROWS_SHOWN;
     this.metadataRevision++;
     this.observedAgentStart = undefined;
@@ -1381,6 +1480,8 @@ export class FlowExecutionView extends LitElement {
           (message: any) => message.execution_id === this.executionId
         );
 
+        this.scheduleRealtimeRecovery();
+
         // Track connection state. The unsubscribe is kept and dropped in
         // disconnectedCallback: discarding it leaked a listener holding this
         // view for every connect.
@@ -1406,7 +1507,7 @@ export class FlowExecutionView extends LitElement {
             }
 
             if (state === 'connected') {
-              if (!wasConnected) this.scheduleMetadataRefresh();
+              if (!wasConnected) this.scheduleRealtimeRecovery();
               // A reconnect has to put back what the drop stopped, or the
               // logs stay frozen for the rest of the session: the socket is
               // delivering lines again but nothing flushes the buffer and
@@ -1488,6 +1589,20 @@ export class FlowExecutionView extends LitElement {
     // Handle connection confirmation
     if (message.type === 'connected') {
       return; // Already handled in onOpen callback
+    }
+
+    if (
+      message.execution_id === this.executionId &&
+      message.type === 'snapshot'
+    ) {
+      this.applyLifecycleSnapshot(message);
+      return;
+    }
+    if (message.execution_id === this.executionId) {
+      const order = this.realtimeSequence.accept(message.seq);
+      if (order === 'stale') return;
+      if (order === 'gap' || message.resync_required)
+        this.scheduleRealtimeRecovery();
     }
 
     // Handle NATS forwarded messages
