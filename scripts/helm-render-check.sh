@@ -15,6 +15,12 @@ echo "==> helm dependency build"
 helm repo add nats https://nats-io.github.io/k8s/helm/charts >/dev/null 2>&1 || true
 helm dependency build "$CHART" >/dev/null
 
+echo "==> CI preview profile including pinned NATS dependency"
+render -f "$CHART/values-ci.yaml" >/dev/null
+nats_preview=$(render -f "$CHART/values-ci.yaml" --show-only charts/nats/templates/stateful-set.yaml)
+echo "$nats_preview" | grep -q 'memory: 512Mi' || { echo "NATS preview server limit missing" >&2; exit 1; }
+echo "$nats_preview" | grep -q 'memory: 128Mi' || { echo "NATS preview reloader limit missing" >&2; exit 1; }
+
 echo "==> helm lint"
 helm lint "$CHART" --set environment.jwtSecret="$JWT_TEST_SECRET"
 

@@ -1056,3 +1056,18 @@ then link an account and send a fresh message to verify delivery. The optional
 Cloud documentation support service does not replace this worker. See
 [Chat connections](../../docs/chat-connections.md) for enrollment, authorization,
 and delivery limits.
+
+
+### CI preview profile
+
+`values-ci.yaml` is an explicit overlay for small, ephemeral test/review
+installations. The legacy GitLab preview jobs apply it; ordinary chart installs
+keep the defaults in `values.yaml`. It bounds API, worker, database and NATS
+resources, sizes PostgreSQL working memory to match, and omits the NATS debugging
+pod. Check the rendered footprint against namespace quotas, including rollout
+and hook headroom, before enabling additional parallel environments.
+
+The GitLab preview jobs also apply `ci-post-renderer.py`: preview Deployments
+use Recreate while preserving the chart's drain settings, allowing downtime while avoiding
+overlapping rollout pods. Ordinary chart consumers keep their rolling strategy.
+The renderer requires Python with PyYAML, installed by the preview jobs.
