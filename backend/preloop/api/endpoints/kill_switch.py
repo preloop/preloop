@@ -35,7 +35,11 @@ from preloop.schemas.kill_switch import (
 from preloop.models.models.account_halt import HALT_SCOPE_FLOWS, HALT_SCOPE_TOOLS
 from preloop.services.kill_switch import invalidate_kill_switch_cache
 from preloop.services.runner_sessions import end_sessions_for_kill_switch
-from preloop.utils.permissions import require_permission, _rbac_checks_enabled
+from preloop.utils.permissions import (
+    require_permission,
+    _rbac_checks_enabled,
+    _plugin_require_permission,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +52,6 @@ router = APIRouter(
 #: plugin enforces it via the decorator below; in OSS builds the explicit
 #: role check in :func:`_ensure_toggle_authorized` enforces the equivalent.
 MANAGE_KILL_SWITCH_PERMISSION = "manage_kill_switch"
-
-# Mirrors the plugin detection in preloop.utils.permissions: when the
-# proprietary RBAC plugin is installed, the decorator already enforced the
-# permission and the OSS role check below must not double-gate EE users.
-try:  # pragma: no cover - depends on the proprietary plugin being installed
-    from preloop.plugins.proprietary.rbac.permissions import (
-        require_permission as _plugin_require_permission,
-    )
-except ImportError:  # pragma: no cover - OSS build
-    _plugin_require_permission = None
 
 
 def _user_has_kill_switch_permission(db: Session, current_user: models.User) -> bool:
@@ -94,13 +88,14 @@ def _user_has_kill_switch_permission(db: Session, current_user: models.User) -> 
 
 
 def _ensure_toggle_authorized(db: Session, current_user: models.User) -> None:
-    """Enforce role restriction for kill-switch toggles in OSS builds.
+    """Enforce role restriction for kill-switch toggles.
 
-    The kill switch stays role-restricted even with RBAC disabled: it is
-    the one control that halts the whole account, so a viewer or editor
-    must not be able to flip it, while the account owner, an
-    ``owner``/``admin``-role user, or a superuser can always reach it in an
-    emergency.
+    Core applies no access control between members of one account, so any
+    member may flip it. With the RBAC plugin installed but its checks
+    disabled, the kill switch stays role-restricted: it is the one control
+    that halts the whole account, so a viewer or editor must not be able to
+    flip it, while the account owner, an ``owner``/``admin``-role user, or a
+    superuser can always reach it in an emergency.
 
     Args:
         db: Database session.
@@ -111,6 +106,9 @@ def _ensure_toggle_authorized(db: Session, current_user: models.User) -> None:
     """
     if _plugin_require_permission is not None and _rbac_checks_enabled():
         # EE build: the decorator already enforced the permission.
+        return
+    if _plugin_require_permission is None:
+        # Core build: no access control between members of one account.
         return
 
     if current_user.is_superuser:

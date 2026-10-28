@@ -410,8 +410,8 @@ def test_cancel_of_an_unknown_note_is_a_404(client):
 # --- authorization ----------------------------------------------------------
 
 
-def test_sending_requires_the_agent_control_permission(db_session, test_viewer_user):
-    """A viewer cannot steer an agent, exactly as it cannot stop one."""
+def test_core_member_without_role_can_send_notes(db_session, test_viewer_user):
+    """Core has no role checks: a viewer-role member can steer its agent."""
     viewer_agent = crud_managed_agent.create_custom_agent(
         db_session,
         account_id=test_viewer_user.account_id,
@@ -427,20 +427,21 @@ def test_sending_requires_the_agent_control_permission(db_session, test_viewer_u
             NOTES_URL, json={"agent_id": str(viewer_agent.id), "text": "do this"}
         )
 
-    assert response.status_code == 403
-    assert "control_managed_agent" in response.json()["detail"]
+    assert response.status_code == 201, response.text
     assert (
-        crud_agent_control_command.list_notes(
-            db_session,
-            account_id=test_viewer_user.account_id,
-            managed_agent_id=viewer_agent.id,
+        len(
+            crud_agent_control_command.list_notes(
+                db_session,
+                account_id=test_viewer_user.account_id,
+                managed_agent_id=viewer_agent.id,
+            )
         )
-        == []
+        == 1
     )
 
 
-def test_listing_requires_the_agent_control_permission(db_session, test_viewer_user):
-    """A viewer cannot read notes on OSS either, where the decorator is a no-op."""
+def test_core_member_without_role_can_list_notes(db_session, test_viewer_user):
+    """Core has no role checks: a viewer-role member reads its agent's notes."""
     viewer_agent = crud_managed_agent.create_custom_agent(
         db_session,
         account_id=test_viewer_user.account_id,
@@ -469,8 +470,8 @@ def test_listing_requires_the_agent_control_permission(db_session, test_viewer_u
             NOTES_URL, params={"agent_id": str(viewer_agent.id)}
         )
 
-    assert response.status_code == 403
-    assert "control_managed_agent" in response.json()["detail"]
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
 
 
 # --- the hook pull ----------------------------------------------------------

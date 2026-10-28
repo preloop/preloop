@@ -23148,21 +23148,1067 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
-  /api/v1/roles:
+  /api/v1/users/me:
     get:
       tags:
-      - Roles
-      summary: List Roles
-      description: "List all available roles.\n\nArgs:\n    current_user: Current\
-        \ authenticated user\n    db: Database session\n\nReturns:\n    dict: List\
-        \ of roles with their permissions"
-      operationId: list_roles_api_v1_roles_get
+      - Users
+      summary: Get Current User Info
+      description: "Get current user's information.\n\nReturns:\n    UserResponse:\
+        \ Current user's profile data"
+      operationId: get_current_user_info_api_v1_users_me_get
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    patch:
+      tags:
+      - Users
+      summary: Update Current User
+      description: "Update current user's profile.\n\nArgs:\n    update_data: User\
+        \ update data\n    current_user: Current authenticated user\n    db: Database\
+        \ session\n\nReturns:\n    UserResponse: Updated user data"
+      operationId: update_current_user_api_v1_users_me_patch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/users/me/change-password:
+    post:
+      tags:
+      - Users
+      summary: Change Password
+      description: "Change current user's password.\n\nArgs:\n    password_data: Current\
+        \ and new password\n    current_user: Current authenticated user\n    db:\
+        \ Database session\n\nRaises:\n    HTTPException: If the identity is inactive\
+        \ or the password is incorrect."
+      operationId: change_password_api_v1_users_me_change_password_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPasswordUpdate'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/users:
+    post:
+      tags:
+      - Users
+      summary: Create User
+      description: "Create a new user in the current account.\n\nArgs:\n    user_data:\
+        \ User creation data\n    current_user: Current authenticated user\n    db:\
+        \ Database session\n\nReturns:\n    UserResponse: Created user data\n\nRaises:\n\
+        \    HTTPException: If username or email already exists, or the account has\n\
+        \        no seat left on its plan (402)."
+      operationId: create_user_api_v1_users_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Users
+      summary: List Users
+      description: "List all users in the current user's account.\n\nArgs:\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n    skip: Number of\
+        \ records to skip\n    limit: Maximum number of records to return\n\nReturns:\n\
+        \    UserListResponse: Paginated list of users"
+      operationId: list_users_api_v1_users_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/users/{user_id}:
+    get:
+      tags:
+      - Users
+      summary: Get User
+      description: "Get a specific user by ID.\n\nArgs:\n    user_id: User ID to retrieve\n\
+        \    current_user: Current authenticated user\n    db: Database session\n\n\
+        Returns:\n    UserResponse: User data\n\nRaises:\n    HTTPException: If user\
+        \ not found or not in same account"
+      operationId: get_user_api_v1_users__user_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    patch:
+      tags:
+      - Users
+      summary: Update User
+      description: "Update a user's membership, or the caller's own profile.\n\nArgs:\n\
+        \    user_id: User ID to update\n    update_data: User update data\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nReturns:\n    UserResponse:\
+        \ Updated user data\n\nRaises:\n    HTTPException: If user not found or not\
+        \ in same account"
+      operationId: update_user_api_v1_users__user_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/users/{user_id}/deactivate:
+    post:
+      tags:
+      - Users
+      summary: Deactivate User
+      description: "Deactivate another user in the account.\n\nArgs:\n    user_id:\
+        \ User ID to deactivate\n    current_user: Current authenticated user\n  \
+        \  db: Database session\n\nRaises:\n    HTTPException: If user not found,\
+        \ not in same account, or trying to deactivate self"
+      operationId: deactivate_user_api_v1_users__user_id__deactivate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/users/bulk-delete:
+    post:
+      tags:
+      - Users
+      summary: Bulk Delete Users
+      description: "Delete or deactivate several users at once.\n\nWith ``hard_delete=false``\
+        \ each user is deactivated (soft delete). With\n``hard_delete=true`` each\
+        \ user is permanently deleted, including their\nSSO identity records (``oauth_*``/``external_id``\
+        \ fields, provider\ntokens, identity links).\n\nPrimary users are handled\
+        \ specially:\n- Primary user of a multi-user account: skipped (transfer ownership\
+        \ or\n  delete the whole account instead).\n- Primary user of a solo account\
+        \ (the SSO-signup shape): the entire\n  account is purged, including cancelling\
+        \ Stripe subscriptions and\n  deleting the Stripe customer when the billing\
+        \ plugin is installed.\n\nTargets must belong to the caller's account unless\
+        \ the caller is a\nsuperuser. The caller can never delete themselves.\n\n\
+        Returns a per-user results array; the endpoint always returns 200 with\nindividual\
+        \ ``skipped``/``error`` statuses rather than failing the batch."
+      operationId: bulk_delete_users_api_v1_users_bulk_delete_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkDeleteUsersRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkDeleteUsersResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/users/search/{username}:
+    get:
+      tags:
+      - Users
+      summary: Search Users By Username
+      description: "Search users by username within the current account.\n\nArgs:\n\
+        \    username: Username search string\n    current_user: Current authenticated\
+        \ user\n    db: Database session\n    limit: Maximum number of results\n\n\
+        Returns:\n    List[UserSummary]: List of matching users"
+      operationId: search_users_by_username_api_v1_users_search__username__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: username
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Username
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 10
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserSummary'
+                title: Response Search Users By Username Api V1 Users Search  Username  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/teams:
+    post:
+      tags:
+      - Teams
+      summary: Create Team
+      description: "Create a new team in the current account.\n\nArgs:\n    team_data:\
+        \ Team creation data\n    current_user: Current authenticated user\n    db:\
+        \ Database session\n\nReturns:\n    TeamResponse: Created team data"
+      operationId: create_team_api_v1_teams_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Teams
+      summary: List Teams
+      description: "List all teams in the current account.\n\nArgs:\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n    skip: Number of\
+        \ records to skip\n    limit: Maximum number of records to return\n\nReturns:\n\
+        \    TeamListResponse: Paginated list of teams"
+      operationId: list_teams_api_v1_teams_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/teams/{team_id}:
+    get:
+      tags:
+      - Teams
+      summary: Get Team
+      description: "Get a specific team by ID with its members.\n\nArgs:\n    team_id:\
+        \ Team ID to retrieve\n    current_user: Current authenticated user\n    db:\
+        \ Database session\n\nReturns:\n    TeamDetailResponse: Team data with members\n\
+        \nRaises:\n    HTTPException: If team not found or not in same account"
+      operationId: get_team_api_v1_teams__team_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    patch:
+      tags:
+      - Teams
+      summary: Update Team
+      description: "Update a team's information.\n\nArgs:\n    team_id: Team ID to\
+        \ update\n    team_data: Team update data\n    current_user: Current authenticated\
+        \ user\n    db: Database session\n\nReturns:\n    TeamResponse: Updated team\
+        \ data\n\nRaises:\n    HTTPException: If team not found or not in same account"
+      operationId: update_team_api_v1_teams__team_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Teams
+      summary: Delete Team
+      description: "Delete a team.\n\nArgs:\n    team_id: Team ID to delete\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nRaises:\n    HTTPException:\
+        \ If team not found or not in same account"
+      operationId: delete_team_api_v1_teams__team_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/teams/{team_id}/members:
+    post:
+      tags:
+      - Teams
+      summary: Add Team Member
+      description: "Add a member to a team.\n\nArgs:\n    team_id: Team ID\n    member_data:\
+        \ Member data (user_id and optional role)\n    current_user: Current authenticated\
+        \ user\n    db: Database session\n\nReturns:\n    TeamMemberResponse: Added\
+        \ member data\n\nRaises:\n    HTTPException: If team not found, user not found,\
+        \ or not in same account"
+      operationId: add_team_member_api_v1_teams__team_id__members_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamMemberAdd'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Add Team Member Api V1 Teams  Team Id  Members Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Teams
+      summary: Get Team Members
+      description: "Get all members of a team.\n\nArgs:\n    team_id: Team ID\n  \
+        \  current_user: Current authenticated user\n    db: Database session\n\n\
+        Returns:\n    list[TeamMemberResponse]: List of team members\n\nRaises:\n\
+        \    HTTPException: If team not found or not in same account"
+      operationId: get_team_members_api_v1_teams__team_id__members_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TeamMemberResponse'
+                title: Response Get Team Members Api V1 Teams  Team Id  Members Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/teams/{team_id}/members/{user_id}:
+    delete:
+      tags:
+      - Teams
+      summary: Remove Team Member
+      description: "Remove a member from a team.\n\nArgs:\n    team_id: Team ID\n\
+        \    user_id: User ID to remove\n    current_user: Current authenticated user\n\
+        \    db: Database session\n\nRaises:\n    HTTPException: If team not found\
+        \ or not in same account"
+      operationId: remove_team_member_api_v1_teams__team_id__members__user_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    patch:
+      tags:
+      - Teams
+      summary: Update Team Member
+      description: "Update a team member's role.\n\nArgs:\n    team_id: Team ID\n\
+        \    user_id: User ID to update\n    member_data: Member update data (role)\n\
+        \    current_user: Current authenticated user\n    db: Database session\n\n\
+        Returns:\n    TeamMemberResponse: Updated member data\n\nRaises:\n    HTTPException:\
+        \ If team not found, member not found, or not in same account"
+      operationId: update_team_member_api_v1_teams__team_id__members__user_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Team Id
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamMemberUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Update Team Member Api V1 Teams  Team Id  Members  User
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/invitations:
+    post:
+      tags:
+      - Invitations
+      summary: Create Invitation
+      description: "Create a new user invitation.\n\nArgs:\n    invitation_data: Invitation\
+        \ data with email, optional role IDs, and optional team IDs\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nReturns:\n    InvitationResponse:\
+        \ Created invitation data\n\nRaises:\n    HTTPException: If user already exists,\
+        \ invitation already pending, or\n        the account has no seat left on\
+        \ its plan (402)."
+      operationId: create_invitation_api_v1_invitations_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Invitations
+      summary: List Invitations
+      description: "List all invitations in the current account.\n\nArgs:\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n    skip: Number of\
+        \ records to skip\n    limit: Maximum number of records to return\n    status_filter:\
+        \ Optional status filter (pending, accepted, expired, cancelled)\n\nReturns:\n\
+        \    InvitationListResponse: Paginated list of invitations"
+      operationId: list_invitations_api_v1_invitations_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      - name: status_filter
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status Filter
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/invitations/{invitation_id}:
+    get:
+      tags:
+      - Invitations
+      summary: Get Invitation
+      description: "Get a specific invitation by ID.\n\nArgs:\n    invitation_id:\
+        \ Invitation ID to retrieve\n    current_user: Current authenticated user\n\
+        \    db: Database session\n\nReturns:\n    InvitationResponse: Invitation\
+        \ data\n\nRaises:\n    HTTPException: If invitation not found or not in same\
+        \ account"
+      operationId: get_invitation_api_v1_invitations__invitation_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Invitation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Invitations
+      summary: Cancel Invitation
+      description: "Cancel a pending invitation.\n\nArgs:\n    invitation_id: Invitation\
+        \ ID to cancel\n    current_user: Current authenticated user\n    db: Database\
+        \ session\n\nRaises:\n    HTTPException: If invitation not found, not in same\
+        \ account, or already accepted"
+      operationId: cancel_invitation_api_v1_invitations__invitation_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Invitation Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/invitations/{invitation_id}/resend:
+    post:
+      tags:
+      - Invitations
+      summary: Resend Invitation
+      description: "Resend an invitation email.\n\nArgs:\n    invitation_id: Invitation\
+        \ ID to resend\n    current_user: Current authenticated user\n    db: Database\
+        \ session\n\nRaises:\n    HTTPException: If invitation not found, not in same\
+        \ account, or not pending"
+      operationId: resend_invitation_api_v1_invitations__invitation_id__resend_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Invitation Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/invitations/public/{token}:
+    get:
+      tags:
+      - Invitations
+      summary: Get Invitation Info
+      description: "Get public information about an invitation (for the accept page).\n\
+        \nThis endpoint is public and doesn't require authentication.\n\nArgs:\n \
+        \   token: Invitation token\n    db: Database session\n\nReturns:\n    InvitationPublicInfo:\
+        \ Public invitation information"
+      operationId: get_invitation_info_api_v1_invitations_public__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationPublicInfo'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/invitations/accept:
+    post:
+      tags:
+      - Invitations
+      summary: Accept Invitation
+      description: "Accept an invitation and create a new user account.\n\nThis endpoint\
+        \ is public and doesn't require authentication.\n\nArgs:\n    accept_data:\
+        \ Invitation acceptance data (token, username, password, full_name)\n    db:\
+        \ Database session\n\nReturns:\n    dict: Success message with user ID\n\n\
+        Raises:\n    HTTPException: If invitation invalid, expired, or username already\
+        \ exists"
+      operationId: accept_invitation_api_v1_invitations_accept_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAccept'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Accept Invitation Api V1 Invitations Accept Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
@@ -24801,6 +25847,213 @@ components:
       - period_end
       title: AccountRuntimeSessionListResponse
       description: Account-scoped runtime session explorer list response.
+    AdminUserCreate:
+      properties:
+        username:
+          type: string
+          maxLength: 50
+          minLength: 3
+          title: Username
+        email:
+          type: string
+          format: email
+          title: Email
+        full_name:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Full Name
+        password:
+          type: string
+          maxLength: 72
+          minLength: 8
+          title: Password
+        user_source:
+          type: string
+          title: User Source
+          default: local
+        oauth_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Oauth Provider
+        oauth_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Oauth Id
+        external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Id
+        is_active:
+          type: boolean
+          title: Is Active
+          default: true
+      type: object
+      required:
+      - username
+      - email
+      - password
+      title: AdminUserCreate
+      description: Schema for creating a new user.
+    AdminUserResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        person_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Person Id
+        account_id:
+          type: string
+          title: Account Id
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        email:
+          anyOf:
+          - type: string
+            format: email
+          - type: 'null'
+          title: Email
+        email_verified:
+          type: boolean
+          title: Email Verified
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+        avatar_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Source
+        identity_status:
+          type: string
+          title: Identity Status
+          default: active
+        is_active:
+          type: boolean
+          title: Is Active
+        user_source:
+          type: string
+          title: User Source
+        oauth_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Oauth Provider
+        last_login:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Login
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        roles:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/AdminUserRoleResponse'
+            type: array
+          - type: 'null'
+          title: Roles
+        inherited_roles:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/AdminUserRoleResponse'
+            type: array
+          - type: 'null'
+          title: Inherited Roles
+      type: object
+      required:
+      - id
+      - account_id
+      - username
+      - email
+      - email_verified
+      - full_name
+      - is_active
+      - user_source
+      - oauth_provider
+      - last_login
+      - created_at
+      - updated_at
+      title: AdminUserResponse
+      description: Response schema for user data.
+    AdminUserRoleResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        team_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Name
+      type: object
+      required:
+      - id
+      - name
+      title: AdminUserRoleResponse
+      description: Response schema for role data attached to admin user responses.
+    AdminUserUpdate:
+      properties:
+        username:
+          anyOf:
+          - type: string
+            maxLength: 50
+            minLength: 3
+          - type: 'null'
+          title: Username
+        email:
+          anyOf:
+          - type: string
+            format: email
+          - type: 'null'
+          title: Email
+        full_name:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Full Name
+        is_active:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Active
+      type: object
+      title: AdminUserUpdate
+      description: Schema for updating a user.
     AgentControlCommandResponse:
       properties:
         command_id:
@@ -29512,6 +30765,55 @@ components:
           title: Notification Emails
       type: object
       title: BudgetPolicyUpdate
+    BulkDeleteUserResult:
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        status:
+          type: string
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - user_id
+      - status
+      title: BulkDeleteUserResult
+      description: Outcome of one user in a bulk deletion request.
+    BulkDeleteUsersRequest:
+      properties:
+        user_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: User Ids
+        hard_delete:
+          type: boolean
+          title: Hard Delete
+          default: false
+      type: object
+      required:
+      - user_ids
+      title: BulkDeleteUsersRequest
+      description: Request body for bulk user deletion.
+    BulkDeleteUsersResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/BulkDeleteUserResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - results
+      title: BulkDeleteUsersResponse
+      description: Per-user results of a bulk deletion request.
     CallableFlowEntry:
       properties:
         flow:
@@ -38251,6 +39553,193 @@ components:
       - unit
       title: IntervalSchedule
       description: 'Friendly schedule form: run every N minutes/hours/days.'
+    InvitationAccept:
+      properties:
+        token:
+          type: string
+          title: Token
+        username:
+          type: string
+          maxLength: 50
+          minLength: 3
+          title: Username
+        password:
+          type: string
+          maxLength: 72
+          minLength: 8
+          title: Password
+        full_name:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - token
+      - username
+      - password
+      title: InvitationAccept
+      description: Schema for accepting an invitation.
+    InvitationCreate:
+      properties:
+        email:
+          type: string
+          format: email
+          title: Email
+        role_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Role Ids
+        team_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Team Ids
+      type: object
+      required:
+      - email
+      title: InvitationCreate
+      description: Schema for creating a user invitation.
+    InvitationListResponse:
+      properties:
+        invitations:
+          items:
+            $ref: '#/components/schemas/InvitationResponse'
+          type: array
+          title: Invitations
+        total:
+          type: integer
+          title: Total
+        skip:
+          type: integer
+          title: Skip
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - invitations
+      - total
+      - skip
+      - limit
+      title: InvitationListResponse
+      description: Response schema for paginated invitation list.
+    InvitationPublicInfo:
+      properties:
+        email:
+          anyOf:
+          - type: string
+            format: email
+          - type: 'null'
+          title: Email
+        organization_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Organization Name
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        is_valid:
+          type: boolean
+          title: Is Valid
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        role_names:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Role Names
+        team_names:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Team Names
+      type: object
+      required:
+      - organization_name
+      - expires_at
+      - is_valid
+      title: InvitationPublicInfo
+      description: Public information about an invitation (for accept page).
+    InvitationResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        account_id:
+          type: string
+          title: Account Id
+        email:
+          type: string
+          format: email
+          title: Email
+        token:
+          type: string
+          title: Token
+        status:
+          type: string
+          title: Status
+        role_ids:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Ids
+        team_ids:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Ids
+        invited_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Invited By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        accepted_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Accepted At
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      type: object
+      required:
+      - id
+      - account_id
+      - email
+      - token
+      - status
+      - role_ids
+      - team_ids
+      - invited_by
+      - created_at
+      - accepted_at
+      - expires_at
+      title: InvitationResponse
+      description: Response schema for invitation data.
     IssueCostExecutionRow:
       properties:
         execution_id:
@@ -49746,6 +51235,247 @@ components:
       type: object
       title: SupportedReleaseUpdate
       description: Partial inventory update. Identity keys are immutable.
+    TeamCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        description:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - name
+      title: TeamCreate
+      description: Schema for creating a new team.
+    TeamDetailResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        account_id:
+          type: string
+          title: Account Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        roles:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Roles
+        members:
+          items:
+            $ref: '#/components/schemas/TeamMemberResponse'
+          type: array
+          title: Members
+          default: []
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - description
+      - created_at
+      - updated_at
+      title: TeamDetailResponse
+      description: Detailed response schema for team with members.
+    TeamListResponse:
+      properties:
+        teams:
+          items:
+            $ref: '#/components/schemas/TeamResponse'
+          type: array
+          title: Teams
+        total:
+          type: integer
+          title: Total
+        skip:
+          type: integer
+          title: Skip
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - teams
+      - total
+      - skip
+      - limit
+      title: TeamListResponse
+      description: Response schema for paginated team list.
+    TeamMemberAdd:
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        role:
+          anyOf:
+          - type: string
+            maxLength: 50
+          - type: 'null'
+          title: Role
+      type: object
+      required:
+      - user_id
+      title: TeamMemberAdd
+      description: Schema for adding a member to a team.
+    TeamMemberResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        team_id:
+          type: string
+          title: Team Id
+        user_id:
+          type: string
+          title: User Id
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role
+        added_at:
+          type: string
+          format: date-time
+          title: Added At
+        added_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Added By
+        person_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Person Id
+        identity_status:
+          type: string
+          title: Identity Status
+          default: active
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - id
+      - team_id
+      - user_id
+      - role
+      - added_at
+      - added_by
+      - username
+      - email
+      - full_name
+      title: TeamMemberResponse
+      description: Response schema for team member data.
+    TeamMemberUpdate:
+      properties:
+        role:
+          anyOf:
+          - type: string
+            maxLength: 50
+          - type: 'null'
+          title: Role
+      type: object
+      title: TeamMemberUpdate
+      description: Schema for updating a team member's role.
+    TeamResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        account_id:
+          type: string
+          title: Account Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        roles:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Roles
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - description
+      - created_at
+      - updated_at
+      title: TeamResponse
+      description: Response schema for team data.
+    TeamUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Name
+        description:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Description
+      type: object
+      title: TeamUpdate
+      description: Schema for updating a team.
     TestConnectionRequest:
       properties:
         organization:
@@ -51593,6 +53323,85 @@ components:
       - text
       title: UsageIngestTranscriptMessage
       description: One role-tagged text chunk of a conversation transcript.
+    UserListResponse:
+      properties:
+        users:
+          items:
+            $ref: '#/components/schemas/AdminUserResponse'
+          type: array
+          title: Users
+        total:
+          type: integer
+          title: Total
+        skip:
+          type: integer
+          title: Skip
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - users
+      - total
+      - skip
+      - limit
+      title: UserListResponse
+      description: Response schema for paginated user list.
+    UserPasswordUpdate:
+      properties:
+        current_password:
+          type: string
+          title: Current Password
+        new_password:
+          type: string
+          maxLength: 72
+          minLength: 8
+          title: New Password
+      type: object
+      required:
+      - current_password
+      - new_password
+      title: UserPasswordUpdate
+      description: Schema for updating user password.
+    UserSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        person_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Person Id
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        email:
+          anyOf:
+          - type: string
+            format: email
+          - type: 'null'
+          title: Email
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+        is_active:
+          type: boolean
+          title: Is Active
+      type: object
+      required:
+      - id
+      - username
+      - email
+      - full_name
+      - is_active
+      title: UserSummary
+      description: Summary schema for user data (minimal info).
     ValidationError:
       properties:
         loc:

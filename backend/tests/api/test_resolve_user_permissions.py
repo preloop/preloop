@@ -4,10 +4,21 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
+
 from preloop.api.auth import router as auth_router
 from preloop.config import settings
+from preloop.utils import permissions
 
 _RBAC_PERMS_MOD = "preloop.plugins.proprietary.rbac.permissions"
+
+
+@pytest.fixture(autouse=True)
+def active_rbac_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Optional-resolution cases exercise the installed access-control layer."""
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda func: func
+    )
 
 
 def test_resolve_user_permissions_disable_rbac(monkeypatch):
@@ -19,12 +30,12 @@ def test_resolve_user_permissions_disable_rbac(monkeypatch):
 
 
 def test_resolve_user_permissions_import_error(monkeypatch):
-    """Broken/missing RBAC deps must soft-fail (ImportError, not only ModuleNotFound)."""
+    """A broken installed RBAC lookup must never imply unrestricted access."""
     monkeypatch.setattr(settings, "disable_rbac", False)
     # None in sys.modules makes import raise ModuleNotFoundError (ImportError subclass).
     monkeypatch.setitem(sys.modules, _RBAC_PERMS_MOD, None)
 
-    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) is None
+    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) == []
 
 
 def test_resolve_user_permissions_db_failure_soft_fails(monkeypatch):
@@ -38,7 +49,7 @@ def test_resolve_user_permissions_db_failure_soft_fails(monkeypatch):
     fake_module.get_user_permissions = boom  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, _RBAC_PERMS_MOD, fake_module)
 
-    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) is None
+    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) == []
 
 
 def test_resolve_user_permissions_success(monkeypatch):

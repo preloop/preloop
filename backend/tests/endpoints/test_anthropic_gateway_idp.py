@@ -566,13 +566,18 @@ def test_binding_key_serves_one_provider(client, db_session, test_user):
     assert response.status_code == 409
 
 
-def test_non_admin_cannot_manage_providers(
+def test_viewer_role_does_not_block_provider_management_in_core(
     app, client, db_session, test_user, test_viewer_user
 ):
+    """Core has no role checks; the binding key still belongs to another account."""
     api_key, _ = _binding_key(db_session, test_user)
     _as(app, test_viewer_user)
-    assert client.get(API).status_code == 403
-    assert _create_provider(client, api_key).status_code == 403
+    listed = client.get(API)
+    assert listed.status_code == 200, listed.text
+    created = _create_provider(client, api_key)
+    # Tenant isolation still holds: the key belongs to another account.
+    assert created.status_code == 422, created.text
+    assert "of this account" in created.json()["detail"]
 
 
 def test_provider_of_another_account_is_404(app, client, db_session, test_user):

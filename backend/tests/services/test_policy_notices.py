@@ -806,7 +806,7 @@ def _account_user(db_session: Session, account_id, name: str) -> User:
 
 
 def test_policy_owners_are_found_in_sql_not_in_a_capped_scan(
-    db_session: Session, test_user: User
+    db_session: Session, test_user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from preloop.models.crud import (
         crud_role,
@@ -854,9 +854,15 @@ def test_policy_owners_are_found_in_sql_not_in_a_capped_scan(
         "zz-team-editor",
     }
 
-    # Same answer as the per-user permission walk used elsewhere.
+    # Same answer as the per-user permission walk the RBAC overlay uses.
+    # Without the overlay every member holds every permission, so the
+    # oracle is evaluated with a stand-in plugin installed.
+    from preloop.utils import permissions
     from preloop.utils.permissions import user_holds_permission
 
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda _name: lambda f: f
+    )
     everyone = crud_user.get_active_by_account(
         db_session, account_id=account_id, limit=100
     )

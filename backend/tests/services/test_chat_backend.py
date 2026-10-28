@@ -291,16 +291,37 @@ async def test_constructed_chat_worker_app_calls_real_scoped_api(fixture_db, rea
     assert response.status_code == 404  # real target guard, route is registered
 
 
+@pytest.fixture(params=[False, True], ids=["core", "commercial"])
+def role_enforcement(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> bool:
+    """Exercise unrestricted core and the shared commercial role resolver."""
+    from preloop.utils import permissions
+
+    enabled = bool(request.param)
+    monkeypatch.setattr(
+        permissions,
+        "_plugin_require_permission",
+        (lambda name: lambda func: func) if enabled else None,
+    )
+    return enabled
+
+
 @pytest.mark.asyncio
-async def test_broker_rechecks_role_and_revoked_actor(fixture_db, real_app):
+async def test_broker_rechecks_role_and_revoked_actor(
+    fixture_db, real_app, role_enforcement
+):
     f = fixture_db
     broker = ChatBroker(f.db, f.connection, "external-test", real_app)
     await broker.read("models")
     f.db.query(models.UserRole).filter_by(user_id=f.user.id).delete()
     f.db.commit()
-    with pytest.raises(HTTPException) as exc:
-        await broker.read("models")
-    assert exc.value.status_code == 403
+    if role_enforcement:
+        with pytest.raises(HTTPException) as exc:
+            await broker.read("models")
+        assert exc.value.status_code == 403
+    else:
+        assert await broker.read("models") == {"items": [], "limit": 20}
     f.user.is_active = False
     f.db.commit()
     assert crud_chat.principal(f.db, f.connection, "external-test") is None
@@ -316,7 +337,9 @@ async def test_broker_blocks_unregistered_routes(fixture_db, real_app):
 
 
 @pytest.mark.asyncio
-async def test_tenant_connection_denial_and_member_link_status(fixture_db, real_app):
+async def test_tenant_connection_denial_and_member_link_status(
+    fixture_db, real_app, role_enforcement
+):
     f = fixture_db
     user_token = create_access_token({"sub": str(f.user.id)})
     async with httpx.AsyncClient(
@@ -333,7 +356,8 @@ async def test_tenant_connection_denial_and_member_link_status(fixture_db, real_
         f.db.query(models.UserRole).filter_by(user_id=f.user.id).delete()
         f.db.commit()
         listing = await client.get("/api/v1/chat/connections")
-        assert listing.status_code == 200 and listing.json()["can_manage"] is False
+        assert listing.status_code == 200
+        assert listing.json()["can_manage"] is (not role_enforcement)
         link = await client.post(
             f"/api/v1/chat/connections/{f.connection.id}/link-code"
         )
@@ -341,7 +365,7 @@ async def test_tenant_connection_denial_and_member_link_status(fixture_db, real_
         denied = await client.patch(
             f"/api/v1/chat/connections/{f.connection.id}", json={"enabled": False}
         )
-        assert denied.status_code == 403
+        assert denied.status_code == (403 if role_enforcement else 200)
 
 
 @pytest.mark.asyncio
@@ -473,7 +497,7 @@ async def test_actual_queue_private_delivery_and_timeout_visibility(
 
 @pytest.mark.asyncio
 async def test_scoped_read_proof_revalidates_resource_denial(
-    fixture_db, real_app, monkeypatch
+    fixture_db, real_app, role_enforcement
 ):
     f = fixture_db
     broker = ChatBroker(f.db, f.connection, "external-test", real_app)
@@ -481,7 +505,10 @@ async def test_scoped_read_proof_revalidates_resource_denial(
     await broker.validate_reads()
     f.db.query(models.UserRole).filter_by(user_id=f.user.id).delete()
     f.db.commit()
-    with pytest.raises(HTTPException):
+    if role_enforcement:
+        with pytest.raises(HTTPException):
+            await broker.validate_reads()
+    else:
         await broker.validate_reads()
 
 

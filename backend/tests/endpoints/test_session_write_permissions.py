@@ -1,4 +1,9 @@
-"""Role permissions for personal searches, sharing, analysis and replay."""
+"""Permissions for personal searches, sharing, analysis and replay.
+
+The core edition has no access controls: every account member may share
+searches, run analysis and replay regardless of role. The sharing check that
+runs inside the handler body is still pinned with an RBAC plugin stand-in.
+"""
 
 from typing import Any
 from unittest.mock import patch
@@ -61,7 +66,7 @@ def test_read_roles_keep_personal_saved_searches(
 
 @pytest.mark.parametrize("role_name", ["viewer", "analyst"])
 @pytest.mark.parametrize("plugin_present", [False, True])
-def test_sharing_requires_permission_before_writing(
+def test_sharing_permission_applies_only_with_plugin(
     client: Any,
     db_session: Any,
     role_user: Any,
@@ -69,6 +74,7 @@ def test_sharing_requires_permission_before_writing(
     plugin_present: bool,
     monkeypatch: Any,
 ) -> None:
+    """Core members share freely; with the plugin, read roles are refused."""
     user = role_user(role_name)
     private = client.post(
         SAVED_URL, json={"name": "personal", "query": "ledger"}
@@ -86,6 +92,11 @@ def test_sharing_requires_permission_before_writing(
         f"{SAVED_URL}/{private['id']}",
         json={"name": "changed", "query": "changed", "visibility": "account"},
     )
+    if not plugin_present:
+        assert created.status_code == 201, created.text
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["visibility"] == "account"
+        return
     assert created.status_code == edited.status_code == 403
     assert "share_session_searches" in created.json()["detail"]
     assert "share_session_searches" in edited.json()["detail"]
@@ -150,25 +161,26 @@ def test_author_can_manage_shared_search_after_sharing_permission_is_removed(
             assert response.json()["shared_at"] is None
 
 
-def test_saved_search_writes_require_session_read_permission(
+def test_member_without_roles_keeps_saved_search_access(
     client: Any, db_session: Any, role_user: Any
 ) -> None:
+    """Losing every role does not cut a core member off from saved searches."""
     user = role_user("viewer")
     saved = client.post(SAVED_URL, json={"name": "personal", "query": "ledger"}).json()
     role = crud.crud_role.get_by_name(db_session, name="viewer")
     crud.crud_user_role.remove_role(db_session, user_id=user.id, role_id=role.id)
     assert (
         client.post(SAVED_URL, json={"name": "new", "query": "ledger"}).status_code
-        == 403
+        == 201
     )
     assert (
-        client.patch(f"{SAVED_URL}/{saved['id']}", json={"name": "new"}).status_code
-        == 403
+        client.patch(f"{SAVED_URL}/{saved['id']}", json={"name": "renamed"}).status_code
+        == 200
     )
-    assert client.delete(f"{SAVED_URL}/{saved['id']}").status_code == 403
-    assert client.get(SAVED_URL).status_code == 403
-    assert client.get(f"{SAVED_URL}/{saved['id']}").status_code == 403
-    assert client.post(f"{SAVED_URL}/{saved['id']}/run").status_code == 403
+    assert client.get(SAVED_URL).status_code == 200
+    assert client.get(f"{SAVED_URL}/{saved['id']}").status_code == 200
+    assert client.post(f"{SAVED_URL}/{saved['id']}/run").status_code != 403
+    assert client.delete(f"{SAVED_URL}/{saved['id']}").status_code == 204
     assert (
         crud.crud_session_saved_search.get_owned(
             db_session,
@@ -176,43 +188,18 @@ def test_saved_search_writes_require_session_read_permission(
             user_id=user.id,
             saved_search_id=UUID(saved["id"]),
         )
-        is not None
+        is None
     )
 
 
-@pytest.mark.parametrize("role_name", ["viewer", "analyst"])
-@pytest.mark.parametrize("suffix", ["optimizations", "optimizations/jobs", "replay"])
-def test_read_roles_cannot_submit_analysis_or_replay(
-    client: Any, role_user: Any, role_name: str, suffix: str
-) -> None:
-    role_user(role_name)
-    with (
-        patch(
-            "preloop.api.endpoints.session_optimization.run_session_optimization"
-        ) as inline,
-        patch(
-            "preloop.api.endpoints.session_optimization.submit_session_optimization_job"
-        ) as submit,
-        patch(
-            "preloop.api.endpoints.session_optimization.run_session_replay"
-        ) as replay,
-    ):
-        response = client.post(
-            f"{OPTIMIZATION_URL}/00000000-0000-0000-0000-000000000001/{suffix}", json={}
-        )
-    assert response.status_code == 403
-    required = "edit_ai_models" if suffix == "replay" else "run_session_optimizations"
-    assert required in response.json()["detail"]
-    inline.assert_not_called()
-    submit.assert_not_called()
-    replay.assert_not_called()
-
-
-@pytest.mark.parametrize("role_name", ["owner", "admin", "editor", "executor"])
+@pytest.mark.parametrize(
+    "role_name", ["owner", "admin", "editor", "executor", "viewer", "analyst"]
+)
 @pytest.mark.parametrize("suffix", ["optimizations", "optimizations/jobs"])
-def test_analysis_roles_reach_submission_service(
+def test_every_role_reaches_submission_service(
     client: Any, role_user: Any, role_name: str, suffix: str
 ) -> None:
+    """Read-only roles reach analysis too: core has no access controls."""
     from fastapi import HTTPException
 
     role_user(role_name)
@@ -232,10 +219,11 @@ def test_analysis_roles_reach_submission_service(
     service.assert_called_once()
 
 
-@pytest.mark.parametrize("role_name", ["owner", "admin", "editor", "executor"])
-def test_replay_keeps_model_edit_permission(
-    client: Any, role_user: Any, role_name: str
-) -> None:
+@pytest.mark.parametrize(
+    "role_name", ["owner", "admin", "editor", "executor", "viewer", "analyst"]
+)
+def test_every_role_reaches_replay(client: Any, role_user: Any, role_name: str) -> None:
+    """Replay no longer requires a model edit grant in the core edition."""
     from preloop.services.replay_savings_service import ConsentRequiredError
 
     role_user(role_name)
@@ -246,9 +234,5 @@ def test_replay_keeps_model_edit_permission(
         response = client.post(
             f"{OPTIMIZATION_URL}/00000000-0000-0000-0000-000000000001/replay", json={}
         )
-    if role_name == "executor":
-        assert response.status_code == 403
-        replay.assert_not_called()
-    else:
-        assert response.status_code == 400
-        replay.assert_called_once()
+    assert response.status_code == 400
+    replay.assert_called_once()

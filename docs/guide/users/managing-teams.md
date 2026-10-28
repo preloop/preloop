@@ -1,17 +1,17 @@
 # Managing Teams
 
-Editions: Cloud, Enterprise.
+Editions: Preloop (OSS), Preloop Cloud, Preloop Enterprise.
 
-Create teams, add members, and assign team roles so you can route approvals to groups and grant permissions in one place.
+Create teams and assign members in Preloop (OSS), where any user of the account can manage them. Preloop Cloud and Preloop Enterprise also support inherited team roles, permission checks and team-based approval routing.
 
 !!! info "Editions"
-    Team management is part of the Enterprise RBAC plugin, available in Preloop Cloud and Preloop Enterprise.
+    Basic team creation, editing, deletion and membership are included in Preloop (OSS). Team role inheritance, team budgets and advanced approval routing require Preloop Cloud or Preloop Enterprise.
 
 ---
 
 ## What Teams Do
 
-Teams in Preloop are groups of users used in two places:
+Teams organize users in every edition. Preloop Cloud and Preloop Enterprise also use them in two places:
 
 - **Approval routing**: approval workflows reference teams via `approver_teams` (and `escalation_teams`), so any member can vote on a request
 - **Permissions**: roles assigned to a team apply to all its members, combined as a union with each member's individual roles

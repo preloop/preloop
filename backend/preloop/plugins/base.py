@@ -6,6 +6,7 @@ condition evaluators, and workflow orchestrators.
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -16,6 +17,15 @@ if TYPE_CHECKING:
 from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
+
+
+def proprietary_plugins_disabled() -> bool:
+    """Read the shared explicit-disable flag for loading and authorization."""
+    return os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").strip().lower() in {
+        "true",
+        "1",
+        "yes",
+    }
 
 
 @dataclass
@@ -337,7 +347,13 @@ class PluginManager:
         only provides internal functionality (argument evaluator) and is not
         a user-facing enterprise plugin.
         """
-        features = {"plugins": [], "features": {}}
+        features = {
+            "plugins": [],
+            "features": {
+                "user_management": True,
+                "team_management": True,
+            },
+        }
 
         for _plugin_name, plugin in self._plugins.items():
             # Skip builtin plugin from the list - it's not an enterprise plugin
@@ -514,8 +530,6 @@ _plugin_manager: Optional[PluginManager] = None
 
 def get_plugin_manager() -> PluginManager:
     """Get global plugin manager (singleton)."""
-    import os
-
     from preloop.config import settings
 
     global _plugin_manager
@@ -525,9 +539,7 @@ def get_plugin_manager() -> PluginManager:
 
         # Only load proprietary plugins if not explicitly disabled
         # Check both disable_rbac (for permission checks) and DISABLE_PROPRIETARY_PLUGINS (for plugin loading)
-        disable_proprietary = (
-            os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() == "true"
-        )
+        disable_proprietary = proprietary_plugins_disabled()
 
         if settings.disable_rbac:
             logger.info("DISABLE_RBAC is set - skipping proprietary plugins")

@@ -197,7 +197,7 @@ class CRUDRole(CRUDBase[models.Role]):
         )
 
     def get_all_for_account(
-        self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
+        self, db: Session, *, account_id: str, skip: int = 0, limit: int | None = 100
     ) -> List[models.Role]:
         """Get all roles available to an account (system + custom).
 
@@ -205,7 +205,7 @@ class CRUDRole(CRUDBase[models.Role]):
             db: Database session.
             account_id: Account ID.
             skip: Number of records to skip.
-            limit: Maximum number of records to return.
+            limit: Maximum number of records, or None for the complete catalog.
 
         Returns:
             List of roles (system + account's custom roles).
@@ -399,6 +399,32 @@ class CRUDTeamRole(CRUDBase[models.TeamRole]):
             .filter(models.TeamRole.team_id == team_id)
             .all()
         )
+
+    def get_roles_for_teams(
+        self, db: Session, *, account_id: uuid.UUID, team_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[models.Role]]:
+        """Batch role projections for teams belonging to the requesting account."""
+        result: dict[uuid.UUID, list[models.Role]] = {}
+        if not team_ids:
+            return result
+        rows = (
+            db.query(models.TeamRole.team_id, models.Role)
+            .join(models.Role, models.Role.id == models.TeamRole.role_id)
+            .join(models.Team, models.Team.id == models.TeamRole.team_id)
+            .filter(
+                models.Team.account_id == account_id,
+                models.Team.id.in_(team_ids),
+                (models.Role.account_id == account_id)
+                | (
+                    models.Role.account_id.is_(None)
+                    & models.Role.is_system_role.is_(True)
+                ),
+            )
+            .all()
+        )
+        for team_id, role in rows:
+            result.setdefault(team_id, []).append(role)
+        return result
 
     def assign_role(
         self,

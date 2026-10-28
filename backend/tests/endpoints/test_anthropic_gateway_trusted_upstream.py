@@ -828,7 +828,7 @@ def test_trusted_options_without_scope_are_rejected(client):
     assert response.status_code == 400
 
 
-def test_non_admin_cannot_grant_trusted_scope(
+def test_viewer_role_does_not_block_trusted_scope_in_core(
     app, client, db_session, test_viewer_user
 ):
     from preloop.api.auth import get_current_active_user
@@ -838,4 +838,4 @@ def test_non_admin_cannot_grant_trusted_scope(
         "/api/v1/auth/api-keys",
         json={"name": "sneaky", "scopes": [TRUSTED_UPSTREAM_SCOPE]},
     )
-    assert response.status_code == 403
+    assert response.status_code == 201, response.text

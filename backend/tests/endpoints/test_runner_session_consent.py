@@ -124,7 +124,13 @@ def test_approved_start_does_not_cover_changed_request(
     assert not service.plans
 
 
-def test_consent_does_not_grant_runner_access(db_session, test_user, service):
+def test_consent_does_not_grant_runner_access(
+    db_session, test_user, service, monkeypatch
+):
+    """With the RBAC plugin, a member without manage_account is refused."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
     runner = _runner(db_session, test_user)
     member = _member(db_session, test_user, "Jane Doe")
     response = _client(db_session, member).post(
@@ -134,6 +140,18 @@ def test_consent_does_not_grant_runner_access(db_session, test_user, service):
     assert response.status_code == 403
     assert not service.plans
     assert db_session.query(models.OwnerConsent).count() == 0
+
+
+def test_core_member_still_needs_owner_consent(db_session, test_user, service):
+    """Core has no roles, but a member still waits for the owner's consent."""
+    runner = _runner(db_session, test_user)
+    member = _member(db_session, test_user, "Jane Doe")
+    response = _client(db_session, member).post(
+        f"/api/v1/runners/{runner.id}/sessions",
+        json=_start_body(consent_request_id=str(uuid4())),
+    )
+    assert response.status_code == 409, response.text
+    assert not service.plans
 
 
 def test_admin_cannot_start_runner_without_owner(db_session, test_user, admin, service):

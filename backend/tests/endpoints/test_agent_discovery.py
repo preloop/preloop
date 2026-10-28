@@ -352,9 +352,12 @@ def as_viewer(app, db_session, test_viewer_user):
     return test_viewer_user
 
 
-def test_report_denied_without_report_discovery(client, as_viewer):
-    assert client.post(REPORTS, json=_report("a" * 64, _candidate())).status_code == 403
-    assert client.get(SALT).status_code == 403
+def test_viewer_role_does_not_block_reports_in_core(client, as_viewer):
+    """Core has no role checks: a viewer-role member may report discoveries."""
+    report = client.post(REPORTS, json=_report("a" * 64, _candidate()))
+    assert report.status_code == 202, report.text
+    salt = client.get(SALT)
+    assert salt.status_code == 200, salt.text
 
 
 def test_report_denied_for_api_key_without_the_scope(

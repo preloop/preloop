@@ -4,6 +4,11 @@
 ``preloop.api.auth.permissions``) and ``user_holds_permission``
 (``preloop.utils.permissions``) must agree on which roles a user holds in
 their account, including roles granted through a team.
+
+Roles only exist alongside the RBAC plugin: the core edition has no access
+controls and grants every member everything. The role-resolution tests below
+therefore install a plugin stand-in; ``test_core_member_holds_everything``
+pins the core behaviour.
 """
 
 import uuid
@@ -23,6 +28,7 @@ from preloop.models.crud import (
     crud_user_role,
 )
 from preloop.models.models.user import User
+from preloop.utils import permissions
 from preloop.utils.permissions import user_holds_permission
 
 PERMISSION = "manage_kill_switch"
@@ -78,6 +84,14 @@ def _make_team_with_role(db: Session, account_id, role, *, name: str = "responde
     return team
 
 
+@pytest.fixture(autouse=True)
+def rbac_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install an RBAC plugin stand-in so role resolution is what is checked."""
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda func: func
+    )
+
+
 @pytest.fixture
 def roleless_user(db_session: Session) -> User:
     """A user in a fresh account with no roles and no teams."""
@@ -87,6 +101,16 @@ def roleless_user(db_session: Session) -> User:
 
 def test_user_without_roles_holds_nothing(db_session, roleless_user):
     assert _both(db_session, roleless_user) == (False, False)
+
+
+def test_core_member_holds_everything(db_session, roleless_user, monkeypatch):
+    """Without the RBAC plugin a roleless member holds every permission."""
+    monkeypatch.setattr(permissions, "_plugin_require_permission", None)
+    assert permissions.members_have_full_access()
+    assert user_holds_permission(db_session, roleless_user, PERMISSION)
+    assert user_holds_permission(db_session, roleless_user, "manage_billing")
+    names = set(permissions.user_permission_names(db_session, roleless_user))
+    assert {PERMISSION, "manage_billing"} <= names
 
 
 def test_team_role_is_the_only_path_both_checks_grant(db_session, roleless_user):

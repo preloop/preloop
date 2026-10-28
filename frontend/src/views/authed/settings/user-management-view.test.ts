@@ -30,6 +30,7 @@ describe('UserManagementView', () => {
       users?: unknown[];
       usersFail?: boolean;
       createFails?: boolean;
+      advancedRoles?: boolean;
     } = {}
   ) {
     const featureEnabled = opts.featureEnabled !== false;
@@ -48,7 +49,10 @@ describe('UserManagementView', () => {
         if (url.includes('/api/v1/features')) {
           return json({
             plugins: [],
-            features: { user_management: featureEnabled },
+            features: {
+              user_management: featureEnabled,
+              rbac: opts.advancedRoles === true,
+            },
           });
         }
 
@@ -465,7 +469,7 @@ describe('UserManagementView', () => {
   });
 
   it('lists roles by their display names in the roles dialog', async () => {
-    fetchStub = createFetchStub({ users: [sampleUser] });
+    fetchStub = createFetchStub({ users: [sampleUser], advancedRoles: true });
     const element = await mountWithUser();
     await waitUntil(() => (element as any).roles.length === 1);
     await element.updateComplete;
@@ -473,6 +477,34 @@ describe('UserManagementView', () => {
       'sl-dialog[label="Manage roles"] sl-checkbox'
     );
     expect(box?.textContent?.trim()).to.equal('Admin');
+  });
+
+  it('offers an upgrade instead of role controls without RBAC', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const element = await mountWithUser();
+    const upgrade = sinon.spy();
+    window.addEventListener('show-upgrade-modal', upgrade);
+    try {
+      const roleAction = element.shadowRoot!.querySelector(
+        '.row-menu [data-action="roles"]'
+      ) as HTMLElement & { disabled: boolean };
+      expect(roleAction.disabled).to.equal(false);
+      expect(roleAction.title).to.equal(
+        'Roles are available in Preloop Cloud and Preloop Enterprise'
+      );
+      roleAction.click();
+      await element.updateComplete;
+      expect(upgrade).to.have.been.calledOnce;
+      expect(upgrade.firstCall.args[0].detail.feature).to.equal('rbac');
+      expect((element as any).isRoleModalOpen).to.equal(false);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/roles'))
+      ).to.equal(false);
+    } finally {
+      window.removeEventListener('show-upgrade-modal', upgrade);
+    }
   });
 });
 
