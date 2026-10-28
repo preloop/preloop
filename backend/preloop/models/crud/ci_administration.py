@@ -28,10 +28,10 @@ from preloop.schemas.ci_subscription import CiSubscriptionCreate
 
 logger = logging.getLogger(__name__)
 
-# The v1 machine ceiling is deliberately exactly ten routes over nine actions.
+# The machine ceiling includes the explicitly granted own-execution evidence route.
 # Changing enforcement coverage requires explicit contract/rollout review before
 # issuance resumes; extra routes must not silently broaden a deployed ceiling.
-_EXPECTED_V1_MACHINE_ROUTE_COUNT = 10
+_EXPECTED_V1_MACHINE_ROUTE_COUNT = 11
 
 
 class CRUDCiAdministration:

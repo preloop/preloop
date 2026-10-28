@@ -25,6 +25,7 @@ class CiRepositoryBinding(TypedDict):
     tracker_url: Optional[str]
     organization_id: str
     publication_mode: NotRequired[str]
+    ci_project_selection: NotRequired[bool]
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,17 @@ class CRUDCiPrincipal:
         ):
             raise ValueError("CI flow requires an enabled repository binding")
         repositories = configuration.get("repositories", [])
+        shared = configuration.get("ci_project_selection") is True
+        selected = (
+            [
+                repo
+                for repo in repositories
+                if isinstance(repo, dict) and repo.get("project_id") == str(project.id)
+            ]
+            if isinstance(repositories, list)
+            else []
+        )
+        projects = flow.trigger_project_ids or []
         from preloop.services.read_only_review import (
             read_only_private_runner,
             read_only_review,
@@ -129,14 +141,28 @@ class CRUDCiPrincipal:
             flow
         )
         if (
-            flow.trigger_project_ids != [str(project.id)]
-            or (flow.runner_pool != "server" and not private_review)
+            (flow.runner_pool != "server" and not private_review)
             or not isinstance(repositories, list)
-            or len(repositories) != 1
-            or not isinstance(repositories[0], dict)
-            or repositories[0].get("project_id") != str(project.id)
-            or repositories[0].get("tracker_id") != str(tracker.id)
-            or repositories[0].get("repository_url")
+            or len(selected) != 1
+            or selected[0].get("tracker_id") != str(tracker.id)
+            or selected[0].get("repository_url")
+            or (
+                not shared and (projects != [str(project.id)] or len(repositories) != 1)
+            )
+            or (
+                shared
+                and (
+                    configuration.get("publication_mode") != "read_only"
+                    or str(project.id) not in projects
+                    or len(projects) != len(set(projects))
+                    or set(projects)
+                    != {
+                        repo.get("project_id")
+                        for repo in repositories
+                        if isinstance(repo, dict)
+                    }
+                )
+            )
         ):
             raise ValueError(
                 "CI flow must bind exactly the selected project repository"
@@ -161,6 +187,8 @@ class CRUDCiPrincipal:
             # Preserve legacy snapshots exactly. Opted-in identities cannot be
             # silently changed to a write-capable mode (or vice versa).
             extra["publication_mode"] = "read_only"
+            if shared:
+                extra["ci_project_selection"] = True
         return (
             tracker.id,
             project.identifier,

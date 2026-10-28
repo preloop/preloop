@@ -31,11 +31,30 @@ def read_only_review(config: Any) -> bool:
 
 def validate_read_only_configuration(config: dict[str, Any]) -> None:
     """Reject publication and alternate repository selection in this mode."""
+    shared = config.get("ci_project_selection") is True
+    if shared and not read_only_review(config):
+        raise ValueError("CI project selection requires read_only publication mode")
     if not read_only_review(config):
         return
+    repositories = config.get("repositories") or []
+    if shared and (
+        not isinstance(repositories, list)
+        or not repositories
+        or any(
+            not isinstance(repo, dict)
+            or not repo.get("project_id")
+            or not repo.get("tracker_id")
+            or repo.get("repository_url")
+            for repo in repositories
+        )
+        or len({repo["project_id"] for repo in repositories}) != len(repositories)
+    ):
+        raise ValueError(
+            "Shared CI review requires unique explicit project repositories"
+        )
     if (
         config.get("enabled") is not True
-        or len(config.get("repositories") or []) != 1
+        or (not shared and len(repositories) != 1)
         or config.get("repository_bindings")
         or config.get("create_pull_request")
         or config.get("publication_approval")
@@ -249,7 +268,14 @@ async def prepare_read_only_review(
     )
     if tracker is None or binding.tracker_type != "github":
         raise ValueError("Read-only review requires the owning GitHub App tracker")
-    repository = dict(flow.git_clone_config["repositories"][0])
+    candidates = [
+        repo
+        for repo in flow.git_clone_config["repositories"]
+        if repo.get("project_id") == str(binding.project_id)
+    ]
+    if len(candidates) != 1:
+        raise ValueError("Read-only review requires one principal-bound repository")
+    repository = dict(candidates[0])
     if (
         repository.get("project_id") != str(binding.project_id)
         or repository.get("tracker_id") != str(binding.tracker_id)
@@ -262,7 +288,10 @@ async def prepare_read_only_review(
     )
     config = dict(flow.git_clone_config)
     config.update(
-        repositories=[repository], source_branch=binding.head_sha, target_branch=None
+        repositories=[repository],
+        source_branch=binding.head_sha,
+        target_branch=None,
+        ci_project_selection=False,
     )
     if not mint:
         context["git_clone_config"] = config

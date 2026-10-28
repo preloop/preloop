@@ -734,3 +734,39 @@ def test_private_pool_ci_flow_requires_read_only_host_profile(
         crud.crud_ci_principal.provision(
             db_session, actor=owner, name="Rejected review", grant=grant
         )
+
+
+def test_shared_read_only_flow_keeps_principals_project_bound(
+    db_session: Session, ci_resources: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import publication_credentials
+
+    owner, project, flow, grant = ci_resources
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    # An administrator can list another project without granting it to this
+    # principal. Exact current project/tracker identity remains authoritative.
+    other_project_id = str(uuid4())
+    flow.agent_type = "codex"
+    flow.trigger_project_ids = [str(project.id), other_project_id]
+    flow.git_clone_config = {
+        **flow.git_clone_config,
+        "publication_mode": "read_only",
+        "ci_project_selection": True,
+        "repositories": [
+            {"project_id": other_project_id, "tracker_id": str(uuid4())},
+            *flow.git_clone_config["repositories"],
+        ],
+    }
+    db_session.commit()
+    principal, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    assert context.project_id == project.id
+    assert principal.repository_binding["ci_project_selection"] is True
+    flow.git_clone_config = {
+        **flow.git_clone_config,
+        "repositories": flow.git_clone_config["repositories"][:1],
+    }
+    db_session.commit()
+    assert crud.crud_ci_principal.authenticate(db_session, token=token) is None
