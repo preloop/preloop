@@ -403,3 +403,126 @@ def test_email_verification_must_survive_person_lock(
             email=test_user.email,
             email_verified=True,
         )
+
+
+def test_saml_provider_namespace_and_membership_source(db_session, test_user):
+    provider = "saml:urn:example:idp"
+    crud_person.link_provider(
+        db_session,
+        person_id=test_user.person_id,
+        source="saml",
+        provider=provider,
+        subject="employee",
+    )
+    person, member = sso_login.resolve_identity(
+        db_session,
+        account_id=test_user.account_id,
+        provider=provider,
+        subject="employee",
+        email=test_user.email,
+        email_verified=False,
+        source="saml",
+    )
+    assert person.id == test_user.person_id and member.id == test_user.id
+    with pytest.raises(IdentityConflictError, match="verified_email_required"):
+        sso_login.resolve_identity(
+            db_session,
+            account_id=test_user.account_id,
+            provider=provider,
+            subject="employee",
+            email=test_user.email,
+            email_verified=False,
+            source="oidc",
+        )
+
+
+def test_pending_saml_request_is_scoped_expiring_and_once(db_session, test_user):
+    from uuid import uuid4
+    from preloop.models.crud import crud_sso_replay_guard as guards
+
+    connection = crud_account_sso_connection.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        protocol="saml",
+        fields={"name": "SAML request"},
+    )
+    now = utc_now()
+    guard = "pending:saml:browser:request"
+    assert guards.claim(
+        db_session,
+        connection_id=connection.id,
+        guard_id=guard,
+        expires_at=now + timedelta(minutes=10),
+    )
+    assert not guards.consume_pending(db_session, connection_id=uuid4(), guard_id=guard)
+    assert not guards.consume_pending(
+        db_session,
+        connection_id=connection.id,
+        guard_id=guard,
+        now=now + timedelta(minutes=11),
+    )
+    assert guards.consume_pending(
+        db_session, connection_id=connection.id, guard_id=guard
+    )
+    assert not guards.consume_pending(
+        db_session, connection_id=connection.id, guard_id=guard
+    )
+    with pytest.raises(ValueError):
+        guards.consume_pending(
+            db_session, connection_id=connection.id, guard_id="assertion:saml:used"
+        )
+
+
+def test_simultaneous_saml_request_consume_has_exactly_one_winner(db_engine):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import delete
+    from sqlalchemy.orm import Session
+    from preloop.models import models
+    from preloop.models.crud import crud_sso_replay_guard as guards
+
+    with Session(db_engine) as setup:
+        account = crud_account.create(
+            setup,
+            obj_in={"organization_name": "SAML concurrency fixture", "is_active": True},
+        )
+        account_id = account.id
+        connection = crud_account_sso_connection.create_for_account(
+            setup,
+            account_id=account_id,
+            protocol="saml",
+            fields={"name": "Concurrent requests"},
+        )
+        connection_id = connection.id
+        guard = "pending:saml:browser:concurrent"
+        guards.claim(
+            setup,
+            connection_id=connection_id,
+            guard_id=guard,
+            expires_at=utc_now() + timedelta(minutes=10),
+        )
+        setup.commit()
+    barrier = Barrier(2)
+
+    def consume():
+        with Session(db_engine) as session:
+            barrier.wait(timeout=10)
+            result = guards.consume_pending(
+                session, connection_id=connection_id, guard_id=guard
+            )
+            session.commit()
+            return result
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(consume) for _ in range(2)]
+            assert sorted(future.result(timeout=15) for future in futures) == [
+                False,
+                True,
+            ]
+    finally:
+        with Session(db_engine) as cleanup:
+            cleanup.execute(
+                delete(models.Account).where(models.Account.id == account_id)
+            )
+            cleanup.commit()

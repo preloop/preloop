@@ -1593,3 +1593,10 @@ from canonical person/session revocation; all session types still honor ordinary
 `auth_generation`. Original authentication account/generation remain distinct from
 the selected account to prevent switches from upgrading or reviving assurance.
 The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+SAML persistence remains edition-neutral: `AccountSsoConnection` stores the
+public SP certificate paired with its SecretReference, and replay CRUD atomically
+consumes expiring pending SAML requests. Protocol implementation and certificate
+creation stay in EE. The shared identity CRUD accepts explicit OIDC/SAML sources
+while preserving canonical verified-email linkage, account membership boundaries
+and provider-link locking. The optional `ee` dependency extra supplies the SAML
+XML toolkit; core modules do not import it.

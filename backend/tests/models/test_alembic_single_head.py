@@ -516,4 +516,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert group_grants.down_revision == "20261113_pull_request_details"
     enforcement = script.get_revision("20261115_sso_enforcement")
     assert enforcement.down_revision == "20261114_sso_group_grants"
-    assert script.get_heads() == ["20261115_sso_enforcement"]
+    saml_certificate = script.get_revision("20261116_saml_sp_certificate")
+    assert saml_certificate.down_revision == "20261115_sso_enforcement"
+    assert script.get_heads() == ["20261116_saml_sp_certificate"]

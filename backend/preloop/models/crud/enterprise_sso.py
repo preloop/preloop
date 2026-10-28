@@ -543,6 +543,28 @@ class CRUDSsoReplayGuard(_ThroughConnection, _AccountScopedCRUD[SsoReplayGuard])
         )
         return result.first() is not None
 
+    def consume_pending(
+        self,
+        db: Session,
+        *,
+        connection_id: Any,
+        guard_id: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically remove one unexpired, server-stored pending request."""
+        if not guard_id.startswith("pending:saml:"):
+            raise ValueError("Only pending SAML requests may be consumed")
+        result = db.execute(
+            delete(SsoReplayGuard)
+            .where(
+                SsoReplayGuard.connection_id == connection_id,
+                SsoReplayGuard.guard_id == guard_id,
+                SsoReplayGuard.expires_at > (now or utc_now()),
+            )
+            .returning(SsoReplayGuard.id)
+        )
+        return result.first() is not None
+
     def purge_expired(self, db: Session, *, now: Optional[datetime] = None) -> int:
         """Delete expired ids and return how many were removed; caller commits."""
         result = db.execute(

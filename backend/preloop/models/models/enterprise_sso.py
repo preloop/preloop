@@ -34,6 +34,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -125,6 +126,7 @@ class AccountSsoConnection(Base):
         ForeignKey("secret_reference.id", ondelete="SET NULL"),
         nullable=True,
     )
+    saml_sp_certificate: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     saml_want_assertions_signed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )

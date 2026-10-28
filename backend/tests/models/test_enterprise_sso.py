@@ -101,14 +101,24 @@ def _round_trip(db):
     grants_migration = _load_migration(
         MIGRATION_PATH.with_name("20261114_sso_group_grants.py")
     )
+    enforcement_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261115_sso_enforcement.py")
+    )
+    saml_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261116_saml_sp_certificate.py")
+    )
     connection = db.connection()
     with Operations.context(MigrationContext.configure(connection)):
+        saml_migration.downgrade()
+        enforcement_migration.downgrade()
         grants_migration.downgrade()
         migration.downgrade()
         names = set(inspect(connection).get_table_names())
         assert not names & set(TABLES)
         migration.upgrade()
         grants_migration.upgrade()
+        enforcement_migration.upgrade()
+        saml_migration.upgrade()
     names = set(inspect(connection).get_table_names())
     assert set(TABLES) <= names
 
