@@ -554,3 +554,50 @@ def test_replayed_request_history_is_stored_once(
         assert [o["call_id"] for o in results] == [f"c{i}" for i in range(turn + 1)]
     growth = [b - a for a, b in zip(sizes, sizes[1:], strict=False)]
     assert max(growth) == min(growth), sizes
+
+
+def test_request_dedupe_preserves_changed_observations_for_same_call_id(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    _, _, token, context, execution = owned_run(db_session, ci_resources)
+    for output in ("first", "updated", "updated"):
+        persist_tool_evidence(
+            db_session,
+            usage=SimpleNamespace(
+                id=uuid4(),
+                flow_execution_id=execution.id,
+                account_id=context.account_id,
+            ),
+            document=capture_tools(
+                {
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": "same",
+                            "output": output,
+                        }
+                    ]
+                },
+                {},
+                capture_content=True,
+            ),
+        )
+    db_session.commit()
+    body = client.get(
+        f"/api/v1/flows/executions/{execution.id}/tool-evidence",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    values = [
+        item["value"]
+        for row in body["records"]
+        for item in row["document"]["observations"]
+    ]
+    assert values == ["first", "updated"]
+    assert (
+        sum(
+            row["document"].get("request_duplicates_omitted", 0)
+            for row in body["records"]
+        )
+        == 1
+    )
+    assert all(row["integrity_valid"] for row in body["records"])

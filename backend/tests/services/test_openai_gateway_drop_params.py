@@ -450,6 +450,7 @@ def test_schema_keeps_connection_and_auth_kwargs() -> None:
     )
     assert kwargs["api_key"] == "sk-test"
     assert kwargs["api_base"] == "https://gateway.example.com/v1"
+    assert kwargs["timeout"] == 600
     assert kwargs["extra_headers"]
     assert kwargs["response_format"] == {"type": "json_object"}
     assert kwargs["drop_params"] is True

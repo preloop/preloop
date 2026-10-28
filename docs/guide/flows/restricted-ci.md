@@ -138,7 +138,8 @@ capture retains the current response. Replayed
 older request history is deliberately excluded, so storage grows with new exchanges
 rather than accumulated history. `capture_complete` refers to this declared scope,
 not a historical conversation import. Request-side observations whose call ID was
-already stored for the execution are omitted (`request_duplicates_omitted` counts
+already stored with the same sanitized content digest are omitted; changed
+observations under the same call ID remain retained (`request_duplicates_omitted` counts
 them), so retries do not repeat an exchange. If an evidence write fails, the
 usage row and agent log batch are still stored, and a record with
 `capture_failed: true` and `capture_complete: false` takes its place.

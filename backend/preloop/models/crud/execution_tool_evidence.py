@@ -84,11 +84,13 @@ def _fail_soft(
 
 
 def _observation_key(observation: dict[str, Any]) -> str | None:
-    """Return the request-side dedupe key, or None when not deduplicable."""
+    """Identify an exact sanitized observation, preserving changed call content."""
+    from preloop.utils.secret_scrubbing import scrub_structure
+
     call_id = observation.get("call_id")
     if observation.get("source") != "request" or not isinstance(call_id, str):
         return None
-    return f"{observation.get('kind')}:{call_id}"
+    return digest(scrub_structure(sanitize_for_jsonb(observation)))
 
 
 def _seen_request_keys(db: Session, execution_id: UUID) -> set[str]:
@@ -143,6 +145,11 @@ def _persist_tool_evidence(
         "execution_id": str(usage.flow_execution_id),
         "api_usage_id": str(usage.id),
     }
+    sanitized = apply_storage_redaction(str(usage.account_id), document)
+    sanitized["storage_redacted"] = (
+        document.get("storage_redacted", False) or sanitized != document
+    )
+    document = sanitized
     observations = document.get("observations")
     if isinstance(observations, list) and any(
         _observation_key(item) for item in observations if isinstance(item, dict)
@@ -155,16 +162,12 @@ def _persist_tool_evidence(
         ]
         document["observations"] = kept
         document["request_duplicates_omitted"] = len(observations) - len(kept)
-    sanitized = apply_storage_redaction(str(usage.account_id), document)
-    sanitized["storage_redacted"] = (
-        document.get("storage_redacted", False) or sanitized != document
-    )
     _persist_document(
         db,
         execution_id=usage.flow_execution_id,
         source="gateway",
         source_id=str(usage.id),
-        document=sanitized,
+        document=document,
     )
 
 
