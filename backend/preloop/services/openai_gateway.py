@@ -8434,21 +8434,23 @@ class OpenAIGatewayService:
                     message="Conflicting structured response formats",
                 )
         if response_format is not None:
-            # Preserve the schema contract while keeping ordinary unsupported
-            # option dropping. With global drop_params=False LiteLLM otherwise
-            # rejects unrelated client flags such as parallel_tool_calls.
+            # drop_params stays True: it is request-global in LiteLLM, and
+            # turning it off would make unrelated unsupported options (such as
+            # parallel_tool_calls on some providers) hard-fail. The only thing
+            # that must never be dropped silently is the schema itself, so
+            # refuse explicitly when LiteLLM would drop response_format.
             supported = litellm.get_supported_openai_params(model=kwargs["model"])
             if not supported or "response_format" not in supported:
                 raise ModelGatewayAPIError(
                     provider=provider,
                     status_code=400,
-                    message="The selected provider/model does not support structured response_format",
+                    message=(
+                        "The selected provider/model does not support structured "
+                        "response_format; choose a model with structured output "
+                        "support or remove the response schema"
+                    ),
                 )
-            for key in litellm.OPENAI_CHAT_COMPLETION_PARAMS:
-                if key not in supported and key not in {"model", "messages"}:
-                    kwargs.pop(key, None)
             kwargs["response_format"] = response_format
-            kwargs["drop_params"] = False
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.

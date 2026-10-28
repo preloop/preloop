@@ -1,5 +1,7 @@
 """Scoped durable tool evidence and safe terminal-delivery diagnostics."""
 
+import logging
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
 
@@ -18,15 +20,122 @@ from preloop.services.execution_tool_evidence import (
 )
 
 
-MAX_PAGE_BYTES = 4 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+MAX_PAGE_BYTES = 8 * 1024 * 1024
+
+
+def _fail_soft(
+    db: Session,
+    *,
+    execution_id: Any,
+    source: str,
+    source_id: str | None,
+    write: Callable[[], None],
+) -> None:
+    """Run an evidence write in a savepoint so a failure never aborts the caller.
+
+    Evidence rides on the gateway usage transaction and the agent log batch.
+    Losing either to an evidence failure would defeat the point of evidence,
+    so failures are logged and replaced by a capture-failure marker.
+
+    Args:
+        db: Session of the surrounding transaction.
+        execution_id: Execution the evidence belongs to.
+        source: ``gateway`` or ``native``.
+        source_id: Usage id or native item id, when known.
+        write: Callable performing the evidence insert.
+    """
+    try:
+        with db.begin_nested():
+            write()
+        return
+    except Exception as exc:  # noqa: BLE001 - evidence must never break callers
+        logger.warning(
+            "Tool evidence capture failed for execution %s (%s): %s",
+            execution_id,
+            source,
+            type(exc).__name__,
+        )
+    if not source_id:
+        return
+    try:
+        with db.begin_nested():
+            _persist_document(
+                db,
+                execution_id=UUID(str(execution_id)),
+                source=source,
+                source_id=source_id,
+                document={
+                    "version": 1,
+                    "execution_id": str(execution_id),
+                    "api_usage_id": source_id if source == "gateway" else None,
+                    "capture_complete": False,
+                    "capture_failed": True,
+                    "observations": [],
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Tool evidence failure marker not stored for execution %s: %s",
+            execution_id,
+            type(exc).__name__,
+        )
+
+
+def _observation_key(observation: dict[str, Any]) -> str | None:
+    """Return the request-side dedupe key, or None when not deduplicable."""
+    call_id = observation.get("call_id")
+    if observation.get("source") != "request" or not isinstance(call_id, str):
+        return None
+    return f"{observation.get('kind')}:{call_id}"
+
+
+def _seen_request_keys(db: Session, execution_id: UUID) -> set[str]:
+    """Load request-side observation keys already stored for an execution.
+
+    Reads only the small ``request_keys`` metadata entry on the execution's
+    indexed evidence rows, never the stored documents.
+    """
+    rows = db.query(models.FlowExecutionLog.metadata_["request_keys"]).filter(
+        models.FlowExecutionLog.execution_id == execution_id,
+        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
+    )
+    seen: set[str] = set()
+    for (keys,) in rows:
+        if isinstance(keys, list):
+            seen.update(key for key in keys if isinstance(key, str))
+    return seen
 
 
 def persist_tool_evidence(
     db: Session, *, usage: models.ApiUsage, document: dict[str, Any]
 ) -> None:
-    """Persist a bounded, sanitized record before the console payload is clipped."""
+    """Persist a bounded, sanitized record before the console payload is clipped.
+
+    Never raises: a failure is logged and recorded as a capture-failure marker
+    so the surrounding usage row survives.
+
+    Args:
+        db: Session of the gateway usage transaction.
+        usage: Usage row the evidence belongs to.
+        document: Document produced by ``capture_tools``.
+    """
     if not usage.flow_execution_id:
         return
+    _fail_soft(
+        db,
+        execution_id=usage.flow_execution_id,
+        source="gateway",
+        source_id=str(usage.id) if usage.id else None,
+        write=lambda: _persist_tool_evidence(db, usage=usage, document=document),
+    )
+
+
+def _persist_tool_evidence(
+    db: Session, *, usage: models.ApiUsage, document: dict[str, Any]
+) -> None:
+    """Deduplicate replayed request-side observations, then store the record."""
     from preloop.services.sensitive_data.storage import apply_storage_redaction
 
     document = {
@@ -34,6 +143,18 @@ def persist_tool_evidence(
         "execution_id": str(usage.flow_execution_id),
         "api_usage_id": str(usage.id),
     }
+    observations = document.get("observations")
+    if isinstance(observations, list) and any(
+        _observation_key(item) for item in observations if isinstance(item, dict)
+    ):
+        seen = _seen_request_keys(db, usage.flow_execution_id)
+        kept = [
+            item
+            for item in observations
+            if not isinstance(item, dict) or _observation_key(item) not in seen
+        ]
+        document["observations"] = kept
+        document["request_duplicates_omitted"] = len(observations) - len(kept)
     sanitized = apply_storage_redaction(str(usage.account_id), document)
     sanitized["storage_redacted"] = (
         document.get("storage_redacted", False) or sanitized != document
@@ -84,6 +205,13 @@ def _persist_document(
                 "api_usage_id": source_id if source == "gateway" else None,
                 "sha256": sha256,
                 "capture_complete": document.get("capture_complete", False),
+                "request_keys": sorted(
+                    {
+                        key
+                        for item in document.get("observations") or []
+                        if isinstance(item, dict) and (key := _observation_key(item))
+                    }
+                ),
                 "chunks": [
                     encoded[i : i + 16000] for i in range(0, len(encoded), 16000)
                 ],
@@ -97,7 +225,51 @@ def _persist_document(
 def persist_native_command_evidence(
     db: Session, *, execution_id: str, line: Any
 ) -> None:
-    """Capture Codex command events before the ordinary log string is capped."""
+    """Capture Codex command events before the ordinary log string is capped.
+
+    Never raises: a failure is logged and recorded as a capture-failure marker
+    so the surrounding log batch is still written.
+
+    Args:
+        db: Session of the log batch transaction.
+        execution_id: Execution that emitted the log line.
+        line: Raw agent log line.
+    """
+    _fail_soft(
+        db,
+        execution_id=execution_id,
+        source="native",
+        source_id=_native_item_id(line),
+        write=lambda: _persist_native_command_evidence(
+            db, execution_id=execution_id, line=line
+        ),
+    )
+
+
+def _native_item_id(line: Any) -> str | None:
+    """Best-effort native item id for a failure marker."""
+    import json
+
+    if not isinstance(line, str) or not line.startswith("{"):
+        return None
+    try:
+        item = json.loads(line).get("item")
+        item_id = item.get("id") if isinstance(item, dict) else None
+    except (ValueError, AttributeError):
+        return None
+    if (
+        not isinstance(item_id, str)
+        or not 0 < len(item_id) <= 256
+        or item.get("type") != "command_execution"
+    ):
+        return None
+    return str(sanitize_for_jsonb(item_id))
+
+
+def _persist_native_command_evidence(
+    db: Session, *, execution_id: str, line: Any
+) -> None:
+    """Build and store one native command observation."""
     import json
     from preloop.config import settings
     from preloop.models.crud.flow_execution_log import _account_for_execution

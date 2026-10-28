@@ -370,16 +370,14 @@ the existing file-writing contract.
 
 For Responses requests translated to Chat Completions, the gateway maps
 `text.format` to `response_format`. The gateway checks provider/model support for
-structured output and returns an error when the schema is unsupported. Other
-unsupported OpenAI options are filtered separately, preserving provider
-compatibility without silently removing the schema. Native mode supports cold starts only because the
-pinned CLI resume command lacks the schema flag. Saving or provisioning a flow
-rejects enabled `agent_config.feedback`, nonzero explicit `max_resumes_per_pr`,
-and configured native restore/nudge inputs alongside `native_result`. Set
-`max_resumes_per_pr: 0` for flows that would otherwise correlate PR comments.
-Historical flows and correlated follow-up requests are checked again before
-runner launch: an incompatible follow-up fails explicitly; it is not silently
-restored or downgraded to an unrelated cold start. Unconstrained recovery rounds
+structured output and returns an explicit error when the schema is unsupported,
+so the schema is never dropped silently. Other unsupported OpenAI options are
+still dropped as usual, preserving provider compatibility. The pinned CLI resume
+command lacks the schema flag, so follow-up rounds in this mode (PR comment
+follow-ups, restored sessions) start cold: the prior agent session is not
+restored, and the execution timeline and agent log say so. Feedback and
+`max_resumes_per_pr` settings stay valid; the follow-up runs without the prior
+conversation context. Unconstrained recovery rounds
 and completion reminders remain disabled. Native schema output cannot
 ensure completion within a token/time budget, or execute an arbitrary trusted
 helper. Consumers requiring a helper-bound diff/challenge must still verify those

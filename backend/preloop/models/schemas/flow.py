@@ -1741,10 +1741,6 @@ class FlowBase(BaseModel):
         """Validate optional agent_config keys before persistence."""
         if not isinstance(v, dict):
             return v
-        from preloop.services.native_result import validate_native_result_configuration
-
-        if not issubclass(cls, FlowResponse):
-            validate_native_result_configuration(v)
         routing = v.get("model_routing")
         if routing is not None:
             ModelRoutingConfig.model_validate(routing)

@@ -9841,9 +9841,13 @@ class FlowExecutionOrchestrator:
 
             from preloop.services.read_only_review import validate_read_only_flow
 
-            from preloop.services.native_result import validate_native_result_admission
+            from preloop.services.native_result import (
+                COLD_START_MESSAGE,
+                native_result_cold_start,
+            )
 
-            validate_native_result_admission(self.flow, self.trigger_event_data)
+            if native_result_cold_start(self.flow, self.trigger_event_data):
+                await self._emit_execution_warning(COLD_START_MESSAGE)
             validate_read_only_flow(self.flow)
             if (
                 getattr(getattr(self, "execution_log", None), "ci_principal_id", None)

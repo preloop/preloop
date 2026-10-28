@@ -1,7 +1,13 @@
-"""Admission rules for schema-constrained Codex cold-start executions."""
+"""Cold-start rules for schema-constrained Codex native results.
+
+The pinned Codex CLI's ``exec resume`` has no ``--output-schema`` flag, so a
+native-result run can never resume a prior session without losing its schema.
+Follow-up and resumed rounds therefore start cold: session restoration inputs
+are dropped, a session restored at runtime is not resumed, and the run says
+that prior context was not restored.
+"""
 
 from typing import Any
-
 
 RESTORE_KEYS = (
     "cli_session_restore_archive",
@@ -9,34 +15,56 @@ RESTORE_KEYS = (
     "confirmation_nudge",
 )
 
-
-def validate_native_result_configuration(config: Any) -> None:
-    """Reject saved policies that require a schema-less native resume."""
-    if not isinstance(config, dict) or config.get("native_result") is not True:
-        return
-    feedback = config.get("feedback")
-    if isinstance(feedback, dict) and feedback.get("enabled") is True:
-        raise ValueError("native_result does not support feedback session resumes")
-    if "max_resumes_per_pr" in config and config["max_resumes_per_pr"] not in (0, "0"):
-        raise ValueError("native_result requires max_resumes_per_pr to be zero")
-    if any(config.get(key) for key in RESTORE_KEYS):
-        raise ValueError("native_result does not support native session restoration")
+COLD_START_MESSAGE = (
+    "native_result: this follow-up round starts cold; the prior agent session "
+    "context was not restored because resume cannot keep the result schema"
+)
 
 
-def validate_native_result_admission(
-    flow: Any, event_data: dict[str, Any] | None = None
-) -> None:
-    """Reject historical incompatible policies and follow-ups before launch.
+def native_result_enabled(config: Any) -> bool:
+    """Return whether an agent config opts into native result capture.
 
-    Existing records can predate save validation. A correlated continuation is
-    refused rather than silently losing its restored state in a cold start.
+    Args:
+        config: The flow's ``agent_config``.
+
+    Returns:
+        True when ``native_result`` is explicitly enabled.
     """
-    config = getattr(flow, "agent_config", None)
-    validate_native_result_configuration(config)
-    if not isinstance(config, dict) or config.get("native_result") is not True:
-        return
+    return isinstance(config, dict) and config.get("native_result") is True
+
+
+def native_result_cold_start(flow: Any, event_data: dict[str, Any] | None) -> bool:
+    """Return whether a resumed native-result execution must start cold.
+
+    Args:
+        flow: Flow being executed.
+        event_data: Trigger event data, which carries ``_resume`` for
+            correlated follow-ups.
+
+    Returns:
+        True when the flow uses native results and the trigger asks to resume.
+    """
+    if not native_result_enabled(getattr(flow, "agent_config", None)):
+        return False
     event_data = event_data or {}
-    if event_data.get("_resume") or any(event_data.get(key) for key in RESTORE_KEYS):
-        raise ValueError(
-            "native_result requires a cold start; correlated resumes are unsupported"
-        )
+    return bool(event_data.get("_resume")) or any(
+        event_data.get(key) for key in RESTORE_KEYS
+    )
+
+
+def cold_start_context(context: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Strip session-restore inputs from a native-result execution context.
+
+    Args:
+        context: Execution context handed to the agent script builder.
+
+    Returns:
+        The context to build from, and whether anything was stripped. The
+        caller's dict is never mutated.
+    """
+    if not native_result_enabled(context.get("agent_config")):
+        return context, False
+    if not any(context.get(key) for key in RESTORE_KEYS):
+        return context, False
+    cleaned = {key: value for key, value in context.items() if key not in RESTORE_KEYS}
+    return cleaned, True
