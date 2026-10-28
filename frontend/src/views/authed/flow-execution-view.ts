@@ -114,10 +114,18 @@ import {
 } from '../../utils/billing-attribution';
 
 interface FlowExecutionUpdate {
+  log_id?: string;
   execution_id: string;
   timestamp: string;
   type: string;
   payload: any;
+}
+
+/** Stable runner row identity survives storage timestamps and line/message shaping. */
+function executionLogIdentity(log: FlowExecutionUpdate): string {
+  if (typeof log.log_id === 'string' && log.log_id) return `row:${log.log_id}`;
+  // Legacy sources have no shared identity. Never collapse them by text alone.
+  return JSON.stringify([log.type, log.timestamp, log.payload]);
 }
 
 interface FlowExecution {
@@ -1223,8 +1231,7 @@ export class FlowExecutionView extends LitElement {
     ) {
       // Persistence is best effort. Merge retained records without discarding
       // live lines that arrived while the recovery request was in flight.
-      const key = (log: any) =>
-        JSON.stringify([log.type, log.timestamp, log.payload]);
+      const key = executionLogIdentity;
       const seen = new Set([...this.logs, ...this.logBuffer].map(key));
       const recovered = persisted.value.logs.filter((log: any) => {
         const id = key(log);
@@ -1578,8 +1585,7 @@ export class FlowExecutionView extends LitElement {
       ) {
         // Recovery/live appends can shift this offset. Dedupe overlapping
         // pages while still advancing by the number of stored rows read.
-        const key = (log: any) =>
-          JSON.stringify([log.type, log.timestamp, log.payload]);
+        const key = executionLogIdentity;
         const seen = new Set([...this.logs, ...this.logBuffer].map(key));
         const older = logsResult.logs.filter((log: any) => {
           const id = key(log);
@@ -1901,8 +1907,7 @@ export class FlowExecutionView extends LitElement {
 
     // A late live event may already be in an initial/recovery persisted page.
     // Deduplicate at flush time because recovery can finish after enqueueing.
-    const key = (log: FlowExecutionUpdate) =>
-      JSON.stringify([log.type, log.timestamp, log.payload]);
+    const key = executionLogIdentity;
     const seen = new Set(this.logs.map(key));
     const linesToAdd = this.logBuffer.splice(0, limit).filter((log) => {
       const id = key(log);

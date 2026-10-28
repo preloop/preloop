@@ -776,13 +776,14 @@ async def persist_runner_logs(
     await run_in_threadpool(crud_flow_execution_log.append_logs, db, entries)
 
     async def broadcast() -> None:
-        for line in lines:
+        for _, entry in entries:
             await _publish_flow_update(
                 str(execution_id),
                 {
                     "execution_id": str(execution_id),
                     "type": "agent_log_line",
-                    "payload": {"line": line},
+                    "log_id": entry["_persistence_id"],
+                    "payload": entry["payload"],
                 },
             )
 
