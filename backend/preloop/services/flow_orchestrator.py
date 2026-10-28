@@ -9837,17 +9837,6 @@ class FlowExecutionOrchestrator:
             # Stage 2: Create execution log
             self._create_execution_log()
 
-            # Worker-mode recovery can claim legacy rows without trigger
-            # admission. Check before context preparation or any runtime launch;
-            # the normal exception path persists a terminal model_config failure.
-            from preloop.services.model_routing import (
-                validate_execution_model_principal,
-            )
-
-            validate_execution_model_principal(
-                self.db, self.flow, self.trigger_event_data or {}
-            )
-
             from preloop.services.read_only_review import validate_read_only_flow
 
             validate_read_only_flow(self.flow)
@@ -9925,6 +9914,16 @@ class FlowExecutionOrchestrator:
                 )
                 agent_result = await self._run_backport_within_budget(backport_plan)
             else:
+                # Legacy queued rows can bypass trigger admission. Check the
+                # actual model branch before context preparation/runtime launch;
+                # deterministic backport/report branches invoke no model.
+                from preloop.services.model_routing import (
+                    validate_execution_model_principal,
+                )
+
+                validate_execution_model_principal(
+                    self.db, self.flow, self.trigger_event_data or {}
+                )
                 # Stage 3: Prepare execution context
                 execution_context = await self._prepare_execution_context()
 
