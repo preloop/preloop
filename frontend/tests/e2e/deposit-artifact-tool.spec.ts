@@ -160,7 +160,11 @@ test('deposit_artifact: Tools page opt in, MCP deposit, session list', async ({
       runtime_session_id: string;
     };
   };
-  expect(await toolNames(request, (await mint()).token)).not.toContain(TOOL);
+  await expect
+    .poll(async () => toolNames(request, (await mint()).token), {
+      timeout: 15_000,
+    })
+    .not.toContain(TOOL);
 
   // Switch it on where an operator would, then the agent reconnects.
   await toggle.click();

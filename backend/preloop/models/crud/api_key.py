@@ -179,14 +179,15 @@ class CRUDApiKey(CRUDBase[ApiKey]):
     ) -> tuple[ApiKey, str]:
         """Create a runtime-scoped API key stored without plaintext value."""
         token_value = key_value or f"flow_{secrets.token_urlsafe(32)}"
-        runtime_key_name = name
+        runtime_key_name = name[:100]
         if (
             db.query(ApiKey)
             .filter(ApiKey.account_id == account_id, ApiKey.name == runtime_key_name)
             .first()
             is not None
         ):
-            runtime_key_name = f"{name} ({secrets.token_hex(4)})"
+            suffix = f" ({secrets.token_hex(4)})"
+            runtime_key_name = f"{name[: 100 - len(suffix)]}{suffix}"
         db_obj = ApiKey(
             name=runtime_key_name,
             key=None,
