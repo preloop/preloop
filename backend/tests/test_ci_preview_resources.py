@@ -21,3 +21,4 @@ def test_only_preview_deployments_use_the_small_profile() -> None:
         if step.startswith("helm upgrade")
     )
     assert "--values ./helm/preloop/values-ci.yaml" in command
+    assert "--post-renderer ./helm/preloop/ci-post-renderer.py" in command

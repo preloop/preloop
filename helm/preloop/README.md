@@ -1066,3 +1066,8 @@ keep the defaults in `values.yaml`. It bounds API, worker, database and NATS
 resources, sizes PostgreSQL working memory to match, and omits the NATS debugging
 pod. Check the rendered footprint against namespace quotas, including rollout
 and hook headroom, before enabling additional parallel environments.
+
+The GitLab preview jobs also apply `ci-post-renderer.py`: preview Deployments
+use Recreate and bounded termination, allowing brief downtime while avoiding
+overlapping rollout pods. Ordinary chart consumers keep their rolling strategy.
+The renderer requires Python with PyYAML, installed by the preview jobs.

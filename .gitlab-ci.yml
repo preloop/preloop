@@ -643,6 +643,8 @@ test:coverage:
     DATABASE_NAME: ""
     SEED_ENABLED: "false"
     ENV_NAME: ""
+  before_script:
+    - apk add --no-cache python3 py3-yaml
   script:
     - helm repo add nats https://nats-io.github.io/k8s/helm/charts
     - helm dependency update ./helm/preloop
@@ -661,6 +663,7 @@ test:coverage:
       fi
     - helm upgrade --install ${ENV_NAME} ./helm/preloop
       --values ./helm/preloop/values-ci.yaml
+      --post-renderer ./helm/preloop/ci-post-renderer.py
       --namespace ${NAMESPACE}
       --timeout 20m
       --wait

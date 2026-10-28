@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -93,3 +94,33 @@ def test_preview_render_limits_real_nats_dependency() -> None:
         "memory": "128Mi",
     }
     assert not any("nats-box" in doc["metadata"]["name"] for doc in documents)
+
+
+def test_preview_post_renderer_prevents_rollout_overlap() -> None:
+    raw = helm_template_all(values_files=[PROFILE])
+    rendered = subprocess.run(
+        [sys.executable, str(CHART_DIR / "ci-post-renderer.py")],
+        input=raw,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    before = [doc for doc in yaml.safe_load_all(raw) if doc]
+    after = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc]
+    assert len(before) == len(after)
+    for original, preview in zip(before, after, strict=True):
+        if original["kind"] != "Deployment":
+            assert preview == original
+            continue
+        assert preview["spec"]["strategy"] == {"type": "Recreate"}
+        pod = preview["spec"]["template"]["spec"]
+        assert pod["terminationGracePeriodSeconds"] <= 90
+        assert pod["containers"] == original["spec"]["template"]["spec"]["containers"]
+    # The normal render retains its original rolling deployment strategy.
+    gateway = next(
+        doc
+        for doc in before
+        if doc["kind"] == "Deployment"
+        and doc["metadata"]["labels"]["app.kubernetes.io/component"] == "gateway"
+    )
+    assert gateway["spec"]["strategy"]["type"] == "RollingUpdate"
