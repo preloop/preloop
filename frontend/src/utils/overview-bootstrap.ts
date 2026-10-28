@@ -44,6 +44,12 @@ export function closeOverviewShell(): void {
   shell = null;
 }
 
+/** Writes and authentication changes make every snapshot a read of the past. */
+export function invalidateOverviewLoads(): void {
+  active?.close();
+  closeOverviewShell();
+}
+
 export function readOverviewInput(
   url: string,
   token: string
@@ -106,9 +112,13 @@ function createLoad(endpoint: string): OverviewLoad {
     async read(url, callerToken) {
       if (closed || !token || callerToken !== token) return null;
       await manifest;
-      if (callerToken !== localStorage.getItem('accessToken')) return null;
+      if (closed || callerToken !== localStorage.getItem('accessToken')) {
+        throw new DOMException('Overview load canceled', 'AbortError');
+      }
       const result = responses.get(key(url)) ?? (await pending.get(key(url)));
-      if (closed || token !== localStorage.getItem('accessToken')) return null;
+      if (closed || token !== localStorage.getItem('accessToken')) {
+        throw new DOMException('Overview load canceled', 'AbortError');
+      }
       return result
         ? new Response(result.body, {
             status: result.status,

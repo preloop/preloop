@@ -1,4 +1,7 @@
-import { readOverviewInput } from './utils/overview-bootstrap';
+import {
+  readOverviewInput,
+  invalidateOverviewLoads,
+} from './utils/overview-bootstrap';
 import { REST_API_PREFIX } from './api-path';
 import { LitElement } from 'lit';
 import { ownerConsentRequest } from './utils/owner-consent-request';
@@ -198,6 +201,7 @@ export function invalidateApiCaches(): void {
   // Drop coalesced GETs so a later caller cannot join a response that started
   // under a previous session or fetch stub.
   inFlightGets.clear();
+  invalidateOverviewLoads();
   if (typeof sessionStorage !== 'undefined') {
     try {
       sessionStorage.removeItem('preloop.agents.gateway_summary.v1');
@@ -566,6 +570,7 @@ export async function fetchWithAuth(
     // caller that asks again after this must get a request of its own, not
     // join one that started before the change.
     inFlightGets.clear();
+    invalidateOverviewLoads();
   }
   // Only plain reads: a body, a signal or a custom header makes the call the
   // caller's own, and anything that is not a GET may change something.

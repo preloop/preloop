@@ -1,6 +1,10 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
-import { beginOverviewLoad, type OverviewLoad } from './overview-bootstrap';
+import {
+  beginOverviewLoad,
+  invalidateOverviewLoads,
+  type OverviewLoad,
+} from './overview-bootstrap';
 
 const params = {
   start_date: '2026-10-01T00:00:00.000Z',
@@ -64,15 +68,40 @@ describe('Overview response stream', () => {
       body: '{"secret":"a"}',
       headers: {},
     });
-    expect(await result).to.equal(null);
+    expect(
+      await result.then(
+        () => 'resolved',
+        (error) => error.name
+      )
+    ).to.equal('AbortError');
     expect(await load.read('/api/v1/agents', 'tenant-b')).to.equal(null);
+  });
+
+  it('invalidates snapshot responses after writes or authentication cache resets', async () => {
+    send({ paths: ['/api/v1/agents'] });
+    send({
+      url: '/api/v1/agents',
+      status: 200,
+      body: '{"items":[]}',
+      headers: {},
+    });
+    expect((await load.read('/api/v1/agents', 'tenant-a'))!.status).to.equal(
+      200
+    );
+    invalidateOverviewLoads();
+    expect(await load.read('/api/v1/agents', 'tenant-a')).to.equal(null);
   });
 
   it('releases pending readers when the view disconnects', async () => {
     send({ paths: ['/api/v1/agents'] });
     const result = load.read('/api/v1/agents', 'tenant-a');
     load.close();
-    expect(await result).to.equal(null);
+    expect(
+      await result.then(
+        () => 'resolved',
+        (error) => error.name
+      )
+    ).to.equal('AbortError');
     expect(
       (window.fetch as sinon.SinonStub).firstCall.args[1].signal.aborted
     ).to.equal(true);
