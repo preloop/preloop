@@ -944,6 +944,9 @@ def _register_control_plane_routes(
     pay for flow orchestration, MCP HTTP, or the control-plane surface.
     """
     from preloop.api.auth import auth_router, get_current_active_user
+    from preloop.api.endpoints.overview import router as overview_router
+
+    app.include_router(overview_router, prefix="/api/v1", tags=["overview"])
     from preloop.api.endpoints import (
         account,
         agent_control,

@@ -631,6 +631,46 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
+    it('starts the Overview news slice before the day read settles', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const original = window.fetch;
+      const urls: string[] = [];
+      let finishDay!: (value: Response) => void;
+      const day = new Promise<Response>((resolve) => {
+        finishDay = resolve;
+      });
+      window.fetch = async (input) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.includes('start_date=')) return day;
+        return new Response(
+          JSON.stringify(url.includes('/users') ? [] : { groups: [] })
+        );
+      };
+      try {
+        const el = await fixture<ActivityFeed>(
+          html`<activity-feed .parallelHistory=${true}></activity-feed>`
+        );
+        await waitUntil(
+          () =>
+            urls.filter((url) => url.includes('/audit-logs/grouped')).length ===
+            2
+        );
+        expect(
+          urls.some((url) => url.includes('event_type=tool_call'))
+        ).to.equal(true);
+        finishDay(new Response(JSON.stringify({ groups: [] })));
+        await waitUntil(() => !el.shadowRoot!.querySelector('.skeleton-row'));
+        expect(
+          urls.filter((url) => url.includes('/audit-logs/grouped'))
+        ).to.have.length(2);
+      } finally {
+        finishDay(new Response(JSON.stringify({ groups: [] })));
+        window.fetch = original;
+        localStorage.removeItem('accessToken');
+      }
+    });
+
     it('never reads the same drowned page twice', async () => {
       // The prod bug of 2026-09-08. A gateway doing thousands of calls a day
       // fills every unfiltered page with traffic the feed drops, and dropping

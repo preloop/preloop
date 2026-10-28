@@ -1,3 +1,4 @@
+import { readOverviewInput } from './utils/overview-bootstrap';
 import { REST_API_PREFIX } from './api-path';
 import { LitElement } from 'lit';
 import { ownerConsentRequest } from './utils/owner-consent-request';
@@ -668,7 +669,17 @@ async function performFetchWithAuth(
   headers.set('Authorization', `Bearer ${accessToken}`);
   options.headers = headers;
 
-  let response = await fetch(url, options);
+  const overviewRead =
+    (options.method || 'GET').toUpperCase() === 'GET' &&
+    !options.signal &&
+    !options.body &&
+    !requested.headers &&
+    options.cache !== 'reload' &&
+    options.cache !== 'no-store'
+      ? readOverviewInput(url, accessToken)
+      : null;
+  const overviewResponse = overviewRead ? await overviewRead : null;
+  let response = overviewResponse ?? (await fetch(url, options));
 
   if (response.status === 401) {
     // Check if the 401 is actually a gateway upstream error (e.g., invalid Anthropic or OpenAI API key).
@@ -8001,7 +8012,14 @@ export async function getFeatures(): Promise<FeaturesResponse> {
   const epoch = featuresEpoch;
   featuresInflight = (async () => {
     try {
-      const response = await fetchPublic(REST_API_PREFIX + '/features');
+      const overview = localStorage.getItem('accessToken')
+        ? await readOverviewInput(
+            REST_API_PREFIX + '/features',
+            localStorage.getItem('accessToken')!
+          )
+        : null;
+      const response =
+        overview ?? (await fetchPublic(REST_API_PREFIX + '/features'));
       if (!response.ok) {
         throw new Error('Failed to fetch features');
       }
