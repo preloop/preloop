@@ -3289,6 +3289,7 @@ class FlowTriggerService:
         )
 
         executions = []
+        execution_inputs = []
         cells = []
         for index, entry in enumerate(matrix):
             trigger_details: Dict[str, Any] = {}
@@ -3327,6 +3328,11 @@ class FlowTriggerService:
                 trigger_event_details=trigger_details,
                 batch_id=batch_id,
             )
+            execution_inputs.append(execution_data)
+
+        # Validate every cell before CRUD.create (which may commit) so an
+        # incompatible later selection cannot leave a partially created batch.
+        for execution_data in execution_inputs:
             executions.append(
                 crud_flow_execution.create(self.db, obj_in=execution_data)
             )

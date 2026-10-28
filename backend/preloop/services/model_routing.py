@@ -18,10 +18,14 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.crud import crud_ai_model, crud_flow_execution
+from preloop.models.crud import (
+    crud_ai_model,
+    crud_flow_execution,
+)
 from preloop.models.models.flow_execution import (
     MATRIX_OVERRIDES_KEY,
     ROUTING_RECORD_KEY,
+    resolve_execution_agent_selection,
 )
 from preloop.models.schemas.flow import (
     ModelByLabelConfig,
@@ -734,7 +738,70 @@ def revalidate_routing_record(
     return record
 
 
+def validate_execution_model_principal(
+    db: Session, flow: models.Flow, details: Dict[str, Any]
+) -> None:
+    """Reject subscription credentials an ephemeral flow principal cannot use.
+
+    A model registration and a runner pool do not bind the newly minted flow
+    credential to a managed agent. Persistent agents and local host profiles
+    keep their existing identity/credential admission. Employee event flows
+    require persistent execution and are covered by that existing path.
+    """
+    from preloop.services.host_exec import (
+        host_exec_harness,
+        host_exec_profile_name,
+        is_host_exec_agent_type,
+    )
+
+    harness, model_id = resolve_execution_agent_selection(
+        details, flow_agent_type=flow.agent_type, flow_ai_model_id=flow.ai_model_id
+    )
+    config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
+    if (
+        model_id is None
+        or config.get("execution_path") == "persistent"
+        or is_host_exec_agent_type(harness)
+        or (host_exec_harness(harness) and host_exec_profile_name(config))
+    ):
+        return
+    model = crud_ai_model.get(db, id=str(model_id))
+    if model is None or model.is_principal_bound_oauth is not True:
+        return
+    raise ModelRoutingError(
+        "The selected model uses agent-bound subscription credentials, "
+        "which cannot authorize an ephemeral flow's runtime credential. "
+        "Select a server-usable API-key or hosted model. Changing runner_pool "
+        "or setting target_agent_id on an ephemeral flow does not transfer "
+        "the owning agent's identity. Persistent-agent and private host-profile "
+        "execution use their own credentials and are not supported by the "
+        "restricted CI read-only review contract."
+    )
+
+
 def prepare_execution_routing(
+    db: Session,
+    flow: models.Flow,
+    event_data: Optional[Dict[str, Any]],
+    *,
+    source_execution: Optional[models.FlowExecution] = None,
+    authorized_matrix: Optional[Dict[str, Any]] = None,
+    pin_kind: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve trusted routing and reject an incompatible runtime principal."""
+    details = _prepare_execution_routing(
+        db,
+        flow,
+        event_data,
+        source_execution=source_execution,
+        authorized_matrix=authorized_matrix,
+        pin_kind=pin_kind,
+    )
+    validate_execution_model_principal(db, flow, details)
+    return details
+
+
+def _prepare_execution_routing(
     db: Session,
     flow: models.Flow,
     event_data: Optional[Dict[str, Any]],
@@ -1014,6 +1081,7 @@ def apply_no_progress_escalation(
     record["source"] = "no_progress_escalation"
     record["reason"] = reason
     details[ROUTING_RECORD_KEY] = record
+    validate_execution_model_principal(db, flow, details)
     logger.info(
         "No-progress retry of %s escalated: model=%s effort=%s",
         retry_of_execution_id,
