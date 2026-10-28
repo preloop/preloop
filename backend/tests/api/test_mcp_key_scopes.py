@@ -349,9 +349,11 @@ async def test_write_grant_does_not_open_another_accounts_registered_tool(
     dispatch.assert_not_awaited()
 
 
+@pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("path", ["/mcp", "/mcp/v1"])
 @pytest.mark.parametrize(
-    "scopes,visible", [(["mcp:read"], True), (["mcp:write"], False)]
+    "scopes,visible",
+    [(["mcp:read"], True), (["mcp:write"], False), (["*"], True), ([], True)],
 )
 def test_http_transport_keeps_the_presented_key_scopes(
     db_session: Session,
@@ -359,10 +361,17 @@ def test_http_transport_keeps_the_presented_key_scopes(
     path: str,
     scopes: list[str],
     visible: bool,
+    read_only: bool,
 ) -> None:
     """Real authentication, ASGI context and MCP framing on mounted endpoints."""
     _, secret = crud_api_key.create_runtime_key(
         db_session,
+        context_data={
+            "read_only_review": True,
+            "allowed_mcp_tools": [{"name": "example"}],
+        }
+        if read_only
+        else None,
         name="HTTP scope regression",
         account_id=test_user.account_id,
         user_id=test_user.id,
@@ -424,8 +433,8 @@ def test_http_transport_keeps_the_presented_key_scopes(
                 if line.startswith("data: ")
             )
         )
-        assert bool(data["result"]["tools"]) is visible
-        if scopes == ["mcp:read"]:
+        assert bool(data["result"]["tools"]) is (visible and not read_only)
+        if scopes == ["mcp:read"] or read_only:
             response = client.post(
                 path,
                 headers=headers,

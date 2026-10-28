@@ -1232,11 +1232,21 @@ class FlowExecutionOrchestrator:
                 f"Failed to publish execution warning: {publish_error}",
             )
 
+    def _read_only_review_mode(self) -> bool:
+        """Retain the startup capability even if the flow is edited later."""
+        from preloop.services.read_only_review import read_only_review
+
+        return bool(
+            getattr(self, "_read_only_review_execution", False)
+        ) or read_only_review(self._effective_git_clone_config())
+
     async def _get_tracker_client_for_status(self):
         """Get a tracker client for updating commit status.
 
         Returns None if we can't get a valid client (e.g., no project configured).
         """
+        if self._read_only_review_mode():
+            return None
         if self._tracker_client is not None:
             logger.debug("[CommitStatus] Using cached tracker client")
             return self._tracker_client
@@ -3273,6 +3283,18 @@ class FlowExecutionOrchestrator:
         Args:
             execution_context: Context to extend in place.
         """
+        from preloop.services.read_only_review import prepare_read_only_review
+
+        if self._read_only_review_mode():
+            self._read_only_review_execution = True
+            lease = await prepare_read_only_review(
+                self.db, self.flow, self.execution_log, execution_context
+            )
+            self._read_only_review_leases = [
+                *getattr(self, "_read_only_review_leases", []),
+                lease,
+            ]
+            return
         clone_config = execution_context.get("git_clone_config")
         if clone_config is None:
             clone_config = self._effective_git_clone_config()
@@ -3460,6 +3482,17 @@ class FlowExecutionOrchestrator:
         self, *, resolved_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        # Every new context, including recovery, rechecks the immutable CI
+        # principal snapshot before any token or broad clone credential exists.
+        if (
+            getattr(getattr(self, "execution_log", None), "ci_principal_id", None)
+            is not None
+        ):
+            from preloop.models import crud
+
+            crud.crud_ci_execution.authorize_dispatch(
+                self.db, execution=self.execution_log
+            )
         self._apply_harness_routing_decision()
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
@@ -5590,6 +5623,8 @@ class FlowExecutionOrchestrator:
         already written, so every problem here becomes a receipt on the
         result and a warning on the timeline.
         """
+        if self._read_only_review_mode():
+            return
         if not isinstance(merged_result, dict) or not self.flow:
             return
         plan = resolve_follow_up_filing(getattr(self.flow, "git_clone_config", None))
@@ -6040,6 +6075,8 @@ class FlowExecutionOrchestrator:
         container's clone fallback (``_resolve_git_clone_repositories``).
         ``context`` overrides the execution context (host checkout context).
         """
+        if self._read_only_review_mode():
+            return []
         from preloop.api.common import get_tracker_client
         from preloop.models.crud import crud_project
 
@@ -9517,6 +9554,8 @@ class FlowExecutionOrchestrator:
                         "product_provenance_failed", {"reason": str(exc)}
                     )
         self._attach_product_evidence_records(agent_result, provenance=provenance)
+        if self._read_only_review_mode():
+            return
         policy = getattr(self, "_isolated_publication_policy", None)
         if policy is None:
             return
@@ -9797,6 +9836,25 @@ class FlowExecutionOrchestrator:
 
             # Stage 2: Create execution log
             self._create_execution_log()
+
+            from preloop.services.read_only_review import validate_read_only_flow
+
+            validate_read_only_flow(self.flow)
+            if (
+                getattr(getattr(self, "execution_log", None), "ci_principal_id", None)
+                is not None
+            ):
+                from preloop.models import crud
+
+                crud.crud_ci_execution.authorize_dispatch(
+                    self.db, execution=self.execution_log
+                )
+            self._read_only_review_execution = self._read_only_review_mode()
+            if (
+                self._read_only_review_execution
+                and not self.execution_log.ci_principal_id
+            ):
+                raise ValueError("Read-only review requires a restricted CI execution")
 
             # Publish execution_started event for UI notification
             # This allows the flow executions list to update automatically
@@ -10328,5 +10386,21 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
+            leases = getattr(self, "_read_only_review_leases", [])
+            if leases and self._execution_reached_terminal_state():
+                import httpx
+                from preloop.services.publication_credentials import (
+                    revoke_repository_lease,
+                )
+                from preloop.services.trusted_publisher import PublicationError
+
+                async with httpx.AsyncClient() as client:
+                    for lease in leases:
+                        try:
+                            await revoke_repository_lease(lease, client)
+                        except PublicationError:
+                            logger.warning(
+                                "Read-only review lease revocation failed; expiry remains enforced"
+                            )
             # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

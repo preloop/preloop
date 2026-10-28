@@ -475,11 +475,13 @@ class GitCloneConfig(BaseModel):
     create_pull_request: Optional[bool] = Field(
         default=False, description="Whether to create a Pull Request / Merge Request"
     )
-    publication_mode: Literal["legacy", "isolated"] = Field(
+    publication_mode: Literal["legacy", "isolated", "read_only"] = Field(
         default="legacy",
         description=(
             "Legacy publishes inside the agent container. Isolated publishes from "
-            "the trusted control plane after verification, using scoped App credentials."
+            "the trusted control plane after verification, using scoped App credentials. "
+            "Read_only is a dedicated restricted CI review with a scoped read-only "
+            "GitHub App clone and no provider publication or MCP authority."
         ),
     )
     publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(
@@ -540,6 +542,14 @@ class GitCloneConfig(BaseModel):
             "no agent runs"
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_read_only_review(self) -> "GitCloneConfig":
+        """Read-only review cannot opt into any publication path."""
+        from preloop.services.read_only_review import validate_read_only_configuration
+
+        validate_read_only_configuration(self.model_dump())
+        return self
 
     @field_validator("repository_bindings")
     @classmethod

@@ -1206,7 +1206,7 @@ class TestRoutingReviewRegressions:
             nats_client=AsyncMock(),
         )
         orch._get_flow_details()
-        orch.execution_log = MagicMock(id=uuid4())
+        orch.execution_log = MagicMock(id=uuid4(), ci_principal_id=None)
         with (
             patch.object(orch, "_resolve_prompt", AsyncMock(return_value="repair")),
             patch.object(

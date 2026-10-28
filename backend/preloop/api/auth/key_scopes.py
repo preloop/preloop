@@ -242,6 +242,17 @@ def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> Non
             },
         )
     context = getattr(api_key, "context_data", None)
+    if isinstance(context, dict) and context.get("read_only_review") is True:
+        # This capability is unconditional even when legacy scope enforcement
+        # is disabled/audit-only. A native shell must not replay its runtime
+        # token against account/provider REST writes.
+        raise HTTPException(
+            403,
+            detail={
+                "code": API_KEY_SCOPE_DENIED,
+                "message": "Read-only review runtime only",
+            },
+        )
     if isinstance(context, dict) and "unattended_enrollment" in context:
         if (
             request is not None

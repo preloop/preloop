@@ -3,7 +3,7 @@
 import secrets
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import NotRequired, Optional, TypedDict
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -24,6 +24,7 @@ class CiRepositoryBinding(TypedDict):
     tracker_type: str
     tracker_url: Optional[str]
     organization_id: str
+    publication_mode: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,22 @@ class CRUDCiPrincipal:
             raise ValueError(
                 "CI repository requires a provider identifier and clone slug"
             )
+        from preloop.services.read_only_review import (
+            read_only_review,
+            validate_read_only_flow,
+        )
+
+        validate_read_only_flow(flow)
+        extra = {}
+        if read_only_review(configuration):
+            from preloop.services.publication_credentials import (
+                validate_publication_tracker,
+            )
+
+            validate_publication_tracker(tracker)
+            # Preserve legacy snapshots exactly. Opted-in identities cannot be
+            # silently changed to a write-capable mode (or vice versa).
+            extra["publication_mode"] = "read_only"
         return (
             tracker.id,
             project.identifier,
@@ -142,6 +159,7 @@ class CRUDCiPrincipal:
                 "tracker_type": tracker.tracker_type,
                 "tracker_url": tracker.url,
                 "organization_id": str(project.organization_id),
+                **extra,
             },
         )
 

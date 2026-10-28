@@ -210,6 +210,16 @@ def create_flow_runtime_token(
                 "username": principal_user.username,
             },
         }
+        from preloop.services.read_only_review import (
+            read_only_review,
+            validate_read_only_flow,
+        )
+
+        if read_only_review(getattr(flow, "git_clone_config", None)):
+            validate_read_only_flow(flow)
+            context_data["read_only_review"] = True
+            context_data["allowed_mcp_tools"] = []
+            context_data["allowed_mcp_servers"] = []
         employee_binding = (getattr(flow, "trigger_config", None) or {}).get(
             "employee_events"
         )
@@ -236,7 +246,9 @@ def create_flow_runtime_token(
             account_id=account_id,
             user_id=principal_user.id,
             expires_at=expires_at,
-            scopes=["mcp:read", "mcp:write"],
+            scopes=["mcp:read"]
+            if context_data.get("read_only_review")
+            else ["mcp:read", "mcp:write"],
             context_data=context_data,
         )
         logger.info(

@@ -37280,9 +37280,12 @@ components:
           enum:
           - legacy
           - isolated
+          - read_only
           title: Publication Mode
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
+            Read_only is a dedicated restricted CI review with a scoped read-only
+            GitHub App clone and no provider publication or MCP authority.
           default: legacy
         publication_approval:
           anyOf:
@@ -37414,9 +37417,12 @@ components:
           enum:
           - legacy
           - isolated
+          - read_only
           title: Publication Mode
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
+            Read_only is a dedicated restricted CI review with a scoped read-only
+            GitHub App clone and no provider publication or MCP authority.
           default: legacy
         publication_approval:
           anyOf:

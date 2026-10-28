@@ -633,3 +633,35 @@ def test_rotation_preserves_expiry_when_an_administrator_omits_it(
         key_id=old.id,
     )
     assert rotated.expires_at == expiry and rotated.expires_at is not None
+
+
+def test_read_only_mode_is_immutable_in_principal_binding(
+    db_session: Session, ci_resources: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing clone capability invalidates the identity, without changing ownership."""
+    from preloop.services import publication_credentials
+    from preloop.services.flow_runtime_token import create_flow_runtime_token
+
+    owner, project, flow, grant = ci_resources
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    db_session.commit()
+    principal, key, secret = crud.crud_ci_principal.provision(
+        db_session, actor=owner, name="Read only", grant=grant
+    )
+    assert principal.repository_binding["publication_mode"] == "read_only"
+    # The native model token is not an account key, even if replayed by a shell.
+    token, runtime_key_id = create_flow_runtime_token(
+        db_session, flow=flow, execution_id=None
+    )
+    assert token
+    runtime_key = crud.crud_api_key.get(db_session, id=runtime_key_id)
+    assert runtime_key.context_data["read_only_review"] is True
+    assert runtime_key.context_data["allowed_mcp_tools"] == []
+    assert runtime_key.scopes == ["mcp:read"]
+    assert crud.crud_ci_principal.authenticate(db_session, token=secret) is not None
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "legacy"}
+    db_session.commit()
+    assert crud.crud_ci_principal.authenticate(db_session, token=secret) is None

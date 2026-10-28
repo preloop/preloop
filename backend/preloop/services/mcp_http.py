@@ -268,6 +268,15 @@ async def get_user_context_for_mcp(
             detail="Not authenticated. Provide Authorization: Bearer <token> header",
         )
 
+    key = getattr(auth_user.access_token, "api_key", None)
+    if (
+        key
+        and (getattr(key, "context_data", None) or {}).get("read_only_review") is True
+    ):
+        raise HTTPException(
+            status_code=403, detail="Read-only review has no MCP authority"
+        )
+
     # Extract token and cached account from AuthenticatedUser
     token = auth_user.access_token.token
     current_user = getattr(auth_user.access_token, "account", None)
