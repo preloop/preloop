@@ -396,6 +396,33 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """Initialize with the FlowExecution model."""
         super().__init__(model=FlowExecution)
 
+    def get_flow_for_execution(
+        self, db: Session, *, execution_id: str, flow_id: str
+    ) -> Optional[Flow]:
+        """Return the flow when ``execution_id`` belongs to ``flow_id``.
+
+        One joined lookup for the gateway hot path.
+
+        Args:
+            db: Active database session.
+            execution_id: Flow execution id.
+            flow_id: Flow the caller claims the execution belongs to.
+
+        Returns:
+            The flow, or ``None`` when the pair does not match.
+        """
+        try:
+            execution_uuid = uuid.UUID(str(execution_id))
+            flow_uuid = uuid.UUID(str(flow_id))
+        except ValueError:
+            return None
+        return (
+            db.query(Flow)
+            .join(FlowExecution, FlowExecution.flow_id == Flow.id)
+            .filter(FlowExecution.id == execution_uuid, Flow.id == flow_uuid)
+            .first()
+        )
+
     def get(
         self,
         db: Session,

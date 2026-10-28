@@ -27,7 +27,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import (
-    crud_flow,
     crud_flow_execution,
     crud_managed_agent_ai_model_binding,
     crud_user,
@@ -125,8 +124,9 @@ def owner_flow_authorized_model_ids(
 
     Only a flow-execution credential (``runtime_principal.type ==
     "flow_execution"``) whose execution belongs to the named flow in the
-    credential's account qualifies. Each bound row is then checked with
-    :func:`flow_may_use_subscription`.
+    credential's account qualifies. This runs on the gateway hot path, so it
+    issues no query unless some row carries an opt-in, then resolves the
+    execution and flow once and checks the owner user once.
 
     Args:
         db: Active database session.
@@ -137,7 +137,12 @@ def owner_flow_authorized_model_ids(
     Returns:
         Ids of the rows this execution may use (often empty).
     """
-    if not bound_models:
+    candidates = [
+        ai_model
+        for ai_model in bound_models
+        if getattr(ai_model, "owner_flow_use_user_id", None) is not None
+    ]
+    if not candidates:
         return frozenset()
     principal = context_data.get("runtime_principal") or {}
     if not isinstance(principal, dict) or principal.get("type") != "flow_execution":
@@ -146,14 +151,30 @@ def owner_flow_authorized_model_ids(
     flow_id = context_data.get("flow_id")
     if not execution_id or not flow_id or str(principal.get("id")) != str(execution_id):
         return frozenset()
-    execution = crud_flow_execution.get(db, id=str(execution_id))
-    if execution is None or str(execution.flow_id) != str(flow_id):
-        return frozenset()
-    flow = crud_flow.get(db, id=str(flow_id))
+    flow = crud_flow_execution.get_flow_for_execution(
+        db, execution_id=str(execution_id), flow_id=str(flow_id)
+    )
     if flow is None or str(flow.account_id) != str(account_id):
+        return frozenset()
+    owner = flow.created_by_user_id
+    candidates = [
+        ai_model
+        for ai_model in candidates
+        if owner is not None
+        and str(ai_model.owner_flow_use_user_id) == str(owner)
+        and str(ai_model.account_id) == str(flow.account_id)
+    ]
+    if not candidates:
+        return frozenset()
+    user = crud_user.get(db, id=owner)
+    if (
+        user is None
+        or not user.is_active
+        or str(user.account_id) != str(flow.account_id)
+    ):
         return frozenset()
     return frozenset(
         str(ai_model.id)
-        for ai_model in bound_models
-        if flow_may_use_subscription(db, flow, ai_model)
+        for ai_model in candidates
+        if subscription_owner_user_id(db, ai_model) == str(owner)
     )

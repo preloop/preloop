@@ -546,3 +546,38 @@ def test_preset_clone_records_flow_owner(db_session, test_user) -> None:
     )
     kwargs = crud.create.call_args.kwargs
     assert kwargs["created_by_user_id"] == test_user.id
+
+
+def test_no_opt_in_adds_no_gateway_queries(db_session, team) -> None:
+    """Hot path: without any opt-in the flow credential costs no extra query."""
+    from sqlalchemy import event
+
+    from preloop.services.subscription_flow_use import (
+        owner_flow_authorized_model_ids,
+    )
+
+    statements: list[str] = []
+
+    def _count(*args: Any, **kwargs: Any) -> None:
+        statements.append(str(args[2])[:80])
+
+    # Load the row first: the gateway already holds the inventory.
+    assert team["model"].owner_flow_use_user_id is None
+    account_id = team["owner"].account_id
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        result = owner_flow_authorized_model_ids(
+            db_session,
+            account_id=account_id,
+            context_data={
+                "flow_execution_id": str(uuid4()),
+                "flow_id": str(uuid4()),
+                "runtime_principal": {"type": "flow_execution"},
+            },
+            bound_models=[team["model"]],
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+    assert result == frozenset()
+    assert statements == []

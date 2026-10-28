@@ -4744,7 +4744,6 @@ export async function getAIModelRuntimeSessions(
   return response.json();
 }
 
-/** Agents and flows configured to use the model (configuration only). */
 /** Owner opt-in for running own flows on a subscription model. */
 export interface AIModelOwnerFlowUse {
   applicable: boolean;
@@ -4795,6 +4794,7 @@ export async function setAIModelOwnerFlowUse(
   return (await response.json()) as AIModelOwnerFlowUse;
 }
 
+/** Agents and flows configured to use the model (configuration only). */
 export async function getAIModelUsedBy(
   modelId: string,
   signal?: AbortSignal

@@ -447,7 +447,7 @@ def create_flow(
         db=db,
         flow_in=flow_in,
         account_id=current_user.account_id,
-        created_by_user_id=current_user.id,
+        created_by_user_id=getattr(current_user, "id", None),
     )
 
     log_config_change(
@@ -836,7 +836,7 @@ def clone_preset(
         name=None,
         bound_ai_model_id=bound_ai_model_id,
         flow_crud=crud_flow,
-        created_by_user_id=current_user.id,
+        created_by_user_id=getattr(current_user, "id", None),
     )
 
 
