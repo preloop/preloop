@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -108,8 +109,15 @@ def record_auth_event(
             status="failure" if action.endswith((".failed", ".blocked")) else "success",
             ip_address=source_ip,
             details=clean,
-            commit=commit,
+            commit=False,
         )
+        if commit:
+            # The caller never consumes the audit row: avoid its refresh SELECT.
+            db.commit()
+            if user is not None:
+                # Commit expires ORM rows. Load token fields in this worker, so
+                # async login handlers do not issue a lazy SELECT on the loop.
+                _ = user.id, user.auth_generation
     except Exception:
         if not commit:
             raise
@@ -153,3 +161,20 @@ def record_login_event(
         details={"method": method, "reason_code": reason_code, "provider": provider},
         source_ip=source_ip,
     )
+
+
+def login_failure_reason(error: Exception, *, method: str) -> str:
+    """Classify failures without retaining response text or exception payloads."""
+    if not isinstance(error, HTTPException):
+        return "internal_error"
+    if error.status_code == 404:
+        return f"{method}_disabled"
+    if error.status_code == 400:
+        return "challenge_rejected" if method == "passkey" else "invalid_request"
+    if error.status_code == 401:
+        return "invalid_credentials" if method == "password" else f"{method}_rejected"
+    if error.status_code == 403:
+        return "identity_or_policy_rejected"
+    if error.status_code == 429:
+        return "rate_limited"
+    return "internal_error"

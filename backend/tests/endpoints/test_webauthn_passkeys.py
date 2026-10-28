@@ -728,3 +728,36 @@ def test_passkey_records_one_final_auth_outcome(db_session_mock, mock_user, succ
     )
     assert event["details"]["method"] == "passkey"
     assert event["details"]["person_id"] == str(mock_user.person_id)
+
+
+@pytest.mark.parametrize(
+    "status_code,expected",
+    [(404, "passkey_disabled"), (400, "challenge_rejected"), (500, "internal_error")],
+)
+def test_passkey_audit_reason_matches_actual_failure(status_code, expected):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from preloop.api.auth.webauthn_router import (
+        AuthenticationVerifyRequest,
+        authentication_verify,
+    )
+
+    request = Request({"type": "http", "headers": [], "client": ("testclient", 80)})
+    body = AuthenticationVerifyRequest(
+        credential={"id": "synthetic-credential"}, challenge_token="synthetic-challenge"
+    )
+    with (
+        patch(
+            "preloop.api.auth.webauthn_router._authentication_verify",
+            side_effect=HTTPException(status_code, "synthetic refusal"),
+        ),
+        patch(
+            "preloop.api.auth.webauthn_router.crud_webauthn_credential.get_by_credential_id",
+            return_value=None,
+        ),
+        patch("preloop.services.auth_audit.record_login_event") as record,
+    ):
+        with pytest.raises(HTTPException):
+            authentication_verify(body, request, MagicMock(spec=Session))
+    record.assert_called_once()
+    assert record.call_args.kwargs["reason_code"] == expected

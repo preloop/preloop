@@ -385,13 +385,21 @@ def authentication_verify(
     db: Session = Depends(get_db_session),
 ) -> dict:
     """Audit one final passkey outcome, including challenge and policy failures."""
-    from preloop.services.auth_audit import login_subject, record_login_event
+    from preloop.services.auth_audit import (
+        login_failure_reason,
+        login_subject,
+        record_login_event,
+    )
 
     succeeded = False
+    reason_code = "internal_error"
     try:
         result = _authentication_verify(body, request, db)
         succeeded = True
         return result
+    except Exception as exc:
+        reason_code = login_failure_reason(exc, method="passkey")
+        raise
     finally:
         try:
             user = getattr(request.state, "auth_audit_user", None)
@@ -407,7 +415,7 @@ def authentication_verify(
                 user=user,
                 method="passkey",
                 succeeded=succeeded,
-                reason_code=None if succeeded else "passkey_rejected",
+                reason_code=None if succeeded else reason_code,
                 source_ip=get_client_ip(request),
             )
         except Exception:
