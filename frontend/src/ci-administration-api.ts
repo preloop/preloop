@@ -5,6 +5,7 @@ export const CI_ACTIONS = [
   'flow:trigger',
   'execution:read',
   'execution:result:read',
+  'execution:evidence:read',
   'execution:stop',
   'subscription:create',
   'subscription:read',

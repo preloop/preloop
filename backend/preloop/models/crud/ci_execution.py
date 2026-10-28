@@ -114,6 +114,7 @@ class CRUDCiExecution:
         if action not in {
             CiAction.READ_EXECUTION,
             CiAction.READ_RESULT,
+            CiAction.READ_EVIDENCE,
             CiAction.STOP_EXECUTION,
         }:
             raise PermissionError("Restricted CI execution operation denied")

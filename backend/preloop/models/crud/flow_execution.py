@@ -1877,6 +1877,30 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             )
             .update(values, synchronize_session=False)
         )
+        if count:
+            # Persist the authenticated callback outbox alongside the status.
+            # A missing/crashed orchestrator cannot be the only delivery owner.
+            # The execution/status natural key deduplicates its later emit.
+            execution = (
+                db.query(models.FlowExecution)
+                .populate_existing()
+                .filter(models.FlowExecution.id == execution_id)
+                .one()
+            )
+            flow = (
+                db.query(models.Flow).filter(models.Flow.id == execution.flow_id).one()
+            )
+            from preloop.services.event_webhooks.emitters import (
+                emit_flow_execution_finished,
+            )
+
+            emit_flow_execution_finished(
+                db,
+                execution,
+                flow,
+                status="STOPPED",
+                failure_category=execution.failure_category,
+            )
         if commit:
             db.commit()
         return bool(count)
@@ -2547,6 +2571,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             log_data.get("message") or payload.get("line") or payload.get("message")
         )
         metadata = payload or log_data.get("metadata") or log_data.get("data")
+
+        if log_data.get("type") == "agent_log_line":
+            from preloop.models.crud.execution_tool_evidence import (
+                persist_native_command_evidence,
+            )
+
+            persist_native_command_evidence(db, execution_id=execution_id, line=message)
 
         # Last gate before persistence: redact known credential formats so a
         # secret cannot be stored even if its producer skipped scrubbing

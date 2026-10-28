@@ -1568,6 +1568,58 @@ def adopt_execution_continuation(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@router.get("/flows/executions/{execution_id}/tool-evidence")
+@require_permission("view_flows", ci_action=CiAction.READ_EVIDENCE)
+def get_execution_tool_evidence(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=10),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+) -> Dict[str, Any]:
+    """Read bounded tool-only evidence; never grant general execution-log access.
+
+    A page holds at most 10 records and at most 8 MiB of encoded records; the
+    first record is always returned. When the byte budget cuts a page short,
+    ``has_more`` is true and ``next_skip`` gives the offset of the next page.
+    """
+    from preloop.models.crud.execution_tool_evidence import (
+        callback_diagnostics,
+        evidence_page,
+    )
+
+    if isinstance(current_user, CiAuthorizationContext):
+        execution = _owned_ci_execution(
+            db, current_user, execution_id, CiAction.READ_EVIDENCE
+        )
+    else:
+        execution = crud_flow_execution.get(
+            db=db, id=execution_id, account_id=current_user.account_id
+        )
+        if execution is None:
+            raise HTTPException(404, "Flow execution not found")
+    result = {
+        "execution_id": str(execution.id),
+        "status": execution.status,
+        "result_available": execution.result is not None,
+        **evidence_page(db, execution=execution, skip=skip, limit=limit),
+    }
+    from preloop.services.execution_tool_evidence import digest
+
+    result["captured_result_sha256"] = (
+        digest(public_ci_result(execution.result))
+        if execution.result is not None
+        else None
+    )
+    if isinstance(current_user, CiAuthorizationContext):
+        result["binding"] = execution_projection(execution)
+        result["terminal_deliveries"] = callback_diagnostics(
+            db, execution=execution, principal_id=current_user.principal_id
+        )
+    return result
+
+
 @router.get("/flows/executions/{execution_id}/result")
 @require_permission("view_flows", ci_action=CiAction.READ_RESULT)
 def get_flow_execution_result(
@@ -1596,6 +1648,12 @@ def get_flow_execution_result(
             "execution_id": str(execution.id),
             **execution_projection(execution),
             "result": public_ci_result(execution.result),
+            "schema_validation": {
+                key: value
+                for key, value in (_public_schema_validation(execution) or {}).items()
+                if key in {"valid", "error_count"}
+            }
+            or None,
         }
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id

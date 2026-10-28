@@ -8401,6 +8401,56 @@ class OpenAIGatewayService:
         # forwards client flags the provider rejects. Drop those instead of
         # failing the whole request.
         kwargs["drop_params"] = True
+        text_config = payload.get("text")
+        native_format = (
+            text_config.get("format") if isinstance(text_config, dict) else None
+        )
+        response_format = payload.get("response_format")
+        if isinstance(native_format, dict) and native_format.get("type") not in (
+            None,
+            "text",
+        ):
+            if native_format.get("type") == "json_schema":
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        key: value
+                        for key, value in native_format.items()
+                        if key != "type"
+                    },
+                }
+            elif native_format.get("type") == "json_object":
+                response_format = {"type": "json_object"}
+            else:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Unsupported structured response format",
+                )
+            if payload.get("response_format") not in (None, response_format):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Conflicting structured response formats",
+                )
+        if response_format is not None:
+            # drop_params stays True: it is request-global in LiteLLM, and
+            # turning it off would make unrelated unsupported options (such as
+            # parallel_tool_calls on some providers) hard-fail. The only thing
+            # that must never be dropped silently is the schema itself, so
+            # refuse explicitly when LiteLLM would drop response_format.
+            supported = litellm.get_supported_openai_params(model=kwargs["model"])
+            if not supported or "response_format" not in supported:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message=(
+                        "The selected provider/model does not support structured "
+                        "response_format; choose a model with structured output "
+                        "support or remove the response schema"
+                    ),
+                )
+            kwargs["response_format"] = response_format
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.

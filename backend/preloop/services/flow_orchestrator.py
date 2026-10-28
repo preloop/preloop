@@ -3656,6 +3656,8 @@ class FlowExecutionOrchestrator:
             "prompt": resolved_prompt,
             "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
+            "result_schema": getattr(self.flow, "result_schema", None),
+            "validate_result": getattr(self.flow, "validate_result", True),
             # The wall clock this run may spend. Harnesses keep their own
             # waits (the Codex stream idle timeout) inside it.
             "flow_timeout_seconds": self._execution_timeout_budget().seconds,
@@ -9839,6 +9841,13 @@ class FlowExecutionOrchestrator:
 
             from preloop.services.read_only_review import validate_read_only_flow
 
+            from preloop.services.native_result import (
+                COLD_START_MESSAGE,
+                native_result_cold_start,
+            )
+
+            if native_result_cold_start(self.flow, self.trigger_event_data):
+                await self._emit_execution_warning(COLD_START_MESSAGE)
             validate_read_only_flow(self.flow)
             if (
                 getattr(getattr(self, "execution_log", None), "ci_principal_id", None)
