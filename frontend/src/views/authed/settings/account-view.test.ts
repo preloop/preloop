@@ -1569,4 +1569,28 @@ describe('AccountView', () => {
     });
     expect(summaryGets()).to.equal(before);
   });
+  it('mounts SSO settings only when its account tab is selected', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('sso-settings')).to.be.null;
+    (
+      element.shadowRoot!.querySelector('sl-tab[panel=sso]') as HTMLElement
+    ).click();
+    await waitUntil(() => !!element.shadowRoot!.querySelector('sso-settings'));
+    const settings = element.shadowRoot!.querySelector('sso-settings')!;
+    await waitUntil(() =>
+      settings.shadowRoot!.textContent!.includes('See plans')
+    );
+    expect(new URLSearchParams(location.search).get('tab')).to.equal('sso');
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/sso/'))
+    ).to.equal(false);
+    window.history.replaceState({}, '', location.pathname);
+  });
 });

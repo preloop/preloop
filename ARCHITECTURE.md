@@ -1607,3 +1607,22 @@ and completion bind the same optional account UUID. This makes owner recovery
 reachable after a different account was last active without treating an existing
 session switch as fresh credential proof. Unknown and unavailable destinations
 share one refusal.
+
+### Optional enterprise single sign-on settings
+
+Account settings includes a Single sign-on tab. The Lit console checks the
+`enterprise_sso` feature and the caller's account administration permission
+before loading account-scoped provider, domain, policy, mapping or SCIM-token
+configuration. Without the feature it offers the existing upgrade action.
+Submitted client secrets and signing keys are cleared immediately and never
+repopulated from configuration reads; SCIM tokens appear once until dismissed.
+
+Email-first login is enabled only when the feature is advertised. Discovery
+can offer a local SSO start URL or return the user to existing sign-in methods.
+Provider callback/metadata URLs and test-sign-in availability come from the
+server. Enforcement controls require a current configuration test completed by the signed-in administrator within 24 hours, a verified
+domain and an enabled connection; missing support is explained in the UI.
+The API remains responsible for the recent administrator test requirement and
+authentication enforcement.
+
+Test sign-in obtains a one-use start URL through an authenticated POST. SAML metadata imports are previewed before applying them to the unsaved editor; only public SP certificates are displayed. A refused account switch can request fresh password/passkey authentication bound to that account, preserving the existing session until credential proof succeeds. All owners retain emergency access, which the enterprise plugin audits and notifies.

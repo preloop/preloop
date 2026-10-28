@@ -1,5 +1,9 @@
 import { REST_API_PREFIX } from '../../../api-path';
 import '../../../components/runner-policy-settings';
+import '../../../components/sso-settings';
+import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
+import '@shoelace-style/shoelace/dist/components/tab/tab.js';
+import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '../../../components/weekly-report-settings';
 import '../../../components/delivery-report-policy-settings';
 import { hasPermission, type UserPermissions } from '../../../permissions';
@@ -49,6 +53,10 @@ export class AccountView extends LitElement {
    * leaves the controls usable (the server still enforces), matching the
    * runners page rather than showing a wrong "needs permission" note.
    */
+  @state() private accountTab =
+    new URLSearchParams(window.location.search).get('tab') === 'sso'
+      ? 'sso'
+      : 'general';
   @state() private permissions: UserPermissions = undefined;
   @state() private accountOrganization: AccountOrganization | null = null;
   @state() private features: FeaturesResponse | null = null;
@@ -722,96 +730,123 @@ export class AccountView extends LitElement {
 
     return html`
       <view-header headerText="Account" width="narrow"></view-header>
-      <div class="column-layout narrow">
-        <div class="main-column">
-          <!-- Account details section -->
-          <sl-card style="margin-bottom: 2rem;">
-            <h2
-              slot="header"
-              style="margin: 0; font-size: var(--console-text-card-title);"
-            >
-              Account
-            </h2>
-
-            ${
-              this.orgSuccessMessage
-                ? html`
-                    <sl-alert variant="success" open closable>
-                      <sl-icon slot="icon" name="check-circle"></sl-icon>
-                      ${this.orgSuccessMessage}
-                    </sl-alert>
-                  `
-                : ''
-            }
-            ${
-              this.orgErrorMessage
-                ? html`
-                    <sl-alert variant="danger" open closable>
-                      <sl-icon
-                        slot="icon"
-                        name="exclamation-triangle"
-                      ></sl-icon>
-                      ${this.orgErrorMessage}
-                    </sl-alert>
-                  `
-                : ''
-            }
-
-            <div style="display: flex; flex-direction: column; gap: 1rem;">
-              <sl-input
-                label="Account name"
-                placeholder="Enter your account name"
-                value=${this.organizationName}
-                @sl-input=${(e: any) =>
-                  (this.organizationName = e.target.value)}
-                ?disabled=${this.isSavingOrg || !canManageAccount}
-              >
-                <span slot="help-text">
-                  ${
-                    canManageAccount
-                      ? 'This name will be displayed across the application'
-                      : 'Changing the account name needs the manage account permission.'
-                  }
-                </span>
-              </sl-input>
-
-              <div>
-                <sl-button
-                  variant="primary"
-                  @click=${this._handleSaveOrganization}
-                  ?loading=${this.isSavingOrg}
-                  ?disabled=${!canManageAccount}
-                  data-testid="save-account-name"
+      <sl-tab-group
+        @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
+          if (event.target !== event.currentTarget) return;
+          this.accountTab = event.detail.name;
+          const url = new URL(window.location.href);
+          if (this.accountTab === 'sso') url.searchParams.set('tab', 'sso');
+          else url.searchParams.delete('tab');
+          window.history.replaceState({}, '', url);
+        }}
+      >
+        <sl-tab
+          slot="nav"
+          panel="general"
+          ?active=${this.accountTab === 'general'}
+          >General</sl-tab
+        >
+        <sl-tab slot="nav" panel="sso" ?active=${this.accountTab === 'sso'}
+          >Single sign-on</sl-tab
+        >
+        <sl-tab-panel name="general" ?active=${this.accountTab === 'general'}>
+          <div class="column-layout narrow">
+            <div class="main-column">
+              <!-- Account details section -->
+              <sl-card style="margin-bottom: 2rem;">
+                <h2
+                  slot="header"
+                  style="margin: 0; font-size: var(--console-text-card-title);"
                 >
-                  Save account name
-                </sl-button>
-              </div>
-            </div>
-          </sl-card>
+                  Account
+                </h2>
 
-          ${
-            // Subaccounts are created from the account they sit under, so
-            // the list lives here rather than behind its own nav entry. The
-            // card hides itself on a subaccount.
-            hasCapability(this.features?.features, 'account_hierarchy')
-              ? html`<subaccounts-view embedded></subaccounts-view>`
-              : ''
-          }
-          <weekly-report-settings></weekly-report-settings>
-          <delivery-report-policy-settings></delivery-report-policy-settings>
-          <runner-policy-settings></runner-policy-settings>
-          ${this._renderSessionArtifactUsage()}
-          ${
-            isProprietary
-              ? html`<p class="current-plan" data-testid="billing-summary">
-                  You are on ${displayPlanName} ·
-                  ${trialExpired ? 'Free' : billingStatusLabel(this.subscription?.status)}.
-                  <a href=${PLAN_PAGE_PATH}>Subscription, usage and seats</a>
-                </p>`
-              : ''
-          }
-        </div>
-      </div>
+                ${
+                  this.orgSuccessMessage
+                    ? html`
+                        <sl-alert variant="success" open closable>
+                          <sl-icon slot="icon" name="check-circle"></sl-icon>
+                          ${this.orgSuccessMessage}
+                        </sl-alert>
+                      `
+                    : ''
+                }
+                ${
+                  this.orgErrorMessage
+                    ? html`
+                        <sl-alert variant="danger" open closable>
+                          <sl-icon
+                            slot="icon"
+                            name="exclamation-triangle"
+                          ></sl-icon>
+                          ${this.orgErrorMessage}
+                        </sl-alert>
+                      `
+                    : ''
+                }
+
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                  <sl-input
+                    label="Account name"
+                    placeholder="Enter your account name"
+                    value=${this.organizationName}
+                    @sl-input=${(e: any) =>
+                      (this.organizationName = e.target.value)}
+                    ?disabled=${this.isSavingOrg || !canManageAccount}
+                  >
+                    <span slot="help-text">
+                      ${
+                        canManageAccount
+                          ? 'This name will be displayed across the application'
+                          : 'Changing the account name needs the manage account permission.'
+                      }
+                    </span>
+                  </sl-input>
+
+                  <div>
+                    <sl-button
+                      variant="primary"
+                      @click=${this._handleSaveOrganization}
+                      ?loading=${this.isSavingOrg}
+                      ?disabled=${!canManageAccount}
+                      data-testid="save-account-name"
+                    >
+                      Save account name
+                    </sl-button>
+                  </div>
+                </div>
+              </sl-card>
+
+              ${
+                // Subaccounts are created from the account they sit under, so
+                // the list lives here rather than behind its own nav entry. The
+                // card hides itself on a subaccount.
+                hasCapability(this.features?.features, 'account_hierarchy')
+                  ? html`<subaccounts-view embedded></subaccounts-view>`
+                  : ''
+              }
+              <weekly-report-settings></weekly-report-settings>
+              <delivery-report-policy-settings></delivery-report-policy-settings>
+              <runner-policy-settings></runner-policy-settings>
+              ${this._renderSessionArtifactUsage()}
+              ${
+                isProprietary
+                  ? html`<p class="current-plan" data-testid="billing-summary">
+                      You are on ${displayPlanName} ·
+                      ${trialExpired ? 'Free' : billingStatusLabel(this.subscription?.status)}.
+                      <a href=${PLAN_PAGE_PATH}
+                        >Subscription, usage and seats</a
+                      >
+                    </p>`
+                  : ''
+              }
+            </div>
+          </div>
+        </sl-tab-panel>
+        <sl-tab-panel name="sso" ?active=${this.accountTab === 'sso'}>
+          ${this.accountTab === 'sso' ? html`<sso-settings></sso-settings>` : ''}
+        </sl-tab-panel>
+      </sl-tab-group>
     `;
   }
 }

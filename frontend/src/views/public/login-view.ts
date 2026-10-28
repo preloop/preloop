@@ -1,4 +1,5 @@
 import { REST_API_PREFIX } from '../../api-path';
+import { discoverSso } from '../../services/sso-api';
 import { consumeLoginReturn } from '../../utils/login-return';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -30,6 +31,14 @@ const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
 export class LoginView extends LitElement {
   @state()
   private error = '';
+  private targetAccountId: string | undefined;
+
+  @state() private ssoEnabled = false;
+  @state() private showOtherMethods = false;
+  @state() private discovering = false;
+  @state() private ssoEmail = '';
+  @state() private ssoUrl: string | null = null;
+  private discoveryGeneration = 0;
 
   @state()
   private successMessage = '';
@@ -134,6 +143,24 @@ export class LoginView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     const urlParams = new URLSearchParams(window.location.search);
+    const target = urlParams.get('account_id');
+    this.targetAccountId =
+      target &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        target
+      )
+        ? target
+        : undefined;
+    if (this.targetAccountId)
+      this.successMessage =
+        'Sign in again for the selected account. Account owners can use their password or passkey for emergency access.';
+    if (urlParams.get('sso_error') === 'sign_in_failed') {
+      this.error =
+        'Single sign-on failed. Try again or contact your account administrator.';
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete('sso_error');
+      window.history.replaceState({}, '', clean.pathname + clean.search);
+    }
     if (urlParams.has('registered')) {
       this.successMessage =
         'Your account has been created successfully. Please sign in.';
@@ -152,6 +179,7 @@ export class LoginView extends LitElement {
       this.registrationEnabled = features.features['registration'] !== false;
       this.passkeysEnabled =
         features.features['passkeys'] !== false && passkeysSupported();
+      this.ssoEnabled = features.features['enterprise_sso'] === true;
       this.multiAccount = hasCapability(features.features, 'multi_account');
     } catch (error) {
       this.oauthProviders = [];
@@ -184,7 +212,7 @@ export class LoginView extends LitElement {
   private async _continueAfterSignIn(data: object) {
     const lastActive = (data as { last_active_account_id?: unknown })
       .last_active_account_id;
-    if (this.multiAccount && !lastActive) {
+    if (this.multiAccount && !lastActive && !this.targetAccountId) {
       try {
         const [{ getMemberships }] = await Promise.all([
           import('../../hierarchy-api'),
@@ -205,7 +233,7 @@ export class LoginView extends LitElement {
   private async handlePasskeySignIn() {
     this.error = '';
     try {
-      const data = await signInWithPasskey();
+      const data = await signInWithPasskey(this.targetAccountId);
       localStorage.setItem('accessToken', data.access_token);
       if (data.refresh_token) {
         localStorage.setItem('refreshToken', data.refresh_token);
@@ -242,6 +270,7 @@ export class LoginView extends LitElement {
       const data = await post(REST_API_PREFIX + '/auth/token/json', {
         username,
         password,
+        ...(this.targetAccountId ? { account_id: this.targetAccountId } : {}),
       });
 
       localStorage.setItem('accessToken', data.access_token);
@@ -309,6 +338,75 @@ export class LoginView extends LitElement {
     } finally {
       this.resending = false;
     }
+  }
+
+  disconnectedCallback(): void {
+    this.discoveryGeneration++;
+    super.disconnectedCallback();
+  }
+
+  private async _discoverSso(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (this.discovering) return;
+    const input =
+      this.renderRoot.querySelector<HTMLInputElement>('input[name=email]');
+    if (!input?.reportValidity()) return;
+    const email = input.value.trim();
+    const generation = ++this.discoveryGeneration;
+    this.ssoEmail = email;
+    this.discovering = true;
+    this.error = '';
+    try {
+      const url = await discoverSso(email);
+      if (!this.isConnected || generation !== this.discoveryGeneration) return;
+      this.ssoUrl = url;
+      if (!url) this.showOtherMethods = true;
+    } catch (error) {
+      if (this.isConnected && generation === this.discoveryGeneration)
+        this.error =
+          error instanceof Error
+            ? error.message
+            : 'Unable to check single sign-on.';
+    } finally {
+      if (generation === this.discoveryGeneration) this.discovering = false;
+    }
+  }
+
+  private _renderEmailFirst() {
+    return html`
+      ${this.successMessage ? html`<div class="success-message" role="status">${this.successMessage}</div>` : nothing}
+      ${this.error ? html`<div class="error-message" role="alert">${this.error}</div>` : nothing}
+      <form id="sso-discovery-form" @submit=${this._discoverSso}>
+        <div class="form-group">
+          <label for="sso-email">Email address</label>
+          <input
+            id="sso-email"
+            name="email"
+            type="email"
+            autocomplete="email"
+            required
+            .value=${this.ssoEmail}
+            ?disabled=${this.discovering}
+            @input=${() => {
+              this.ssoUrl = null;
+              this.error = '';
+            }}
+            style="box-sizing:border-box;width:100%;font:inherit;padding:0.75rem;border:1px solid var(--console-hairline);border-radius:var(--sl-border-radius-small);background:var(--console-page);color:var(--sl-color-neutral-900);"
+          />
+        </div>
+        ${this.ssoUrl ? html`<sl-button id="continue-sso" href=${this.ssoUrl} variant="primary" style="width:100%">Continue with SSO</sl-button>` : html`<sl-button type="submit" variant="primary" style="width:100%" ?loading=${this.discovering}>Continue</sl-button>`}
+      </form>
+      <sl-button
+        id="other-sign-in-methods"
+        variant="text"
+        ?disabled=${this.discovering}
+        @click=${() => {
+          this.showOtherMethods = true;
+          this.error = '';
+        }}
+        >Use another sign-in method</sl-button
+      >
+    `;
   }
 
   private _renderPasskeyButton() {
@@ -381,6 +479,8 @@ export class LoginView extends LitElement {
   }
 
   private _renderSignInForm() {
+    if (this.ssoEnabled && !this.showOtherMethods)
+      return this._renderEmailFirst();
     return html`
       ${
         this.successMessage
@@ -408,6 +508,19 @@ export class LoginView extends LitElement {
               }
             </div>`
           : ''
+      }
+      ${
+        this.ssoEnabled
+          ? html`<sl-button
+              variant="text"
+              @click=${() => {
+                this.showOtherMethods = false;
+                this.error = '';
+                this.ssoUrl = null;
+              }}
+              >Use single sign-on</sl-button
+            >`
+          : nothing
       }
       ${this._renderOAuthButtons()}
       <form @submit=${this.handleLogin}>

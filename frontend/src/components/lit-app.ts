@@ -311,7 +311,7 @@ export class LitApp extends LitElement {
       {
         path: '/console',
         component: 'console-shell',
-        action: () => {
+        action: (_context, commands) => {
           // Handle OAuth callback tokens from URL fragment only.
           // Fragment-based delivery prevents tokens from appearing in browser
           // history, server access logs, and Referrer headers.
@@ -320,6 +320,9 @@ export class LitApp extends LitElement {
               ? window.location.hash.substring(1)
               : ''
           );
+          if (params.has('sso_error')) {
+            return commands.redirect('/login?sso_error=sign_in_failed');
+          }
           const accessToken = params.get('access_token');
           const refreshToken = params.get('refresh_token');
 

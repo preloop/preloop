@@ -18,6 +18,7 @@ export const PREMIUM_FEATURE_LABELS: Record<string, string> = {
   session_titles: 'AI session titles',
   value_reviews: 'value reviews',
   rbac: 'role-based access control',
+  enterprise_sso: 'single sign-on',
   team_approvals: 'team approval workflows',
   reconciliation: 'provider billing reconciliation',
   // The three gates a person reaches by doing something: setting a price,
