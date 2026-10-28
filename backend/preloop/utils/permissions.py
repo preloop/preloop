@@ -1,7 +1,7 @@
 """Permission utilities with OSS fallback.
 
-When the proprietary RBAC plugin is unavailable, this module exposes a no-op
-decorator and the role helpers grant every member every permission: core
+When commercial plugins are explicitly disabled or the RBAC package is absent,
+this module exposes a no-op decorator and the role helpers grant every member every permission: core
 applies no access control between users of the same account. When the plugin
 is available, the exported decorator preserves the wrapped function's
 sync/async nature so FastAPI can keep dispatching sync handlers via its
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import logging
 import os
 import threading
 from contextvars import ContextVar, copy_context
@@ -21,25 +22,33 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import HTTPException, status
 
 from preloop.schemas.ci_principal import CiAction
+from preloop.plugins.base import proprietary_plugins_disabled
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from preloop.models.models.user import User
 
-try:
-    if os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() in {
-        "true",
-        "1",
-        "yes",
-    }:
-        raise ImportError("Proprietary plugins disabled")
-    from preloop.plugins.proprietary.rbac.permissions import (
-        require_permission as _plugin_require_permission,
+logger = logging.getLogger(__name__)
+
+if proprietary_plugins_disabled():
+    logger.info(
+        "Proprietary plugins explicitly disabled; account members have full access"
     )
-except ImportError:
-    # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
     _plugin_require_permission = None
+else:
+    try:
+        from preloop.plugins.proprietary.rbac.permissions import (
+            require_permission as _plugin_require_permission,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "preloop.plugins.proprietary",
+            "preloop.plugins.proprietary.rbac",
+        }:
+            raise
+        logger.info("Commercial RBAC package absent; account members have full access")
+        _plugin_require_permission = None
 
 # Compatibility extensions must leave denied-search collection to core.
 AUDITS_DENIED_SESSION_SEARCH = True
@@ -53,7 +62,6 @@ def _rbac_checks_enabled() -> bool:
     Honors both the process env flag and the in-memory settings singleton
     (tests often toggle env without recreating Settings).
     """
-    import os
 
     from preloop.config import settings
 
