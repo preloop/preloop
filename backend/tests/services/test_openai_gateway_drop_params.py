@@ -435,3 +435,21 @@ def test_zai_schema_rejects_unsupported_format_explicitly() -> None:
             model,
             {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
         )
+
+
+def test_schema_keeps_connection_and_auth_kwargs() -> None:
+    """Structured output never strips the credential or the upstream base."""
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="llama-3",
+        api_endpoint="https://gateway.example.com/v1",
+    )
+    kwargs = _build_kwargs(
+        model,
+        {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
+    )
+    assert kwargs["api_key"] == "sk-test"
+    assert kwargs["api_base"] == "https://gateway.example.com/v1"
+    assert kwargs["extra_headers"]
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["drop_params"] is True
