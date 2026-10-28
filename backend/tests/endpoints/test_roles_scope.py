@@ -43,11 +43,15 @@ def scoped_roles(db_session: Session, test_user: models.User) -> dict[str, Any]:
     return {"roles": roles, "other_account": other.id}
 
 
+@pytest.mark.parametrize("limit", [100, None])
 def test_account_roles_crud_rejects_foreign_system_marker(
-    db_session: Session, test_user: models.User, scoped_roles: dict[str, Any]
+    db_session: Session,
+    test_user: models.User,
+    scoped_roles: dict[str, Any],
+    limit: int | None,
 ) -> None:
     rows = crud.crud_role.get_all_for_account(
-        db_session, account_id=test_user.account_id
+        db_session, account_id=test_user.account_id, limit=limit
     )
     ids = {row.id for row in rows}
     roles = scoped_roles["roles"]

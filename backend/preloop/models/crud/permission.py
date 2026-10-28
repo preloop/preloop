@@ -197,7 +197,7 @@ class CRUDRole(CRUDBase[models.Role]):
         )
 
     def get_all_for_account(
-        self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
+        self, db: Session, *, account_id: str, skip: int = 0, limit: int | None = 100
     ) -> List[models.Role]:
         """Get all roles available to an account (system + custom).
 
@@ -205,7 +205,7 @@ class CRUDRole(CRUDBase[models.Role]):
             db: Database session.
             account_id: Account ID.
             skip: Number of records to skip.
-            limit: Maximum number of records to return.
+            limit: Maximum number of records, or None for the complete catalog.
 
         Returns:
             List of roles (system + account's custom roles).
