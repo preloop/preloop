@@ -17,6 +17,7 @@ export interface GitCloneConfig {
   create_pull_request?: boolean;
   pull_request_title?: string;
   pull_request_description?: string;
+  publication_mode?: 'legacy' | 'isolated' | 'read_only';
 }
 
 export interface FlowCustomCommands {

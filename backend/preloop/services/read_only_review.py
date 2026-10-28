@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,10 +15,13 @@ from preloop.models import crud, models
 from preloop.services.publication_credentials import mint_repository_lease
 from preloop.services.trusted_publisher import PublicationLease
 
+logger = logging.getLogger(__name__)
 
 # Initial native capability is verified against the actual Codex executor.
 # New executors require an explicit exact-checkout and launch-boundary review.
 READ_ONLY_NATIVE_AGENT_TYPES: frozenset[str] = frozenset({"codex"})
+SERVER_POOL = "server"
+AUTO_POOL = "auto"
 
 
 def read_only_review(config: Any) -> bool:
@@ -48,61 +54,147 @@ def validate_read_only_configuration(config: dict[str, Any]) -> None:
         )
 
 
+def _flow_pool(flow: Any) -> str | None:
+    pool = getattr(flow, "runner_pool", None)
+    if not isinstance(pool, str) or not pool.strip():
+        return None
+    return pool.strip()
+
+
+def read_only_private_runner(flow: Any) -> bool:
+    """Whether the flow runs read-only review on a private runner host profile.
+
+    The pool must be named explicitly (not ``server``, ``auto`` or the
+    account default) and the flow's own ``agent_config`` must name the Codex
+    host profile. Everything else about the executor is checked by
+    :func:`validate_read_only_executor`.
+
+    Args:
+        flow: Flow row or namespace.
+
+    Returns:
+        True for the private-runner shape, False for the hosted shape.
+    """
+    from preloop.services.host_exec import host_exec_profile_name
+
+    pool = _flow_pool(flow)
+    if pool is None or pool.lower() in {SERVER_POOL, AUTO_POOL}:
+        return False
+    return bool(host_exec_profile_name(getattr(flow, "agent_config", None)))
+
+
 def validate_read_only_flow(flow: Any) -> None:
-    """This initial capability has no external MCP tools or restored workspace."""
+    """Read-only review has no external MCP tools or restored workspace.
+
+    Two executors are admitted: the hosted ephemeral Codex executor on the
+    ``server`` pool, and a Codex host profile on an explicitly named private
+    runner pool (the host CLI's own login serves the model).
+    """
     config = flow.git_clone_config or {}
     if not read_only_review(config):
         return
     validate_read_only_configuration(config)
     validate_read_only_executor(flow)
-    if (
-        flow.runner_pool != "server"
-        or flow.allowed_mcp_servers
-        or flow.allowed_mcp_tools
-    ):
-        raise ValueError(
-            "Read-only review requires server execution without MCP tools or servers"
-        )
+    if flow.allowed_mcp_servers or flow.allowed_mcp_tools:
+        raise ValueError("Read-only review requires no MCP tools or servers")
+
+
+def _own_runner_reference(reference: str, execution: Any) -> bool:
+    """A private-runner lease reference that names this very execution."""
+    execution_id = getattr(execution, "id", None)
+    parts = reference.split(":")
+    return (
+        execution_id is not None
+        and len(parts) >= 3
+        and parts[-1].lower() == str(execution_id).lower()
+    )
 
 
 def validate_read_only_executor(
     flow: Any, context: dict[str, Any] | None = None, execution: Any = None
 ) -> None:
-    """Check effective routing at admission, before lease issuance, and launch."""
+    """Check effective routing at admission, before lease issuance, and launch.
+
+    Args:
+        flow: Flow row or namespace.
+        context: Execution context (agent type/config overrides, trigger data).
+        execution: Execution row, used to reject resumed runner sessions.
+
+    Raises:
+        ValueError: When the effective executor is not an admitted read-only
+            review executor.
+    """
+    from preloop.services.host_exec import host_exec_profile_name, host_exec_workspace
     from preloop.services.runner_service import unwrap_agent_config
 
+    private = read_only_private_runner(flow)
     reference = getattr(execution, "agent_session_reference", None)
-    if isinstance(reference, str) and reference.startswith("runner:"):
+    if (
+        isinstance(reference, str)
+        and reference.startswith("runner:")
+        and not (private and _own_runner_reference(reference, execution))
+    ):
         raise ValueError("Read-only review cannot resume a private runner session")
     context = context or {}
     kind = context.get("agent_type", getattr(flow, "agent_type", None))
-    configs = [getattr(flow, "agent_config", None), context.get("agent_config")]
-    if (
-        kind not in READ_ONLY_NATIVE_AGENT_TYPES
-        or getattr(flow, "runner_pool", None) != "server"
+    if kind not in READ_ONLY_NATIVE_AGENT_TYPES or (
+        not private and getattr(flow, "runner_pool", None) != SERVER_POOL
     ):
-        raise ValueError("Read-only review requires a supported hosted native executor")
+        raise ValueError(
+            "Read-only review requires a supported native executor: hosted "
+            "Codex on the server pool, or a Codex host_exec_profile on a "
+            "named private runner pool"
+        )
+    profile = (
+        host_exec_profile_name(getattr(flow, "agent_config", None)) if private else None
+    )
+    configs = [getattr(flow, "agent_config", None), context.get("agent_config")]
     for config in configs:
         config = unwrap_agent_config(config) or {}
         if not isinstance(config, dict):
             raise ValueError("Read-only review requires valid native configuration")
         for source in (config, config.get("agent_config") or {}):
-            if isinstance(source, dict) and (
-                source.get("execution_path") == "persistent"
-                or source.get("host_exec_profile")
-                or source.get("harness")
-            ):
+            if not isinstance(source, dict):
+                continue
+            if source.get("execution_path") == "persistent" or source.get("harness"):
                 raise ValueError(
-                    "Read-only review requires a supported hosted native executor"
+                    "Read-only review requires a supported native executor"
                 )
+            selected = source.get("host_exec_profile")
+            if selected and (not private or selected != profile):
+                raise ValueError(
+                    "Read-only review requires a supported native executor"
+                )
+            if private and source.get("workspace") is not None:
+                raise ValueError(
+                    "Read-only review clones the admitted revision; an "
+                    "authorized host directory is not supported"
+                )
+    if private and host_exec_workspace(getattr(flow, "agent_config", None)):
+        raise ValueError(
+            "Read-only review clones the admitted revision; an authorized "
+            "host directory is not supported"
+        )
     details = context.get("trigger_event_data") or {}
     payload = details.get("payload") or {}
-    if context.get("host_exec_profile") or any(
-        source.get("_runner") not in (None, "server")
-        for source in (details, payload)
-        if isinstance(source, dict)
+    override = context.get("host_exec_profile")
+    allowed_runner = (None, _flow_pool(flow)) if private else (None, SERVER_POOL)
+    if (
+        (override and (not private or override != profile))
+        or any(
+            source.get("_runner") not in allowed_runner
+            for source in (details, payload)
+            if isinstance(source, dict)
+        )
+        or (
+            private
+            and any(
+                context.get(key)
+                for key in ("host_exec_resume", "resume_from", "session_id")
+            )
+        )
     ):
-        raise ValueError("Read-only review cannot override hosted native routing")
+        raise ValueError("Read-only review cannot override native routing")
 
 
 async def prepare_read_only_review(
@@ -110,8 +202,26 @@ async def prepare_read_only_review(
     flow: models.Flow,
     execution: models.FlowExecution,
     context: dict[str, Any],
-) -> PublicationLease:
-    """Reauthorize persisted ownership, then mint only a read-scoped App lease."""
+    *,
+    mint: bool = True,
+) -> PublicationLease | None:
+    """Reauthorize persisted ownership, then mint only a read-scoped App lease.
+
+    Args:
+        db: Database session.
+        flow: Read-only review flow.
+        execution: Restricted CI execution row.
+        context: Execution or host checkout context, extended in place.
+        mint: Mint the lease. A private-runner execution context only needs
+            the checks and the exact revision; its lease is minted when the
+            checkout plan is delivered to the runner.
+
+    Returns:
+        The minted lease, or None when ``mint`` is False.
+
+    Raises:
+        ValueError: When authority, binding or executor checks fail.
+    """
     validate_read_only_flow(flow)
     validate_read_only_executor(flow, context, execution)
     binding = crud.crud_ci_execution.authorize_dispatch(db, execution=execution)
@@ -147,6 +257,18 @@ async def prepare_read_only_review(
     ):
         raise ValueError("Read-only review repository binding changed")
     url = f"https://github.com/{binding.repository_slug}.git"
+    repository.update(
+        repository_url=url, branch=binding.base_branch, commit=binding.head_sha
+    )
+    config = dict(flow.git_clone_config)
+    config.update(
+        repositories=[repository], source_branch=binding.head_sha, target_branch=None
+    )
+    if not mint:
+        context["git_clone_config"] = config
+        context["read_only_review"] = True
+        context["git_credentials_map"] = {}
+        return None
     async with httpx.AsyncClient() as client:
         lease = await mint_repository_lease(tracker, url, write=False, client=client)
     if (
@@ -157,13 +279,6 @@ async def prepare_read_only_review(
         or lease.expires_at <= datetime.now(timezone.utc)
     ):
         raise ValueError("Read-only review lease is invalid or expired")
-    repository.update(
-        repository_url=url, branch=binding.base_branch, commit=binding.head_sha
-    )
-    config = dict(flow.git_clone_config)
-    config.update(
-        repositories=[repository], source_branch=binding.head_sha, target_branch=None
-    )
     context["git_clone_config"] = config
     context["read_only_review"] = True
     context["git_credentials_map"] = {
@@ -175,3 +290,88 @@ async def prepare_read_only_review(
         }
     }
     return lease
+
+
+#: Lease key naming a read-only review on a host profile. Persisted leases
+#: carry only ``{"mode": "read_only"}``; delivery adds the admitted commit.
+HOST_READ_ONLY_LEASE_KEY = "host_exec_read_only"
+#: Profile capability a runner advertises when it enforces this contract.
+HOST_READ_ONLY_CAPABILITY = "host_read_only_review"
+#: Control-plane key on the execution result for the runner receipt.
+HOST_READ_ONLY_RESULT_KEY = "host_read_only_review"
+_SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+
+# Leases delivered to a runner from this process, by execution id. Runner
+# delivery and completion share one WebSocket (one process), and the
+# orchestrator that starts the lease delivers the first plan itself. GitHub
+# expiry bounds a lease this process cannot see, and the runner revokes its
+# copy as soon as the checkout is done.
+_delivered_read_leases: dict[str, list[PublicationLease]] = {}
+
+
+def register_delivered_read_lease(execution_id: Any, lease: PublicationLease) -> None:
+    """Remember a delivered read lease so completion can revoke it."""
+    _delivered_read_leases.setdefault(str(execution_id), []).append(lease)
+
+
+async def revoke_delivered_read_leases(execution_id: Any) -> int:
+    """Revoke every read lease this process delivered for an execution.
+
+    Args:
+        execution_id: Execution id.
+
+    Returns:
+        Number of leases whose revocation GitHub confirmed.
+    """
+    from preloop.services.publication_credentials import revoke_repository_lease
+    from preloop.services.trusted_publisher import PublicationError
+
+    leases = _delivered_read_leases.pop(str(execution_id), [])
+    revoked = 0
+    if not leases:
+        return 0
+    async with httpx.AsyncClient() as client:
+        for lease in leases:
+            try:
+                await revoke_repository_lease(lease, client)
+                revoked += 1
+            except PublicationError:
+                logger.warning(
+                    "Read-only review lease revocation failed; expiry remains enforced"
+                )
+    return revoked
+
+
+def host_read_only_receipt_error(
+    message: Mapping[str, Any], pending_job: Mapping[str, Any]
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Check the runner's read-only receipt for a successful host completion.
+
+    Args:
+        message: Runner completion envelope.
+        pending_job: Persisted lease, which names the admitted commit.
+
+    Returns:
+        ``(error, receipt)``. ``error`` is None when the runner proves it
+        checked out the admitted commit and ran Codex in the read-only sandbox.
+    """
+    lease = pending_job.get(HOST_READ_ONLY_LEASE_KEY)
+    expected = lease.get("commit") if isinstance(lease, Mapping) else None
+    receipt = message.get(HOST_READ_ONLY_LEASE_KEY)
+    if not isinstance(receipt, Mapping):
+        return "Runner did not confirm the read-only review contract", None
+    commit = receipt.get("commit")
+    clean = {
+        "commit": commit if isinstance(commit, str) else None,
+        "sandbox": receipt.get("sandbox"),
+        "lease_revoked": receipt.get("lease_revoked") is True,
+    }
+    if (
+        not isinstance(expected, str)
+        or not _SHA_RE.fullmatch(expected)
+        or commit != expected
+    ):
+        return "Runner checkout does not match the admitted revision", clean
+    if clean["sandbox"] != "read-only":
+        return "Runner did not run Codex in the read-only sandbox", clean
+    return None, clean

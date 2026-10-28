@@ -118,9 +118,19 @@ class CRUDCiPrincipal:
         ):
             raise ValueError("CI flow requires an enabled repository binding")
         repositories = configuration.get("repositories", [])
+        from preloop.services.read_only_review import (
+            read_only_private_runner,
+            read_only_review,
+        )
+
+        # Read-only review may also run on a named private runner pool with a
+        # Codex host profile; every other CI flow is hosted.
+        private_review = read_only_review(configuration) and read_only_private_runner(
+            flow
+        )
         if (
             flow.trigger_project_ids != [str(project.id)]
-            or flow.runner_pool != "server"
+            or (flow.runner_pool != "server" and not private_review)
             or not isinstance(repositories, list)
             or len(repositories) != 1
             or not isinstance(repositories[0], dict)

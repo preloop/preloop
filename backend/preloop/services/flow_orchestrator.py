@@ -3272,7 +3272,12 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
-    async def _attach_git_credentials(self, execution_context: Dict[str, Any]) -> None:
+    async def _attach_git_credentials(
+        self,
+        execution_context: Dict[str, Any],
+        *,
+        mint_read_lease: Optional[bool] = None,
+    ) -> None:
         """Resolve clone credentials for the flow's repositories.
 
         Adds ``git_credentials_map`` (keyed by tracker id) for the effective
@@ -3282,18 +3287,31 @@ class FlowExecutionOrchestrator:
 
         Args:
             execution_context: Context to extend in place.
+            mint_read_lease: Read-only review only. None mints for the hosted
+                executor and skips minting for a private-runner host profile,
+                whose lease is minted with the delivered checkout plan.
         """
-        from preloop.services.read_only_review import prepare_read_only_review
+        from preloop.services.read_only_review import (
+            prepare_read_only_review,
+            read_only_private_runner,
+        )
 
         if self._read_only_review_mode():
             self._read_only_review_execution = True
+            if mint_read_lease is None:
+                mint_read_lease = not read_only_private_runner(self.flow)
             lease = await prepare_read_only_review(
-                self.db, self.flow, self.execution_log, execution_context
+                self.db,
+                self.flow,
+                self.execution_log,
+                execution_context,
+                mint=mint_read_lease,
             )
-            self._read_only_review_leases = [
-                *getattr(self, "_read_only_review_leases", []),
-                lease,
-            ]
+            if lease is not None:
+                self._read_only_review_leases = [
+                    *getattr(self, "_read_only_review_leases", []),
+                    lease,
+                ]
             return
         clone_config = execution_context.get("git_clone_config")
         if clone_config is None:
@@ -3374,7 +3392,7 @@ class FlowExecutionOrchestrator:
             # Read by the shared clone resolvers: the git credential must come
             # from the bound code-host tracker only, never the issue tracker.
             context["repository_binding"] = binding.summary()
-        await self._attach_git_credentials(context)
+        await self._attach_git_credentials(context, mint_read_lease=True)
         return context
 
     def _apply_harness_routing_decision(self) -> None:
@@ -10397,6 +10415,16 @@ class FlowExecutionOrchestrator:
                 logger.error("Cannot update execution log - not created yet")
         finally:
             leases = getattr(self, "_read_only_review_leases", [])
+            if (
+                getattr(self, "_read_only_review_execution", False)
+                and self.execution_log is not None
+                and self._execution_reached_terminal_state()
+            ):
+                from preloop.services.read_only_review import (
+                    revoke_delivered_read_leases,
+                )
+
+                await revoke_delivered_read_leases(self.execution_log.id)
             if leases and self._execution_reached_terminal_state():
                 import httpx
                 from preloop.services.publication_credentials import (

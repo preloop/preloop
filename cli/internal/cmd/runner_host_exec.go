@@ -283,6 +283,9 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 		if hostExecProfileMayPublish(profile, harness) {
 			caps = append(caps, hostExecCapabilityPublication, hostExecCapabilityContinuation)
 		}
+		if harness == hostExecHarnessCodex && profile.AllowCheckout {
+			caps = append(caps, hostExecCapabilityReadOnly)
+		}
 		models := make([]string, 0, len(profile.ModelMap))
 		for requested := range profile.ModelMap {
 			models = append(models, requested)
@@ -657,6 +660,7 @@ type hostExecRun struct {
 	checkout        *hostExecCheckout
 	publication     *hostExecPublication
 	resume          *hostExecResume
+	readOnly        *hostExecReadOnly
 	stdinPrompt     string
 	preflight       func(context.Context) error
 	governanceNonce string
@@ -742,6 +746,13 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	if err := validateHostExecResume(resume, profile, wantHarness, publication); err != nil {
 		return nil, err
 	}
+	readOnly, err := jobHostExecReadOnly(job)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateHostExecReadOnlyJob(readOnly, wantHarness, profile, checkout, mcpToken, publication, resume, workspaceSpec); err != nil {
+		return nil, err
+	}
 	executionID, _ := job["execution_id"].(string)
 	root, err := hostExecWorkspaceRoot(profile)
 	if err != nil {
@@ -812,7 +823,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		var extraEnv, extraFiles []string
 		switch wantHarness {
 		case hostExecHarnessCodex:
-			args, stdin, extraEnv, extraFiles, err = prepareCodexHostExec(profile, job, workspace, scratch, mcpToken)
+			args, stdin, extraEnv, extraFiles, err = prepareCodexHostExecSandbox(profile, job, workspace, scratch, mcpToken, readOnly != nil)
 		case hostExecHarnessOpenCode:
 			args, stdin, extraEnv, extraFiles, err = prepareOpenCodeHostExec(profile, job, workspace, scratch, mcpToken)
 		case hostExecHarnessDeepSeek:
@@ -901,6 +912,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		checkout:        checkout,
 		publication:     publication,
 		resume:          resume,
+		readOnly:        readOnly,
 		cleanup:         cleanup,
 	}, nil
 }
@@ -1027,7 +1039,13 @@ func beginHostExecJob(
 	cmd, timeout := run.cmd, run.timeout
 	agentType, _ := job["agent_type"].(string)
 	mcpToken, _ := jobHostExecMCPToken(job)
-	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType), resultPath: run.resultPath, secrets: []string{mcpToken}}
+	secrets := []string{mcpToken}
+	if run.checkout != nil {
+		for _, repo := range run.checkout.Repositories {
+			secrets = append(secrets, repo.Token)
+		}
+	}
+	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType), resultPath: run.resultPath, secrets: secrets}
 	var governance *hostExecGovernanceGate
 	if run.governanceNonce != "" {
 		governance, err = newHostExecGovernanceGate(cmd, run.stdinPrompt, run.governanceNonce)
@@ -1050,9 +1068,10 @@ func beginHostExecJob(
 		if governance != nil {
 			defer governance.close()
 		}
+		var readOnlyReceipt map[string]any
 		failed := func(status, msg string) {
 			buffer.finish()
-			done <- leasedJobOutcome{executionID: executionID, status: status, hostExec: true, profile: profile, errMsg: msg, exitCode: -1, logBuffer: buffer}
+			done <- leasedJobOutcome{executionID: executionID, status: status, hostExec: true, profile: profile, errMsg: msg, exitCode: -1, logBuffer: buffer, hostReadOnly: readOnlyReceipt}
 		}
 
 		if run.workspaceLabel != "" {
@@ -1085,7 +1104,12 @@ func beginHostExecJob(
 				failed("STOPPED", "")
 				return
 			}
-			err := runHostExecCheckout(ctx, run.workspace, run.checkout, buffer.note)
+			var err error
+			if run.readOnly != nil {
+				readOnlyReceipt, err = runHostExecReadOnlyCheckout(ctx, run.workspace, run.checkout, run.readOnly, buffer.note)
+			} else {
+				err = runHostExecCheckout(ctx, run.workspace, run.checkout, buffer.note)
+			}
 			if err == nil && run.publication != nil {
 				err = recordHostPublicationBase(ctx, run.workspace, run.publication)
 			}
@@ -1148,6 +1172,7 @@ func beginHostExecJob(
 			}
 		}
 		outcome = checkResumedSession(outcome, run.resume)
+		outcome.hostReadOnly = readOnlyReceipt
 		if run.publication != nil && outcome.status == "SUCCEEDED" {
 			outcome = publishHostExecOutcome(outcome, run, gate, halted, timeout, buffer)
 		}

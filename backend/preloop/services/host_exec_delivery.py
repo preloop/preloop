@@ -302,6 +302,26 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
             "The flow's pull request setting changed after this run was queued"
         )
 
+    from preloop.services.read_only_review import (
+        HOST_READ_ONLY_LEASE_KEY,
+        read_only_review,
+    )
+
+    read_only = read_only_review(flow.git_clone_config)
+    if read_only != bool(job.get(HOST_READ_ONLY_LEASE_KEY)):
+        raise HostExecDeliveryError(
+            "The flow's read-only review setting changed after this run was queued"
+        )
+    if read_only and (
+        publishes
+        or continuation
+        or flow_uses_mcp(flow)
+        or str(job.get("agent_type") or "").lower() != "codex"
+    ):
+        raise HostExecDeliveryError(
+            "Read-only review runs Codex without MCP, publication or resume"
+        )
+
     hydrated = dict(job)
     if flow_uses_mcp(flow):
         runtime_session = crud_runtime_session.get_by_source(
@@ -336,6 +356,14 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
                 f"Repository binding cannot be applied: {exc}"
             ) from exc
         checkout = build_host_exec_checkout(context) if context else None
+        if read_only:
+            hydrated[HOST_READ_ONLY_LEASE_KEY] = _read_only_delivery(
+                orchestrator,
+                context,
+                checkout,
+                execution.id,
+                job.get(HOST_READ_ONLY_LEASE_KEY),
+            )
         if publishes:
             hydrated[HOST_PUBLICATION_LEASE_KEY] = build_host_exec_publication(
                 checkout,
@@ -346,8 +374,62 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
             )
         if checkout:
             hydrated["host_exec_checkout"] = checkout
-    elif publishes:
+    elif publishes or read_only:
         raise HostExecDeliveryError(
-            "Host publication requires the flow to clone its repository"
+            "Host publication and read-only review require the flow to clone "
+            "its repository"
         )
     return hydrated
+
+
+def _read_only_delivery(
+    orchestrator: Any,
+    context: Optional[Dict[str, Any]],
+    checkout: Optional[Dict[str, Any]],
+    execution_id: Any,
+    leased: Any,
+) -> Dict[str, Any]:
+    """Bind the delivered read lease to one exact-revision checkout.
+
+    The orchestrator minted a repository-scoped ``contents:read`` lease while
+    preparing ``context``. It is registered for revocation at completion and
+    must be the only credential in the plan.
+
+    Args:
+        orchestrator: Orchestrator that prepared the checkout context.
+        context: Checkout context from ``prepare_host_exec_checkout_context``.
+        checkout: Plan from ``build_host_exec_checkout``.
+        execution_id: Execution id.
+        leased: Persisted lease marker naming the admitted commit.
+
+    Returns:
+        The runner read-only plan: ``{"mode", "commit"}``.
+
+    Raises:
+        HostExecDeliveryError: When the plan is not one leased repository at
+            the admitted revision.
+    """
+    from preloop.services.read_only_review import register_delivered_read_lease
+
+    leases = list(getattr(orchestrator, "_read_only_review_leases", []) or [])
+    for lease in leases:
+        register_delivered_read_lease(execution_id, lease)
+    clone = (context or {}).get("git_clone_config") or {}
+    admitted = (clone.get("repositories") or [{}])[0].get("commit")
+    repositories = (checkout or {}).get("repositories") or []
+    if (
+        len(leases) != 1
+        or not (context or {}).get("read_only_review")
+        or len(repositories) != 1
+        or not isinstance(admitted, str)
+        or not isinstance(leased, dict)
+        or leased.get("commit") != admitted
+        or repositories[0].get("commit") != admitted
+        or repositories[0].get("branch")
+        or repositories[0].get("token") != leases[0].token
+        or repositories[0].get("url") != leases[0].repository_url
+    ):
+        raise HostExecDeliveryError(
+            "Read-only review requires one leased repository at the admitted revision"
+        )
+    return {"mode": "read_only", "commit": admitted}

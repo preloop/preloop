@@ -1466,6 +1466,12 @@ async def runner_ws(
                     commit=False,
                 )
                 db.commit()
+                if (leased_job or {}).get("host_exec_read_only"):
+                    from preloop.services.read_only_review import (
+                        revoke_delivered_read_leases,
+                    )
+
+                    await revoke_delivered_read_leases(execution_id)
                 fresh_runner = crud_flow_runner.get_fresh(db, runner_id=runner_id)
                 if fresh_runner is not None:
                     emit_runner_updated(fresh_runner, db)

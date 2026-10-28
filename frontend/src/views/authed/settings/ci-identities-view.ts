@@ -109,12 +109,25 @@ export class CiIdentitiesView extends LitElement {
         flow.id &&
         flow.account_id &&
         flow.is_enabled === true &&
-        flow.runner_pool === 'server' &&
+        (flow.runner_pool === 'server' || this.privateReadOnlyReview(flow)) &&
         flow.trigger_project_ids?.length === 1 &&
         flow.trigger_project_ids[0] === this.projectId &&
         flow.git_clone_config?.enabled === true &&
         flow.git_clone_config.repositories?.length === 1 &&
         flow.git_clone_config.repositories[0].project_id === this.projectId
+    );
+  }
+  /** Read-only review may run on a named private pool with a host profile. */
+  private privateReadOnlyReview(flow: Flow): boolean {
+    const pool = flow.runner_pool?.trim().toLowerCase();
+    const config = flow.agent_config as Record<string, unknown> | undefined;
+    return (
+      flow.git_clone_config?.publication_mode === 'read_only' &&
+      !!pool &&
+      pool !== 'server' &&
+      pool !== 'auto' &&
+      typeof config?.host_exec_profile === 'string' &&
+      config.host_exec_profile.trim() !== ''
     );
   }
   private grant(): CiGrant {

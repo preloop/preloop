@@ -781,9 +781,9 @@ def validate_execution_model_principal(
         "which cannot authorize an ephemeral flow's runtime credential. "
         "Select a server-usable API-key or hosted model. Changing runner_pool "
         "or setting target_agent_id on an ephemeral flow does not transfer "
-        "the owning agent's identity. Persistent-agent and private host-profile "
-        "execution use their own credentials and are not supported by the "
-        "restricted CI read-only review contract."
+        "the owning agent's identity. To use a subscription, run the flow on "
+        "a private runner with a host_exec_profile: the host CLI's own login "
+        "serves the model, including for restricted CI read-only review."
     )
 
 
