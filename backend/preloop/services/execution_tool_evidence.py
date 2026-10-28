@@ -186,7 +186,7 @@ def capture_tools(
 
 
 def _latest_tool_exchange(items: Any) -> list[dict[str, Any]]:
-    """Select the trailing call/result exchange, not replayed conversation history.
+    """Select the latest call/result exchange, not replayed conversation history.
 
     Chat/Anthropic envelopes terminate at their latest assistant tool call.
     Flat Responses input keeps a contiguous call batch and its result batch.
@@ -210,7 +210,11 @@ def _latest_tool_exchange(items: Any) -> list[dict[str, Any]]:
         has_results |= any(
             isinstance(b, dict) and b.get("type") in results for b in blocks
         )
-        if not (has_calls or has_results) or (saw_calls and has_results):
+        if not (has_calls or has_results):
+            if not selected:
+                continue  # Trailing prose/reasoning does not erase new results.
+            break
+        if saw_calls and has_results:
             break
         selected.append(item)
         saw_calls |= has_calls

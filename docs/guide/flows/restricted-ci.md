@@ -131,8 +131,9 @@ Deploy both before granting or advertising this action; an older EE authorizer
 fails closed even when a principal grant contains the new action.
 
 New gateway requests retain tool-only observations before console preview clipping.
-Request-side `request_scope: latest_tool_exchange` captures the trailing tool call
-batch and its results; response-side capture retains the current response. Replayed
+Request-side `request_scope: latest_tool_exchange` captures the latest tool call
+batch and its results, including when prose follows that batch; response-side
+capture retains the current response. Replayed
 older request history is deliberately excluded, so storage grows with new exchanges
 rather than accumulated history. `capture_complete` refers to this declared scope,
 not a historical conversation import. Repeated retries can repeat the latest exchange.
