@@ -113,6 +113,12 @@ def test_api_key_model_still_accepted(
     [
         {"execution_path": "persistent", "target_agent_id": str(uuid4())},
         {"host_exec_profile": "codex-local"},
+        {
+            "agent_config": {
+                "execution_path": "persistent",
+                "target_agent_id": str(uuid4()),
+            }
+        },
     ],
 )
 def test_existing_agent_and_local_cli_paths_keep_their_own_admission(
@@ -230,4 +236,27 @@ def test_trigger_http_returns_422_without_creating_or_dispatching(
     assert "agent-bound subscription" in response.json()["detail"]
     assert "server-usable" in response.json()["detail"]
     create.assert_not_called()
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_precreated_execution_cannot_bypass_dispatch_admission(
+    selection: tuple[SimpleNamespace, models.AIModel],
+) -> None:
+    flow, model = selection
+    execution = SimpleNamespace(id=uuid4(), trigger_event_details={})
+    service = FlowTriggerService(MagicMock())
+    with (
+        patch.object(service, "_authorize_flow_run", new_callable=AsyncMock),
+        patch.object(service, "_flows_halted", return_value=False),
+        patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
+        patch(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            new_callable=AsyncMock,
+        ) as dispatch,
+    ):
+        with pytest.raises(ModelRoutingError, match="agent-bound subscription"):
+            await service._start_flow_execution(
+                flow, {}, MagicMock(), precreated_execution=execution
+            )
     dispatch.assert_not_awaited()

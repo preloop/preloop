@@ -38,6 +38,7 @@ from preloop.services.runner_service import (
     _account_default_runner_pool,
     _explicit_pool,
     _is_server_pool,
+    unwrap_agent_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -757,7 +758,8 @@ def validate_execution_model_principal(
     harness, model_id = resolve_execution_agent_selection(
         details, flow_agent_type=flow.agent_type, flow_ai_model_id=flow.ai_model_id
     )
-    config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
+    config = unwrap_agent_config(flow.agent_config)
+    config = config if isinstance(config, dict) else {}
     if (
         model_id is None
         or config.get("execution_path") == "persistent"
