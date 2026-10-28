@@ -130,9 +130,15 @@ def mcp_scope_allowed(scopes: Any, required_scope: str) -> bool:
     return required_scope in scopes or "*" in scopes
 
 
+def is_read_only_review_api_key(api_key: Any) -> bool:
+    """Identify a review capability independently of legacy scope settings."""
+    context = getattr(api_key, "context_data", None)
+    return isinstance(context, dict) and context.get("read_only_review") is True
+
+
 def enforce_runtime_api_key_scope(api_key: Any) -> None:
     """Keep discovery, telemetry and enrollment authority off runtime routes."""
-    if is_single_purpose_api_key(api_key):
+    if is_read_only_review_api_key(api_key) or is_single_purpose_api_key(api_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -195,6 +201,8 @@ def _mode_denies(api_key: Any, where: str) -> bool:
     Returns:
         True when the caller must refuse the key.
     """
+    if is_read_only_review_api_key(api_key):
+        return True
     mode = getattr(settings, "api_key_scope_enforcement", "enforce")
     if mode == "off" or not is_mcp_only_api_key(api_key):
         return False

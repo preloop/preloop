@@ -4109,6 +4109,17 @@ class ContainerAgentExecutor(AgentExecutor):
         if evidence:
             commands.append(evidence.rstrip())
 
+        # Review execution requires a source checkout even if context is altered.
+        review_checkout = (
+            execution_context.get("read_only_review") is True
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        )
+        if review_checkout and not (
+            execution_context.get("git_clone_config") or {}
+        ).get("repositories"):
+            raise ValueError("Read-only review requires its admitted repository")
+
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")
         self.logger.info(f"Git clone config: {git_clone_config}")
@@ -5450,6 +5461,13 @@ true
                 execution_context, git_config
             )
             if not repositories:
+                if (
+                    execution_context.get("read_only_review") is True
+                    or git_config.get("publication_mode") == "read_only"
+                ):
+                    raise ValueError(
+                        "Read-only review requires its admitted repository"
+                    )
                 return ""
 
             (
@@ -5515,6 +5533,14 @@ true
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
+            if (
+                execution_context.get("read_only_review") is True
+                or (execution_context.get("git_clone_config") or {}).get(
+                    "publication_mode"
+                )
+                == "read_only"
+            ):
+                raise
             return ""
 
     def _resolve_bitbucket_api_email(

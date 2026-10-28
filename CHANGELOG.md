@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
+  for native checkout of the admitted commit using an exact-repository, read-only
+  GitHub App lease. Review workers can use inference and their own evidence upload,
+  but cannot use MCP, account/runtime administration, push, or publish. Publication
+  requires a separate trusted publisher.
+
 ### Telemetry
 
 - **OTLP model-call span timestamps are UTC-correct.** `ApiUsage.timestamp`

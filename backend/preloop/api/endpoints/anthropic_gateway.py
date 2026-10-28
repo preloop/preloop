@@ -84,7 +84,9 @@ async def get_anthropic_gateway_auth_context(
         if idp_context is not None:
             return idp_context
 
-    auth_context = await authenticate_bearer_token(token, db, owns_db_session=True)
+    auth_context = await authenticate_bearer_token(
+        token, db, owns_db_session=True, allow_read_only_review=True
+    )
     if not auth_context:
         raise ModelGatewayAPIError(
             provider="anthropic",

@@ -15,7 +15,11 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from preloop.agents.container import ContainerAgentExecutor
-from preloop.api.auth.key_scopes import enforce_api_key_route_scope
+from preloop.api.auth.key_scopes import (
+    enforce_api_key_route_scope,
+    enforce_runtime_api_key_scope,
+    api_key_allowed_on_channel,
+)
 from preloop.config import settings
 from preloop.models.schemas.flow import GitCloneConfig
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
@@ -150,11 +154,33 @@ async def test_scoped_lease_binds_exact_repo_and_revision_without_broad_resolver
                 },
                 context,
             )
+        with pytest.raises(ValueError):
+            executor._prepare_git_clone_command(
+                {
+                    **context,
+                    "git_credentials_map": {
+                        "https://github.com/other/project.git": {"token": "wrong"}
+                    },
+                }
+            )
         context["git_credentials_map"] = {}
         context["git_clone_config"]["publication_mode"] = "legacy"
         with pytest.raises(ValueError):
             executor._resolve_repository_token(repository, context)
+        with pytest.raises(ValueError):
+            executor._prepare_git_clone_command(context)
+        with pytest.raises(ValueError):
+            executor._prepare_init_commands(context)
+        with pytest.raises(ValueError):
+            executor._prepare_init_commands({**context, "git_clone_config": {}})
+        with pytest.raises(ValueError):
+            executor._prepare_git_clone_command({**context, "git_clone_config": {}})
     fallback.assert_not_called()
+    orch._read_only_review_execution = True
+    flow.git_clone_config = {"publication_mode": "legacy"}
+    orch._tracker_client = MagicMock()
+    assert await orch._get_tracker_client_for_status() is None
+    assert await orch._publication_tracker_clients() == []
     # Agent-supplied success/bundle cannot cause either publication path.
     with patch(
         "preloop.services.isolated_publication.finish_isolated_publication", AsyncMock()
@@ -225,6 +251,21 @@ def test_runtime_marker_denies_rest_even_with_legacy_scopes(
     with pytest.raises(HTTPException) as error:
         enforce_api_key_route_scope(key, request)
     assert error.value.status_code == 403
+    for channel in ("console", "desktop"):
+        assert not api_key_allowed_on_channel(key, channel)
+    with pytest.raises(HTTPException) as runtime_error:
+        enforce_runtime_api_key_scope(key)
+    assert runtime_error.value.status_code == 403
+    from preloop.api.auth.jwt import (
+        _authenticate_with_api_key,
+        get_user_from_token_if_valid_sync,
+    )
+
+    with pytest.raises(HTTPException) as auth_error:
+        _authenticate_with_api_key(MagicMock(), key)
+    assert auth_error.value.status_code == 403
+    with patch("preloop.api.auth.jwt.crud_api_key.get_by_key", return_value=key):
+        assert get_user_from_token_if_valid_sync("review-token", MagicMock()) is None
 
 
 @pytest.mark.asyncio
@@ -307,6 +348,20 @@ async def test_native_result_persists_and_owned_callback_remains_available(
         assert (
             gateway.call_args.args[1].api_key.context_data["read_only_review"] is True
         )
+        # The inference exception must not leak into helpers shared by browser
+        # ingestion, security screening, native approval or account channels.
+        from preloop.services.model_gateway_auth import authenticate_bearer_token
+        from preloop.api.gateway_auth_dependency import get_browser_step_auth_context
+        from preloop.services.model_gateway_errors import ModelGatewayAPIError
+        from preloop.api.auth.jwt import authenticate_runtime_bearer_token
+
+        token = context["account_api_token"]
+        assert await authenticate_bearer_token(token, db_session) is None
+        with pytest.raises(ModelGatewayAPIError):
+            await get_browser_step_auth_context("Bearer " + token, db_session)
+        with pytest.raises(HTTPException) as denied:
+            authenticate_runtime_bearer_token(db_session, token)
+        assert denied.value.status_code == 403
         url = f"/flows/executions/{execution.id}/artifacts"
         headers = {
             "Authorization": "Bearer "

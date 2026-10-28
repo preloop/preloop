@@ -392,8 +392,11 @@ def test_http_transport_keeps_the_presented_key_scopes(
     app.add_middleware(MCPPathRewriteMiddleware)
     app.mount("/mcp", _MCPRootPathHandler(transport))
 
-    def cached_context(scope: dict) -> UserContext:
+    def cached_context(scope: dict) -> UserContext | None:
         context = create_user_context_from_scope(scope)
+        if read_only:
+            assert context is None
+            return None
         assert context is not None
         context.mcp_tools_cache = [
             Tool(
@@ -425,6 +428,20 @@ def test_http_transport_keeps_the_presented_key_scopes(
             headers=headers,
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         )
+        if read_only:
+            assert response.status_code == 401, response.text
+            response = client.post(
+                path,
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "example", "arguments": {}},
+                },
+            )
+            assert response.status_code == 401, response.text
+            return
         assert response.status_code == 200, response.text
         data = json.loads(
             next(
