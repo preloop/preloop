@@ -208,6 +208,8 @@
   "GET /api/v1/organizations/{organization_id}": "deny",
   "GET /api/v1/organizations/{organization_id}/projects": "deny",
   "GET /api/v1/organizations/{organization_id}/projects/{identifier}": "deny",
+  "GET /api/v1/overview/bootstrap": "deny",
+  "GET /api/v1/overview/shell": "deny",
   "GET /api/v1/ping": "deny",
   "GET /api/v1/policies/export": "deny",
   "GET /api/v1/policies/model-io-rules": "deny",

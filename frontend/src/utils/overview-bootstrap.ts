@@ -20,18 +20,6 @@ export interface OverviewLoad {
 
 let active: OverviewLoad | null = null;
 let shell: OverviewLoad | null = null;
-const shellPaths = new Set([
-  'features',
-  'version/status',
-  'licence/status',
-  'auth/users/me',
-  'ci-identities/capabilities',
-  'billing/nudges',
-  'approval-bypasses/status',
-  'account/kill-switch/status',
-  'account/runner-compliance/me',
-  'me/memberships',
-]);
 
 export function beginOverviewShell(): void {
   if (!['/console', '/console/'].includes(window.location.pathname)) return;
@@ -61,16 +49,16 @@ export function readOverviewInput(
   if (parsed.origin !== window.location.origin) return null;
   const path = parsed.pathname.replace(REST_API_PREFIX + '/', '');
   if (path === 'features' && !shell) beginOverviewShell();
-  if (
-    shellPaths.has(path) ||
-    (path === 'approval-requests' && parsed.search === '?status=pending') ||
-    (path === 'flows/executions' && parsed.searchParams.get('limit') === '10')
-  ) {
-    return shell?.read(url, token) ?? null;
-  }
   // These independent reads start immediately beside the bootstrap stream.
   if (['cost/timeseries', 'audit-logs/grouped'].includes(path)) return null;
-  return active?.read(url, token) ?? null;
+  const currentShell = shell;
+  const currentLoad = active;
+  if (!currentShell && !currentLoad) return null;
+  return (async () => {
+    const shellResult = await currentShell?.read(url, token);
+    if (shellResult) return shellResult;
+    return currentLoad?.read(url, token) ?? null;
+  })();
 }
 
 export function beginOverviewLoad(
@@ -97,6 +85,7 @@ function createLoad(endpoint: string): OverviewLoad {
   const responses = new Map<string, Result>();
   const waiters = new Map<string, (result: Result | null) => void>();
   const pending = new Map<string, Promise<Result | null>>();
+  const manifestKeys = new Set<string>();
   let closed = false;
   let resolveManifest!: () => void;
   const manifest = new Promise<void>((resolve) => {
@@ -112,6 +101,10 @@ function createLoad(endpoint: string): OverviewLoad {
     async read(url, callerToken) {
       if (closed || !token || callerToken !== token) return null;
       await manifest;
+      // Only inputs declared by this stream belong to its cancellation scope.
+      // Keep keys (not response data) after close so pending callers can tell
+      // unrelated ordinary reads from canceled snapshot reads.
+      if (!manifestKeys.has(key(url))) return null;
       if (closed || callerToken !== localStorage.getItem('accessToken')) {
         throw new DOMException('Overview load canceled', 'AbortError');
       }
@@ -158,6 +151,7 @@ function createLoad(endpoint: string): OverviewLoad {
           buffer = buffer.slice(newline + 1);
           if (line.paths) {
             for (const path of line.paths) {
+              manifestKeys.add(key(path));
               pending.set(
                 key(path),
                 new Promise((resolve) => waiters.set(key(path), resolve))

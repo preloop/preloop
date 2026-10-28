@@ -2,6 +2,9 @@ import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
 import {
   beginOverviewLoad,
+  beginOverviewShell,
+  closeOverviewShell,
+  readOverviewInput,
   invalidateOverviewLoads,
   type OverviewLoad,
 } from './overview-bootstrap';
@@ -92,8 +95,50 @@ describe('Overview response stream', () => {
     expect(await load.read('/api/v1/agents', 'tenant-a')).to.equal(null);
   });
 
+  it('keeps unrelated queries outside the snapshot cancellation scope', async () => {
+    send({ paths: ['/api/v1/agents?limit=100'] });
+    await load.read('/api/v1/not-in-manifest', 'tenant-a');
+    const unrelated = load.read('/api/v1/agents?limit=20', 'tenant-a');
+    invalidateOverviewLoads();
+    expect(await unrelated).to.equal(null);
+  });
+
+  it('routes shell inputs using the server manifest without a client path list', async () => {
+    load.close();
+    const previousUrl = window.location.href;
+    history.replaceState(null, '', '/console');
+    (window.fetch as sinon.SinonStub).resolves(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            stream = controller;
+          },
+        })
+      )
+    );
+    try {
+      beginOverviewShell();
+      send({ paths: ['/api/v1/new-server-owned-shell-input'] });
+      send({
+        url: '/api/v1/new-server-owned-shell-input',
+        status: 200,
+        body: '{"ready":true}',
+        headers: {},
+      });
+      const response = await readOverviewInput(
+        '/api/v1/new-server-owned-shell-input',
+        'tenant-a'
+      );
+      expect(await response!.json()).to.eql({ ready: true });
+    } finally {
+      closeOverviewShell();
+      history.replaceState(null, '', previousUrl);
+    }
+  });
+
   it('releases pending readers when the view disconnects', async () => {
     send({ paths: ['/api/v1/agents'] });
+    await load.read('/api/v1/not-in-manifest', 'tenant-a');
     const result = load.read('/api/v1/agents', 'tenant-a');
     load.close();
     expect(
