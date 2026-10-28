@@ -81,6 +81,27 @@ describe('SSO API safety', () => {
     expect(rejected).to.equal(true);
   });
 
+  it('requires a fresh proof on a rejected enforcement update without reflecting its payload', async () => {
+    localStorage.setItem('accessToken', 'synthetic-token');
+    sinon.stub(window, 'fetch').resolves(
+      new Response(JSON.stringify({ detail: 'synthetic-private-input' }), {
+        status: 422,
+      })
+    );
+    let error: unknown;
+    try {
+      await ssoApi.savePolicy('account-a', {
+        enforce: true,
+        break_glass_owner_ids: null,
+        session_max_age_seconds: null,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect((error as Error).message).to.contain('fresh test sign-in');
+    expect((error as Error).message).not.to.contain('synthetic-private-input');
+  });
+
   it('never reflects a validation body containing a secret into an error', async () => {
     localStorage.setItem('accessToken', 'synthetic-token');
     sinon

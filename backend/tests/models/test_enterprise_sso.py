@@ -504,3 +504,26 @@ def test_generic_writes_require_validated_helpers(crud, field: str) -> None:
         crud.create(None, obj_in=fields)
     with pytest.raises(TypeError, match="requires a named write helper"):
         crud.update(None, db_obj=None, obj_in=fields)
+
+
+def test_saml_public_certificate_create_update_clear_round_trip(db_session, test_user):
+    connection = crud_account_sso_connection.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        protocol="saml",
+        fields={"name": "Public SP certificate", "saml_sp_certificate": "public-v1"},
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate == "public-v1"
+    previous_revision = connection.updated_at
+    crud_account_sso_connection.apply_update(
+        db_session, connection=connection, fields={"saml_sp_certificate": "public-v2"}
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate == "public-v2"
+    assert connection.updated_at != previous_revision
+    crud_account_sso_connection.apply_update(
+        db_session, connection=connection, fields={"saml_sp_certificate": None}
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate is None
