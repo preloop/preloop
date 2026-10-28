@@ -212,12 +212,92 @@ describe('Device fleet', () => {
     );
     setup();
     const view = await mount();
-    for (const copy of view.shadowRoot.querySelectorAll('sl-copy-button')) {
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies.length).to.be.greaterThan(0);
+    for (const copy of copies) {
       await copy.updateComplete;
       expect(
         copy.querySelector('[slot="copy-icon"] .sr-only')?.textContent.trim()
       ).to.match(/^Copy /);
     }
+  });
+  it('normalizes an unknown tab to the device table', async () => {
+    history.replaceState({}, '', '?tab=obsolete');
+    setup();
+    const view = await mount();
+    expect(view.tab).to.equal('devices');
+    expect(view.shadowRoot.querySelectorAll('tbody tr')).to.have.length(1);
+    expect(api.callsTo('/api/v1/fleet/device-fleet')).to.have.length(1);
+  });
+  it('returns positive matches for both roster wire states', async () => {
+    setup();
+    const view = await mount();
+    view.page = {
+      ...view.page,
+      items: [
+        {
+          ...device,
+          device_key: 'fp:' + 'b'.repeat(64),
+          hostname: 'expected-missing',
+          roster_state: 'expected_missing',
+        },
+        {
+          ...device,
+          device_key: 'fp:' + 'c'.repeat(64),
+          hostname: 'expected-seen',
+          roster_state: 'expected',
+        },
+      ],
+      total: 2,
+    };
+    await view.updateComplete;
+    for (const [state, name] of [
+      ['expected_missing', 'expected-missing'],
+      ['expected', 'expected-seen'],
+    ]) {
+      const filter = view.shadowRoot.querySelector('#roster-filter');
+      filter.value = state;
+      filter.dispatchEvent(new Event('change'));
+      await view.updateComplete;
+      const rows = view.shadowRoot.querySelectorAll('tbody tr');
+      expect(rows).to.have.length(1);
+      expect(rows[0].textContent).to.include(name);
+    }
+  });
+  it('keeps copy controls named in copy, success and error states', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies).to.have.length(2);
+    for (const copy of copies) {
+      await copy.updateComplete;
+      for (const status of ['copy', 'success', 'error']) {
+        copy.copyIcon.hidden = status !== 'copy';
+        copy.successIcon.hidden = status !== 'success';
+        copy.errorIcon.hidden = status !== 'error';
+        await expect(copy).to.be.accessible();
+      }
+    }
+    expect(
+      view.shadowRoot.querySelector('sl-copy-button.onboard').successLabel
+    ).to.equal('Onboard command copied');
+  });
+  it('names copy controls for unassigned agents in the list', async () => {
+    setup();
+    const view = await mount();
+    view.page = { ...view.page, unassigned_agents: [device.agents[0]] };
+    await view.updateComplete;
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies).to.have.length(1);
+    for (const slot of ['copy-icon', 'success-icon', 'error-icon'])
+      expect(
+        copies[0].querySelector(`[slot="${slot}"] .sr-only`).textContent
+      ).to.include('Copy onboard command');
   });
   it('provides a native expandable limits disclosure', async () => {
     setup();
@@ -502,6 +582,11 @@ describe('Device fleet', () => {
     const view = await mount();
     const empty = view.shadowRoot.querySelector('[data-testid="fleet-empty"]');
     expect(empty.textContent).to.include('preloop runner fg');
+    const copy = empty.querySelector('sl-copy-button');
+    expect(copy).to.exist;
+    expect(
+      copy.querySelector('[slot="copy-icon"] .sr-only').textContent
+    ).to.include('Copy runner command');
   });
 
   it('gives first-device guidance, not a filter miss, when only unassigned agents exist', async () => {

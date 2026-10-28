@@ -595,6 +595,8 @@ export class DeviceFleetView extends LitElement {
         Router.go('/console');
         return;
       }
+      if (!['devices', 'settings', 'roster'].includes(this.tab))
+        this.tab = 'devices';
       this.active = true;
       this.manage = access.manage;
       this.instanceAdmin = access.instanceAdmin === true;
@@ -1047,17 +1049,25 @@ export class DeviceFleetView extends LitElement {
       ${this.renderUnassigned(page.unassigned_agents)}`;
   }
 
-  private copyButton(value: string, label: string, className = '') {
-    // copy-label names the tooltip; slotted text names the native button.
+  private copyButton(
+    value: string,
+    label: string,
+    className = '',
+    successLabel = 'Copied'
+  ) {
+    // Shoelace hides the active icon during feedback. Every slot needs a name.
+    const icon = (slot: string, glyph: string) =>
+      html`<span slot=${slot}
+        ><span aria-hidden="true">${glyph}</span
+        ><span class="sr-only">${label}</span></span
+      >`;
     return html`<sl-copy-button
       class=${className}
       value=${value}
       copy-label=${label}
+      success-label=${successLabel}
     >
-      <span slot="copy-icon"
-        ><sl-icon name="copy" aria-hidden="true"></sl-icon
-        ><span class="sr-only">${label}</span></span
-      >
+      ${icon('copy-icon', '⧉')}${icon('success-icon', '✓')}${icon('error-icon', '×')}
     </sl-copy-button>`;
   }
 
@@ -1251,7 +1261,7 @@ export class DeviceFleetView extends LitElement {
               <sl-tooltip
                 content="Run this on the machine to put the agent under Preloop"
               >
-                ${this.copyButton(onboardCommand(agent), 'Copy onboard command', 'onboard')}
+                ${this.copyButton(onboardCommand(agent), 'Copy onboard command', 'onboard', 'Onboard command copied')}
               </sl-tooltip>
               <code>${onboardCommand(agent)}</code>
             </span>`
