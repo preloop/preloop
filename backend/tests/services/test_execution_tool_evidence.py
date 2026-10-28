@@ -126,3 +126,25 @@ def test_sanitization_precedes_canonicalization_of_nested_argument_json() -> Non
     )
     assert json.loads(doc["observations"][0]["value"])["text"] == "x"
     assert doc["observations"][0]["redacted"]
+
+
+def test_latest_results_are_retained_before_trailing_prose() -> None:
+    history = [
+        {
+            "type": "function_call",
+            "call_id": "current",
+            "name": "read",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "current",
+            "output": "current result",
+        },
+        {"role": "user", "content": "Continue using that result"},
+        {"type": "reasoning", "summary": []},
+    ]
+    document = capture_tools({"input": history}, {}, capture_content=True)
+    assert document["capture_complete"]
+    assert [r["call_id"] for r in document["observations"]] == ["current", "current"]
+    assert document["observations"][-1]["value"] == "current result"
