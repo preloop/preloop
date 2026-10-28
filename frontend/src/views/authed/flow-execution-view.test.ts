@@ -2914,4 +2914,28 @@ describe('FlowExecutionView', () => {
     ).to.equal(true);
     expect(state.logsSkip).to.equal(4);
   });
+  for (const flush of ['flushLogBuffer', 'stopBufferFlush'] as const) {
+    it(`deduplicates late persisted lines during ${flush}`, async () => {
+      const element = await load('exec-running');
+      const state = element as any;
+      const retained = {
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:01Z',
+        payload: { line: 'retained' },
+      };
+      const fresh = {
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'fresh' },
+      };
+      state.logs = [retained];
+      state.logBuffer = [{ ...retained, seq: 9 }, fresh, fresh];
+      element[flush]();
+      expect(state.logs.map((log: any) => log.payload.line)).to.deep.equal([
+        'retained',
+        'fresh',
+      ]);
+      expect(state.logBuffer).to.have.length(0);
+    });
+  }
 });
