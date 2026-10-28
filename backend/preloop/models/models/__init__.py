@@ -13,6 +13,7 @@ from .enterprise_sso import (
     AccountVerifiedDomain,
     ScimToken,
     SsoGroupMapping,
+    SsoProvisioningGrant,
     SsoReplayGuard,
 )
 from .gateway_identity_provider import (
@@ -289,6 +290,7 @@ __all__ = [
     "AccountVerifiedDomain",
     "ScimToken",
     "SsoGroupMapping",
+    "SsoProvisioningGrant",
     "SsoReplayGuard",
     "GatewayIdentityProvider",
     "GatewayIdentityProviderAudience",

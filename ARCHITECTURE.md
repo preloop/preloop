@@ -1569,3 +1569,15 @@ The caller owns seat admission and authorization; these core helpers assign no
 roles and create no accounts. Connection updates advance their revision even
 when a write-only secret retains the same secret-reference id. Protocol handling,
 role policy and token issuance remain in the enterprise SSO plugin.
+
+### SSO grant provenance
+
+`crud.sso_group_grants` reconciles complete OIDC, SAML and SCIM snapshots without
+committing. Each connection/source claim references a physical role or team
+assignment. Existing assignments default to `manually_granted=true`; only rows
+created by the mapper are eligible for automatic removal after their final claim
+disappears. Manual replacement and explicit team edits remain manual. Connection
+deletion revokes its claims before cascading configuration, retaining assignments
+claimed by other sources. Account hierarchy `access_grant_id` stays independent.
+The CRUD boundary validates tenant references and rejects owner authority;
+protocol adapters and role selection remain in the enterprise plugin.

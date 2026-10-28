@@ -39,13 +39,14 @@ TABLES = (
     "account_verified_domain",
     "account_sso_policy",
     "sso_group_mapping",
+    "sso_provisioning_grant",
     "scim_token",
     "sso_replay_guard",
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("enterprise_sso_mig", MIGRATION_PATH)
+def _load_migration(path=MIGRATION_PATH):
+    spec = importlib.util.spec_from_file_location("enterprise_sso_mig", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -97,12 +98,17 @@ def _seed(db, account_id):
 
 def _round_trip(db):
     migration = _load_migration()
+    grants_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261114_sso_group_grants.py")
+    )
     connection = db.connection()
     with Operations.context(MigrationContext.configure(connection)):
+        grants_migration.downgrade()
         migration.downgrade()
         names = set(inspect(connection).get_table_names())
         assert not names & set(TABLES)
         migration.upgrade()
+        grants_migration.upgrade()
     names = set(inspect(connection).get_table_names())
     assert set(TABLES) <= names
 

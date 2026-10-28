@@ -145,6 +145,25 @@ def _check_secret_refs(db: Session, account_id: Any, fields: dict[str, Any]) -> 
 class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
     """Account-scoped connection reads and writes."""
 
+    def delete(  # type: ignore[override]
+        self, db: Session, *, id: Any, account_id: Any = None, commit: bool = True
+    ) -> Optional[AccountSsoConnection]:
+        """Revoke this connection's managed access before deleting it."""
+        from .sso_group_grants import revoke_connection_grants
+
+        if account_id is None:
+            raise TypeError("CRUDAccountSsoConnection.delete requires account_id")
+        row = self.get_in_account(db, connection_id=id, account_id=account_id)
+        if row is not None:
+            revoke_connection_grants(
+                db, connection_id=row.id, account_id=row.account_id
+            )
+            db.delete(row)
+            db.flush()
+            if commit:
+                db.commit()
+        return row
+
     def list_for_account(
         self, db: Session, *, account_id: Any
     ) -> list[AccountSsoConnection]:
@@ -422,6 +441,10 @@ class CRUDSsoGroupMapping(_ThroughConnection, _AccountScopedCRUD[SsoGroupMapping
             team = db.get(Team, team_id)
             if team is None or str(team.account_id) != str(account_id):
                 raise CrossAccountReferenceError("team_id")
+        if team_id is not None:
+            from .sso_group_grants import validate_team
+
+            validate_team(db, account_id=connection.account_id, team_id=team.id)
         row = SsoGroupMapping(
             connection_id=connection_id, idp_group=idp_group, team_id=team_id, role=role
         )

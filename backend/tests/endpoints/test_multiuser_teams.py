@@ -728,3 +728,22 @@ def test_update_team_member_different_account(
 
     assert response.status_code == 403
     assert "different account" in response.json()["detail"]
+
+
+def test_manual_team_edit_returns_404_when_reconciliation_removed_member(
+    client: TestClient,
+    test_user: User,
+    db_session: Session,
+    monkeypatch,
+) -> None:
+    """A removal between endpoint lookup and locked edit remains a clean 404."""
+    team = crud_team.create(
+        db_session, obj_in={"name": "Removal race", "account_id": test_user.account_id}
+    )
+    crud_team.add_member(db_session, team_id=team.id, user_id=test_user.id)
+    monkeypatch.setattr(crud_team, "update_member", lambda *args, **kwargs: None)
+    response = client.patch(
+        f"/api/v1/teams/{team.id}/members/{test_user.id}", json={"role": "lead"}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User is not a member of this team"

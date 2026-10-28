@@ -85,7 +85,8 @@ class AccountSsoConnection(Base):
             "protocol IN ('oidc', 'saml')", name="ck_account_sso_connection_protocol"
         ),
         CheckConstraint(
-            "default_role <> 'owner'", name="ck_account_sso_connection_not_owner"
+            "lower(btrim(default_role)) <> 'owner'",
+            name="ck_account_sso_connection_not_owner",
         ),
     )
 
@@ -231,7 +232,8 @@ class SsoGroupMapping(Base):
             name="ck_sso_group_mapping_target",
         ),
         CheckConstraint(
-            "role IS NULL OR role <> 'owner'", name="ck_sso_group_mapping_not_owner"
+            "role IS NULL OR lower(btrim(role)) <> 'owner'",
+            name="ck_sso_group_mapping_not_owner",
         ),
     )
 
@@ -303,3 +305,53 @@ class SsoReplayGuard(Base):
     )
     guard_id: Mapped[str] = mapped_column(String(512), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class SsoProvisioningGrant(Base):
+    """A connection/source claim on a physical role or team assignment.
+
+    No IdP group names or assertion contents are retained. Physical-row foreign
+    keys prevent an old claim from removing a manually replaced assignment.
+    """
+
+    __tablename__ = "sso_provisioning_grant"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_role_id IS NOT NULL) <> (team_membership_id IS NOT NULL)",
+            name="ck_sso_provisioning_grant_target",
+        ),
+        CheckConstraint(
+            "source IN ('oidc', 'saml', 'scim')", name="ck_sso_grant_source"
+        ),
+        UniqueConstraint(
+            "connection_id", "source", "user_role_id", name="uq_sso_grant_role"
+        ),
+        UniqueConstraint(
+            "connection_id", "source", "team_membership_id", name="uq_sso_grant_team"
+        ),
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account_sso_connection.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_role_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user_role.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    team_membership_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("team_membership.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
