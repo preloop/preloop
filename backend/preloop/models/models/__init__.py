@@ -20,6 +20,7 @@ from .gateway_identity_provider import (
     GatewayIdentityProviderAudience,
 )
 from .ci_principal import CiPrincipal
+from .execution_result_grant import ExecutionResultGrant
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
@@ -301,6 +302,7 @@ __all__ = [
     "Flow",
     "FlowArtifact",
     "FlowExecution",
+    "ExecutionResultGrant",
     "FlowRunner",
     "FlowRunnerAssignment",
     "RUNNER_SESSION_LIVE_STATES",

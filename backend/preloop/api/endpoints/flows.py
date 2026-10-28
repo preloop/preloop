@@ -46,6 +46,7 @@ from preloop.schemas.ci_execution import (
     CiStopRequest,
 )
 from preloop.schemas.ci_principal import CiAction
+from preloop.schemas.ci_result_export import CiResultExportCreate
 from preloop.schemas.flow_continuation import (
     ContinuationAdoptRequest,
     ContinuationAdoptResponse,
@@ -1566,6 +1567,81 @@ def adopt_execution_continuation(
         return adopt_continuation(account_id, execution_id, request)
     except ContinuationAdoptionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post("/flows/executions/{execution_id}/result-export", status_code=201)
+@require_permission("view_flows")
+async def grant_execution_result_export(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    payload: CiResultExportCreate,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Current human owner consents to one reviewed, expiring result export."""
+    from preloop.services.ci_result_export import grant_result_export
+
+    try:
+        return await grant_result_export(
+            db, actor=current_user, execution_id=execution_id, payload=payload
+        )
+    except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
+        _result_export_error(exc)
+
+
+@router.delete(
+    "/flows/executions/{execution_id}/result-export/{grant_id}", status_code=204
+)
+@require_permission("view_flows")
+def revoke_execution_result_export(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    grant_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Revoke explicit consent without changing historical execution ownership."""
+    from preloop.models.crud.ci_result_export import revoke_consent
+
+    try:
+        revoke_consent(
+            db, actor=current_user, execution_id=execution_id, grant_id=grant_id
+        )
+    except (LookupError, PermissionError, ValueError) as exc:
+        _result_export_error(exc)
+    return Response(status_code=204)
+
+
+@router.get("/flows/executions/{execution_id}/result-export/{grant_id}")
+@require_permission("view_flows", ci_action=CiAction.READ_RESULT_EXPORT)
+async def get_execution_result_export(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    grant_id: uuid.UUID,
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+) -> Dict[str, Any]:
+    """Export only under the exact explicit grant, current identity and revisions."""
+    from preloop.services.ci_result_export import export_result
+
+    if not isinstance(current_user, CiAuthorizationContext):
+        raise HTTPException(403, "Result export requires the granted CI principal")
+    try:
+        return await export_result(
+            db, context=current_user, execution_id=execution_id, grant_id=grant_id
+        )
+    except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
+        _result_export_error(exc)
+
+
+def _result_export_error(exc: Exception) -> NoReturn:
+    """Keep provider details and source contents out of denial responses."""
+    status = (
+        503
+        if isinstance(exc, CiReviewUnavailableError)
+        else (404 if isinstance(exc, LookupError) else 403)
+    )
+    raise HTTPException(status, "Result export unavailable") from None
 
 
 @router.get("/flows/executions/{execution_id}/tool-evidence")
