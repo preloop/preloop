@@ -44,9 +44,12 @@ def _team_member_responses(
     profiles, _ = identity_directory.projections_for_memberships(
         db, membership_ids=[user.id for user in members]
     )
+    memberships = crud_team.get_memberships_for_users(
+        db, team_id=team_id, user_ids=[user.id for user in members]
+    )
     responses: list[TeamMemberResponse] = []
     for user in members:
-        membership = crud_team.get_membership(db, team_id=team_id, user_id=user.id)
+        membership = memberships.get(user.id)
         if membership is None:
             continue
         profile = profiles.get(user.id)
@@ -128,6 +131,13 @@ def list_teams(
     # Get roles for each team
     from preloop.models.crud import crud_team_role
 
+    roles_by_team = (
+        crud_team_role.get_roles_for_teams(
+            db, account_id=current_user.account_id, team_ids=[team.id for team in teams]
+        )
+        if multiuser.access_control() is not None
+        else {}
+    )
     team_responses = []
     for team in teams:
         # Build team dict manually to avoid validation issues with roles relationship
@@ -141,11 +151,7 @@ def list_teams(
         }
 
         # Get team's roles
-        team_roles = (
-            crud_team_role.get_team_roles(db=db, team_id=team.id)
-            if multiuser.access_control() is not None
-            else []
-        )
+        team_roles = roles_by_team.get(team.id, [])
         team_dict["roles"] = [
             {
                 "id": str(role.id),

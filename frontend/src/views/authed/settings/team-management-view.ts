@@ -299,7 +299,7 @@ export class TeamManagementView extends LitElement {
     await Promise.all([
       this.fetchTeams(),
       this.fetchUsers(),
-      this.fetchRoles(),
+      this.advancedRolesEnabled ? this.fetchRoles() : Promise.resolve(),
     ]);
   }
 

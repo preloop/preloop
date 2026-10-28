@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud.person import IdentityConflictError, crud_person
 from preloop.models.crud.user import crud_user
+from preloop.models.models.person import normalize_email
 
 
 def lock_subject(db: Session, *, provider: str, subject: str) -> None:
@@ -42,6 +43,7 @@ def resolve_identity(
     Email-only matches outside this account never establish identity. An
     ambiguous address fails closed, without touching another account.
     """
+    normalized_email = normalize_email(email)
     person = crud_person.get_by_provider(
         db, source="oidc", provider=provider, subject=subject
     )
@@ -55,7 +57,8 @@ def resolve_identity(
                 .join(models.Person, models.Person.id == models.User.person_id)
                 .where(
                     models.User.account_id == account_id,
-                    models.Person.email_normalized == email.lower(),
+                    models.Person.email_normalized == normalized_email,
+                    models.Person.email_verified_at.is_not(None),
                 )
             )
         )
@@ -78,7 +81,17 @@ def resolve_identity(
     )
     if person is None or person.identity_status != "active":
         raise IdentityConflictError("identity_inactive")
-    if not linked_subject and person.email_normalized != email.lower():
+    if linked_subject:
+        # Repair locks this same person before retiring provider identities.
+        # Never restore a subject link that was removed while login waited.
+        current_owner = crud_person.get_by_provider(
+            db, source="oidc", provider=provider, subject=subject
+        )
+        if current_owner is None or current_owner.id != person.id:
+            raise IdentityConflictError("identity_enrollment_required")
+    elif (
+        person.email_normalized != normalized_email or person.email_verified_at is None
+    ):
         raise IdentityConflictError("identity_enrollment_required")
     memberships = list(
         db.scalars(

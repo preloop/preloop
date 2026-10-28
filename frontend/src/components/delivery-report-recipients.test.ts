@@ -1,6 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { invalidateApiCaches } from '../api';
+import { fetchWithAuth, invalidateApiCaches } from '../api';
 import './delivery-report-policy-settings';
 import type { DeliveryReportPolicySettings } from './delivery-report-policy-settings';
 
@@ -67,6 +67,9 @@ function json(body: unknown, status = 200) {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+function token(subject = 'u1', version = 1): string {
+  return `${btoa('{}')}.${btoa(JSON.stringify({ sub: subject, exp: version }))}.synthetic`;
+}
 function stubApi(
   options: {
     enabled?: boolean;
@@ -76,17 +79,32 @@ function stubApi(
     memberUpdates?: boolean;
     policyOverrides?: Record<string, unknown>;
     readDeferred?: Promise<Response>;
+    refreshOnPut?: boolean;
+    userId?: string;
+    featureStatus?: number;
   } = {}
 ) {
   const puts: { path: string; body: any }[] = [];
   const data = structuredClone(RECIPIENTS);
+  let refreshed = false;
+  let deferredReadStarted = false;
   const stub = sinon
     .stub(window, 'fetch')
     .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(String(input), location.origin).pathname;
+      if (path === '/api/v1/auth/refresh') {
+        refreshed = true;
+        return json({
+          access_token: token('u1', 2),
+          refresh_token: 'next-refresh',
+        });
+      }
+      if (path === '/api/v1/refresh-probe')
+        return json({}, refreshed ? 200 : 401);
       if (path === '/api/v1/auth/users/me')
         return json({
-          id: 'u1',
+          id: options.userId ?? 'u1',
+          account_id: `account-${options.userId ?? 'u1'}`,
           permissions: options.permissions ?? [
             'manage_budgets',
             'view_policies',
@@ -94,14 +112,18 @@ function stubApi(
           ],
         });
       if (path === '/api/v1/features')
-        return json({
-          features: {
-            delivery_report_recipients: options.enabled ?? true,
-            delivery_report_member_updates: options.memberUpdates ?? true,
+        return json(
+          {
+            features: {
+              delivery_report_recipients: options.enabled ?? true,
+              delivery_report_member_updates: options.memberUpdates ?? true,
+            },
           },
-        });
+          options.featureStatus ?? 200
+        );
       if (path === '/api/v1/delivery-report/recipients') {
         if (init?.method === 'PUT') {
+          if (options.refreshOnPut && !refreshed) return json({}, 401);
           const body = JSON.parse(String(init.body));
           puts.push({ path, body });
           if (options.putStatus)
@@ -124,8 +146,10 @@ function stubApi(
             }
             member.opted_out = data.opted_out_user_ids.includes(member.user_id);
           }
-        } else if (options.readDeferred) return options.readDeferred;
-        else if (options.readStatus)
+        } else if (options.readDeferred && !deferredReadStarted) {
+          deferredReadStarted = true;
+          return options.readDeferred;
+        } else if (options.readStatus)
           return json(
             { detail: 'Cannot read recipients.' },
             options.readStatus
@@ -153,7 +177,7 @@ function stubApi(
         });
       return json({}, 404);
     });
-  return { puts, stub };
+  return { puts, stub, data };
 }
 async function mount(projectId = '') {
   const el = await fixture<DeliveryReportPolicySettings>(
@@ -187,6 +211,7 @@ describe('enterprise Delivery Report recipients', () => {
   beforeEach(() => localStorage.setItem('accessToken', 'synthetic-test-token'));
   afterEach(() => {
     localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
     sinon.restore();
     invalidateApiCaches();
   });
@@ -315,9 +340,163 @@ describe('enterprise Delivery Report recipients', () => {
     stubApi();
     const el = await mount();
     await roster(el);
+    localStorage.removeItem('accessToken');
     invalidateApiCaches();
     await el.updateComplete;
     expect(el.shadowRoot!.textContent).not.to.contain('jane@example.com');
+  });
+  it('preserves budget and recipient edits across a real silent token refresh', async () => {
+    localStorage.setItem('accessToken', token());
+    localStorage.setItem('refreshToken', 'synthetic-refresh');
+    stubApi();
+    const el = await mount();
+    const root = await roster(el);
+    change(root, '[data-role-user="u2"]', 'viewer');
+    change(root, '[data-field="enabled"]', false);
+    await fetchWithAuth('/api/v1/refresh-probe');
+    await el.updateComplete;
+    expect(root.querySelector('section')).to.exist;
+    expect((root.querySelector('[data-role-user="u2"]') as any).value).to.equal(
+      'viewer'
+    );
+    expect(
+      (root.querySelector('[data-field="enabled"]') as any).checked
+    ).to.equal(false);
+    expect(el.overrides()).to.deep.equal({ enabled: false });
+  });
+  it('adopts a recipient save that refreshes its token in flight', async () => {
+    localStorage.setItem('accessToken', token());
+    localStorage.setItem('refreshToken', 'synthetic-refresh');
+    const { puts } = stubApi({ refreshOnPut: true });
+    const el = await mount();
+    const root = await roster(el);
+    change(root, '[data-role-user="u2"]', 'viewer');
+    await save(el);
+    await waitUntil(
+      () =>
+        puts.length === 1 &&
+        !!root.querySelector('[data-action="save-recipients"]') &&
+        !(root.querySelector('[data-action="save-recipients"]') as any).loading
+    );
+    expect((root.querySelector('[data-role-user="u2"]') as any).value).to.equal(
+      'viewer'
+    );
+    expect(root.querySelector('section')).to.exist;
+  });
+  it('clears the previous account immediately and reloads a changed membership', async () => {
+    localStorage.setItem('accessToken', token());
+    const options = { userId: 'u1' };
+    const { data } = stubApi(options);
+    const el = await mount();
+    await roster(el);
+    options.userId = 'u3';
+    data.members[1].email = 'new-account@example.com';
+    localStorage.setItem('accessToken', token('u3'));
+    invalidateApiCaches();
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).not.to.contain('jane@example.com');
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('new-account@example.com')
+    );
+  });
+  it('keeps draft edits if capability revalidation fails after silent refresh', async () => {
+    localStorage.setItem('accessToken', token());
+    localStorage.setItem('refreshToken', 'synthetic-refresh');
+    const options = { featureStatus: 200 };
+    stubApi(options);
+    const el = await mount();
+    const root = await roster(el);
+    change(root, '[data-role-user="u2"]', 'viewer');
+    options.featureStatus = 503;
+    await fetchWithAuth('/api/v1/refresh-probe');
+    await waitUntil(() =>
+      root.textContent!.includes('Could not refresh access.')
+    );
+    expect((root.querySelector('[data-role-user="u2"]') as any).value).to.equal(
+      'viewer'
+    );
+  });
+  it('ignores an old roster response after another account has loaded', async () => {
+    localStorage.setItem('accessToken', token());
+    let finish!: (response: Response) => void;
+    const readDeferred = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    const options = { userId: 'u1', readDeferred };
+    const { data, stub } = stubApi(options);
+    const el = await mount();
+    await waitUntil(() =>
+      stub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('/delivery-report/recipients')
+        )
+    );
+    options.userId = 'u3';
+    data.members[1].email = 'new-account@example.com';
+    localStorage.setItem('accessToken', token('u3'));
+    invalidateApiCaches();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('new-account@example.com')
+    );
+    finish(json(RECIPIENTS));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).to.contain('new-account@example.com');
+    expect(el.shadowRoot!.textContent).not.to.contain('jane@example.com');
+  });
+  it('shows loading instead of retry while the initial roster request is pending', async () => {
+    let finish!: (response: Response) => void;
+    const readDeferred = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    stubApi({ readDeferred });
+    const el = await mount();
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-action="retry-recipients"]')
+    ).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector(
+        '[data-section="recipients"] [role="status"]'
+      )
+    ).to.exist;
+    finish(json(RECIPIENTS));
+    await roster(el);
+    expect(
+      el.shadowRoot!.querySelector(
+        '[data-section="recipients"] [role="status"]'
+      )
+    ).to.equal(null);
+  });
+  it('saves member updates through policy when only that capability is enabled', async () => {
+    const { puts } = stubApi({ enabled: false, memberUpdates: true });
+    const el = await mount();
+    const root = el.shadowRoot!;
+    expect(root.querySelector('[data-field="per_member_updates"]')).to.exist;
+    change(root, '[data-field="per_member_updates"]', true);
+    await el.updateComplete;
+    (root.querySelector('[data-action="save"]') as HTMLElement).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0]).to.deep.equal({
+      path: '/api/v1/delivery-report/policy',
+      body: { overrides: { per_member_updates: true } },
+    });
+  });
+  it('preserves concurrent member-update changes when the standalone switch is untouched', async () => {
+    const policyOverrides: Record<string, unknown> = {};
+    const { puts } = stubApi({
+      enabled: false,
+      memberUpdates: true,
+      policyOverrides,
+    });
+    const el = await mount();
+    policyOverrides.per_member_updates = true;
+    (
+      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
+    ).click();
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0].body.overrides).to.deep.equal({ per_member_updates: true });
   });
   it('keeps the member-update control hidden when that capability is unavailable', async () => {
     stubApi({ memberUpdates: false });
@@ -377,6 +556,7 @@ describe('enterprise Delivery Report recipients', () => {
         .getCalls()
         .some((c) => String(c.args[0]).includes('/delivery-report/recipients'))
     );
+    localStorage.removeItem('accessToken');
     invalidateApiCaches();
     finish(json(RECIPIENTS));
     await new Promise((resolve) => setTimeout(resolve, 0));

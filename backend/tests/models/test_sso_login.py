@@ -118,9 +118,7 @@ def test_proof_scope_revision_and_expiration(db_session, test_user):
     )
 
 
-def test_empty_config_patch_invalidates_revision_for_secret_rotation(
-    db_session, test_user
-):
+def test_empty_config_patch_advances_connection_revision(db_session, test_user):
     connection = crud_account_sso_connection.create_for_account(
         db_session,
         account_id=test_user.account_id,
@@ -176,5 +174,232 @@ def test_email_link_rechecks_canonical_address_after_lock(
             provider=PROVIDER,
             subject="subject",
             email="test@example.com",
+            email_verified=True,
+        )
+
+
+def test_unverified_member_cannot_preclaim_verified_idp_email(db_session, test_user):
+    crud_person.update_profile(
+        db_session,
+        membership_id=test_user.id,
+        changes={"email": "victim@example.test"},
+        commit=False,
+    )
+    with pytest.raises(IdentityConflictError, match="identity_enrollment_required"):
+        sso_login.resolve_identity(
+            db_session,
+            account_id=test_user.account_id,
+            provider=PROVIDER,
+            subject="victim-subject",
+            email="victim@example.test",
+            email_verified=True,
+        )
+    assert (
+        crud_person.get_by_provider(
+            db_session, source="oidc", provider=PROVIDER, subject="victim-subject"
+        )
+        is None
+    )
+
+
+def test_canonical_normalization_accepts_whitespace_and_case(db_session, test_user):
+    person, member = sso_login.resolve_identity(
+        db_session,
+        account_id=test_user.account_id,
+        provider=PROVIDER,
+        subject="subject",
+        email=" \tTEST@EXAMPLE.COM\r\n",
+        email_verified=True,
+    )
+    assert person.id == test_user.person_id and member.id == test_user.id
+
+
+def test_repaired_identity_cannot_restore_retired_provider_link(db_engine, monkeypatch):
+    """An actual second transaction repairs after lookup, before login's lock."""
+    from uuid import uuid4
+    from sqlalchemy import delete
+    from sqlalchemy.orm import Session
+    from preloop.models import models
+
+    suffix = uuid4().hex
+    with Session(db_engine) as setup:
+        account = crud_account.create(
+            setup,
+            obj_in={
+                "organization_name": "Repair ordering " + suffix,
+                "is_active": True,
+            },
+        )
+        user = crud_user.create(
+            setup,
+            obj_in={
+                "account_id": account.id,
+                "username": "repair-" + suffix,
+                "email": suffix + "@example.test",
+                "email_verified": True,
+                "is_active": True,
+            },
+        )
+        crud_person.link_provider(
+            setup,
+            person_id=user.person_id,
+            source="oidc",
+            provider=PROVIDER,
+            subject=suffix,
+        )
+        account_id, person_id, email = account.id, user.person_id, user.email
+        person = crud_person.get(setup, id=person_id)
+        person.identity_status = "quarantined"
+        setup.commit()
+    original = crud_person.get_by_provider
+    try:
+        with Session(db_engine) as login:
+
+            def repair_between_lookup_and_lock(db, **kwargs):
+                candidate = original(db, **kwargs)
+                if db is login and candidate is not None:
+                    with Session(db_engine) as repair:
+                        crud_person.repair_conflict(
+                            repair,
+                            person_id=person_id,
+                            username="repaired-" + suffix,
+                            email="repaired-" + suffix + "@example.test",
+                            hashed_password="synthetic-retired-password",
+                            ownership_reference="synthetic-admin-review",
+                            discard_credentials=True,
+                        )
+                        assert (
+                            original(
+                                repair, source="oidc", provider=PROVIDER, subject=suffix
+                            )
+                            is None
+                        )
+                return candidate
+
+            monkeypatch.setattr(
+                crud_person, "get_by_provider", repair_between_lookup_and_lock
+            )
+            sso_login.lock_subject(login, provider=PROVIDER, subject=suffix)
+            with pytest.raises(
+                IdentityConflictError, match="identity_enrollment_required"
+            ):
+                sso_login.resolve_identity(
+                    login,
+                    account_id=account_id,
+                    provider=PROVIDER,
+                    subject=suffix,
+                    email=email,
+                    email_verified=True,
+                )
+            login.rollback()
+            assert (
+                original(login, source="oidc", provider=PROVIDER, subject=suffix)
+                is None
+            )
+    finally:
+        with Session(db_engine) as cleanup:
+            cleanup.execute(
+                delete(models.Account).where(models.Account.id == account_id)
+            )
+            cleanup.execute(delete(models.Person).where(models.Person.id == person_id))
+            cleanup.commit()
+
+
+def test_secret_revision_scope_rotation_status_and_proof(db_session, test_user):
+    from uuid import uuid4
+    from preloop.models.crud.secret_reference import crud_secret_reference
+
+    reference = crud_secret_reference.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "name": "Synthetic OIDC credential",
+            "backend_type": "local_encrypted",
+            "secret_kind": "sso_oidc_client_secret",
+            "encrypted_value": "synthetic-unresolved-ciphertext",
+            "status": "active",
+        },
+    )
+    args = dict(account_id=test_user.account_id, secret_id=reference.id)
+    original = sso_login.secret_revision(db_session, **args)
+    assert original and original.endswith(":active")
+    assert (
+        sso_login.secret_revision(db_session, **{**args, "account_id": uuid4()}) is None
+    )
+    assert (
+        sso_login.secret_revision(db_session, **{**args, "secret_id": uuid4()}) is None
+    )
+    assert (
+        sso_login.secret_revision(
+            db_session, account_id=test_user.account_id, secret_id=None
+        )
+        is None
+    )
+    connection = crud_account_sso_connection.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        protocol="oidc",
+        fields={"name": "Secret proof"},
+    )
+    now = utc_now()
+    proof = dict(
+        connection_id=connection.id,
+        account_id=test_user.account_id,
+        admin_id=test_user.id,
+        now=now,
+    )
+    sso_login.claim_test_proof(
+        db_session,
+        connection_id=connection.id,
+        admin_id=test_user.id,
+        revision=original,
+        flow_id="proof",
+        expires_at=now + timedelta(hours=24),
+    )
+    assert sso_login.has_test_proof(db_session, **proof, revision=original)
+    crud_secret_reference.update(
+        db_session,
+        db_obj=reference,
+        obj_in={"updated_at": reference.updated_at + timedelta(seconds=1)},
+    )
+    rotated = sso_login.secret_revision(db_session, **args)
+    assert rotated != original
+    assert not sso_login.has_test_proof(db_session, **proof, revision=rotated)
+    # Force the unchanged timestamp into the UPDATE rather than allowing the
+    # model's automatic onupdate timestamp to obscure the status-only case.
+    from sqlalchemy.orm.attributes import flag_modified
+
+    fixed_timestamp = reference.updated_at
+    flag_modified(reference, "updated_at")
+    crud_secret_reference.update(
+        db_session,
+        db_obj=reference,
+        obj_in={"updated_at": fixed_timestamp, "status": "revoked"},
+    )
+    assert reference.updated_at == fixed_timestamp
+    revoked = sso_login.secret_revision(db_session, **args)
+    assert revoked != rotated and revoked.endswith(":revoked")
+    assert not sso_login.has_test_proof(db_session, **proof, revision=revoked)
+
+
+def test_email_verification_must_survive_person_lock(
+    db_session, test_user, monkeypatch
+):
+    original = crud_person.get
+
+    def unverify_after_lookup(db, *, id):
+        person = original(db, id=id)
+        person.email_verified_at = None
+        db.flush()
+        return person
+
+    monkeypatch.setattr(crud_person, "get", unverify_after_lookup)
+    with pytest.raises(IdentityConflictError, match="identity_enrollment_required"):
+        sso_login.resolve_identity(
+            db_session,
+            account_id=test_user.account_id,
+            provider=PROVIDER,
+            subject="subject",
+            email=test_user.email,
             email_verified=True,
         )
