@@ -4060,7 +4060,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         if (execution_context.get("git_clone_config") or {}).get(
             "publication_mode"
-        ) == "isolated":
+        ) in {"isolated", "read_only"}:
             if execution_context.get(
                 self.GIT_API_TOKENS_CONTEXT_KEY
             ) or execution_context.get("_publication_refresh_env"):
@@ -4108,6 +4108,17 @@ class ContainerAgentExecutor(AgentExecutor):
         evidence = evidence_shell(execution_context)
         if evidence:
             commands.append(evidence.rstrip())
+
+        # Review execution requires a source checkout even if context is altered.
+        review_checkout = (
+            execution_context.get("read_only_review") is True
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        )
+        if review_checkout and not (
+            execution_context.get("git_clone_config") or {}
+        ).get("repositories"):
+            raise ValueError("Read-only review requires its admitted repository")
 
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")
@@ -4673,6 +4684,25 @@ fi
         records a tracker it could not get a key for, and falling through gives
         the remaining sources a chance instead of running with no credential.
         """
+
+        if (
+            execution_context.get("read_only_review")
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        ):
+            repo_url = repo_config.get("repository_url")
+            credential = (execution_context.get("git_credentials_map") or {}).get(
+                repo_url
+            ) or {}
+            if (
+                not execution_context.get("read_only_review")
+                or credential.get("permission") != "read"
+                or not credential.get("token")
+            ):
+                raise ValueError(
+                    "Read-only review requires its exact repository-scoped lease"
+                )
+            return credential["token"], "github", "x-access-token"
 
         if (execution_context.get("git_clone_config") or {}).get(
             "publication_mode"
@@ -5431,6 +5461,13 @@ true
                 execution_context, git_config
             )
             if not repositories:
+                if (
+                    execution_context.get("read_only_review") is True
+                    or git_config.get("publication_mode") == "read_only"
+                ):
+                    raise ValueError(
+                        "Read-only review requires its admitted repository"
+                    )
                 return ""
 
             (
@@ -5496,6 +5533,14 @@ true
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
+            if (
+                execution_context.get("read_only_review") is True
+                or (execution_context.get("git_clone_config") or {}).get(
+                    "publication_mode"
+                )
+                == "read_only"
+            ):
+                raise
             return ""
 
     def _resolve_bitbucket_api_email(
@@ -6019,6 +6064,12 @@ true
         Returns:
             Shell command string for post-execution git operations
         """
+        if (
+            execution_context.get("read_only_review")
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        ):
+            return ""
         # Invalid configured gates must fail before the legacy broad exception
         # handler, which otherwise turns a policy failure into no post commands.
         verification_policy = resolve_verification_policy(

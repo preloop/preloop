@@ -4052,6 +4052,10 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
                     f"allowed_tools={allowed_flow_tools}"
                 )
 
+        if api_key and (api_key.context_data or {}).get("read_only_review") is True:
+            # Server-side ceiling, including direct calls and legacy aliases.
+            allowed_flow_tools = []
+
         user_context = UserContext(
             user_id=str(user.id),
             account_id=str(user.account_id),
@@ -4068,7 +4072,14 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             runtime_principal_name=runtime_principal_name,
             api_key_id=api_key_id,
             api_key_name=api_key_name,
-            api_key_scopes=tuple(api_key.scopes) if api_key else None,
+            api_key_scopes=(
+                ("review:runtime",)
+                if api_key
+                and (api_key.context_data or {}).get("read_only_review") is True
+                else tuple(api_key.scopes)
+                if api_key
+                else None
+            ),
             managed_agent_id=(
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),

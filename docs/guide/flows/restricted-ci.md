@@ -36,6 +36,60 @@ its stored project/flow/repository snapshot is immutable. Configure the flow
 to return a structured result with a `review` string when using the publication
 example below.
 
+## Read-only native GitHub App review
+
+For a review that must clone source without provider write credentials, set
+`git_clone_config.publication_mode` to `"read_only"` on the dedicated flow above.
+Select `agent_type: codex`, the supported hosted native executor in this initial
+mode. The default `openhands` executor is rejected because
+its checkout does not implement this capability. Persistent execution, private
+runners, host profiles and harness routing are unsupported in this initial mode.
+Keep the repository's existing owning GitHub App tracker ID. A different tracker,
+arbitrary URL, shared flow, or second repository is rejected. The flow must be
+enabled for preview and provisioning; enabling a flow does not issue a CI key or
+trigger a review.
+
+This mode requires an App installation and the control plane's configured App
+signing key. At execution startup, Preloop rechecks the principal and repository
+binding and requests one repository with `contents: read` (plus GitHub's implicit
+`metadata: read`). An unsupported credential, failed issuance, or broader returned
+scope fails the execution; it never falls back to the tracker's normal token.
+The checkout is pinned to the server-admitted PR head SHA. The principal snapshots
+this mode: changing between legacy and read-only invalidates the old identity's
+binding, so provision a new principal instead of silently changing its capability.
+
+**This initial mode does not allow MCP tools or MCP servers.** Set
+`allowed_mcp_tools: []` and `allowed_mcp_servers: []`. Native shell helpers may read
+source and write local `result.json`; the local filesystem remains writable.
+Remote MCP finalizers are unsupported. Runtime credentials cannot call MCP tools
+or general account REST routes, even when legacy scope enforcement is disabled.
+The normal execution-bound evidence upload capability still accepts only its own
+execution and operation. Results remain agent-authored, not an attested command
+history or custom diff/challenge proof.
+
+Omit verification, publication approval, report publication, follow-up filing and
+backport configuration; `create_pull_request` must be false. Completion persists
+the result and emits the existing principal-filtered signed callback. Neither
+native post-execution commands nor the trusted publisher push a branch or create
+a PR, and Preloop does not post commit statuses in this mode. Use the separately
+authorized publisher to verify the owned result and publish it. An agent-authored
+success or publication bundle does not grant publication authority.
+
+Workspace/session restoration and continuation are unsupported. A recovered
+controller may monitor the existing execution, but cannot restore an old workspace
+or broaden its credentials. The read lease expires at GitHub's deadline (normally
+one hour); terminal cleanup revokes the lease when the issuing controller still
+holds it. A lost controller relies on provider expiry. There is no automatic clone
+credential refresh. Operator-supplied images, setup commands and workspace inputs
+must not inject independent provider secrets; this mode narrows the credentials
+Preloop supplies, not credentials supplied separately by an administrator.
+
+This solves clone access for a dedicated project flow. Shared-flow authorization,
+scoped attested audit evidence and publication of human-owned historical runs
+remain separate capabilities. GitLab, PAT and alternate-tracker bindings are not
+supported by this mode. Local tests use a synthetic provider; they do not certify
+an installation's live GitHub permissions.
+
 ## Console and CLI setup
 
 Open **Settings → CI identities**. The console uses the common human permissions

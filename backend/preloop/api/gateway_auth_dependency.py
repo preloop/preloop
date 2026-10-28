@@ -26,6 +26,7 @@ async def authenticate_request(
     db: Session,
     *,
     allow_ended_runtime_session: bool,
+    allow_read_only_review: bool = False,
 ) -> ModelGatewayAuthContext:
     """Resolve a bearer token or raise the gateway's 401.
 
@@ -55,6 +56,7 @@ async def authenticate_request(
         db,
         owns_db_session=True,
         allow_ended_runtime_session=allow_ended_runtime_session,
+        allow_read_only_review=allow_read_only_review,
     )
     if not auth_context:
         raise ModelGatewayAPIError(
@@ -85,7 +87,10 @@ async def get_model_gateway_auth_context(
         ModelGatewayAPIError: 401 when the bearer is missing or rejected.
     """
     return await authenticate_request(
-        authorization, db, allow_ended_runtime_session=False
+        authorization,
+        db,
+        allow_ended_runtime_session=False,
+        allow_read_only_review=True,
     )
 
 

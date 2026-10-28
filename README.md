@@ -135,7 +135,7 @@ Check a sample call before saving with **Test this rule** or **Simulate** in the
 ## More capabilities
 
 - **Model providers:** OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot, Z.ai, OpenRouter, any OpenAI-compatible endpoint, and [runner-proxied local models](docs/guide/runner-local-models.md). [Reviewed model pricing](docs/guide/model-price-refresh.md); unpriced models stay visibly unpriced.
-- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs. [Guide](docs/guide/flows/restricted-ci.md).
+- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs, with an optional read-only native GitHub App clone mode and separate result publication. [Guide](docs/guide/flows/restricted-ci.md).
 - **Account kill switch:** blocks gateway and tool traffic and stops managed flow runs, with audited recovery. [Guide](docs/guide/account-kill-switch.md).
 - **Durable audit delivery:** opt-in transactional intents for approvals, policy decisions and tool outcomes, with restart replay and backlog alerts. [Operations guide](docs/operations/audit-outbox.md).
 - **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
