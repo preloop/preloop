@@ -41,6 +41,12 @@ Project reruns use the existing manual flow trigger, narrow the report policy's
 scope for that execution, and recheck the policy before running. They preserve
 the account's assessment budgets and tracker-write rules.
 
+The account report policy shows recipient roles only when the Enterprise plugin
+advertises `delivery_report_recipients`. Its roster, role overrides, sponsoring
+lead and per-person opt-outs use the plugin recipient API and policy permissions,
+independently of budget editing. Budget saves retain the current recipient
+settings; each person retains the shared self-subscription control.
+
 [Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's ten-operation route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
 
 Dedicated restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. Legacy and isolated publication retain their existing contracts.

@@ -160,11 +160,68 @@ effective policy is the defaults, then the account, then the repository
 | Recipients | the account owner, or a sponsoring lead; anyone can opt out | account |
 | Per-member updates (`per_member_updates`) | off (`false`); short updates require Enterprise Edition | account |
 
-The per-member updates switch appears in account settings only when the
-`delivery_report_member_updates` feature is enabled. A registered
+The per-member updates switch requires the
+`delivery_report_member_updates` feature. When `delivery_report_recipients`
+is also enabled, it appears in the Recipients section and policy managers
+save it through the recipients API. A plugin that enables member updates
+without the recipients feature keeps the standalone account-policy switch,
+saved with `manage_budgets` through the policy API. A registered
 `delivery_report_distributor` service can use the completed report and its
 forge engagement facts to send these short updates. Without that extension,
 the core distributor sends the standard report email.
+
+### Enterprise recipients
+
+With `delivery_report_recipients` enabled, Account settings shows the
+Recipients section to members with `view_policies`. It lists active account
+members, their RBAC roles, effective report role, role source, saved delivery
+and opt-out. Changing recipients, role overrides or opt-outs requires
+`manage_policies`, independently of the `manage_budgets` permission used for
+report cadence and budgets. Repository settings do not show this roster.
+Each recipient can still change their own email subscription without either
+management permission.
+
+Report roles control report delivery; changing one does not grant an RBAC
+permission. The account owner has the fixed `owner` report role. Other members
+use an explicit report-role override first, then the sponsoring-lead role,
+then their RBAC mapping:
+
+| Account RBAC role | Default report role |
+|---|---|
+| `owner`, `admin` | `owner` |
+| `tracker_manager` | `lead` |
+| `editor`, `executor`, or no mapped role | `member` |
+| `analyst`, `viewer` | `viewer` |
+
+When someone holds several mapped roles, the widest report role wins
+(`owner`, then `lead`, `member`, `viewer`). Choose **Use default** to clear
+an override and return to that resolution. The sponsoring lead is selected
+from the account's active member list.
+
+The designated account owner and sponsoring lead receive the full report.
+When member updates are enabled, other `owner` and `lead` report roles also
+receive the full report, `member` roles receive a short update, and `viewer`
+roles receive no email. A saved opt-out stops all delivery for that person,
+including the account owner or sponsoring lead; turning the report off stops
+all delivery. The roster's delivery column shows the saved result, so save
+draft changes before relying on it.
+
+`GET /api/v1/delivery-report/recipients` returns the current account's
+`per_member`, `recipients`, `sponsoring_lead_user_id`, `opted_out_user_ids`
+and `members`. `PUT` at the same path accepts those settings plus `roles`,
+a map from active member IDs to `owner`, `lead`, `member`, `viewer` or
+`null` (clear the override). Send only changed fields: omitted fields remain
+unchanged, while `opted_out_user_ids` replaces the saved opt-out list. For
+example, this request changes one report role without changing recipients
+or opt-outs:
+
+```json
+{"roles": {"00000000-0000-4000-8000-000000000002": "viewer"}}
+```
+
+The server derives the account from the authenticated membership and rejects
+IDs outside that account's active roster. Budget saves preserve the latest
+recipient settings, including when the recipients feature is hidden.
 
 The deterministic report (shipped, closed, open, the delta and the
 deterministic risk flags) costs nothing and is on by default. The first
