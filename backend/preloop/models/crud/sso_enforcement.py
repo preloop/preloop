@@ -9,6 +9,15 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 
 
+def email_domain(email: str | None) -> str:
+    """Match canonical email domains to the IDNA form stored by domain claims."""
+    domain = (email or "").rpartition("@")[2].strip().rstrip(".").lower()
+    try:
+        return domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+
+
 def owners(db: Session, *, account_id: UUID) -> list[models.User]:
     """Return active owners from this account and valid role assignments."""
     return list(
@@ -45,7 +54,7 @@ def revoke_non_sso(db: Session, *, account_id: UUID, domains: set[str]) -> int:
     )
     count = 0
     for user, email in rows:
-        if email and email.rpartition("@")[2] in domains:
+        if email_domain(email) in domains:
             user.non_sso_auth_generation += 1
             count += 1
     db.flush()
