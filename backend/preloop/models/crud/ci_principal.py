@@ -166,6 +166,9 @@ class CRUDCiPrincipal:
             validate_read_only_flow,
         )
 
+        from preloop.services.native_result import validate_native_result_admission
+
+        validate_native_result_admission(flow)
         validate_read_only_flow(flow)
         extra = {}
         if read_only_review(configuration):

@@ -203,3 +203,41 @@ def test_export_publication_readback_requires_exact_review_body(
     setup(monkeypatch, proof=proof)
     with pytest.raises(example.VerificationError, match="receipt mismatch"):
         example.run(args(publish_review=True))
+
+
+@pytest.mark.parametrize(
+    "tracker_url", ["https://github.com/", "https://api.github.com/"]
+)
+def test_export_accepts_conventional_tracker_trailing_slash(
+    monkeypatch: pytest.MonkeyPatch, tracker_url: str
+) -> None:
+    exported = document()
+    exported["receipt"]["tracker_url"] = tracker_url
+    exported["publication_idempotency_key"] = (
+        "preloop-result-export-v1:" + example.json_digest(exported["receipt"])
+    )
+    calls = setup(monkeypatch, export=exported)
+    example.run(args())
+    assert not any(method == "POST" for method, _, _ in calls)
+
+
+@pytest.mark.parametrize(
+    "tracker_url",
+    [
+        "https://evil.example/",
+        "https://github.com.evil.example/",
+        "https://github.com/private/",
+    ],
+)
+def test_export_rejects_untrusted_tracker_after_normalization(
+    monkeypatch: pytest.MonkeyPatch, tracker_url: str
+) -> None:
+    exported = document()
+    exported["receipt"]["tracker_url"] = tracker_url
+    exported["publication_idempotency_key"] = (
+        "preloop-result-export-v1:" + example.json_digest(exported["receipt"])
+    )
+    calls = setup(monkeypatch, export=exported)
+    with pytest.raises(example.VerificationError, match="correlation"):
+        example.run(args(publish_review=True))
+    assert not any(method == "POST" for method, _, _ in calls)

@@ -7,7 +7,11 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from preloop.api.auth import get_current_active_user
 from preloop.models.crud import execution_realtime as crud_realtime
-from preloop.services.execution_realtime import lifecycle_event, MAX_LIFECYCLE_BYTES
+from preloop.services.execution_realtime import (
+    lifecycle_event,
+    MAX_LIFECYCLE_BYTES,
+    LIFECYCLE_TYPES,
+)
 from sqlalchemy.orm import Session
 from nats.aio.msg import Msg
 
@@ -404,7 +408,11 @@ async def flow_execution_websocket(
                 data = json.loads(msg.data.decode())
                 async with send_lock:
                     seq = data.get("seq")
-                    if type(seq) is int and seq <= snapshot_seq:
+                    if (
+                        data.get("type") in LIFECYCLE_TYPES
+                        and type(seq) is int
+                        and seq <= snapshot_seq
+                    ):
                         return
                     await websocket.send_json(data)
             except Exception as e:
@@ -573,9 +581,12 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
     bus = EventBus()
     subscription = None
     ready = asyncio.Event()
+    stopped = asyncio.Event()
     send_lock = asyncio.Lock()
 
     async def forward(msg: Msg) -> None:
+        if stopped.is_set():
+            return
         try:
             data = json.loads(msg.data.decode())
             if data.get("flow_id") != str(flow_id) or data.get("account_id") != str(
@@ -593,7 +604,7 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
             except HTTPException:
                 still_allowed = False
             if not still_allowed:
-                await websocket.close(code=1008)
+                stopped.set()
                 return
             encoded = json.dumps(event)
             if len(encoded.encode("utf-8")) > MAX_LIFECYCLE_BYTES:
@@ -604,7 +615,8 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
                 encoded = json.dumps(event)
             await ready.wait()
             async with send_lock:
-                await websocket.send_text(encoded)
+                if not stopped.is_set():
+                    await websocket.send_text(encoded)
         except (ValueError, TypeError):
             logger.warning("Invalid lifecycle update dropped")
 
@@ -627,11 +639,26 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
             }
         )
         ready.set()
-        while True:
-            text = await asyncio.wait_for(websocket.receive_text(), timeout=60)
-            if text == "ping":
-                async with send_lock:
-                    await websocket.send_json({"type": "pong"})
+        while not stopped.is_set():
+            receive_task = asyncio.create_task(websocket.receive_text())
+            stop_task = asyncio.create_task(stopped.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {receive_task, stop_task},
+                    timeout=60,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done or stopped.is_set():
+                    break
+                text = receive_task.result()
+                if text == "ping":
+                    async with send_lock:
+                        await websocket.send_json({"type": "pong"})
+            finally:
+                for task in (receive_task, stop_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(receive_task, stop_task, return_exceptions=True)
     except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     finally:
@@ -640,7 +667,7 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
             await subscription.unsubscribe()
         await bus.close()
         try:
-            await websocket.close()
+            await websocket.close(code=1008 if stopped.is_set() else 1000)
         except RuntimeError:
             pass
 

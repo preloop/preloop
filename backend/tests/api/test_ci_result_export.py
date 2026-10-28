@@ -445,3 +445,27 @@ def test_consent_expiry_is_bounded(
         client.post(scenario.path + "/result-export", json=payload).status_code == 403
     )
     scenario.transport.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["grant", "export"])
+def test_flow_halt_returns_explicit_denial_before_provider(
+    client: TestClient,
+    scenario: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    grant_id = consent(client, scenario) if operation == "export" else None
+    scenario.transport.reset_mock()
+    monkeypatch.setattr(ci_execution, "flows_halted", lambda db, account: True)
+    if operation == "grant":
+        response = client.post(scenario.path + "/result-export", json=scenario.payload)
+    else:
+        response = client.get(
+            scenario.path + f"/result-export/{grant_id}",
+            headers={"Authorization": f"Bearer {scenario.token}"},
+        )
+    from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE
+
+    assert response.status_code == 403, response.text
+    assert response.json() == {"detail": FLOW_DENIAL_MESSAGE}
+    scenario.transport.assert_not_awaited()

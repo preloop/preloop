@@ -1571,7 +1571,7 @@ def adopt_execution_continuation(
 
 @router.post("/flows/executions/{execution_id}/result-export", status_code=201)
 @require_permission("view_flows")
-async def grant_execution_result_export(
+def grant_execution_result_export(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
@@ -1580,11 +1580,16 @@ async def grant_execution_result_export(
 ) -> Dict[str, Any]:
     """Current human owner consents to one reviewed, expiring result export."""
     from preloop.services.ci_result_export import grant_result_export
+    from preloop.tools.utils import run_async
 
     try:
-        return await grant_result_export(
-            db, actor=current_user, execution_id=execution_id, payload=payload
+        return run_async(
+            grant_result_export(
+                db, actor=current_user, execution_id=execution_id, payload=payload
+            )
         )
+    except FlowHaltActiveError:
+        raise _halted_response() from None
     except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
         _result_export_error(exc)
 
@@ -1614,7 +1619,7 @@ def revoke_execution_result_export(
 
 @router.get("/flows/executions/{execution_id}/result-export/{grant_id}")
 @require_permission("view_flows", ci_action=CiAction.READ_RESULT_EXPORT)
-async def get_execution_result_export(
+def get_execution_result_export(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
@@ -1623,13 +1628,18 @@ async def get_execution_result_export(
 ) -> Dict[str, Any]:
     """Export only under the exact explicit grant, current identity and revisions."""
     from preloop.services.ci_result_export import export_result
+    from preloop.tools.utils import run_async
 
     if not isinstance(current_user, CiAuthorizationContext):
         raise HTTPException(403, "Result export requires the granted CI principal")
     try:
-        return await export_result(
-            db, context=current_user, execution_id=execution_id, grant_id=grant_id
+        return run_async(
+            export_result(
+                db, context=current_user, execution_id=execution_id, grant_id=grant_id
+            )
         )
+    except FlowHaltActiveError:
+        raise _halted_response() from None
     except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
         _result_export_error(exc)
 

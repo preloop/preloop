@@ -189,6 +189,9 @@ def verify_result_export(
     receipt = document.get("receipt")
     if not isinstance(receipt, dict):
         raise VerificationError("Result export receipt missing")
+    tracker_url = receipt.get("tracker_url")
+    if isinstance(tracker_url, str):
+        tracker_url = tracker_url.rstrip("/")
     if (
         document.get("grant_id") != args.result_export_grant
         or document.get("status") != "SUCCEEDED"
@@ -199,8 +202,7 @@ def verify_result_export(
         or receipt.get("execution_id") != args.execution
         or receipt.get("base_sha") != args.base
         or receipt.get("tracker_type") != "github"
-        or receipt.get("tracker_url")
-        not in {None, "https://github.com", "https://api.github.com"}
+        or tracker_url not in (None, "https://github.com", "https://api.github.com")
         or receipt.get("repository_slug") != args.repository
         or any(receipt.get(field) != expected[field] for field in CORRELATION)
         or receipt.get("result_sha256") != args.expected_result_sha256

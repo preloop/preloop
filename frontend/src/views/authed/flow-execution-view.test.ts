@@ -2797,6 +2797,20 @@ describe('FlowExecutionView', () => {
           }),
           { status: 200 }
         );
+      if (url.includes('/gateway-events'))
+        return new Response(
+          JSON.stringify({
+            logs: [
+              {
+                type: 'model_gateway_call',
+                execution_id: 'exec-running',
+                timestamp: '2026-10-28T10:00:01Z',
+                payload: { api_usage_id: 'recovered-call', total_tokens: 1 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
       if (url.includes('/logs'))
         return new Response(
           JSON.stringify({
@@ -2831,6 +2845,37 @@ describe('FlowExecutionView', () => {
     await waitUntil(() => state.execution.status === 'STOPPED');
     expect(state.execution.agent_session_reference).to.equal('run-1');
     expect(
+      state.gatewayEvents.some(
+        (event: any) => event.payload.api_usage_id === 'recovered-call'
+      )
+    ).to.equal(true);
+    const lateGateway = {
+      type: 'model_gateway_call',
+      execution_id: 'exec-running',
+      seq: 13,
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { api_usage_id: 'late-call', total_tokens: 2 },
+    };
+    state.handleWebSocketMessage(lateGateway);
+    state.handleWebSocketMessage(lateGateway);
+    expect(
+      state.gatewayEvents.filter(
+        (event: any) => event.payload.api_usage_id === 'late-call'
+      )
+    ).to.have.length(1);
+    const lateTool = {
+      type: 'tool_call',
+      execution_id: 'exec-running',
+      seq: 11,
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { tool_name: 'retained-tool' },
+    };
+    state.handleWebSocketMessage(lateTool);
+    state.handleWebSocketMessage(lateTool);
+    expect(
+      state.liveToolActivityEvents.filter((event: any) => event.seq === 11)
+    ).to.have.length(1);
+    expect(
       state.logs.filter((log: any) => log.payload?.line === 'live')
     ).to.have.length(1);
     expect(
@@ -2848,5 +2893,25 @@ describe('FlowExecutionView', () => {
       status: 'RUNNING',
     });
     expect(state.execution.status).to.equal('STOPPED');
+    state.hasMoreLogs = true;
+    state.logsSkip = 2;
+    state.execution.mcp_usage_logs = [
+      {
+        timestamp: '2026-10-28T10:00:01Z',
+        tool_name: 'stored-tool',
+        server_name: 'fixture',
+      },
+    ];
+    await element.loadPreviousLogs();
+    expect(
+      state.logs.filter((log: any) => log.payload?.line === 'recovered')
+    ).to.have.length(1);
+    expect(
+      state.logs.some(
+        (log: any) =>
+          log.type === 'mcp_call' && log.payload?.tool_name === 'stored-tool'
+      )
+    ).to.equal(true);
+    expect(state.logsSkip).to.equal(4);
   });
 });

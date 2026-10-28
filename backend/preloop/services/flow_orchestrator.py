@@ -9844,6 +9844,9 @@ class FlowExecutionOrchestrator:
 
             from preloop.services.read_only_review import validate_read_only_flow
 
+            from preloop.services.native_result import validate_native_result_admission
+
+            validate_native_result_admission(self.flow, self.trigger_event_data)
             validate_read_only_flow(self.flow)
             if (
                 getattr(getattr(self, "execution_log", None), "ci_principal_id", None)

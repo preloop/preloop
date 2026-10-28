@@ -301,9 +301,15 @@ def load_export(
 def revoke_consent(
     db: Session, *, actor: models.User, execution_id: UUID, grant_id: UUID
 ) -> None:
-    """Current owner can revoke without requiring an active execution/flow."""
+    """Current owner can revoke without requiring an active execution/flow.
+
+    Serialize concurrent revocations and refresh any cached consent so every
+    caller preserves the first revocation timestamp required by the DB guard.
+    """
     record = (
         db.query(models.ExecutionResultGrant)
+        .populate_existing()
+        .with_for_update()
         .filter(
             models.ExecutionResultGrant.id == grant_id,
             models.ExecutionResultGrant.execution_id == execution_id,

@@ -1160,6 +1160,7 @@ export class FlowExecutionView extends LitElement {
   private metadataRefreshRunning = false;
   private metadataRefreshPending = false;
   private realtimeSequence = new ExecutionSequence();
+  private activitySequences = new Set<number>();
   private realtimeRecovery?: Promise<void>;
   private realtimeRecoveryTimer?: number;
   private realtimeRecoveryPending = false;
@@ -1196,17 +1197,26 @@ export class FlowExecutionView extends LitElement {
       this.isConnected &&
       this.executionId === executionId &&
       this.executionGeneration === generation;
-    const [snapshot, persisted] = await Promise.allSettled([
+    const [snapshot, persisted, gateway] = await Promise.allSettled([
       getFlowExecutionLifecycle(executionId),
       getFlowExecutionLogs(executionId, {
         tail: INITIAL_LOGS_TAIL,
         excludeModelCalls: true,
       }),
+      getFlowExecutionGatewayEvents(
+        executionId,
+        INITIAL_GATEWAY_EVENTS_TAIL,
+        true,
+        true
+      ),
     ]);
     if (!current()) return;
     if (snapshot.status === 'fulfilled')
       this.applyLifecycleSnapshot(snapshot.value);
     this.scheduleMetadataRefresh();
+    if (gateway.status === 'fulfilled' && Array.isArray(gateway.value?.logs)) {
+      for (const event of gateway.value.logs) this.appendGatewayEvent(event);
+    }
     if (
       persisted.status === 'fulfilled' &&
       Array.isArray(persisted.value?.logs)
@@ -1225,6 +1235,7 @@ export class FlowExecutionView extends LitElement {
       this.logs = [...recovered, ...this.logs].sort((a, b) =>
         (a.timestamp || '').localeCompare(b.timestamp || '')
       );
+      this.hydrateToolActivityLogs();
     }
   }
 
@@ -1260,6 +1271,7 @@ export class FlowExecutionView extends LitElement {
   private invalidateExecutionRequests() {
     this.executionGeneration++;
     this.realtimeSequence = new ExecutionSequence();
+    this.activitySequences.clear();
     window.clearTimeout(this.realtimeRecoveryTimer);
     this.realtimeRecoveryTimer = undefined;
     this.realtimeRecovery = undefined;
@@ -1306,6 +1318,7 @@ export class FlowExecutionView extends LitElement {
         return;
       this.execution = execution;
       this.hydrateMetricsFromExecution();
+      this.hydrateToolActivityLogs();
       void this.loadEvidenceStatus(executionId);
     } catch (error) {
       // Preserve live event details if the authoritative read fails.
@@ -1563,8 +1576,19 @@ export class FlowExecutionView extends LitElement {
         Array.isArray(logsResult.logs) &&
         logsResult.logs.length > 0
       ) {
-        // Prepend new logs to the existing logs array
-        this.logs = [...logsResult.logs, ...this.logs];
+        // Recovery/live appends can shift this offset. Dedupe overlapping
+        // pages while still advancing by the number of stored rows read.
+        const key = (log: any) =>
+          JSON.stringify([log.type, log.timestamp, log.payload]);
+        const seen = new Set([...this.logs, ...this.logBuffer].map(key));
+        const older = logsResult.logs.filter((log: any) => {
+          const id = key(log);
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+        this.logs = [...older, ...this.logs];
+        this.hydrateToolActivityLogs();
         // `logsSkip` counts the newest rows already read, so the next page
         // starts where this one ended whatever size the first read was.
         this.logsSkip += logsResult.logs.length;
@@ -1605,8 +1629,26 @@ export class FlowExecutionView extends LitElement {
       return;
     }
     if (message.execution_id === this.executionId) {
+      const activity = [
+        'agent_log_line',
+        'model_gateway_call',
+        'tool_call',
+        'mcp_call',
+        'tool_calls_update',
+      ].includes(message.type);
+      const sequenced = Number.isSafeInteger(message.seq) && message.seq >= 0;
+      if (activity && sequenced) {
+        if (this.activitySequences.has(message.seq)) return;
+        this.activitySequences.add(message.seq);
+        // Bound duplicate tracking independently of the snapshot watermark:
+        // lifecycle snapshots do not contain activity payloads.
+        if (this.activitySequences.size > 4096)
+          this.activitySequences.delete(
+            this.activitySequences.values().next().value!
+          );
+      }
       const order = this.realtimeSequence.accept(message.seq);
-      if (order === 'stale') return;
+      if (order === 'stale' && !activity) return;
       if (order === 'gap' || message.resync_required)
         this.scheduleRealtimeRecovery();
     }
@@ -1723,7 +1765,10 @@ export class FlowExecutionView extends LitElement {
       }
       // Handle real-time tool calls update
       if (message.type === 'tool_calls_update') {
-        this.toolCalls = message.payload.tool_calls || 0;
+        this.toolCalls = Math.max(
+          this.toolCalls,
+          message.payload.tool_calls || 0
+        );
       }
 
       // Handle real-time token usage update

@@ -120,18 +120,32 @@ explicit reprovisioning.
 
 Grant the separate action `execution:evidence:read` to retrieve
 `GET /api/v1/flows/executions/{id}/tool-evidence?skip=0&limit=10` (maximum 25 records
-per page). Fresh principal, project, flow and execution ownership checks apply to
+per page, with a 4 MiB aggregate records cap). Continue using `next_skip`, since
+the byte cap can return fewer records than `limit`. Fresh principal, project, flow and execution ownership checks apply to
 every page. General logs, artifacts, prompts and other principals' executions
 remain unavailable to the CI credential. Key rotation retains principal ownership;
 revocation or binding changes deny subsequent reads.
 
+Enterprise rollout requires the coordinated EE action mapping
+`READ_EVIDENCE: "view_flows"` (EE !291) and the matching core revision.
+Deploy both before granting or advertising this action; an older EE authorizer
+fails closed even when a principal grant contains the new action.
+
 New gateway requests retain tool-only observations before console preview clipping.
+Request-side `request_scope: latest_tool_exchange` captures the latest tool call
+batch and its results, including when prose follows that batch; response-side
+capture retains the current response. Replayed
+older request history is deliberately excluded, so storage grows with new exchanges
+rather than accumulated history. `capture_complete` refers to this declared scope,
+not a historical conversation import. Repeated retries can repeat the latest exchange.
 Codex native command events are captured before the ordinary log-string cap.
 Gateway call IDs and native item IDs are distinct namespaces; match only actual
 correlation data, never infer that a model-requested call executed. Native exit
 codes are runtime observations, not a successful execution or accepted review.
 The capture excludes general conversation text. Capture-disabled content is absent;
-credential and account storage-redaction rules still apply.
+credential and account storage-redaction rules still apply. JSONB-unsafe controls
+and lone surrogates are removed before encoding; altered content sets `redacted`,
+`storage_redacted`, and `capture_complete: false`.
 
 Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
 keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
@@ -357,7 +371,9 @@ specific CI principal without changing execution ownership or rerunning the
 model. This is an explicit API operation, not automatic access to history.
 The principal must already carry `execution:result-export:read`. EE additionally
 requires current CI identity administration and resource permissions for the
-owner; those permissions are checked again at every export.
+owner; those permissions are checked again at every export. An active account
+flow halt denies new grants and reads with the explicit halt 403 before provider
+I/O; revocation remains available.
 
 1. Review the original execution and public result. The human tool-evidence
    response's `captured_result_sha256` is the digest of the public result

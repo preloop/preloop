@@ -512,4 +512,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert enterprise_sso.down_revision == "20261112_forge_reconciliation"
     pull_request_details = script.get_revision("20261113_pull_request_details")
     assert pull_request_details.down_revision == "20261112_enterprise_sso"
-    assert script.get_heads() == ["20261113_pull_request_details"]
+    realtime = script.get_revision("20261120_execution_realtime_seq")
+    assert realtime.down_revision == "20261113_pull_request_details"
+    result_export = script.get_revision("20261122_execution_result_grant")
+    assert result_export.down_revision == "20261120_execution_realtime_seq"
+    assert script.get_heads() == ["20261122_execution_result_grant"]
