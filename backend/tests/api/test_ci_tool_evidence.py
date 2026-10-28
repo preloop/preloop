@@ -601,3 +601,71 @@ def test_request_dedupe_preserves_changed_observations_for_same_call_id(
         == 1
     )
     assert all(row["integrity_valid"] for row in body["records"])
+
+
+def test_dedupe_lookup_never_reads_stored_documents(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """The per-request key lookup selects the keys column, not the chunks."""
+    from sqlalchemy import event
+
+    from preloop.models import models
+
+    _, _, _, context, execution = owned_run(db_session, ci_resources)
+
+    def persist(call_id: str) -> None:
+        persist_tool_evidence(
+            db_session,
+            usage=SimpleNamespace(
+                id=uuid4(),
+                flow_execution_id=execution.id,
+                account_id=context.account_id,
+            ),
+            document=capture_tools(
+                {
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": "z" * 1_000_000,
+                        }
+                    ]
+                },
+                {},
+                capture_content=True,
+            ),
+        )
+
+    persist("large-1")
+    statements: list[str] = []
+
+    def record(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        persist("large-1")
+        persist("large-2")
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    lookups = [
+        s
+        for s in statements
+        if s.lstrip().upper().startswith("SELECT") and "flow_execution_log" in s
+    ]
+    assert lookups, statements
+    for statement in lookups:
+        selected = statement.split("FROM", 1)[0]
+        assert "metadata" not in selected, statement
+    rows = (
+        db_session.query(models.FlowExecutionLog)
+        .filter(
+            models.FlowExecutionLog.execution_id == execution.id,
+            models.FlowExecutionLog.log_type == "execution_tool_evidence",
+        )
+        .all()
+    )
+    # The exact retry of large-1 stored no observation; large-2 is new.
+    stored = [len(r.metadata_["chunks"]) > 1 for r in rows]
+    assert sum(stored) == 2, stored
