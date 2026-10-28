@@ -372,6 +372,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         *,
         flow_in: schemas.FlowCreate,
         account_id: Optional[Union[str, UUID]] = None,
+        commit: bool = True,
     ) -> models.Flow:
         """
         Create a new flow.
@@ -380,6 +381,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db: The database session.
             flow_in: The data for the new flow.
             account_id: Account ID (string or UUID).
+            commit: Commit the new flow, or only flush it in a caller's transaction.
 
         Returns:
             The created flow object.
@@ -390,8 +392,11 @@ class CRUDFlow(CRUDBase[models.Flow]):
                 str(account_id) if isinstance(account_id, UUID) else account_id
             )
         db.add(db_flow)
-        db.commit()
-        db.refresh(db_flow)
+        if commit:
+            db.commit()
+            db.refresh(db_flow)
+        else:
+            db.flush()
         return db_flow
 
     def update(

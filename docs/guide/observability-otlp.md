@@ -5,7 +5,7 @@ Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this pa
 For what tool/model record stores retain under redaction and reference-only
 policies, see [Sensitive-data handling](sensitive-data.md#what-is-stored).
 
-Preloop can export OpenTelemetry traces (and duration metrics) for
+Preloop can export OpenTelemetry traces (and duration, token and cost metrics) for
 governed model calls and MCP tool calls to any OTLP-compatible backend.
 Export is **disabled by default**. Turning it on does not replace the
 `ApiUsage` ledger or console cost views.
@@ -81,6 +81,28 @@ export OTLP_SERVICE_NAME="preloop"
 export OTLP_DEPLOYMENT_ENVIRONMENT="production"
 ```
 
+Docker Compose (`docker-compose.yml` for development and the
+`docker-compose.release.yaml` stack the OSS installer downloads) forwards the
+`OTLP_*` variables above (except `OTLP_SERVICE_NAMESPACE` and
+`OTLP_SAMPLER_RATIO`) from `.env` to the `api` and `gateway` services. Export
+stays off while `OTLP_ENABLED` is false or `OTLP_ENDPOINT` is empty. Add the
+lines to `.env` next to the compose file:
+
+```bash
+OTLP_ENABLED=true
+OTLP_ENDPOINT=http://otel-collector:4318
+OTLP_PROTOCOL=http/protobuf
+OTLP_HEADERS=Authorization=Bearer <token>
+OTLP_SERVICE_NAME=preloop
+OTLP_DEPLOYMENT_ENVIRONMENT=production
+```
+
+Then recreate the services so they pick up the new environment:
+
+```bash
+docker compose up -d
+```
+
 ## Sampling and cardinality
 
 The SDK sampler is parent-based with `OTLP_SAMPLER_RATIO` (default `1.0`
@@ -94,7 +116,8 @@ High-cardinality attributes on traces:
 - `preloop.api_usage.id`
 - `preloop.account.id`
 
-Duration metrics use operation, provider, and model only. Do not add
+Duration, token and cost metrics use operation, provider, and model only
+(plus `gen_ai.token.type` on the token histogram). Do not add
 payloads to attributes; that would raise both privacy risk and cardinality.
 
 ## Destinations
@@ -224,6 +247,37 @@ dd-api-key=YOUR_DATADOG_API_KEY,compute_stats=true
 For production volume, Datadog recommends an OpenTelemetry Collector or
 Datadog Agent in front of intake.
 
+### Gigapipe (formerly qryn)
+
+Docs: [Gigapipe configuration](https://github.com/metrico/gigapipe/blob/main/docs/configuration.md),
+[OTLP over gRPC](https://github.com/metrico/gigapipe/blob/main/docs/otlp-grpc.md)
+(checked 2026-10-27). Gigapipe accepts OTLP traces and metrics directly on its
+HTTP port (default `3100`), over HTTP/protobuf or gRPC (h2c, same port). No
+collector is needed.
+
+```bash
+export OTLP_ENABLED=true
+export OTLP_ENDPOINT="http://gigapipe:3100"
+export OTLP_PROTOCOL="http/protobuf"   # or grpc
+# Basic auth, if GIGAPIPE_LOGIN/GIGAPIPE_PASSWORD are set:
+# export OTLP_HEADERS="Authorization=Basic ${AUTH_STRING}"
+```
+
+In Grafana, add Gigapipe as a Tempo datasource (traces, TraceQL) and as a
+Prometheus datasource (`gen_ai_client_operation_duration_seconds_*`,
+`gen_ai_client_token_usage_*`, and the cost counter), both at
+`http://gigapipe:3100`. Example queries:
+
+- TraceQL: `{ resource.service.name = "preloop" && span.gen_ai.operation.name = "chat" }`
+- TraceQL: `{ span.gen_ai.conversation.id = "<runtime session id>" }` (one agent session)
+- PromQL: `histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_bucket[5m])))`
+- PromQL: `sum by (gen_ai_request_model, gen_ai_token_type) (rate(gen_ai_client_token_usage_sum[5m]))`
+
+Token counts and cost are also span attributes (`gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, `preloop.usage.estimated_cost_usd`), visible in
+the trace view. MCP tool spans appear only for calls made with a runtime
+session token.
+
 ## What is exported
 
 | Signal | When | Notes |
@@ -232,6 +286,8 @@ Datadog Agent in front of intake.
 | Span per `GET /openai/v1/models` | After the model list is built | No conversation id. |
 | Span per MCP tool call | After execution, only if a runtime session id is present | `gen_ai.operation.name=execute_tool`. Linked to the last in-process model span for that session when available. Tool arguments are never attributes. |
 | Duration histogram | Same as the spans above | `gen_ai.client.operation.duration` (seconds), low-cardinality attributes only. |
+| Token usage histogram | Per model call span | `gen_ai.client.token.usage` (`{token}`), one point per call for `gen_ai.token.type=input` and one for `output`. |
+| Cost counter | Per model call with a non-zero recorded cost | `preloop.usage.cost` (`USD`), equal to `preloop.usage.estimated_cost_usd` on the span. |
 
 Internal model-gateway events (`model_gateway_events.py`) are unchanged.
 OTLP is an additional export.

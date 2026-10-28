@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from preloop.schemas.delivery_report import ExecutionPullRequest
 from preloop.schemas.gateway_usage import GatewayTokenUsage
 
 
@@ -407,6 +408,7 @@ class ExecutionContinuationNavigation(BaseModel):
 
 
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
+    pull_request: Optional[ExecutionPullRequest] = None
     runtime_session_id: Optional[str] = Field(
         None, description="Runtime tracking session for persistent Agent Control runs."
     )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
@@ -47,6 +48,12 @@ ATTR_ESTIMATED_COST = "preloop.usage.estimated_cost_usd"
 ATTR_COST_SOURCE = "preloop.usage.cost_source"
 ATTR_STATUS_CODE = "http.response.status_code"
 ATTR_SERVER_NAME = "preloop.mcp.server_name"
+
+# Metric-only dimension (not a span attribute) for gen_ai.client.token.usage.
+_TOKEN_TYPE_KEY = "gen_ai.token.type"
+
+# GenAI semconv advisory buckets for gen_ai.client.token.usage: 1, 4, ... 4**13.
+_TOKEN_BUCKETS: tuple[float, ...] = tuple(float(4**i) for i in range(14))
 
 _FORBIDDEN_ATTR_KEYS = frozenset(
     {
@@ -183,6 +190,7 @@ def emit_gateway_usage(usage: Any) -> None:
             _remember_session_span(session_id, span)
         span.end(end_time=end_ns)
         _record_duration_metric(attrs, float(getattr(usage, "duration", 0.0) or 0.0))
+        _record_usage_metrics(attrs)
     except Exception:
         logger.warning(
             "OTLP gateway export failed; request is unchanged", exc_info=True
@@ -456,18 +464,48 @@ def _record_duration_metric(attrs: Mapping[str, Any], duration_s: float) -> None
             unit="s",
             description="Duration of a Preloop-governed model or tool call",
         )
-        metric_attrs = {
-            key: attrs[key]
-            for key in (
-                ATTR_OPERATION_NAME,
-                ATTR_PROVIDER_NAME,
-                ATTR_REQUEST_MODEL,
-            )
-            if key in attrs
-        }
+        metric_attrs = _metric_dimensions(attrs)
         histogram.record(max(duration_s, 0.0), metric_attrs)
     except Exception:
         logger.debug("OTLP duration metric record failed", exc_info=True)
+
+
+def _metric_dimensions(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: attrs[key]
+        for key in (ATTR_OPERATION_NAME, ATTR_PROVIDER_NAME, ATTR_REQUEST_MODEL)
+        if key in attrs
+    }
+
+
+def _record_usage_metrics(attrs: Mapping[str, Any]) -> None:
+    """Record GenAI token usage and recorded cost for one model call."""
+    try:
+        meter = metrics.get_meter(METER_NAME)
+        dims = _metric_dimensions(attrs)
+        token_histogram = meter.create_histogram(
+            "gen_ai.client.token.usage",
+            unit="{token}",
+            description="Tokens used by a Preloop-governed model call",
+            explicit_bucket_boundaries_advisory=_TOKEN_BUCKETS,
+        )
+        for token_type, key in (
+            ("input", ATTR_INPUT_TOKENS),
+            ("output", ATTR_OUTPUT_TOKENS),
+        ):
+            count = attrs.get(key)
+            if isinstance(count, int) and count >= 0:
+                token_histogram.record(count, {**dims, _TOKEN_TYPE_KEY: token_type})
+        cost = attrs.get(ATTR_ESTIMATED_COST)
+        if isinstance(cost, (int, float)) and cost > 0:
+            cost_counter = meter.create_counter(
+                "preloop.usage.cost",
+                unit="USD",
+                description="Recorded cost of Preloop-governed model calls",
+            )
+            cost_counter.add(float(cost), dims)
+    except Exception:
+        logger.debug("OTLP usage metric record failed", exc_info=True)
 
 
 def _signal_endpoint(endpoint: str, protocol: str, signal: str) -> Optional[str]:
@@ -510,18 +548,28 @@ def _operation_name(endpoint_kind: str) -> str:
 
 
 def _span_timestamps(usage: Any) -> tuple[int, int]:
-    end_ns = _now_ns()
+    """Return ``(start_ns, end_ns)`` for an ApiUsage row.
+
+    ``ApiUsage.timestamp`` is written when the usage row is logged, after the
+    upstream call completes, and is stored in a naive UTC ``DateTime``
+    column. A naive value is read as UTC (not host local time) and used as
+    the span end; the start is end - duration.
+    """
+    duration_ns = max(
+        int(float(getattr(usage, "duration", 0.0) or 0.0) * 1_000_000_000), 0
+    )
     timestamp = getattr(usage, "timestamp", None)
-    if timestamp is not None:
+    end_ns: Optional[int] = None
+    if isinstance(timestamp, datetime):
         try:
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
             end_ns = int(timestamp.timestamp() * 1_000_000_000)
         except Exception:
-            end_ns = _now_ns()
-    duration_s = float(getattr(usage, "duration", 0.0) or 0.0)
-    start_ns = end_ns - int(duration_s * 1_000_000_000)
-    if start_ns <= 0:
-        start_ns = end_ns
-    return start_ns, end_ns
+            end_ns = None
+    if end_ns is None or end_ns <= 0:
+        end_ns = _now_ns()
+    return max(end_ns - duration_ns, 1), end_ns
 
 
 def _now_ns() -> int:

@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from preloop.services.gateway_activity_body import payload_bytes
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
@@ -447,17 +446,16 @@ def test_build_event_marks_budget_denied_outcome():
 
 def test_emit_for_usage_does_not_require_running_event_loop():
     """Emission should still append logs when called outside an event loop."""
-    emitter = ModelGatewayEventEmitter(MagicMock())
+    db = MagicMock()
+    db.get.return_value = None
+    emitter = ModelGatewayEventEmitter(db)
     usage = _build_usage()
 
     with (
         patch(
             "preloop.services.model_gateway_events.crud_flow_execution.append_log"
         ) as mock_append_log,
-        patch(
-            "preloop.services.model_gateway_events.asyncio.get_running_loop",
-            side_effect=RuntimeError,
-        ),
+        patch("preloop.services.model_gateway_events.publish_realtime") as publish,
     ):
         emitter.emit_for_usage(
             usage=usage,
@@ -468,10 +466,12 @@ def test_emit_for_usage_does_not_require_running_event_loop():
     mock_append_log.assert_called_once()
     assert mock_append_log.call_args.args[1] == str(usage.flow_execution_id)
     assert mock_append_log.call_args.args[2]["type"] == "model_gateway_call"
+    assert publish.call_args_list[0].args[0] == (
+        f"flow-updates.{usage.flow_execution_id}"
+    )
 
 
-@pytest.mark.asyncio
-async def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_large():
+def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_large():
     """Gateway events should not publish oversized NATS payloads after truncation."""
     emitter = ModelGatewayEventEmitter(MagicMock())
     event = {
@@ -480,16 +480,10 @@ async def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_l
             "already_minimal_but_huge": "x" * 1_000_001,
         },
     }
-    nats_client = MagicMock()
-    nats_client.is_connected = True
+    with patch("preloop.services.model_gateway_events.publish_realtime") as publish:
+        emitter._publish_to_nats(event)
 
-    with patch(
-        "preloop.services.model_gateway_events.get_nats_client",
-        return_value=nats_client,
-    ):
-        await emitter._publish_to_nats(event)
-
-    nats_client.publish.assert_not_called()
+    publish.assert_not_called()
 
 
 def test_build_event_strips_nul_and_control_bytes_from_bodies():
@@ -721,17 +715,13 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     history.append({"role": "user", "content": "latest question"})
     published: list[dict] = []
 
-    async def capture(event):
+    def capture(event: dict) -> None:
         published.append(event)
 
     with (
         patch(
             "preloop.services.model_gateway_events.crud_flow_execution.append_log"
         ) as mock_append_log,
-        patch(
-            "preloop.services.model_gateway_events.asyncio.get_running_loop",
-            side_effect=RuntimeError,
-        ),
         patch.object(emitter, "_publish_to_nats", side_effect=capture),
         patch.object(settings, "model_gateway_capture_content", True),
         patch.object(settings, "model_gateway_activity_max_stored_bytes", 32768),
@@ -756,3 +746,24 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     # The live event still carries the whole replayed conversation.
     assert len(published) == 1
     assert len(published[0]["payload"]["request"]["messages"]) == len(history)
+
+
+def test_event_keeps_safe_upstream_diagnostics_when_content_capture_is_disabled() -> (
+    None
+):
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        meta_data={
+            "upstream_parameters": {"max_tokens": 8192, "reasoning_effort": "low"},
+            "usage_warnings": ["reasoning_tokens_exceed_output_tokens"],
+        }
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        payload = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )["payload"]
+    assert payload["upstream_parameters"] == {
+        "max_tokens": 8192,
+        "reasoning_effort": "low",
+    }
+    assert payload["usage_warnings"] == ["reasoning_tokens_exceed_output_tokens"]

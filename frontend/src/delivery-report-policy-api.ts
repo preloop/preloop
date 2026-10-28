@@ -29,6 +29,7 @@ export interface DeliveryReportPolicy {
   max_assessed_changes: number;
   pr_ready_days: number;
   issue_inactive_days: number;
+  audit_ci_max_wait_minutes: number;
   ui_screenshot_min_lines: number;
   criteria_source: CriteriaSource;
   tracker_writes: {
@@ -38,6 +39,7 @@ export interface DeliveryReportPolicy {
     follow_up_label: string;
   };
   recipients: RecipientRule;
+  per_member_updates: boolean;
   sponsoring_lead_user_id: string | null;
   opted_out_user_ids: string[];
 }
@@ -123,5 +125,50 @@ export async function clearDeliveryReportPolicy(
   return parse(
     await fetchWithAuth(layerPath(projectId), { method: 'DELETE' }),
     'Could not reset the repository policy'
+  );
+}
+
+/** Whether the signed-in person receives the report email. */
+export interface DeliveryReportSubscription {
+  opted_out: boolean;
+  is_recipient: boolean;
+  report_enabled: boolean;
+}
+
+const SUBSCRIPTION_PATH = `${REST_API_PREFIX}/delivery-report/subscription`;
+
+async function parseSubscription(
+  response: Response,
+  fallback: string
+): Promise<DeliveryReportSubscription> {
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new DeliveryReportPolicyError(
+      extractErrorMessage(body, fallback),
+      response.status,
+      null
+    );
+  }
+  return body as DeliveryReportSubscription;
+}
+
+export async function getDeliveryReportSubscription(): Promise<DeliveryReportSubscription> {
+  return parseSubscription(
+    await fetchWithAuth(SUBSCRIPTION_PATH),
+    'Could not load your report email setting'
+  );
+}
+
+/** Opt the signed-in person out of, or back into, the report email. */
+export async function saveDeliveryReportSubscription(
+  optedOut: boolean
+): Promise<DeliveryReportSubscription> {
+  return parseSubscription(
+    await fetchWithAuth(SUBSCRIPTION_PATH, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ opted_out: optedOut }),
+    }),
+    'Could not save your report email setting'
   );
 }

@@ -359,7 +359,10 @@ export class SubaccountsView extends LitElement {
       // apply: no extension, or an account below another one.
       if (this.off || this.nonRoot || this.loading) return nothing;
       return html`<sl-card id="subaccounts" class="subaccounts-card">
-        <h2 slot="header" style="margin: 0; font-size: 1.25rem;">
+        <h2
+          slot="header"
+          style="margin: 0; font-size: var(--console-text-card-title);"
+        >
           Subaccounts
         </h2>
         <p class="hint">

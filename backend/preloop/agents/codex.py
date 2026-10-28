@@ -36,6 +36,11 @@ from .cli_session import (
     resume_cli_session,
 )
 from .codex_events import codex_event_filter_command
+from .codex_model_catalog import (
+    CODEX_CATALOG_VERSION,
+    catalog_materialization_shell,
+    custom_model_catalog,
+)
 from .errors import AgentStartError
 from .completion_nudge import (
     AGENT_OUTPUT_LOG_PATH,
@@ -441,7 +446,7 @@ fi
         # upgrade is explicit; manifests reject incompatible restored state.
         cli_version = str(
             (execution_context.get("agent_config") or {}).get(
-                "codex_cli_version", "0.153.4"
+                "codex_cli_version", CODEX_CATALOG_VERSION
             )
         )
         import re
@@ -595,6 +600,7 @@ fi
             attach_mcp=attach_mcp,
             shell_locked=shell_locked,
             stream_idle_timeout_seconds=stream_idle_timeout_seconds,
+            cli_version=cli_version,
         )
         # Native OpenAI writes no provider block, so the bound is not ours
         # to report there.
@@ -875,7 +881,7 @@ exit $CODEX_EXIT_CODE
     def _build_codex_limit_lines(
         self, model: str, limits: Optional[ModelContextLimits]
     ) -> str:
-        """The ``model_context_window`` / ``model_max_output_tokens`` lines.
+        """The supported ``model_context_window`` scalar override.
 
         Codex falls back to a conservative window when ``config.toml`` says
         nothing, so a model with a large window compacts far too early and
@@ -889,19 +895,20 @@ exit $CODEX_EXIT_CODE
             limits: Resolved limits, or None when nothing was resolved.
 
         Returns:
-            Zero, one or two TOML lines, newline-terminated when non-empty.
+            One TOML line, or empty when the context window is unknown.
         """
         limits = limits or ModelContextLimits()
         lines = []
         if limits.context_window is not None:
             lines.append(f"model_context_window = {limits.context_window}")
-        if limits.max_output_tokens is not None:
-            lines.append(f"model_max_output_tokens = {limits.max_output_tokens}")
+        # Codex 0.153.4 does not recognize model_max_output_tokens. The
+        # model gateway applies the registered output allowance upstream.
         if not lines:
             logger.info(
-                "No context window or output ceiling known for model %s "
+                "No context window known for model %s "
                 "(neither the model row nor the vendored price catalog has "
-                "one); codex keeps its own defaults",
+                "one); Codex keeps its own fallback window. "
+                "Output allowance is separate: gateway when enabled, otherwise provider defaults",
                 model,
             )
             return ""
@@ -951,25 +958,17 @@ exit $CODEX_EXIT_CODE
         return config.get("sandbox_type") == "read-only"
 
     def _codex_sandbox_flags(self, shell_locked: bool) -> str:
-        """Return the Codex exec sandbox flags for this run.
+        """Preserve read-only restrictions across both exec and exec resume.
 
-        The locked path is ``--sandbox read-only --disable shell_tool``
-        and no ``--yolo``. Codex 0.153.4 (the pinned CLI) documents
-        ``read-only`` as a sandbox value and ``shell_tool`` as a stable
-        feature. ``codex exec`` already sets ``AskForApproval::Never``, so
-        omitting ``--yolo`` does not wait for a person. ``--yolo`` is the
-        alias that also selects ``danger-full-access``. The locked path
-        still writes ``approval_policy = "never"`` into config.toml so a
-        resume cannot fall back to prompting.
-
-        Args:
-            shell_locked: Result of ``_shell_locked`` for this execution.
-
-        Returns:
-            Flags inserted into each ``codex exec`` invocation.
+        Codex 0.153.4 accepts --sandbox only on exec. Both subcommands accept
+        config overrides, so pin the sandbox and approvals there and keep the
+        shell tool disabled for locked flows, including reminders and recovery.
         """
         if shell_locked:
-            return "--sandbox read-only --disable shell_tool"
+            return (
+                "-c 'sandbox_mode=\"read-only\"' "
+                "-c 'approval_policy=\"never\"' --disable shell_tool"
+            )
         return "--yolo"
 
     def _build_codex_auth_config(
@@ -982,6 +981,7 @@ exit $CODEX_EXIT_CODE
         attach_mcp: bool = True,
         shell_locked: bool = False,
         stream_idle_timeout_seconds: int = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        cli_version: str = CODEX_CATALOG_VERSION,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -1011,6 +1011,8 @@ exit $CODEX_EXIT_CODE
                 may send nothing before Codex treats it as dropped. See
                 :func:`preloop.services.stream_stall.resolve_stream_idle_timeout_seconds`.
                 Native OpenAI keeps Codex's built-in value.
+            cli_version: Exact hosted CLI version, used to select a validated
+                custom-model catalog schema and fallback profile.
 
         Returns:
             Shell script block to write auth.json and config.toml
@@ -1040,6 +1042,17 @@ exit $CODEX_EXIT_CODE
         )
 
         if is_custom:
+            catalog = custom_model_catalog(model, limits, cli_version=cli_version)
+            catalog_block = (
+                catalog_materialization_shell(catalog, limits) if catalog else ""
+            )
+            catalog_line = (
+                'model_catalog_json = "$HOME/.codex/preloop-models.json"\n'
+                # Match the pinned default used to render catalog instructions.
+                "tools.update_plan.enabled = false\n"
+                if catalog
+                else ""
+            )
             # Custom provider: generate provider-specific config
             provider_key = model_provider.replace("-", "_").replace(" ", "_")
             env_key = f"{model_provider.upper().replace('-', '_')}_API_KEY"
@@ -1056,7 +1069,7 @@ exit $CODEX_EXIT_CODE
             # Only include base_url if we have an actual endpoint URL
             base_url_line = f'base_url = "{model_endpoint}"' if model_endpoint else ""
 
-            auth_block = f"""# Create auth.json with provider API key
+            auth_block = f"""{catalog_block}# Create auth.json with provider API key
 cat > ~/.codex/auth.json << EOF
 {{
   "{env_key}": "${env_key}",
@@ -1068,7 +1081,7 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-{lock_lines}{limit_lines}{rmcp_line}[model_providers.{provider_key}]
+{lock_lines}{limit_lines}{catalog_line}{rmcp_line}[model_providers.{provider_key}]
 name = "{model_provider.title()}"
 {base_url_line}
 env_key = "{env_key}"

@@ -1,17 +1,15 @@
 """MCP Servers router for managing external MCP server connections."""
 
-import base64
 from preloop.schemas.resource_share import SharedResourceRead
 
-import hashlib
 import logging
 import os
 import secrets
 from typing import Any, Dict, List
 from uuid import UUID
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from anyio import from_thread
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -19,8 +17,21 @@ from preloop.api.auth import get_current_active_user
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_mcp_server
 from preloop.models.db.session import get_db_session
-from preloop.models.models.mcp_server import MCPServer
-from preloop.models.models.user import User
+from preloop.models import models
+from preloop.models.crud.upstream_mcp_oauth import (
+    crud_upstream_mcp_oauth,
+    OAuthContextError,
+    digest,
+)
+from preloop.services.upstream_mcp_oauth import (
+    OAuthError,
+    OAuthHTTP,
+    discover,
+    configure_client,
+    authorization_url,
+    request_tokens,
+)
+
 from preloop.models.schemas.mcp_server import (
     MCPServerCreate,
     MCPServerResponse,
@@ -41,16 +52,19 @@ from preloop.services.mcp_tool_collisions import (
     tool_warnings_by_id,
 )
 from preloop.utils.audit import log_config_change
+from preloop.utils.mcp_oauth_privacy import install_mcp_oauth_privacy
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+
+MCPServer = models.MCPServer
+User = models.User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Public router for OAuth callback (no auth required — user is redirected here)
 oauth_callback_router = APIRouter(tags=["MCP Servers OAuth"])
+install_mcp_oauth_privacy()
 
-# In-memory store for pending OAuth states (maps state -> context dict)
-_pending_oauth_states: dict[str, dict] = {}
 
 # Claim marking a short-lived token minted solely for the browser OAuth-authorize
 # redirect. Scoped to one server; NOT a general access token.
@@ -147,9 +161,20 @@ async def create_mcp_server(
             tool_prefix=server_data.tool_prefix,
         )
 
-        db.add(new_server)
-        db.commit()
-        db.refresh(new_server)
+        new_server = crud_mcp_server.create(
+            db,
+            obj_in={
+                "account_id": current_user.account_id,
+                "name": new_server.name,
+                "url": new_server.url,
+                "transport": new_server.transport,
+                "auth_type": new_server.auth_type,
+                "auth_config": new_server.auth_config,
+                "tool_prefix": new_server.tool_prefix,
+                "status": new_server.status,
+                "last_error": new_server.last_error,
+            },
+        )
 
         log_config_change(
             db,
@@ -238,8 +263,12 @@ def list_mcp_servers(
         shared = crud_resource_share.public_list(
             db, account_id=current_user.account_id, resource_type="mcp_server"
         )
+        states = crud_upstream_mcp_oauth.states_for_servers(db, servers)
         return [
-            *[_server_response(db, server, warnings_by_server) for server in servers],
+            *[
+                _server_response(db, server, warnings_by_server, states)
+                for server in servers
+            ],
             *filter_viewable(db, current_user, VISIBLE_MCP_SERVER, shared),
         ]
     except Exception as e:
@@ -300,12 +329,21 @@ def _server_response(
     db: Session,
     server: MCPServer,
     warnings_by_server: Dict[str, List[str]] | None = None,
+    states: dict[UUID, str | None] | None = None,
 ) -> SharedResourceRead | MCPServerResponse:
     """Server response with its tool-collision warnings (#1135).
 
-    A list passes ``warnings_by_server`` computed once for the account.
+    Lists batch warnings and states and use the stored public OAuth config.
+    Only individual reads load encrypted config to provide redacted edit markers.
     """
     response = MCPServerResponse.model_validate(server)
+    response.connection_state = (
+        states[server.id]
+        if states is not None
+        else crud_upstream_mcp_oauth.state(db, server)
+    )
+    if server.auth_type == "oauth" and states is None:
+        response.auth_config = crud_upstream_mcp_oauth.config_for_edit(db, server)
     try:
         if warnings_by_server is not None:
             response.warnings = warnings_by_server.get(str(server.id), [])
@@ -384,11 +422,6 @@ async def update_mcp_server(
 
     # Update fields
     update_data = server_update.model_dump(exclude_unset=True)
-    if "auth_config" in update_data:
-        # Write-only secrets: markers echoed back from a read keep the stored value.
-        update_data["auth_config"] = merge_auth_config(
-            update_data["auth_config"], server.auth_config
-        )
 
     try:
         old_snapshot = {
@@ -402,11 +435,7 @@ async def update_mcp_server(
             exposed_tool_name(server.tool_prefix, tool.name) for tool in server.tools
         ]
 
-        for field, value in update_data.items():
-            setattr(server, field, value)
-
-        db.commit()
-        db.refresh(server)
+        server = crud_mcp_server.update(db, db_obj=server, obj_in=update_data)
         await _evict_mcp_client(server_id)
 
         log_config_change(
@@ -492,8 +521,6 @@ async def delete_mcp_server(
             logger.info(
                 f"Deleting {len(tool_configs)} tool configurations for MCP server {server_id}"
             )
-            for config in tool_configs:
-                db.delete(config)
 
         server_name = server.name  # capture before delete
         from preloop.models.crud import crud_mcp_tool
@@ -504,8 +531,9 @@ async def delete_mcp_server(
         ]
 
         # Delete the MCP server
-        db.delete(server)
-        db.commit()
+        crud_mcp_server.remove(
+            db, id=server_id, account_id=str(current_user.account_id)
+        )
         await _evict_mcp_client(server_id)
         _unregister_proxied_tools(str(current_user.account_id), server_id, tool_names)
 
@@ -550,7 +578,7 @@ async def scan_mcp_server(
         db: Database session
 
     Returns:
-        Success message with tool count
+        Success message with tool count; failed scans return HTTP 502.
 
     Raises:
         HTTPException: If server not found or scan fails
@@ -574,8 +602,9 @@ async def scan_mcp_server(
         )
 
         # Guard: OAuth servers without tokens can't be scanned
-        if server.auth_type == "oauth" and not (server.auth_config or {}).get(
-            "access_token"
+        if (
+            server.auth_type == "oauth"
+            and crud_upstream_mcp_oauth.state(db, server) != "connected"
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -583,6 +612,15 @@ async def scan_mcp_server(
             )
 
         tools = await scan_mcp_server_tools(server_id, db, user=current_user)
+
+        if server.status == "error":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Scan failed. Cached tools were retained. "
+                    + (server.last_error or "Check the server connection and rescan.")
+                ),
+            )
 
         logger.info(
             f"Scan complete for MCP server {server_id}: {len(tools)} tools discovered"
@@ -594,6 +632,8 @@ async def scan_mcp_server(
             "warnings": server_warnings(db, server),
         }
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -729,10 +769,9 @@ async def mcp_server_oauth_authorize(
     server-scoped ``code`` minted by ``POST .../oauth/authorize-token`` —
     never the reusable access token.
 
-    1. Fetches the server's /.well-known/oauth-authorization-server metadata.
-    2. Dynamically registers as an OAuth client (RFC 7591) if needed.
-    3. Generates PKCE code_challenge / code_verifier.
-    4. Redirects the user to the external server's authorization endpoint.
+    Discovers the protected resource and selected issuer, configures a public
+    or pre-registered client, and stores a durable browser-bound PKCE
+    transaction before redirecting to provider consent.
     """
     # Validate the short-lived, purpose- and server-scoped authorize token.
     import jwt
@@ -779,260 +818,144 @@ async def mcp_server_oauth_authorize(
             detail="Server auth_type is not 'oauth'",
         )
 
-    server_url = server.url.rstrip("/")
+    from preloop.api.auth.jwt import user_auth_generation
 
-    # Step 1: Discover OAuth metadata
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        # Try the path-aware metadata URL first (RFC 9728 / MCP spec)
-        from urllib.parse import urlparse
-
-        parsed = urlparse(server_url)
-        base_origin = f"{parsed.scheme}://{parsed.netloc}"
-        server_path = parsed.path.rstrip("/")
-
-        metadata = None
-        for meta_url in [
-            f"{base_origin}/.well-known/oauth-authorization-server{server_path}",
-            f"{base_origin}/.well-known/oauth-authorization-server",
-        ]:
-            try:
-                resp = await client.get(meta_url)
-                if resp.status_code == 200:
-                    metadata = resp.json()
-                    break
-            except Exception:
-                continue
-
-        if not metadata:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    f"Could not discover OAuth metadata at {server_url}. "
-                    "The server may not support MCP OAuth."
-                ),
+    if payload.get("gen", 0) != user_auth_generation(current_user):
+        raise HTTPException(401, "Authorization session is no longer valid")
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "edit_mcp_servers")
+    )
+    try:
+        snapshot = await run_db_off_loop(
+            lambda: crud_upstream_mcp_oauth.setup(
+                db, UUID(server_id), current_user.account_id
             )
-
-        authorization_endpoint = metadata.get("authorization_endpoint")
-        token_endpoint = metadata.get("token_endpoint")
-        registration_endpoint = metadata.get("registration_endpoint")
-
-        if not authorization_endpoint or not token_endpoint:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="OAuth metadata is missing authorization_endpoint or token_endpoint",
+        )
+        http = OAuthHTTP()
+        metadata = await discover(snapshot.url, snapshot.config, http)
+        config = await configure_client(
+            snapshot.config, metadata, _oauth_callback_uri(), http
+        )
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = secrets.token_urlsafe(64)
+        await run_db_off_loop(
+            lambda: crud_upstream_mcp_oauth.begin(
+                db,
+                snapshot,
+                user_id=current_user.id,
+                state=state,
+                browser_nonce=nonce,
+                verifier=verifier,
+                config=config,
             )
+        )
+        response = RedirectResponse(
+            authorization_url(config, state, verifier), status_code=302
+        )
+        response.set_cookie(
+            _oauth_cookie(state),
+            nonce,
+            max_age=600,
+            httponly=True,
+            secure=_oauth_callback_uri().startswith("https:"),
+            samesite="lax",
+            path="/api/v1/mcp-servers/oauth",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+    except (OAuthError, OAuthContextError) as error:
+        raise HTTPException(400, str(error)) from None
 
-        # Step 2: Dynamic Client Registration (if we don't have a client_id yet)
-        auth_config = dict(server.auth_config or {})
-        client_id = auth_config.get("client_id")
 
-        preloop_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
-        callback_url = f"{preloop_url}/api/v1/mcp-servers/oauth/callback"
-
-        if not client_id and registration_endpoint:
-            reg_body = {
-                "redirect_uris": [callback_url],
-                "grant_types": ["authorization_code", "refresh_token"],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
-                "client_name": "Preloop MCP Proxy",
-            }
-            try:
-                reg_resp = await client.post(registration_endpoint, json=reg_body)
-                if reg_resp.status_code in (200, 201):
-                    reg_data = reg_resp.json()
-                    client_id = reg_data.get("client_id")
-                    client_secret = reg_data.get("client_secret")
-                    auth_config["client_id"] = client_id
-                    if client_secret:
-                        auth_config["client_secret"] = client_secret
-                    logger.info(
-                        f"Dynamically registered OAuth client: {client_id} "
-                        f"for MCP server {server.name}"
-                    )
-                else:
-                    logger.warning(
-                        f"Dynamic registration failed ({reg_resp.status_code}): "
-                        f"{reg_resp.text}"
-                    )
-            except Exception as e:
-                logger.warning(f"Dynamic registration error: {e}")
-
-        if not client_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "No client_id available. The external server does not support "
-                    "dynamic registration. Please set client_id in auth_config."
-                ),
-            )
-
-    # Step 3: Generate PKCE
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
+def _oauth_callback_uri() -> str:
+    return (
+        os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
+        + "/api/v1/mcp-servers/oauth/callback"
     )
 
-    # Generate state for CSRF protection
-    state = secrets.token_urlsafe(32)
 
-    # Store both PKCE verifier and server context
-    _pending_oauth_states[state] = {
-        # Carry the signed issuance gate through the provider redirect.
-        "permission": payload["permission"],
-        "server_id": str(server.id),
-        "account_id": str(server.account_id),
-        "code_verifier": code_verifier,
-        "token_endpoint": token_endpoint,
-        "client_id": client_id,
-        "client_secret": auth_config.get("client_secret", ""),
-        "callback_url": callback_url,
-    }
-
-    # Persist the token_endpoint and client_id in auth_config for future use
-    auth_config["token_endpoint"] = token_endpoint
-    auth_config["authorization_endpoint"] = authorization_endpoint
-    if registration_endpoint:
-        auth_config["registration_endpoint"] = registration_endpoint
-    crud_mcp_server.update(db, db_obj=server, obj_in={"auth_config": auth_config})
-
-    # Step 4: Redirect to authorization endpoint
-    from urllib.parse import urlencode
-
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": callback_url,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-    }
-    auth_url = f"{authorization_endpoint}?{urlencode(params)}"
-
-    logger.info(
-        f"Redirecting user to OAuth authorization for MCP server {server.name} "
-        f"at {authorization_endpoint}"
-    )
-    return RedirectResponse(url=auth_url, status_code=302)
+def _oauth_cookie(state: str) -> str:
+    return "mcp_oauth_" + digest(state)[:16]
 
 
 @oauth_callback_router.get("/api/v1/mcp-servers/oauth/callback")
 async def mcp_server_oauth_callback(
-    code: str = Query(...),
-    state: str = Query(...),
-):
-    """Handle the OAuth callback from an external MCP server.
-
-    Exchanges the authorization code for access/refresh tokens using PKCE,
-    saves them in the MCP server's auth_config, and redirects to the frontend.
-    """
-    # Validate state (CSRF protection)
-    state_data = _pending_oauth_states.pop(state, None)
-    if not state_data or state_data.get("permission") != "edit_mcp_servers":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OAuth state. Please try again.",
-        )
-
-    server_id = state_data["server_id"]
-    token_endpoint = state_data["token_endpoint"]
-    client_id = state_data["client_id"]
-    client_secret = state_data.get("client_secret", "")
-    code_verifier = state_data["code_verifier"]
-    callback_url = state_data["callback_url"]
-
-    # Exchange authorization code for tokens
-    token_body = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": callback_url,
-        "client_id": client_id,
-        "code_verifier": code_verifier,
-    }
-    if client_secret:
-        token_body["client_secret"] = client_secret
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            resp = await client.post(
-                token_endpoint,
-                data=token_body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            if resp.status_code != 200:
-                logger.error(
-                    f"OAuth token exchange failed ({resp.status_code}): {resp.text}"
-                )
-                frontend_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip(
-                    "/"
-                )
-                return RedirectResponse(
-                    url=f"{frontend_url}/console/tools#setup_mcp=error",
-                    status_code=302,
-                )
-
-            token_data = resp.json()
-        except Exception as e:
-            logger.error(f"OAuth token exchange error: {e}", exc_info=True)
-            frontend_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
-            return RedirectResponse(
-                url=f"{frontend_url}/console/tools#setup_mcp=error",
-                status_code=302,
-            )
-
-    # Save tokens in the server's auth_config
-    db = next(get_db_session())
+    request: Request,
+    state: str = Query(..., max_length=512),
+    code: str | None = Query(None),
+    error: str | None = Query(None, max_length=256),
+    iss: str | None = Query(None, max_length=2048),
+    db: Session = Depends(get_db_session),
+) -> RedirectResponse:
+    """Consume a durable browser-bound transaction before any token exchange."""
     try:
-        server = crud_mcp_server.get(
-            db, id=server_id, account_id=state_data["account_id"]
-        )
-        if server:
-            auth_config = dict(server.auth_config or {})
-            auth_config["access_token"] = token_data.get("access_token")
-            if token_data.get("refresh_token"):
-                auth_config["refresh_token"] = token_data["refresh_token"]
-            if token_data.get("expires_in"):
-                import time
-
-                auth_config["expires_at"] = int(time.time()) + token_data["expires_in"]
-            auth_config["token_type"] = token_data.get("token_type", "Bearer")
-
-            crud_mcp_server.update(
+        snapshot = await run_db_off_loop(
+            lambda: crud_upstream_mcp_oauth.consume(
                 db,
-                db_obj=server,
-                obj_in={
-                    "auth_config": auth_config,
-                    "status": "active",
-                    "last_error": None,
-                },
+                state=state,
+                browser_nonce=request.cookies.get(_oauth_cookie(state), ""),
+                redirect_uri=_oauth_callback_uri(),
+                issuer=iss,
             )
-            # Do not log server_id/name here: they share a dict with
-            # client_secret in the OAuth state and CodeQL taints the whole map.
-            logger.info("OAuth credentials stored for MCP server")
-
-            # Auto-scan for tools now that we have credentials
-            try:
-                tools = await scan_mcp_server_tools(server_id, db)
-                logger.info(
-                    "Post-OAuth auto-scan: discovered %s tools",
-                    len(tools),
-                )
-            except Exception:
-                logger.warning(
-                    "Post-OAuth auto-scan failed after credential storage",
-                    exc_info=True,
-                )
-                # Don't fail the callback — credentials are stored, user can rescan manually
-        else:
-            logger.warning("MCP server not found after OAuth callback")
-    finally:
-        db.close()
-
-    # Redirect to the frontend tools page with success indicator
-    frontend_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
-    return RedirectResponse(
-        url=f"{frontend_url}/console/tools#setup_mcp=success",
+        )
+    except OAuthContextError:
+        raise HTTPException(
+            400, "Invalid or expired OAuth state. Start authorization again."
+        ) from None
+    success = False
+    try:
+        if error is not None or not code:
+            raise OAuthError("OAuth authorization was not completed.")
+        config = await request_tokens(
+            snapshot.config, OAuthHTTP(), code=code, verifier=snapshot.verifier
+        )
+        success = await run_db_off_loop(
+            lambda: crud_upstream_mcp_oauth.complete(db, snapshot, config)
+        )
+    except (OAuthError, OAuthContextError):
+        try:
+            await run_db_off_loop(lambda: crud_upstream_mcp_oauth.fail(db, snapshot))
+        except OAuthContextError:
+            pass  # Deletion/replacement already invalidated this transaction.
+    await _evict_mcp_client(snapshot.server_id)
+    if success:
+        try:
+            await scan_mcp_server_tools(snapshot.server_id, db)
+        except Exception:
+            logger.warning(
+                "Post-OAuth scan failed; credentials saved. Rescan from Tools setup."
+            )
+    frontend = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
+    response = RedirectResponse(
+        f"{frontend}/console/tools#setup_mcp={'success' if success else 'error'}",
         status_code=302,
     )
+    response.delete_cookie(_oauth_cookie(state), path="/api/v1/mcp-servers/oauth")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@router.post(
+    "/mcp-servers/{server_id}/oauth/disconnect", response_model=MCPServerResponse
+)
+@require_permission("edit_mcp_servers")
+def disconnect_mcp_oauth(
+    server_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> MCPServerResponse:
+    """Remove local grants and pending transactions. No upstream revocation."""
+    # A sync handler, so the session is only used on the worker thread.
+    ensure_permission_in_oss(db, current_user, "edit_mcp_servers")
+    try:
+        crud_upstream_mcp_oauth.disconnect(db, server_id, current_user.account_id)
+    except OAuthContextError:
+        raise HTTPException(404, "OAuth server not found or unavailable") from None
+    from_thread.run(_evict_mcp_client, server_id)
+    server = crud_mcp_server.get(
+        db, id=server_id, account_id=str(current_user.account_id)
+    )
+    return _server_response(db, server)

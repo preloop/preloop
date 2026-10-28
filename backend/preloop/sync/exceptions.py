@@ -40,9 +40,16 @@ class TrackerConnectionError(TrackerError):
 
 
 class TrackerRateLimitError(TrackerError):
-    """Raised when a tracker API rate limit is hit."""
+    """Raised when a tracker API rate limit is hit.
 
-    pass
+    `retry_after` is the provider's advised wait in seconds (``Retry-After``
+    or a rate-limit reset header), or None when the response named none.
+    """
+
+    def __init__(self, *args: object, retry_after: float | None = None) -> None:
+        super().__init__(*args)
+        self.status_code = 429
+        self.retry_after = retry_after
 
 
 class TrackerResponseError(TrackerError):
@@ -53,9 +60,16 @@ class TrackerResponseError(TrackerError):
     the message. It stays None for the call sites that only have a message.
     """
 
-    def __init__(self, *args: object, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        *args: object,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(*args)
         self.status_code = status_code
+        # Provider-advised wait in seconds on a throttled response, else None.
+        self.retry_after = retry_after
 
 
 class TrackerPermissionError(TrackerResponseError):

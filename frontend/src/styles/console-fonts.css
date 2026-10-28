@@ -1,0 +1,32 @@
+/* =====================================================================
+   Console mono face (D4): JetBrains Mono, self-hosted.
+
+   Commands, Talk tool rows and the agent status line read in a real mono.
+   The woff2 files live in public/fonts/jetbrains-mono (SIL OFL 1.1, latin
+   subset, 400 and 600) and are served from our own origin: no font CDN.
+   @font-face only works at document level, so this file is imported by
+   main.css; the token is also declared on :root so light-DOM surfaces
+   outside a console shadow root resolve the same stack.
+   ===================================================================== */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('/fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('/fonts/jetbrains-mono/jetbrains-mono-latin-600-normal.woff2')
+    format('woff2');
+}
+
+:root {
+  --console-font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

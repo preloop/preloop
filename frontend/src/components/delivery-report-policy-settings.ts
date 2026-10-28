@@ -1,12 +1,16 @@
 import { LitElement, html, css, nothing } from 'lit';
+import { live } from 'lit/directives/live.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import { getUserProfile, hasPermission } from '../api';
+import { getFeatures, getUserProfile, hasPermission } from '../api';
 import {
   clearDeliveryReportPolicy,
   getDeliveryReportPolicy,
+  getDeliveryReportSubscription,
   saveDeliveryReportPolicy,
+  saveDeliveryReportSubscription,
   type DeliveryReportPolicy,
   type DeliveryReportPolicyLayer,
+  type DeliveryReportSubscription,
   type PolicyOverrides,
 } from '../delivery-report-policy-api';
 import { showToast } from './confirm-dialog';
@@ -50,8 +54,10 @@ export class DeliveryReportPolicySettings extends LitElement {
   @state() private layer: DeliveryReportPolicyLayer | null = null;
   @state() private draft: DeliveryReportPolicy | null = null;
   @state() private canManage = false;
+  @state() private memberUpdatesAvailable = false;
   @state() private saving = false;
   @state() private error = '';
+  @state() private subscription: DeliveryReportSubscription | null = null;
   private generation = 0;
 
   static styles = css`
@@ -131,16 +137,26 @@ export class DeliveryReportPolicySettings extends LitElement {
     const generation = ++this.generation;
     this.error = '';
     try {
-      const [profile, layer] = await Promise.all([
+      const [profile, layer, features] = await Promise.all([
         getUserProfile(),
         getDeliveryReportPolicy(this.projectId || undefined),
+        getFeatures().catch(() => null),
       ]);
       if (generation !== this.generation) return;
       this.canManage = hasPermission(
         profile?.permissions,
         this.isProject ? 'edit_projects' : 'manage_budgets'
       );
+      this.memberUpdatesAvailable =
+        features?.features.delivery_report_member_updates === true &&
+        !this.isProject;
       this.adopt(layer);
+      if (!this.isProject) {
+        // Each person's own copy; any member may change it.
+        this.subscription = await getDeliveryReportSubscription().catch(
+          () => null
+        );
+      }
     } catch {
       // A server without the report policy, or a member who cannot read
       // flows, gets no card.
@@ -189,7 +205,8 @@ export class DeliveryReportPolicySettings extends LitElement {
     }
     const defaults = layer.defaults;
     for (const key of Object.keys(draft) as (keyof DeliveryReportPolicy)[]) {
-      if (key === 'tracker_writes') continue;
+      // Opt-outs belong to each person (the email link, the switch below).
+      if (key === 'tracker_writes' || key === 'opted_out_user_ids') continue;
       if (!same(draft[key], defaults[key])) out[key] = draft[key];
     }
     const writes: Record<string, unknown> = {};
@@ -226,6 +243,22 @@ export class DeliveryReportPolicySettings extends LitElement {
     }
   }
 
+  private async setSubscribed(subscribed: boolean): Promise<void> {
+    this.error = '';
+    try {
+      this.subscription = await saveDeliveryReportSubscription(!subscribed);
+      showToast(
+        subscribed
+          ? 'You will receive the report email.'
+          : 'You will no longer receive the report email.',
+        'success'
+      );
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Could not save the setting.';
+    }
+  }
+
   private async reset(): Promise<void> {
     if (this.saving || !this.projectId) return;
     this.saving = true;
@@ -244,7 +277,11 @@ export class DeliveryReportPolicySettings extends LitElement {
   private numberInput(
     label: string,
     key:
-      'pr_ready_days' | 'issue_inactive_days' | 'per_run_usd' | 'monthly_usd',
+      | 'pr_ready_days'
+      | 'issue_inactive_days'
+      | 'audit_ci_max_wait_minutes'
+      | 'per_run_usd'
+      | 'monthly_usd',
     min: number,
     step = 1
   ) {
@@ -271,6 +308,7 @@ export class DeliveryReportPolicySettings extends LitElement {
       <div class="fields">
         ${this.numberInput('Open PR after (days)', 'pr_ready_days', 1)}
         ${this.numberInput('Inactive issue after (days)', 'issue_inactive_days', 1)}
+        ${this.numberInput('Merge audit CI wait (minutes)', 'audit_ci_max_wait_minutes', 1)}
         <sl-select
           label="Acceptance criteria from"
           data-field="criteria_source"
@@ -440,6 +478,25 @@ export class DeliveryReportPolicySettings extends LitElement {
       </div>
       <div class="group">
         <h3>Recipients</h3>
+        ${
+          this.memberUpdatesAvailable
+            ? html`<sl-switch
+                  data-field="per_member_updates"
+                  .checked=${live(draft.per_member_updates)}
+                  ?disabled=${!this.canManage}
+                  @sl-change=${(event: Event) =>
+                    this.set(
+                      'per_member_updates',
+                      (event.target as HTMLInputElement).checked
+                    )}
+                  >Send short updates to account members</sl-switch
+                >
+                <p class="meta">
+                  Off by default. Each person receives one update per report
+                  period, based on the work they reviewed or discussed.
+                </p>`
+            : nothing
+        }
         <div class="fields">
           <sl-select
             label="Send to"
@@ -472,6 +529,19 @@ export class DeliveryReportPolicySettings extends LitElement {
               : nothing
           }
         </div>
+        ${
+          this.subscription?.is_recipient
+            ? html`<sl-switch
+                data-field="subscribed"
+                .checked=${live(!this.subscription.opted_out)}
+                @sl-change=${(event: Event) =>
+                  void this.setSubscribed(
+                    (event.target as HTMLInputElement).checked
+                  )}
+                >Email me this report</sl-switch
+              >`
+            : nothing
+        }
         <p class="meta">
           Anyone can stop their own copy from the link in the email.
         </p>

@@ -1193,6 +1193,7 @@ class OpenAIGatewayService:
         # never a false dollar claim. Set at both credential-resolution
         # choke points; reset there per request to avoid stale carryover.
         self._last_upstream_credential_type: Optional[str] = None
+        self._last_upstream_parameters: Dict[str, Any] = {}
         # Rate-limit headers observed on the LAST upstream response (success
         # or failure) for this request, parsed into a snapshot at the point
         # where the raw response/exception is still in hand and consumed
@@ -1321,6 +1322,7 @@ class OpenAIGatewayService:
         request can never lend its ``retried: n`` to the next one.
         """
         self._last_upstream_retry_count = 0
+        self._last_upstream_parameters = {}
         self._last_alibaba_cache_mode = None
         self._codex_transport_meta = None
         self.last_usage_id = None
@@ -3757,6 +3759,7 @@ class OpenAIGatewayService:
             reasoning_buffer = StringIO()
             reasoning_bytes = 0
             upstream_finish_reason: Optional[str] = None
+            upstream_response_id: Optional[str] = None
             reasoning_output_index: Optional[int] = None
             try:
                 yield self._sse_event(
@@ -3774,6 +3777,8 @@ class OpenAIGatewayService:
 
                 for chunk in upstream_stream:
                     chunk_dict = self._response_to_dict(chunk)
+                    if isinstance(chunk_dict.get("id"), str):
+                        upstream_response_id = chunk_dict["id"]
                     # Some upstreams (OpenRouter among them) report provider
                     # failures as an in-band `error` field on an otherwise
                     # well-formed chunk instead of failing the transport.
@@ -4009,7 +4014,11 @@ class OpenAIGatewayService:
                                 "Upstream exhausted the output token budget before "
                                 "producing text or tool calls. Increase the explicit "
                                 "output limit or reduce reasoning effort; no review "
-                                "or task completion was produced."
+                                "or task completion was produced. "
+                                f"Gateway request={self._gateway_request_id}; "
+                                "effective upstream "
+                                f"max_output_tokens={self._last_upstream_parameters.get('max_tokens', 'provider default')}; "
+                                f"reasoning_effort={self._last_upstream_parameters.get('reasoning_effort', 'provider default')}."
                             ),
                         )
                     raise ModelGatewayAPIError(
@@ -4023,6 +4032,8 @@ class OpenAIGatewayService:
                     )
 
                 full_text = "".join(assistant_parts)
+                output_incomplete = upstream_finish_reason == "length"
+                output_status = "incomplete" if output_incomplete else "completed"
                 if reasoning_bridge is not None and reasoning_output_index is not None:
                     reasoning_item = reasoning_bridge.output_item(
                         reasoning_buffer.getvalue(),
@@ -4045,7 +4056,7 @@ class OpenAIGatewayService:
                     output_items[text_output_index] = {
                         "id": text_item_id,
                         "type": "message",
-                        "status": "completed",
+                        "status": output_status,
                         "role": "assistant",
                         "content": [{"type": "output_text", "text": full_text}],
                     }
@@ -4077,6 +4088,16 @@ class OpenAIGatewayService:
                 for state in sorted(
                     tool_call_states.values(), key=lambda item: item["output_index"]
                 ):
+                    if output_incomplete:
+                        # Preserve partial arguments as evidence, but never
+                        # dispatch a tool from an output-budget-truncated turn.
+                        # Codex dispatches on output_item.done, not deltas.
+                        state["item"]["status"] = "incomplete"
+                        if state["item"]["type"] == "custom_tool_call":
+                            state["item"]["input"] = state["arguments"]
+                        else:
+                            state["item"]["arguments"] = state["arguments"]
+                        continue
                     if not state["announced"]:
                         # A tool call whose name never arrived. Announce it as
                         # it stands rather than dropping it silently.
@@ -4124,14 +4145,22 @@ class OpenAIGatewayService:
                     "object": "response",
                     "created_at": created_at,
                     "model": requested_model,
-                    "status": "completed",
+                    "status": output_status,
                     "output": output_items,
                     "output_text": full_text,
                     "usage": final_usage,
                 }
+                if output_incomplete:
+                    response_payload["incomplete_details"] = {
+                        "reason": "max_output_tokens"
+                    }
                 yield self._sse_event(
                     {
-                        "type": "response.completed",
+                        "type": (
+                            "response.incomplete"
+                            if output_incomplete
+                            else "response.completed"
+                        ),
                         "response": response_payload,
                     }
                 )
@@ -4150,6 +4179,8 @@ class OpenAIGatewayService:
                     response_payload=response_payload,
                     upstream_response={
                         **response_payload,
+                        "id": upstream_response_id,
+                        "choices": [{"finish_reason": upstream_finish_reason}],
                         "usage": final_usage_details or response_payload.get("usage"),
                     },
                     endpoint_kind="responses_stream",
@@ -4169,7 +4200,11 @@ class OpenAIGatewayService:
                         ai_model=model,
                         requested_model=payload.get("model"),
                         response_payload=None,
-                        upstream_response=None,
+                        upstream_response={
+                            "id": upstream_response_id,
+                            "choices": [{"finish_reason": upstream_finish_reason}],
+                            "usage": final_usage_details,
+                        },
                         endpoint_kind="responses_stream",
                         budget_result=budget_result,
                         error_detail=gateway_error.message,
@@ -8096,6 +8131,7 @@ class OpenAIGatewayService:
         # Reset per request so a prior request's value never leaks if
         # resolution below raises before the credential type is determined.
         self._last_upstream_credential_type = None
+        self._last_upstream_parameters = {}
         self._last_alibaba_cache_mode = None
         if self._owns_db_session:
             ai_model = self._model_for_credentials(ai_model)
@@ -8297,6 +8333,15 @@ class OpenAIGatewayService:
                 kwargs["messages"] = deepcopy(messages)
             if thinking_options:
                 kwargs["extra_body"] = thinking_options
+        if _is_openrouter_upstream(ai_model):
+            # OpenRouter's chat API accepts reasoning.effort. Send its native
+            # body field so LiteLLM does not drop it for models missing from
+            # its capability catalog. Responses-only summary is not portable.
+            reasoning = payload.get("reasoning")
+            reasoning = reasoning if isinstance(reasoning, dict) else {}
+            effort = payload.get("reasoning_effort", reasoning.get("effort"))
+            if effort is not None:
+                kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": effort}
         if _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled():
             # Ask OpenRouter to include the request's actual cost in the
             # response usage payload (usage accounting). litellm forwards
@@ -8340,6 +8385,15 @@ class OpenAIGatewayService:
             for key in ("temperature", "top_p"):
                 if key not in kwargs and model_parameters.get(key) is not None:
                     kwargs[key] = model_parameters[key]
+        if (
+            _is_openrouter_upstream(ai_model)
+            and "max_tokens" not in kwargs
+            and isinstance(model_parameters, dict)
+        ):
+            for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+                if model_parameters.get(key) is not None:
+                    kwargs["max_tokens"] = model_parameters[key]
+                    break
         if payload.get("stop") is not None:
             kwargs["stop"] = payload["stop"]
         # Intentional global default, not zai-only. Matches aux generation.
@@ -8352,6 +8406,29 @@ class OpenAIGatewayService:
         # OpenRouter also gets HTTP-Referer / X-Title.
         apply_preloop_client_headers(kwargs, ai_model)
 
+        # Persist only effective, non-secret controls, never the full kwargs
+        # (which contain credentials and private messages). Keep this after
+        # alias/default resolution so diagnostics describe what was sent.
+        limit = kwargs.get("max_tokens")
+        if isinstance(limit, int) and not isinstance(limit, bool):
+            self._last_upstream_parameters["max_tokens"] = limit
+        extra_body = kwargs.get("extra_body") or {}
+        reasoning = extra_body.get("reasoning")
+        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        if effort is None:
+            effort = extra_body.get("reasoning_effort")
+        if effort is None:
+            effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str) and effort in {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            self._last_upstream_parameters["reasoning_effort"] = effort
         return kwargs
 
     # ------------------------------------------------------------------
@@ -10184,6 +10261,25 @@ class OpenAIGatewayService:
         return normalized
 
     @staticmethod
+    def _usage_warnings(usage: Dict[str, Any]) -> List[str]:
+        """Identify inconsistent adapter counters without inventing corrections.
+
+        Reasoning is a subset of completion usage. Do not add it to the
+        completion total or clamp reported evidence when the counts conflict.
+        """
+        reasoning = extract_token_details(usage)["reasoning_tokens"]
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+        if (
+            reasoning is not None
+            and isinstance(completion, int)
+            and not isinstance(completion, bool)
+            and completion >= 0
+            and reasoning > completion
+        ):
+            return ["reasoning_tokens_exceed_output_tokens"]
+        return []
+
+    @staticmethod
     def _merge_usage_dicts(
         base: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -10997,6 +11093,8 @@ class OpenAIGatewayService:
                 if upstream_response
                 else None,
                 "usage_details": usage_details or None,
+                "upstream_parameters": dict(self._last_upstream_parameters) or None,
+                "usage_warnings": self._usage_warnings(usage_details) or None,
                 "pricing_snapshot": {
                     **cost_estimate.pricing_snapshot,
                     "timestamp_basis": "request_start_estimated_from_duration",

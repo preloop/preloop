@@ -1,7 +1,9 @@
 import { expect } from '@open-wc/testing';
 import {
   renderWithoutSubscriptionsLine,
+  renderWithoutSubscriptionsTooltip,
   subscriptionEstimate,
+  withoutSubscriptionsFigure,
 } from './subscription-estimate';
 import type { SubscriptionUsageSummary } from '../types';
 
@@ -53,6 +55,59 @@ describe('subscriptionEstimate (D-05)', () => {
     );
     expect(estimate.value).to.equal(null);
     expect(estimate.text).to.equal('No estimate');
+  });
+
+  it('words the figure without subscriptions for exact, partial and unknown', () => {
+    expect(
+      withoutSubscriptionsFigure(subscriptionEstimate(0.16, block({})))
+    ).to.equal('$1.91 without subscriptions');
+    expect(
+      withoutSubscriptionsFigure(
+        subscriptionEstimate(
+          0.16,
+          block({ covered_requests: 2, coverage: 2 / 3 })
+        )
+      )
+    ).to.equal('≥ $1.91 without subscriptions');
+    expect(
+      withoutSubscriptionsFigure(
+        subscriptionEstimate(0, block({ covered_requests: 0, coverage: 0 }))
+      )
+    ).to.equal('Unknown without subscriptions');
+  });
+
+  it('offers the tooltip only where there is subscription traffic', async () => {
+    const { render, html } = await import('lit');
+    const host = document.createElement('div');
+    render(
+      html`${renderWithoutSubscriptionsTooltip(
+        0.16,
+        subscriptionEstimate(0.16, block({})),
+        3
+      )}`,
+      host
+    );
+    const button = host.querySelector('button.cost-trigger')!;
+    expect(button.closest('sl-tooltip')!.getAttribute('trigger')).to.equal(
+      'hover focus click'
+    );
+    const lines = [...host.querySelectorAll('[slot="content"] > div')].map(
+      (line) => line.textContent!.trim()
+    );
+    expect(lines[1]).to.equal('$1.91 without subscriptions');
+    expect(lines[2]).to.match(/^Estimate, not a bill/);
+    expect(button.getAttribute('aria-label')).to.contain(lines[1]);
+    render(
+      html`${renderWithoutSubscriptionsTooltip(
+        0.5,
+        subscriptionEstimate(0.5, null),
+        0
+      )}`,
+      host
+    );
+    expect(host.querySelector('button')).to.equal(null);
+    expect(host.querySelector('sl-tooltip')).to.equal(null);
+    expect(host.textContent!.trim()).to.equal('$0.50');
   });
 
   it('renders the table line only for agents with subscription use', async () => {

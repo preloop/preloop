@@ -156,6 +156,9 @@ def test_remove(crud_mcp_server, mock_db_session):
     mock_query = MagicMock()
     mock_db_session.query.return_value = mock_query
     mock_query.filter.return_value = mock_query
+    mock_query.filter_by.return_value = mock_query
+    mock_query.with_for_update.return_value = mock_query
+    mock_query.one_or_none.return_value = None
     mock_query.first.return_value = mock_server
     mock_db_session.delete = MagicMock()
     mock_db_session.commit = MagicMock()
@@ -180,6 +183,9 @@ def test_remove_not_found(crud_mcp_server, mock_db_session):
     mock_query = MagicMock()
     mock_db_session.query.return_value = mock_query
     mock_query.filter.return_value = mock_query
+    mock_query.filter_by.return_value = mock_query
+    mock_query.with_for_update.return_value = mock_query
+    mock_query.one_or_none.return_value = None
     mock_query.first.return_value = None
     mock_db_session.delete = MagicMock()
     mock_db_session.commit = MagicMock()

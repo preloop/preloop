@@ -3,11 +3,29 @@
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
 The Fleet Map connects people, devices, agents, flows, work, models and providers.
-Open it from Device fleet or the Overview inventory card. Device evidence depends
-on the configured fleet collector; missing evidence is identified on the map.
+Open it from Device fleet, or with the **Fleet map** button in the Overview page
+header (right side, beside "Updated"). From the Overview the map opens full screen
+only, on the page's period (24h, 7d and 30d map to the same window; a year maps to
+90 days), with idle resources hidden and **Onboarded only** on; Esc or the exit
+button closes it and returns to the page. A window chosen inside the map stays in
+the map. The button is hidden on a phone. Device evidence depends on the
+configured fleet collector; missing evidence is identified on the map.
+
+Every account member can open the map. It shows only what they may see: each
+source needs its own read permission (agents, models, flows and runners, people,
+and devices with Device fleet access), and each resource passes the account's
+resource visibility. Pull request activity and window totals count only agents
+the viewer can see. A member who can see none of the sources gets a sentence
+saying the account's resources are not shared with them.
 
 Search highlights matching nodes. Each select shows its current value, for
-example "Last hour" rather than "Window". Show selects resource kinds, including
+example "Last hour" rather than "Window". Show starts with **Onboarded only**,
+which hides agents that are not onboarded (discovered or inactive; MCP-only and
+gateway-only setups count as onboarded) and the people, machines, accounts and
+providers that only those agents reached; the count then reads "12 active
+onboarded agents" and its tooltip says how many were hidden. The Overview turns
+it on by default and Device fleet off; Reset filters returns to that host
+default. Show also selects resource kinds, including
 Flows and Work (Accounts are hidden by default), Idle (configured) and the
 available governance gaps. Every agent active in the window is shown; there is no
 separate state or provider filter. Users scopes the map to one or more people:
@@ -27,8 +45,10 @@ how many visible resources are active in the window and excludes idle resources.
 Older servers retain their existing window filtering. A configured model binding
 alone does not establish model usage on servers with activity evidence.
 
-Instance administrators switch between the lanes view and the canvas view with
-an icon-only control (tooltips "Lanes" and "Canvas"). The lanes view reads People,
+Everyone can switch between the lanes view and the canvas view with an icon-only
+control (tooltips "Lanes" and "Canvas") at the left of the bottom-right control
+bar; the arrangement and positions are stored per user and map, so they are a
+layout preference, not shared data. The lanes view reads People,
 Devices, Agents & Flows, Providers and Work: flows sit under the agents in the
 same lane, below a Flows sub-header, and the lane header names both with a count
 for each ("Agents" or "Flows" alone when only one has rows). When Models and
@@ -49,12 +69,11 @@ layout also forgets folded groups and expanded columns. Both spatial actions off
 Undo for six seconds. Fit changes the camera without moving your nodes. Layout
 changes use the existing glide and happen immediately with reduced motion.
 
-Device fleet and full screen pan on plain wheel. In the Overview card, plain wheel
-scrolls the page; drag empty canvas to pan. Ctrl/Cmd+wheel zooms around the pointer.
-The bottom-right controls provide zoom, 100%, Fit and full screen. A crowded spatial
-map keeps a minimum readable scale and allows panning. The Overview Map occupies a
-bounded, full-width grid row. Its Inventory component stays mounted when switching
-views, and entering full screen uses the existing canvas.
+Device fleet and full screen pan on plain wheel; Ctrl/Cmd+wheel zooms around the
+pointer. The bottom-right control bar reads, left to right: Lanes | Canvas, zoom
+out, the zoom level (100% on click), zoom in, Arrange (canvas only), Fit and full
+screen. A crowded spatial map keeps a minimum readable scale and allows panning.
+The Overview Inventory card is a table only; the map is not one of its views.
 
 ## Resource details
 

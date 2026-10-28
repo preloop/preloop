@@ -51,6 +51,9 @@ import {
   noteReadPointLabel,
 } from '../utils/agent-control';
 import type { PendingTalkMessage } from './session-chat-view';
+import './talk-command-menu';
+import { TALK_COMMANDS, matchCommands } from './talk-command-menu';
+import type { TalkCommand, TalkCommandName } from './talk-command-menu';
 
 interface SpeechRecognitionLike {
   lang: string;
@@ -89,6 +92,38 @@ export const TALK_SWITCH_SESSION_EVENT = 'talk-switch-session';
 
 /** Asked by the ended-session guard: start a new session instead. */
 export const TALK_NEW_SESSION_EVENT = 'talk-new-session';
+
+/** Asked by `/resume`: open the session picker. */
+export const TALK_OPEN_PICKER_EVENT = 'talk-open-session-picker';
+
+/** How many prompts Up can recall per session. */
+export const TALK_HISTORY_LIMIT = 50;
+
+const HISTORY_KEY_PREFIX = 'preloop-talk-history:';
+
+/** The prompts typed into one session, oldest first (tab-scoped storage). */
+function readHistory(sessionKey: string): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(HISTORY_KEY_PREFIX + sessionKey);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHistory(sessionKey: string, items: string[]): void {
+  try {
+    window.sessionStorage.setItem(
+      HISTORY_KEY_PREFIX + sessionKey,
+      JSON.stringify(items.slice(-TALK_HISTORY_LIMIT))
+    );
+  } catch {
+    /* Storage full or blocked: history is a convenience. */
+  }
+}
 
 /** How long a note may wait on an idle session before the bubble says so. */
 export const NOTE_STALE_AFTER_MS = 10 * 60 * 1000;
@@ -165,6 +200,17 @@ export class TalkComposer extends LitElement {
 
   @state()
   private commandCopied = false;
+
+  /** Highlighted row of the `/` menu. */
+  @state()
+  private menuIndex = 0;
+
+  /** Esc closed the `/` menu for the text as it is now. */
+  @state()
+  private menuDismissed = false;
+
+  /** Position in this session's history while Up/Down recall; null = live. */
+  private historyCursor: number | null = null;
 
   @query('sl-textarea')
   private textarea!: HTMLElement & { focus: () => void };
@@ -443,6 +489,8 @@ export class TalkComposer extends LitElement {
       this.endedGuardVisible = false;
     }
     if (changed.has('sessionId')) {
+      // Up recalls this session's prompts only, from the newest again.
+      this.historyCursor = null;
       // A new session has no answer yet: show no control buttons until the
       // server says how it is routed.
       this.sessionControl = null;
@@ -714,8 +762,195 @@ export class TalkComposer extends LitElement {
     }
   }
 
+  /** The control row shows (and Interrupt/Release may appear in it). */
+  private get controlRowVisible(): boolean {
+    return (
+      getAgentControlState(this.agent).enabled &&
+      !this.sessionLoadFailed &&
+      !(this.sessionId && this.sessionControlFailed)
+    );
+  }
+
+  /** Interrupt is offered: the runtime supports it and Preloop drives this session. */
+  private get canInterrupt(): boolean {
+    return (
+      this.controlRowVisible &&
+      !this.noteMode &&
+      this.sessionDrivable &&
+      Boolean(this.agent?.supports_interrupt) &&
+      this.controlMode === 'remote'
+    );
+  }
+
+  private get canRelease(): boolean {
+    return (
+      this.controlRowVisible &&
+      !this.noteMode &&
+      this.sessionDrivable &&
+      this.controlMode === 'remote' &&
+      Boolean(this.agent?.control_capabilities?.includes('release'))
+    );
+  }
+
+  /** Commands this window can run right now. */
+  private get availableCommands(): TalkCommand[] {
+    return TALK_COMMANDS.filter((command) => {
+      if (command.name === 'interrupt') return this.canInterrupt;
+      if (command.name === 'release') return this.canRelease;
+      if (command.name === 'new')
+        return this.agent?.supports_new_session !== false;
+      return true;
+    });
+  }
+
+  /** The `/` menu rows for the text in the box, empty when it is closed. */
+  private get menuCommands(): TalkCommand[] {
+    if (this.menuDismissed || !getAgentControlState(this.agent).enabled)
+      return [];
+    return matchCommands(this.message, this.availableCommands);
+  }
+
+  /** The words of the line above the input, also what `/status` says. */
+  private get modeLine(): string {
+    if (this.noteMode)
+      return noteModeLine(
+        this.sessionControl?.reason_code,
+        this.sessionControl?.reason,
+        this.sessionIdle
+      );
+    if (this.controlMode === 'remote') return 'You have this session';
+    if (this.controlMode === 'local')
+      return 'Local session. Sending takes it over.';
+    if (this.controlMode === 'queued')
+      return 'Queued. The agent picks this up when it connects.';
+    return 'Offline. Your message waits for the agent.';
+  }
+
+  private remember(sessionId: string, text: string): void {
+    const history = readHistory(sessionId);
+    if (history[history.length - 1] !== text)
+      writeHistory(sessionId, [...history, text]);
+  }
+
+  private setMessage(text: string): void {
+    this.message = text;
+    this.menuIndex = 0;
+    this.menuDismissed = false;
+  }
+
+  private runCommand(name: TalkCommandName): void {
+    this.setMessage('');
+    this.historyCursor = null;
+    this.controlError = null;
+    if (name === 'new') {
+      this.dispatchEvent(
+        new CustomEvent(TALK_NEW_SESSION_EVENT, {
+          bubbles: true,
+          composed: true,
+        })
+      );
+      this.statusMessage = 'New session. Your next message starts it.';
+    } else if (name === 'resume') {
+      // The picker takes focus, so Esc there closes it and never reaches
+      // the composer's Esc-to-interrupt.
+      this.dispatchEvent(
+        new CustomEvent(TALK_OPEN_PICKER_EVENT, {
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    } else if (name === 'interrupt') {
+      void this.interruptSession();
+    } else if (name === 'release') {
+      void this.releaseSession();
+    } else if (name === 'status') {
+      this.statusMessage = this.modeLine;
+    }
+    this.focusInput();
+  }
+
+  /** Up: the previous prompt typed into this session, never another's. */
+  private recallHistory(direction: -1 | 1): boolean {
+    // A window starting a new session has no history of its own yet.
+    if (!this.sessionId) return false;
+    const history = readHistory(this.sessionId);
+    if (!history.length) return false;
+    if (this.historyCursor === null) {
+      // Only an empty box recalls, so Up still moves the caret in a draft.
+      if (direction === 1 || this.message.trim()) return false;
+      this.historyCursor = history.length - 1;
+    } else {
+      const next = this.historyCursor + direction;
+      if (next >= history.length) {
+        this.historyCursor = null;
+        this.setMessage('');
+        return true;
+      }
+      this.historyCursor = Math.max(0, next);
+    }
+    this.setMessage(history[this.historyCursor]);
+    return true;
+  }
+
   private handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    if (event.isComposing) return;
+    const menu = this.menuCommands;
+    if (menu.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        this.menuIndex = (this.menuIndex + step + menu.length) % menu.length;
+        return;
+      }
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        this.setMessage(
+          `/${menu[Math.min(this.menuIndex, menu.length - 1)].name}`
+        );
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        this.menuDismissed = true;
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        this.runCommand(menu[Math.min(this.menuIndex, menu.length - 1)].name);
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      const typed = this.message.trim().toLowerCase();
+      const known = TALK_COMMANDS.find((c) => `/${c.name}` === typed);
+      if (known && !this.availableCommands.includes(known)) {
+        // A real command this session cannot run is not a message.
+        event.preventDefault();
+        this.statusMessage = `/${known.name} is not available for this session.`;
+        return;
+      }
+    }
+    if (event.key === 'Escape') {
+      // Esc interrupts, as in Claude Code, only where Preloop can.
+      if (!this.canInterrupt) return;
+      event.preventDefault();
+      void this.interruptSession();
+      return;
+    }
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey
+    ) {
+      if (this.recallHistory(event.key === 'ArrowUp' ? -1 : 1))
+        event.preventDefault();
+      return;
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void this.send();
     }
@@ -779,7 +1014,11 @@ export class TalkComposer extends LitElement {
     // swallows what you typed until a round trip finishes reads as broken.
     // Clearing the box now also means a second Enter cannot resend it.
     this.setPending([...this.pending, pending]);
-    this.message = '';
+    this.setMessage('');
+    this.historyCursor = null;
+    // A first prompt has no session yet; it is recorded once the server
+    // names the session it created (deliver), never under a shared key.
+    if (targetSessionId) this.remember(targetSessionId, text);
     this.lastInputMode = 'text';
     const asNote = targetSessionId
       ? await this.sessionTakesNotes(targetSessionId)
@@ -926,6 +1165,7 @@ export class TalkComposer extends LitElement {
         startNewSession && typeof response.target_session_id === 'string'
           ? response.target_session_id
           : null;
+      if (createdSessionId) this.remember(createdSessionId, text);
       this.setPending(
         this.pending.map((item) =>
           item.id === id
@@ -1098,21 +1338,15 @@ export class TalkComposer extends LitElement {
       (this.localSpeechRecognitionAvailable || this.mediaRecorderAvailable);
     const listening = this.listening || this.recordingFallback;
 
-    const showControlRow =
-      enabled &&
-      !this.sessionLoadFailed &&
-      !(this.sessionId && this.sessionControlFailed);
+    const showControlRow = this.controlRowVisible;
+    const menu = this.menuCommands;
     return html`
       ${
         showControlRow && this.noteMode
           ? html`
               <div class="control-row">
                 <span class="mode" data-testid="composer-mode">
-                  ${noteModeLine(
-                    this.sessionControl?.reason_code,
-                    this.sessionControl?.reason,
-                    this.sessionIdle
-                  )}
+                  ${this.modeLine}
                 </span>
               </div>
             `
@@ -1123,19 +1357,10 @@ export class TalkComposer extends LitElement {
           ? html`
               <div class="control-row">
                 <span class="mode" data-testid="composer-mode">
-                  ${
-                    this.controlMode === 'remote'
-                      ? 'You have this session'
-                      : this.controlMode === 'local'
-                        ? 'Local session. Sending takes it over.'
-                        : this.controlMode === 'queued'
-                          ? 'Queued. The agent picks this up when it connects.'
-                          : 'Offline. Your message waits for the agent.'
-                  }
+                  ${this.modeLine}
                 </span>
                 ${
-                  this.agent?.supports_interrupt &&
-                  this.controlMode === 'remote'
+                  this.canInterrupt
                     ? html`<sl-button
                         size="small"
                         @click=${() => void this.interruptSession()}
@@ -1145,8 +1370,7 @@ export class TalkComposer extends LitElement {
                     : nothing
                 }
                 ${
-                  this.controlMode === 'remote' &&
-                  this.agent?.control_capabilities?.includes('release')
+                  this.canRelease
                     ? html`<sl-button
                         size="small"
                         @click=${() => void this.releaseSession()}
@@ -1159,7 +1383,20 @@ export class TalkComposer extends LitElement {
             `
           : nothing
       }
-
+      ${
+        menu.length
+          ? html`<talk-command-menu
+              .commands=${menu}
+              .activeIndex=${Math.min(this.menuIndex, menu.length - 1)}
+              @talk-command-pick=${(
+                event: CustomEvent<{ name: TalkCommandName }>
+              ) => {
+                event.stopPropagation();
+                this.runCommand(event.detail.name);
+              }}
+            ></talk-command-menu>`
+          : nothing
+      }
       <div class="input-row">
         <sl-textarea
           data-testid="composer-input"
@@ -1174,7 +1411,8 @@ export class TalkComposer extends LitElement {
           .value=${this.message}
           ?disabled=${!enabled}
           @sl-input=${(event: Event) => {
-            this.message = (event.target as HTMLTextAreaElement).value;
+            this.setMessage((event.target as HTMLTextAreaElement).value);
+            this.historyCursor = null;
             this.lastInputMode = 'text';
           }}
           @keydown=${(event: KeyboardEvent) => this.handleKeydown(event)}
@@ -1214,8 +1452,8 @@ export class TalkComposer extends LitElement {
       ${
         enabled
           ? html`<div class="hint">
-              Enter sends. Shift+Enter adds a new
-              line.${
+              Enter sends. Shift+Enter adds a new line. / for
+              commands.${this.canInterrupt ? ' Esc interrupts.' : nothing}${
                 this.statusMessage ? html` · ${this.statusMessage}` : nothing
               }
             </div>`

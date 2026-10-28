@@ -210,6 +210,26 @@ describe('ApiKeyView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Active');
   });
 
+  it('names an auto-created flow key by run and shows the full id in meta', async () => {
+    fetchStub = createFetchStub({
+      key: { name: 'Flow Execution 9910dacd-4297-4bb0-9f1e-0a1b2c3d4e5f' },
+    });
+    const element = (await fixture(
+      html`<api-key-view
+        .location=${{ params: { keyId: 'key-1' } }}
+      ></api-key-view>`
+    )) as ApiKeyView;
+    await waitUntil(() => !(element as any).loading);
+    await element.updateComplete;
+
+    const header = element.shadowRoot?.querySelector('view-header');
+    expect((header as any)?.headerText).to.equal('Flow run 9910dacd');
+    const meta = header?.querySelector('[slot="meta"]');
+    expect(meta?.textContent).to.contain(
+      '9910dacd-4297-4bb0-9f1e-0a1b2c3d4e5f'
+    );
+  });
+
   it('renders the back link and a Revoke button in slots view-header has', async () => {
     fetchStub = createFetchStub();
     const element = (await fixture(

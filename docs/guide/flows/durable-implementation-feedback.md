@@ -117,6 +117,8 @@ Cost is cumulative estimated execution cost in USD, with existing execution
 budgets enforced independently. No-progress detection compares the PR head
 before and after a repair. The execution result's `continuation` object shows
 thread state, consumed turns/cost, pending feedback, head and stop reason.
+A thread whose pull request ends stops with `pr_merged` or `pr_closed`, the
+same values the webhook path records on a stopped execution.
 
 The execution detail page marks each repair as a **Continuation** and links to
 the original publishing execution. Both pages provide issue and pull request
@@ -226,7 +228,10 @@ ruleset workflow/code-scanning gates that require additional evidence prevent
 readiness with a reason. Explicit permission denials on GitHub branch protection
 or ruleset discovery still allow repairs to fully read, current-head review and
 CI feedback. They never establish that repository requirements passed. Other
-provider failures, rate limits or incomplete feedback block repairs as well.
+provider failures or incomplete feedback block repairs as well. A rate-limited
+read is not a failure: the thread waits with `stop_reason:
+provider_rate_limited` and is read again after the provider's `Retry-After`
+(at least 30 seconds, at most one hour).
 Resolve the blocker or provide the required gate integration; Preloop does not
 interpret unavailable evidence as approval. The PR remains open
 for manual merge.

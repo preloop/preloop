@@ -1,4 +1,5 @@
 import type { PreparedExtensionAttentionItem } from './attention-extension';
+import type { DeliveryReportAttention } from '../delivery-reports-api';
 import type { MCPFinding } from '../mcp-findings-api';
 import type { BudgetPolicy } from '../api';
 import type {
@@ -45,6 +46,7 @@ import {
  */
 export type AttentionKind =
   | 'approval'
+  | 'delivery_report'
   | 'agent'
   | 'flow'
   | 'model'
@@ -133,6 +135,7 @@ export interface AttentionBudgetDetail {
  * inbox unactionable.
  */
 export interface AttentionEvidence {
+  deliveryReport?: DeliveryReportAttention;
   mcpFinding?: MCPFinding;
   failedRuns?: AttentionFailedRun[];
   /** "Failed to start agent Job: (409) Conflict" plus how many runs said it. */
@@ -281,6 +284,7 @@ export interface AttentionFlowExecution {
 }
 
 export interface AttentionInputs {
+  deliveryReports?: DeliveryReportAttention[];
   approvals?: AttentionApproval[];
   agents?: ManagedAgentSummary[];
   sessions?: RuntimeSessionSummary[];
@@ -313,6 +317,12 @@ export const ATTENTION_KIND_META: Record<
   AttentionKind,
   { label: string; plural: string; icon: string; sectionHref: string }
 > = {
+  delivery_report: {
+    label: 'Delivery report',
+    plural: 'Delivery report needs you',
+    icon: 'exclamation-triangle',
+    sectionHref: '/console/delivery-reports',
+  },
   approval: {
     label: 'Approval',
     plural: 'Approvals',
@@ -378,6 +388,7 @@ export const ATTENTION_KIND_META: Record<
 /** Section order on the Attention page and in the grouped map. */
 export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'approval',
+  'delivery_report',
   'agent',
   'flow',
   'model',
@@ -1414,6 +1425,20 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
   const now = inputs.now || new Date();
   const dismissals = inputs.dismissals || [];
   const derived: AttentionItem[] = [
+    ...(inputs.deliveryReports || [])
+      .filter((report) => report.proposals.length > 0)
+      .map((report): AttentionItem => ({
+        id: `delivery_report:${report.id}`,
+        kind: 'delivery_report',
+        severity: 'warning',
+        title: report.projects.join(', ') || 'Delivery report',
+        detail: `${report.proposals.length} ${report.proposals.length === 1 ? 'proposal needs' : 'proposals need'} a decision${report.started_at ? ` · ${formatRelativeTime(report.started_at, now)}` : ''}`,
+        href: `/console/delivery-reports/${encodeURIComponent(report.id)}#needs-you`,
+        at: report.started_at,
+        fingerprint: report.fingerprint,
+        dismissable: true,
+        evidence: { deliveryReport: report },
+      })),
     ...approvalItems(inputs.approvals || [], now),
     ...agentItems(inputs.agents || [], inputs.sessions || [], now),
     ...flowItems(inputs.executions || [], now),
@@ -1534,4 +1559,31 @@ export function attentionKindChipLabel(
   const meta = ATTENTION_KIND_META[kind];
   const noun = count === 1 ? meta.label : meta.plural;
   return `${count} ${noun.toLowerCase()}`;
+}
+
+/**
+ * The short label an Overview strip chip prints. Three chips share one line
+ * at 1440, so a chip names the thing and the fact ("Budget over soft limit",
+ * "Pull Request Reviewer: 11 failed") and the full `title · detail` sentence
+ * goes in its `title`. Anything without a shorter form keeps its title.
+ */
+export function attentionChipLabel(item: AttentionItem): string {
+  const firstReason = (item.detail.split(' · ')[0] || '').trim();
+  switch (item.kind) {
+    case 'budget':
+      if (/^hard limit/i.test(item.detail)) return 'Budget at hard limit';
+      if (/^soft limit/i.test(item.detail)) return 'Budget over soft limit';
+      return item.title;
+    case 'flow':
+    case 'model': {
+      const count = /^(\d[\d,]*) failed/.exec(firstReason);
+      if (count) return `${item.title}: ${count[1]} failed`;
+      if (/^failed/i.test(firstReason)) return `${item.title}: failed`;
+      return item.title;
+    }
+    case 'agent':
+      return firstReason ? `${item.title}: ${firstReason}` : item.title;
+    default:
+      return item.title;
+  }
 }

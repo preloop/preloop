@@ -522,38 +522,30 @@ database:
   # SQLAlchemy connection pool sizing per component, injected as
   # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW.
   #
-  # IMPORTANT: each pod builds TWO pools (the sync engine and the async
-  # engine in models/db/session.py share these settings), plus one connection
-  # for the dedicated health-check engine. So:
-  #   steady per pod  = size * 2 + 1
-  #   ceiling per pod = (size + maxOverflow) * 2 + 1
+  # Each pod can build sync and async request pools plus one health
+  # connection. API/gateway processes also have an auth pool (2 steady,
+  # 3 overflow by default). Pools are lazy; budget for all being initialized:
+  #   request steady  = size * 2 + 1
+  #   request ceiling = (size + maxOverflow) * 2 + 1
+  #   API/gateway add = 2 steady / 5 ceiling for credential checks
   #
-  # The previous comment assumed 1 api pod and 5 worker pods; production
-  # actually runs api=2, gateway HPA (min 2 / max 5), and several worker
-  # pools. Flow-execution pods use flowExecution.databasePool, not worker 2+4.
+  # Budget (api=2, gateway min 2 / max 5, flow-execution=3, other workers=5):
+  #   api               2 x (8+12): steady  38, ceiling  92
+  #   gateway (min 2)   2 x (5+15): steady  26, ceiling  92
+  #   gateway (max 5)   5 x (5+15): steady  65, ceiling 230
+  #   other workers      5 x (2+4): steady  25, ceiling  65
+  #   flow-execution    3 x (10+4): steady  63, ceiling  87
+  #   TOTAL at gw min 2:            steady 152, ceiling 336
+  #   TOTAL at gw max 5:            steady 191, ceiling 474
   #
-  # Budget with the values below (api=2, gateway min 2, flow-execution=3,
-  # other workers=5):
-  #   api              2 x (8+12):  steady  34, ceiling  82
-  #   gateway (min 2)  2 x (6+14):  steady  26, ceiling  82
-  #   gateway (max 5)  5 x (6+14):  steady  65, ceiling 205
-  #   other workers     5 x (2+4):   steady  25, ceiling  65
-  #   flow-execution    3 x (10+4):  steady  63, ceiling  87
-  #   TOTAL at gw min 2:             steady 148, ceiling 316
-  #   TOTAL at gw max 5:             steady 187, ceiling 439
-  #
-  # Steady state at gateway min (148) and max (187) both fit inside
-  # max_connections=200 minus the 3 superuser reserved slots. The absolute
-  # ceiling is deliberately oversubscribed: overflow connections are
-  # short-lived and never all claimed at once (measured production peak is
-  # ~65 total). Do not raise gateway maxReplicas above 5 without raising
-  # max_connections or adding PgBouncer. The 2026-08-08 incident was
-  # per-pod starvation, not a global shortage -- one gateway pod exhausted
-  # its 10-connection ceiling while the server as a whole was 65/200.
-  # Raising the gateway ceiling from 10 to 20 per pod is what fixes it.
-  # Memory HPA used to pin at 5 replicas because the 256Mi request sat
-  # below idle RSS (~650Mi); the request is now 768Mi so utilization
-  # tracks real pressure.
+  # Reducing gateway base size from 6 to 5 offsets the auth pool while
+  # keeping its request-pool ceiling at 20. Steady max (191) fits in
+  # max_connections=200 minus 3 reserved slots, leaving 6 connections for
+  # dedicated triage locks and maintenance. Overflow is oversubscribed:
+  # simultaneous bursts can still reach the server limit. Increase database
+  # capacity or add PgBouncer before increasing replicas or pool sizes,
+  # including DATABASE_AUTH_POOL_SIZE / DATABASE_AUTH_MAX_OVERFLOW.
+  # Flow-execution pods use flowExecution.databasePool, not worker 2+4.
   #
   # Approval waits no longer hold connections: the approval paths used to
   # keep one async-pool connection checked out per pending approval for the
@@ -571,8 +563,8 @@ database:
       size: 8
       maxOverflow: 12
     gateway:
-      size: 6
-      maxOverflow: 14
+      size: 5
+      maxOverflow: 15
     worker:
       size: 2
       maxOverflow: 4
@@ -622,6 +614,10 @@ database:
     storage:
       size: 1Gi
       storageClass: ""
+      # CloudNativePG spec.storage.resizeInUseVolumes. true lets the operator
+      # grow an in-use PVC when storage.size increases; set false to manage
+      # volume resizes manually.
+      resizeInUseVolumes: true
     resources:
       limits:
         cpu: 1500m

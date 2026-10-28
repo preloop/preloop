@@ -72,7 +72,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 
 | Capability | What it does | Alternatives |
 |---|---|---|
-| **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. | MintMCP, Lunar.dev MCPX, TrueFoundry |
+| **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. [Connect OAuth MCP servers](docs/guide/tools/external-mcp.md#oauth-connections) with automatic token refresh. | MintMCP, Lunar.dev MCPX, TrueFoundry |
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
 | **Private runners** | Run flow agents on your own machines over an outbound WebSocket, no inbound ports. | Self-managed CI runners |
@@ -96,7 +96,7 @@ One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Clou
 
 - [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
 - [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
-- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report. See what landed, what the available evidence supports against stated criteria, and which gaps deserve investigation
+- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly report with proposals for human decisions and project reruns. See what landed, what the available evidence supports against stated criteria, and which gaps deserve investigation
 - [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
 - [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
 - [Observe / Eval](./backend/presets/003-observe-eval.yaml)
@@ -137,7 +137,7 @@ Check a sample call before saving with **Test this rule** or **Simulate** in the
 ## More capabilities
 
 - **Model providers:** OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot, Z.ai, OpenRouter, any OpenAI-compatible endpoint, and [runner-proxied local models](docs/guide/runner-local-models.md). [Reviewed model pricing](docs/guide/model-price-refresh.md); unpriced models stay visibly unpriced.
-- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs. [Guide](docs/guide/flows/restricted-ci.md).
+- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs, with an optional read-only native GitHub App clone mode and separate result publication. [Guide](docs/guide/flows/restricted-ci.md).
 - **Account kill switch:** blocks gateway and tool traffic and stops managed flow runs, with audited recovery. [Guide](docs/guide/account-kill-switch.md).
 - **Durable audit delivery:** opt-in transactional intents for approvals, policy decisions and tool outcomes, with restart replay and backlog alerts. [Operations guide](docs/operations/audit-outbox.md).
 - **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
@@ -173,7 +173,7 @@ preloop agents discover
 
 Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules. The [local upgrade acceptance harness](docs/operations/upgrade-acceptance.md) verifies release-to-candidate migrations, data and credentials in disposable Compose and kind stacks.
 
-Credential storage upgrades require a maintenance window and the existing encryption key; follow the [staged upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
+Credential storage upgrades keep the existing encryption key and run as a normal rolling upgrade; read the [credential storage upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 

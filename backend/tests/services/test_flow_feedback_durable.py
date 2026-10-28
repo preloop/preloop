@@ -1889,7 +1889,7 @@ async def test_close_stops_active_repair_and_releases_scheduler(
         db.refresh(source)
         db.refresh(thread)
         assert source.status == "STOPPED"
-        assert source.error_message == "pr_closed_or_merged"
+        assert source.error_message == "pr_closed"
         assert thread.state == "closed"
         assert thread.lease_token is None
         assert crud_flow_feedback.claim_due(db, now=NOW + timedelta(seconds=121)) == []

@@ -400,7 +400,7 @@ def test_mcp_oauth_continuation_requires_permission_claim(
             "server_id": str(server.id),
         }
     )
-    with patch("preloop.api.endpoints.mcp_servers.httpx.AsyncClient") as outbound:
+    with patch("preloop.api.endpoints.mcp_servers.OAuthHTTP") as outbound:
         response = client.get(
             f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
             params={"code": token},
@@ -436,34 +436,50 @@ def test_mcp_oauth_continuation_preserves_state_and_pkce(
     token = client.post(
         f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
     ).json()["authorize_token"]
-    monkeypatch.setattr(mcp_servers, "_pending_oauth_states", {})
-    monkeypatch.setattr(mcp_servers, "get_db_session", lambda: iter([db_session]))
     # RFC 7636 Appendix B gives an independent expected S256 challenge.
     expected_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     expected_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
     scan = AsyncMock(return_value=[])
     monkeypatch.setattr(mcp_servers, "scan_mcp_server_tools", scan)
+    import json
+    import time
+    from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth, digest
+    from preloop.utils.encryption import decrypt_value
+
     outbound = AsyncMock()
-    outbound.get.return_value = httpx.Response(
-        200,
-        json={
-            "authorization_endpoint": "https://mcp.example.com/authorize",
-            "token_endpoint": "https://mcp.example.com/token",
-        },
-    )
-    outbound.post.return_value = httpx.Response(
-        200,
-        json={
-            "access_token": "example-access",
-            "refresh_token": "example-refresh",
-        },
-    )
-    with patch.object(mcp_servers.httpx, "AsyncClient") as factory:
-        factory.return_value.__aenter__.return_value = outbound
+    outbound.deadline = time.monotonic() + 45
+    outbound.get.side_effect = [
+        httpx.Response(
+            401,
+            headers={
+                "WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/metadata"'
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "resource": server.url,
+                "authorization_servers": ["https://mcp.example.com"],
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "issuer": "https://mcp.example.com",
+                "authorization_endpoint": "https://mcp.example.com/authorize",
+                "token_endpoint": "https://mcp.example.com/token",
+            },
+        ),
+    ]
+    outbound.post.return_value = {
+        "access_token": "example-access",
+        "refresh_token": "example-refresh",
+    }
+    with patch.object(mcp_servers, "OAuthHTTP", return_value=outbound):
         with patch.object(
             mcp_servers.secrets,
             "token_urlsafe",
-            side_effect=[expected_verifier, "example-oauth-state"],
+            side_effect=["example-oauth-state", "example-browser", expected_verifier],
         ):
             response = client.get(
                 f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
@@ -473,23 +489,33 @@ def test_mcp_oauth_continuation_preserves_state_and_pkce(
         assert response.status_code == 302
         params = parse_qs(urlparse(response.headers["location"]).query)
         state = params["state"][0]
-        pending = mcp_servers._pending_oauth_states[state]
-        verifier = pending["code_verifier"]
+        pending = (
+            db_session.query(models.UpstreamMCPOAuthTransaction)
+            .filter_by(state_hash=digest(state))
+            .one()
+        )
+        context = json.loads(decrypt_value(pending.context_encrypted))
+        verifier = context["verifier"]
         assert verifier == expected_verifier
+        assert verifier not in pending.context_encrypted
         assert params["code_challenge"] == [expected_challenge]
         assert params["code_challenge_method"] == ["S256"]
-        assert pending["permission"] == "edit_mcp_servers"
-        assert pending["account_id"] == str(test_user.account_id)
-        with patch.object(db_session, "close"):
-            response = client.get(
-                "/api/v1/mcp-servers/oauth/callback",
-                params={"code": "provider-code", "state": state},
-                follow_redirects=False,
-            )
+        assert pending.account_id == test_user.account_id
+        assert pending.user_id == test_user.id
+        response = client.get(
+            "/api/v1/mcp-servers/oauth/callback",
+            params={"code": "provider-code", "state": state},
+            follow_redirects=False,
+        )
         assert response.status_code == 302
         assert response.headers["location"].endswith("#setup_mcp=success")
         assert outbound.post.call_args.kwargs["data"]["code_verifier"] == verifier
-        assert state not in mcp_servers._pending_oauth_states
+        assert (
+            db_session.query(models.UpstreamMCPOAuthTransaction)
+            .filter_by(state_hash=digest(state))
+            .count()
+            == 0
+        )
         scan.assert_awaited_once()
         response = client.get(
             "/api/v1/mcp-servers/oauth/callback",
@@ -497,7 +523,11 @@ def test_mcp_oauth_continuation_preserves_state_and_pkce(
         )
         assert response.status_code == 400
     db_session.refresh(server)
-    assert server.auth_config["access_token"] == "example-access"
+    assert "access_token" not in server.auth_config
+    assert (
+        crud_upstream_mcp_oauth.config_for_edit(db_session, server)["access_token"]
+        == "example-access"
+    )
 
 
 def test_mcp_oauth_callback_requires_gated_state(
@@ -505,21 +535,7 @@ def test_mcp_oauth_callback_requires_gated_state(
 ) -> None:
     from preloop.api.endpoints import mcp_servers
 
-    monkeypatch.setattr(
-        mcp_servers,
-        "_pending_oauth_states",
-        {
-            "example-state": {
-                "server_id": "example-server",
-                "account_id": "example-account",
-                "token_endpoint": "https://mcp.example.com/token",
-                "client_id": "example-client",
-                "code_verifier": "example-verifier",
-                "callback_url": "https://example.com/callback",
-            }
-        },
-    )
-    with patch.object(mcp_servers.httpx, "AsyncClient") as outbound:
+    with patch.object(mcp_servers, "OAuthHTTP") as outbound:
         response = client.get(
             "/api/v1/mcp-servers/oauth/callback",
             params={"code": "example", "state": "example-state"},

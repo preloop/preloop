@@ -37,6 +37,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     false as sa_false,
     text,
@@ -210,6 +211,7 @@ class IssueCostPullRequest(Base):
     __tablename__ = "issue_cost_pull_request"
     __table_args__ = (
         UniqueConstraint("account_id", "pr_key", name="uq_issue_cost_pull_request"),
+        Index("ix_issue_cost_pull_request_refresh_due", "refresh_due_at"),
     )
 
     account_id: Mapped[uuid.UUID] = mapped_column(
@@ -261,6 +263,32 @@ class IssueCostPullRequest(Base):
     # Forge state: one of ``PULL_REQUEST_STATES``; NULL until observed.
     state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # Forge refresh bookkeeping. ``refresh_due_at`` NULL means "due" while the
+    # state is open or unknown and "not scheduled" once merged or closed; a
+    # webhook for the pull request sets it to now. ``refresh_etag`` is the
+    # validator sent as ``If-None-Match`` on the next read.
+    refresh_due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refresh_etag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # What the deterministic Delivery Report reads without a model call
+    # (#2020). Filled from webhooks and a bounded forge read before a run;
+    # NULL means not observed. ``body`` is bounded and keeps the change
+    # brief and review summary blocks. ``changed_files`` holds
+    # ``{filename, status, additions, deletions}`` per file, plus ``patch``
+    # for migration files only; ``files_changed`` is the forge's own count.
+    title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    author_login: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    changed_files: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    files_changed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    details_observed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class IssueCostPullRequestIssue(Base):
     """One issue a pull request claims; a pull request may claim several."""
@@ -288,4 +316,30 @@ class IssueCostPullRequestIssue(Base):
         ForeignKey("issue.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+    )
+
+
+class ForgeWebhookDelivery(Base):
+    """A forge delivery id already queued, so a redelivery is not queued again."""
+
+    __tablename__ = "forge_webhook_delivery"
+    __table_args__ = (
+        UniqueConstraint("tracker_id", "delivery_id", name="uq_forge_webhook_delivery"),
+    )
+
+    tracker_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tracker.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # ``X-GitHub-Delivery``, ``X-Gitlab-Event-UUID`` or ``X-Request-UUID``.
+    delivery_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    # Set once the queue acknowledged the task. A claim left unpublished (the
+    # process died before the acknowledgement) can be taken over by a later
+    # delivery of the same id after a short grace period.
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

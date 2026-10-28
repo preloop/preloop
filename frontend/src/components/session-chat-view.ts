@@ -307,6 +307,10 @@ export class SessionChatView extends LitElement {
   @property({ type: Boolean })
   loadingMoreEvents = false;
 
+  /** The open turn's reply while it streams; empty when there is none. */
+  @property({ type: String })
+  liveReply = '';
+
   /** Pin the scroll position to the newest message as events stream in. */
   @property({ type: Boolean })
   followLive = false;
@@ -878,7 +882,7 @@ export class SessionChatView extends LitElement {
     const last = items[items.length - 1];
     return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
       this.activity.length
-    }`;
+    }|${this.liveReply.length}|${this.liveReply.slice(-64)}`;
   }
 
   /**
@@ -1455,6 +1459,21 @@ ${
     </sl-details>`;
   }
 
+  private renderLiveReply() {
+    if (!this.liveReply) return nothing;
+    return html`<div
+      class="bubble agent"
+      data-kind="live-reply"
+      data-testid="live-reply"
+    >
+      <div class="bubble-meta">
+        <span class="bubble-role">Agent</span>
+        <span>Writing...</span>
+      </div>
+      <pre class="bubble-text">${this.liveReply}</pre>
+    </div>`;
+  }
+
   private renderPending(message: PendingTalkMessage) {
     return html`
       <div
@@ -1575,7 +1594,7 @@ ${
       return html`
         <div class="loading">
           <sl-spinner></sl-spinner>
-          <div>Loading conversation...</div>
+          <div>Loading conversation…</div>
         </div>
       `;
     }
@@ -1583,7 +1602,7 @@ ${
     const { stats } = this.conversation;
     const items = this.displayItems;
     const turns = this.sessionTurns;
-    if (!items.length && !this.pending.length) {
+    if (!items.length && !this.pending.length && !this.liveReply) {
       return html`${this.renderLiveRegion()} ${this.renderLiveActivity()}
         <div class="empty">${this.emptyText}</div>`;
     }
@@ -1677,6 +1696,7 @@ ${
             (message) => message.id,
             (message) => this.renderPending(message)
           )}
+          ${this.renderLiveReply()}
         </div>
       </div>
     `;

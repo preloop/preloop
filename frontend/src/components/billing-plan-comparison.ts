@@ -1528,11 +1528,10 @@ export class BillingPlanComparison extends LitElement {
     li {
       line-height: 1.6;
     }
-    h2 {
-      font-size: 1.2rem;
-    }
+    h2,
     h3 {
-      font-size: 1.05rem;
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
     }
     .heading {
       display: flex;

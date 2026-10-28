@@ -59,3 +59,9 @@ rules:
   dangerous-triggers:
     ignore:
       - preloop-flow-trigger.yml
+      # Recovery must outlive cancellation of the CI run it monitors.
+      # workflow_run executes only workflow_sha-pinned default-branch code,
+      # never PR code/artifacts/logs. The job and script reject untrusted,
+      # superseded, canceled and repeated attempts before Actions mutations.
+      # Regression tests pin checkout ref, permissions and mutation guards.
+      - ci-hosted-recovery.yml

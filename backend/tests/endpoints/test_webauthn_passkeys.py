@@ -687,3 +687,44 @@ class TestCredentialManagement:
 
         assert response.status_code == 404
         mock_crud.deactivate.assert_not_called()
+
+
+@pytest.mark.parametrize("succeeded", [True, False])
+def test_passkey_records_one_final_auth_outcome(db_session_mock, mock_user, succeeded):
+    from webauthn.helpers.exceptions import InvalidAuthenticationResponse
+
+    cred = MagicMock()
+    cred.person_id = mock_user.person_id
+    cred.public_key = _b64url(b"public-key-bytes")
+    cred.sign_count = 5
+    with (
+        patch(
+            "preloop.api.auth.webauthn_router.crud_webauthn_credential"
+        ) as credentials,
+        patch(
+            "preloop.api.auth.webauthn_router.login_membership", return_value=mock_user
+        ),
+        patch("preloop.api.auth.webauthn_router.crud_audit_log"),
+        patch(
+            "preloop.api.auth.webauthn_router.verify_authentication_response"
+        ) as verify,
+        patch("preloop.services.auth_audit.crud_audit_log.log_action") as write,
+    ):
+        credentials.get_by_credential_id.return_value = cred
+        if not succeeded:
+            verify.side_effect = InvalidAuthenticationResponse("synthetic rejection")
+        response = client.post(
+            "/auth/webauthn/authenticate/verify",
+            json={
+                "credential": {"id": "synthetic-credential"},
+                "challenge_token": _issue_challenge_token(b"auth-chal", "authenticate"),
+            },
+        )
+    assert response.status_code == (200 if succeeded else 401)
+    write.assert_called_once()
+    event = write.call_args.kwargs
+    assert event["action"] == (
+        "auth.login.succeeded" if succeeded else "auth.login.failed"
+    )
+    assert event["details"]["method"] == "passkey"
+    assert event["details"]["person_id"] == str(mock_user.person_id)

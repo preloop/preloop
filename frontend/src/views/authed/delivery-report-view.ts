@@ -2,15 +2,19 @@ import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
+  actOnDeliveryReport,
   getDeliveryReport,
   type ClosedIssue,
+  type DeliveryReportAction,
   type Criterion,
   type DeliveryReportDetail,
   type FollowUp,
+  type ProposalDecision,
   type ReopenRequest,
   type ShippedChange,
 } from '../../delivery-reports-api';
 import { PermissionError } from '../../permissions';
+import { triggerFlowExecution } from '../../api';
 import { formatRelativeTime, parseUTCDate } from '../../utils/date';
 import {
   denominators,
@@ -28,10 +32,22 @@ import '../../components/permission-denied';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
 
-/** Why a proposal action is disabled until tracker writes from the report ship. */
+/** Why a proposal action is disabled on a server that cannot act on it. */
 export const ACTIONS_UNAVAILABLE =
-  'Not available yet: acting on proposals from the report is not supported by this server.';
+  'Not available: acting on proposals from the report is not supported by this server.';
+
+/** The decision's label in place of the buttons once a proposal is decided. */
+export function decisionLabel(decision: ProposalDecision): string {
+  if (decision.status === 'dismissed')
+    return decision.reason ? `Dismissed: ${decision.reason}` : 'Dismissed';
+  if (decision.status === 'pending') return 'In progress';
+  if (decision.status === 'unconfirmed')
+    return 'Not confirmed by the tracker: check it, then dismiss';
+  return decision.kind === 'reopen' ? 'Reopened' : 'Issue opened';
+}
 
 /** An anchor id for a project or area name. */
 export function anchorId(prefix: string, name: string): string {
@@ -63,7 +79,7 @@ export class DeliveryReportView extends LitElement {
         font-size: var(--console-text-meta);
       }
       a {
-        color: var(--sl-color-primary-700);
+        color: var(--console-link-color);
         text-decoration: none;
       }
       a:hover,
@@ -74,6 +90,21 @@ export class DeliveryReportView extends LitElement {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
+        align-items: center;
+      }
+      .header-actions sl-select {
+        max-width: 100%;
+        min-width: 0;
+      }
+      .header-actions sl-select::part(form-control) {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .header-actions sl-select::part(form-control-label) {
+        margin: 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
       }
       .summary-strip {
         display: flex;
@@ -87,6 +118,7 @@ export class DeliveryReportView extends LitElement {
       }
       .strip-item {
         display: flex;
+        flex-wrap: wrap;
         align-items: baseline;
         gap: 6px;
       }
@@ -152,6 +184,7 @@ export class DeliveryReportView extends LitElement {
       .row-head .end {
         margin-left: auto;
         display: inline-flex;
+        flex-wrap: wrap;
         gap: 8px;
         align-items: baseline;
         font-variant-numeric: tabular-nums;
@@ -167,6 +200,7 @@ export class DeliveryReportView extends LitElement {
       }
       .ref {
         font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
       }
       .detail {
         margin: 8px 0 0 22px;
@@ -181,6 +215,26 @@ export class DeliveryReportView extends LitElement {
         display: flex;
         gap: 8px;
         margin-left: auto;
+      }
+      .dismiss-form {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 8px;
+        margin: 8px 0 0 22px;
+        font-size: var(--console-text-meta);
+      }
+      .dismiss-form label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1 1 240px;
+      }
+      .dismiss-form input {
+        font: inherit;
+        padding: 4px 8px;
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-medium);
       }
       .empty {
         padding: 12px 16px;
@@ -232,6 +286,12 @@ export class DeliveryReportView extends LitElement {
         border: 0;
       }
       @media (max-width: 640px) {
+        section > h2 {
+          flex-wrap: wrap;
+        }
+        section > h2 .meta {
+          margin-left: 0;
+        }
         .row-head .end,
         .proposal-actions {
           margin-left: 0;
@@ -250,6 +310,16 @@ export class DeliveryReportView extends LitElement {
   @state() private error: string | null = null;
   @state() private permissionError: PermissionError | null = null;
   @state() private expanded = new Set<string>();
+  /** The proposal whose action is in flight. */
+  @state() private busyKey: string | null = null;
+  /** The proposal whose Dismiss form is open, and its reason. */
+  @state() private dismissKey: string | null = null;
+  @state() private dismissReason = '';
+  @state() private actionError: { key: string; message: string } | null = null;
+  @state() private rerunProject = '';
+  @state() private rerunning = false;
+  @state() private rerunError: string | null = null;
+  @state() private rerunExecution: string | null = null;
 
   /** Vaadin Router hands the route params over before the view connects. */
   onBeforeEnter(location: { params: Record<string, unknown> }): void {
@@ -258,8 +328,25 @@ export class DeliveryReportView extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener('hashchange', this.scrollToAnchor);
     void this.load();
   }
+
+  disconnectedCallback(): void {
+    window.removeEventListener('hashchange', this.scrollToAnchor);
+    super.disconnectedCallback();
+  }
+
+  /** Native fragment navigation cannot see the console view's shadow root. */
+  private scrollToAnchor = (): void => {
+    try {
+      const id = decodeURIComponent(window.location.hash.slice(1));
+      if (id)
+        this.renderRoot.querySelector(`#${CSS.escape(id)}`)?.scrollIntoView();
+    } catch {
+      // A malformed fragment still opens the report normally.
+    }
+  };
 
   async load(): Promise<void> {
     if (!this.reportId) {
@@ -270,6 +357,8 @@ export class DeliveryReportView extends LitElement {
     this.loading = true;
     try {
       this.detail = await getDeliveryReport(this.reportId);
+      if (!this.detail.rerun_projects?.includes(this.rerunProject))
+        this.rerunProject = this.detail.rerun_projects?.[0] ?? '';
       this.error = null;
     } catch (error) {
       if (error instanceof PermissionError) {
@@ -280,6 +369,47 @@ export class DeliveryReportView extends LitElement {
     } finally {
       this.loading = false;
     }
+    await this.updateComplete;
+    this.scrollToAnchor();
+  }
+
+  private async rerun(): Promise<void> {
+    if (!this.detail || !this.rerunProject || this.rerunning) return;
+    this.rerunning = true;
+    this.rerunError = null;
+    this.rerunExecution = null;
+    try {
+      const execution = await triggerFlowExecution(this.detail.flow_id, {
+        delivery_report_project: this.rerunProject,
+        payload: { window: this.detail.window },
+      });
+      this.rerunExecution = execution.id;
+    } catch (error) {
+      this.rerunError =
+        error instanceof Error ? error.message : 'Could not start the report.';
+    } finally {
+      this.rerunning = false;
+    }
+  }
+
+  private async act(key: string, action: DeliveryReportAction): Promise<void> {
+    this.busyKey = key;
+    this.actionError = null;
+    try {
+      await actOnDeliveryReport(this.reportId, action);
+      this.dismissKey = null;
+      this.dismissReason = '';
+    } catch (error) {
+      this.actionError = {
+        key,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      this.busyKey = null;
+    }
+    // Reload either way: a refusal (stale, already decided) is shown from
+    // the current state of the report.
+    await this.load();
   }
 
   private toggle(key: string): void {
@@ -366,15 +496,129 @@ export class DeliveryReportView extends LitElement {
     </ul>`;
   }
 
-  private actionButton(label: string, enabled: boolean, variant = 'default') {
+  private actionButton(
+    label: string,
+    enabled: boolean,
+    variant = 'default',
+    onClick?: () => void,
+    disabledTitle = ACTIONS_UNAVAILABLE
+  ) {
     return html`<sl-button
       size="small"
       variant=${variant}
-      ?disabled=${!enabled}
-      title=${enabled ? label : ACTIONS_UNAVAILABLE}
+      ?disabled=${!enabled || this.busyKey !== null}
+      title=${enabled ? label : disabledTitle}
       data-testid="action-${label.toLowerCase().replace(/\s+/g, '-')}"
+      @click=${() => onClick?.()}
       >${label}</sl-button
     >`;
+  }
+
+  /** Buttons for an open proposal, or its decision once it has one. */
+  private proposalActions(
+    key: string,
+    decision: ProposalDecision | undefined,
+    primary: {
+      label: string;
+      enabled: boolean;
+      title?: string;
+      run: () => void;
+    },
+    detail: DeliveryReportDetail
+  ) {
+    if (decision) {
+      const label = decisionLabel(decision);
+      const unconfirmed = decision.status === 'unconfirmed';
+      return html`<span class="proposal-actions" data-testid="decision">
+        ${this.chip(
+          decision.status === 'applied'
+            ? 'success'
+            : unconfirmed
+              ? 'warning'
+              : 'neutral',
+          label
+        )}
+        ${
+          decision.issue_url
+            ? this.external(decision.issue_url, 'View issue')
+            : nothing
+        }
+        ${
+          unconfirmed || decision.status === 'pending'
+            ? this.actionButton(
+                'Dismiss',
+                detail.actions.dismiss,
+                'default',
+                () => {
+                  this.dismissKey = key;
+                  this.dismissReason = '';
+                }
+              )
+            : nothing
+        }
+      </span>`;
+    }
+    return html`<span class="proposal-actions">
+      ${this.actionButton(
+        primary.label,
+        primary.enabled,
+        'primary',
+        primary.run,
+        primary.title
+      )}
+      ${this.actionButton('Dismiss', detail.actions.dismiss, 'default', () => {
+        this.dismissKey = key;
+        this.dismissReason = '';
+      })}
+    </span>`;
+  }
+
+  /** The inline Dismiss form and any refusal for one proposal. */
+  private proposalFooter(key: string) {
+    const error =
+      this.actionError?.key === key
+        ? html`<div class="meta" role="alert" data-testid="action-error">
+            ${this.actionError.message}
+          </div>`
+        : nothing;
+    if (this.dismissKey !== key) return error;
+    return html`${error}
+      <form
+        class="dismiss-form"
+        data-testid="dismiss-form"
+        @submit=${(e: Event) => {
+          e.preventDefault();
+          const reason = this.dismissReason.trim();
+          if (reason) void this.act(key, { kind: 'dismiss', key, reason });
+        }}
+      >
+        <label
+          >Why dismiss it?
+          <input
+            type="text"
+            maxlength="2000"
+            required
+            .value=${this.dismissReason}
+            @input=${(e: Event) => {
+              this.dismissReason = (e.target as HTMLInputElement).value;
+            }}
+        /></label>
+        <sl-button
+          size="small"
+          type="submit"
+          ?disabled=${!this.dismissReason.trim() || this.busyKey !== null}
+          data-testid="dismiss-confirm"
+          >Dismiss</sl-button
+        >
+        <sl-button
+          size="small"
+          variant="text"
+          @click=${() => {
+            this.dismissKey = null;
+          }}
+          >Cancel</sl-button
+        >
+      </form>`;
   }
 
   private renderStrip(detail: DeliveryReportDetail) {
@@ -454,7 +698,7 @@ export class DeliveryReportView extends LitElement {
         followUps.length
           ? html`<h3>Proposed follow-ups</h3>
               <ul class="rows">
-                ${followUps.map((f) => this.renderFollowUp(f, detail))}
+                ${followUps.map((f, i) => this.renderFollowUp(f, i, detail))}
               </ul>`
           : nothing
       }
@@ -463,6 +707,11 @@ export class DeliveryReportView extends LitElement {
 
   private renderReopen(request: ReopenRequest, detail: DeliveryReportDetail) {
     const stale = detail.stale_reopen_requests[request.ref];
+    const key = `reopen:${request.ref}`;
+    // A request the run reopened itself under the policy is already decided.
+    const decision: ProposalDecision | undefined = request.applied
+      ? { kind: 'reopen', status: 'applied', issue_url: request.url }
+      : detail.report.proposal_actions?.[key];
     return html`<li
       data-testid="reopen-request"
       data-stale=${stale ? 'true' : 'false'}
@@ -473,10 +722,19 @@ export class DeliveryReportView extends LitElement {
           ${request.title ?? ''}</span
         >
         ${stale ? this.chip('neutral', 'Stale', stale) : nothing}
-        <span class="proposal-actions">
-          ${this.actionButton('Reopen', !stale && detail.actions.reopen, 'primary')}
-          ${this.actionButton('Dismiss', detail.actions.dismiss)}
-        </span>
+        ${this.proposalActions(
+          key,
+          decision,
+          {
+            label: 'Reopen',
+            enabled: !stale && detail.actions.reopen,
+            title: stale
+              ? `${stale} Assess the issue again before reopening it.`
+              : undefined,
+            run: () => void this.act(key, { kind: 'reopen', ref: request.ref }),
+          },
+          detail
+        )}
       </div>
       <div class="detail">
         ${request.reason ? html`<div>${request.reason}</div>` : nothing}
@@ -491,18 +749,34 @@ export class DeliveryReportView extends LitElement {
               </ul>`
             : nothing
         }
+        ${this.proposalFooter(key)}
       </div>
     </li>`;
   }
 
-  private renderFollowUp(item: FollowUp, detail: DeliveryReportDetail) {
+  private renderFollowUp(
+    item: FollowUp,
+    index: number,
+    detail: DeliveryReportDetail
+  ) {
+    const key = `follow_up:${index}`;
+    // A follow-up the run opened itself under the policy is already decided.
+    const decision: ProposalDecision | undefined = item.issue_url
+      ? { kind: 'open_issue', status: 'applied', issue_url: item.issue_url }
+      : detail.report.proposal_actions?.[key];
     return html`<li data-testid="follow-up">
       <div class="row-head">
         <span class="title">${item.title ?? 'Follow-up'}</span>
-        <span class="proposal-actions">
-          ${this.actionButton('Open issue', detail.actions.open_issue, 'primary')}
-          ${this.actionButton('Dismiss', detail.actions.dismiss)}
-        </span>
+        ${this.proposalActions(
+          key,
+          decision,
+          {
+            label: 'Open issue',
+            enabled: detail.actions.open_issue,
+            run: () => void this.act(key, { kind: 'open_issue', index }),
+          },
+          detail
+        )}
       </div>
       ${
         item.reason || item.evidence?.length
@@ -518,14 +792,15 @@ export class DeliveryReportView extends LitElement {
             </div>`
           : nothing
       }
+      ${this.proposalFooter(key)}
     </li>`;
   }
 
-  private renderChange(change: ShippedChange) {
+  private renderChange(change: ShippedChange, areaAnchor = '') {
     const key = `pr-${change.ref}`;
     const open = this.expanded.has(key);
     const flags = change.risk_flags ?? [];
-    return html`<li data-testid="shipped-change">
+    return html`<li data-testid="shipped-change" id=${areaAnchor || nothing}>
       <div class="row-head">
         ${this.expander(key, change.ref)}
         ${this.external(change.url, change.ref.split('#').length > 1 ? `#${change.ref.split('#').pop()}` : change.ref)}
@@ -624,7 +899,17 @@ export class DeliveryReportView extends LitElement {
               ([project, changes]) =>
                 html`<h3 id=${anchorId('project', project)}>${project}</h3>
                   <ul class="rows">
-                    ${changes.map((c) => this.renderChange(c))}
+                    ${changes.map((c, index) =>
+                      this.renderChange(
+                        c,
+                        c.area &&
+                          changes.findIndex(
+                            (other) => other.area === c.area
+                          ) === index
+                          ? anchorId('area', `${project}-${c.area}`)
+                          : ''
+                      )
+                    )}
                   </ul>`
             )
       }
@@ -854,6 +1139,36 @@ export class DeliveryReportView extends LitElement {
           ${failed ? this.chip('neutral', detail.status) : nothing}</span
         >
         <div slot="meta" class="header-actions">
+          ${
+            detail.rerun_projects?.length
+              ? html`
+                  <sl-select
+                    size="small"
+                    label="Project"
+                    .value=${this.rerunProject}
+                    ?disabled=${this.rerunning}
+                    @sl-change=${(event: Event) => {
+                      this.rerunProject = (
+                        event.target as HTMLSelectElement
+                      ).value;
+                    }}
+                  >
+                    ${detail.rerun_projects.map((project) => html`<sl-option value=${project}>${project}</sl-option>`)}
+                  </sl-select>
+                  <sl-button
+                    size="small"
+                    variant="primary"
+                    data-testid="rerun"
+                    ?loading=${this.rerunning}
+                    ?disabled=${!this.rerunProject || this.rerunning}
+                    @click=${() => void this.rerun()}
+                    >Re-run project</sl-button
+                  >
+                `
+              : nothing
+          }
+          ${this.rerunExecution ? html`<a data-testid="rerun-execution" href="/console/flows/executions/${encodeURIComponent(this.rerunExecution)}">Open new execution</a>` : nothing}
+          ${this.rerunError ? html`<span role="alert">${this.rerunError}</span>` : nothing}
           <sl-button size="small" href="/console/flows/${detail.flow_id}"
             >Open flow</sl-button
           >

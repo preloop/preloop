@@ -135,7 +135,7 @@ from preloop.services.gateway_event_history import elide_replayed_history
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
 )
-from preloop.services import operator_notes
+from preloop.services import delivery_report_views, operator_notes
 from preloop.services.event_webhooks.emitters import emit_session_ended
 from preloop.services.spend_outliers import (
     record_dismissal as record_spend_outlier_dismissal,
@@ -2008,9 +2008,14 @@ async def replace_account_managed_agent_model_bindings(
 
 
 def _governance_defaults_response(
+    db: Session,
     account: Account,
 ) -> AccountGovernanceDefaultsResponse:
-    """Build the defaults response including per-agent override ids."""
+    """Build the defaults response including per-agent override ids.
+
+    Overrides left behind by deleted agents are omitted: the console resolves
+    each id to a name, and an id with no agent behind it is a guaranteed 404.
+    """
     store = normalize_subject_governance_store(account.meta_data or {})
     agents_bucket = store.get(SUBJECT_TYPE_MANAGED_AGENTS) or {}
     override_agent_ids = sorted(
@@ -2022,6 +2027,11 @@ def _governance_defaults_response(
             or config.get("approval_workflow_id")
         )
     )
+    if override_agent_ids:
+        existing = crud_managed_agent.existing_ids_for_account(
+            db, account_id=str(account.id), agent_ids=override_agent_ids
+        )
+        override_agent_ids = [i for i in override_agent_ids if i in existing]
     return AccountGovernanceDefaultsResponse(
         defaults=AccountGovernanceDefaults.model_validate(
             get_account_governance_defaults(account.meta_data or {})
@@ -2041,7 +2051,7 @@ async def get_account_governance_defaults_endpoint(
     db: Session = Depends(get_db_session),
 ) -> AccountGovernanceDefaultsResponse:
     """Account-wide native tool-approval defaults every agent inherits."""
-    return _governance_defaults_response(account)
+    return _governance_defaults_response(db, account)
 
 
 @router.put(
@@ -2083,7 +2093,7 @@ async def update_account_governance_defaults_endpoint(
     db.commit()
     db.refresh(account)
     invalidate_account_governance_cache(str(account.id))
-    return _governance_defaults_response(account)
+    return _governance_defaults_response(db, account)
 
 
 def _validate_governance_workflow(
@@ -4434,13 +4444,16 @@ def _resolve_dismissal_usernames(
 def list_extension_attention_items(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
+    include_delivery_reports: bool = False,
 ) -> list[ExtensionAttentionItem]:
     """Bound contribution fan-out while async providers run on the API loop."""
-    return anyio.from_thread.run(_list_extension_attention_items, current_user, db)
+    return anyio.from_thread.run(
+        _list_extension_attention_items, current_user, db, include_delivery_reports
+    )
 
 
 async def _list_extension_attention_items(
-    current_user: UserModel, db: Session
+    current_user: UserModel, db: Session, include_delivery_reports: bool = False
 ) -> list[ExtensionAttentionItem]:
     """Merge enabled plugin sources authorized for the selected membership."""
     from preloop.api.auth.key_scopes import (
@@ -4463,7 +4476,7 @@ async def _list_extension_attention_items(
     if await run_db_off_loop(restricted):
         raise HTTPException(403, "Restricted credentials cannot read attention items")
     sources = get_plugin_manager().attention_sources()
-    if not sources:
+    if not sources and not include_delivery_reports:
         return []
 
     def permitted(permission: str) -> bool:
@@ -4475,6 +4488,35 @@ async def _list_extension_attention_items(
         )
 
     items: dict[tuple[str, str], ExtensionAttentionItem] = {}
+    if include_delivery_reports and await run_db_off_loop(
+        lambda: permitted("view_flows")
+    ):
+        try:
+
+            def report_items() -> list[ExtensionAttentionItem]:
+                contributions = []
+                for report in delivery_report_views.list_report_attention(
+                    db, account_id=current_user.account_id
+                ):
+                    contributions.append(
+                        ExtensionAttentionItem(
+                            id=str(report.id),
+                            source="core:delivery_report",
+                            title="Delivery report needs you",
+                            detail=f"{len(report.proposals)} pending proposals",
+                            href=f"/console/delivery-reports/{report.id}#needs-you",
+                            severity="action",
+                            opened_at=report.started_at or datetime.now(UTC),
+                            delivery_report=report,
+                        )
+                    )
+                return contributions
+
+            for item in await run_db_off_loop(report_items):
+                items[(item.source, item.id)] = item
+        except Exception:
+            await run_db_off_loop(db.rollback)
+            logger.exception("Delivery report attention source failed")
     for plugin_name, source in sources:
         if not await run_db_off_loop(
             lambda permission=source.permission: permitted(permission)

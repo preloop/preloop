@@ -1,3 +1,8 @@
+import {
+  beginOverviewLoad,
+  closeOverviewShell,
+  type OverviewLoad,
+} from '../../utils/overview-bootstrap';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 
@@ -17,6 +22,7 @@ import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '../../components/mcp-setup-dialog.ts';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/activity-feed.ts';
+import '../../components/fleet-map-launcher';
 import '../../components/inventory-card.ts';
 import '../../components/usage-card.ts';
 import {
@@ -70,6 +76,7 @@ import { isSaaS } from '../../brand-config';
 import { normalizeObservedSession } from '../../utils/session-observer';
 import { getAgentStatusChip } from '../../utils/agent-display';
 import {
+  attentionChipLabel,
   attentionItemAnchor,
   ATTENTION_KIND_META,
   deriveAttentionItems,
@@ -369,6 +376,15 @@ interface DashboardMetric {
   href?: string;
   tone?: 'primary' | 'neutral' | 'success' | 'warning' | 'danger';
 }
+
+/** Permissions that each let the fleet map draw one of its sources. */
+const FLEET_MAP_SOURCE_PERMISSIONS = [
+  'view_agents',
+  'view_ai_models',
+  'view_flows',
+  'view_users',
+  'view_device_fleet',
+];
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
@@ -933,6 +949,11 @@ export class DashboardView extends AuthedElement {
         color: var(--console-meta-color);
         text-decoration: line-through;
       }
+      .header-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
       .updated-at {
         color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
@@ -1239,7 +1260,7 @@ export class DashboardView extends AuthedElement {
       }
       @media (min-width: 1200px) {
         /* Inventory sits under the main column (Gateway, and Next steps
-           when shown) in Table and Map alike. Row 1 is sized by that
+           when shown). Row 1 is sized by that
            column alone and row 2 takes what the spanning
            side column needs beyond it. With two auto rows the long Activity
            feed stretched row 1 (a gap above Inventory), and a full-width
@@ -1686,6 +1707,7 @@ export class DashboardView extends AuthedElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.overviewLoad?.close();
     ++this.dashboardLoadGeneration;
     this.pendingTopicRefreshes.clear();
     this.queuedDashboardRefresh = null;
@@ -2173,49 +2195,67 @@ export class DashboardView extends AuthedElement {
     const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow();
-    const [summary, priorSummary, rateLimitReport, interactions] =
-      await Promise.all([
-        this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: startDateStr,
-            includeBreakdown: false,
-          }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: priorWindow.startDate,
-            endDate: priorWindow.endDate,
-            includeBreakdown: false,
-          }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountRateLimitReport({ startDate: startDateStr }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAccountGatewayUsageSearch({
-            limit: GATEWAY_FAILURES_REFRESH_LIMIT,
-            startDate: startDateStr,
-          }),
-          { items: [] } as unknown as Awaited<
-            ReturnType<typeof getAccountGatewayUsageSearch>
-          >
-        ),
-      ]);
-    if (range !== this.gatewayTimeRange) return;
-    void this.loadUsageSeries(range, { force: true });
-    // Merge, never replace: the breakdown on screen came from a heavier
-    // request that this one does not make.
-    this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
-      this.gatewayUsageRange === range ? this.gatewaySummary : null,
-      summary
-    );
-    if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
-    this.priorGatewaySummary = priorSummary;
-    this.rateLimitReport = rateLimitReport;
-    this.gatewayInteractions = interactions.items || [];
+
+    const load = ['/console', '/console/'].includes(window.location.pathname)
+      ? beginOverviewLoad(
+          {
+            start_date: startDateStr,
+            prior_start: priorWindow.startDate,
+            prior_end: priorWindow.endDate,
+            now: new Date().toISOString(),
+          },
+          'gateway'
+        )
+      : null;
+    this.overviewLoad = load;
+    try {
+      const [summary, priorSummary, rateLimitReport, interactions] =
+        await Promise.all([
+          this.catchWith403Handling(
+            getAccountGatewayUsageSummary({
+              startDate: startDateStr,
+              includeBreakdown: false,
+            }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountGatewayUsageSummary({
+              startDate: priorWindow.startDate,
+              endDate: priorWindow.endDate,
+              includeBreakdown: false,
+            }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountRateLimitReport({ startDate: startDateStr }),
+            null
+          ),
+          this.catchWith403Handling(
+            getAccountGatewayUsageSearch({
+              limit: GATEWAY_FAILURES_REFRESH_LIMIT,
+              startDate: startDateStr,
+            }),
+            { items: [] } as unknown as Awaited<
+              ReturnType<typeof getAccountGatewayUsageSearch>
+            >
+          ),
+        ]);
+      if (range !== this.gatewayTimeRange) return;
+      void this.loadUsageSeries(range, { force: true });
+      // Merge, never replace: the breakdown on screen came from a heavier
+      // request that this one does not make.
+      this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+        this.gatewayUsageRange === range ? this.gatewaySummary : null,
+        summary
+      );
+      if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
+      this.priorGatewaySummary = priorSummary;
+      this.rateLimitReport = rateLimitReport;
+      this.gatewayInteractions = interactions.items || [];
+    } finally {
+      load?.close();
+      if (this.overviewLoad === load) this.overviewLoad = null;
+    }
   }
 
   /** What a session or agent event can change. */
@@ -2584,6 +2624,9 @@ export class DashboardView extends AuthedElement {
    * used to sit between the wave and `loading = false`, so the whole page
    * waited on a request only the Usage card and the checklist read.
    */
+  private overviewLoad: OverviewLoad | null = null;
+  private overviewLoadTime: Date | undefined;
+
   private async fetchDashboardData(
     options: { preserveLoadingState?: boolean } = {}
   ) {
@@ -2630,6 +2673,18 @@ export class DashboardView extends AuthedElement {
     const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow();
+    if (
+      !options.preserveLoadingState &&
+      ['/console', '/console/'].includes(window.location.pathname)
+    ) {
+      this.overviewLoadTime = new Date();
+      this.overviewLoad = beginOverviewLoad({
+        start_date: startDateStr,
+        prior_start: priorWindow.startDate,
+        prior_end: priorWindow.endDate,
+        now: this.overviewLoadTime.toISOString(),
+      });
+    }
 
     // The chart's own small request, alongside the headline rather than
     // behind the breakdown wave (#1610). Not awaited: nothing else reads it.
@@ -2853,6 +2908,10 @@ export class DashboardView extends AuthedElement {
       this.loading = false;
     } finally {
       if (loadCoveredTopics) this.armTopicFloorAfterLongLoad();
+      closeOverviewShell();
+      this.overviewLoad?.close();
+      this.overviewLoad = null;
+      this.overviewLoadTime = undefined;
       releaseKillSwitchPoll();
       this.refreshInFlight = false;
       this.flushPendingTopicRefreshes();
@@ -3573,6 +3632,19 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
+   * The Fleet map button shows for anyone who may view at least one of the
+   * map's sources; the server scopes what they then see. A profile without
+   * a permission list (OSS, an older server) is the account's one operator.
+   */
+  private get canOpenFleetMap(): boolean {
+    if (!this.profileResolved) return false;
+    if (this.isAdmin || !Array.isArray(this.permissions)) return true;
+    return FLEET_MAP_SOURCE_PERMISSIONS.some((name) =>
+      this.permissions!.includes(name)
+    );
+  }
+
+  /**
    * The freshness stamp beside the title. The element owns its own thirty
    * second timer, so ageing the label no longer re-renders this page.
    */
@@ -3661,6 +3733,7 @@ export class DashboardView extends AuthedElement {
   ): Promise<void> {
     try {
       this.attentionInputs = await loadAttentionInputs({
+        now: this.overviewLoadTime,
         prefetched: {
           approvals: this.pendingApprovals as AttentionApproval[],
           agents: this.managedAgents,
@@ -4113,6 +4186,7 @@ export class DashboardView extends AuthedElement {
               <a
                 class="attention-chip-link"
                 href=${attentionItemAnchor(item.id)}
+                title=${item.detail ? `${item.title} · ${item.detail}` : item.title}
               >
                 <sl-badge
                   class="chip"
@@ -4124,7 +4198,7 @@ export class DashboardView extends AuthedElement {
                     aria-hidden="true"
                   ></sl-icon>
                   <span class="attention-chip-text"
-                    >${item.title} · ${item.detail}</span
+                    >${attentionChipLabel(item)}</span
                   >
                 </sl-badge>
               </a>
@@ -4727,8 +4801,6 @@ export class DashboardView extends AuthedElement {
         .deviceRows=${this.inventoryDeviceRows}
         .devicesTotal=${this.fleetDevicesTotal}
         ?showDevices=${this.canViewFleet}
-        ?instanceAdmin=${this.isAdmin}
-        .userId=${this.profileUserId}
         .unavailableTabs=${this.unavailableInventoryTabs}
         .agentsTotal=${this.totalAgentsCount}
         .flowsTotal=${this.totalFlowsCount}
@@ -4862,6 +4934,7 @@ export class DashboardView extends AuthedElement {
   private renderActivityFeed() {
     return html`
       <activity-feed
+        .parallelHistory=${true}
         .flows=${this.flows}
         .agents=${this.managedAgents}
         .executions=${this.flowExecutions}
@@ -4895,16 +4968,26 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <span
-          slot="meta"
-          class="updated-at"
-          title=${
-            this.lastUpdatedAt
-              ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
-              : 'Not loaded yet'
+        <span slot="meta" class="header-meta">
+          ${
+            this.canOpenFleetMap
+              ? html`<fleet-map-launcher
+                  time-range=${this.gatewayTimeRange}
+                  user-id=${this.profileUserId}
+                  ?instance-admin=${this.isAdmin}
+                ></fleet-map-launcher>`
+              : nothing
           }
-          >Updated ${this.renderLastUpdated()}</span
-        >
+          <span
+            class="updated-at"
+            title=${
+              this.lastUpdatedAt
+                ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
+                : 'Not loaded yet'
+            }
+            >Updated ${this.renderLastUpdated()}</span
+          >
+        </span>
       </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
@@ -4950,7 +5033,7 @@ export class DashboardView extends AuthedElement {
 
   /**
    * The Inventory, the audit trail line and the two exception cards, under
-   * the main column and beside Usage and Activity in Table and Map alike.
+   * the main column and beside Usage and Activity.
    */
   private renderInventoryStack() {
     return html`

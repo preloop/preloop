@@ -423,7 +423,13 @@ class CRUDFlowFeedback:
         *,
         changes: dict[str, Any],
         now: datetime,
+        delay_seconds: float | None = None,
     ) -> bool:
+        """Apply ``changes``, release the lease and re-arm the thread.
+
+        The thread is due again after ``delay_seconds`` (a provider
+        ``Retry-After``), or after the usual 30 seconds when that is None.
+        """
         thread = self.leased(db, thread_id, token, lock=True)
         if thread is None:
             return False
@@ -448,7 +454,9 @@ class CRUDFlowFeedback:
             }
         thread.lease_until = None
         thread.lease_token = None
-        thread.due_at = now + timedelta(seconds=30)
+        thread.due_at = now + timedelta(
+            seconds=30 if delay_seconds is None else delay_seconds
+        )
         db.commit()
         return True
 

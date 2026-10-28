@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -123,3 +124,44 @@ def test_second_closing_pr_is_not_compared_to_another_prs_head(
         lambda db, *, account_id, pr_key: pulls.get(pr_key),
     )
     assert views.stale_reopen_requests(None, account_id="a", report=report) == {}
+
+
+def test_pending_attention_marks_stale_requests(state: dict[str, Any]) -> None:
+    state["pull"] = SimpleNamespace(head_sha="new-head")
+    report = views.report_attention(
+        None,
+        account_id="a",
+        execution=SimpleNamespace(id=uuid.uuid4(), start_time=None, result=_report()),
+    )
+    assert report is not None
+    assert "New commits" in report.proposals[0].stale_reason
+
+
+def test_projects_include_open_work_without_any_merges() -> None:
+    assert views.report_projects(
+        {
+            "open_past_window": [{"ref": "example/app#1"}],
+            "follow_ups": [{"ref": "example/docs#2"}],
+        }
+    ) == ["example/app", "example/docs"]
+
+
+def test_decided_attention_does_not_read_current_issue_or_pr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue_read = Mock()
+    pull_read = Mock()
+    monkeypatch.setattr(views.crud_issue, "get_by_external_url", issue_read)
+    monkeypatch.setattr(views.crud_issue_cost, "get_pull_request", pull_read)
+    report = _report()
+    report["proposal_actions"] = {"reopen:example/app#7": {"status": "dismissed"}}
+    assert (
+        views.report_attention(
+            None,
+            account_id="a",
+            execution=SimpleNamespace(id=uuid.uuid4(), start_time=None, result=report),
+        )
+        is None
+    )
+    issue_read.assert_not_called()
+    pull_read.assert_not_called()

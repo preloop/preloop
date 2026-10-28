@@ -15,9 +15,10 @@
     --console-text-meta: 0.8125rem; /* 13px */
     --console-text-eyebrow: 0.6875rem; /* 11px */
     --console-stat-value: 1.375rem; /* 22px */
-    /* Commands, tool rows and the agent status line. Generic stack until a
-       real mono face is chosen; switching it is this one line. */
-    --console-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* Commands, tool rows and the agent status line: JetBrains Mono (D4),
+       self-hosted by console-fonts.css, generic stack as the fallback. */
+    --console-font-mono:
+      'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* The page box. One width and one side inset for every console page. */
     --console-page-max-width: 80rem; /* 1280px */
@@ -176,6 +177,23 @@ sl-badge:focus-visible,
     letter-spacing: -0.01em;
     color: var(--sl-color-neutral-900);
     margin: 0;
+}
+
+/* Section headings sit on the scale even when a view leaves them unstyled.
+   Browser defaults (1.5em, 1.17em, 0.83em of the parent) put 21px, 17.55px
+   and 11.62px titles on the settings and cost pages. Element selectors, so
+   any class rule or a view's own later `h3 {}` still wins. */
+h2,
+h3,
+h4 {
+    font-size: var(--console-text-card-title);
+    font-weight: 600;
+}
+
+h5,
+h6 {
+    font-size: var(--console-text-body);
+    font-weight: 600;
 }
 
 .header {
@@ -683,4 +701,17 @@ sl-dialog.large::part(panel) {
     justify-content: center;
     align-items: center;
     height: 400px;
+}
+
+/* The destructive item of a row's kebab menu (DESIGN.md "Destructive
+   actions"): last, after a divider, in danger ink, never a red button on
+   the row itself. */
+sl-menu-item.danger-item::part(base),
+sl-menu-item.danger-item::part(prefix) {
+    color: var(--sl-color-danger-600);
+}
+
+/* A row menu sits in a right-aligned actions cell; its items read left. */
+.row-menu sl-menu {
+    text-align: left;
 }

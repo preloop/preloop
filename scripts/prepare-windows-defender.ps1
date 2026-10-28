@@ -15,14 +15,14 @@ function Enable-WindowsDefenderEventLog {
 
 function Update-GitHubHostedDefenderSignature {
   # Defender can restart while protection is enabled on the hosted image.
-  # Retry only RPC failure or service-unavailable HRESULTs during startup;
-  # persistent disablement and unrelated policy errors still fail closed.
+  # Retry only RPC failure, service-unavailable, or another-install-in-progress
+  # HRESULTs during startup; persistent errors and policy failures still fail.
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
       Update-MpSignature -ErrorAction Stop
       return
     } catch {
-      if ($_.FullyQualifiedErrorId -notmatch '^HRESULT 0x(?:800706be|800106ba)(?:,|$)' -or $attempt -eq 3) {
+      if ($_.FullyQualifiedErrorId -notmatch '^HRESULT 0x(?:800706be|800106ba|80070652)(?:,|$)' -or $attempt -eq 3) {
         throw
       }
       Write-Warning "Defender signature update service is not ready; retrying ($attempt/3)."
@@ -39,9 +39,11 @@ function Update-GitHubHostedDefenderSignature {
           if (-not $stopped) { throw }
           Write-Warning "WinDefend cannot be stopped on this hosted image; retrying the signature update."
         }
-      } else {
+      } elseif ($_.FullyQualifiedErrorId -match '^HRESULT 0x800106ba(?:,|$)') {
         Start-Service -Name WinDefend -ErrorAction Stop
       }
+      # 0x80070652 means Windows Update already owns the installer. Leave the
+      # running service alone and retry after the competing update completes.
       Start-Sleep -Seconds (5 * $attempt)
     }
   }

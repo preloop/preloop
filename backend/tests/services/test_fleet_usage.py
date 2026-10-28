@@ -254,7 +254,11 @@ def test_route_window_validation_and_permission(
                 == 422
             )
         with patch.object(fleet_usage, "_allowed", return_value=False):
-            assert client.get("/api/v1/fleet/usage").status_code == 403
+            # Any member may ask; one who may view nothing gets nothing.
+            denied = client.get("/api/v1/fleet/usage")
+            assert denied.status_code == 200
+            body = denied.json()
+            assert body["models"] == {} and body["agents"] == {}
         response = client.get("/api/v1/fleet/usage?active_within_minutes=5")
         assert response.status_code == 200
         assert response.json()["active_within_minutes"] == 5

@@ -4060,7 +4060,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         if (execution_context.get("git_clone_config") or {}).get(
             "publication_mode"
-        ) == "isolated":
+        ) in {"isolated", "read_only"}:
             if execution_context.get(
                 self.GIT_API_TOKENS_CONTEXT_KEY
             ) or execution_context.get("_publication_refresh_env"):
@@ -4108,6 +4108,17 @@ class ContainerAgentExecutor(AgentExecutor):
         evidence = evidence_shell(execution_context)
         if evidence:
             commands.append(evidence.rstrip())
+
+        # Review execution requires a source checkout even if context is altered.
+        review_checkout = (
+            execution_context.get("read_only_review") is True
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        )
+        if review_checkout and not (
+            execution_context.get("git_clone_config") or {}
+        ).get("repositories"):
+            raise ValueError("Read-only review requires its admitted repository")
 
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")
@@ -4674,6 +4685,25 @@ fi
         the remaining sources a chance instead of running with no credential.
         """
 
+        if (
+            execution_context.get("read_only_review")
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        ):
+            repo_url = repo_config.get("repository_url")
+            credential = (execution_context.get("git_credentials_map") or {}).get(
+                repo_url
+            ) or {}
+            if (
+                not execution_context.get("read_only_review")
+                or credential.get("permission") != "read"
+                or not credential.get("token")
+            ):
+                raise ValueError(
+                    "Read-only review requires its exact repository-scoped lease"
+                )
+            return credential["token"], "github", "x-access-token"
+
         if (execution_context.get("git_clone_config") or {}).get(
             "publication_mode"
         ) == "isolated":
@@ -4859,9 +4889,11 @@ fi
     ) -> str:
         """Choose the branch passed to ``git clone -b`` for one repository."""
 
+        if repo_config.get("use_remote_default"):
+            return ""
         repo_branch = repo_config.get("branch")
         if repo_branch:
-            return repo_branch
+            return str(repo_branch)
         if commit_sha:
             clone_branch = (
                 self._extract_target_branch_from_trigger(trigger_data) or "main"
@@ -4991,6 +5023,7 @@ fi
         source_branch: str,
         target_branch: str,
         trigger_data: Dict[str, Any],
+        use_remote_default: bool = False,
     ) -> str:
         """Build post-clone branch and commit checkout commands."""
 
@@ -5052,6 +5085,17 @@ if ! git checkout -b {q_target}; then
     echo "========================================="
     echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
+    exit 1
+fi
+cd /workspace
+""".strip()
+
+        if use_remote_default:
+            return f"""
+cd {q_path}
+echo Creating agent target branch {q_target} from remote default HEAD
+if ! git checkout -b {q_target}; then
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     exit 1
 fi
 cd /workspace
@@ -5322,10 +5366,15 @@ true
                     source_branch=repo_source,
                     target_branch=repo_target,
                     trigger_data=trigger_data,
+                    use_remote_default=bool(repo_config.get("use_remote_default")),
                 ),
                 self._build_git_clone_validation_shell(
                     full_path=full_path,
-                    source_branch=repo_source,
+                    source_branch=(
+                        "remote HEAD"
+                        if repo_config.get("use_remote_default") and not commit_sha
+                        else repo_source
+                    ),
                     target_branch=repo_target,
                     commit_sha=commit_sha,
                 ),
@@ -5412,6 +5461,13 @@ true
                 execution_context, git_config
             )
             if not repositories:
+                if (
+                    execution_context.get("read_only_review") is True
+                    or git_config.get("publication_mode") == "read_only"
+                ):
+                    raise ValueError(
+                        "Read-only review requires its admitted repository"
+                    )
                 return ""
 
             (
@@ -5477,6 +5533,14 @@ true
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
+            if (
+                execution_context.get("read_only_review") is True
+                or (execution_context.get("git_clone_config") or {}).get(
+                    "publication_mode"
+                )
+                == "read_only"
+            ):
+                raise
             return ""
 
     def _resolve_bitbucket_api_email(
@@ -6000,6 +6064,12 @@ true
         Returns:
             Shell command string for post-execution git operations
         """
+        if (
+            execution_context.get("read_only_review")
+            or (execution_context.get("git_clone_config") or {}).get("publication_mode")
+            == "read_only"
+        ):
+            return ""
         # Invalid configured gates must fail before the legacy broad exception
         # handler, which otherwise turns a policy failure into no post commands.
         verification_policy = resolve_verification_policy(

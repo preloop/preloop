@@ -78,8 +78,17 @@ describe('Fleet Map pass 3', () => {
     });
   }
 
-  // Arrange left the menus for the canvas tools in pass 4.
-  for (const action of ['reset-layout', 'reset-filters', 'fullscreen-menu']) {
+  // Arrange left the menus for the canvas tools in pass 4; Full screen left
+  // them too, since the bar's button is a real, keyboard-reachable control.
+  it('offers full screen on the control bar only, not in the narrow menu', async () => {
+    await page.viewport(390, 900);
+    const el = await mount();
+    await page.getByTestId('fleet-map-filters').click();
+    expect(root(el).querySelector('[data-testid="fleet-map-fullscreen-menu"]')).toBeNull();
+    await page.getByTestId('fleet-map-fullscreen').click();
+    expect(el.fullscreen).toBe(true);
+  });
+  for (const action of ['reset-layout', 'reset-filters']) {
     it(`dismisses narrow Filters after ${action}`, async () => {
       await page.viewport(390, 900);
       const el = await mount({ query: 'e' });
@@ -91,7 +100,6 @@ describe('Fleet Map pass 3', () => {
       expect(dropdown.open).toBe(true);
       await page.getByTestId(`fleet-map-${action}`).click();
       expect(dropdown.open).toBe(false);
-      if (action === 'fullscreen-menu') expect(el.fullscreen).toBe(true);
     });
   }
 
@@ -699,7 +707,7 @@ describe('pass 3 usage and hosts', () => {
     expect(String(fetch.mock.calls[1][0])).not.toContain('include_idle');
   });
 
-  it('keeps the same Inventory instance under the Gateway when Map is selected', async () => {
+  it('keeps the Inventory under the Gateway and opens the map from the page header', async () => {
     await page.viewport(1440, 900);
     const dashboard: any = document.createElement('dashboard-view');
     dashboard.fetchDashboardData = async () => {};
@@ -719,14 +727,7 @@ describe('pass 3 usage and hosts', () => {
     await dashboard.updateComplete;
     const inventory: any = root(dashboard).querySelector('inventory-card');
     await inventory.updateComplete;
-    inventory.loadMap = async () => {};
-    inventory.map = sampleFleetMap();
-    root(inventory)
-      .querySelector<HTMLElement>('[data-inventory-view="map"]')!
-      .click();
-    await inventory.updateComplete;
-    await dashboard.updateComplete;
-    expect(root(dashboard).querySelector('inventory-card')).toBe(inventory);
+    expect(root(inventory).querySelector('[data-inventory-view]')).toBeNull();
     const gateway = root(dashboard)
       .querySelector('.main-column')!
       .getBoundingClientRect();
@@ -739,11 +740,15 @@ describe('pass 3 usage and hosts', () => {
     expect(bounds.top - gateway.bottom).toBeLessThanOrEqual(32);
     expect(bounds.right).toBeLessThanOrEqual(side.left);
     expect(bounds.top).toBeLessThan(side.bottom);
-    const map: any = root(inventory).querySelector('fleet-map');
-    map.live = false;
-    const height = map.getBoundingClientRect().height;
-    expect(height).toBeGreaterThanOrEqual(360);
-    expect(height).toBeLessThanOrEqual(720);
+    // The map is a full screen surface opened from the header, right side.
+    const launcher: any = root(dashboard).querySelector('fleet-map-launcher');
+    const updated = root(dashboard)
+      .querySelector('.updated-at')!
+      .getBoundingClientRect();
+    const button = launcher.getBoundingClientRect();
+    expect(button.right).toBeLessThanOrEqual(updated.left);
+    expect(button.top).toBeLessThan(updated.bottom);
+    expect(button.left).toBeGreaterThan(gateway.left + gateway.width / 2);
   });
 
   it('shows measured usage on people, agents, flows, devices, models, providers and work with unknowns and estimated sub-cent cost', async () => {
@@ -847,29 +852,18 @@ describe('pass 3 usage and hosts', () => {
     ).toBe('MC');
   });
 
-  it('keeps Inventory bounded, drops table controls in Map, and covers the viewport in fullscreen', async () => {
+  it('keeps Inventory bounded on a phone, and the map covers the viewport in fullscreen', async () => {
     await page.viewport(390, 900);
     const inv: any = document.createElement('inventory-card');
-    Object.assign(inv, {
-      instanceAdmin: true,
-      userId: 'pass3-user',
-      map: sampleFleetMap(),
-      mapWindow: 'any',
-    });
     document.body.append(inv);
     mounted.push(inv);
     await inv.updateComplete;
-    root(inv)
-      .querySelector<HTMLElement>('[data-inventory-view="map"]')!
-      .click();
-    await inv.updateComplete;
-    const el: any = root(inv).querySelector('fleet-map');
-    el.live = false;
-    await el.updateComplete;
-    expect(root(inv).querySelector('.sort-select')).toBeNull();
-    expect(root(inv).querySelector('time-range-select')).toBeNull();
+    expect(root(inv).querySelector('fleet-map')).toBeNull();
     expect(inv.scrollWidth).toBeLessThanOrEqual(390);
     expect(inv.getBoundingClientRect().height).toBeLessThan(900);
+    const el = await mount({ activityWindow: 'any', live: false });
+    // The test mount pins a card height; a full screen host sets none.
+    el.style.cssText = '';
     document.body.style.overflow = 'clip';
     el.fullscreen = true;
     await el.updateComplete;
@@ -883,7 +877,6 @@ describe('pass 3 usage and hosts', () => {
     expect(el.fullscreen).toBe(false);
     expect(document.body.style.overflow).toBe('clip');
     document.body.style.overflow = '';
-    expect(root(inv).querySelector('fleet-map')).toBe(el);
   });
 
   it('uses the glide for Arrange and suppresses it under reduced motion with a six-second Undo', async () => {

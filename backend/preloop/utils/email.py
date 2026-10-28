@@ -40,7 +40,8 @@ def send_email(
     from_email: Optional[str] = None,
     *,
     timeout: Optional[float] = None,
-) -> None:
+    headers: Optional[Dict[str, str]] = None,
+) -> bool:
     """Send an email using the configured SMTP server.
 
     Args:
@@ -51,6 +52,10 @@ def send_email(
         from_email: Sender email address (defaults to SMTP_FROM).
         timeout: Optional SMTP socket timeout in seconds. Omit to retain
             the process socket default.
+        headers: Extra message headers, such as ``List-Unsubscribe``.
+
+    Returns:
+        True when handed to SMTP; False when credentials are not configured.
 
     Raises:
         EmailError: If email sending fails.
@@ -65,6 +70,8 @@ def send_email(
     msg["Subject"] = f"[{portal_url}] {subject}"
     msg["From"] = from_email
     msg["To"] = to_email
+    for name, value in (headers or {}).items():
+        msg[name] = value
 
     # Create the body of the message
     part1 = MIMEText(body_text, "plain")
@@ -94,7 +101,7 @@ def send_email(
         )
         logger.debug("Email body suppressed from logs (%d chars)", len(body_text))
         # Don't raise error - just return gracefully to avoid HTTP 500 in dev/CI environments
-        return
+        return False
 
     try:
         # Send the message via SMTP server
@@ -108,6 +115,7 @@ def send_email(
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(from_email, to_email, msg.as_string())
             logger.info("Email sent to %s", to_email)
+        return True
     except Exception as e:
         logger.error(f"Failed to send email: {str(e)}")
         raise EmailError(f"Failed to send email: {str(e)}")

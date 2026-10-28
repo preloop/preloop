@@ -198,6 +198,18 @@ async function runCustomAgentWizard(
   await nameInput.click();
   await page.keyboard.type(agentName);
 
+  // Model grants are a separate step. CI must choose the seeded fake model,
+  // never whichever real-provider model happens to be first in the account.
+  await wizard.getByRole('button', { name: 'Continue', exact: true }).click();
+  const modelPicker = wizard.locator('sl-select[name="allowed_models"]');
+  await expect(modelPicker).toBeVisible();
+  await modelPicker.click();
+  const modelOption = IS_STAGING
+    ? modelPicker.locator('sl-option').first()
+    : modelPicker.locator('sl-option').filter({ hasText: `(${GATEWAY_MODEL})` });
+  await modelOption.click();
+  await page.keyboard.press('Escape');
+
   // Register + mint.
   await wizard
     .getByRole('button', { name: /Register agent .* mint credential/i })

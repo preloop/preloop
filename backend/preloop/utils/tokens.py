@@ -326,3 +326,68 @@ def verify_onboarding_claim_token(token: str) -> dict:
         "account_id": account_id,
         "checkout_session_id": checkout_session_id,
     }
+
+
+#: Delivery Report opt-out links stay valid for half a year: an old email in
+#: someone's inbox must still be able to stop the next one.
+REPORT_OPT_OUT_TOKEN_TYPE = "delivery_report_opt_out"
+REPORT_OPT_OUT_EXPIRE_DAYS = 180
+
+
+@dataclass(frozen=True)
+class ReportOptOutClaims:
+    """Who a Delivery Report opt-out link stops the report for."""
+
+    user_id: UUID
+    account_id: UUID
+    email: str
+
+
+def create_report_opt_out_token(
+    *, user_id: UUID | str, account_id: UUID | str, email: str
+) -> str:
+    """Sign the opt-out link of one Delivery Report email.
+
+    The token names the user row and the account, so following it changes
+    only that person's subscription to that account's report.
+
+    Args:
+        user_id: The recipient's user id.
+        account_id: The account whose report the email carried.
+        email: The address the email went to.
+
+    Returns:
+        A JWT token.
+    """
+    expire = datetime.now(UTC) + timedelta(days=REPORT_OPT_OUT_EXPIRE_DAYS)
+    to_encode = {
+        "sub": email,
+        "uid": str(user_id),
+        "aid": str(account_id),
+        "exp": expire,
+        "type": REPORT_OPT_OUT_TOKEN_TYPE,
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_report_opt_out_token(token: str) -> ReportOptOutClaims:
+    """Verify a Delivery Report opt-out token.
+
+    Args:
+        token: The token from the link.
+
+    Returns:
+        The user, account and address it names.
+
+    Raises:
+        TokenError: If the token is invalid, expired or of another type.
+    """
+    payload = _decode_typed_token(token, REPORT_OPT_OUT_TOKEN_TYPE)
+    try:
+        return ReportOptOutClaims(
+            user_id=UUID(str(payload["uid"])),
+            account_id=UUID(str(payload["aid"])),
+            email=str(payload["sub"]),
+        )
+    except (KeyError, ValueError, TypeError):
+        raise TokenError("This opt-out link is not valid.")

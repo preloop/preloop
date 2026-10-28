@@ -99,6 +99,7 @@ def validate_machine_policies(
         app = getattr(app, "app", None)
     if app is None or not hasattr(app, "routes"):
         raise ValueError("Restricted CI policies require an inspectable router")
+    routes = tuple(effective_routes(app))
     for method, path in policies:
         scope: Scope = {
             "type": "http",
@@ -106,7 +107,7 @@ def validate_machine_policies(
             "path": path,
             "root_path": "",
         }
-        for route in effective_routes(app):
+        for route in routes:
             original = getattr(route, "original_route", route)
             concrete = getattr(route, "starlette_route", None) or original
             if isinstance(concrete, Mount):

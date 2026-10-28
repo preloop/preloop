@@ -411,6 +411,32 @@ describe('IssueCostView', () => {
     expect(text).to.contain('$2.25');
   });
 
+  it('uses a chevron disclosure that states its expanded state', async () => {
+    const el = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => el.report !== null, 'report loaded');
+    await el.updateComplete;
+    const button = el.shadowRoot!.querySelector(
+      'button.expand'
+    ) as HTMLButtonElement;
+    expect(button.textContent!.trim()).to.equal('');
+    expect(button.getAttribute('aria-expanded')).to.equal('false');
+    expect(button.querySelector('sl-icon')!.getAttribute('name')).to.equal(
+      'chevron-right'
+    );
+    button.click();
+    const current = () =>
+      el.shadowRoot!.querySelector('button.expand') as HTMLButtonElement;
+    await waitUntil(
+      () => current().getAttribute('aria-expanded') === 'true',
+      'expanded'
+    );
+    expect(current().querySelector('sl-icon')!.getAttribute('name')).to.equal(
+      'chevron-down'
+    );
+  });
+
   it('drills into the unassigned bucket with the current filter', async () => {
     const el = await fixture<IssueCostView>(
       html`<issue-cost-view></issue-cost-view>`

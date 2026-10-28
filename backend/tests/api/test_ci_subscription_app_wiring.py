@@ -34,7 +34,7 @@ def production_client(
 
     app = create_app()
     app.dependency_overrides[get_db_session] = sessions
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
     return TestClient(app)
 
 

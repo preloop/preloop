@@ -170,6 +170,7 @@ def test_source_failure_is_visible_and_other_sources_survive(
     )
     graph = build_fleet_map(MagicMock(), user=viewer())
     assert graph.unavailable == ["devices"]
+    assert graph.restricted == []
     assert graph.nodes
     assert "internal secret text" not in graph.model_dump_json()
 
@@ -198,6 +199,7 @@ def test_denied_sections_are_not_read(sources: tuple[MagicMock, MagicMock]) -> N
     ):
         graph = build_fleet_map(MagicMock(), user=user)
     assert not graph.nodes
+    assert {"agents", "models", "runners", "users"} <= set(graph.unavailable)
     crud.crud_managed_agent.get_multi.assert_not_called()
     crud.crud_ai_model.get_multi.assert_not_called()
     crud.crud_flow_runner.get_multi.assert_not_called()
@@ -218,17 +220,55 @@ def test_authorizer_can_deny_section_even_for_superuser(
     crud.crud_ai_model.get_multi.assert_not_called()
 
 
-def test_fleet_gate_is_enforced_without_ee(
+def test_member_without_permissions_gets_an_empty_graph(
     sources: tuple[MagicMock, MagicMock],
 ) -> None:
+    """No 403: the graph is empty and names every source it could not read."""
+    crud, manager = sources
     user = viewer()
     user.is_superuser = False
-    with (
-        patch(f"{MODULE}.user_holds_permission", return_value=False),
-        pytest.raises(HTTPException) as error,
+    with patch(f"{MODULE}.user_holds_permission", return_value=False):
+        graph = build_fleet_map(MagicMock(), user=user)
+    assert not graph.nodes and not graph.edges
+    assert set(graph.unavailable) == {"agents", "models", "runners", "users", "devices"}
+    assert set(graph.restricted) == set(graph.unavailable)
+    crud.crud_managed_agent.get_multi.assert_not_called()
+    manager.return_value.get_service.assert_not_called()
+
+
+def test_member_with_view_agents_only_sees_agents_and_no_people(
+    sources: tuple[MagicMock, MagicMock],
+) -> None:
+    crud, manager = sources
+    crud.crud_user.get_multi.return_value = [
+        Row(id="person-a", full_name="Person A", username="a", avatar_url=None)
+    ]
+    crud.crud_managed_agent.get_multi.return_value = [agent(owner_user_id="person-a")]
+    user = viewer()
+    user.is_superuser = False
+    with patch(
+        f"{MODULE}.user_holds_permission",
+        side_effect=lambda db, user, permission: permission == "view_agents",
     ):
-        build_fleet_map(MagicMock(), user=user)
-    assert error.value.status_code == 403
+        graph = build_fleet_map(MagicMock(), user=user)
+    assert {n.type for n in graph.nodes} == {"agent"}
+    assert "users" in graph.unavailable and "devices" in graph.unavailable
+    assert "agents" not in graph.unavailable
+    crud.crud_user.get_multi.assert_not_called()
+    # Devices are the device fleet's inventory, read only by its viewers.
+    manager.return_value.get_service.assert_not_called()
+
+
+def test_owner_still_reads_every_source(sources: tuple[MagicMock, MagicMock]) -> None:
+    crud, _ = sources
+    user = viewer()
+    user.is_superuser = False
+    crud.crud_account.get.return_value = Row(primary_user_id=user.id)
+    with patch(f"{MODULE}.user_holds_permission", return_value=False):
+        graph = build_fleet_map(MagicMock(), user=user)
+    assert {"agent:agent-a", "model:model-a"} <= {n.id for n in graph.nodes}
+    assert graph.unavailable == ["devices"]
+    assert graph.restricted == []
 
 
 def test_report_only_key_cannot_read_graph(
@@ -1199,3 +1239,12 @@ def test_truncated_device_projection_places_nothing_by_hostname(
     service.read.return_value = dict(truncated=True, items=[_laptop(user_ids=())])
     graph = build_fleet_map(MagicMock(), user=viewer())
     assert not any(e.kind == "hosts" for e in graph.edges)
+
+
+def test_authorizer_sharing_no_rows_marks_the_source_restricted(
+    sources: tuple[MagicMock, MagicMock],
+) -> None:
+    with patch(f"{MODULE}.filter_viewable", return_value=[]):
+        graph = build_fleet_map(MagicMock(), user=viewer())
+    assert {"agents", "models"} <= set(graph.restricted)
+    assert "agents" not in graph.unavailable

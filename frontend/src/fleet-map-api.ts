@@ -107,6 +107,11 @@ export interface FleetMapGraph {
   limit: number;
   clusters: { type: FleetMapResourceType; count: number }[];
   unavailable: string[];
+  /**
+   * Sources the caller may not view (they are also in `unavailable`). Absent
+   * on servers that gated the whole map instead.
+   */
+  restricted?: string[];
   decommissioned_agents?: number;
   /** Activity window the server applied; absent on servers that ignore it. */
   active_within_minutes?: number | null;
@@ -375,6 +380,134 @@ export function scopeToUsers(
  * that no remaining agent reaches drop out too, so a filter shrinks the whole
  * picture instead of leaving a column of orphans.
  */
+/** Edge kinds that hold one resource inside or under another. */
+const CONTAINS = new Set(['owns', 'hosts', 'runs_on']);
+
+/** Edge kinds that run from a node to what it relies on further down. */
+const RELIES_ON = new Set([
+  'uses_model',
+  'uses_account',
+  'provided_by',
+  'account_of_provider',
+]);
+
+/**
+ * Keep only onboarded agents (`agentState` is `onboarded`; partial setups
+ * such as MCP only or gateway only count). A person, device, runner, work
+ * item, model, account or provider that only a hidden agent reached goes
+ * too, so the map shows no orphan providers; one that a kept agent or flow
+ * reaches, or that no agent reached at all, stays.
+ *
+ * Returns the narrowed graph and how many agents it hid.
+ */
+export function onboardedOnly(graph: FleetMapGraph): {
+  graph: FleetMapGraph;
+  hidden: number;
+} {
+  const isActor = (node: FleetMapNode) =>
+    node.type === 'agent' || node.type === 'flow';
+  const hiddenAgents = new Set(
+    graph.nodes
+      .filter(
+        (node) => node.type === 'agent' && agentState(node) !== 'onboarded'
+      )
+      .map((node) => node.id)
+  );
+  if (!hiddenAgents.size) return { graph, hidden: 0 };
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  // First hop: anything touching the actor. Further hops: only downstream,
+  // so one shared provider does not anchor every model behind it.
+  const reach = (starts: FleetMapNode[]): Set<string> => {
+    const seen = new Set<string>();
+    const queue: string[] = [];
+    const visit = (id: string | null | undefined) => {
+      const node = id ? byId.get(id) : undefined;
+      if (!node || isActor(node) || seen.has(node.id)) return;
+      seen.add(node.id);
+      queue.push(node.id);
+    };
+    const ids = new Set(starts.map((node) => node.id));
+    for (const node of starts) {
+      node.owner_ids.forEach(visit);
+      node.provider_ids.forEach(visit);
+      visit(node.parent_id);
+    }
+    for (const edge of graph.edges) {
+      if (ids.has(edge.source)) visit(edge.target);
+      if (ids.has(edge.target)) visit(edge.source);
+    }
+    while (queue.length) {
+      const id = queue.shift()!;
+      const node = byId.get(id)!;
+      node.provider_ids.forEach(visit);
+      visit(node.parent_id);
+      for (const edge of graph.edges)
+        if (edge.source === id && RELIES_ON.has(edge.kind)) visit(edge.target);
+    }
+    return seen;
+  };
+  const kept = graph.nodes.filter(
+    (node) => isActor(node) && !hiddenAgents.has(node.id)
+  );
+  const anchored = reach(kept);
+  const orphaned = reach(
+    graph.nodes.filter((node) => hiddenAgents.has(node.id))
+  );
+  // Containment still holds what a hidden agent touched: a machine that
+  // also hosts a runner stays, and so does the person who owns it.
+  const queue = graph.nodes
+    .filter((node) => !hiddenAgents.has(node.id))
+    .filter((node) => anchored.has(node.id) || !orphaned.has(node.id))
+    .map((node) => node.id);
+  const held = new Set(queue);
+  while (queue.length) {
+    const id = queue.shift()!;
+    for (const edge of graph.edges) {
+      if (!CONTAINS.has(edge.kind)) continue;
+      const other =
+        edge.source === id
+          ? edge.target
+          : edge.target === id
+            ? edge.source
+            : '';
+      if (!other || held.has(other) || hiddenAgents.has(other)) continue;
+      held.add(other);
+      anchored.add(other);
+      queue.push(other);
+    }
+  }
+  const keep = new Set(
+    graph.nodes
+      .filter(
+        (node) =>
+          !hiddenAgents.has(node.id) &&
+          (isActor(node) || anchored.has(node.id) || !orphaned.has(node.id))
+      )
+      .map((node) => node.id)
+  );
+  // A kept runner or account keeps the device or provider it sits inside.
+  for (const id of [...keep]) {
+    let parent = byId.get(id)?.parent_id;
+    while (parent && byId.has(parent) && !keep.has(parent)) {
+      if (hiddenAgents.has(parent)) break;
+      keep.add(parent);
+      parent = byId.get(parent)?.parent_id;
+    }
+  }
+  const nodes = graph.nodes.filter((node) => keep.has(node.id));
+  const ids = keep;
+  return {
+    graph: {
+      ...graph,
+      nodes,
+      edges: graph.edges.filter(
+        (edge) => ids.has(edge.source) && ids.has(edge.target)
+      ),
+    },
+    hidden: hiddenAgents.size,
+  };
+}
+
 export function filterGraph(
   graph: FleetMapGraph,
   filters: FleetMapFilters

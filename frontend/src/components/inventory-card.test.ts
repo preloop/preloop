@@ -1,6 +1,4 @@
 import { expect, fixture, html, oneEvent, waitUntil } from '@open-wc/testing';
-import { mockApi, type MockApi } from '../test-helpers/capability-api';
-import { sampleFleetMap } from '../test-helpers/fleet-map-graph';
 import './inventory-card.ts';
 import { INVENTORY_TAB_STORAGE_KEY } from './inventory-card';
 import {
@@ -844,6 +842,47 @@ describe('inventory-card', () => {
     }
   });
 
+  it('opens a phone tab strip on the remembered tab with room on both sides', async () => {
+    localStorage.setItem(INVENTORY_TAB_STORAGE_KEY, 'devices');
+    const wrapper = await fixture<HTMLDivElement>(
+      html`<div style="width: 320px"></div>`
+    );
+    const el = document.createElement('inventory-card') as InventoryCard;
+    Object.assign(el, {
+      agentRows: [agentRow()],
+      showUsers: true,
+      usersTotal: 28,
+      showDevices: true,
+      devicesTotal: 4,
+      agentsTotal: 10,
+      flowsTotal: 30,
+      modelsTotal: 16,
+      toolsTotal: 16,
+    });
+    wrapper.appendChild(el);
+    await el.updateComplete;
+    const group = el.shadowRoot!.querySelector(
+      'sl-tab-group'
+    ) as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await group.updateComplete;
+    // No scroll buttons: they clipped the previous tab into a "< 28" fragment.
+    expect(group.hasAttribute('no-scroll-controls')).to.be.true;
+    const nav = group.shadowRoot!.querySelector(
+      '.tab-group__nav'
+    ) as HTMLElement;
+    const active = el.shadowRoot!.querySelector(
+      'sl-tab[panel="devices"]'
+    ) as HTMLElement;
+    await waitUntil(() => nav.scrollLeft > 0, 'strip scrolls to the tab');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const navBox = nav.getBoundingClientRect();
+    const tabBox = active.getBoundingClientRect();
+    expect(tabBox.right).to.be.at.most(navBox.right);
+    expect(tabBox.left - navBox.left).to.be.at.least(16);
+  });
+
   it('has no Map view: the fleet map lives on its own page', async () => {
     const el = await card({ showDevices: true, devicesTotal: 1 });
     expect(el.shadowRoot?.querySelector('.view-switch')).to.not.exist;
@@ -1218,7 +1257,7 @@ describe('inventory-card Agents columns', () => {
       };
     };
     const table = el.agentTable;
-    expect(table.widthOfColumn('name')).to.equal(180);
+    expect(table.widthOfColumn('name')).to.equal(240);
     table.resizeBy('name', -1000);
     await el.updateComplete;
     expect(table.widthOfColumn('name')).to.equal(160);
@@ -1227,6 +1266,116 @@ describe('inventory-card Agents columns', () => {
       'a-very-long-agent-name-on-a-build-host'
     );
   });
+
+  it('puts the without-subscriptions figure in a tooltip on the estimate, not a second line', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({
+          cost: 0.74,
+          withoutSubscriptions: {
+            value: 6197.29,
+            partial: true,
+            text: 'at least $6,197.29',
+            title: '2 of 3 subscription requests carry an API-equivalent price',
+          },
+          subscriptionRequests: 3,
+        }),
+      ],
+    });
+    const cell = el.shadowRoot!.querySelector(
+      'td[data-label="Spend"]'
+    ) as HTMLElement;
+    expect(cell.querySelector('[data-testid="without-subscriptions"]')).to.not
+      .exist;
+    expect(cell.querySelector('details')).to.not.exist;
+    expect((cell.textContent || '').replace(/\s+/g, ' ').trim()).to.contain(
+      '$0.74'
+    );
+    const button = cell.querySelector<HTMLButtonElement>(
+      'button.cost-trigger'
+    )!;
+    expect((button.textContent || '').trim()).to.equal('$0.74');
+    const lines = [...cell.querySelectorAll('[slot="content"] > div')].map(
+      (line) => line.textContent!.trim()
+    );
+    expect(lines).to.deep.equal([
+      '$0.74',
+      '≥ $6,197.29 without subscriptions',
+      '2 of 3 subscription requests carry an API-equivalent price',
+    ]);
+    // The accessible name and the no-JS title carry the same facts.
+    expect(button.getAttribute('aria-label')).to.contain(
+      '≥ $6,197.29 without subscriptions'
+    );
+    expect(button.title).to.equal(button.getAttribute('aria-label'));
+    expect(getComputedStyle(button).textDecorationStyle).to.equal('dotted');
+  });
+
+  it('renders a plain figure where there is no subscription traffic', async () => {
+    const el = await card({
+      agentRows: [agentRow({ cost: 1.5, subscriptionRequests: 0 })],
+    });
+    const cell = el.shadowRoot!.querySelector(
+      'td[data-label="Spend"]'
+    ) as HTMLElement;
+    expect(cell.querySelector('button.cost-trigger')).to.not.exist;
+    expect(cell.querySelector('sl-tooltip')).to.not.exist;
+    const figure = cell.querySelector<HTMLElement>('.cost-figure')!;
+    expect(figure.textContent!.trim()).to.equal('$1.50');
+    expect(figure.title).to.equal('$1.50');
+  });
+
+  for (const tab of ['agents', 'users']) {
+    it(`opens ${tab} spend details by focus and tap`, async () => {
+      const spend = {
+        cost: 0.74,
+        withoutSubscriptions: {
+          value: 6197.29,
+          partial: false,
+          text: '$6,197.29',
+          title: 'All subscription requests carry an API-equivalent price',
+        },
+        subscriptionRequests: 3,
+      };
+      const el = await card({
+        agentRows: [agentRow(spend)],
+        showUsers: true,
+        usersTotal: 1,
+        userRows: [userRow(spend)],
+      });
+      await showTab(el, tab);
+      const button = el.shadowRoot!.querySelector<HTMLButtonElement>(
+        'button.cost-trigger'
+      )!;
+      const tooltip = button.closest('sl-tooltip') as HTMLElement & {
+        open: boolean;
+      };
+      expect(button.getAttribute('aria-label')).to.contain(
+        'without subscriptions'
+      );
+      button.focus();
+      await waitUntil(() => tooltip.open, 'keyboard focus opens spend details');
+      button.blur();
+      await waitUntil(
+        () => !tooltip.open,
+        'leaving focus closes spend details'
+      );
+      button.click();
+      await waitUntil(() => tooltip.open, 'tap/click opens spend details');
+      button.click();
+      await waitUntil(() => !tooltip.open, 'a second tap closes spend details');
+      button.click();
+      await waitUntil(() => tooltip.open, 'tap opens it again');
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(() => !tooltip.open, 'Esc closes spend details');
+    });
+  }
 
   it('keeps a resized width across reloads', async () => {
     const el = await card({ agentRows: [agentRow()] });
@@ -1238,162 +1387,30 @@ describe('inventory-card Agents columns', () => {
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
     await el.updateComplete;
-    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(196);
+    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(256);
 
     const again = (await card({ agentRows: [agentRow()] })) as HTMLElement & {
       agentTable: { widthOfColumn(id: string): number };
     };
-    expect(again.agentTable.widthOfColumn('name')).to.equal(196);
+    expect(again.agentTable.widthOfColumn('name')).to.equal(256);
   });
 });
 
-describe('inventory-card spatial map', () => {
-  let api: MockApi;
-  afterEach(() => {
-    api?.restore();
-    localStorage.removeItem('accessToken');
-    for (const key of Object.keys(localStorage))
-      if (
-        key.startsWith('preloop:inventory:') ||
-        key.startsWith('preloop:fleet-map:')
-      )
-        localStorage.removeItem(key);
-  });
+describe('inventory-card has no map view', () => {
+  afterEach(() => localStorage.removeItem('preloop:inventory:view:u1'));
 
-  beforeEach(() => localStorage.removeItem('preloop:fleet-map:window'));
-
-  it('offers no map to anyone but an instance administrator', async () => {
+  it('is the table even with a remembered map view', async () => {
     localStorage.setItem('preloop:inventory:view:u1', 'map');
     const el = await fixture<InventoryCard>(
-      html`<inventory-card userId="u1"></inventory-card>`
+      html`<inventory-card
+        .agentRows=${[agentRow()]}
+        instanceAdmin
+        userId="u1"
+      ></inventory-card>`
     );
     expect(el.shadowRoot!.querySelector('[data-inventory-view]')).to.not.exist;
     expect(el.shadowRoot!.querySelector('fleet-map')).to.not.exist;
-  });
-
-  it('swaps the table for the spatial fleet map and remembers it', async () => {
-    localStorage.setItem('accessToken', 'test-token');
-    api = mockApi({
-      routes: [
-        {
-          path: '/api/v1/fleet/map',
-          body: { ...sampleFleetMap(), active_within_minutes: 43200 },
-        },
-      ],
-    });
-    const el = await fixture<InventoryCard>(
-      html`<inventory-card instanceAdmin userId="u1"></inventory-card>`
-    );
-    el.shadowRoot!.querySelector<HTMLButtonElement>(
-      '[data-inventory-view="map"]'
-    )!.click();
-    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
-    const map = el.shadowRoot!.querySelector('fleet-map')!;
-    await map.updateComplete;
-    expect(map.positionsScope).to.equal('inventory');
-    expect(map.shadowRoot!.querySelector('[data-node="agent:codex"]')).to.exist;
-    // The live spatial canvas is the default; the columns are one click away.
-    expect(map.shadowRoot!.querySelector('.column-title')).to.not.exist;
-    map
-      .shadowRoot!.querySelector<HTMLButtonElement>(
-        '[data-arrangement="columns"]'
-      )!
-      .click();
-    await map.updateComplete;
-    expect(map.shadowRoot!.querySelector('.column-title')).to.exist;
-    expect(
-      localStorage.getItem('preloop:fleet-map:arrangement:inventory:u1')
-    ).to.equal('columns');
-    expect(el.shadowRoot!.querySelector('table')).to.not.exist;
-    expect(localStorage.getItem('preloop:inventory:view:u1')).to.equal('map');
-    expect(api.callsTo('/api/v1/fleet/map').length).to.equal(1);
-  });
-
-  it('refetches the map scoped to the users chosen on it', async () => {
-    localStorage.setItem('accessToken', 'test-token');
-    api = mockApi({
-      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
-    });
-    const el = await fixture<InventoryCard>(
-      html`<inventory-card instanceAdmin userId="u9"></inventory-card>`
-    );
-    el.shadowRoot!.querySelector<HTMLButtonElement>(
-      '[data-inventory-view="map"]'
-    )!.click();
-    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
-    const map = el.shadowRoot!.querySelector('fleet-map')!;
-    await map.updateComplete;
-    map
-      .shadowRoot!.querySelector<HTMLElement>('[data-user="user:sam"]')!
-      .click();
-    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
-    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.contain('users=sam');
-    await el.updateComplete;
-    expect(map.users).to.deep.equal(['user:sam']);
-    localStorage.removeItem('preloop:inventory:view:u9');
-  });
-
-  it('keeps the table the default for an administrator', async () => {
-    const el = await fixture<InventoryCard>(
-      html`<inventory-card instanceAdmin userId="u2"></inventory-card>`
-    );
-    expect(
-      el
-        .shadowRoot!.querySelector('[data-inventory-view="table"]')!
-        .getAttribute('aria-pressed')
-    ).to.equal('true');
-    expect(el.shadowRoot!.querySelector('fleet-map')).to.not.exist;
-  });
-
-  it('shows the live map with pull request counters from the endpoint', async () => {
-    localStorage.setItem('accessToken', 'test-token');
-    localStorage.setItem('preloop:inventory:view:u1', 'map');
-    api = mockApi({
-      routes: [
-        {
-          path: '/api/v1/fleet/map',
-          body: { ...sampleFleetMap(), active_within_minutes: 43200 },
-        },
-        {
-          path: '/api/v1/fleet/code-activity',
-          body: {
-            active_within_minutes: 43200,
-            since: new Date().toISOString(),
-            truncated: false,
-            counts: {
-              'agent:codex': {
-                opened: 3,
-                commented: 0,
-                reviewed: 0,
-                merged: 1,
-              },
-            },
-            flows: [],
-            events: [],
-          },
-        },
-      ],
-    });
-    const el = await fixture<InventoryCard>(
-      html`<inventory-card instanceAdmin userId="u1"></inventory-card>`
-    );
-    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
-    const map = el.shadowRoot!.querySelector('fleet-map')!;
-    expect(map.live).to.equal(true);
-    await waitUntil(
-      () => map.shadowRoot!.querySelector('[data-code="agent:codex"]'),
-      'code counters render',
-      { timeout: 3000 }
-    );
-    const badges = [
-      ...map.shadowRoot!.querySelectorAll<HTMLElement>(
-        '[data-code="agent:codex"] .code-badge'
-      ),
-    ].map((b) => `${b.dataset.action}:${b.textContent!.trim()}`);
-    expect(badges).to.deep.equal(['opened:3', 'merged:1']);
-    expect(
-      api.callsTo('/api/v1/fleet/code-activity')[0]?.search ?? ''
-    ).to.contain('active_within_minutes=43200');
+    expect(el.shadowRoot!.querySelector('table')).to.exist;
   });
 });
 

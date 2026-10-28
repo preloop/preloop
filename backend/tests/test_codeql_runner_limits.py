@@ -1,0 +1,93 @@
+"""Guard CodeQL resource limits on shared self-hosted runners."""
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/codeql.yml"
+
+
+def test_codeql_limits_shared_runners_without_constraining_hosted() -> None:
+    """Init limits cover extraction and analysis only on self-hosted runners."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["analyze"]["steps"]
+    init = next(step for step in steps if step["name"] == "Initialize CodeQL")
+    analyze = next(step for step in steps if step["name"] == "Perform CodeQL analysis")
+
+    assert init["with"]["ram"] == (
+        "${{ runner.environment == 'self-hosted' && '2560' || '' }}"
+    )
+    assert init["with"]["threads"] == (
+        "${{ runner.environment == 'self-hosted' && '2' || '' }}"
+    )
+    assert "ram" not in analyze["with"]
+    assert "threads" not in analyze["with"]
+
+
+def test_javascript_codeql_sets_up_node_before_extraction() -> None:
+    """The JavaScript extractor has Node on self-hosted ubuntu-latest runners."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["analyze"]["steps"]
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Set up Node.js for CodeQL"
+    )
+    setup = steps[setup_index]
+    assert setup["if"] == "matrix.language == 'javascript-typescript'"
+    assert setup["uses"] == (
+        "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
+    )
+    assert setup["with"]["node-version"] == "22"
+    assert setup["with"]["package-manager-cache"] is False
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Initialize CodeQL"
+    )
+
+
+def test_go_codeql_sets_up_go_before_autobuild() -> None:
+    """Go analysis has a toolchain even on self-hosted ubuntu-latest runners."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["analyze"]["steps"]
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Set up Go for CodeQL"
+    )
+    setup = steps[setup_index]
+    assert setup["if"] == "matrix.language == 'go'"
+    assert setup["uses"] == (
+        "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+    )
+    assert setup["with"]["go-version-file"] == "cli/go.mod"
+    assert setup["with"]["cache"] is False
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Initialize CodeQL"
+    )
+
+
+def test_codeql_avoids_private_ubuntu_latest_alias() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    assert workflow["jobs"]["changes"]["runs-on"] == "ubuntu-24.04"
+    assert workflow["jobs"]["analyze"]["runs-on"] == "ubuntu-24.04"
+
+
+@pytest.mark.parametrize(
+    ("filename", "job"),
+    [
+        ("zizmor.yml", "zizmor"),
+        ("docs.yml", "build"),
+        ("secret-scan.yml", "gitleaks"),
+        ("preloop-flow-trigger.yml", "trigger"),
+    ],
+)
+def test_pr_support_jobs_avoid_private_ubuntu_latest_alias(
+    filename: str, job: str
+) -> None:
+    workflow = yaml.safe_load(WORKFLOW.with_name(filename).read_text())
+    assert workflow["jobs"][job]["runs-on"] == "ubuntu-24.04"

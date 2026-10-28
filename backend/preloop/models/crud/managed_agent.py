@@ -1222,6 +1222,38 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             query = query.with_for_update()
         return query.first()
 
+    def existing_ids_for_account(
+        self, db: Session, *, account_id: str, agent_ids: Sequence[str]
+    ) -> set[str]:
+        """Return which of ``agent_ids`` still name an agent in the account.
+
+        Args:
+            db: Database session.
+            account_id: Account the agents must belong to.
+            agent_ids: Candidate agent ids; values that are not UUIDs are
+                ignored.
+
+        Returns:
+            The subset of ``agent_ids`` (as given) that exist in the account.
+        """
+        parsed: dict[UUID, str] = {}
+        for agent_id in agent_ids:
+            try:
+                parsed[UUID(str(agent_id))] = agent_id
+            except ValueError:
+                continue
+        if not parsed:
+            return set()
+        rows = (
+            db.query(self.model.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.id.in_(list(parsed)),
+            )
+            .all()
+        )
+        return {parsed[row.id] for row in rows if row.id in parsed}
+
     def latest_merge_into_at(
         self, db: Session, *, account_id: str, survivor_id: str
     ) -> Optional[datetime]:

@@ -589,7 +589,11 @@ export class PreloopFlowPresetPicker extends LitElement {
     return html`
       <div class="chips">
         ${chips.map(
-          (chip) => html` <sl-badge class="chip" pill>${chip.label}</sl-badge> `
+          (chip) => html`
+            <sl-badge class="chip" variant="neutral" pill
+              >${chip.label}</sl-badge
+            >
+          `
         )}
       </div>
     `;

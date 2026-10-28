@@ -23,7 +23,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import crud, models
@@ -192,19 +191,23 @@ def build_code_activity(
         Counts per agent, flow and person node, the flows to place, and the
         most recent events.
 
+    Every member may call this. Agent actions count only for agents the
+    resource authorizer lets the caller view (the same rows the caller's
+    graph draws), and calls made by a hidden agent are dropped before work
+    items are built, so their pull request titles never reach the caller.
+
     Raises:
-        HTTPException: The caller cannot view the account's fleet.
+        HTTPException: Report-only credentials.
     """
     _reject_report_key(user)
     account = crud.crud_account.get(db, id=user.account_id)
     owner = account is not None and str(account.primary_user_id) == str(user.id)
-    if not _allowed(db, user, "view_device_fleet", owner):
-        raise HTTPException(
-            403, "Insufficient permissions. Required: view_device_fleet"
-        )
     see_agents = _allowed(db, user, "view_agents", owner)
     see_flows = _allowed(db, user, "view_flows", owner)
     see_users = _allowed(db, user, "view_users", owner)
+    # Tracker and forge snapshots (issue and PR titles) are the issue list's
+    # data: without view_issues only work a visible actor touched is shown.
+    see_work = _allowed(db, user, "view_issues", owner)
     current = now or datetime.now(UTC)
     window = (
         timedelta(minutes=active_within_minutes)
@@ -233,6 +236,9 @@ def build_code_activity(
     )
     result.truncated = len(calls) > CALL_LIMIT
     calls = calls[:CALL_LIMIT]
+    if not see_flows:
+        # A flow run's calls would name work with no actor the caller can see.
+        calls = [c for c in calls if not c.flow_execution_id]
     flow_of_execution: dict[str, str] = {}
     flow_rows: dict[str, tuple[str, Any]] = {}
     if see_flows:
@@ -257,11 +263,32 @@ def build_code_activity(
         )
         index = agent_index(loaded)
         by_id = {str(agent.id): agent for agent in loaded}
+        from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
+
+        visible = {
+            str(agent.id)
+            for agent in filter_viewable(db, user, VISIBLE_MANAGED_AGENT, loaded)
+        }
+        hidden: set[tuple[str, str]] = set()
         # Key every principal seen, so per-conversation ids reach their agent.
         for principal_type, principal_id in principals:
             found = resolve_principal(index, principal_type, principal_id, by_id=by_id)
-            if found is not None:
+            if found is None:
+                continue
+            if str(found.id) in visible:
                 agents_by_principal[(principal_type, principal_id)] = found
+            else:
+                hidden.add((principal_type, principal_id))
+        if hidden:
+            calls = [
+                c
+                for c in calls
+                if c.flow_execution_id
+                or (c.runtime_principal_type, c.runtime_principal_id) not in hidden
+            ]
+    else:
+        # No agent may be shown, so no agent's call may name work either.
+        calls = [c for c in calls if c.flow_execution_id]
 
     counts: dict[str, FleetCodeCounts] = defaultdict(FleetCodeCounts)
     flow_tool_merges: dict[str, list[FleetCodeEvent]] = defaultdict(list)
@@ -500,10 +527,34 @@ def build_code_activity(
     # Drop hidden flows before the cap, so visible events backfill it.
     result.events = events
     _drop_hidden_flows(db, user, result)
+    if not see_work:
+        _keep_acted_work(result)
     if scope is not None:
         apply_scope(result, scope)
     result.events = result.events[:EVENT_LIMIT]
     return result
+
+
+def _keep_acted_work(result: FleetCodeActivityResponse) -> None:
+    """Keep only work an actor in this response touched, and its relations.
+
+    For a caller without ``view_issues``: the account's issue and pull
+    request snapshots are not theirs to list, so an item stays only when a
+    visible agent, flow or person acted on it.
+    """
+    actors = {
+        relation.target
+        for relation in result.relations
+        if relation.source.split(":", 1)[0] in {"agent", "flow", "user"}
+    }
+    result.work = [item for item in result.work if item.node_ids or item.id in actors]
+    shown = {item.id for item in result.work}
+    result.relations = [
+        relation
+        for relation in result.relations
+        if relation.target in shown
+        and (not relation.source.startswith("work:") or relation.source in shown)
+    ]
 
 
 def apply_scope(result: FleetCodeActivityResponse, scope: FleetScope) -> None:

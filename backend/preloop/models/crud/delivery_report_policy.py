@@ -32,7 +32,7 @@ def _uuid(value: Any) -> uuid.UUID:
 
 
 def _row(
-    db: Session, *, account_id: Any, project_id: Any = None
+    db: Session, *, account_id: Any, project_id: Any = None, lock: bool = False
 ) -> Optional[models.DeliveryReportPolicySetting]:
     query = select(models.DeliveryReportPolicySetting).where(
         models.DeliveryReportPolicySetting.account_id == _uuid(account_id)
@@ -43,11 +43,13 @@ def _row(
         query = query.where(
             models.DeliveryReportPolicySetting.project_id == _uuid(project_id)
         )
+    if lock:
+        query = query.with_for_update()
     return db.scalar(query)
 
 
 def get_overrides(
-    db: Session, *, account_id: Any, project_id: Any = None
+    db: Session, *, account_id: Any, project_id: Any = None, lock: bool = False
 ) -> Optional[Dict[str, Any]]:
     """The stored overrides of the account row, or of one project row.
 
@@ -55,11 +57,12 @@ def get_overrides(
         db: Session.
         account_id: Owning account.
         project_id: A project, or None for the account row.
+        lock: Hold the row until the caller commits, for a read-modify-write.
 
     Returns:
         The overrides, or None when no row exists.
     """
-    row = _row(db, account_id=account_id, project_id=project_id)
+    row = _row(db, account_id=account_id, project_id=project_id, lock=lock)
     return dict(row.overrides or {}) if row is not None else None
 
 
@@ -88,6 +91,81 @@ def project_overrides(db: Session, *, account_id: Any) -> Dict[str, Dict[str, An
         str(project.slug or project.identifier).lower(): dict(row.overrides or {})
         for row, project in rows
     }
+
+
+def lock_account_for_activation(db: Session, *, account_id: Any) -> None:
+    """Serialize an account's report-flow check and insert until commit.
+
+    Args:
+        db: Session that will create the flow and commit afterward.
+        account_id: Owning account.
+
+    Raises:
+        ValueError: The account does not exist.
+    """
+    found = db.scalar(
+        select(models.Account.id)
+        .where(models.Account.id == _uuid(account_id))
+        .with_for_update()
+    )
+    if found is None:
+        raise ValueError("Account not found")
+
+
+def code_repositories(
+    db: Session, *, account_id: Any
+) -> List[tuple[str, str, str, Optional[str]]]:
+    """Active code-host projects available to the account's report checkout.
+
+    Args:
+        db: Session.
+        account_id: Account that owns the trackers.
+
+    Returns:
+        Repository name, project id, tracker id and known default branch,
+        ordered for stable clone paths.
+    """
+    rows = db.execute(
+        select(
+            models.Project.id,
+            models.Project.slug,
+            models.Project.identifier,
+            models.Project.settings,
+            models.Project.meta_data,
+            models.Tracker.id,
+        )
+        .select_from(models.Project)
+        .join(
+            models.Organization,
+            models.Organization.id == models.Project.organization_id,
+        )
+        .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+        .where(
+            models.Tracker.account_id == _uuid(account_id),
+            models.Tracker.is_active.is_(True),
+            models.Tracker.is_deleted.is_(False),
+            models.Project.is_active.is_(True),
+            models.Tracker.tracker_type.in_(
+                ("github", "gitlab", "bitbucket", "bitbucket_dc")
+            ),
+        )
+        .order_by(models.Project.slug, models.Project.id)
+    ).all()
+    seen: set[str] = set()
+    repositories: List[tuple[str, str, str, Optional[str]]] = []
+    for project_id, slug, identifier, settings, meta_data, tracker_id in rows:
+        name = str(slug or identifier or "").lower()
+        if name and name not in seen:
+            branch = None
+            for source in (settings, meta_data):
+                if isinstance(source, dict):
+                    value = source.get("default_branch")
+                    if isinstance(value, str) and value.strip():
+                        branch = value.strip()
+                        break
+            repositories.append((name, str(project_id), str(tracker_id), branch))
+            seen.add(name)
+    return repositories
 
 
 def project_in_account(db: Session, *, account_id: Any, project_id: Any) -> bool:
@@ -272,9 +350,262 @@ def pull_request_facts(
             "head_sha": row.head_sha,
             "linked_issues": links.get(row.id, []),
             "origin": row.origin,
+            # The detail columns, in the ``get_pull_request`` shape the
+            # report's file and brief rules read. None where not observed.
+            "title": row.title,
+            "description": row.body,
+            "author": row.author_login,
+            "author_id": row.author_id,
+            "forge": (
+                "gitlab"
+                if "/-/merge_requests/" in row.pr_key
+                else "github"
+                if "/pull/" in row.pr_key
+                else ""
+            ),
+            "changes": (
+                {
+                    "changed_files": list(row.changed_files),
+                    "files_changed": row.files_changed,
+                }
+                if isinstance(row.changed_files, list)
+                else None
+            ),
         }
         for row in rows
     ]
+
+
+def pull_requests_missing_files(
+    db: Session,
+    *,
+    account_id: Any,
+    start: Optional[datetime],
+    end: datetime,
+    limit: int,
+) -> List[models.IssueCostPullRequest]:
+    """Merged PRs in the window whose file list was never read from the forge.
+
+    A row the forge read already tried (``details_observed_at`` set) is not
+    returned again, so a PR the forge cannot serve costs one read, not one
+    per run.
+
+    Args:
+        db: Session.
+        account_id: Owning account.
+        start: Window start, or None.
+        end: Window end.
+        limit: Most rows.
+
+    Returns:
+        Newest merges first.
+    """
+    pr = models.IssueCostPullRequest
+    query = select(pr).where(
+        pr.account_id == _uuid(account_id),
+        pr.merged_at.isnot(None),
+        pr.merged_at <= end,
+        pr.changed_files.is_(None),
+        pr.details_observed_at.is_(None),
+    )
+    if start is not None:
+        query = query.where(pr.merged_at >= start)
+    return list(db.scalars(query.order_by(pr.merged_at.desc()).limit(limit)).all())
+
+
+#: Detail columns a writer may set; anything else in ``details`` is ignored.
+DETAIL_COLUMNS = (
+    "title",
+    "body",
+    "author_login",
+    "author_id",
+    "changed_files",
+    "files_changed",
+)
+
+
+def store_pull_request_details(
+    db: Session,
+    *,
+    pull: models.IssueCostPullRequest,
+    details: Dict[str, Any],
+    observed_at: Optional[datetime] = None,
+) -> models.IssueCostPullRequest:
+    """Write the detail columns the caller observed. The caller commits.
+
+    Only keys present in ``details`` change, so a webhook without a body
+    does not erase one a forge read stored.
+
+    Args:
+        db: Session.
+        pull: The ledger row.
+        details: Any of :data:`DETAIL_COLUMNS`.
+        observed_at: Set for a forge read (attempted, even if it returned
+            nothing); None for a webhook.
+
+    Returns:
+        The row, flushed.
+    """
+    for column in DETAIL_COLUMNS:
+        if column in details:
+            if column == "author_id" and pull.author_id is not None:
+                continue
+            setattr(pull, column, details[column])
+    if observed_at is not None:
+        pull.details_observed_at = observed_at
+    db.flush()
+    return pull
+
+
+def active_project_repositories(
+    db: Session, *, account_id: Any, repositories: Sequence[str]
+) -> set[str]:
+    """Requested repositories with an active project, organization and tracker."""
+    if not repositories:
+        return set()
+    return set(
+        db.scalars(
+            select(func.lower(models.Project.slug))
+            .join(
+                models.Organization,
+                models.Organization.id == models.Project.organization_id,
+            )
+            .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+            .where(
+                models.Tracker.account_id == _uuid(account_id),
+                func.lower(models.Project.slug).in_([r.lower() for r in repositories]),
+                models.Project.is_active.is_(True),
+                models.Organization.is_active.is_(True),
+                models.Tracker.is_active.is_(True),
+            )
+        )
+    )
+
+
+def project_for_repository(
+    db: Session, *, account_id: Any, repository: str
+) -> Optional[tuple[models.Project, models.Organization, models.Tracker]]:
+    """The account's synced project whose slug is ``owner/repo``.
+
+    Args:
+        db: Session.
+        account_id: Owning account.
+        repository: ``owner/repo`` from the PR URL.
+
+    Returns:
+        ``(project, organization, tracker)``, or None when not synced.
+    """
+    row = db.execute(
+        select(models.Project, models.Organization, models.Tracker)
+        .join(
+            models.Organization,
+            models.Organization.id == models.Project.organization_id,
+        )
+        .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+        .where(
+            models.Tracker.account_id == _uuid(account_id),
+            func.lower(models.Project.slug) == repository.lower(),
+        )
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return row[0], row[1], row[2]
+
+
+def report_recipients(
+    db: Session,
+    *,
+    account_id: Any,
+    recipient_rule: str,
+    sponsoring_lead_user_id: Optional[str],
+    opted_out_user_ids: Sequence[str],
+) -> List[models.User]:
+    """Who receives the report email, opt-outs removed.
+
+    ``account_owner`` is the account's primary user. ``sponsoring_lead``
+    is the named user when that user is an active member of the account,
+    else the owner, so a departed lead does not silence the report.
+
+    Args:
+        db: Session.
+        account_id: Owning account.
+        recipient_rule: The policy's ``recipients``.
+        sponsoring_lead_user_id: The policy's sponsoring lead.
+        opted_out_user_ids: Users who opted out.
+
+    Returns:
+        Active users with an address; at most one today.
+    """
+    account = db.get(models.Account, _uuid(account_id))
+    if account is None:
+        return []
+    candidates: List[Any] = []
+    if recipient_rule == "sponsoring_lead" and sponsoring_lead_user_id:
+        try:
+            candidates.append(_uuid(sponsoring_lead_user_id))
+        except ValueError:
+            pass
+    if account.primary_user_id is not None:
+        candidates.append(account.primary_user_id)
+    opted_out = {str(u) for u in opted_out_user_ids}
+    for user_id in candidates:
+        user = db.get(models.User, user_id)
+        if (
+            user is None
+            or user.account_id != account.id
+            or not user.is_active
+            or not user.email
+        ):
+            continue
+        # The first eligible candidate is the recipient. An opted-out lead
+        # does not hand the report to the owner: opting out is a choice.
+        if str(user.id) in opted_out:
+            return []
+        return [user]
+    return []
+
+
+def set_user_opt_out(
+    db: Session, *, account_id: Any, user_id: Any, opted_out: bool
+) -> List[str]:
+    """Add or remove one user in the account policy's opt-out list.
+
+    Writes the account row's overrides directly: the opt-out is the
+    person's own choice and needs no budget permission. The row is locked
+    so a concurrent opt-out or policy save cannot drop this change. The
+    caller commits.
+
+    Args:
+        db: Session.
+        account_id: Owning account.
+        user_id: The person.
+        opted_out: True to stop their report email.
+
+    Returns:
+        The stored opt-out list.
+    """
+    row = _row(db, account_id=account_id, lock=True)
+    overrides = dict(row.overrides or {}) if row is not None else {}
+    current = [str(u) for u in overrides.get("opted_out_user_ids") or []]
+    key = str(user_id)
+    if opted_out and key not in current:
+        current.append(key)
+    elif not opted_out:
+        current = [u for u in current if u != key]
+    if current:
+        overrides["opted_out_user_ids"] = current
+    else:
+        overrides.pop("opted_out_user_ids", None)
+    if row is None and not overrides:
+        return []
+    save_overrides(
+        db,
+        account_id=account_id,
+        overrides=overrides,
+        user_id=row.updated_by if row is not None else None,
+    )
+    return current
 
 
 def issue_facts(
@@ -348,3 +679,18 @@ def credit_available(db: Session, *, account_id: Any) -> Optional[float]:
     if row is None:
         return None
     return float(row.balance - row.reserved)
+
+
+def user_in_account(db: Session, *, account_id: Any, user_id: Any) -> bool:
+    """Whether the user row belongs to the account.
+
+    Args:
+        db: Session.
+        account_id: Account the opt-out link names.
+        user_id: User the link names.
+
+    Returns:
+        True when the user is the account's.
+    """
+    user = db.get(models.User, _uuid(user_id))
+    return user is not None and user.account_id == _uuid(account_id)

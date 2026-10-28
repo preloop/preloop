@@ -1380,6 +1380,11 @@ def read_flow_execution(
     _project_execution_park(db, execution)
     # The page paints its title from this row before the flow itself loads.
     execution.flow_name = execution.flow.name if execution.flow else None
+    from preloop.services.delivery_report_views import execution_pull_request
+
+    execution.pull_request = execution_pull_request(
+        db, account_id=current_user.account_id, execution=execution
+    )
 
     return execution
 
@@ -2746,6 +2751,23 @@ async def trigger_flow_execution(
     _reject_reserved_trigger_keys(trigger_event_data)
     _reject_oversized_workspace_seeds(trigger_event_data)
     _reject_invalid_product_provenance(trigger_event_data)
+
+    if trigger_event_data and "delivery_report_project" in trigger_event_data:
+        from preloop.services.delivery_report import (
+            is_delivery_report_flow,
+            validate_report_project,
+        )
+
+        if not is_delivery_report_flow(flow):
+            raise HTTPException(422, "Project reruns require a Delivery Report flow")
+        try:
+            validate_report_project(
+                db,
+                account_id=current_user.account_id,
+                project=trigger_event_data["delivery_report_project"],
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     # Pop the reserved matrix key so it never leaks into template variables.
     matrix = None

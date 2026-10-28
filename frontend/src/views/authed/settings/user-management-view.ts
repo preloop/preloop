@@ -1,7 +1,7 @@
 import { ConsoleStatus } from '../../../controllers/console-status';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -28,6 +28,8 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '../../../components/view-header.ts';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { hasCapability } from '../../../capabilities';
@@ -37,6 +39,7 @@ import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
 import { userHref } from '../../../utils/user-href';
+import { formatLocalDateTime, formatRelativeTime } from '../../../utils/date';
 
 @customElement('user-management-view')
 export class UserManagementView extends LitElement {
@@ -127,82 +130,66 @@ export class UserManagementView extends LitElement {
         margin-bottom: var(--sl-spacing-medium);
       }
 
-      .users-grid {
-        display: grid;
-        gap: 1rem;
+      /* The console table pattern (DESIGN.md "Tables and views"):
+         hairline rows, the name a real link, chips as tints and the row
+         actions behind one kebab with the destructive one last. */
+      .users-table td {
+        vertical-align: middle;
       }
 
-      sl-card {
-        width: 100%;
-      }
-
-      sl-card.linked::part(base) {
-        outline: 2px solid var(--sl-color-primary-600);
-        outline-offset: 2px;
-      }
-      .user-card-content {
-        display: grid;
-        grid-template-columns: auto 1fr auto;
-        gap: 1rem;
-        align-items: center;
-      }
-
-      .user-icon {
-        font-size: 2rem;
-        width: 48px;
-        height: 48px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--sl-color-primary-50);
-        border-radius: 50%;
-        color: var(--sl-color-primary-600);
-      }
-
-      .user-details {
-        flex: 1;
+      .users-table tr.linked td {
+        box-shadow: inset 0 -2px 0 var(--sl-color-primary-600);
       }
 
       .user-name {
         font-weight: 600;
-        font-size: 1rem;
-        margin: 0 0 0.25rem 0;
       }
 
-      .user-email {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-        margin: 0 0 0.5rem 0;
+      .user-name a {
+        color: var(--sl-color-primary-600);
+        text-decoration: none;
       }
 
-      .user-meta {
+      .user-name a:hover {
+        text-decoration: underline;
+      }
+
+      .identity-note,
+      .user-email,
+      .teams-cell,
+      .last-login {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+
+      .identity-note {
+        margin: 2px 0 0;
+      }
+
+      .chips {
         display: flex;
-        gap: 0.5rem;
+        gap: var(--sl-spacing-2x-small);
         flex-wrap: wrap;
       }
 
-      .user-roles {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-        flex-wrap: wrap;
-        margin-top: 0.5rem;
+      .actions-cell {
+        width: 1%;
+        white-space: nowrap;
       }
 
-      .user-roles strong {
-        font-size: 0.875rem;
-        color: var(--sl-color-neutral-600);
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
 
-      .user-actions {
-        display: flex;
-        gap: 0.5rem;
-      }
-
-      /* The gap DESIGN.md asks for between the ordinary actions and the
-         destructive one, so Deactivate is never hit on the way to Edit. */
-      .user-actions .danger-action {
-        margin-left: var(--sl-spacing-large);
+      .empty-row {
+        text-align: center;
+        color: var(--console-meta-color);
+        padding: var(--sl-spacing-x-large);
       }
 
       .form-grid {
@@ -461,12 +448,199 @@ export class UserManagementView extends LitElement {
 
   updated(): void {
     if (!this.linkedUserId || this.linkedUserShown) return;
-    const card = this.shadowRoot?.querySelector(
-      `sl-card[data-user-id="${CSS.escape(this.linkedUserId)}"]`
+    const row = this.shadowRoot?.querySelector(
+      `tr[data-user-id="${CSS.escape(this.linkedUserId)}"]`
     );
-    if (!card) return;
+    if (!row) return;
     this.linkedUserShown = true;
-    card.scrollIntoView?.({ block: 'center' });
+    row.scrollIntoView?.({ block: 'center' });
+  }
+
+  /** The team names a person holds roles through, once each. */
+  static teamNames(user: User): string[] {
+    const inherited = ((user as any).inherited_roles || []) as Array<{
+      team_name?: string;
+    }>;
+    return [
+      ...new Set(
+        inherited
+          .map((role) => role.team_name || '')
+          .filter((name) => name.length > 0)
+      ),
+    ];
+  }
+
+  private displayName(user: User): string {
+    return (
+      user.full_name || user.username || user.email || 'Identity unavailable'
+    );
+  }
+
+  private renderUserRow(user: User) {
+    const linked = user.id === this.linkedUserId;
+    const roles = ((user as any).roles || []) as Array<{ name: string }>;
+    // A role held directly and through a team is one role: the team copy
+    // would only repeat the chip (the Teams column says where it came from).
+    const direct = new Set(roles.map((role) => role.name));
+    const inherited = (
+      ((user as any).inherited_roles || []) as Array<{
+        name: string;
+        team_name?: string;
+      }>
+    ).filter(
+      (role, index, all) =>
+        !direct.has(role.name) &&
+        all.findIndex((other) => other.name === role.name) === index
+    );
+    const teams = UserManagementView.teamNames(user);
+    const canManage = this.editPermissions.allows('manage_users');
+    const canAssign =
+      !this.advancedRolesEnabled || this.editPermissions.allows('assign_roles');
+    return html`
+      <tr
+        data-user-id=${user.id}
+        class=${linked ? 'linked' : ''}
+        aria-current=${linked ? 'true' : 'false'}
+      >
+        <td>
+          <div class="user-name">
+            <a href=${userHref(user.id)}
+              >${user.full_name || user.username || 'Identity unavailable'}</a
+            >
+          </div>
+          ${
+            user.identity_status === 'quarantined'
+              ? html`<p class="identity-note">
+                  Identity requires migration conflict resolution by a platform
+                  administrator.
+                </p>`
+              : nothing
+          }
+        </td>
+        <td class="user-email">${user.email || ''}</td>
+        <td>
+          <div class="chips">
+            <sl-badge
+              class="chip"
+              pill
+              variant=${user.is_active ? 'success' : 'neutral'}
+              >${user.is_active ? 'Active' : 'Inactive'}</sl-badge
+            >
+            ${
+              user.email_verified
+                ? nothing
+                : html`<sl-badge
+                    class="chip"
+                    pill
+                    variant="warning"
+                    title="This email address has not been confirmed"
+                    >Unverified</sl-badge
+                  >`
+            }
+          </div>
+        </td>
+        <td>
+          <sl-badge class="chip" pill variant="neutral"
+            >${UserManagementView.userSourceLabel(user.user_source)}</sl-badge
+          >
+        </td>
+        <td class="roles-cell">
+          <div class="chips">
+            ${roles.map(
+              (role) =>
+                html`<sl-badge class="chip" pill variant="neutral"
+                  >${UserManagementView.roleLabel(role.name)}</sl-badge
+                >`
+            )}
+            ${inherited.map(
+              (role) =>
+                html`<sl-badge
+                  class="chip"
+                  pill
+                  variant="neutral"
+                  title="From team: ${role.team_name || ''}"
+                  >${UserManagementView.roleLabel(role.name)}</sl-badge
+                >`
+            )}
+          </div>
+        </td>
+        <td class="teams-cell">${teams.join(', ')}</td>
+        <td class="last-login">
+          ${
+            user.last_login
+              ? html`<span title=${formatLocalDateTime(user.last_login)}
+                  >${formatRelativeTime(user.last_login, new Date(), {
+                    maxRelativeDays: Number.POSITIVE_INFINITY,
+                  })}</span
+                >`
+              : 'Never'
+          }
+        </td>
+        <td class="actions-cell">
+          <sl-dropdown class="row-menu" placement="bottom-end" hoist>
+            <sl-icon-button
+              slot="trigger"
+              name="three-dots-vertical"
+              label="Actions for ${this.displayName(user)}"
+            ></sl-icon-button>
+            <sl-menu>
+              <sl-menu-item
+                data-action="roles"
+                ?disabled=${!canAssign}
+                title=${
+                  !this.advancedRolesEnabled
+                    ? 'Roles are available in Preloop Cloud and Preloop Enterprise'
+                    : canAssign
+                      ? ''
+                      : 'Requires assign_roles'
+                }
+                @click=${() => this.openRoleModal(user)}
+              >
+                <sl-icon slot="prefix" name="shield-check"></sl-icon>
+                Manage roles
+              </sl-menu-item>
+              <sl-menu-item
+                data-action="edit"
+                ?disabled=${!canManage}
+                title=${canManage ? '' : 'Requires manage_users'}
+                @click=${() => this.openEditModal(user)}
+              >
+                <sl-icon slot="prefix" name="pencil"></sl-icon>
+                Edit account membership
+              </sl-menu-item>
+              ${
+                this.subaccounts.length > 0
+                  ? html`<sl-menu-item
+                      data-action="subaccount-access"
+                      data-testid="subaccount-access"
+                      @click=${() =>
+                        this.openSubaccountAccess({
+                          type: 'user',
+                          id: user.id,
+                          label: this.displayName(user),
+                        })}
+                    >
+                      <sl-icon slot="prefix" name="diagram-3"></sl-icon>
+                      Subaccount access
+                    </sl-menu-item>`
+                  : nothing
+              }
+              <sl-divider></sl-divider>
+              <sl-menu-item
+                class="danger-item"
+                data-action="deactivate"
+                ?disabled=${!canManage}
+                title=${canManage ? '' : 'Requires manage_users'}
+                @click=${() => this.handleDeactivateUser(user)}
+              >
+                <sl-icon slot="prefix" name="person-dash"></sl-icon>
+                Deactivate account membership
+              </sl-menu-item>
+            </sl-menu>
+          </sl-dropdown>
+        </td>
+      </tr>
+    `;
   }
 
   render() {
@@ -509,175 +683,37 @@ export class UserManagementView extends LitElement {
           : ''
       }
 
-      <div class="users-grid">
-        ${repeat(
-          this.users,
-          (user) => user.id,
-          (user) => html`
-            <sl-card
-              data-user-id=${user.id}
-              class=${user.id === this.linkedUserId ? 'linked' : ''}
-              aria-current=${user.id === this.linkedUserId ? 'true' : 'false'}
-            >
-              <div class="user-card-content">
-                <div class="user-icon">
-                  <sl-icon name="person-circle"></sl-icon>
-                </div>
-                <div class="user-details">
-                  <h3 class="user-name">
-                    <a href=${userHref(user.id)}
-                      >${user.full_name || user.username || 'Identity unavailable'}</a
-                    >
-                  </h3>
-                  ${user.identity_status === 'quarantined' ? html`<p>Identity requires migration conflict resolution by a platform administrator.</p>` : ''}
-                  <p class="user-email">${user.email}</p>
-                  <div class="user-meta">
-                    <sl-badge
-                      class="chip"
-                      variant="${user.is_active ? 'success' : 'neutral'}"
-                    >
-                      ${user.is_active ? 'Active' : 'Inactive'}
-                    </sl-badge>
-                    <sl-badge class="chip" variant="neutral"
-                      >${UserManagementView.userSourceLabel(
-                        user.user_source
-                      )}</sl-badge
-                    >
-                    ${
-                      user.email_verified
-                        ? html`<sl-badge class="chip" variant="success"
-                            >Verified</sl-badge
-                          >`
-                        : html`<sl-badge class="chip" variant="warning"
-                            >Unverified</sl-badge
-                          >`
-                    }
-                  </div>
-                  ${
-                    (user as any).roles && (user as any).roles.length > 0
-                      ? html`
-                          <div class="user-roles">
-                            <strong>Roles:</strong>
-                            ${(user as any).roles.map(
-                              (role: any) =>
-                                html`<sl-badge class="chip" variant="neutral"
-                                  >${UserManagementView.roleLabel(
-                                    role.name
-                                  )}</sl-badge
-                                >`
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                  ${
-                    (user as any).inherited_roles &&
-                    (user as any).inherited_roles.length > 0
-                      ? html`
-                          <div class="user-roles">
-                            <strong>From teams:</strong>
-                            ${(user as any).inherited_roles.map(
-                              (role: any) =>
-                                html`<sl-badge
-                                  class="chip"
-                                  variant="neutral"
-                                  title="From team: ${role.team_name}"
-                                  >${UserManagementView.roleLabel(role.name)}
-                                  <span style="font-size: 0.7em;"
-                                    >(${role.team_name})</span
-                                  ></sl-badge
-                                >`
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-                <div class="user-actions">
-                  <sl-tooltip
-                    content=${
-                      !this.advancedRolesEnabled
-                        ? 'Roles are available in Preloop Cloud and Preloop Enterprise'
-                        : !this.editPermissions.allows('assign_roles')
-                          ? 'Requires assign_roles'
-                          : ''
-                    }
-                    ><sl-button
-                      ?disabled=${
-                        this.advancedRolesEnabled &&
-                        !this.editPermissions.allows('assign_roles')
-                      }
-                      size="small"
-                      title="Manage roles"
-                      @click=${() => this.openRoleModal(user)}
-                    >
-                      <sl-icon
-                        name="shield-check"
-                        label="Manage roles"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                  <sl-tooltip
-                    content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
-                    ><sl-button
-                      ?disabled=${!this.editPermissions.allows('manage_users')}
-                      size="small"
-                      title="Edit account membership"
-                      @click=${() => this.openEditModal(user)}
-                    >
-                      <sl-icon
-                        name="pencil"
-                        label="Edit account membership"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                  ${
-                    this.subaccounts.length > 0
-                      ? html`<sl-button
-                          size="small"
-                          title="Subaccount access"
-                          data-testid="subaccount-access"
-                          @click=${() =>
-                            this.openSubaccountAccess({
-                              type: 'user',
-                              id: user.id,
-                              label:
-                                user.full_name ||
-                                user.username ||
-                                user.email ||
-                                'Identity unavailable',
-                            })}
-                        >
-                          <sl-icon
-                            name="diagram-3"
-                            label="Subaccount access"
-                          ></sl-icon>
-                        </sl-button>`
-                      : ''
-                  }
-                  <!-- Destructive last, outline, after a gap (DESIGN.md
-                       "Destructive actions"): a solid red button beside two
-                       neutral ones is the loudest thing in the row. -->
-                  <sl-tooltip
-                    content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
-                    ><sl-button
-                      ?disabled=${!this.editPermissions.allows('manage_users')}
-                      class="danger-action"
-                      size="small"
-                      variant="danger"
-                      outline
-                      title="Deactivate account membership"
-                      @click=${() => this.handleDeactivateUser(user)}
-                    >
-                      <sl-icon
-                        name="person-dash"
-                        label="Deactivate account membership"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                </div>
-              </div>
-            </sl-card>
-          `
-        )}
-      </div>
+      <sl-card class="table-card">
+        <div class="table-scroll">
+          <table class="styled-table users-table" aria-label="Users">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Email</th>
+                <th scope="col">Status</th>
+                <th scope="col">Sign-in</th>
+                <th scope="col">Roles</th>
+                <th scope="col">Teams</th>
+                <th scope="col">Last login</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                this.users.length === 0
+                  ? html`<tr>
+                      <td class="empty-row" colspan="8">No users yet.</td>
+                    </tr>`
+                  : repeat(
+                      this.users,
+                      (user) => user.id,
+                      (user) => this.renderUserRow(user)
+                    )
+              }
+            </tbody>
+          </table>
+        </div>
+      </sl-card>
 
       ${
         this.subaccounts.length > 0

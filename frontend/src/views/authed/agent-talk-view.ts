@@ -26,10 +26,12 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/session-chat-view';
 import '../../components/talk-composer';
 import '../../components/talk-session-picker';
+import '../../components/talk-status-line';
 import {
   TALK_SESSION_NEW_EVENT,
   TALK_SESSION_SELECT_EVENT,
 } from '../../components/talk-session-picker';
+import type { TalkSessionPicker } from '../../components/talk-session-picker';
 
 import {
   getAccountAgent,
@@ -88,6 +90,7 @@ import {
 import {
   TALK_MESSAGE_SENT_EVENT,
   TALK_NEW_SESSION_EVENT,
+  TALK_OPEN_PICKER_EVENT,
   TALK_PENDING_CHANGED_EVENT,
   TALK_SWITCH_SESSION_EVENT,
 } from '../../components/talk-composer';
@@ -162,6 +165,15 @@ export class AgentTalkView extends LitElement {
   private channel: BroadcastChannel | null = null;
   private heartbeatTimer: number | null = null;
   private reloadTimer: number | null = null;
+  /**
+   * The open turn's reply as it streams in (`session_progress` deltas).
+   * Cleared once the stored reply is read after the turn ends.
+   */
+  @state() private liveReply = '';
+  private liveItemId: string | null = null;
+  private liveTurnEnded = false;
+  /** Last `seq` seen for the open session; a jump means a missed event. */
+  private lastProgressSeq: number | null = null;
   private geometryTimer: number | null = null;
 
   static styles = [
@@ -297,8 +309,13 @@ export class AgentTalkView extends LitElement {
         min-height: 0;
       }
 
-      talk-composer {
+      talk-composer,
+      talk-status-line {
         flex-shrink: 0;
+      }
+
+      talk-status-line {
+        background: var(--console-surface, var(--sl-color-neutral-0));
       }
 
       .state {
@@ -657,6 +674,8 @@ export class AgentTalkView extends LitElement {
       this.nextEventPage = this.nextPageOf(events);
       // Anything the server has now echoed back is in the thread already.
       this.composer?.clearSentPending(this.echoedCommandIds(this.activity));
+      // The ended turn's reply is now in the stored thread.
+      if (this.liveTurnEnded) this.resetLiveReply();
       this.sessionLoadFailed = false;
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
@@ -752,6 +771,10 @@ export class AgentTalkView extends LitElement {
       unifiedWebSocketManager.subscribe('agent_control', (message) =>
         this.handleActivity(message)
       ),
+      // Live reply deltas: appended to the open turn, never a refetch.
+      unifiedWebSocketManager.subscribe('session_progress', (message) =>
+        this.handleSessionProgress(message)
+      ),
       // Approvals have their own topic: a session blocked on a decision emits
       // no gateway or session traffic at all, so without this the operator is
       // not told until they happen to reload.
@@ -771,7 +794,13 @@ export class AgentTalkView extends LitElement {
         // coming back reads the open session again instead of trusting it.
         const reconnected = connected && this.realtimeConnected === false;
         this.realtimeConnected = connected;
-        if (reconnected) void this.load();
+        if (reconnected) {
+          // Deltas (or the turn end) may have been missed while down: the
+          // stored thread is the authority, not a half-streamed bubble.
+          this.resetLiveReply();
+          this.lastProgressSeq = null;
+          void this.load();
+        }
       }
     );
     this.realtimeConnected =
@@ -809,6 +838,79 @@ export class AgentTalkView extends LitElement {
     this.composer?.handleRealtime(message);
     this.noteAgentTurn();
     this.scheduleReload();
+  }
+
+  /**
+   * One `session_progress` event. Only the open session's events count;
+   * the server already scopes them to this account. Reply deltas append to
+   * the live bubble; a gap in `seq` (a throttled or lost event) or the end
+   * of the turn re-reads the stored thread instead. Sidecars that send no
+   * progress keep the reload-on-activity path above.
+   */
+  private handleSessionProgress(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
+    const payload = message?.payload ?? {};
+    const sessionId =
+      (payload.runtime_session_id as string | undefined) ??
+      message?.runtime_session_id;
+    if (!sessionId || sessionId !== this.sessionId) return;
+    if (message.managed_agent_id && message.managed_agent_id !== this.agentId)
+      return;
+    const seq = typeof payload.seq === 'number' ? payload.seq : null;
+    if (seq !== null) {
+      const gap =
+        this.lastProgressSeq !== null && seq !== this.lastProgressSeq + 1;
+      this.lastProgressSeq = seq;
+      if (gap) {
+        // Text is missing in the middle: the stored thread is the truth.
+        this.resetLiveReply();
+        this.scheduleReload();
+        return;
+      }
+    }
+    switch (payload.kind) {
+      case 'turn_started':
+        this.resetLiveReply();
+        return;
+      case 'assistant_delta': {
+        const delta = typeof payload.delta === 'string' ? payload.delta : '';
+        if (!delta) return;
+        if (this.liveTurnEnded) this.resetLiveReply();
+        const itemId =
+          typeof payload.item_id === 'string' ? payload.item_id : null;
+        const separator =
+          this.liveReply && itemId !== this.liveItemId ? '\n\n' : '';
+        this.liveItemId = itemId;
+        this.liveReply = `${this.liveReply}${separator}${delta}`.slice(-20000);
+        this.noteAgentTurn();
+        return;
+      }
+      case 'turn_completed':
+        this.liveTurnEnded = true;
+        this.scheduleReload();
+        return;
+      default:
+        // Tools, titles and usage drive the status line, not the thread.
+        return;
+    }
+  }
+
+  private resetLiveReply(): void {
+    this.liveReply = '';
+    this.liveItemId = null;
+    this.liveTurnEnded = false;
+  }
+
+  /** Test seam: feed one `session_progress` message without a socket. */
+  public receiveSessionProgress(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
+    this.handleSessionProgress(message);
   }
 
   /** Show the one-line "New session" notice for a session not on screen. */
@@ -912,6 +1014,8 @@ export class AgentTalkView extends LitElement {
     this.events = [];
     this.activity = [];
     this.pendingApprovals = [];
+    this.resetLiveReply();
+    this.lastProgressSeq = null;
     this.hasMoreEvents = false;
     this.nextEventPage = null;
     this.loadingEvents = false;
@@ -1034,7 +1138,7 @@ export class AgentTalkView extends LitElement {
     if (this.loading && !this.agent) {
       return html`<div class="state" role="status">
         <sl-spinner></sl-spinner>
-        <div>Loading agent...</div>
+        <div>Loading agent…</div>
       </div>`;
     }
     if (!this.agent) {
@@ -1074,6 +1178,7 @@ export class AgentTalkView extends LitElement {
         .pendingApprovals=${this.pendingApprovals}
         .connected=${this.realtimeConnected ?? true}
         .pending=${this.pending}
+        .liveReply=${this.liveReply}
         .loading=${this.loadingEvents && !this.events.length}
         .hasMoreEvents=${this.hasMoreEvents}
         .loadingMoreEvents=${this.loadingMoreEvents || this.eventsMoreQueued}
@@ -1112,6 +1217,12 @@ export class AgentTalkView extends LitElement {
         .liveAlternative=${this.liveAlternative}
         sourceContext=${this.composerSourceContext}
       ></talk-composer>
+      <talk-status-line
+        .agent=${this.agent}
+        .session=${this.currentSession ?? null}
+        .connected=${this.realtimeConnected}
+        .approvals=${this.pendingApprovals.length}
+      ></talk-status-line>
     `;
   }
 
@@ -1138,6 +1249,11 @@ export class AgentTalkView extends LitElement {
     });
     this.addEventListener(TALK_SESSION_NEW_EVENT, () => this.startNewSession());
     this.addEventListener(TALK_NEW_SESSION_EVENT, () => this.startNewSession());
+    this.addEventListener(TALK_OPEN_PICKER_EVENT, () => {
+      void this.renderRoot
+        .querySelector<TalkSessionPicker>('talk-session-picker')
+        ?.show();
+    });
     this.addEventListener(TALK_PENDING_CHANGED_EVENT, (event: Event) => {
       this.pending = [
         ...((event as CustomEvent<{ pending: PendingTalkMessage[] }>).detail

@@ -11,11 +11,11 @@ This module provides functionality to:
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 from uuid import UUID, uuid4
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.services.policy.schema import (
@@ -1352,8 +1352,9 @@ class PolicyApplier:
     ) -> None:
         """Apply MCP server definitions."""
         from preloop.models.crud import crud_mcp_server
-        from preloop.models.models.mcp_server import MCPServer
+        from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth
         from preloop.models.schemas.mcp_server import merge_auth_config
+        from preloop.utils.redaction import REDACTED_STRING
 
         for server_def in servers:
             # Check if server exists by name
@@ -1371,23 +1372,41 @@ class PolicyApplier:
             if existing:
                 # Update existing server
                 if not dry_run:
-                    existing.url = server_def.url
-                    existing.transport = server_def.transport
-                    existing.auth_type = server_def.auth_type
+                    changes: Dict[str, Any] = {
+                        "url": server_def.url,
+                        "transport": server_def.transport,
+                        "auth_type": server_def.auth_type,
+                    }
                     # Only update auth_config if:
                     # 1. It's provided AND
                     # 2. It's NOT a redaction marker
                     # This prevents rollbacks from wiping credentials
                     if server_def.auth_config and not auth_config_is_redacted:
+                        incoming = server_def.auth_config
+                        if existing.auth_type == "oauth" == server_def.auth_type:
+                            # A policy or snapshot carries only the public OAuth
+                            # fields: keep every stored key it leaves out (client
+                            # secret, grant) so an unchanged binding stays
+                            # connected, even after a token refresh.
+                            stored = crud_upstream_mcp_oauth.config_for_edit(
+                                self.db, existing
+                            )
+                            incoming = {
+                                **{key: REDACTED_STRING for key in stored},
+                                **incoming,
+                            }
                         # Per-key markers keep the stored secret for that key.
-                        existing.auth_config = merge_auth_config(
-                            server_def.auth_config, existing.auth_config
-                        )
+                        changes["auth_config"] = incoming
                     elif auth_config_is_redacted:
                         logger.debug(
                             f"Skipping auth_config update for {server_def.name} "
                             "(redacted in snapshot, preserving existing credentials)"
                         )
+                    # The CRUD keeps OAuth secrets encrypted and invalidates
+                    # grants whose binding changed.
+                    crud_mcp_server.update(
+                        self.db, db_obj=existing, obj_in=changes, commit=False
+                    )
                 self._mcp_server_map[server_def.name] = existing.id
                 self._result.mcp_servers_updated += 1
                 logger.info(f"Updated MCP server: {server_def.name}")
@@ -1406,16 +1425,19 @@ class PolicyApplier:
                             f"Creating MCP server {server_def.name} without credentials "
                             "(redacted in snapshot). Configure auth_config manually."
                         )
-                    new_server = MCPServer(
-                        account_id=self.account_id,
-                        name=server_def.name,
-                        url=server_def.url,
-                        transport=server_def.transport,
-                        auth_type=server_def.auth_type,
-                        auth_config=actual_auth_config,
-                        status="active",
+                    new_server = crud_mcp_server.create(
+                        self.db,
+                        obj_in={
+                            "account_id": self.account_id,
+                            "name": server_def.name,
+                            "url": server_def.url,
+                            "transport": server_def.transport,
+                            "auth_type": server_def.auth_type,
+                            "auth_config": actual_auth_config,
+                            "status": "active",
+                        },
+                        commit=False,
                     )
-                    self.db.add(new_server)
                     self.db.flush()  # Get the ID
                     self._mcp_server_map[server_def.name] = new_server.id
                 self._result.mcp_servers_created += 1
@@ -1856,6 +1878,40 @@ class PolicyApplier:
         logger.info("Applied sensitive_data policy block")
 
 
+_ExportModel = TypeVar("_ExportModel", bound=BaseModel)
+
+
+def _export_item(model_cls: Type[_ExportModel], **fields: Any) -> _ExportModel:
+    """Build one exported item, keeping stored values the schema rejects.
+
+    Rows written through the configuration API can hold values the policy
+    schema rejects (for example a workflow with no timeout). Export shows the
+    operator what is stored so it can be fixed, so a rejected row is kept as
+    an unvalidated model instead of failing the whole export. A stored
+    ``None`` in a required field is still omitted from the YAML, which drops
+    ``None`` values, so it reads as the schema default there.
+
+    Args:
+        model_cls: Policy schema model for the item.
+        **fields: Field values read from the stored row.
+
+    Returns:
+        The validated model, or an unvalidated one when validation fails.
+    """
+    try:
+        return model_cls(**fields)
+    except ValidationError as exc:
+        logger.warning(
+            "Exported %s %r does not validate: %s",
+            model_cls.__name__,
+            fields.get("name"),
+            # Field paths and messages only: the inputs can hold credentials
+            # (auth_config), webhook config or AI context.
+            exc.errors(include_input=False, include_url=False),
+        )
+        return model_cls.model_construct(**fields)
+
+
 def export_current_policy(
     db: Session,
     account_id: Union[str, UUID],
@@ -1910,7 +1966,8 @@ def export_current_policy(
                 auth_config = {"redacted": True} if server.auth_config else None
 
             server_defs.append(
-                MCPServerDefinition(
+                _export_item(
+                    MCPServerDefinition,
                     name=server.name,
                     url=server.url,
                     transport=server.transport,
@@ -1952,7 +2009,8 @@ def export_current_policy(
                 str(escalation_workflow_id)
             )
 
-        policy_def = ApprovalWorkflowDefinition(
+        policy_def = _export_item(
+            ApprovalWorkflowDefinition,
             **crud_approval_workflow.export_recipient_names(db, workflow=policy),
             name=policy.name,
             description=policy.description,
@@ -2004,14 +2062,16 @@ def export_current_policy(
                         rule.action, ConditionAction.REQUIRE_APPROVAL
                     )
                     conditions.append(
-                        ToolCondition(
+                        _export_item(
+                            ToolCondition,
                             expression=rule.condition_expression,
                             action=action,
                             description=rule.description,
                         )
                     )
 
-        tool_def = ToolDefinition(
+        tool_def = _export_item(
+            ToolDefinition,
             name=config.tool_name,
             source=source,
             enabled=config.is_enabled,
@@ -2082,5 +2142,8 @@ def export_current_policy(
         # Stored state that no longer validates as one document (for example
         # a model_io rule naming a custom type the block has lost). Export
         # must still show the operator what is stored so it can be fixed.
-        logger.warning("Exported policy does not validate as a whole: %s", exc)
+        logger.warning(
+            "Exported policy does not validate as a whole: %s",
+            exc.errors(include_input=False, include_url=False),
+        )
         return PolicyDocument.model_construct(**document_fields)

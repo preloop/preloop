@@ -10,10 +10,26 @@ This module tests the MR review functionality:
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from preloop.sync.trackers.gitlab import GitLabTracker
+from preloop.sync.trackers.gitlab import GitLabTracker, _review_from_system_note
 from preloop.sync.exceptions import TrackerResponseError
+
+
+def test_approval_note_keeps_forge_user_id_and_time() -> None:
+    note = SimpleNamespace(
+        system=True,
+        body="approved this merge request",
+        author={"id": 42, "name": "Display Name"},
+        created_at="2026-10-20T10:00:00Z",
+    )
+    assert _review_from_system_note(note) == {
+        "user_id": "42",
+        "submitted_at": "2026-10-20T10:00:00Z",
+    }
+    note.system = False
+    assert _review_from_system_note(note) is None
 
 
 class _AttrsStrippingMR:

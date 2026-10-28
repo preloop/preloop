@@ -6246,7 +6246,7 @@ export class SessionReplayPanel extends LitElement {
       return html`
         <div class="loading">
           <sl-spinner></sl-spinner>
-          <div>Loading session replay...</div>
+          <div>Loading session replay…</div>
         </div>
       `;
     }

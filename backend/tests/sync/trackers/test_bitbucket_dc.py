@@ -537,8 +537,9 @@ async def test_error_statuses_map_to_tracker_errors() -> None:
     tracker = make_tracker(
         lambda r: httpx.Response(429, headers={"Retry-After": "7"}), []
     )
-    with pytest.raises(TrackerRateLimitError, match="Retry after 7s"):
+    with pytest.raises(TrackerRateLimitError, match="Retry after 7s") as rate_limit:
         await tracker.get_pull_request(101)
+    assert rate_limit.value.retry_after == 7.0
     tracker = make_tracker(lambda r: ok(fx("error_409_version"), 409), [])
     with pytest.raises(BitbucketDCConflictError, match="out-of-date") as conflict:
         await tracker.get_pull_request(101)

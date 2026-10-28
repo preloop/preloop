@@ -34,7 +34,7 @@ def orchestrator():
     orch.flow.git_clone_config = None
     orch.flow.trigger_project_ids = None
     orch.flow.agent_type = "opencode"
-    orch.execution_log = MagicMock()
+    orch.execution_log = MagicMock(ci_principal_id=None)
     orch.execution_log.id = "test-execution-id"
     orch.ai_model = MagicMock()
     return orch

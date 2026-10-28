@@ -65,6 +65,7 @@ describe('DashboardView', () => {
   /** Merged into `GET /api/v1/features`. */
   let extraFeatures: Record<string, boolean>;
   let fleetResponse: any;
+  let deliveryReportsResponse: any[];
   /** `is_superuser` on the profile: instance admins get the Map toggle. */
   let meSuperuser: boolean;
 
@@ -84,6 +85,7 @@ describe('DashboardView', () => {
     failNext = new Map();
     extraFeatures = {};
     fleetResponse = null;
+    deliveryReportsResponse = [];
     meSuperuser = false;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -555,8 +557,19 @@ describe('DashboardView', () => {
           return json({ active: 3 });
         }
 
-        if (url === '/api/v1/attention/extension-items') {
-          return json([]);
+        if (url.startsWith('/api/v1/attention/extension-items')) {
+          return json(
+            deliveryReportsResponse.map((report) => ({
+              id: report.id,
+              source: 'core:delivery_report',
+              title: 'Delivery report needs you',
+              detail: '1 pending proposal',
+              href: `/console/delivery-reports/${report.id}#needs-you`,
+              severity: 'action',
+              opened_at: report.started_at,
+              delivery_report: report,
+            }))
+          );
         }
 
         if (url === '/api/v1/auth/users/me') {
@@ -1040,6 +1053,30 @@ describe('DashboardView', () => {
     expect(strip.offsetHeight, 'strip height').to.be.at.most(56);
   });
 
+  it('prints a short chip label and keeps the full sentence in its title', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+    const chip = element.shadowRoot!.querySelector(
+      '.attention-strip a.attention-chip-link'
+    ) as HTMLAnchorElement;
+    const first = element['attentionItems'][0];
+    expect(
+      chip.querySelector('.attention-chip-text')!.textContent!.trim()
+    ).to.not.contain(' · ');
+    expect(chip.getAttribute('title')).to.equal(
+      first.detail ? `${first.title} · ${first.detail}` : first.title
+    );
+  });
+
   it('points each strip chip at its own row on the attention page', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -1171,7 +1208,7 @@ describe('DashboardView', () => {
       'view-header .updated-at'
     );
     expect(updated, 'the page-level updated line renders').to.exist;
-    expect(updated?.getAttribute('slot')).to.equal('meta');
+    expect(updated?.closest('[slot]')?.getAttribute('slot')).to.equal('meta');
     expect(updated?.textContent).to.contain('Updated');
 
     const manageKeys = element.shadowRoot?.querySelector(
@@ -1524,6 +1561,38 @@ describe('DashboardView', () => {
     // Wave 8: the tab is a list of people, and the API behind it answers only
     // to view_users. Without that permission the tab would open on an error,
     // so it is not offered at all.
+    it('offers the Fleet map in the page header to a member who may view a source', async () => {
+      mePermissions = ['view_agents'];
+      const element = await mountLoaded();
+      const header = element.shadowRoot!.querySelector('view-header')!;
+      const meta = header.querySelector('[slot="meta"]')!;
+      const launcher = meta.querySelector('fleet-map-launcher') as any;
+      expect(launcher, 'the button renders for a non-admin member').to.exist;
+      // Right side, left of the freshness stamp.
+      expect(launcher.nextElementSibling.classList.contains('updated-at')).to.be
+        .true;
+      expect(launcher.instanceAdmin).to.equal(false);
+      // Nothing is fetched until the button is pressed.
+      expect(
+        fetchStub
+          .getCalls()
+          .map((call: any) => String(call.args[0]))
+          .filter((url: string) => url.startsWith('/api/v1/fleet/map'))
+      ).to.deep.equal([]);
+      // The Inventory card is the table, with no map toggle.
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect(inventory.shadowRoot!.querySelector('[data-inventory-view]')).to
+        .not.exist;
+    });
+
+    it('offers no Fleet map to a member who may view none of its sources', async () => {
+      mePermissions = ['view_tools'];
+      const element = await mountLoaded();
+      expect(element.shadowRoot!.querySelector('fleet-map-launcher')).to.not
+        .exist;
+    });
+
     it('hides the Users tab from a reader without view_users', async () => {
       mePermissions = ['view_agents', 'view_flows'];
       const element = await mountLoaded();
@@ -1992,10 +2061,9 @@ describe('DashboardView', () => {
     });
 
     for (const width of [1280, 1440, 1920]) {
-      it(`keeps the Inventory under the Gateway in both views at ${width}px`, async () => {
+      it(`keeps the Inventory under the Gateway at ${width}px`, async () => {
         await setViewport({ width, height: 900 });
         try {
-          // The Map toggle is for instance admins.
           meSuperuser = true;
           const element = await mountLoaded();
           const root = element.shadowRoot!;
@@ -2009,19 +2077,12 @@ describe('DashboardView', () => {
           side.style.minHeight = '2400px';
           const gateway = root.querySelector('.main-column')!
             .firstElementChild as HTMLElement;
-          const check = async (view: 'table' | 'map') => {
-            const toggle = inventory().shadowRoot!.querySelector(
-              `[data-inventory-view="${view}"]`
-            ) as HTMLElement;
-            toggle.click();
+          // The card is the table, always: the map opens full screen.
+          expect(inventory().shadowRoot!.querySelector('[data-inventory-view]'))
+            .to.not.exist;
+          const check = async (view: 'table') => {
             await (inventory() as any).updateComplete;
             await element.updateComplete;
-            expect(
-              inventory()
-                .shadowRoot!.querySelector(`[data-inventory-view="${view}"]`)!
-                .getAttribute('aria-pressed'),
-              `${view}: the toggle switched the card`
-            ).to.equal('true');
             await new Promise((r) => requestAnimationFrame(r));
             const g = gateway.getBoundingClientRect();
             const inv = inventory().getBoundingClientRect();
@@ -2038,8 +2099,6 @@ describe('DashboardView', () => {
               original
             );
           };
-          await check('table');
-          await check('map');
           await check('table');
         } finally {
           for (const key of Object.keys(localStorage))
@@ -2363,12 +2422,13 @@ describe('DashboardView', () => {
         'inventory-card'
       ) as any;
       await inventory.updateComplete;
-      const line = inventory.shadowRoot.querySelector(
-        '[data-testid="without-subscriptions"]'
+      // One figure in the cell; the estimate is in the accessible tooltip (UX3-04).
+      const cell = inventory.shadowRoot.querySelector(
+        'td[data-label="Spend"] sl-tooltip'
       );
-      expect(
-        line.querySelector('summary').textContent.replace(/\s+/g, ' ').trim()
-      ).to.equal('$2.34 w/o subs.');
+      expect(cell.querySelector('[slot="content"]').textContent).to.contain(
+        '$2.34 without subscriptions'
+      );
     });
 
     it('reads each tab from a fetch the page already made', async () => {
@@ -2866,6 +2926,24 @@ describe('DashboardView', () => {
     });
 
     it('keeps the first-paint budget with one shared extension read', async () => {
+      deliveryReportsResponse = [
+        {
+          id: 'report-1',
+          started_at: new Date().toISOString(),
+          projects: ['Example Project'],
+          proposals: [
+            {
+              key: 'follow_up:0',
+              kind: 'follow_up',
+              title: 'Review tests',
+              reason: 'Missing coverage',
+              stale_reason: null,
+              unconfirmed: false,
+            },
+          ],
+          fingerprint: 'pending-proposal-1',
+        },
+      ];
       const element = await mountDashboard();
       await waitUntil(
         () =>
@@ -2888,6 +2966,7 @@ describe('DashboardView', () => {
       // findings once (#960), so the set is 29. The Usage card's chart
       // reads /cost/timeseries once (#1610): 30. Generic plugin Attention
       // adds one shared /attention/extension-items read (#1821): 31.
+      // Pending delivery reports ride in that same response.
       const pageUrls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
@@ -2900,9 +2979,21 @@ describe('DashboardView', () => {
         );
       expect(pageUrls.length, pageUrls.join('\n')).to.equal(31);
       expect(
-        pageUrls.filter((url) => url === '/api/v1/attention/extension-items')
-          .length
+        pageUrls.filter((url) =>
+          url.startsWith('/api/v1/attention/extension-items')
+        ).length
       ).to.equal(1);
+      expect(
+        pageUrls.filter((url) =>
+          url.startsWith('/api/v1/delivery-reports/attention')
+        )
+      ).to.have.length(0);
+      expect(
+        element['attentionItems'].some(
+          (item) =>
+            item.kind === 'delivery_report' && item.title === 'Example Project'
+        )
+      ).to.be.true;
       expect(
         pageUrls.filter((url) => url.startsWith('/api/v1/cost/timeseries'))
           .length

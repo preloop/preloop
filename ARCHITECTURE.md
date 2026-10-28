@@ -18,7 +18,11 @@ Talk, Conversation and Transcript. Gateway starts and accounting completions
 share a per-request identity; captured OpenAI, Responses and Anthropic tool
 metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
 Agent detail uses independent identity, session-page and spend reads; Talk uses
-bounded delta history and coalesced refreshes. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
+bounded delta history and coalesced refreshes. Sidecars stream the open turn's
+reply as numbered `session_progress` deltas (merged to four a second, throttled
+per session on the server, scoped to the owning account and runtime session);
+Talk appends them to a live bubble and re-reads the thread only on a sequence
+gap or turn end. Sidecars that send no deltas keep the refresh path. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
 Approval REST queries combine account and runtime-session scope, and websocket
 approval payloads pass the same permission boundary before delivery. See
 [Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
@@ -27,7 +31,31 @@ approval payloads pass the same permission boundary before delivery. See
 
 Implementation PRs can use [durable feedback subscriptions](docs/guide/flows/durable-implementation-feedback.md): PostgreSQL threads and inbox leases coordinate new execution turns, while native conversation artifacts remain isolated from workspace checkpoints. Repository events and bounded reconciliation advance CI/review gates without idle agent containers. Bitbucket review feedback requires a current changes-requested participant state and excludes automated summary comments; metadata updates skip successful reviews of the same pull request head. Feedback opt-in applies to future executions; a preview-and-adopt API binds one older publication explicitly. Live policy changes are checked again at atomic repair reservation. Missing native checkpoints fail closed unless the operator explicitly selected a source-only published-branch handoff. Unreadable repository requirements prevent readiness while fully verified feedback can still authorize bounded repairs.
 
+Forge reconciliation keeps one forge truth for pull request state. Feedback reads split merged from closed (`pr_merged`, `pr_closed`) on GitHub, GitLab and Bitbucket, and a throttled read waits out the provider's `Retry-After` instead of blocking. `services/pull_request_refresh.py` refreshes `IssueCostPullRequest.head_sha`, `state` and `merged_at` for open or not-yet-observed pull requests: at most 25 records and 25 API reads per one-minute tick, including fallback trackers and Bitbucket commit lookups, each open record re-armed after five minutes. Reads use `If-None-Match` when the forge supplies an ETag; Bitbucket Cloud PR reads explicitly fall back to plain GETs without a validator (see [forge reconciliation](docs/guide/forge-reconciliation.md)). A pull request webhook only marks its record due; a merge is never reverted by a later read. Webhook ingress claims each `X-GitHub-Delivery`, `X-Gitlab-Event-UUID` or Bitbucket `X-Request-UUID` in `forge_webhook_delivery` before queueing, answers a redelivery as a duplicate, and releases the claim when publication is not acknowledged. An unpublished claim can be taken over after two minutes; publication and release match the claim timestamp so a late holder cannot mutate its replacement. Copilot records follow the same bounded refresh and ingress dedupe paths.
+
+Delivery Report console reads go through account-scoped CRUD. Attention includes
+only pending or unconfirmed proposals, with a fingerprint that changes when the
+pending decisions change. Execution detail projects forge state from
+`IssueCostPullRequest` and the newest assessment at its current head SHA.
+Project reruns use the existing manual flow trigger, narrow the report policy's
+scope for that execution, and recheck the policy before running. They preserve
+the account's assessment budgets and tracker-write rules.
+
 [Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's ten-operation route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
+
+Dedicated restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. Legacy and isolated publication retain their existing contracts.
+
+
+Credential checks use a dedicated synchronous auth pool alongside the sync and
+async request pools and the health engine. The auth pool adds its configured
+base size to each API/gateway process's retained connection budget, and base
+plus overflow to its ceiling. Helm values include this contribution; the pool
+monitor reports it as `auth`. Bounded non-machine classification caching never
+replaces route authentication; [restricted CI operations](docs/guide/flows/restricted-ci.md#credential-check-resilience)
+documents its freshness and database-error fallback windows. Async session
+teardown has a single shielded cleanup owner so caller cancellation cannot
+interrupt rollback/close or start a concurrent close on the same session.
+
 
 [Isolated publication](docs/guide/flows/automated-issue-implementation.md#isolated-publication-rollout-and-repair) verifies immutable bundles in fresh credential-free runtimes before acquiring a write lease. Controller-owned evidence reuse binds the execution, bundle, base, profile, pinned image and runtime; sandbox-written evidence cannot populate it. Failed durable repairs retain their latest workspace and native session while recovering only the prior published branch binding from authenticated thread ancestry.
 Private-runner log batches use stable delivery identities and acknowledgments so a reconnect can replay unconfirmed output without duplicating stored rows. Socket writes have deadlines, live log broadcasts have a bounded budget, and runner lease release shares the terminal result transaction. Publication and native-session markers are saved while output arrives. The execution console refreshes runner assignment and failure details at lifecycle transitions; an execution without an observed runtime is shown as unassigned.
@@ -48,10 +76,12 @@ The [account kill switch](docs/guide/account-kill-switch.md) serializes halt tra
 Database worker ownership, row-lock compatibility, and cancellation rules are
 documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
 
-Agent harnesses are told the [context window and output ceiling](docs/guide/model-context-limits.md)
-of the model they run on, taken per field from `model_parameters` on the model
-row and then from the vendored catalog. An unknown limit is omitted rather
-than guessed, so the harness keeps its own default.
+Agent harnesses receive supported [context and output settings](docs/guide/model-context-limits.md)
+from model-row parameters and the vendored catalog. Hosted Codex adds a
+version-pinned local catalog for unknown custom models, preserving its generic
+instructions and labeling an unknown context as a CLI fallback. The model
+gateway controls Codex's upstream output allowance when enabled; direct provider
+runs retain provider defaults. Native Codex profiles stay intact. No provider capacity is inferred from an unknown model name.
 
 [Reviewed price feeds](docs/guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and
@@ -72,6 +102,15 @@ Period exports and evidence packs carry detached Ed25519 signatures.
 caller's machine. See [Evidence storage and signed records](docs/guide/flows/evidence-storage.md).
 The chain proves order and non-deletion in the range it names, not that the
 records were true when written; the signing key lives beside the records.
+
+Password and passkey sign-in record one final `auth.login.succeeded` or
+`auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
+plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
+Payloads retain only bounded identity metadata; tokens, assertions and nested
+provider payloads are excluded. Known identities route to their account audit
+trail and period exports; attempts without a trustworthy account emit a
+content-free service security log, never a caller-selected tenant row. Existing
+`user.login` activity events remain available for cohort metrics.
 
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
@@ -907,7 +946,14 @@ both resource visibility and the permission to view each consumer kind.
 `GET /api/v1/fleet/map` combines the optional device projection with bounded,
 tenant-owned agent, runner, model and user reads, plus the available hosted model
 when enabled. Hosted operator credentials and routing stay private. Each resource
-kind retains its read permission and account visibility checks. Credential references group model
+kind retains its read permission and account visibility checks. The map,
+`/fleet/code-activity` and `/fleet/usage` carry no whole-route permission: any
+member may call them, a source the caller may not read is skipped and named in
+`unavailable` and `restricted` (devices need `view_device_fleet`), code activity
+drops calls from agents the resource authorizer hides before work items are
+built, and usage keys work totals only by the work items that code activity
+returned. Account realtime topics are not filtered per member on the server, so
+the map drops a member's events that name an agent or flow it does not hold. Credential references group model
 accounts without resolving secrets. Configured and observed edges stay distinct;
 explicit impact directions support dependency and affected-owner traversal without
 crossing into unrelated accounts at the same provider. Decommissioned agents are
@@ -1417,10 +1463,11 @@ Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
 
 Residual credential storage uses the existing SecretReference backend for model
-and webhook values, and hash-only storage for all Preloop API keys. Separate
-backfill and removal revisions retire the three legacy columns; see the
+and webhook values, and hash-only storage for all Preloop API keys. A backfill
+revision clears the three legacy columns; a later release removes them once no
+pod of the previous release can still map them. See the
 [credential storage upgrade guide](docs/operations/credential-storage-upgrade.md)
-for the maintenance window, encryption-key continuity and rollback limits.
+for rolling-upgrade behaviour, encryption-key continuity and rollback limits.
 
 ## API diagnostics
 
@@ -1473,3 +1520,5 @@ parsing, aggregation, API schemas and display. Durable per-day billing status
 snapshots retain retry work independently of the adoption cursor; unavailable
 days replace stale spend and make incomplete range totals unknown. Optional
 extension failures are isolated from core imports with a sanitized warning.
+
+[Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.

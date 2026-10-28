@@ -90,6 +90,17 @@ class ExecutionMonitor:
             except Exception as e:
                 logger.error(f"Error sweeping child parks: {e}", exc_info=True)
 
+            try:
+                from preloop.services.issue_lifecycle_runtime import (
+                    sweep_deferred_merge_audits,
+                )
+
+                await sweep_deferred_merge_audits()
+            except Exception as e:
+                logger.error(
+                    "Error sweeping deferred merge audits: %s", e, exc_info=True
+                )
+
             # Wait before next check
             try:
                 await asyncio.sleep(self.check_interval)

@@ -43,7 +43,7 @@ jobs:
 
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       backend: ${{ steps.out.outputs.backend }}
       frontend: ${{ steps.out.outputs.frontend }}
@@ -112,6 +112,10 @@ jobs:
               - 'backend/tests/helm/**'
             workflow:
               - '.github/workflows/ci.yml'
+              - '.github/actions/setup-ci-python/**'
+              - '.github/actions/install-ci-python-deps/**'
+              - 'scripts/run_backend_shard.py'
+              - '.github/pytest-split-durations.json'
             # Anything that can change what a hash-pinned lock resolves to.
             requirements:
               - 'requirements/**'
@@ -158,41 +162,38 @@ jobs:
   # ==========================================================================
   # Where do the test jobs run?
   # ==========================================================================
-  # Hosted first. Self-hosted is optional overflow only when this repository
-  # has ubuntu-latest jobs queued without a runner for at least two minutes.
-  # That is observable queue pressure, not GitHub's global capacity (there is
-  # no capacity API). Unknown pressure, absent credentials, forks, disabled
-  # routing, or no idle general CI runners all select hosted.
-  # At least half the backend shards always remain hosted. A selection-time
-  # snapshot cannot guarantee acquisition if a VM stops afterwards; see
-  # .github/self-hosted-runners.md for the race and recovery procedure.
-  # CI_RUNNER_READ_TOKEN needs repository administration:read. The normal
-  # GITHUB_TOKEN reads Actions queue data. CI_SELF_HOSTED_TESTS=false disables
-  # overflow without a commit. preloop-ci-general is an explicit readiness
-  # label; never apply it to the gce-tests-only execution pool.
+  # Bootstrap and aggregation always run hosted: optional spot capacity must
+  # not gate the picker that decides whether self-hosted capacity is available.
+  # Use online idle general CI runners immediately, one backend shard per
+  # available slot, with remaining shards on GitHub-hosted capacity. Missing
+  # inventory, absent credentials, forks and disabled routing select hosted.
+  # A selection-time snapshot cannot reserve capacity or guarantee acquisition
+  # if another run takes a slot or a spot VM stops afterwards; see
+  # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
+  # CI_RUNNER_READ_TOKEN needs repository administration:read.
+  # CI_SELF_HOSTED_TESTS=false disables self-hosted shards without a commit.
+  # preloop-ci-general is an explicit readiness label; never apply it to the
+  # gce-tests-only execution pool.
   #
   # Python: setup-python has no Debian 12 builds. Jobs use
   # .github/actions/setup-ci-python, which venvs a matching system
   # interpreter (needs python3.11-venv on Debian) and only then falls
-  # back to setup-python. Hosted ubuntu-latest has no system 3.11, so
+  # back to setup-python. Hosted ubuntu-24.04 has no system 3.11, so
   # those jobs still download from the Ubuntu manifest. Self-hosted
   # backend shards use the same action: Debian needs system Python and
   # venv; Ubuntu can download its matching build. No job container is used.
   pick-runner:
     name: Pick test runner
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions:
-      actions: read
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
     steps:
-      - name: Assign overflow backend shards to idle self-hosted runners
+      - name: Assign backend shards to available runner capacity
         id: pick
         env:
           # Empty on forks and Dependabot: secrets are not exposed there.
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
@@ -218,19 +219,19 @@ jobs:
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt "$((SPLITS / 2))" ]; then idle=$((SPLITS / 2)); fi
+            if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
 
             plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
               def slot($runner): {runner:$runner};
               ($ENV.IDLE|tonumber) as $idle
               | ($ENV.SPLITS|tonumber) as $splits
-              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64","preloop-ci-general"]) else slot("ubuntu-latest") end]
+              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64","preloop-ci-general"]) else slot("ubuntu-24.04") end]
             ') || plan=""
 
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest"}]*18))')
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-24.04"}]*18))')
             fi
 
             {
@@ -239,8 +240,8 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
-            echo "overflow shards on self-hosted: $idle / $SPLITS"
-            echo "- overflow self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "shards on self-hosted: $idle / $SPLITS"
+            echo "- self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
@@ -251,28 +252,6 @@ jobs:
 
           if [ -z "${RUNNER_READ_TOKEN:-}" ]; then
             emit 0 "secret CI_RUNNER_READ_TOKEN is absent or empty"
-          fi
-
-          # Bound both API time and work: only the ten newest active runs.
-          # Any incomplete/unreadable response means unknown pressure -> hosted.
-          if ! runs=$(timeout 15s gh api "repos/${REPO}/actions/runs?per_page=10" \
-              --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id]' 2>/dev/null); then
-            emit 0 "could not read hosted queue pressure"
-          fi
-          pressure=0
-          for run_id in $(printf '%s' "$runs" | jq -r '.[]' 2>/dev/null); do
-            if ! jobs=$(timeout 15s gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" --paginate 2>/dev/null); then
-              emit 0 "could not read hosted queued jobs"
-            fi
-            queued=$(printf '%s' "$jobs" | jq -s '[.[].jobs[]?
-              | select(.status == "queued" and ((.runner_id // 0) == 0))
-              | select((.labels | index("ubuntu-latest")) != null
-                   and (.labels | index("self-hosted")) == null)
-              | select((now - (.created_at | fromdateiso8601)) >= 120)] | length' 2>/dev/null) || emit 0 "could not parse hosted queued jobs"
-            pressure=$((pressure + queued))
-          done
-          if [ "$pressure" -eq 0 ]; then
-            emit 0 "no observed hosted queue pressure"
           fi
 
           if ! runners=$(GH_TOKEN="$RUNNER_READ_TOKEN" timeout 15s gh api "repos/${REPO}/actions/runners" --paginate 2>/dev/null); then
@@ -298,9 +277,9 @@ jobs:
               ;;
           esac
 
+          echo "idle general runners: $available"
           if [ "$available" -ge 1 ]; then
-            if [ "$available" -gt "$pressure" ]; then available=$pressure; fi
-            emit "$available" "observed hosted queue pressure; idle general CI runners take overflow"
+            emit "$available" "idle general CI runners take shards immediately; hosted takes the remainder"
           fi
 
           emit 0 "no idle self-hosted Linux/X64 runner is online"
@@ -326,7 +305,7 @@ jobs:
   # thing those do. Measured cold-cache locally: 47s for all ten lock files.
   requirements-resolve:
     name: Requirements Resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.requirements == 'true'
     timeout-minutes: 10
@@ -375,7 +354,7 @@ jobs:
 
   lint:
     name: Lint & Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -399,9 +378,7 @@ jobs:
       #   --python-version 3.11 --extra dev pyproject.toml
       #   -o .github/requirements/app-dev.txt
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Install frontend dependencies
         run: cd frontend && npm ci
@@ -426,7 +403,7 @@ jobs:
 
   helm-lint:
     name: Helm Chart Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.helm == 'true'
     steps:
@@ -434,7 +411,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # helm is preinstalled on ubuntu-latest runners
+      # Install pinned Helm before render checks instead of relying on the image.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
 
@@ -447,25 +429,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Helm chart guard tests
         env:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest backend/tests/helm -q
 
-  # Eighteen shards. On the green main run 37987118309, eight count-based
-  # shards left group 2 at 26.7m (25.2m of that in pytest) while group 6
-  # was 4.8m. .github/pytest-split-durations.json makes
-  # duration_based_chunks cut on measured time; the slowest chunk is
-  # about 3.3m of tests, and hosted setup is about 1.5m, so a shard stays
-  # under 7m. least_duration is still wrong here: it round-robins
-  # individual tests and breaks unittest setUp isolation plus tests that
-  # share a process-wide DB session. Chunks keep collection order, so
-  # files stay together. The 60% coverage floor is applied after shards
-  # are combined -- a single shard only sees part of the tree.
+  # Partition complete files before pytest imports tests. Historical durations
+  # balance contiguous groups, preserving file/test order and including new files.
+  # Coverage is still collected in every shard and combined before the 60% floor.
   #
   # Postgres is not a service container. scripts/ci_postgres.py checks
   # 127.0.0.1:5432 first. A server that accepts test_user gets one new
@@ -473,14 +446,16 @@ jobs:
   # pgvector/pgvector:pg16 and the drop step removes that container.
   # Runner setup: .github/self-hosted-runners.md.
   #
-  # Runner: ubuntu-latest is the default. pick-runner may send the last
-  # N shards (idle self-hosted count) to private VMs as overflow. Shards
+  # Runner: pick-runner assigns the last N shards (idle self-hosted count)
+  # to general private VMs immediately; hosted takes the remaining shards. They
   # run on the machine, not in a nested container, so that address is the
   # VM's Postgres. The VM needs Docker for the fallback start, and the
   # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
     name: Backend Tests (${{ matrix.group }}/18)
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
+    # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
+    # rerun a successful picker. Recovery must never requeue a lost spot slot.
+    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     needs: [changes, pick-runner]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 15
@@ -552,20 +527,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache pip
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('.github/requirements/app-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       # App + [dev] extra hash-pinned via app-dev.txt; `--no-deps` installs
       # only the local package.
       - name: Install dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Prepare Postgres
         run: python scripts/ci_postgres.py prepare
@@ -575,12 +540,9 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -v \
+          python scripts/run_backend_shard.py --shards 18 \
+            --group ${{ matrix.group }} -- -v \
             -m "not integration" \
-            --splits 18 \
-            --group ${{ matrix.group }} \
-            --splitting-algorithm=duration_based_chunks \
-            --durations-path .github/pytest-split-durations.json \
             --cov=preloop \
             --cov-report= \
             --junitxml=test-results.xml
@@ -607,7 +569,7 @@ jobs:
 
   test-backend-coverage:
     name: Backend Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, test-backend]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 20
@@ -671,7 +633,7 @@ jobs:
 
   test-frontend:
     name: Frontend Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 45
@@ -776,7 +738,7 @@ jobs:
 
   test-runtime-plugins:
     name: Runtime Plugin Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
@@ -799,15 +761,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: runtime-plugins/openclaw-preloop/package-lock.json
 
-      - name: Cache pip
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-runtime-plugins-${{ hashFiles('.github/requirements/runtime-plugin-test.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-runtime-plugins-
-            ${{ runner.os }}-pip-
-
       # Runtime + pytest hash-pinned together (a merge of runtime.txt and
       # runtime-test.txt conflicts on pygments). `--no-deps` installs only
       # the local package. Regenerate:
@@ -815,9 +768,9 @@ jobs:
       #     pyproject.toml .github/requirements/runtime-test.in \
       #     -o .github/requirements/runtime-plugin-test.txt
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/runtime-plugin-test.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
+        with:
+          requirements: .github/requirements/runtime-plugin-test.txt
 
       - name: Run runtime-plugin pytest
         env:
@@ -952,7 +905,7 @@ jobs:
 
   test-egress-proxy:
     name: Egress Proxy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.egress == 'true'
     defaults:
@@ -984,7 +937,7 @@ jobs:
 
   test-browser-profile:
     name: Browser profile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.browser == 'true'
     timeout-minutes: 30
@@ -1007,9 +960,13 @@ jobs:
 
       - name: Install pinned Playwright MCP and Chromium
         working-directory: environments/preloop/tools
+        env:
+          WITH_DEPS: ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }}
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # Self-hosted OS libraries are provisioned by the runner administrator.
+          # shellcheck disable=SC2086 # WITH_DEPS is one flag or empty
+          npx playwright install $WITH_DEPS chromium
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
@@ -1017,9 +974,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install test dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Prove browser egress is enforced
         env:
@@ -1054,7 +1009,7 @@ jobs:
 
   cli-vuln-scan:
     name: CLI Vulnerability Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: cli
@@ -1085,7 +1040,7 @@ jobs:
   # so a checkout/filter crash cannot leave this job green with no tests.
   ci:
     name: CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: always() && !cancelled()
     needs:
       - changes

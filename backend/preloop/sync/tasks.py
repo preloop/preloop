@@ -37,7 +37,9 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "cleanup_flow_workspaces",
     "maintain_gateway_activity",
     "reconcile_flow_feedback",
+    "refresh_pull_request_records",
     "reconcile_security_maintenance",
+    "run_data_backfills",
     "evaluate_spend_outliers",
     "evaluate_spend_outlier_sessions",
     "governance_session_digest_sweep",
@@ -905,6 +907,47 @@ async def reconcile_flow_feedback() -> int:
     db = next(get_db_session())
     try:
         return await run_feedback_tick(db)
+    finally:
+        db.close()
+
+
+async def refresh_pull_request_records() -> dict[str, int]:
+    """Refresh a bounded batch of pull request records from their forges."""
+    from preloop.services.pull_request_refresh import refresh_pull_requests
+
+    db = next(get_db_session())
+    try:
+        return await refresh_pull_requests(db)
+    finally:
+        db.close()
+
+
+async def run_data_backfills() -> list[dict[str, object]]:
+    """Advance pending post-deploy data backfills in bounded batches.
+
+    Migrations register backfills instead of running them inside the
+    pre-upgrade hook; this task does the work after the deploy. Each batch
+    commits on its own, so an interrupted pass resumes where it stopped. The
+    pass runs off the event loop and its time budget stays well inside the
+    worker's three-minute ack wait.
+    """
+    from preloop.models.backfills import run_pending_backfills
+
+    db = next(get_db_session())
+    try:
+        results = await run_db_off_loop(lambda: run_pending_backfills(db))
+        failed = [result.name for result in results if result.errors]
+        if failed:
+            raise RuntimeError(f"Data backfills failed: {', '.join(failed)}")
+        return [
+            {
+                "name": result.name,
+                "batches": result.batches,
+                "ready": result.ready,
+                "errors": result.errors,
+            }
+            for result in results
+        ]
     finally:
         db.close()
 

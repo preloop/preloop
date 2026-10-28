@@ -48,6 +48,76 @@ def test_list_mcp_servers_empty(client: TestClient, db_session):
     assert response.json() == []
 
 
+@pytest.mark.parametrize("count", [1, 12])
+def test_list_oauth_servers_batches_state_without_decrypting(
+    client: TestClient, db_session, test_user, count: int
+) -> None:
+    """Listing encrypted grants has constant query cost and never opens secrets."""
+    from sqlalchemy import event
+
+    from preloop.models import models
+    from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth
+
+    for index in range(count):
+        server = models.MCPServer(
+            name=f"OAuth {index}",
+            url=f"https://example.com/{index}/mcp",
+            transport="http-streaming",
+            auth_type="oauth",
+            account_id=test_user.account_id,
+            status="active",
+        )
+        db_session.add(server)
+        db_session.flush()
+        crud_upstream_mcp_oauth.protect_config(
+            db_session,
+            server,
+            {"client_id": "public-client", "access_token": "private-token"},
+        )
+    db_session.commit()
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "upstream_mcp_oauth" in statement.lower():
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with patch(
+            "preloop.services.secret_service.SecretService.resolve_secret_reference",
+            side_effect=AssertionError("Listing must not decrypt credentials"),
+        ):
+            response = client.get("/api/v1/mcp-servers")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert response.status_code == 200
+    assert len(response.json()) == count
+    assert len(statements) == 1
+    for server_data in response.json():
+        assert server_data["connection_state"] == "connected"
+        assert server_data["auth_config"] == {"client_id": "public-client"}
+
+    # Editing fetches detail on demand, preserving redacted credential markers.
+    server_data = response.json()[0]
+    detail = client.get(f"/api/v1/mcp-servers/{server_data['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["auth_config"]["access_token"] == "***REDACTED***"
+    from preloop.models.crud import crud_mcp_server
+
+    stored = db_session.get(models.MCPServer, uuid.UUID(server_data["id"]))
+    crud_mcp_server.update(
+        db_session,
+        db_obj=stored,
+        obj_in={"name": "Renamed OAuth", "auth_config": detail.json()["auth_config"]},
+    )
+    assert (
+        crud_upstream_mcp_oauth.config_for_edit(db_session, stored)["access_token"]
+        == "private-token"
+    )
+
+
 def test_list_mcp_servers_with_data(client: TestClient, db_session, test_user):
     """Test listing MCP servers with existing data.
 
@@ -527,3 +597,154 @@ def test_create_mcp_server_authentication_error_is_actionable_and_safe(
     assert "authentication" in result.json()["last_error"]
     assert "private" not in result.json()["last_error"]
     assert "TaskGroup" not in result.json()["last_error"]
+
+
+@pytest.fixture
+def synthetic_oauth(monkeypatch):
+    """A complete synthetic public-client provider, including separate issuer."""
+    import httpx
+    from preloop.services.upstream_mcp_oauth import OAuthHTTP
+    from preloop.api.endpoints import mcp_servers
+
+    requests = []
+    resource = "https://ext.example/mcp"
+    issuer = "https://identity.example.com"
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    def handle(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://ext.example/metadata"'
+                },
+            )
+        if path == "/metadata":
+            return httpx.Response(
+                200, json={"resource": resource, "authorization_servers": [issuer]}
+            )
+        if path == "/.well-known/oauth-authorization-server":
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": issuer,
+                    "authorization_endpoint": issuer + "/authorize",
+                    "token_endpoint": issuer + "/token",
+                    "registration_endpoint": issuer + "/register",
+                },
+            )
+        if path == "/register":
+            return httpx.Response(201, json={"client_id": "synthetic-public-client"})
+        if path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "expires_in": 3600,
+                },
+            )
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        mcp_servers,
+        "OAuthHTTP",
+        lambda: OAuthHTTP(transport=httpx.MockTransport(handle), resolver=resolve),
+    )
+    return requests
+
+
+def test_oauth_durable_callback_and_disconnect(
+    client, db_session, test_user, synthetic_oauth
+):
+    from urllib.parse import parse_qs, urlsplit
+    from preloop.models import models
+
+    server = _oauth_server(db_session, test_user)
+    ticket = client.post(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
+    ).json()["authorize_token"]
+    authorization = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": ticket},
+        follow_redirects=False,
+    )
+    assert authorization.status_code == 302
+    assert authorization.headers["referrer-policy"] == "no-referrer"
+    state = parse_qs(urlsplit(authorization.headers["location"]).query)["state"][0]
+    assert (
+        client.get(f"/api/v1/mcp-servers/{server.id}").json()["connection_state"]
+        == "connecting"
+    )
+    callback = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"code": "synthetic-code", "state": state},
+        follow_redirects=False,
+    )
+    assert callback.status_code == 302
+    assert callback.headers["location"].endswith("setup_mcp=success")
+    read = client.get(f"/api/v1/mcp-servers/{server.id}").json()
+    assert read["connection_state"] == "connected"
+    assert read["auth_config"]["access_token"] == "***REDACTED***"
+    assert "synthetic-access-token" not in str(read)
+    assert "synthetic-refresh-token" not in str(read)
+    # Echoed write-only markers must preserve the encrypted grant.
+    edit = client.put(
+        f"/api/v1/mcp-servers/{server.id}",
+        json={"auth_config": read["auth_config"], "name": "Renamed"},
+    )
+    assert edit.status_code == 200
+    assert edit.json()["connection_state"] == "connected"
+    assert (
+        client.get(
+            "/api/v1/mcp-servers/oauth/callback",
+            params={"code": "synthetic-code", "state": state},
+        ).status_code
+        == 400
+    )
+    assert sum(request.url.path == "/token" for request in synthetic_oauth) == 1
+    disconnected = client.post(f"/api/v1/mcp-servers/{server.id}/oauth/disconnect")
+    assert disconnected.status_code == 200
+    assert disconnected.json()["connection_state"] == "disconnected"
+    assert "access_token" not in disconnected.json()["auth_config"]
+    assert db_session.query(models.UpstreamMCPOAuthTransaction).count() == 0
+
+
+def test_callback_wrong_browser_and_provider_denial_do_not_exchange(
+    client, db_session, test_user, synthetic_oauth
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    server = _oauth_server(db_session, test_user)
+    ticket = client.post(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
+    ).json()["authorize_token"]
+    authorization = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": ticket},
+        follow_redirects=False,
+    )
+    state = parse_qs(urlsplit(authorization.headers["location"]).query)["state"][0]
+    cookies = dict(client.cookies)
+    client.cookies.clear()
+    bad = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"state": state, "code": "synthetic-code"},
+    )
+    assert bad.status_code == 400
+    client.cookies.update(cookies)
+    denied = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"state": state, "error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert denied.headers["location"].endswith("setup_mcp=error")
+    assert not any(request.url.path == "/token" for request in synthetic_oauth)
+    assert (
+        client.get(f"/api/v1/mcp-servers/{server.id}").json()["connection_state"]
+        == "reconnect_required"
+    )

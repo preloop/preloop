@@ -11,6 +11,8 @@ from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_t
 import json
 import uuid
 
+from preloop.sync.services.realtime_publisher import realtime_publisher
+
 try:
     from preloop.config import settings
 except ImportError:
@@ -18,6 +20,8 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+NATS_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
 class _TaskPayloadEncoder(json.JSONEncoder):
@@ -35,7 +39,20 @@ class EventBus:
         self.js = None
         self.nats_url: str = settings.nats_url if settings else "nats://localhost:4222"
 
-    async def connect(self):
+    async def connect(self) -> None:
+        if self is event_bus_service:
+            # Establish ownership before connecting: a foreign loop must not
+            # replace a temporarily disconnected client under the owner drain.
+            try:
+                realtime_publisher.start(lambda: self.nc)
+            except RuntimeError:
+                logger.error(
+                    "Realtime publisher is owned by another event loop; not moving it"
+                )
+                return
+        await self._connect()
+
+    async def _connect(self) -> None:
         if self.nc and self.nc.is_connected:
             logger.info("NATS client already connected.")
             return
@@ -49,6 +66,8 @@ class EventBus:
                 disconnected_cb=self._disconnected_cb,
                 closed_cb=self._closed_cb,
                 name="preloop-publisher",
+                # Bound forced flushes; nats-py waits forever when unset.
+                flush_timeout=NATS_FLUSH_TIMEOUT_SECONDS,
             )
             self.js = self.nc.jetstream()
 
@@ -162,6 +181,9 @@ class EventBus:
         return None
 
     async def close(self):
+        if self is event_bus_service:
+            # Flush queued realtime messages while the client can still send.
+            await realtime_publisher.stop()
         if self.nc and not self.nc.is_closed:
             logger.info("Closing NATS client connection...")
             try:

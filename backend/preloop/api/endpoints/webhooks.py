@@ -1,10 +1,10 @@
 import hashlib
 import hmac
-import logging
 import json
+import logging
 import uuid
-from dataclasses import dataclass, field
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -15,31 +15,30 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.crud import (
     crud_comment,
+    crud_forge_webhook_delivery,
     crud_issue,
     crud_organization,
     crud_project,
     crud_tracker,
-    crud_webhook,
     crud_tracker_scope_rule,
+    crud_webhook,
 )
-from preloop.models.db.session import get_db_session, _safe_close_db_session
 from preloop.models.crud.project import find_repository_projects, repository_host
+from preloop.models.db.session import _safe_close_db_session, get_db_session
+from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.services.managed_credentials import (
     get_managed_webhook_verifier,
     is_managed_tracker,
 )
-from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.sync.scanner.core import TrackerClient
-
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
-
 from preloop.utils.bitbucket import (
     BITBUCKET_DELIVERY_HEADER,
     BITBUCKET_EVENT_HEADER,
     BITBUCKET_SIGNATURE_HEADER,
     BITBUCKET_WEBHOOK_EVENTS,
-    verify_signature as verify_bitbucket_signature,
 )
+from preloop.utils.bitbucket import verify_signature as verify_bitbucket_signature
 from preloop.utils.bitbucket_dc import (
     BITBUCKET_DC_TRACKER_TYPE,
     BitbucketDCConfigError,
@@ -53,8 +52,14 @@ from preloop.utils.bitbucket_dc_webhooks import (
     BITBUCKET_DC_SIGNATURE_HEADER,
     BITBUCKET_DC_WEBHOOK_MAX_BYTES,
     BitbucketDCWebhookRejectedError,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     delivery_identity as bitbucket_dc_delivery_identity,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     normalize_delivery as normalize_bitbucket_dc_delivery,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
     verify_webhook_signature as verify_bitbucket_dc_signature,
 )
 
@@ -114,9 +119,120 @@ class _WebhookPlan:
     organization_id: Any = None
     db_processed: Optional[bool] = None
     received_organization_ids: list[str] = field(default_factory=list)
+    forge_claimed_at: Optional[datetime] = None
 
     def queue_task(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.tasks.append((name, args, kwargs))
+
+
+#: Tracker types whose delivery header is a forge-assigned, redelivery-stable
+#: id: ``X-GitHub-Delivery``, ``X-Gitlab-Event-UUID``, ``X-Request-UUID``.
+FORGE_DEDUPE_TRACKER_TYPES = frozenset({"github", "gitlab", "bitbucket"})
+
+
+def _forge_delivery_id(tracker_type: str, plan: _WebhookPlan) -> Optional[str]:
+    """The forge delivery id of the queued event task, if it has one."""
+    if tracker_type.lower() not in FORGE_DEDUPE_TRACKER_TYPES or not plan.tracker_id:
+        return None
+    return _queued_delivery_id(plan)
+
+
+async def _claim_forge_delivery(
+    db: Session, tracker_type: str, plan: _WebhookPlan
+) -> Optional[bool]:
+    """Claim the delivery id before queueing.
+
+    Returns:
+        True when claimed, False for a duplicate, None when the delivery has
+        no forge id or the claim could not be recorded (queue as before).
+    """
+    delivery_id = _forge_delivery_id(tracker_type, plan)
+    if delivery_id is None:
+        return None
+
+    def claim() -> bool:
+        try:
+            plan.forge_claimed_at = datetime.now(timezone.utc)
+            return crud_forge_webhook_delivery.claim(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+                now=plan.forge_claimed_at,
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        return await run_db_off_loop(claim)
+    except Exception:
+        logger.exception("Webhook delivery dedupe unavailable; queueing anyway")
+        return None
+
+
+def _queued_delivery_id(plan: _WebhookPlan) -> Optional[str]:
+    """The delivery id carried by the queued event task, if any."""
+    return next(
+        (
+            str(kwargs["delivery_id"])
+            for name, _args, kwargs in plan.tasks
+            if name == "process_webhook_event" and kwargs.get("delivery_id")
+        ),
+        None,
+    )
+
+
+async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> None:
+    """Record the acknowledgement so the claim is never taken over.
+
+    A failure here only leaves the claim open to a takeover by a forge retry
+    after the grace period; that retry would be queued again, which the
+    execution-level delivery dedupe absorbs.
+    """
+    delivery_id = _queued_delivery_id(plan)
+    claimed_at = plan.forge_claimed_at
+    if delivery_id is None or claimed_at is None:
+        return
+
+    def mark() -> None:
+        try:
+            crud_forge_webhook_delivery.mark_published(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+                now=datetime.now(timezone.utc),
+                claimed_at=claimed_at,
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        await run_db_off_loop(mark)
+    except Exception:
+        logger.exception("Webhook delivery publication mark failed")
+
+
+async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
+    """Drop the claim of a delivery whose task was not acknowledged."""
+    delivery_id = _queued_delivery_id(plan)
+    claimed_at = plan.forge_claimed_at
+    if delivery_id is None or claimed_at is None:
+        return
+
+    def release() -> None:
+        try:
+            crud_forge_webhook_delivery.release(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+                claimed_at=claimed_at,
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        await run_db_off_loop(release)
+    except Exception:
+        logger.exception("Webhook delivery claim release failed")
 
 
 @router.post("/private/webhooks/{tracker_type}/{organization_id}", response_model=None)
@@ -166,6 +282,21 @@ async def receive_webhook(
         # Notifications queued before a validation/DB failure must still be sent.
         preparation_error = exc
 
+    claimed_delivery = (
+        await _claim_forge_delivery(db, tracker_type, plan)
+        if preparation_error is None
+        else None
+    )
+    if claimed_delivery is False:
+        # A redelivery (or a concurrent duplicate) of an event already queued.
+        # Its inline issue changes above are idempotent; queueing it again
+        # would run its flow triggers twice.
+        return {
+            "status": "duplicate",
+            "message": "Webhook delivery already queued",
+            "tracker_id": plan.tracker_id,
+        }
+
     publish_failed = False
     for name, args, kwargs in plan.tasks:
         try:
@@ -179,6 +310,11 @@ async def receive_webhook(
 
     if preparation_error is not None:
         raise preparation_error
+    if publish_failed and claimed_delivery:
+        # Nothing was acknowledged, so the forge's redelivery must be queued.
+        await _release_forge_delivery(db, plan)
+    elif claimed_delivery:
+        await _mark_forge_delivery_published(db, plan)
     if publish_failed:
         # Returning 200 would stop tracker redelivery even though no task was
         # acknowledged. Inline issue changes are idempotent on a delivery retry.
@@ -518,6 +654,7 @@ def _prepare_shared_jira_webhook(
 ) -> dict[str, Any]:
     """Dispatch a signed shared callback only to explicit registration owners."""
     from urllib.parse import urljoin
+
     from preloop.config import settings
     from preloop.utils.tracker_scope import project_scope_identifiers
 

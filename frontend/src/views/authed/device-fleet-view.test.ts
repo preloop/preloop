@@ -1,3 +1,5 @@
+// Capture the runner session before route tests replace the page URL.
+import { setViewport } from '@web/test-runner-commands';
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
@@ -574,7 +576,6 @@ describe('Device fleet', () => {
   });
 
   it('keeps the Table/Map switch clear of the subtitle at 390 px', async () => {
-    const { setViewport } = await import('@web/test-runner-commands');
     await setViewport({ width: 390, height: 844 });
     try {
       localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');

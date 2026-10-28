@@ -2258,8 +2258,8 @@ describe('FlowsView', () => {
       const chips = items(element).map((item) =>
         item.querySelector('sl-badge.status-chip')
       );
-      // Blue in flight, as on the executions pages; grey only while queued.
-      expect(chips[0]?.getAttribute('variant')).to.equal('primary');
+      // Neutral in flight, as on the executions pages (DESIGN.md Chips).
+      expect(chips[0]?.getAttribute('variant')).to.equal('neutral');
       expect(chips[0]?.textContent?.trim()).to.equal('Running');
       expect(chips[1]?.getAttribute('variant')).to.equal('neutral');
       expect(chips[1]?.textContent?.trim()).to.equal('Pending');

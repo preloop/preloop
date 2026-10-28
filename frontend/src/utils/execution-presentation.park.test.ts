@@ -13,14 +13,15 @@ describe('executionStatusVariant, waiting on a human', () => {
     expect(executionStatusVariant('WAITING_FOR_HUMAN')).to.equal('warning');
   });
 
-  it('keeps a resuming run blue with the other live statuses', () => {
-    expect(executionStatusVariant('RESUMING')).to.equal('primary');
+  it('keeps a resuming run neutral with the other live statuses', () => {
+    // DESIGN.md Chips: a run in flight is a state, not an outcome.
+    expect(executionStatusVariant('RESUMING')).to.equal('neutral');
   });
 
   it('leaves the existing taxonomy alone', () => {
     expect(executionStatusVariant('SUCCEEDED')).to.equal('success');
     expect(executionStatusVariant('FAILED')).to.equal('danger');
-    expect(executionStatusVariant('RUNNING')).to.equal('primary');
+    expect(executionStatusVariant('RUNNING')).to.equal('neutral');
     expect(executionStatusVariant('CANCELLED')).to.equal('neutral');
   });
 

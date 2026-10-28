@@ -229,3 +229,12 @@ def test_universal_exports_attestations_for_the_smoked_image() -> None:
             assert "needs.gate.outputs.publish != 'true'" in step["if"]
     arm = next(s for s in steps if s.get("name") == "Build and push arm64")
     assert "@sha256:" in arm["with"]["sbom"]
+
+
+def test_virustotal_cannot_modify_release_contents() -> None:
+    workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text())
+    job = workflow["jobs"]["virustotal-windows-cli"]
+    assert job["permissions"] == {"contents": "read"}
+    scan = next(step for step in job["steps"] if "virustotal@" in step.get("uses", ""))
+    assert scan["with"]["update_release_body"] is False
+    assert "github_token" not in scan["with"]

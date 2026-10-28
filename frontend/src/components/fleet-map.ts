@@ -31,6 +31,7 @@ import {
   blastRadius,
   dependencies,
   filterGraph,
+  onboardedOnly,
   scopeToUsers,
   layoutGraph,
   nodeGaps,
@@ -65,6 +66,7 @@ import {
   FleetActivityTracker,
   activeGraph,
   activityFromRealtime,
+  realtimeNodeIds,
   FLEET_MAP_STALE_DEBOUNCE_MS,
   windowRefreshMs,
   activityLabel,
@@ -219,6 +221,14 @@ const displayLabel = (node: FleetMapNode): string =>
     ? agentKindLabel(node.detail)
     : node.label;
 
+const knownWorkState = (node: FleetMapNode): string | null =>
+  node.type === 'work' &&
+  (node.status === 'Open' ||
+    node.status === 'Closed' ||
+    node.status === 'Merged')
+    ? node.status
+    : null;
+
 /**
  * The fleet as one picture: people, their machines (runners inside them),
  * the agents on them, the models those agents call and the providers behind
@@ -245,9 +255,26 @@ export class FleetMap extends LitElement {
   @property({ attribute: false }) activityWindow: FleetMapWindow = 'any';
   /** Light relationships from the console's realtime stream. */
   @property({ type: Boolean }) live = false;
-  /** Instance administrators may arrange the map in space. */
+  /**
+   * The viewer may see the whole account (an instance administrator), so
+   * realtime events are drawn as they arrive. For everyone else an event
+   * that names an agent or flow the loaded map does not hold is dropped:
+   * account topics reach every member's socket, and the map draws only what
+   * the server let this viewer load.
+   */
   @property({ type: Boolean, attribute: 'instance-admin' })
   instanceAdmin = false;
+  /**
+   * The host's default for "Onboarded only" (agents whose state is
+   * `onboarded`), until the user picks otherwise; stored per user and scope.
+   */
+  @property({ type: Boolean, attribute: 'default-onboarded-only' })
+  defaultOnboardedOnly = false;
+  /**
+   * Remember a window chosen here as the shared default. A host that opens
+   * the map on its own period (the Overview) turns this off.
+   */
+  @property({ attribute: false }) persistWindow = true;
   /** Always spatial, with no Columns choice (the Overview inventory map). */
   @property({ type: Boolean, attribute: 'spatial-only' }) spatialOnly = false;
   /** Arrangement until the user picks one (stored per user and scope). */
@@ -281,6 +308,11 @@ export class FleetMap extends LitElement {
   @state() private points: FleetMapPoints = {};
   @state() private selected = '';
   @state() private types = new Set<FleetMapNodeType>(DEFAULT_TYPES);
+  @state() private onboarded = false;
+  /** Agents the Onboarded only filter hid from the drawn map. */
+  private hiddenNotOnboarded = 0;
+  /** Ids an unknown event already asked to refetch for; once each. */
+  private askedFor = new Set<string>();
   /**
    * The people the map is scoped to (user node ids); empty means everyone.
    * Hosts pass the server `users=` param on `fleet-map-users-change`; until a
@@ -456,10 +488,9 @@ export class FleetMap extends LitElement {
       safeEventText(record.execution_id)
     );
     if (flow && !record.flow_id) message = { ...record, flow_id: flow };
-    if (
-      this.instanceAdmin &&
-      (topic === 'flow_executions' || topic === 'code_activity')
-    ) {
+    if (!this.instanceAdmin && this.graph && this.namesUnknownNode(message))
+      return;
+    if (topic === 'flow_executions' || topic === 'code_activity') {
       const notes = this.story.record(topic, message);
       if (notes.length) {
         this.storyVersion++;
@@ -474,7 +505,7 @@ export class FleetMap extends LitElement {
       if (notes.length) return;
     }
     if (topic === 'gateway_activity') this.learnFlowModel(message);
-    if (this.graph && this.instanceAdmin) {
+    if (this.graph) {
       const messages = messagesForRealtime(this.shown(), topic, message);
       if (messages.length && !this.eventLog.record(messages, message)) return;
       this.send(messages);
@@ -500,6 +531,36 @@ export class FleetMap extends LitElement {
       !this.graph.nodes.some((node) => node.id === hit.agent)
     )
       this.requestRefresh(FLEET_MAP_STALE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Whether a realtime message names only agents or flows this map does not
+   * hold. Such an event may belong to a resource the viewer cannot see, so
+   * it is not drawn; the map refetches once per id, in case the resource is
+   * visible and just became active.
+   */
+  private namesUnknownNode(message: unknown): boolean {
+    const named = realtimeNodeIds(message);
+    if (!named.length) return false;
+    const known = new Set(this.graph?.nodes.map((node) => node.id));
+    for (const flow of this.codeActivity?.flows ?? []) known.add(flow.id);
+    if (named.some((id) => known.has(id))) return false;
+    const fresh = named.filter((id) => !this.askedFor.has(id));
+    if (fresh.length) {
+      fresh.forEach((id) => this.askedFor.add(id));
+      if (this.activityWindow !== 'any')
+        this.requestRefresh(FLEET_MAP_STALE_DEBOUNCE_MS);
+      if (this.live) this.scheduleCodeLoad(1500);
+    }
+    return true;
+  }
+
+  /** Device collection failed, as opposed to devices not shared with you. */
+  private devicesFailed(graph: FleetMapGraph): boolean {
+    return (
+      graph.unavailable.includes('devices') &&
+      !(graph.restricted ?? []).includes('devices')
+    );
   }
 
   private syncStoryTimer(): void {
@@ -634,7 +695,7 @@ export class FleetMap extends LitElement {
    * hidden by a filter is not lit.
    */
   private send(messages: FleetMessage[]): void {
-    if (!messages.length || !this.instanceAdmin) return;
+    if (!messages.length) return;
     const now = Date.now();
     let lit = false;
     for (const message of messages)
@@ -656,7 +717,7 @@ export class FleetMap extends LitElement {
   /** A code event: count it, surface it on the node and in the corner. */
   private recordCode(message: unknown, storyHandled = false): void {
     const hit = codeHitFromRealtime(message);
-    if (!hit || !this.instanceAdmin) return;
+    if (!hit) return;
     const record = object(message),
       payload = object(record.payload);
     const id =
@@ -732,7 +793,7 @@ export class FleetMap extends LitElement {
         now - new Date(event.at).getTime() < 120_000
     );
     for (const event of activity.events) this.seenEvents.add(event.id);
-    if (!fresh.length || !this.instanceAdmin) return;
+    if (!fresh.length) return;
     const toasts = fresh.slice(0, 3).map((event) => ({
       id: this.nextPip++,
       node: event.node_id,
@@ -746,7 +807,7 @@ export class FleetMap extends LitElement {
 
   /** Load the code activity for the window, debounced. */
   private scheduleCodeLoad(delay = 0): void {
-    // The code layer is instance-admin only for now, like the spatial map.
+    // Every viewer's live map loads it; the server scopes it to what they see.
     if (!this.live) return;
     if (this.codeTimer !== undefined) clearTimeout(this.codeTimer);
     this.codeTimer = setTimeout(() => {
@@ -759,13 +820,11 @@ export class FleetMap extends LitElement {
     this.codeController?.abort();
     const controller = (this.codeController = new AbortController());
     try {
-      const activity = this.instanceAdmin
-        ? await getFleetCodeActivity(
-            controller.signal,
-            windowMinutes(this.activityWindow),
-            this.userResourceIds
-          )
-        : null;
+      const activity = await getFleetCodeActivity(
+        controller.signal,
+        windowMinutes(this.activityWindow),
+        this.userResourceIds
+      );
       if (controller.signal.aborted) return;
       this.codeActivity = activity;
       if (activity) this.seedToasts(activity);
@@ -1064,12 +1123,9 @@ export class FleetMap extends LitElement {
 
   private codeUnsubscribe?: () => void;
 
-  /**
-   * Only an instance administrator's live map listens to `code_activity`;
-   * nobody else is sent events the map would not show them.
-   */
+  /** A live map listens to `code_activity`; unknown nodes are dropped. */
   private syncCodeSubscription(): void {
-    const want = this.live && this.instanceAdmin && this.isConnected;
+    const want = this.live && this.isConnected;
     if (want && !this.codeUnsubscribe)
       this.codeUnsubscribe = unifiedWebSocketManager.subscribe(
         'code_activity',
@@ -1082,13 +1138,11 @@ export class FleetMap extends LitElement {
   }
 
   private get spatial(): boolean {
-    return (
-      this.instanceAdmin && (this.spatialOnly || this.arrangement === 'spatial')
-    );
+    return this.spatialOnly || this.arrangement === 'spatial';
   }
 
   private setArrangement(value: FleetMapArrangement): void {
-    if (!this.instanceAdmin || value === this.arrangement) return;
+    if (value === this.arrangement) return;
     this.arrangement = value;
     saveArrangement(this.userId, value, this.positionsScope);
     this.refit = true;
@@ -1101,7 +1155,7 @@ export class FleetMap extends LitElement {
     )
       return;
     this.activityWindow = value;
-    saveFleetMapWindow(value);
+    if (this.persistWindow) saveFleetMapWindow(value);
     this.dispatchEvent(
       new CustomEvent('fleet-map-window-change', {
         detail: { window: value, minutes: windowMinutes(value) },
@@ -1139,12 +1193,19 @@ export class FleetMap extends LitElement {
       this.codeActivity = null;
       this.flowModels.clear();
       this.filterCache = undefined;
+      this.askedFor.clear();
     }
     if (
       changed.has('userId') ||
       changed.has('positionsScope') ||
-      changed.has('defaultArrangement')
+      changed.has('defaultArrangement') ||
+      changed.has('defaultOnboardedOnly')
     ) {
+      this.onboarded = loadOnboarded(
+        this.userId,
+        this.positionsScope,
+        this.defaultOnboardedOnly
+      );
       this.arrangement = loadArrangement(
         this.userId,
         this.positionsScope,
@@ -1168,9 +1229,7 @@ export class FleetMap extends LitElement {
         this.bubbles = loadBubbles(
           this.userId,
           this.positionsScope,
-          this.instanceAdmin &&
-            this.fullscreen &&
-            this.positionsScope !== 'inventory'
+          this.fullscreen && this.positionsScope !== 'inventory'
         );
     }
     if (changed.has('graph'))
@@ -1185,15 +1244,12 @@ export class FleetMap extends LitElement {
       this.story.clear();
       this.flowModels.clear();
       this.filterCache = undefined;
+      this.askedFor.clear();
     }
     this.dropHiddenSelection();
     // The window's history: every issue and PR active in it, not only those
     // that move while the map is open.
-    if (
-      changed.has('codeActivity') &&
-      this.instanceAdmin &&
-      this.story.seedWork(this.codeActivity)
-    )
+    if (changed.has('codeActivity') && this.story.seedWork(this.codeActivity))
       this.storyVersion++;
     if (
       changed.has('graph') ||
@@ -1229,7 +1285,7 @@ export class FleetMap extends LitElement {
       this.send(notes);
     }
     if (changed.has('fullscreen')) {
-      if (this.fullscreen && this.instanceAdmin)
+      if (this.fullscreen)
         this.bubbles = loadBubbles(
           this.userId,
           this.positionsScope,
@@ -1259,7 +1315,7 @@ export class FleetMap extends LitElement {
     if (changed.has('activityWindow') || changed.has('live'))
       this.scheduleRefresh();
     if (changed.has('activityWindow')) this.syncStoryTimer();
-    if (changed.has('live') || changed.has('instanceAdmin')) {
+    if (changed.has('live')) {
       this.syncActivitySubscriptions();
       this.syncCodeSubscription();
     }
@@ -2353,6 +2409,10 @@ export class FleetMap extends LitElement {
         bottom: 10px;
         right: 12px;
       }
+      /* Lanes | Canvas leads the bar, 8px clear of the zoom group. */
+      .canvas-tools [data-testid='fleet-map-arrangement'] {
+        margin-inline-end: 4px;
+      }
       .stage.has-selection .canvas-tools {
         right: 364px;
       }
@@ -2871,6 +2931,7 @@ export class FleetMap extends LitElement {
       this.users,
       this.gapsOnly,
       this.includeIdle,
+      this.onboarded,
     ];
     const cached = this.filterCache;
     if (cached && cached.key.every((value, index) => value === key[index]))
@@ -2897,11 +2958,15 @@ export class FleetMap extends LitElement {
         this.codeActivity
       )
     );
+    const narrowed = this.onboarded
+      ? onboardedOnly(merged)
+      : { graph: merged, hidden: 0 };
+    this.hiddenNotOnboarded = narrowed.hidden;
     const view = filterGraph(
       this.serverScoped
-        ? merged
+        ? narrowed.graph
         : scopeToUsers(
-            merged,
+            narrowed.graph,
             new Set(this.users),
             this.codeActivity?.work ?? []
           ),
@@ -3027,7 +3092,14 @@ export class FleetMap extends LitElement {
     this.query = '';
     this.types = new Set(DEFAULT_TYPES);
     saveTypes(this.userId, this.positionsScope, this.types);
+    // The host's default, not "everything": the Overview opens onboarded only.
+    this.setOnboarded(this.defaultOnboardedOnly);
     if (this.includeIdle) this.setIncludeIdle(false);
+  }
+
+  private setOnboarded(value: boolean): void {
+    this.onboarded = value;
+    saveOnboarded(this.userId, this.positionsScope, value);
   }
 
   private setIncludeIdle(includeIdle: boolean): void {
@@ -3100,6 +3172,8 @@ export class FleetMap extends LitElement {
             : shown.length <= 2
               ? shown.map((type) => TYPE_TOGGLE_LABEL[type]).join(', ')
               : `${shown.length} kinds`;
+    if (this.onboarded)
+      value = value === 'All resources' ? 'Onboarded' : `Onboarded, ${value}`;
     if (this.includeIdle) value += ', idle';
     if (this.gapsOnly || this.focusGap) value += ', gaps';
     return value;
@@ -3258,20 +3332,39 @@ export class FleetMap extends LitElement {
       this.focusGap ||
       this.query ||
       this.includeIdle ||
+      this.onboarded !== this.defaultOnboardedOnly ||
       this.types.size !== DEFAULT_TYPES.length ||
       this.types.has('provider_account');
+    const agents = view.nodes.filter(
+      (node) => node.type === 'agent' && !node.idle
+    ).length;
+    const hiddenAgents = this.onboarded
+      ? `${this.hiddenNotOnboarded} not onboarded ${this.hiddenNotOnboarded === 1 ? 'agent' : 'agents'} hidden by Onboarded only. `
+      : '';
     const count = html`<span
       class="count"
       aria-live="polite"
-      title="${this.query ? `${hits.size} search matches. ` : ''}${idle} idle configured resources shown separately. ${graph.decommissioned_agents ?? 0} decommissioned agents not shown. ${graph.clusters.length} summary groups. Counts describe the loaded graph."
-      >${active} active in this
-      window${
+      data-testid="fleet-map-count"
+      title="${this.query ? `${hits.size} search matches. ` : ''}${hiddenAgents}${idle} idle configured resources shown separately. ${graph.decommissioned_agents ?? 0} decommissioned agents not shown. ${graph.clusters.length} summary groups. Counts describe the loaded graph."
+      >${
+        this.onboarded
+          ? `${agents} active onboarded ${agents === 1 ? 'agent' : 'agents'}`
+          : `${active} active in this window`
+      }${
         this.users.length
           ? ` for ${this.users.length} ${this.users.length === 1 ? 'user' : 'users'}`
           : ''
       }</span
     >`;
-    const show = html`${FLEET_MAP_TYPES.map(
+    const show = html`<sl-menu-item
+        type="checkbox"
+        data-testid="fleet-map-onboarded"
+        .checked=${this.onboarded}
+        @click=${() => this.setOnboarded(!this.onboarded)}
+        >Onboarded only</sl-menu-item
+      >
+      <sl-divider></sl-divider>
+      ${FLEET_MAP_TYPES.map(
         (type) =>
           html`<sl-menu-item
             type="checkbox"
@@ -3324,37 +3417,31 @@ export class FleetMap extends LitElement {
         content: windows,
       },
     ];
-    const more = html`${
-        this.instanceAdmin
-          ? html`<sl-menu-item
-                type="checkbox"
-                .checked=${this.bubbles}
-                data-testid="fleet-map-bubbles"
-                @click=${() => {
-                  this.bubbles = !this.bubbles;
-                  saveBubbles(this.userId, this.bubbles, this.positionsScope);
-                }}
-                >Bubbles</sl-menu-item
-              >
-              <sl-menu-item
-                data-testid="fleet-map-reset-layout"
-                @click=${(event: Event) => this.runMapAction(event, this.resetLayout)}
-                >Reset layout</sl-menu-item
-              >`
-          : nothing
-      }
+    const more = html`<sl-menu-item
+        type="checkbox"
+        .checked=${this.bubbles}
+        data-testid="fleet-map-bubbles"
+        @click=${() => {
+          this.bubbles = !this.bubbles;
+          saveBubbles(this.userId, this.bubbles, this.positionsScope);
+        }}
+        >Bubbles</sl-menu-item
+      >
+      <sl-menu-item
+        data-testid="fleet-map-reset-layout"
+        @click=${(event: Event) => this.runMapAction(event, this.resetLayout)}
+        >Reset layout</sl-menu-item
+      >
       <sl-menu-item
         ?disabled=${!changed}
         data-testid="fleet-map-reset-filters"
         @click=${(event: Event) => this.runMapAction(event, this.resetFilters)}
         >Reset filters</sl-menu-item
       >
-      <sl-menu-item
-        data-testid="fleet-map-fullscreen-menu"
-        @click=${(event: Event) => this.runMapAction(event, this.toggleFullscreen)}
-        >${this.fullscreen ? 'Exit full screen' : 'Full screen'}</sl-menu-item
-      >
-      ${this.instanceAdmin ? html`<div class="privacy-note">Shows tool names, approval commands, PR titles and token counts. Never prompts or replies.</div>` : nothing}`;
+      <div class="privacy-note">
+        Shows tool names, approval commands, PR titles and token counts. Never
+        prompts or replies.
+      </div>`;
     return html`<list-toolbar
       class="toolbar"
       compact
@@ -3461,38 +3548,6 @@ export class FleetMap extends LitElement {
               )}<span slot="count">${count}</span>`
       }
       <div slot="actions" class="map-actions">
-        ${
-          this.instanceAdmin && !this.spatialOnly
-            ? html`<sl-button-group
-                label="Arrangement"
-                data-testid="fleet-map-arrangement"
-              >
-                ${ARRANGEMENTS.map(
-                  (value) =>
-                    html`<sl-tooltip
-                      content=${ARRANGEMENT_LABEL[value]}
-                      placement="bottom"
-                      hoist
-                      ><sl-button
-                        size="small"
-                        data-arrangement=${value}
-                        aria-label=${ARRANGEMENT_LABEL[value]}
-                        variant=${this.arrangement === value ? 'primary' : 'default'}
-                        aria-pressed=${this.arrangement === value ? 'true' : 'false'}
-                        @click=${() => this.setArrangement(value)}
-                        ><sl-icon
-                          name=${ARRANGEMENT_ICON[value]}
-                          aria-hidden="true"
-                        ></sl-icon
-                        ><span class="sr-only"
-                          >${ARRANGEMENT_LABEL[value]}</span
-                        ></sl-button
-                      ></sl-tooltip
-                    >`
-                )}
-              </sl-button-group>`
-            : nothing
-        }
         ${narrow ? nothing : html`<sl-dropdown hoist placement="bottom-end"><sl-icon-button slot="trigger" name="three-dots-vertical" label="More map options"></sl-icon-button><sl-menu>${more}</sl-menu></sl-dropdown>`}
       </div>
     </list-toolbar>`;
@@ -3573,10 +3628,12 @@ export class FleetMap extends LitElement {
     }
     if (node.type === 'runner') return node.status || 'Runner';
     if (node.type === 'flow') return node.status || 'Flow';
-    if (node.type === 'work' && node.status === 'Merged') return 'Merged';
     if (node.type === 'work')
       return (
-        node.review_state?.replace(/_/g, ' ') || node.status || 'State unknown'
+        knownWorkState(node) ||
+        node.review_state?.replace(/_/g, ' ') ||
+        node.status ||
+        'State unknown'
       );
     return node.detail || FLEET_MAP_TYPE_LABEL[node.type];
   }
@@ -3613,9 +3670,7 @@ export class FleetMap extends LitElement {
       (lit && !lit.has(node.id)) ||
       (!lit && this.focusGap && !focused) ||
       (!lit && !this.focusGap && hits.size > 0 && !hits.has(node.id));
-    const speaking = this.instanceAdmin
-      ? this.lights.at(node.id, Date.now())
-      : undefined;
+    const speaking = this.lights.at(node.id, Date.now());
     const classes = [
       'node',
       node.type === 'cluster' ? 'cluster' : '',
@@ -3644,7 +3699,7 @@ export class FleetMap extends LitElement {
       class=${classes}
       data-node=${node.id}
       data-kind=${node.type}
-      data-status=${node.status === 'Merged' ? 'Merged' : node.review_state || node.status || nothing}
+      data-status=${knownWorkState(node) || node.review_state || node.status || nothing}
       data-presence=${node.id}
       style="left:${position.x}px;top:${position.y}px;width:${position.w}px;height:${height}px${
         entering
@@ -3778,7 +3833,6 @@ export class FleetMap extends LitElement {
 
   /** Pull and merge request counters on an agent, flow or person. */
   private renderCode(node: FleetMapNode) {
-    if (!this.instanceAdmin) return nothing;
     const counts = this.codeActivity?.counts[node.id];
     if (!counts) return nothing;
     const items = CODE_BADGES.filter(([action]) => counts[action] > 0);
@@ -3836,7 +3890,7 @@ export class FleetMap extends LitElement {
 
   /** Four bounded event notes, positioned in screen space so zoom stays legible. */
   private renderBubbles(positions: Map<string, FleetMapPosition>) {
-    if (!this.bubbles || !this.instanceAdmin) return nothing;
+    if (!this.bubbles) return nothing;
     const lit = this.bubbleLights
       .active(Date.now())
       .filter((item) => item.label && positions.has(item.node))
@@ -4034,7 +4088,6 @@ export class FleetMap extends LitElement {
   }
 
   private renderToolCount(node: FleetMapNode) {
-    if (!this.instanceAdmin) return nothing;
     const count = this.eventLog
       .forNode(node.id, windowMinutes(this.activityWindow))
       .filter((event) => event.kind === 'tool').length;
@@ -4048,7 +4101,6 @@ export class FleetMap extends LitElement {
   }
 
   private renderRecent(node: FleetMapNode) {
-    if (!this.instanceAdmin) return nothing;
     const events = this.eventLog.forNode(
       node.id,
       windowMinutes(this.activityWindow)
@@ -4634,14 +4686,19 @@ export class FleetMap extends LitElement {
       // Keep the window reachable: a narrow window must not strand the user.
       return html`${this.bare ? nothing : this.renderToolbar(graph, graph, new Set())}
         <div class="empty-state" data-testid="fleet-map-empty">
-          ${graph.unavailable.length ? html`<p>Device evidence is unavailable. Check fleet collection and refresh.</p>` : nothing}
+          ${this.devicesFailed(graph) ? html`<p>Device evidence is unavailable. Check fleet collection and refresh.</p>` : nothing}
           ${
-            this.activityWindow === 'any'
-              ? html`Nothing to map yet. Register a runner with
-                  <code>preloop runner fg</code> or onboard an agent, then
-                  configure its model to connect the map.`
-              : html`Nothing active in the ${windowLabel?.toLowerCase()}. Choose
-                a longer window or Any time.`
+            notShared(graph)
+              ? html`<p data-testid="fleet-map-not-shared">
+                  This account's agents, models and people are not shared with
+                  you. Ask an account admin for access to see them here.
+                </p>`
+              : this.activityWindow === 'any'
+                ? html`Nothing to map yet. Register a runner with
+                    <code>preloop runner fg</code> or onboard an agent, then
+                    configure its model to connect the map.`
+                : html`Nothing active in the ${windowLabel?.toLowerCase()}.
+                  Choose a longer window or Any time.`
           }
         </div>`;
     }
@@ -4708,12 +4765,12 @@ export class FleetMap extends LitElement {
     const boxes = [...layout.positions.values()];
     const labelRects: FleetMapPosition[] = [];
     const active = this.activityByLine(view, layout);
-    // On an administrator's spatial canvas the lit node says where traffic
-    // started; the line lights without a label, so a busy map stays legible.
-    const quiet = this.instanceAdmin && this.spatial;
+    // On the spatial canvas the lit node says where traffic started; the
+    // line lights without a label, so a busy map stays legible.
+    const quiet = this.spatial;
     return html`${this.bare ? nothing : this.renderToolbar(graph, filtered, hits)}
       ${
-        graph.unavailable.length
+        this.devicesFailed(graph)
           ? html`<p class="notice" role="status">
               Device evidence is unavailable. Refresh when fleet collection is
               available; existing agents and model configuration remain visible.
@@ -4926,6 +4983,38 @@ export class FleetMap extends LitElement {
           role="group"
           aria-label="Map navigation"
         >
+          ${
+            !this.spatialOnly
+              ? html`<sl-button-group
+                  label="Arrangement"
+                  data-testid="fleet-map-arrangement"
+                >
+                  ${ARRANGEMENTS.map(
+                    (value) =>
+                      html`<sl-tooltip
+                        content=${ARRANGEMENT_LABEL[value]}
+                        placement="top"
+                        hoist
+                        ><sl-button
+                          size="small"
+                          data-arrangement=${value}
+                          aria-label=${ARRANGEMENT_LABEL[value]}
+                          variant=${this.arrangement === value ? 'primary' : 'default'}
+                          aria-pressed=${this.arrangement === value ? 'true' : 'false'}
+                          @click=${() => this.setArrangement(value)}
+                          ><sl-icon
+                            name=${ARRANGEMENT_ICON[value]}
+                            aria-hidden="true"
+                          ></sl-icon
+                          ><span class="sr-only"
+                            >${ARRANGEMENT_LABEL[value]}</span
+                          ></sl-button
+                        ></sl-tooltip
+                      >`
+                  )}
+                </sl-button-group>`
+              : nothing
+          }
           <button
             type="button"
             @click=${() => this.zoom(0.8)}
@@ -4949,7 +5038,7 @@ export class FleetMap extends LitElement {
           ${
             // Arrange lives beside Fit (pass 4): icon only, canvas only, and
             // never on an empty map. Undo stays in the notice it raises.
-            this.instanceAdmin && this.spatial && view.nodes.length
+            this.spatial && view.nodes.length
               ? html`<sl-tooltip
                   content="Arrange: repack the map (Undo restores it)"
                   placement="top"
@@ -5023,11 +5112,19 @@ export class FleetMap extends LitElement {
         </div>
         ${this.renderBubbles(layout.positions)}
         ${this.resetUndo ? html`<div class="reset-notice" role="status">${this.resetUndo.message}. <button type="button" @click=${this.undoResetLayout}>Undo</button></div>` : nothing}
-        ${this.instanceAdmin ? this.renderToasts(new Map(view.nodes.map((node) => [node.id, node]))) : nothing}
+        ${this.renderToasts(new Map(view.nodes.map((node) => [node.id, node])))}
         ${lit && reach && uses ? this.renderPanel(graph, reach, uses) : nothing}
       </div>`;
   }
 }
+
+/** Every source that draws a node is one the viewer may not see. */
+const notShared = (graph: FleetMapGraph): boolean => {
+  const restricted = new Set(graph.restricted ?? []);
+  return ['agents', 'models', 'runners', 'users'].every((source) =>
+    restricted.has(source)
+  );
+};
 
 /** Icons are Shoelace names, or an image path such as the flow mark. */
 const iconSrc = (icon?: string) => (icon?.startsWith('/') ? icon : nothing);
@@ -5071,6 +5168,34 @@ export function labelSpot(
 }
 
 const BUBBLES_KEY = 'preloop:fleet-map:bubbles';
+const ONBOARDED_KEY = 'preloop:fleet-map:onboarded-only';
+
+/** The Onboarded only choice, per user and map; the host default otherwise. */
+function loadOnboarded(
+  user: string,
+  scope: string,
+  fallback: boolean
+): boolean {
+  try {
+    const value = localStorage.getItem(
+      `${ONBOARDED_KEY}:${scope}:${user || 'anonymous'}`
+    );
+    return value === null ? fallback : value === 'on';
+  } catch {
+    return fallback;
+  }
+}
+
+function saveOnboarded(user: string, scope: string, value: boolean): void {
+  try {
+    localStorage.setItem(
+      `${ONBOARDED_KEY}:${scope}:${user || 'anonymous'}`,
+      value ? 'on' : 'off'
+    );
+  } catch {
+    // Storage unavailable: the choice lasts for this page.
+  }
+}
 const TYPES_KEY = 'preloop:fleet-map:types';
 
 /** The Show choice, per user and map; unknown or broken values fall back. */

@@ -16,14 +16,25 @@ provider failures and assigns each source a `plugin-name:source-id` namespace
 (at most 255 characters). Each provider has a two-second async timeout; failures
 and timeouts roll back the session and allow the next source to run. Providers
 must cooperate with cancellation and keep synchronous CRUD off the loop.
-Without providers it returns `[]`. Item fields are `id`, `source`, `title`, `detail`,
-`href`, `severity` (`action` or `info`) and timezone-aware `opened_at`. Destinations
-must be local `/console` paths. Providers own wording, policy and finding lifecycle.
+With the default `include_delivery_reports=false`, no providers means `[]`.
+Item fields are `id`, `source`, `title`, `detail`, `href`, `severity` (`action` or
+`info`) and timezone-aware `opened_at`. Destinations must be local `/console`
+paths. Providers own wording, policy and finding lifecycle.
 The core owns presentation only. Action items use the existing warning treatment;
 information uses neutral low severity. Both use existing account dismissals, with
 SHA-256 digests of the source/item identity and incident/content fingerprint. Both
 stay within the dismissal limits even at the maximum item lengths. A changed
 incident or displayed content returns after dismissal.
+
+The console requests `GET /api/v1/attention/extension-items?include_delivery_reports=true`
+so pending Delivery Report proposals arrive in the same read as plugin items.
+Core adds `core:delivery_report` items only for a user who can view flows. Each
+item carries a `delivery_report` payload with the report's pending proposals;
+the console turns that payload into its Delivery Report attention kind and uses
+the report's proposal fingerprint for dismissals. These items can appear even
+when no plugin provides attention. The candidate read is bounded to 100 reports
+and shared with the standalone `GET /api/v1/delivery-reports/attention` API.
+Plugin providers should leave `delivery_report` unset; it is core-owned data.
 
 Optional evidence processors can use the inert `ObservationVerification` model and
 `crud_observation_verification` store. A trusted server verifier success binds one

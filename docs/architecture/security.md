@@ -19,10 +19,10 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 
 User, mobile and runtime API keys store SHA-256 fingerprints and lookup prefixes;
 issuance returns the token once. AI model keys and webhook secrets use account-owned
-(or system-owned for global models) `SecretReference` rows. The legacy plaintext
-columns are removed after a separate backfill revision. See the
-[operator upgrade guide](../operations/credential-storage-upgrade.md) for the
-required maintenance window and compatible rollback versions.
+(or system-owned for global models) `SecretReference` rows. A backfill revision
+clears the legacy plaintext columns; a later release removes them. See the
+[operator upgrade guide](../operations/credential-storage-upgrade.md) for
+rolling-upgrade behaviour and compatible rollback versions.
 
 ## preloop.security (`./backend/preloop/security`)
 *   **Purpose:** Deterministic, server-side validation of security audit results. It is result validation, not scanning.

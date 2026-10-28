@@ -7,6 +7,14 @@ from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
 from .gateway_subject import GatewaySubject
 from .telemetry_ingest import TelemetryIngestDedup, TelemetryMetricSeries
+from .enterprise_sso import (
+    AccountSsoConnection,
+    AccountSsoPolicy,
+    AccountVerifiedDomain,
+    ScimToken,
+    SsoGroupMapping,
+    SsoReplayGuard,
+)
 from .gateway_identity_provider import (
     GatewayIdentityProvider,
     GatewayIdentityProviderAudience,
@@ -179,6 +187,7 @@ from .hosted_credit import (
 )
 
 from .issue_cost import (
+    ForgeWebhookDelivery,
     IssueCostExecution,
     IssueCostPullRequest,
     IssueCostPullRequestIssue,
@@ -197,6 +206,8 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "UpstreamMCPOAuthConnection",
+    "UpstreamMCPOAuthTransaction",
     "AgentUsageTotal",
     "AgentUsageCounted",
     "AgentUsageBackfill",
@@ -244,6 +255,7 @@ __all__ = [
     "HostedCreditTopupSetting",
     "FlowFeedback",
     "FlowThread",
+    "ForgeWebhookDelivery",
     "IssueCostExecution",
     "IssueCostPullRequest",
     "IssueCostRollup",
@@ -272,6 +284,12 @@ __all__ = [
     "GatewaySubject",
     "TelemetryIngestDedup",
     "TelemetryMetricSeries",
+    "AccountSsoConnection",
+    "AccountSsoPolicy",
+    "AccountVerifiedDomain",
+    "ScimToken",
+    "SsoGroupMapping",
+    "SsoReplayGuard",
     "GatewayIdentityProvider",
     "GatewayIdentityProviderAudience",
     "CiPrincipal",
@@ -442,3 +460,4 @@ from .support import (
 from .observation_verification import ObservationVerification
 
 from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill
+from .upstream_mcp_oauth import UpstreamMCPOAuthConnection, UpstreamMCPOAuthTransaction

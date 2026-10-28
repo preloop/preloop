@@ -1,3 +1,7 @@
+import {
+  apiKeyDisplayName,
+  apiKeySearchQuery,
+} from '../../../utils/api-key-name';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -224,7 +228,7 @@ export class ApiKeysView extends LitElement {
       const page = await getApiKeysPage({
         limit: query.pageSize || 25,
         offset: query.offset,
-        search: query.search || undefined,
+        search: query.search ? apiKeySearchQuery(query.search) : undefined,
         includeRetired: this.showAllKeys,
         sort: sortKey ? `${sorted!.desc ? '-' : ''}${sortKey}` : '-created',
       });
@@ -352,7 +356,7 @@ export class ApiKeysView extends LitElement {
     if (this.isRevoked(key)) return 'danger';
     if (this.isExpired(key)) return 'neutral';
     if (key.activity_status === 'active_now') return 'success';
-    if (key.activity_status === 'recently_active') return 'primary';
+    if (key.activity_status === 'recently_active') return 'success';
     return 'neutral';
   }
 
@@ -409,7 +413,9 @@ export class ApiKeysView extends LitElement {
         value: (key) => key.name,
         cell: (key) =>
           html`<div class="key-name">
-            <a href="/console/settings/api-keys/${key.id}">${key.name}</a>
+            <a href="/console/settings/api-keys/${key.id}"
+              >${apiKeyDisplayName(key.name).name}</a
+            >
             ${
               key.managed_agent_id
                 ? html`<sl-badge class="chip" pill variant="neutral"
@@ -908,7 +914,7 @@ export class ApiKeysView extends LitElement {
             .selection=${this.selection}
             .rowSelectable=${(key: ApiKey) => !this.isRetired(key)}
             .rowActions=${(key: ApiKey) => this.rowActionsFor(key)}
-            .rowLabel=${(key: ApiKey) => key.name}
+            .rowLabel=${(key: ApiKey) => apiKeyDisplayName(key.name).name}
             .loading=${this.isLoading}
             .error=${this.error}
             .empty=${{

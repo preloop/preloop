@@ -6,20 +6,28 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import event
 
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_delivery_report_policy,
+    crud_flow,
+    crud_flow_execution,
     crud_organization,
     crud_project,
     crud_tracker,
 )
+from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services import delivery_report as dr
+from preloop.services.delivery_report_activation import ensure_default_report_flow
 
 BASE = "/api/v1/delivery-report/policy"
 REPO = "example-org/example-repo"
@@ -98,7 +106,9 @@ class TestAccountPolicy:
         assert effective["enabled"] is True
         assert effective["report_mode"] == "deterministic"
         assert effective["cadence"] == "weekly"
+        assert effective["audit_ci_max_wait_minutes"] == 30
         assert effective["recipients"] == "account_owner"
+        assert effective["per_member_updates"] is False
         assert effective["tracker_writes"]["create_follow_up"] == "deny"
         assert effective["tracker_writes"]["close"] == "deny"
         assert (body["defaults"]["per_run_usd"], body["defaults"]["monthly_usd"]) == (
@@ -121,6 +131,20 @@ class TestAccountPolicy:
         assert body["effective"]["per_run_usd"] == 3.0
         assert body["effective"]["cadence"] == "daily"
 
+    def test_member_update_opt_in_is_account_only(
+        self, client: TestClient, db_session: Session, test_user: Any
+    ) -> None:
+        response = client.put(BASE, json={"overrides": {"per_member_updates": True}})
+        assert response.status_code == 200, response.text
+        assert client.get(BASE).json()["effective"]["per_member_updates"] is True
+        project = _project(db_session, test_user.account_id)
+        refused = client.put(
+            f"{BASE}/projects/{project.id}",
+            json={"overrides": {"per_member_updates": False}},
+        )
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "account_setting"
+
     def test_close_allowed_is_rejected(self, client: TestClient) -> None:
         response = client.put(
             BASE, json={"overrides": {"tracker_writes": {"close": "allow"}}}
@@ -139,14 +163,22 @@ class TestProjectPolicy:
         self, client: TestClient, db_session: Session, test_user: Any
     ) -> None:
         project = _project(db_session, test_user.account_id)
-        client.put(BASE, json={"overrides": {"pr_ready_days": 3}})
+        client.put(
+            BASE,
+            json={"overrides": {"pr_ready_days": 3, "audit_ci_max_wait_minutes": 60}},
+        )
         url = f"{BASE}/projects/{project.id}"
         assert client.get(url).json()["effective"]["pr_ready_days"] == 3
-        saved = client.put(url, json={"overrides": {"pr_ready_days": 10}})
+        saved = client.put(
+            url,
+            json={"overrides": {"pr_ready_days": 10, "audit_ci_max_wait_minutes": 15}},
+        )
         assert saved.status_code == 200, saved.text
         assert saved.json()["effective"]["pr_ready_days"] == 10
+        assert saved.json()["effective"]["audit_ci_max_wait_minutes"] == 15
         cleared = client.delete(url)
         assert cleared.json()["effective"]["pr_ready_days"] == 3
+        assert cleared.json()["effective"]["audit_ci_max_wait_minutes"] == 60
         assert cleared.json()["overrides"] == {}
 
     def test_account_fields_are_refused(
@@ -244,6 +276,148 @@ class TestPolicyRun:
         assert run.payload()["policy"]["tracker_writes"]["close"] == "deny"
 
 
+def test_tracker_connection_creates_one_default_report_flow(
+    db_session: Session, test_user: Any
+) -> None:
+    """A tracker connection activates a schedule even without a model."""
+    project = _project(db_session, test_user.account_id)
+    project.meta_data = {"default_branch": "master"}
+    db_session.flush()
+    assert crud_delivery_report_policy.code_repositories(
+        db_session, account_id=test_user.account_id
+    ) == [(REPO, str(project.id), str(project.organization.tracker_id), "master")]
+    project.settings = {"default_branch": "develop"}
+    db_session.flush()
+    assert crud_delivery_report_policy.code_repositories(
+        db_session, account_id=test_user.account_id
+    ) == [(REPO, str(project.id), str(project.organization.tracker_id), "develop")]
+    with patch(
+        "preloop.api.endpoints.flows._resolve_clone_model_binding",
+        side_effect=HTTPException(status_code=422, detail="no model"),
+    ):
+        flow = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+        again = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+    assert flow is not None
+    assert again.id == flow.id
+    assert flow.is_enabled is True
+    assert flow.schedule_config["type"] == "weekly"
+    assert flow.schedule_config["payload"] == {"previous_result_execution_id": "last"}
+    assert flow.agent_config["limits"]["max_usd"] == 5.0
+    assert flow.ai_model_id is None
+    run = dr.plan_policy_run(db_session, flow=flow)
+    assert run.decision == "skipped_no_model"
+    assert run.calls_model is False
+
+    crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            result={"assessment": {"decision": "skipped_no_model"}},
+        ),
+    )
+    bound_flow = SimpleNamespace(
+        id=flow.id, account_id=test_user.account_id, ai_model_id=uuid.uuid4()
+    )
+    assert dr.plan_policy_run(db_session, flow=bound_flow).decision == "onboarding"
+
+
+def test_no_credit_first_run_can_assess_after_top_up(
+    db_session: Session, test_user: Any
+) -> None:
+    """A deterministic no-credit report does not consume onboarding."""
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name=f"Top-up report {uuid.uuid4().hex[:6]}",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            prompt_template="Report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+        ),
+    )
+    bound = SimpleNamespace(
+        id=flow.id, account_id=test_user.account_id, ai_model_id=uuid.uuid4()
+    )
+    with patch(
+        "preloop.models.crud.crud_delivery_report_policy.credit_available",
+        return_value=0.0,
+    ):
+        assert (
+            dr.plan_policy_run(db_session, flow=bound).decision == "skipped_no_credit"
+        )
+    crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            result={"assessment": {"decision": "skipped_no_credit"}},
+        ),
+    )
+    with patch(
+        "preloop.models.crud.crud_delivery_report_policy.credit_available",
+        return_value=2.0,
+    ):
+        assert dr.plan_policy_run(db_session, flow=bound).decision == "onboarding"
+
+
+@pytest.mark.parametrize(
+    "prior_at,expected",
+    [
+        (datetime(2026, 10, 20, tzinfo=UTC), "skipped_budget"),
+        (datetime(2026, 9, 30, tzinfo=UTC), "assessed"),
+    ],
+)
+def test_run_planner_reads_this_months_spend(
+    db_session: Session,
+    test_user: Any,
+    prior_at: datetime,
+    expected: str,
+) -> None:
+    """The scheduler decides from stored spend in the current UTC month."""
+    account_id = test_user.account_id
+    flow = crud_flow.create(
+        db_session,
+        account_id=account_id,
+        flow_in=FlowCreate(
+            name=f"Monthly report {uuid.uuid4().hex[:6]}",
+            account_id=account_id,
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            prompt_template="Report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+        ),
+    )
+    prior = crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            start_time=prior_at,
+            estimated_cost=25.0,
+            result={"schema": dr.REPORT_SCHEMA},
+        ),
+    )
+    assert prior.id is not None
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=account_id,
+        overrides={"report_mode": "assessed", "per_run_usd": 5, "monthly_usd": 25},
+    )
+    run = dr.plan_policy_run(
+        db_session,
+        flow=SimpleNamespace(
+            id=flow.id, account_id=account_id, ai_model_id=uuid.uuid4()
+        ),
+        now=datetime(2026, 10, 26, tzinfo=UTC),
+    )
+    assert run.decision == expected
+
+
 def test_saving_the_account_policy_updates_the_report_flow(
     client: TestClient, db_session: Session, test_user: Any
 ) -> None:
@@ -335,3 +509,168 @@ def test_leaving_manual_turns_the_schedule_back_on(
     )
     db_session.refresh(flow)
     assert flow.is_enabled is True
+
+
+def test_project_rerun_narrows_scope_and_keeps_policy(db_session, test_user) -> None:
+    _project(db_session, test_user.account_id)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        overrides={
+            "onboarding_assessed_run": False,
+            "per_run_usd": 2.0,
+            "monthly_usd": 9.0,
+            "projects": [REPO, "example/other"],
+        },
+    )
+    flow = SimpleNamespace(id=uuid.uuid4(), account_id=test_user.account_id)
+    run = dr.plan_policy_run(db_session, flow=flow, project=REPO)
+    assert run.policy.projects == [REPO]
+    assert run.policy.per_run_usd == 2.0
+    assert run.policy.monthly_usd == 9.0
+    assert run.policy.tracker_writes.close == "deny"
+    assert not run.calls_model
+    stored = crud_delivery_report_policy.get_overrides(
+        db_session, account_id=test_user.account_id
+    )
+    assert stored["projects"] == [REPO, "example/other"]
+    with pytest.raises(ValueError, match="outside"):
+        dr.plan_policy_run(db_session, flow=flow, project="example/forbidden")
+    with pytest.raises(ValueError, match="connected"):
+        dr.plan_policy_run(db_session, flow=flow, project="example/other")
+
+
+def test_project_rerun_honors_disabled_repository(db_session, test_user) -> None:
+    project = _project(db_session, test_user.account_id)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        project_id=project.id,
+        overrides={"enabled": False},
+    )
+    with pytest.raises(ValueError, match="disabled"):
+        dr.validate_report_project(
+            db_session, account_id=test_user.account_id, project=REPO
+        )
+
+
+def test_rerun_choices_use_bounded_reads_for_multiple_projects(
+    db_session, test_user
+) -> None:
+    from preloop.services.delivery_report_views import rerun_projects
+
+    active = _project(db_session, test_user.account_id)
+    disabled = _project(db_session, test_user.account_id, "example/disabled")
+    disconnected = _project(db_session, test_user.account_id, "example/disconnected")
+    disconnected.is_active = False
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        project_id=disabled.id,
+        overrides={"enabled": False},
+    )
+    db_session.flush()
+    account_id = test_user.account_id
+    projects = [active.slug, disabled.slug, disconnected.slug, "example/missing"]
+    statements = []
+
+    def record(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        allowed = rerun_projects(
+            db_session,
+            account_id=account_id,
+            report={
+                "shipped": [{"project": project} for project in projects],
+            },
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert allowed == [REPO]
+    assert len(statements) <= 3
+
+
+def test_project_rerun_uses_manual_trigger_and_rejects_policy_changes(
+    client, db_session, test_user, monkeypatch
+) -> None:
+    from unittest.mock import AsyncMock
+    from preloop.models.crud import crud_flow
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    _project(db_session, test_user.account_id)
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            account_id=test_user.account_id,
+            name="Delivery Report",
+            prompt_template="Report",
+            agent_type="openhands",
+            agent_config={"report_kind": "delivery_report"},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+        ),
+    )
+    trigger = AsyncMock(return_value={"id": str(uuid.uuid4()), "status": "PENDING"})
+    monkeypatch.setattr(FlowTriggerService, "trigger_flow", trigger)
+    response = client.post(
+        f"/api/v1/flows/{flow.id}/trigger",
+        json={
+            "delivery_report_project": REPO,
+            "payload": {"window": {"to": "2026-10-24T00:00:00Z"}},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        trigger.call_args.kwargs["trigger_event_data"]["delivery_report_project"]
+        == REPO
+    )
+    assert trigger.call_args.kwargs["test_mode"] is True
+    crud_delivery_report_policy.save_overrides(
+        db_session, account_id=test_user.account_id, overrides={"enabled": False}
+    )
+    denied = client.post(
+        f"/api/v1/flows/{flow.id}/trigger", json={"delivery_report_project": REPO}
+    )
+    assert denied.status_code == 422
+    assert trigger.await_count == 1
+
+
+def test_scoped_deterministic_run_contains_only_selected_project(
+    db_session, test_user
+) -> None:
+    from preloop.models.crud.issue_cost import crud_issue_cost
+
+    _project(db_session, test_user.account_id)
+    for repo in [REPO, "example/other"]:
+        pull = crud_issue_cost.get_or_create_pull_request(
+            db_session,
+            account_id=test_user.account_id,
+            pr_key=f"https://github.com/{repo}/pull/1",
+        )
+        pull.state = "merged"
+        pull.head_sha = "revision"
+        pull.merged_at = datetime(2026, 10, 22, tzinfo=UTC)
+    db_session.flush()
+    flow = SimpleNamespace(id=uuid.uuid4(), account_id=test_user.account_id)
+    run = dr.plan_policy_run(db_session, flow=flow, project=REPO)
+    report = dr.deterministic_report(
+        db_session,
+        flow=flow,
+        execution=SimpleNamespace(id=None),
+        run=run,
+        window={"from": "2026-10-17T00:00:00Z", "to": "2026-10-24T00:00:00Z"},
+    )
+    assert [p["project"] for p in report["shipped"]] == [REPO]

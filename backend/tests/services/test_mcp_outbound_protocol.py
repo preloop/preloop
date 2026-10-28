@@ -11,7 +11,11 @@ import pytest
 from mcp import MCPError, types
 
 from preloop.services import mcp_client_pool
-from preloop.services.mcp_client_pool import MCPClient
+from preloop.services.mcp_client_pool import (
+    MCPClient,
+    MCPToolOutcomeUnknownError,
+    MCPAuthenticationError,
+)
 
 MODERN = "2026-07-28"
 LEGACY = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -36,7 +40,7 @@ class Peer:
         self.calls.append((method, body, dict(request.headers)))
         if method == "server/discover":
             status = self.probe_status or (200 if self.version == MODERN else 400)
-            if status != 200:
+            if status != 200 or self.probe_error is not None:
                 if self.probe_error is None:
                     return httpx.Response(status, text="Initialization required")
                 return httpx.Response(
@@ -174,10 +178,14 @@ async def test_modern_peer_uses_discovery_and_per_request_headers(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", LEGACY)
+@pytest.mark.parametrize("probe_status,probe_error", [(400, None), (200, -32601)])
 async def test_legacy_fallback_initialization_and_session_cleanup(
-    monkeypatch: pytest.MonkeyPatch, version: str
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    probe_status: int,
+    probe_error: int | None,
 ) -> None:
-    peer = Peer(version=version)
+    peer = Peer(version=version, probe_status=probe_status, probe_error=probe_error)
     client = install_peer(monkeypatch, peer)
     await client.connect()
     await client.list_tools()
@@ -193,11 +201,23 @@ async def test_legacy_fallback_initialization_and_session_cleanup(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", [-32020, -32021, -32022, -32601])
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (400, -32020),
+        (400, -32021),
+        (400, -32022),
+        (400, -32601),
+        (404, -32601),
+        (200, -32020),
+        (200, -32021),
+        (200, -32022),
+    ],
+)
 async def test_recognized_modern_errors_never_downgrade(
-    monkeypatch: pytest.MonkeyPatch, code: int
+    monkeypatch: pytest.MonkeyPatch, status: int, code: int
 ) -> None:
-    peer = Peer(probe_status=400, probe_error=code, supported=["2099-01-01"])
+    peer = Peer(probe_status=status, probe_error=code, supported=["2099-01-01"])
     client = install_peer(monkeypatch, peer)
     with pytest.raises(MCPError) as raised:
         await client.connect()
@@ -223,14 +243,18 @@ async def test_http_failures_never_become_legacy_fallback(
 ) -> None:
     peer = Peer(probe_status=status)
     client = install_peer(monkeypatch, peer)
-    with pytest.raises((httpx.HTTPStatusError, MCPError)):
+    with pytest.raises(
+        MCPAuthenticationError
+        if status in {401, 403}
+        else (httpx.HTTPStatusError, MCPError)
+    ):
         await client.connect()
     assert peer.methods == ["server/discover"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,code", [(307, None), (401, None), (500, None), (200, -32020)]
+    "status,code", [(307, None), (401, None), (403, None), (500, None), (200, -32020)]
 )
 async def test_dispatched_tool_is_never_replayed(
     monkeypatch: pytest.MonkeyPatch, status: int, code: int | None
@@ -238,8 +262,18 @@ async def test_dispatched_tool_is_never_replayed(
     peer = Peer(call_status=status, call_error=code)
     client = install_peer(monkeypatch, peer)
     await client.connect()
-    with pytest.raises((httpx.HTTPStatusError, MCPError)):
-        await client.call_tool("echo", {})
+    if status in {401, 403}:
+        # An auth rejection is reported as such so the user can reconnect.
+        with pytest.raises(PermissionError, match=f"HTTP {status}") as raised:
+            await client.call_tool("echo", {})
+        assert not isinstance(raised.value, MCPToolOutcomeUnknownError)
+        assert raised.value.status_code == status
+        assert f"HTTP {status}" in mcp_client_pool.describe_mcp_connection_error(
+            raised.value
+        )
+    else:
+        with pytest.raises(MCPToolOutcomeUnknownError, match="may have executed"):
+            await client.call_tool("echo", {})
     assert peer.methods.count("tools/call") == 1
     assert "initialize" not in peer.methods
 
@@ -275,3 +309,22 @@ async def test_endpoint_change_reprobes_cached_legacy_era(
     await client.connect()
     assert client._protocol_version == MODERN
     assert peer.methods.count("server/discover") == 2
+
+
+@pytest.mark.asyncio
+async def test_modern_response_header_prevents_method_not_found_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    peer = Peer(probe_status=200, probe_error=-32601)
+    respond = peer.respond
+
+    def modern_error(request: httpx.Request) -> httpx.Response:
+        response = respond(request)
+        response.headers["Mcp-Protocol-Version"] = MODERN
+        return response
+
+    monkeypatch.setattr(peer, "respond", modern_error)
+    client = install_peer(monkeypatch, peer)
+    with pytest.raises(MCPError):
+        await client.connect()
+    assert peer.methods == ["server/discover"]

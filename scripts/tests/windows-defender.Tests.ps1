@@ -286,6 +286,37 @@ Describe 'Disposable runner protection setup' {
     Should -Invoke Assert-DefenderCoverage -Times 1 -Exactly
   }
 
+  It 'waits for a concurrent signature installation without restarting Defender' {
+    Mock Update-MpSignature {
+      $script:updateAttempts++
+      if ($script:updateAttempts -lt 3) {
+        throw [System.Management.Automation.ErrorRecord]::new(
+          [System.Exception]::new('Another installation is in progress.'),
+          'HRESULT 0x80070652,Update-MpSignature',
+          [System.Management.Automation.ErrorCategory]::NotSpecified, $null)
+      }
+    }
+    Initialize-GitHubHostedDefender
+    Should -Invoke Update-MpSignature -Times 3 -Exactly
+    Should -Invoke Start-Sleep -Times 2 -Exactly
+    Should -Invoke Restart-Service -Times 0 -Exactly
+    Should -Invoke Assert-DefenderCoverage -Times 1 -Exactly
+  }
+
+  It 'fails closed when a concurrent signature installation never clears' {
+    Mock Update-MpSignature {
+      throw [System.Management.Automation.ErrorRecord]::new(
+        [System.Exception]::new('Another installation is in progress.'),
+        'HRESULT 0x80070652,Update-MpSignature',
+        [System.Management.Automation.ErrorCategory]::NotSpecified, $null)
+    }
+    { Initialize-GitHubHostedDefender } | Should -Throw '*Another installation is in progress*'
+    Should -Invoke Update-MpSignature -Times 3 -Exactly
+    Should -Invoke Start-Sleep -Times 2 -Exactly
+    Should -Invoke Restart-Service -Times 0 -Exactly
+    Should -Invoke Assert-DefenderCoverage -Times 0 -Exactly
+  }
+
   It 'fails closed when signature RPC failures persist' {
     Mock Update-MpSignature {
       throw [System.Management.Automation.ErrorRecord]::new(

@@ -609,6 +609,8 @@ export interface RuntimeSessionSummary {
   turn_started_at?: string | null;
   turn_ended_at?: string | null;
   turn_interrupted?: boolean | null;
+  /** Working directory the agent's hook last reported (a label, not trusted). */
+  cwd?: string | null;
   activity_status: 'active_now' | 'idle' | 'ended' | string;
   total_requests: number;
   successful_requests: number;

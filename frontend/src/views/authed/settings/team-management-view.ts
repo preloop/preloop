@@ -1,7 +1,7 @@
 import { ConsoleStatus } from '../../../controllers/console-status';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -36,6 +36,11 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
+import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
@@ -138,70 +143,38 @@ export class TeamManagementView extends LitElement {
         margin: 0;
       }
 
-      .teams-grid {
-        display: grid;
-        gap: 1rem;
-      }
-
-      sl-card {
-        width: 100%;
-      }
-
-      .team-card-content {
-        display: grid;
-        grid-template-columns: auto 1fr auto;
-        gap: 1rem;
-        align-items: center;
-      }
-
-      .team-icon {
-        font-size: 2rem;
-        width: 48px;
-        height: 48px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--sl-color-primary-50);
-        border-radius: 50%;
-        color: var(--sl-color-primary-600);
-      }
-
-      .team-details {
-        flex: 1;
+      /* The console table pattern (DESIGN.md "Tables and views"). */
+      .teams-table td {
+        vertical-align: middle;
       }
 
       .team-name {
         font-weight: 600;
-        font-size: 1rem;
-        margin: 0 0 0.25rem 0;
       }
 
       .team-description {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-        margin: 0 0 0.5rem 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
       }
 
-      .team-roles {
+      .chips {
         display: flex;
-        gap: 0.5rem;
-        align-items: center;
+        gap: var(--sl-spacing-2x-small);
         flex-wrap: wrap;
-        margin-top: 0.5rem;
       }
 
-      .team-roles strong {
-        font-size: 0.875rem;
-        color: var(--sl-color-neutral-600);
+      .actions-cell {
+        width: 1%;
+        white-space: nowrap;
       }
 
-      .team-actions {
-        display: flex;
-        gap: 0.5rem;
-      }
-
-      .team-actions .danger-action {
-        margin-left: var(--sl-spacing-large);
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
 
       .form-grid {
@@ -540,7 +513,7 @@ export class TeamManagementView extends LitElement {
       }
       // Refresh team roles
       this.teamRoles = await getTeamRoles(this.selectedTeam.id);
-      // Refresh teams to update role display in cards
+      // Refresh teams to update role display in the table
       await this.fetchTeams();
       this.dialogError = null;
     } catch (error) {
@@ -558,6 +531,93 @@ export class TeamManagementView extends LitElement {
       'subaccount-access-dialog'
     ) as SubaccountAccessDialog | null;
     await dialog?.show(subject);
+  }
+
+  private renderTeamRow(team: Team) {
+    const roles = ((team as any).roles || []) as Array<{ name: string }>;
+    const canManage = this.editPermissions.allows('manage_teams');
+    const canEdit = this.editPermissions.allows('edit_teams');
+    const canDelete = this.editPermissions.allows('delete_teams');
+    return html`
+      <tr data-team-id=${team.id}>
+        <td class="team-name">${team.name}</td>
+        <td class="team-description">${team.description || ''}</td>
+        <td>
+          <div class="chips">
+            ${roles.map(
+              (role) =>
+                html`<sl-badge class="chip" pill variant="neutral"
+                  >${TeamManagementView.roleLabel(role.name)}</sl-badge
+                >`
+            )}
+          </div>
+        </td>
+        <td class="actions-cell">
+          <sl-dropdown class="row-menu" placement="bottom-end" hoist>
+            <sl-icon-button
+              slot="trigger"
+              name="three-dots-vertical"
+              label="Actions for ${team.name}"
+            ></sl-icon-button>
+            <sl-menu>
+              <sl-menu-item
+                data-action="members"
+                @click=${() => this.openMembersModal(team)}
+              >
+                <sl-icon slot="prefix" name="person-lines-fill"></sl-icon>
+                Members
+              </sl-menu-item>
+              <sl-menu-item
+                data-action="roles"
+                ?disabled=${!canManage}
+                title=${canManage ? '' : 'Requires manage_teams'}
+                @click=${() => this.openRoleModal(team)}
+              >
+                <sl-icon slot="prefix" name="shield-check"></sl-icon>
+                Manage roles
+              </sl-menu-item>
+              <sl-menu-item
+                data-action="edit"
+                ?disabled=${!canEdit}
+                title=${canEdit ? '' : 'Requires edit_teams'}
+                @click=${() => this.openEditModal(team)}
+              >
+                <sl-icon slot="prefix" name="pencil"></sl-icon>
+                Edit team
+              </sl-menu-item>
+              ${
+                this.subaccounts.length > 0
+                  ? html`<sl-menu-item
+                      data-action="subaccount-access"
+                      data-testid="subaccount-access"
+                      @click=${() =>
+                        this.openSubaccountAccess({
+                          type: 'team',
+                          id: team.id,
+                          label: team.name,
+                        })}
+                    >
+                      <sl-icon slot="prefix" name="diagram-3"></sl-icon>
+                      Subaccount access
+                    </sl-menu-item>`
+                  : nothing
+              }
+              <sl-divider></sl-divider>
+              <sl-menu-item
+                class="danger-item"
+                data-action="delete"
+                ?disabled=${!canDelete}
+                title=${canDelete ? '' : 'Requires delete_teams'}
+                @click=${() => this.handleDeleteTeam(team)}
+              >
+                <sl-icon slot="prefix" name="trash"></sl-icon>
+                Delete team
+              </sl-menu-item>
+            </sl-menu>
+          </sl-dropdown>
+        </td>
+      </tr>
+    `;
   }
 
   render() {
@@ -621,123 +681,31 @@ export class TeamManagementView extends LitElement {
             </div>`
           : ''
       }
-
-      <div class="teams-grid">
-        ${repeat(
-          this.teams,
-          (team) => team.id,
-          (team) => html`
-            <sl-card>
-              <div class="team-card-content">
-                <div class="team-icon">
-                  <sl-icon name="people-fill"></sl-icon>
-                </div>
-                <div class="team-details">
-                  <h3 class="team-name">${team.name}</h3>
-                  ${
-                    team.description
-                      ? html`<p class="team-description">
-                          ${team.description}
-                        </p>`
-                      : ''
-                  }
-                  ${
-                    (team as any).roles && (team as any).roles.length > 0
-                      ? html`
-                          <div class="team-roles">
-                            <strong>Roles:</strong>
-                            ${(team as any).roles.map(
-                              (role: any) =>
-                                html`<sl-badge class="chip" variant="neutral"
-                                  >${TeamManagementView.roleLabel(
-                                    role.name
-                                  )}</sl-badge
-                                >`
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-                <div class="team-actions">
-                  <sl-tooltip
-                    content=${!this.editPermissions.allows('manage_teams') ? 'Requires manage_teams' : ''}
-                    ><sl-button
-                      ?disabled=${!this.editPermissions.allows('manage_teams')}
-                      size="small"
-                      title="Manage roles"
-                      @click=${() => this.openRoleModal(team)}
-                    >
-                      <sl-icon
-                        name="shield-check"
-                        label="Manage roles"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                  <sl-button
-                    size="small"
-                    title="Members"
-                    @click=${() => this.openMembersModal(team)}
-                  >
-                    <sl-icon name="person-lines-fill" label="Members"></sl-icon>
-                  </sl-button>
-                  <sl-tooltip
-                    content=${!this.editPermissions.allows('edit_teams') ? 'Requires edit_teams' : ''}
-                    ><sl-button
-                      ?disabled=${!this.editPermissions.allows('edit_teams')}
-                      size="small"
-                      title="Edit team"
-                      @click=${() => this.openEditModal(team)}
-                    >
-                      <sl-icon
-                        name="pencil"
-                        label="Edit team"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                  ${
-                    this.subaccounts.length > 0
-                      ? html`<sl-button
-                          size="small"
-                          title="Subaccount access"
-                          data-testid="subaccount-access"
-                          @click=${() =>
-                            this.openSubaccountAccess({
-                              type: 'team',
-                              id: team.id,
-                              label: team.name,
-                            })}
-                        >
-                          <sl-icon
-                            name="diagram-3"
-                            label="Subaccount access"
-                          ></sl-icon>
-                        </sl-button>`
-                      : ''
-                  }
-                  <!-- Outline, last, after a gap (DESIGN.md "Destructive
-                       actions"). -->
-                  <sl-tooltip
-                    content=${!this.editPermissions.allows('delete_teams') ? 'Requires delete_teams' : ''}
-                    ><sl-button
-                      ?disabled=${!this.editPermissions.allows('delete_teams')}
-                      class="danger-action"
-                      size="small"
-                      variant="danger"
-                      outline
-                      title="Delete team"
-                      @click=${() => this.handleDeleteTeam(team)}
-                    >
-                      <sl-icon
-                        name="trash"
-                        label="Delete team"
-                      ></sl-icon> </sl-button
-                  ></sl-tooltip>
-                </div>
+      ${
+        this.teams.length > 0
+          ? html`<sl-card class="table-card">
+              <div class="table-scroll">
+                <table class="styled-table teams-table" aria-label="Teams">
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Description</th>
+                      <th scope="col">Roles</th>
+                      <th scope="col"><span class="sr-only">Actions</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${repeat(
+                      this.teams,
+                      (team) => team.id,
+                      (team) => this.renderTeamRow(team)
+                    )}
+                  </tbody>
+                </table>
               </div>
-            </sl-card>
-          `
-        )}
-      </div>
-
+            </sl-card>`
+          : nothing
+      }
       ${
         this.subaccounts.length > 0
           ? html`<subaccount-access-dialog></subaccount-access-dialog>`

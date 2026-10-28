@@ -30,6 +30,7 @@ from preloop.schemas.tracker_models import (
 from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
+    TrackerRateLimitError,
     TrackerResponseError,
     TrackerPermissionError,
 )
@@ -43,6 +44,9 @@ from .utils import (
     HTTP_STATUS_UNAUTHORIZED,
     HTTP_STATUS_NOT_FOUND,
     HTTP_STATUS_UNPROCESSABLE_ENTITY,
+    HTTP_STATUS_NOT_MODIFIED,
+    ConditionalResponse,
+    parse_retry_after,
 )
 from ..config import logger
 from preloop.models.models.project import Project
@@ -57,6 +61,25 @@ def _github_link_has_next(link_header: Optional[str]) -> bool:
         if 'rel="next"' in part or "rel=next" in part or "rel='next'" in part:
             return True
     return False
+
+
+def _throttle_delay(response: httpx.Response) -> Optional[float]:
+    """Advised wait of a throttled response, or None when it is not throttled.
+
+    GitHub throttles with 429, or with 403 plus ``Retry-After`` (secondary
+    limits) or ``x-ratelimit-remaining: 0`` (primary limit). A plain 403 is a
+    permission answer and stays None.
+    """
+    if response.status_code == 429 or (
+        response.status_code == 403
+        and (
+            response.headers.get("retry-after")
+            or response.headers.get("x-ratelimit-remaining") == "0"
+        )
+    ):
+        delay = parse_retry_after(response.headers)
+        return 0.0 if delay is None else delay
+    return None
 
 
 class GitHubTracker(BaseTracker):
@@ -179,7 +202,11 @@ class GitHubTracker(BaseTracker):
 
     @async_retry()
     async def _make_request(
-        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        max_pages: Optional[int] = None,
     ) -> Any:
         """
         Make a request to the GitHub API, handling pagination.
@@ -188,6 +215,7 @@ class GitHubTracker(BaseTracker):
             params = {}
         params.setdefault("per_page", GITHUB_DEFAULT_PAGE_SIZE)
         results = []
+        pages_read = 0
         url = f"{self.API_BASE_URL}/{endpoint.lstrip('/')}"
         # Get auth headers (may refresh installation token for github_app auth)
         headers = await self._get_auth_headers()
@@ -206,12 +234,15 @@ class GitHubTracker(BaseTracker):
                         )
 
                     data = response.json()
+                    pages_read += 1
                     if isinstance(data, list):
                         results.extend(data)
                     else:
                         return data
 
-                    if "next" in response.links:
+                    if "next" in response.links and (
+                        max_pages is None or pages_read < max_pages
+                    ):
                         url = response.links["next"]["url"]
                     else:
                         url = None
@@ -283,12 +314,66 @@ class GitHubTracker(BaseTracker):
                     raise error_type(
                         f"GitHub API error: {response.status_code} - {response.text}",
                         status_code=response.status_code,
+                        retry_after=_throttle_delay(response),
                     )
                 if response.status_code == 204:
                     return None, dict(response.headers)
                 return response.json(), dict(response.headers)
             except httpx.RequestError as e:
                 raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+
+    async def conditional_get(
+        self, endpoint: str, etag: Optional[str]
+    ) -> ConditionalResponse:
+        """GET ``endpoint`` with ``If-None-Match`` and report 304 as unchanged.
+
+        GitHub does not count a 304 against the rate limit, which is what
+        keeps a cadence of pull request reads cheap.
+
+        Args:
+            endpoint: API path under the base URL.
+            etag: Validator from the previous read, or None for a plain GET.
+
+        Returns:
+            The status, the body on 200, and the validator for next time.
+
+        Raises:
+            TrackerRateLimitError: On 429, or a 403 the rate limiter sent.
+            TrackerAuthenticationError: On 401.
+            TrackerResponseError: On any other error status.
+            TrackerConnectionError: On network failure.
+        """
+        url = f"{self.API_BASE_URL}/{endpoint.lstrip('/')}"
+        headers = dict(await self._get_auth_headers())
+        if etag:
+            headers["If-None-Match"] = etag
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(url, headers=headers)
+            except httpx.RequestError as e:
+                raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+        if response.status_code == HTTP_STATUS_NOT_MODIFIED:
+            return ConditionalResponse(
+                HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("etag") or etag
+            )
+        if response.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise TrackerAuthenticationError("GitHub authentication failed")
+        delay = _throttle_delay(response)
+        if response.status_code == 429 or (
+            response.status_code == 403 and delay is not None
+        ):
+            raise TrackerRateLimitError(
+                f"GitHub rate limit reached ({response.status_code}).",
+                retry_after=delay,
+            )
+        if response.status_code >= 400:
+            raise TrackerResponseError(
+                f"GitHub API error: {response.status_code}",
+                status_code=response.status_code,
+            )
+        return ConditionalResponse(
+            response.status_code, response.json(), response.headers.get("etag")
+        )
 
     def _parse_github_issue(self, issue_data: Dict[str, Any]) -> Issue:
         """Parse a GitHub issue into our standard format.
@@ -1946,6 +2031,53 @@ class GitHubTracker(BaseTracker):
         except TrackerResponseError:
             return False
 
+    async def _pull_request_checks(self, owner: str, repo: str, sha: str) -> List[dict]:
+        """Read bounded check runs and the combined legacy status for this SHA.
+
+        An inaccessible or truncated result remains explicitly unknown, so a
+        visible passing subset cannot be mistaken for a clean check suite.
+        """
+        checks: List[dict] = []
+        for suffix in ("check-runs", "status"):
+            try:
+                data = await self._request(
+                    "GET",
+                    f"/repos/{owner}/{repo}/commits/{sha}/{suffix}",
+                    params={"per_page": 100},
+                )
+            except (
+                TrackerAuthenticationError,
+                TrackerConnectionError,
+                TrackerRateLimitError,
+                TrackerResponseError,
+                TrackerPermissionError,
+                httpx.HTTPError,
+            ):
+                checks.append({"state": "unknown"})
+                continue
+            if not isinstance(data, dict):
+                checks.append({"state": "unknown"})
+            elif suffix == "status":
+                if data.get("total_count", 0):
+                    checks.append({"state": data.get("state") or "unknown"})
+            else:
+                runs = data.get("check_runs")
+                if not isinstance(runs, list):
+                    checks.append({"state": "unknown"})
+                    continue
+                checks.extend(
+                    {
+                        "name": run.get("name"),
+                        "conclusion": run.get("conclusion"),
+                        "state": run.get("status"),
+                    }
+                    for run in runs
+                    if isinstance(run, dict)
+                )
+                if data.get("total_count", len(runs)) > len(runs):
+                    checks.append({"state": "unknown"})
+        return checks
+
     async def get_pull_request(self, pr_identifier: str) -> Dict[str, Any]:
         """
         Get details of a GitHub pull request.
@@ -1978,10 +2110,14 @@ class GitHubTracker(BaseTracker):
 
             # Get PR comments (review comments + issue comments)
             comments_path = f"/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-            review_comments = await self._request("GET", comments_path)
+            review_comments = await self._make_request(
+                comments_path, params={"per_page": GITHUB_DEFAULT_PAGE_SIZE}
+            )
 
             issue_comments_path = f"/repos/{owner}/{repo}/issues/{pr_number}/comments"
-            issue_comments = await self._request("GET", issue_comments_path)
+            issue_comments = await self._make_request(
+                issue_comments_path, params={"per_page": GITHUB_DEFAULT_PAGE_SIZE}
+            )
 
             # Combine all comments
             all_comments = []
@@ -1990,6 +2126,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "review_comment",
@@ -2003,6 +2140,7 @@ class GitHubTracker(BaseTracker):
                     {
                         "id": str(comment["id"]),
                         "author": comment["user"]["login"],
+                        "author_id": str(comment["user"]["id"]),
                         "body": comment["body"],
                         "created_at": comment["created_at"],
                         "type": "issue_comment",
@@ -2033,6 +2171,13 @@ class GitHubTracker(BaseTracker):
                 ],
             }
 
+            head_sha = pr_data["head"].get("sha")
+            checks = (
+                await self._pull_request_checks(owner, repo, head_sha)
+                if head_sha
+                else []
+            )
+
             return {
                 "id": str(pr_data["id"]),
                 "number": pr_data["number"],
@@ -2040,6 +2185,9 @@ class GitHubTracker(BaseTracker):
                 "description": pr_data.get("body", ""),
                 "state": pr_data["state"],
                 "author": pr_data["user"]["login"],
+                "author_id": str(pr_data["user"]["id"])
+                if pr_data["user"].get("id") is not None
+                else None,
                 "assignees": [a["login"] for a in pr_data.get("assignees", [])],
                 "reviewers": [
                     r["login"] for r in pr_data.get("requested_reviewers", [])
@@ -2051,7 +2199,8 @@ class GitHubTracker(BaseTracker):
                 "created_at": pr_data["created_at"],
                 "updated_at": pr_data["updated_at"],
                 "merged_at": pr_data.get("merged_at"),
-                "head_sha": pr_data["head"].get("sha"),
+                "head_sha": head_sha,
+                "checks": checks,
                 "merge_commit_sha": pr_data.get("merge_commit_sha"),
                 "is_draft": pr_data.get("draft", False),
                 "comments": all_comments,
@@ -2061,6 +2210,72 @@ class GitHubTracker(BaseTracker):
         except Exception as e:
             logger.error(f"Error getting pull request {pr_number}: {e}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
+
+    async def get_pull_request_engagement(self, pr_number: str) -> Dict[str, Any]:
+        """Read PR identity and bounded engagement without files or CI checks.
+
+        At most seven GitHub requests are made: one PR and two pages each
+        of reviews, review comments, and issue comments (100 items per page).
+        A Link header controls whether the second page is needed.
+
+        Args:
+            pr_number: Repository-local pull request number.
+
+        Returns:
+            The fields needed for review, comment, and authored-brief facts.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+        prefix = f"repos/{owner}/{repo}"
+        pr = await self._request("GET", f"/{prefix}/pulls/{pr_number}")
+        reviews = await self._make_request(
+            f"{prefix}/pulls/{pr_number}/reviews",
+            params={"per_page": GITHUB_DEFAULT_PAGE_SIZE},
+            max_pages=2,
+        )
+        comments = []
+        for endpoint in (
+            f"{prefix}/pulls/{pr_number}/comments",
+            f"{prefix}/issues/{pr_number}/comments",
+        ):
+            comments.extend(
+                await self._make_request(
+                    endpoint,
+                    params={"per_page": GITHUB_DEFAULT_PAGE_SIZE},
+                    max_pages=2,
+                )
+            )
+        return {
+            "author_id": str(pr["user"]["id"])
+            if pr.get("user", {}).get("id") is not None
+            else None,
+            "created_at": pr.get("created_at"),
+            "description": pr.get("body"),
+            "reviews": [
+                {
+                    "user_id": str(row["user"]["id"]),
+                    "submitted_at": row["submitted_at"],
+                }
+                for row in reviews
+                if isinstance(row, dict)
+                and isinstance(row.get("user"), dict)
+                and row["user"].get("id") is not None
+                and row.get("submitted_at")
+            ],
+            "comments": [
+                {
+                    "author_id": str(row["user"]["id"]),
+                    "created_at": row["created_at"],
+                }
+                for row in comments
+                if isinstance(row, dict)
+                and isinstance(row.get("user"), dict)
+                and row["user"].get("id") is not None
+                and row.get("created_at")
+            ],
+        }
 
     async def list_pull_requests(
         self,

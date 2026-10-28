@@ -138,6 +138,7 @@ async def authenticate_bearer_token(
     *,
     owns_db_session: bool = False,
     allow_ended_runtime_session: bool = False,
+    allow_read_only_review: bool = False,
 ) -> Optional[ModelGatewayAuthContext]:
     """Resolve bearer state in one worker, releasing HTTP-owned auth reads.
 
@@ -156,6 +157,7 @@ async def authenticate_bearer_token(
             token,
             session,
             allow_ended_runtime_session=allow_ended_runtime_session,
+            allow_read_only_review=allow_read_only_review,
         )
         if user is not None:
             # A last-use commit may expire the user. Hydrate while this worker

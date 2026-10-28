@@ -91,6 +91,14 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
+      # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
+      # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
+      OTLP_ENABLED: ${OTLP_ENABLED:-false}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      OTLP_PROTOCOL: ${OTLP_PROTOCOL:-http/protobuf}
+      OTLP_HEADERS: ${OTLP_HEADERS:-}
+      OTLP_SERVICE_NAME: ${OTLP_SERVICE_NAME:-preloop}
+      OTLP_DEPLOYMENT_ENVIRONMENT: ${OTLP_DEPLOYMENT_ENVIRONMENT:-}
     ports:
       - "8000:8000"
     command: python -m preloop.server
@@ -117,6 +125,14 @@ services:
       PRELOOP_SERVICE_ROLE: gateway
       PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
+      # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
+      OTLP_ENABLED: ${OTLP_ENABLED:-false}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      OTLP_PROTOCOL: ${OTLP_PROTOCOL:-http/protobuf}
+      OTLP_HEADERS: ${OTLP_HEADERS:-}
+      OTLP_SERVICE_NAME: ${OTLP_SERVICE_NAME:-preloop}
+      OTLP_DEPLOYMENT_ENVIRONMENT: ${OTLP_DEPLOYMENT_ENVIRONMENT:-}
     ports:
       - "8001:8000"
     command: python -m preloop.server

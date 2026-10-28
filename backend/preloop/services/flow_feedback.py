@@ -23,9 +23,18 @@ from preloop.services.flow_feedback_provider import (
     bounded_text,
     classify_failure,
 )
+from preloop.sync.event_normalizer import (
+    PR_STOP_SOURCE_CLOSED,
+    PR_STOP_SOURCE_MERGED,
+)
+from preloop.sync.trackers.utils import rate_limit_delay
 from preloop.utils.bitbucket import repository_identity
 
 logger = logging.getLogger(__name__)
+# Bounds on a provider Retry-After applied to a throttled thread: never sooner
+# than the usual re-arm, never later than one hour.
+FEEDBACK_RETRY_FLOOR_SECONDS = 30.0
+FEEDBACK_RETRY_CEILING_SECONDS = 3600.0
 FEEDBACK_TYPES = frozenset(
     {
         "comment_created",
@@ -451,12 +460,25 @@ def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
     return bool(threads)
 
 
+def feedback_retry_delay(retry_after: float) -> float:
+    """Seconds until a throttled thread is due: the hint, floored and capped."""
+    return min(
+        max(retry_after, FEEDBACK_RETRY_FLOOR_SECONDS),
+        FEEDBACK_RETRY_CEILING_SECONDS,
+    )
+
+
+def closed_reason(state: FeedbackState) -> str:
+    """``pr_merged`` or ``pr_closed``: which forge outcome ended the thread."""
+    return PR_STOP_SOURCE_MERGED if state.merged else PR_STOP_SOURCE_CLOSED
+
+
 def decide(
     thread: Any, state: FeedbackState, pending: list[Any], *, now: datetime
 ) -> tuple[str, str | None]:
     """Pure policy decision; ready always means current-head CI and review passed."""
     if state.closed:
-        return "closed", "pr_closed_or_merged"
+        return "closed", closed_reason(state)
     if now >= thread.expires_at:
         return "expired", "subscription_expired"
     requirements_unknown = state.blocked_reason == "repository_requirements_unavailable"
@@ -534,8 +556,29 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
     for thread_id, token in claims:
         try:
             await _reconcile(db, thread_id, token, now=now)
-        except Exception:
+        except Exception as exc:
             crud_flow_feedback.rollback(db)
+            delay = rate_limit_delay(exc)
+            if delay is not None:
+                # Throttling is the provider's answer, not an outage: keep the
+                # thread waiting and come back when the provider said to.
+                logger.warning(
+                    "Feedback reconciliation throttled for thread %s; retry in %ss",
+                    thread_id,
+                    int(feedback_retry_delay(delay)),
+                )
+                crud_flow_feedback.update(
+                    db,
+                    thread_id,
+                    token,
+                    changes={
+                        "state": "waiting",
+                        "stop_reason": "provider_rate_limited",
+                    },
+                    now=now,
+                    delay_seconds=feedback_retry_delay(delay),
+                )
+                continue
             logger.exception("Feedback reconciliation failed for thread %s", thread_id)
             crud_flow_feedback.update(
                 db,
@@ -581,7 +624,7 @@ async def _reconcile(
     provider = await FeedbackProvider.for_thread(db, thread)
     state = await provider.read()
     if state.closed or now >= thread.expires_at:
-        reason = "pr_closed_or_merged" if state.closed else "subscription_expired"
+        reason = closed_reason(state) if state.closed else "subscription_expired"
         active_id = crud_flow_feedback.stop_active(db, thread, reason=reason, now=now)
         if active_id:
             from preloop.services.flow_orchestrator import FlowExecutionOrchestrator

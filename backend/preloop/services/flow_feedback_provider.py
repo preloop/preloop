@@ -105,12 +105,63 @@ def reviewer_is_trusted(policy: Mapping[str, Any], actor: Mapping[str, Any]) -> 
     return False
 
 
+class Terminal(NamedTuple):
+    """Whether a pull request has ended, and whether it ended by a merge."""
+
+    closed: bool
+    merged: bool
+    merged_at: str | None
+
+
+def github_terminal(pr: Mapping[str, Any]) -> Terminal:
+    """Terminal state of a GitHub pull request response."""
+    merged = bool(pr.get("merged") or pr.get("merged_at"))
+    return Terminal(
+        pr.get("state") == "closed" or merged,
+        merged,
+        pr.get("merged_at") if merged else None,
+    )
+
+
+def gitlab_terminal(mr: Mapping[str, Any]) -> Terminal:
+    """Terminal state of a GitLab merge request response."""
+    merged = mr.get("state") == "merged"
+    return Terminal(
+        mr.get("state") in {"closed", "merged"},
+        merged,
+        mr.get("merged_at") if merged else None,
+    )
+
+
+def bitbucket_terminal(pr: Mapping[str, Any]) -> Terminal:
+    """Terminal state of a Bitbucket Cloud pull request response."""
+    state = str(pr.get("state") or "").upper()
+    merged = state == "MERGED"
+    return Terminal(
+        state in {"MERGED", "DECLINED", "SUPERSEDED"},
+        merged,
+        (pr.get("closed_on") or pr.get("updated_on")) if merged else None,
+    )
+
+
+def apply_terminal(state: FeedbackState, terminal: Terminal) -> FeedbackState:
+    """Copy a terminal reading onto ``state`` and return it."""
+    state.closed, state.merged, state.merged_at = terminal
+    return state
+
+
 @dataclass
 class FeedbackState:
     """Authoritative current head and gate state, never webhook truth alone."""
 
     head_sha: str
     closed: bool = False
+    # A merged pull request is also closed; ``merged`` tells the two apart so
+    # the stop reason can say which one ended the subscription.
+    merged: bool = False
+    # Forge merge time (ISO 8601) when merged; Bitbucket reports none, so its
+    # ``closed_on`` or last ``updated_on`` stands in.
+    merged_at: str | None = None
     checks_pending: bool = False
     checks_passed: bool = False
     reviews_passed: bool = False
@@ -506,6 +557,25 @@ def feedback_tracker_options(db: Session, tracker: Any) -> dict[str, Any]:
     return options
 
 
+async def feedback_tracker_client(db: Session, tracker: Any) -> Any:
+    """A read client for ``tracker``; ends the DB read before provider I/O.
+
+    Feedback reads happen long after launch; a managed grant resolves a fresh
+    credential per request instead of reusing a launch token.
+    """
+    tracker_args = (
+        tracker.tracker_type,
+        str(tracker.id),
+        tracker.resolved_api_key,
+        feedback_tracker_options(db, tracker),
+    )
+    credential_source = tracker_credential_source(tracker)
+    crud_flow_feedback.release_read(db)
+    return await create_tracker_client(
+        *tracker_args, credential_source=credential_source
+    )
+
+
 class FeedbackProvider:
     """Read-only APIs, scoped by the trusted tracker and bound repository ID."""
 
@@ -522,25 +592,13 @@ class FeedbackProvider:
         tracker = crud_tracker.get(db, id=thread.tracker_id)
         if tracker is None or tracker.account_id != thread.account_id:
             raise ValueError("feedback tracker account mismatch")
-        tracker_args = (
-            tracker.tracker_type,
-            str(tracker.id),
-            tracker.resolved_api_key,
-            feedback_tracker_options(db, tracker),
-        )
-        # Feedback reads happen long after launch; a managed grant resolves a
-        # fresh credential per request instead of reusing a launch token.
-        credential_source = tracker_credential_source(tracker)
         snapshot = SimpleNamespace(
             provider=thread.provider,
             repository_id=thread.repository_id,
             pr_number=thread.pr_number,
             policy=deepcopy(thread.policy),
         )
-        crud_flow_feedback.release_read(db)
-        client = await create_tracker_client(
-            *tracker_args, credential_source=credential_source
-        )
+        client = await feedback_tracker_client(db, tracker)
         if client is None:
             raise ValueError("feedback provider unavailable")
         return cls(client, snapshot)
@@ -667,7 +725,7 @@ class FeedbackProvider:
         if str(pr["base"]["repo"]["id"]) != self.thread.repository_id:
             raise ValueError("provider repository identity mismatch")
         sha = pr["head"]["sha"]
-        state = FeedbackState(sha, closed=pr["state"] == "closed")
+        state = apply_terminal(FeedbackState(sha), github_terminal(pr))
         if state.closed:
             return state
         checks = await request(
@@ -819,21 +877,22 @@ class FeedbackProvider:
             if state.blocked_reason is None:
                 state.blocked_reason = "repository_requirements_unavailable"
         current = await request("GET", base)
-        state.closed = current.get("state") == "closed"
+        apply_terminal(state, github_terminal(current))
         if current["head"]["sha"] != sha:
-            return FeedbackState(
-                current["head"]["sha"],
-                closed=state.closed,
-                checks_pending=True,
-                blocked_reason="head_changed_during_reconciliation",
+            return apply_terminal(
+                FeedbackState(
+                    current["head"]["sha"],
+                    checks_pending=True,
+                    blocked_reason="head_changed_during_reconciliation",
+                ),
+                github_terminal(current),
             )
         return state
 
     async def _gitlab(self) -> FeedbackState:
         async def get(path: str, **options: Any) -> Any:
-            return await self.client._make_request(
-                self.client.gl.http_get, path, **options
-            )
+            response = await self.client.conditional_get(path, None, **options)
+            return response.body
 
         repo = f"/projects/{quote(self.thread.repository_id, safe='')}"
         base = f"{repo}/merge_requests/{quote(self.thread.pr_number, safe='')}"
@@ -841,7 +900,7 @@ class FeedbackProvider:
         if str(mr["project_id"]) != self.thread.repository_id:
             raise ValueError("provider repository identity mismatch")
         sha = mr["sha"]
-        state = FeedbackState(sha, closed=mr["state"] in {"closed", "merged"})
+        state = apply_terminal(FeedbackState(sha), gitlab_terminal(mr))
         if state.closed:
             return state
         page = f"per_page={PROVIDER_PAGE_SIZE}"
@@ -883,13 +942,15 @@ class FeedbackProvider:
             receipt("ci", item, head_sha=sha) for item in failed
         ]
         current = await get(base)
-        state.closed = current.get("state") in {"closed", "merged"}
+        apply_terminal(state, gitlab_terminal(current))
         if current["sha"] != sha:
-            return FeedbackState(
-                current["sha"],
-                closed=state.closed,
-                checks_pending=True,
-                blocked_reason="head_changed_during_reconciliation",
+            return apply_terminal(
+                FeedbackState(
+                    current["sha"],
+                    checks_pending=True,
+                    blocked_reason="head_changed_during_reconciliation",
+                ),
+                gitlab_terminal(current),
             )
         return state
 
@@ -942,7 +1003,6 @@ class FeedbackProvider:
             response = await self.client._request("GET", path, params=params)
             return response.json()
 
-        closed_states = {"MERGED", "DECLINED", "SUPERSEDED"}
         repo = repository_api_path(self.thread.repository_id)
         base = f"{repo}/pullrequests/{int(self.thread.pr_number)}"
         pr = await get(base)
@@ -964,9 +1024,7 @@ class FeedbackProvider:
             ((pr.get("source") or {}).get("commit") or {}).get("hash"),
         )
         pr_url = ((pr.get("links") or {}).get("html") or {}).get("href")
-        state = FeedbackState(
-            sha, closed=str(pr.get("state") or "").upper() in closed_states
-        )
+        state = apply_terminal(FeedbackState(sha), bitbucket_terminal(pr))
         if state.closed:
             return state
         page = {"pagelen": PROVIDER_PAGE_SIZE}
@@ -1060,18 +1118,20 @@ class FeedbackProvider:
 
         state.feedback += [receipt("ci", item, head_sha=sha) for item in failed]
         current = await get(base)
-        state.closed = str(current.get("state") or "").upper() in closed_states
+        apply_terminal(state, bitbucket_terminal(current))
         current_sha = await canonical_bitbucket_head(
             self.client,
             repo,
             ((current.get("source") or {}).get("commit") or {}).get("hash"),
         )
         if current_sha != sha:
-            return FeedbackState(
-                str(current_sha or ""),
-                closed=state.closed,
-                checks_pending=True,
-                blocked_reason="head_changed_during_reconciliation",
+            return apply_terminal(
+                FeedbackState(
+                    str(current_sha or ""),
+                    checks_pending=True,
+                    blocked_reason="head_changed_during_reconciliation",
+                ),
+                bitbucket_terminal(current),
             )
         return state
 

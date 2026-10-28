@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Any, AsyncIterator
 from uuid import UUID
 
-from sqlalchemy import exists, or_, select, text
+from sqlalchemy import exists, func, or_, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,46 @@ from preloop.models.db.triage_lock import triage_lock_connection
 
 class CRUDIssueLifecycle:
     """Serialize decisions through transaction locks, including first insert."""
+
+    def waiting_merge_audits(
+        self, db: Session, *, limit: int = 10
+    ) -> list[models.IssueLifecycle]:
+        """Return deferred merge audits for the bounded background sweep."""
+        return list(
+            db.scalars(
+                select(models.IssueLifecycle)
+                .where(
+                    models.IssueLifecycle.kind == "merge_audit",
+                    models.IssueLifecycle.state == "waiting_for_checks",
+                    models.IssueLifecycle.execution_id.is_(None),
+                )
+                .order_by(models.IssueLifecycle.updated_at, models.IssueLifecycle.id)
+                .limit(limit)
+            )
+        )
+
+    def touch_waiting_merge_audit(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        issue_id: UUID,
+        revision: str,
+    ) -> None:
+        """Rotate a skipped or failed wait behind other deferred audits."""
+        db.execute(
+            update(models.IssueLifecycle)
+            .where(
+                models.IssueLifecycle.account_id == account_id,
+                models.IssueLifecycle.issue_id == issue_id,
+                models.IssueLifecycle.kind == "merge_audit",
+                models.IssueLifecycle.revision == revision,
+                models.IssueLifecycle.state == "waiting_for_checks",
+                models.IssueLifecycle.execution_id.is_(None),
+            )
+            .values(updated_at=func.clock_timestamp())
+        )
+        db.commit()
 
     def has_triage_execution(self, db: Session, *, execution_id: Any) -> bool:
         """Classify a trusted worker task without returning tenant data."""

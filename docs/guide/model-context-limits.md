@@ -7,11 +7,13 @@ its own conservative default. On a model with a large window that shows up as
 early compaction: the harness drops what it just read and then reads it again,
 which costs tokens and loses detail.
 
-Preloop tells the harness the two numbers when it knows them. Codex receives
-`model_context_window` and `model_max_output_tokens` in `config.toml`,
-OpenCode receives `limit.context` and `limit.output` in its provider model
-entry. Nothing is guessed: an unknown limit is left out and the harness keeps
-its own default.
+Preloop supplies known limits using each harness's supported configuration.
+Codex receives `model_context_window`. For gateway-enabled runs, its upstream
+output allowance is enforced by the model gateway; direct custom-provider runs
+rely on Codex/provider defaults. Codex 0.153.4 does not support a
+`model_max_output_tokens` configuration key. OpenCode receives `limit.context`
+and `limit.output` in its provider model entry. An unknown provider limit is
+not inferred from a similar model name.
 
 ## Where each number comes from
 
@@ -54,3 +56,64 @@ feature existed.
 
 Ignoring is silent by design in the sense that the run continues normally;
 the harness simply keeps its own default for that field.
+
+## Hosted Codex custom-model metadata
+
+The pinned hosted Codex CLI (0.153.4) also receives a local `model_catalog_json`
+entry for an unknown custom model. Scalar configuration alone does not register
+a model: without metadata, this CLI warns and applies its generic profile,
+including a 272,000-token context ceiling that can clamp larger explicit windows.
+The generated entry uses the exact selected model identifier and sets both
+context fields when a model-row or catalog window is known.
+
+When the provider window is unknown, Preloop preserves this version's generic
+272,000-token **CLI fallback**, not a claim about the provider's capacity. Set an
+accurate registered `context_window` for a model not in the vendored catalog.
+The `PRELOOP_CODEX_MODEL_METADATA` startup line records the CLI version, resolved
+CLI window, source, and whether the provider context is known. Output allowance
+remains separate; gateway-enabled runs expose its effective settings in gateway
+request diagnostics. Direct provider runs have no gateway-enforced ceiling.
+
+The local entry preserves the pinned CLI's generic instructions and tool schemas.
+Hosted runs explicitly retain the default disabled `update_plan` tool; the prompt
+omits its checklist guidance exactly as the pinned CLI does without a catalog.
+The custom catalog contains only the selected model, so the subagent tool no
+longer advertises bundled OpenAI model overrides for that custom provider. The catalog accepts the pinned CLI's standard reasoning-effort values
+(including role overrides such as `none` and `xhigh`) so Codex can validate subagent/role settings. These are
+pass-through inputs, not inferred upstream capabilities, and no default effort
+is imposed. Arbitrary provider-specific effort strings are not registered by this
+generic catalog. Provider support is still required. It does not borrow another model's instructions or assert new provider
+capabilities. Built-in model profiles, including the CLI's supported single
+namespace aliases, remain untouched. Removing the metadata warning does not
+prove a review will finish within its flow timeout or that a provider supports
+every tool or modality in the generic CLI profile.
+
+The profile and schema are version-pinned. A `codex_cli_version` override to an
+unvalidated release keeps that CLI's existing metadata behavior and reports the
+unsupported profile version in the service log. When upgrading the hosted pin,
+validate the catalog with the new CLI and refresh the upstream fallback
+instructions and known-model list together. The copied fallback instructions
+are from `openai/codex` tag `rust-v0.153.4`, under Apache-2.0.
+
+See the official [Codex model catalog specification](https://learn.chatgpt.com/docs/model-catalogs)
+and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+## A response reaches its output limit
+
+For streaming Chat Completions providers routed through the Responses gateway,
+`finish_reason=length` with partial text or tool arguments becomes
+`response.incomplete` with reason `max_output_tokens`. Partial evidence and usage
+remain available, but truncated tool calls are not dispatched and the response
+is not reported as a completed review. Empty-output budget exhaustion retains
+its explicit error handling.
+
+Codex can retry incomplete streams according to its configured stream retry
+limit. This can repeat provider work; the gateway does not add another retry.
+A larger output allowance does not guarantee that a review finishes within the
+flow's wall-clock timeout.
+
+A completion reminder only collects the outcome of work already attempted. It
+does not restart a review or guarantee a finalizer call. An explicit failure
+reported in that round is retained in terminal diagnostics. Read-only Codex
+runs retain their sandbox and disabled shell tool when resumed for reminders,
+stream recovery, or restored sessions.

@@ -37,12 +37,20 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequen
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from preloop.services.delivery_report_facts import body_summary
+
+from preloop.services.delivery_report_checks import fetch_scope
+
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
 REPORT_KIND_KEY = "report_kind"
 DELIVERY_REPORT_KIND = "delivery_report"
 #: Schema id written on every report, so a reader can tell versions apart.
 REPORT_SCHEMA = "preloop.delivery_report/v1"
+#: File names kept per shipped change in the report document.
+MAX_LISTED_FILES = 50
+#: File names rendered per change in the markdown and the email.
+RENDERED_FILES = 8
 
 PURPOSE_COVERED = "covered"
 PURPOSE_PARTIAL = "partial"
@@ -248,6 +256,8 @@ class DeliveryReportPolicy(BaseModel):
     max_assessed_changes: int = Field(default=25, ge=0)
     pr_ready_days: int = Field(default=7, ge=1)
     issue_inactive_days: int = Field(default=14, ge=1)
+    #: Maximum time a merge audit waits for CI checks at its merge SHA.
+    audit_ci_max_wait_minutes: int = Field(default=30, ge=1, le=1440)
     #: Changed lines in rendered frontend files below which a UI change
     #: without a screenshot is not flagged (style and view files always are).
     ui_screenshot_min_lines: int = Field(default=40, ge=0)
@@ -255,6 +265,8 @@ class DeliveryReportPolicy(BaseModel):
     tracker_writes: TrackerWritePolicy = Field(default_factory=TrackerWritePolicy)
     #: Who receives the report. Recipients by role are an EE extension.
     recipients: RecipientRule = "account_owner"
+    #: Enterprise editions may use this account-level opt-in for short updates.
+    per_member_updates: bool = False
     #: The sponsoring lead's user id when ``recipients`` names one.
     sponsoring_lead_user_id: Optional[str] = None
     #: Users who asked not to receive the report (the email opt-out link).
@@ -330,6 +342,7 @@ PROJECT_OVERRIDE_FIELDS: frozenset[str] = frozenset(
         "enabled",
         "pr_ready_days",
         "issue_inactive_days",
+        "audit_ci_max_wait_minutes",
         "ui_screenshot_min_lines",
         "criteria_source",
     }
@@ -342,12 +355,15 @@ AssessmentDecision = Literal[
     "deterministic",
     "skipped_budget",
     "skipped_no_credit",
+    "skipped_no_model",
     "disabled",
 ]
 #: Decisions under which the run makes a model call.
 ASSESSING_DECISIONS: frozenset[str] = frozenset({"assessed", "onboarding"})
 #: Decisions that drop assessments the account asked for.
-SKIPPED_DECISIONS: frozenset[str] = frozenset({"skipped_budget", "skipped_no_credit"})
+SKIPPED_DECISIONS: frozenset[str] = frozenset(
+    {"skipped_budget", "skipped_no_credit", "skipped_no_model"}
+)
 
 
 class PolicyOverrideError(ValueError):
@@ -485,6 +501,7 @@ def assessment_decision(
     has_previous_report: bool,
     spent_this_month_usd: Optional[float] = None,
     credit_available_usd: Optional[float] = None,
+    model_available: bool = True,
 ) -> AssessmentDecision:
     """Whether this run may pay for a model pass, and why not.
 
@@ -495,6 +512,7 @@ def assessment_decision(
             unknown (the per-run ceiling still caps the run).
         credit_available_usd: Hosted credit available; None when the
             account does not run on hosted credit.
+        model_available: The flow has a model bound for an assessed run.
 
     Returns:
         ``disabled`` (no report), ``deterministic`` (no model call wanted),
@@ -511,6 +529,8 @@ def assessment_decision(
         return "deterministic"
     if credit_available_usd is not None and credit_available_usd <= 0:
         return "skipped_no_credit"
+    if not model_available:
+        return "skipped_no_model"
     if wanted == "assessed" and not policy.assessments_allowed(spent_this_month_usd):
         return "skipped_budget"
     return wanted
@@ -648,6 +668,14 @@ def _changed_files(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
             )
         normalized.append({"filename": str(name), "patch": patch, "lines": lines})
     return normalized
+
+
+def _files_observed(pr: Mapping[str, Any]) -> bool:
+    """Whether the PR's file list was read at all, even if empty."""
+    changes = pr.get("changes")
+    return isinstance(changes, Mapping) and isinstance(
+        changes.get("changed_files"), list
+    )
 
 
 def _file_count(pr: Mapping[str, Any]) -> Optional[int]:
@@ -967,16 +995,13 @@ def _area(pr: Mapping[str, Any]) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
-_PR_URL_RE = re.compile(
-    r"/([^/]+/[^/]+?)(?:/-)?/(?:pull|pulls|merge_requests|pull-requests)/(\d+)"
-)
-
-
 def _pr_ref(pr: Mapping[str, Any]) -> str:
-    """``owner/repo#number``, from the PR URL (the response has no project)."""
-    match = _PR_URL_RE.search(str(pr.get("url") or ""))
-    if match:
-        return f"{match.group(1)}#{match.group(2)}"
+    """Full repository path and PR number, including GitLab subgroups."""
+    from preloop.services.delivery_report_facts import parse_pr_key
+
+    parsed = parse_pr_key(str(pr.get("url") or ""))
+    if parsed is not None:
+        return f"{parsed[0]}#{parsed[1]}"
     return f"{pr.get('project') or ''}#{pr.get('number')}"
 
 
@@ -994,9 +1019,14 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
 
     * No criteria: ``no_criteria``, whatever the claim.
     * ``covered`` needs every criterion met with evidence.
-    * ``partial`` needs at least one criterion met with evidence.
-    * Anything else, or a claim the evidence does not carry, is
-      ``unverified``. A verdict is never better than its evidence.
+    * ``partial``: at least one criterion is not met (``met: false``). It
+      names a shortfall the evidence shows.
+    * ``unverified``: nothing shows a criterion unmet, but the evidence
+      cannot decide at least one. That is an evidence gap, not a failure,
+      however many of the other criteria are met.
+    A verdict is never better than its evidence. The run may call a
+    covered change ``unverified``; it cannot claim a miss (``partial``)
+    without a criterion shown unmet, nor hide one as an evidence gap.
     """
     # Untrusted agent JSON: anything but a mapping is no assessment at all.
     purpose = dict(purpose) if isinstance(purpose, Mapping) else {}
@@ -1014,9 +1044,15 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
             met = None
         if met not in (True, False):
             met = None
-        criteria.append(
-            {"text": str(item["text"]).strip(), "met": met, "evidence": evidence}
-        )
+        criterion: Dict[str, Any] = {
+            "text": str(item["text"]).strip(),
+            "met": met,
+            "evidence": evidence,
+        }
+        for key in ("parent_check", "unchecked"):
+            if item.get(key):
+                criterion[key] = item[key]
+        criteria.append(criterion)
 
     claimed = purpose.get("verdict")
     if not criteria:
@@ -1025,17 +1061,13 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
         met_count = sum(1 for c in criteria if c["met"] is True)
         if met_count == len(criteria):
             verdict = PURPOSE_COVERED
-        elif met_count:
+        elif any(c["met"] is False for c in criteria):
             verdict = PURPOSE_PARTIAL
         else:
             verdict = PURPOSE_UNVERIFIED
-        # The agent may be more cautious than the evidence, never less.
-        rank = {PURPOSE_UNVERIFIED: 0, PURPOSE_PARTIAL: 1, PURPOSE_COVERED: 2}
-        if (
-            isinstance(claimed, str)
-            and claimed in rank
-            and rank[claimed] < rank[verdict]
-        ):
+        # The agent may call a covered change unverified. A miss needs a
+        # criterion shown unmet, so a "partial" claim without one is dropped.
+        if claimed == PURPOSE_UNVERIFIED and verdict == PURPOSE_COVERED:
             verdict = claimed
     normalized: Dict[str, Any] = {"verdict": verdict, "criteria": criteria}
     for key in ("source", "revision", "audit_execution_id"):
@@ -1157,6 +1189,13 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
         "issue_url": url,
         "issue_title": envelope.get("issue_title"),
         "merge_sha": merge_sha,
+        # Controller-observed PR/merge pairs let the deterministic path pin
+        # proposals even when the PR ledger has only the source head SHA.
+        "merges": [
+            {"url": link.get("url"), "sha": link.get("sha")}
+            for link in envelope.get("merges") or []
+            if isinstance(link, Mapping)
+        ],
         "execution_id": str(getattr(execution, "id", "") or "") or None,
         "assessed_at": started.isoformat() if isinstance(started, datetime) else None,
         "purpose": {"criteria": criteria},
@@ -1256,8 +1295,10 @@ def comments_after_last_criteria_edit(
         [c for c in raw if isinstance(c, Mapping)] if isinstance(raw, list) else []
     )
     comments.sort(
-        key=lambda c: _parse_time(c.get("created_at"))
-        or datetime.min.replace(tzinfo=timezone.utc)
+        key=lambda c: (
+            _parse_time(c.get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
     )
     start = 0
     for index, comment in enumerate(comments):
@@ -1267,9 +1308,191 @@ def comments_after_last_criteria_edit(
     return [dict(c) for c in comments[start:]]
 
 
+#: A criterion that asks for a dependent file to follow the change. Marking
+#: it not met because the file was not touched needs the parent-commit check.
+_ACCORDINGLY_RE = re.compile(
+    r"\b(update|adjust|align|change|fix)\b.*\baccordingly\b", re.IGNORECASE
+)
+
+
+def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a parent-check record is a completed check of this merge.
+
+    It must come from :func:`delivery_report_checks.parent_references` at
+    the known closing merge, resolve the parent, and carry a
+    result for at least one named file.
+    """
+    from preloop.services.delivery_report_checks import PARENT_CHECK_SCHEMA
+
+    if not isinstance(record, Mapping) or record.get("schema") != PARENT_CHECK_SCHEMA:
+        return False
+    if record.get("error") or not record.get("parent_sha"):
+        return False
+    if not merge_sha or record.get("merge_sha") != merge_sha:
+        return False
+    paths = record.get("paths")
+    return isinstance(paths, list) and bool(paths)
+
+
+def _parent_check_matches_criterion(record: Mapping[str, Any], text: str) -> bool:
+    """Only explicit dependent-file criteria can be cleared by parent evidence."""
+    if not _ACCORDINGLY_RE.search(text):
+        return False
+    paths = record.get("paths") or []
+    terms = _strs(record.get("terms"))
+    if (
+        not paths
+        or not terms
+        or any(
+            not isinstance(p, Mapping)
+            or not isinstance(p.get("path"), str)
+            or not p["path"]
+            for p in paths
+        )
+    ):
+        return False
+    # Require the criterion itself to name both the checked files and the
+    # references they should follow. Generic wording remains unverified.
+    return all(
+        re.search(
+            r"(?<![\w./-])" + re.escape(name) + r"(?![\w./-])", text, re.IGNORECASE
+        )
+        for name in [*(p["path"] for p in paths), *terms]
+    )
+
+
+def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a usable parent-check record shows no named file needed a change."""
+    if not _parent_check_usable(record, merge_sha):
+        return False
+    return all(
+        isinstance(p, Mapping) and p.get("referenced") is False and not p.get("hits")
+        for p in record["paths"]
+    )
+
+
+def apply_parent_checks(
+    purpose: Any, *, merge_sha: Optional[str] = None
+) -> Dict[str, Any]:
+    """Apply the parent-commit rule to the run's own criterion verdicts.
+
+    * An explicit "accordingly" criterion naming the checked paths and terms,
+      marked not met and carrying a ``parent_check`` record
+      showing no named file referenced the changed thing at ``<merge>^1``
+      is met: nothing needed changing. The record becomes its evidence.
+    * An "update X accordingly" criterion marked not met with no usable
+      record was never checked against the parent, so it is an evidence gap
+      (``met: null``), not a miss. A usable record that finds a reference
+      keeps the miss: the file did need changing.
+
+    Audits and cached assessments are not passed through here.
+    """
+    out: Dict[str, Any] = dict(purpose) if isinstance(purpose, Mapping) else {}
+    raw = out.get("criteria")
+    if not isinstance(raw, list):
+        return out
+    criteria: List[Any] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or item.get("met") is not False:
+            criteria.append(item)
+            continue
+        criterion = dict(item)
+        record = criterion.get("parent_check")
+        text = str(criterion.get("text") or "")
+        usable = _parent_check_usable(
+            record, merge_sha
+        ) and _parent_check_matches_criterion(record, text)
+        if usable and _parent_check_clears(record, merge_sha):
+            names = ", ".join(str(p.get("path")) for p in record["paths"])
+            terms = ", ".join(_strs(record.get("terms")))
+            criterion["met"] = True
+            criterion["evidence"] = [
+                *_strs(criterion.get("evidence")),
+                f"{names}: no reference to {terms} at parent "
+                f"{str(record['parent_sha'])[:12]}; nothing needed changing",
+            ]
+        elif not usable and _ACCORDINGLY_RE.search(str(criterion.get("text") or "")):
+            criterion["met"] = None
+            criterion["unchecked"] = "parent-commit check not run"
+        criteria.append(criterion)
+    out["criteria"] = criteria
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
+
+
+def _audit_closing_revision(
+    issue: Mapping[str, Any],
+    closing_pr: Mapping[str, Any],
+    audits: Sequence[Mapping[str, Any]],
+) -> Optional[str]:
+    """Resolve an unrecorded merge SHA from the controller's closing PR link.
+
+    A source head is not a merge SHA. An audit of another PR or revision
+    must never supply the missing merge identity for a reopen proposal.
+    """
+    known = closing_pr.get("merge_sha")
+    if known:
+        return str(known)
+    audit = _audit_for(issue, audits)
+    if audit is None or not closing_pr.get("url"):
+        return None
+    merged = _parse_time(closing_pr.get("merged_at"))
+    assessed = _parse_time(audit.get("assessed_at"))
+    if merged is None or assessed is None or assessed < merged:
+        return None
+    for link in audit.get("merges") or []:
+        if (
+            isinstance(link, Mapping)
+            and link.get("url") == closing_pr["url"]
+            and link.get("sha") == audit.get("merge_sha")
+            and link.get("sha")
+        ):
+            return str(link["sha"])
+    return None
+
+
+def _audit_reopen_proposal(
+    issue: Mapping[str, Any], audits: Sequence[Mapping[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Propose an audited miss at a known closing revision, without a write.
+
+    Pure evidence gaps do not justify a reopen. Require a cited, not-met
+    criterion, an unchanged criteria snapshot and an audit after the last
+    issue edit. The report retains the issue timestamp and closing head
+    used by the action endpoint's existing stale-request checks.
+    """
+    if not issue.get("closing_sha") or not issue.get("closing_head_sha"):
+        return None
+    audit = _audit_for(issue, audits)
+    if audit is None:
+        return None
+    assessed = _parse_time(audit.get("assessed_at"))
+    updated = _parse_time(issue.get("updated_at"))
+    if assessed is None or updated is None or updated > assessed:
+        return None
+    purpose = normalize_purpose(_audited_purpose(audit))
+    if purpose["verdict"] not in (PURPOSE_PARTIAL, PURPOSE_UNVERIFIED):
+        return None
+    current = normalize_purpose(issue.get("purpose"))
+    if {c["text"] for c in current["criteria"]} != {
+        c["text"] for c in purpose["criteria"]
+    }:
+        return None
+    unmet = [c for c in purpose["criteria"] if c["met"] is False and c["evidence"]]
+    if not unmet:
+        return None
+    return {
+        "ref": issue["ref"],
+        "title": issue.get("title"),
+        "url": issue.get("url"),
+        "revision": audit["merge_sha"],
+        "reason": "Not met: " + "; ".join(c["text"] for c in unmet),
+        "evidence": list(dict.fromkeys(e for c in unmet for e in c["evidence"])),
+    }
 
 
 def assemble_report(
@@ -1327,6 +1550,7 @@ def assemble_report(
     issues = [i for i in issues if policy_for(issue_project(i)).enabled]
 
     shipped: List[Dict[str, Any]] = []
+    follow_ups: List[Dict[str, Any]] = []
     linked_by_issue: Dict[str, List[str]] = {}
     for pr in pull_requests:
         if not pr.get("merged_at") or not _in_window(pr.get("merged_at"), start, end):
@@ -1361,6 +1585,22 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
+        for flag in normalize_risk_flags([] if metadata_only else deterministic):
+            label = flag["flag"].replace("_", " ")
+            follow_ups.append(
+                {
+                    "ref": ref,
+                    "project": pr_project(pr),
+                    "title": f"Investigate {label}: {ref}",
+                    "reason": (
+                        f"The merged change has a deterministic risk flag: {label}. "
+                        "Check the cited evidence and add verification where needed."
+                    ),
+                    "risk_flag": flag["flag"],
+                    "evidence": flag["evidence"],
+                }
+            )
+        changed = _changed_files(pr)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
             {
@@ -1370,14 +1610,25 @@ def assemble_report(
                 "project": _pr_ref(pr).split("#", 1)[0] or None,
                 "area": _area(pr),
                 "author": pr.get("author"),
+                "author_id": pr.get("author_id"),
+                "forge": pr.get("forge"),
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),
+                # What the PR says about itself and what it touched, so the
+                # deterministic report describes a change without a model.
+                "body_summary": body_summary(pr.get("description")),
+                "files": [f["filename"] for f in changed][:MAX_LISTED_FILES],
+                "files_changed": _file_count(pr) if changed else None,
+                # False when the file list was never read, so "no files"
+                # and "file-based flags not checked" stay distinguishable.
+                "files_observed": _files_observed(pr),
                 "purpose": purpose,
                 "risk_flags": risk,
                 "evidence_gaps": evidence_gaps(pr),
                 "metadata_only": metadata_only,
                 "needs_model_risk_pass": needs_model_risk_pass(pr, deterministic),
+                "fetch_scope": fetch_scope(pr, criteria=criteria),
                 "head_sha": pr.get("head_sha"),
                 "merge_sha": pr.get("merge_commit_sha"),
                 "cost_usd": agent.get("cost_usd"),
@@ -1404,7 +1655,11 @@ def assemble_report(
             if change["ref"] not in prs:
                 continue
             for c in normalize_purpose(change["purpose"])["criteria"]:
-                if c["met"] is True:
+                # A shown miss must survive aggregation, even when another
+                # linked PR marks the same criterion met.
+                if c["met"] is False:
+                    met[c["text"]] = c
+                elif c["met"] is True:
                     met.setdefault(c["text"], c)
         closing = [c for c in shipped if c["ref"] in prs]
         closing_pr = closing[-1] if closing else {}
@@ -1417,7 +1672,9 @@ def assemble_report(
                 "title": issue.get("title"),
                 "url": issue.get("url"),
                 "updated_at": issue.get("updated_at"),
-                "closing_sha": closing_pr.get("merge_sha"),
+                "closing_sha": _audit_closing_revision(
+                    {"ref": key, "url": issue.get("url")}, closing_pr, merge_audits
+                ),
                 "closing_head_sha": closing_pr.get("head_sha"),
                 # The measurement a reopen rule reads: the newest comment
                 # after the last criteria edit, when the issue has criteria.
@@ -1484,7 +1741,12 @@ def assemble_report(
         "shipped": shipped,
         "closed_issues": closed,
         "open_past_window": open_items,
-        "follow_ups": [],
+        "follow_ups": follow_ups,
+        "reopen_requests": [
+            proposal
+            for issue in closed
+            if (proposal := _audit_reopen_proposal(issue, merge_audits)) is not None
+        ],
         "open_questions": [],
     }
     return finalize_delivery_report(
@@ -1503,6 +1765,19 @@ def _needs_you(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 "url": request.get("url"),
                 "revision": request.get("revision"),
                 "reason": request.get("reason"),
+            }
+        )
+    for index, proposal in enumerate(report.get("follow_ups") or []):
+        if not isinstance(proposal, Mapping):
+            continue
+        items.append(
+            {
+                "kind": "follow_up",
+                "index": index,
+                "ref": proposal.get("ref"),
+                "title": proposal.get("title"),
+                "reason": proposal.get("reason"),
+                "evidence": _evidence(proposal.get("evidence")),
             }
         )
     for issue in report.get("closed_issues") or []:
@@ -1693,6 +1968,7 @@ def normalize_reopen_requests(raw: Any) -> List[Dict[str, Any]]:
                 "revision": revision,
                 "reason": str(item.get("reason") or "").strip() or None,
                 "evidence": evidence,
+                "applied": item.get("applied") is True,
             }
         )
     return kept
@@ -1721,6 +1997,8 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
     decision = (report.get("assessment") or {}).get("decision")
     if decision == "skipped_no_credit":
         skipped_reason: Optional[str] = "no_credit"
+    elif decision == "skipped_no_model":
+        skipped_reason = "no_model"
     elif skipped or decision == "skipped_budget":
         skipped_reason = "budget"
     else:
@@ -1767,7 +2045,7 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
             )
             for source in ASSESSMENT_SOURCES
         },
-        "assessments_skipped_for_budget": skipped_reason is not None,
+        "assessments_skipped_for_budget": skipped_reason in {"budget", "no_credit"},
         "assessments_skipped_reason": skipped_reason,
     }
 
@@ -1828,7 +2106,11 @@ def finalize_delivery_report(
         if audit is not None:
             change["purpose"] = normalize_purpose(_audited_purpose(audit))
         else:
-            purpose = normalize_purpose(change.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    change.get("purpose"), merge_sha=change.get("merge_sha")
+                )
+            )
             fallback = SOURCE_METADATA if metadata_only else SOURCE_NONE
             purpose["source"] = _assessed_source(purpose, fallback)
             change["purpose"] = purpose
@@ -1853,7 +2135,11 @@ def finalize_delivery_report(
         elif cached is not None:
             issue["purpose"] = normalize_purpose(cached)
         else:
-            purpose = normalize_purpose(issue.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    issue.get("purpose"), merge_sha=issue.get("closing_sha")
+                )
+            )
             purpose["source"] = _assessed_source(purpose, SOURCE_NONE)
             issue["purpose"] = purpose
         closed.append(issue)
@@ -1935,6 +2221,12 @@ def _summary_lines(summary: Mapping[str, Any]) -> List[str]:
             "Assessments were skipped: the account has no credit left. "
             "Everything above comes from tracker and forge data.",
         ]
+    elif summary.get("assessments_skipped_reason") == "no_model":
+        lines += [
+            "",
+            "Assessments were skipped: no model is configured for this report. "
+            "Everything above comes from tracker and forge data.",
+        ]
     elif summary.get("assessments_skipped_for_budget"):
         lines += ["", "Assessments were skipped for budget; see the spend section."]
     return lines
@@ -1946,6 +2238,24 @@ def _link(item: Mapping[str, Any]) -> str:
     url = item.get("url")
     label = f"{ref} {title}".strip()
     return f"[{label}]({url})" if url else label
+
+
+def change_detail_lines(change: Mapping[str, Any]) -> List[str]:
+    """The PR's own summary and its files, one line each, when stored."""
+    lines: List[str] = []
+    if change.get("body_summary"):
+        lines.append(str(change["body_summary"]))
+    files = [str(f) for f in change.get("files") or []]
+    if files:
+        total = change.get("files_changed") or len(files)
+        shown = ", ".join(files[:RENDERED_FILES])
+        more = total - min(len(files), RENDERED_FILES)
+        lines.append(
+            f"Files ({total}): {shown}" + (f" and {more} more" if more > 0 else "")
+        )
+    elif change.get("files_observed") is False:
+        lines.append("File list not read: file-based risk flags were not checked")
+    return lines
 
 
 def render_markdown(report: Mapping[str, Any]) -> str:
@@ -1971,6 +2281,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 f"- Proposed reopen (assessed at {item.get('revision')}): "
                 f"{_link(item)}{reason}"
             )
+        elif item["kind"] == "follow_up":
+            reason = f": {item['reason']}" if item.get("reason") else ""
+            lines.append(f"- Proposed follow-up: {_link(item)}{reason}")
+            lines.extend(f"  - {e}" for e in item.get("evidence") or [])
         elif item["kind"] == "closed_unverified":
             open_criteria = (
                 "; ".join(item.get("unmet_criteria") or []) or "criteria unchecked"
@@ -2003,6 +2317,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- {_link(change)} ({change.get('area') or 'unknown'}): purpose "
             f"{_VERDICT_LABELS[purpose['verdict']]}" + (f", {source}" if source else "")
         )
+        lines.extend(f"  - {line}" for line in change_detail_lines(change))
         for c in purpose["criteria"]:
             state = {True: "met", False: "not met", None: "evidence gap"}[c["met"]]
             cite = f" ({'; '.join(c['evidence'])})" if c["evidence"] else ""
@@ -2112,9 +2427,35 @@ def with_merge_audits_seed(
     and a seed that would break the workspace caps is left out (the
     platform still applies every audit when it finalizes the report).
     """
+    import json
+
+    content = json.dumps(document, default=str).encode("utf-8")
+    return _with_seed(trigger_event_data, MERGE_AUDITS_WORKSPACE_PATH, content)
+
+
+def with_report_checks_seed(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data that seeds the run's deterministic checks.
+
+    The source of :mod:`preloop.services.delivery_report_checks` lands at
+    ``tools/delivery_report_checks.py``, so the run computes the fetch scope
+    and the parent-commit check with the platform's own code.
+    """
+    from pathlib import Path
+
+    from preloop.services import delivery_report_checks
+
+    source = Path(delivery_report_checks.__file__).read_bytes()
+    return _with_seed(trigger_event_data, delivery_report_checks.WORKSPACE_PATH, source)
+
+
+def _with_seed(
+    trigger_event_data: Optional[Dict[str, Any]], path: str, content: bytes
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data with one more ``workspace_files`` seed."""
     import base64
     import copy
-    import json
 
     from preloop.utils.workspace_seed import (
         WORKSPACE_FILES_KEY,
@@ -2134,15 +2475,11 @@ def with_merge_audits_seed(
         target = data.setdefault("payload", {})
     seeds = target.get(WORKSPACE_FILES_KEY)
     seeds = list(seeds) if isinstance(seeds, list) else []
-    if any(
-        isinstance(seed, Mapping) and seed.get("path") == MERGE_AUDITS_WORKSPACE_PATH
-        for seed in seeds
-    ):
+    if any(isinstance(seed, Mapping) and seed.get("path") == path for seed in seeds):
         return trigger_event_data
-    content = json.dumps(document, default=str).encode("utf-8")
     seeds.append(
         {
-            "path": MERGE_AUDITS_WORKSPACE_PATH,
+            "path": path,
             "content_base64": base64.b64encode(content).decode("ascii"),
         }
     )
@@ -2263,12 +2600,58 @@ def _month_start(now: datetime) -> datetime:
     )
 
 
+def validate_report_project(db: Any, *, account_id: Any, project: Any) -> str:
+    """Validate a manual run's one-project scope against the stored policy.
+
+    Raises:
+        ValueError: The project is disconnected, disabled or outside scope.
+    """
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("Choose one connected project for the report")
+    project = project.strip().lower()
+    errors = report_project_errors(db, account_id=account_id, projects=[project])
+    if project in errors:
+        raise ValueError(errors[project])
+    return project
+
+
+def report_project_errors(
+    db: Any, *, account_id: Any, projects: Sequence[str]
+) -> Dict[str, str]:
+    """Validate rerun choices in three account-scoped reads, independent of count."""
+    from preloop.models.crud import crud_delivery_report_policy
+
+    if not projects:
+        return {}
+    account = crud_delivery_report_policy.get_overrides(db, account_id=account_id)
+    if not resolve_policy(account).enabled:
+        return {
+            p: "Delivery reports are disabled by the report policy" for p in projects
+        }
+    overrides = crud_delivery_report_policy.project_overrides(db, account_id=account_id)
+    connected = crud_delivery_report_policy.active_project_repositories(
+        db, account_id=account_id, repositories=projects
+    )
+    errors = {}
+    for project in projects:
+        name = project.lower()
+        policy = resolve_policy(account, overrides.get(name))
+        if not policy.enabled:
+            errors[project] = "Delivery reports are disabled by the report policy"
+        elif policy.projects and name not in {p.lower() for p in policy.projects}:
+            errors[project] = "The project is outside the report policy scope"
+        elif name not in connected:
+            errors[project] = "The project is no longer connected"
+    return errors
+
+
 def plan_policy_run(
     db: Any,
     *,
     flow: Any,
     exclude_execution_id: Any = None,
     now: Optional[datetime] = None,
+    project: Optional[str] = None,
 ) -> PolicyRun:
     """Read the account's stored policy and decide what this run may do.
 
@@ -2281,6 +2664,7 @@ def plan_policy_run(
         exclude_execution_id: The current execution, so it is not its own
             previous report.
         now: Clock for the month boundary.
+        project: Narrow a manual run to one connected project under the policy.
 
     Returns:
         The decision and the effective policies.
@@ -2295,6 +2679,9 @@ def plan_policy_run(
         db, account_id=account_id
     )
     policy = resolve_policy(account_overrides)
+    if project is not None:
+        project = validate_report_project(db, account_id=account_id, project=project)
+        policy = policy.model_copy(update={"projects": [project]})
     projects = {
         name: resolve_policy(account_overrides, overrides)
         for name, overrides in crud_delivery_report_policy.project_overrides(
@@ -2322,11 +2709,24 @@ def plan_policy_run(
         credit = crud_delivery_report_policy.credit_available(db, account_id=account_id)
     except Exception:  # noqa: BLE001 - no readable wallet: not on hosted credit
         log.warning("Could not read hosted credit for the report", exc_info=True)
+    previous_result = getattr(previous, "result", None)
+    previous_assessment = (
+        previous_result.get("assessment")
+        if isinstance(previous_result, Mapping)
+        else None
+    )
+    previous_decision = (
+        previous_assessment.get("decision")
+        if isinstance(previous_assessment, Mapping)
+        else None
+    )
     decision = assessment_decision(
         policy,
-        has_previous_report=previous is not None,
+        has_previous_report=previous is not None
+        and previous_decision not in SKIPPED_DECISIONS,
         spent_this_month_usd=spent,
         credit_available_usd=credit,
+        model_available=getattr(flow, "ai_model_id", True) is not None,
     )
     return PolicyRun(decision=decision, policy=policy, project_policies=projects)
 
@@ -2346,9 +2746,10 @@ def deterministic_report(
     """Build the report without a model call, from stored tracker facts.
 
     Shipped and open PRs come from the pull request ledger, closed and open
-    issues from the tracker sync, audits from completed merge audits. The
-    ledger holds no PR title, body or file list, so file-based risk flags
-    and brief gaps only appear on assessed runs.
+    issues from the tracker sync, audits from completed merge audits. PR
+    title, body and file list come from the ledger, stamped by webhooks and
+    filled by a bounded forge read before the run; a PR whose file list was
+    never read is marked so, and its file-based flags are not checked.
 
     Args:
         db: Session.

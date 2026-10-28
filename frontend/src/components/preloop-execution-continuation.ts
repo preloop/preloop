@@ -378,7 +378,7 @@ export class PreloopExecutionContinuation extends LitElement {
         ${
           this.loading
             ? html`<sl-spinner></sl-spinner>
-                <p>Checking this PR and its saved execution state...</p>`
+                <p>Checking this PR and its saved execution state…</p>`
             : nothing
         }
         ${

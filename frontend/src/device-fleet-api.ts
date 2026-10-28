@@ -97,7 +97,7 @@ export const fleetHref = (key?: string): string =>
 export async function fleetAccess(): Promise<{
   view: boolean;
   manage: boolean;
-  /** Instance (platform) administrator: unlocks the spatial map. */
+  /** Instance (platform) administrator: the map trusts account-wide realtime. */
   instanceAdmin: boolean;
   userId: string;
 }> {

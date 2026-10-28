@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -28,7 +27,7 @@ from preloop.services.cache_accounting import reported_cache_miss_tokens
 from preloop.services.gateway_activity_body import slim_gateway_payload
 from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
-from preloop.sync.services.event_bus import get_nats_client
+from preloop.sync.services.realtime_publisher import publish_realtime
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
@@ -178,23 +177,7 @@ class ModelGatewayEventEmitter:
             )
 
         if execution_id and usage.account_id:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                loop.create_task(self._publish_to_nats(event))
-            else:
-                from preloop.tools.utils import run_async
-
-                try:
-                    run_async(self._publish_to_nats(event))
-                except Exception:  # noqa: BLE001 - sync NATS publish is best-effort
-                    logger.debug(
-                        "Failed to publish gateway activity event to NATS "
-                        "(sync fallback path)",
-                        exc_info=True,
-                    )
+            self._publish_to_nats(event)
 
         if usage.account_id:
             emit_account_event(
@@ -285,25 +268,22 @@ class ModelGatewayEventEmitter:
         except Exception:  # noqa: BLE001 - a webhook must not fail a model call
             logger.debug("Failed to queue budget webhook event", exc_info=True)
 
-    async def _publish_to_nats(self, event: dict) -> None:
+    def _publish_to_nats(self, event: dict) -> None:
+        """Queue the execution-scoped copy on the NATS owner loop."""
         execution_id = event.get("execution_id")
         if not execution_id:
             return
-        nats_client = await get_nats_client()
-        if not nats_client or not nats_client.is_connected:
+        try:
+            payload_bytes = encode_realtime_event_for_nats(
+                event,
+                context=f"execution {execution_id}",
+            )
+        except Exception:  # noqa: BLE001 - realtime is best-effort
+            logger.exception("Failed to encode gateway activity event")
             return
-
-        payload_bytes = encode_realtime_event_for_nats(
-            event,
-            context=f"execution {execution_id}",
-        )
         if payload_bytes is None:
             return
-
-        await nats_client.publish(
-            f"flow-updates.{execution_id}",
-            payload_bytes,
-        )
+        publish_realtime(f"flow-updates.{execution_id}", payload_bytes)
 
     def _build_event(
         self,
@@ -387,6 +367,8 @@ class ModelGatewayEventEmitter:
                 # duration, and makes provider flakiness countable.
                 "retried": int(meta_data.get("upstream_retries") or 0),
                 "finish_reason": meta_data.get("finish_reason"),
+                "upstream_parameters": meta_data.get("upstream_parameters"),
+                "usage_warnings": meta_data.get("usage_warnings"),
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,

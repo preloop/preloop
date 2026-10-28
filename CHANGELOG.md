@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
+  for native checkout of the admitted commit using an exact-repository, read-only
+  GitHub App lease. Review workers can use inference and their own evidence upload,
+  but cannot use MCP, account/runtime administration, push, or publish. Publication
+  requires a separate trusted publisher.
+
+### Telemetry
+
+- **OTLP model-call span timestamps are UTC-correct.** `ApiUsage.timestamp`
+  is a naive UTC column; the exporter read it as host local time, so chat
+  spans were shifted by the host UTC offset on processes not running in UTC.
+  The timestamp is now read as UTC. It is written when the call completes, so
+  it stays the span end, with start = end - duration.
+- **New metric `gen_ai.client.token.usage`** (experimental, GenAI semconv):
+  histogram in `{token}` with GenAI semconv bucket boundaries (1 to 4^13),
+  one point per model call for
+  `gen_ai.token.type=input` and `output`, with the same operation, provider
+  and model dimensions as `gen_ai.client.operation.duration`.
+- **New metric `preloop.usage.cost`** (stable): counter in `USD` of the
+  recorded cost per model call.
+- OTLP guide: Gigapipe destination section.
+- **Docker Compose forwards `OTLP_*` from `.env`** to the `api` and `gateway`
+  services in `docker-compose.yml` and `docker-compose.release.yaml`; export
+  stays off unless `OTLP_ENABLED=true` and `OTLP_ENDPOINT` is set.
+
 ### Breaking or behavior changes
 
 - **Flow runs store model calls slim too.** The `model_gateway_call` rows a
@@ -43,6 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Paging stored gateway payloads no longer serialises every row to measure
+  it.** The byte-budgeted payload reader computed
+  `octet_length(metadata::text)` per candidate row, which detoasts and
+  serialises the whole value. `runtime_session_activity` now has a nullable
+  `metadata_bytes` column, set on every write, and the reader uses it, falling
+  back to the old measurement only for rows not yet filled in. The migration
+  adds the column only; the hourly `maintain_gateway_activity` task fills
+  older gateway call rows in bounded batches
+  (`GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED`, on by default).
+
 - **Generated policies no longer set `defaults` that `apply` rejects.** The
   policy-generation prompts asked for `unknown_tools: deny` or
   `require_approval` (the audit-log prompt always asked for
@@ -69,6 +106,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every tool not on each server's read list, including tools a later upstream
   release adds. A test runs write and read calls through the policy simulator
   (#1426).
+- **Upstream MCP OAuth connection lifecycle.** Preloop discovers an upstream MCP
+  server's protected resource and authorization server, keeps single-use
+  authorization state and grants in encrypted storage, and coordinates token
+  refresh across workers without replaying a dispatched tool call. The tools
+  setup shows each OAuth server's connection state with connect, reconnect,
+  cancel and disconnect. Disabling an OAuth server drops its grant. Apply the
+  additive `20261110_upstream_mcp_oauth` migration and drain old application
+  workers before new OAuth setup or refresh requests; see
+  [the lifecycle notes](docs/architecture/upstream-mcp-oauth.md) (#1237).
 
 ### Security
 

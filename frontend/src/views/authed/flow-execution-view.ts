@@ -3,6 +3,8 @@ import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd } from '../../utils/money';
 import { errorHeadline } from '../../utils/attention';
+import { verdictChip } from '../../utils/delivery-report';
+import { isSafeSubjectUrl } from '../../utils/execution-subject';
 
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -117,6 +119,8 @@ interface FlowExecutionUpdate {
 }
 
 interface FlowExecution {
+  pull_request?:
+    import('../../delivery-reports-api').ExecutionPullRequest | null;
   id: string;
   flow_id: string;
   /** Set on the detail row, so the title paints before the flow loads. */
@@ -772,7 +776,7 @@ export class FlowExecutionView extends LitElement {
       }
       .timeline-row {
         display: grid;
-        grid-template-columns: 76px minmax(0, 1fr);
+        grid-template-columns: max-content minmax(0, 1fr);
         gap: 12px;
         /* #1692: rows are dense so a long run stays within three screens. */
         padding: 4px 0;
@@ -1015,7 +1019,7 @@ export class FlowExecutionView extends LitElement {
           gap: 8px 20px;
         }
         .timeline-row {
-          grid-template-columns: 64px minmax(0, 1fr);
+          grid-template-columns: max-content minmax(0, 1fr);
           gap: 8px;
         }
         .timeline-stream.is-live {
@@ -3205,7 +3209,7 @@ export class FlowExecutionView extends LitElement {
           ${
             timelineLoading
               ? html`<div class="panel-loading" data-testid="timeline-loading">
-                  <sl-spinner></sl-spinner> Loading activity...
+                  <sl-spinner></sl-spinner> Loading activity…
                 </div>`
               : ''
           }
@@ -3446,8 +3450,8 @@ ${execution.model_output_summary}</pre>
                       query
                         ? `No log line matches "${query}".`
                         : this.isLoadingLogs
-                          ? 'Loading logs...'
-                          : 'Waiting for logs...'
+                          ? 'Loading logs…'
+                          : 'Waiting for logs…'
                     }
                   </p>
                 </div>`
@@ -3631,11 +3635,38 @@ ${execution.resolved_input_prompt}</pre>
         : '';
 
     const verdict = execution.result?.verdict;
+    const pull = execution.pull_request;
+    const assessment = verdictChip(pull?.purpose_verdict);
     const findingsLabel = findingsSummaryLabel(
       execution.result?.findings_summary
     );
     return html`
       <div class="summary-strip" data-testid="summary-strip">
+        ${
+          pull
+            ? html`<div class="strip-item" data-testid="strip-pull-request">
+                <span class="strip-label">Pull request</span>
+                <span class="strip-value">
+                  ${isSafeSubjectUrl(pull.url) ? html`<a href=${pull.url} target="_blank" rel="noopener noreferrer">Open PR<sl-icon name="box-arrow-up-right" label="Opens in a new tab"></sl-icon></a>` : 'PR'}
+                  <sl-badge
+                    class="chip"
+                    pill
+                    variant=${pull.state === 'merged' ? 'success' : 'neutral'}
+                    data-testid="pr-state"
+                    >${pull.state ?? 'State unknown'}</sl-badge
+                  >
+                  <sl-badge
+                    class="chip"
+                    pill
+                    variant=${assessment.variant}
+                    title=${assessment.title}
+                    data-testid="pr-verdict"
+                    >${assessment.label}</sl-badge
+                  >
+                </span>
+              </div>`
+            : nothing
+        }
         ${
           verdict || findingsLabel
             ? html`<div class="strip-item" data-testid="strip-verdict">
@@ -3794,9 +3825,12 @@ ${execution.resolved_input_prompt}</pre>
             <code class="strip-code" title=${execution.id}
               >${shortenIdentifier(execution.id)}</code
             >
-            <sl-copy-button
-              value=${execution.id}
-              copy-label="Copy execution id"
+            <sl-copy-button value=${execution.id} copy-label="Copy execution id"
+              ><sl-icon
+                slot="copy-icon"
+                name="copy"
+                label="Copy execution id"
+              ></sl-icon
             ></sl-copy-button>
           </span>
         </div>
@@ -4044,7 +4078,7 @@ ${execution.resolved_input_prompt}</pre>
         <view-header headerText="Flow execution" width="wide"></view-header>
         <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
-          <p>Loading...</p>
+          <p>Loading…</p>
         </div>
       `;
     }
@@ -4054,7 +4088,7 @@ ${execution.resolved_input_prompt}</pre>
         <view-header headerText="Flow execution" width="wide"></view-header>
         <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
-          <p>Loading execution details...</p>
+          <p>Loading execution details…</p>
         </div>
       `;
     }
@@ -4107,7 +4141,9 @@ ${execution.resolved_input_prompt}</pre>
         <div slot="title-prefix" class="status-pill">
           ${
             execution.resume_of
-              ? html`<sl-badge variant="primary" pill>Continuation</sl-badge>`
+              ? html`<sl-badge class="chip" variant="neutral" pill
+                  >Continuation</sl-badge
+                >`
               : nothing
           }
           ${running ? html`<span class="status-dot"></span>` : ''}
@@ -4195,6 +4231,7 @@ ${execution.resolved_input_prompt}</pre>
           ></preloop-execution-tree>
           ${this.renderOperatorNotes(execution)}
           <sl-tab-group
+            no-scroll-controls
             class="execution-tabs"
             @sl-tab-show=${this.handleTabShow}
           >

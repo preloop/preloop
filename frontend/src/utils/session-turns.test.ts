@@ -83,4 +83,38 @@ describe('session-turns', () => {
     expect(groups).to.have.length(1);
     expect((groups[0] as TranscriptStepGroupItem).steps).to.have.length(2);
   });
+  it('interrupt marks the running turn interrupted', () => {
+    const prompt = {
+      type: 'message' as const,
+      key: 'p',
+      kind: 'user_prompt',
+      role: 'user',
+      text: 'refactor billing',
+      timestamp: '2026-08-06T10:00:00Z',
+      event: null,
+    };
+    const turnEnd = (interrupted: boolean) => ({
+      activity_id: 'end-1',
+      activity_type: 'turn_end',
+      timestamp: '2026-08-06T10:00:39Z',
+      metadata: { interrupted },
+    });
+    for (const [runtime, marker] of [
+      ['codex', 'Conversation interrupted'],
+      ['claude', 'Interrupted'],
+    ] as const) {
+      const { turns } = buildSessionTurns([prompt as never], {
+        runtime,
+        activity: [turnEnd(true) as never],
+      });
+      expect(turns[0].footer?.interrupted).to.equal(true);
+      expect(turns[0].footer?.text).to.contain(marker);
+    }
+    const done = buildSessionTurns([prompt as never], {
+      runtime: 'codex',
+      activity: [turnEnd(false) as never],
+    });
+    expect(done.turns[0].footer?.interrupted).to.equal(false);
+    expect(done.turns[0].footer?.text).to.not.contain('nterrupted');
+  });
 });

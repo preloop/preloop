@@ -239,10 +239,11 @@ The limits worth knowing:
   open a Preloop MCP session when both lists are empty, so an unused client
   cannot reconnect until the flow timeout.
 - **Shell is a separate control.** `agent_config.sandbox_type: read-only`
-  launches Codex with `--sandbox read-only`, disables the `shell_tool`
-  feature, and does not pass `--yolo`. `config.toml` pins
-  `approval_policy = "never"`, which `codex exec` already defaults to, so
-  the run does not wait for a person. Any other value, including the
+  launches Codex with `-c 'sandbox_mode="read-only"'` and
+  `-c 'approval_policy="never"'`, disables the `shell_tool` feature, and
+  does not pass `--yolo`. These overrides work for both `exec` and
+  `exec resume`, so reminders and recovery retain the same restrictions
+  without waiting for a person. Any other value, including the
   preset default `exec`, keeps `--yolo`.
 - **A silent model stream is bounded separately.**
   `agent_config.stream_idle_timeout_seconds` (30..3600, default 600, capped

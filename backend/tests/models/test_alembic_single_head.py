@@ -500,4 +500,16 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert flow_log_gateway_idx.down_revision == "20261110_media_timing"
     delivery_report_policy = script.get_revision("20261112_delivery_report_policy")
     assert delivery_report_policy.down_revision == "20261112_flow_log_gateway_idx"
-    assert script.get_heads() == ["20261112_delivery_report_policy"]
+    activity_meta_bytes = script.get_revision("20261112_activity_meta_bytes")
+    assert activity_meta_bytes.down_revision == "20261112_delivery_report_policy"
+    agent_usage_replan = script.get_revision("20261112_agent_usage_replan")
+    assert agent_usage_replan.down_revision == "20261112_activity_meta_bytes"
+    upstream_mcp_oauth = script.get_revision("20261110_upstream_mcp_oauth")
+    assert upstream_mcp_oauth.down_revision == "20261112_agent_usage_replan"
+    forge_reconciliation = script.get_revision("20261112_forge_reconciliation")
+    assert forge_reconciliation.down_revision == "20261110_upstream_mcp_oauth"
+    enterprise_sso = script.get_revision("20261112_enterprise_sso")
+    assert enterprise_sso.down_revision == "20261112_forge_reconciliation"
+    pull_request_details = script.get_revision("20261113_pull_request_details")
+    assert pull_request_details.down_revision == "20261112_enterprise_sso"
+    assert script.get_heads() == ["20261113_pull_request_details"]

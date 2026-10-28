@@ -19,7 +19,8 @@ export class RunnerPoolAccess extends LitElement {
       margin-top: var(--sl-spacing-large);
     }
     h3 {
-      font-size: var(--sl-font-size-medium);
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
       margin: 0 0 var(--sl-spacing-x-small);
     }
   `;

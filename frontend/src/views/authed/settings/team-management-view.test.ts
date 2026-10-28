@@ -134,11 +134,27 @@ describe('TeamManagementView', () => {
     expect(
       (element.shadowRoot?.querySelector('view-header') as any)?.headerText
     ).to.equal('Teams');
-    // Delete is outline and last, after the gap.
-    const del = element.shadowRoot?.querySelector(
-      '.team-actions sl-button[variant="danger"]'
+    // A console table, not a card per team.
+    const root = element.shadowRoot!;
+    expect(root.querySelector('.teams-grid sl-card')).to.equal(null);
+    const headers = [
+      ...root.querySelectorAll('table.styled-table thead th'),
+    ].map((th) => (th.textContent || '').trim());
+    expect(headers).to.deep.equal(['Name', 'Description', 'Roles', 'Actions']);
+    expect(root.querySelectorAll('tbody tr[data-team-id]').length).to.equal(1);
+    root.querySelectorAll('tbody sl-badge').forEach((chip) => {
+      expect(chip.hasAttribute('pill')).to.equal(true);
+      expect(chip.getAttribute('variant')).to.equal('neutral');
+    });
+    // No red button on the row: Delete is the kebab's last item.
+    expect(root.querySelector('tbody sl-button[variant="danger"]')).to.equal(
+      null
     );
-    expect(del?.hasAttribute('outline')).to.equal(true);
+    const items = [...root.querySelectorAll('.row-menu sl-menu-item')];
+    const del = items[items.length - 1];
+    expect(del.getAttribute('data-action')).to.equal('delete');
+    expect(del.classList.contains('danger-item')).to.equal(true);
+    expect(del.previousElementSibling?.tagName).to.equal('SL-DIVIDER');
     expect(element.shadowRoot?.textContent).to.contain('Platform');
     expect(element.shadowRoot?.textContent).to.contain(
       'Platform engineering team'
@@ -186,8 +202,7 @@ describe('TeamManagementView', () => {
     await waitUntil(() => !(element as any).isLoading, 'still loading');
     await element.updateComplete;
 
-    const cards = element.shadowRoot?.querySelectorAll('.teams-grid sl-card');
-    expect(cards?.length).to.equal(0);
+    expect(element.shadowRoot?.querySelector('table')).to.equal(null);
     const empty = element.shadowRoot?.querySelector('.empty-state');
     expect(empty?.textContent).to.contain('No teams yet');
     const create = empty?.querySelector('sl-button') as HTMLElement;
@@ -273,19 +288,24 @@ describe('TeamManagementView', () => {
     expect((element as any).isCreateModalOpen).to.be.false;
   });
 
-  it('names every icon-only action for assistive tech', async () => {
+  it('names the row menu and every action in it', async () => {
     fetchStub = createFetchStub({ teams: [sampleTeam] });
     const element = (await fixture(
       html`<team-management-view></team-management-view>`
     )) as TeamManagementView;
     await waitUntil(() => (element as any).teams?.length === 1);
     await element.updateComplete;
+    expect(
+      element
+        .shadowRoot!.querySelector('.row-menu sl-icon-button[slot="trigger"]')!
+        .getAttribute('label')
+    ).to.equal('Actions for Platform');
     const labels = [
-      ...element.shadowRoot!.querySelectorAll('.team-actions sl-icon'),
-    ].map((icon) => icon.getAttribute('label'));
+      ...element.shadowRoot!.querySelectorAll('.row-menu sl-menu-item'),
+    ].map((item) => (item.textContent || '').trim());
     expect(labels).to.deep.equal([
-      'Manage roles',
       'Members',
+      'Manage roles',
       'Edit team',
       'Delete team',
     ]);
@@ -301,7 +321,7 @@ describe('TeamManagementView', () => {
     const deletes = () =>
       fetchStub.getCalls().filter((call) => call.args[1]?.method === 'DELETE');
     const del = element.shadowRoot!.querySelector(
-      '.team-actions sl-button[variant="danger"]'
+      '.row-menu sl-menu-item[data-action="delete"]'
     ) as HTMLElement;
 
     del.click();
@@ -386,7 +406,7 @@ describe('TeamManagementView subaccount access', () => {
       html`<team-management-view></team-management-view>`
     );
     await waitUntil(
-      () => el.shadowRoot!.querySelector('[data-id], sl-card'),
+      () => el.shadowRoot!.querySelector('tr[data-team-id]'),
       'rows did not render'
     );
     await waitUntil(() => api!.callsTo(SUBS).length > 0, 'no subaccount read');

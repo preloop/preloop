@@ -160,8 +160,8 @@ export class NotificationPreferencesView extends AuthedElement {
       }
 
       .section-title {
-        font-size: var(--sl-font-size-large);
-        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
         margin: 0 0 var(--sl-spacing-medium) 0;
         color: var(--sl-color-neutral-900);
       }
@@ -325,6 +325,12 @@ export class NotificationPreferencesView extends AuthedElement {
 
       .test-send-header {
         margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .test-send-title {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
       }
 
       .test-send-actions {
@@ -541,10 +547,12 @@ export class NotificationPreferencesView extends AuthedElement {
       <sl-card class="test-send-card">
         <div class="test-send-header">
           <div>
-            <h2 class="section-title" style="margin: 0;">
-              Test push delivery
+            <div class="test-send-title">
+              <h2 class="section-title" style="margin: 0;">
+                Test push delivery
+              </h2>
               <sl-badge class="chip" variant="neutral" pill>Admin</sl-badge>
-            </h2>
+            </div>
             <div class="preference-description">
               Sends a clearly labelled test over the real delivery path and
               reports exactly what the push provider said. Nothing is gated on

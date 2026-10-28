@@ -3,6 +3,7 @@
 import inspect
 from typing import AsyncIterator
 import pytest
+from preloop.services.mcp_client_pool import MCPAuthenticationError
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -3264,8 +3265,16 @@ class TestApprovalDenialUsageOutcome:
 class TestProxiedTransportFailureUsageOutcome:
     """A raising upstream client must not be recorded as succeeded."""
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("connection closed"),
+            MCPAuthenticationError(401),
+            MCPAuthenticationError(403),
+        ],
+    )
     async def test_client_call_tool_raise_records_failed(
-        self, dynamic_mcp, user_context, monkeypatch
+        self, dynamic_mcp, user_context, monkeypatch, error
     ):
         """The wrapper's except path stamps failed, not a success string."""
         from fastmcp.tools import ToolResult
@@ -3273,8 +3282,12 @@ class TestProxiedTransportFailureUsageOutcome:
         user_context.runtime_session_id = str(uuid4())
         dynamic_mcp.set_user_context_provider(lambda: user_context)
         persist = MagicMock()
+        record_error = MagicMock()
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp._record_mcp_server_error", record_error
+        )
         client = MagicMock()
-        client.call_tool = AsyncMock(side_effect=RuntimeError("connection closed"))
+        client.call_tool = AsyncMock(side_effect=error)
 
         monkeypatch.setattr(
             "preloop.services.dynamic_fastmcp.get_db",
@@ -3349,15 +3362,19 @@ class TestProxiedTransportFailureUsageOutcome:
 
         assert isinstance(result, ToolResult)
         assert result.is_error
-        assert "connection closed" in result.content[0].text
+        assert str(error) in result.content[0].text
+        assert "temporarily unavailable" not in result.content[0].text
         failed_calls = [
             call
             for call in persist.call_args_list
             if call.kwargs.get("status") == "failed"
         ]
+        if isinstance(error, MCPAuthenticationError):
+            record_error.assert_called_once()
+            assert f"http_{error.status_code}" in record_error.call_args.args[1]
         assert len(failed_calls) == 1
         assert failed_calls[0].kwargs["client_tool_name"] == "safe_tool"
-        assert "connection closed" in (failed_calls[0].kwargs.get("summary") or "")
+        assert str(error) in (failed_calls[0].kwargs.get("summary") or "")
         assert all(
             call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
         )

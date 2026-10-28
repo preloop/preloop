@@ -399,7 +399,7 @@ describe('ApiKeysView', () => {
       ])
     );
     expect(chipVariants).to.deep.equal({
-      'Recently active': 'primary',
+      'Recently active': 'success',
       'Active now': 'success',
       Idle: 'neutral',
       Revoked: 'danger',
@@ -761,6 +761,40 @@ describe('ApiKeysView', () => {
     expect(new URLSearchParams(window.location.search).get('q')).to.equal(
       'no such key'
     );
+    element.table.clearFilters();
+    window.history.replaceState(null, '', window.location.pathname);
+  });
+
+  it('searches flow keys by the name the list shows', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.setSearch('Flow run 9910dacd');
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('q=Flow+Execution+9910dacd')
+        )
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.clearFilters();
+    window.history.replaceState(null, '', window.location.pathname);
+  });
+
+  it('keeps a user-chosen Flow run name unchanged when searching', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.setSearch('Flow run helper');
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('q=Flow+run+helper'))
+    );
+    await waitUntil(() => !(element as any).isLoading);
     element.table.clearFilters();
     window.history.replaceState(null, '', window.location.pathname);
   });

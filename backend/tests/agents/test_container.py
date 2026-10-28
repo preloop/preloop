@@ -1075,6 +1075,94 @@ class TestGitShellQuoting:
             f"{shlex.quote(repo_url)} {shlex.quote(full_path)}"
         ) in shell
 
+    def test_report_checkout_without_known_branch_uses_remote_head(
+        self, container_executor
+    ) -> None:
+        """The clone must not demand main when the remote defaults elsewhere."""
+        context = {
+            "execution_id": "synthetic-report-run",
+            "flow_name": "Delivery Report",
+            "trigger_event_data": {},
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://example.com/app.git",
+                        "clone_path": "/workspace/app",
+                        "use_remote_default": True,
+                    }
+                ],
+            },
+        }
+        shell = container_executor._prepare_git_clone_command(context)
+        assert "git clone https://example.com/app.git /workspace/app" in shell
+        assert "git clone -b main" not in shell
+        repository = context["git_clone_config"]["repositories"][0]
+        repository.pop("use_remote_default")
+        repository["branch"] = "develop"
+        shell = container_executor._prepare_git_clone_command(context)
+        assert (
+            "git clone -b develop https://example.com/app.git /workspace/app" in shell
+        )
+
+    def test_report_checkout_keeps_remote_default_when_main_also_exists(
+        self, container_executor, tmp_path
+    ) -> None:
+        """The prepared clone must branch from the remote HEAD, not main."""
+        source = tmp_path / "source"
+        source.mkdir()
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
+
+        git("init", "-b", "develop")
+        git("config", "user.name", "Jane Doe")
+        git("config", "user.email", "jane@example.com")
+        (source / "branch.txt").write_text("develop")
+        git("add", "branch.txt")
+        git("commit", "-m", "Develop")
+        git("checkout", "-b", "main")
+        (source / "branch.txt").write_text("main")
+        git("commit", "-am", "Main")
+        git("checkout", "develop")
+
+        workspace = tmp_path / "workspace"
+        clone = workspace / "app"
+        context = {
+            "execution_id": "synthetic-report-run",
+            "flow_name": "Delivery Report",
+            "trigger_event_data": {},
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": str(source),
+                        "clone_path": str(clone),
+                        "use_remote_default": True,
+                    }
+                ],
+            },
+        }
+        shell = container_executor._prepare_git_clone_command(context)
+        assert "git clone -b main" not in shell
+        shell = shell.replace("mkdir -p /workspace", f"mkdir -p {workspace}")
+        shell = shell.replace("cd /workspace", f"cd {workspace}")
+        result = subprocess.run(
+            ["bash", "-c", shell],
+            cwd=tmp_path,
+            env={**os.environ, "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (clone / "branch.txt").read_text() == "develop"
+        assert (
+            subprocess.check_output(
+                ["git", "branch", "--show-current"], cwd=clone, text=True
+            ).strip()
+            == context["_git_target_branch"]
+        )
+
     def test_git_pre_clone_replaces_unwritable_target(
         self, container_executor, tmp_path
     ):

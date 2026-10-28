@@ -73,6 +73,33 @@ Overview keeps its initial refresh guard through the deferred data wave while
 rendering the first results as before. Realtime refreshes retain at most one
 pending follow-up per resource, and background refreshes skip runs while other
 refreshes are active.
+Overview consolidates its initial reads into two server-owned manifests:
+`GET /overview/shell` and `GET /overview/bootstrap`. The latter accepts typed
+window boundaries, including a shared instant for the attention rules' rolling
+seven- and thirty-day windows. The gateway refresh phase uses a separate fixed four-read subset of the same
+bootstrap, without reloading inventory or attention inputs. Neither endpoint accepts caller-selected paths
+or methods. Results stream independently as NDJSON, so an available usage
+headline does not wait for slower analytics. The browser preserves each input's
+HTTP status and runs its existing error handling.
+
+The server dispatches these reads in-process through their ordinary ASGI routes,
+with the original caller's authentication and client address. Existing route
+permissions, tenant filters and CRUD queries remain authoritative. A shared
+per-application semaphore permits at most four internal reads at a time. Each stream admits at most four
+reads lazily, so one user does not enqueue the entire page ahead of others;
+at most 64 reads may be active or queued across all streams. A thirty-second
+deadline includes queue time, and saturation returns an unavailable field.
+Disconnection cancels and awaits pending work. This reduces browser round trips,
+not database query count. The browser resolver belongs to the current Overview
+load and token, is cleared on completion/disconnect, and does not persist data.
+Other routes, range changes and requests with custom headers or cancellation
+signals keep their normal request path. Older deployments or interrupted
+streams fall back to individual reads. Overview also starts the bounded first
+news slice alongside the activity feed's newest-day query. This removes the
+quiet-account/busy-gateway fallback round trip, at the cost of one speculative
+read when the newest day already fills the feed; subsequent pagination keeps
+its existing bounds.
+
 Agent detail reads identity, session pages and spend independently through
 `GET /agents/{id}?lightweight=true`. `include=` returns enriched identity and
 recency without historical usage totals (`agent.usage_computed=false`);

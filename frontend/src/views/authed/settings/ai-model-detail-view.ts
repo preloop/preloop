@@ -2268,7 +2268,11 @@ export class AIModelDetailView extends LitElement {
               }
             </div>
           </div>
-          <sl-badge variant=${item.outcome === 'error' ? 'danger' : 'success'}>
+          <sl-badge
+            class="chip"
+            pill
+            variant=${item.outcome === 'error' ? 'danger' : 'success'}
+          >
             ${item.outcome}
           </sl-badge>
         </div>
@@ -3114,7 +3118,7 @@ export class AIModelDetailView extends LitElement {
                         aria-busy="true"
                       >
                         <sl-spinner></sl-spinner>
-                        <div>Loading AI model observability...</div>
+                        <div>Loading AI model observability…</div>
                       </div>
                     </sl-card>
                   `
@@ -3195,7 +3199,7 @@ export class AIModelDetailView extends LitElement {
                      "Observability" promised telemetry it never carried. -->
                   <div class="model-title">Details</div>
                   <div class="badge-row">
-                    ${this.model?.is_built_in ? html`<sl-badge variant="neutral">Built-in</sl-badge>` : null}
+                    ${this.model?.is_built_in ? html`<sl-badge class="chip" variant="neutral" pill>Built-in</sl-badge>` : null}
                     ${
                       this.model?.provider_name
                         ? html`

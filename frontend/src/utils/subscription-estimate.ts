@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from 'lit';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import type { SubscriptionUsageSummary } from '../types';
 import { formatUsd, formatUsdExact } from './money';
 
@@ -58,6 +59,74 @@ export function subscriptionEstimate(
       ? `${basis}. The rest carry no API-equivalent price, so the real figure is higher.`
       : `${basis}.`,
   };
+}
+
+/** The "without subscriptions" figure as one short line. */
+export function withoutSubscriptionsFigure(
+  estimate: SubscriptionEstimate
+): string {
+  if (estimate.value === null) return 'Unknown without subscriptions';
+  return `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)} without subscriptions`;
+}
+
+/**
+ * A spend figure in a table cell, with the without-subscriptions fact on a
+ * tooltip instead of a second line. Only an agent (or person) with
+ * subscription traffic gets the affordance: a chrome-less button with a
+ * dotted underline that hover, keyboard focus and a tap all open, and Esc
+ * closes. The tooltip reads the exact spend, the figure without
+ * subscriptions and the coverage sentence; the button's accessible name
+ * carries the same text, and its `title` is the no-JS fallback. Without
+ * subscription traffic the figure renders plain, with the exact spend in
+ * its `title`.
+ */
+export function renderWithoutSubscriptionsTooltip(
+  cost: number | null | undefined,
+  estimate: SubscriptionEstimate | null | undefined,
+  subscription: SubscriptionUsageSummary | number | null | undefined
+): TemplateResult {
+  const requests =
+    typeof subscription === 'number'
+      ? subscription
+      : (subscription?.request_count ?? 0);
+  const exact = formatUsdExact(cost);
+  if (!estimate || !requests)
+    return html`<span class="cost-figure" title=${exact}
+      >${formatUsd(cost)}</span
+    >`;
+  const figure = withoutSubscriptionsFigure(estimate);
+  const sentence = `${exact}. ${figure}. ${estimate.title}`;
+  return html`<sl-tooltip
+    class="cost-tooltip"
+    trigger="hover focus click"
+    placement="top"
+    hoist
+    @keydown=${(event: KeyboardEvent) => {
+      const tooltip = event.currentTarget as HTMLElement & {
+        open: boolean;
+        hide(): Promise<void>;
+      };
+      if (event.key === 'Escape' && tooltip.open) {
+        event.stopPropagation();
+        void tooltip.hide();
+      }
+    }}
+  >
+    <div slot="content" class="cost-tooltip-content">
+      <div>${exact}</div>
+      <div>${figure}</div>
+      <div>${estimate.title}</div>
+    </div>
+    <button
+      type="button"
+      class="cost-trigger"
+      aria-label=${sentence}
+      title=${sentence}
+      style="border:0;padding:0;background:none;color:inherit;font:inherit;cursor:help;text-decoration:underline dotted;text-underline-offset:3px;text-decoration-color:var(--sl-color-neutral-500)"
+    >
+      ${formatUsd(cost)}
+    </button>
+  </sl-tooltip>`;
 }
 
 /**

@@ -823,3 +823,337 @@ describe('talk-composer per-session routing', () => {
     expect(buttons(el)).to.not.include('Release');
   });
 });
+
+describe('talk-composer keyboard and slash commands', () => {
+  let fetchStub: sinon.SinonStub;
+
+  function json(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  function commandControl(sessionId = 'sess-1'): Record<string, unknown> {
+    return {
+      runtime_session_id: sessionId,
+      mode: 'command',
+      reason_code: 'harness_session',
+      reason: 'Preloop drives this session',
+      delivery: 'command',
+      send_path: null,
+      managed_agent_id: 'agent-1',
+      agent_name: 'Hermes',
+      agent_kind: 'hermes',
+    };
+  }
+
+  function route(control: Record<string, unknown>): void {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/runtime-sessions/') && url.endsWith('/control')) {
+        const id = url.split('/runtime-sessions/')[1].split('/')[0];
+        return json({ ...control, runtime_session_id: id });
+      }
+      if (url.includes('/control/'))
+        return json({ status: 'delivered', published: true });
+      return new Response('', { status: 200 });
+    });
+  }
+
+  async function mount(
+    overrides: Partial<ManagedAgentSummary> = {},
+    sessionId = 'sess-1'
+  ): Promise<TalkComposer> {
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({
+          control_capabilities: ['send_text_prompt', 'release'],
+          supports_interrupt: true,
+          ...overrides,
+        } as Partial<ManagedAgentSummary>)}
+        sessionId=${sessionId}
+      ></talk-composer>`
+    );
+    await waitUntil(
+      () => el.shadowRoot!.querySelector('[data-testid="composer-mode"]'),
+      'mode line never rendered'
+    );
+    await el.updateComplete;
+    return el;
+  }
+
+  async function setText(el: TalkComposer, text: string): Promise<void> {
+    const input = textarea(el);
+    input.value = text;
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    await el.updateComplete;
+  }
+
+  async function press(el: TalkComposer, key: string): Promise<KeyboardEvent> {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea(el).dispatchEvent(event);
+    await el.updateComplete;
+    return event;
+  }
+
+  function commandBodies(): Array<Record<string, unknown>> {
+    return fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/control/'))
+      .map((call) => JSON.parse(call.args[1].body));
+  }
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    sessionStorage.clear();
+    fetchStub = sinon.stub(window, 'fetch');
+    route(commandControl());
+  });
+
+  afterEach(() => {
+    sinon.restore();
+    sessionStorage.clear();
+  });
+
+  it('Esc sends interrupt only when supported', async () => {
+    const el = await mount();
+    expect(el.shadowRoot!.textContent).to.contain('Esc interrupts');
+    const event = await press(el, 'Escape');
+    expect(event.defaultPrevented).to.equal(true);
+    await waitUntil(() => commandBodies().length === 1);
+    expect(commandBodies()[0]).to.include({
+      interrupt: true,
+      target_session_id: 'sess-1',
+    });
+
+    fetchStub.resetHistory();
+    const unsupported = await mount({ supports_interrupt: false });
+    expect(unsupported.shadowRoot!.textContent).to.not.contain(
+      'Esc interrupts'
+    );
+    const ignored = await press(unsupported, 'Escape');
+    expect(ignored.defaultPrevented).to.equal(false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it('Esc does not interrupt a session Preloop cannot drive', async () => {
+    const el = await mount({ control_session_mode: 'local' });
+    const event = await press(el, 'Escape');
+    expect(event.defaultPrevented).to.equal(false);
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it("Up recalls this session's last prompt only", async () => {
+    const el = await mount();
+    await setText(el, 'first in one');
+    await press(el, 'Enter');
+    await setText(el, 'second in one');
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 2);
+
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('second in one');
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('first in one');
+    await press(el, 'ArrowDown');
+    expect(textarea(el).value).to.equal('second in one');
+    await press(el, 'ArrowDown');
+    expect(textarea(el).value).to.equal('');
+
+    // Another session has its own history, and none yet.
+    el.sessionId = 'sess-2';
+    await el.updateComplete;
+    const up = await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('');
+    expect(up.defaultPrevented).to.equal(false);
+
+    // Back on the first session, its prompts are still there.
+    el.sessionId = 'sess-1';
+    await el.updateComplete;
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('second in one');
+  });
+
+  it('Up leaves a draft alone', async () => {
+    const el = await mount();
+    await setText(el, 'sent');
+    await press(el, 'Enter');
+    await setText(el, 'a draft');
+    const event = await press(el, 'ArrowUp');
+    expect(event.defaultPrevented).to.equal(false);
+    expect(textarea(el).value).to.equal('a draft');
+  });
+
+  it('/ opens the command menu with what this session can do', async () => {
+    const el = await mount();
+    await setText(el, '/');
+    const menu = el.shadowRoot!.querySelector('talk-command-menu');
+    expect(menu).to.exist;
+    // Light DOM inside the composer: the rows are the menu's own children.
+    expect(menu!.shadowRoot).to.equal(null);
+    const names = Array.from(menu!.querySelectorAll('[data-command]')).map(
+      (row) => row.getAttribute('data-command')
+    );
+    expect(names).to.deep.equal([
+      'new',
+      'resume',
+      'interrupt',
+      'release',
+      'status',
+    ]);
+
+    await setText(el, '/re');
+    const filtered = Array.from(
+      el.shadowRoot!.querySelectorAll('talk-command-menu [data-command]')
+    ).map((row) => row.getAttribute('data-command'));
+    expect(filtered).to.deep.equal(['resume', 'release']);
+    await press(el, 'ArrowDown');
+    expect(
+      el
+        .shadowRoot!.querySelector('[aria-selected="true"]')
+        ?.getAttribute('data-command')
+    ).to.equal('release');
+
+    const unsupported = await mount({
+      supports_interrupt: false,
+      control_capabilities: ['send_text_prompt'],
+    });
+    await setText(unsupported, '/');
+    const rows = Array.from(
+      unsupported.shadowRoot!.querySelectorAll(
+        'talk-command-menu [data-command]'
+      )
+    ).map((row) => row.getAttribute('data-command'));
+    expect(rows).to.deep.equal(['new', 'resume', 'status']);
+  });
+
+  it('/new starts a new session', async () => {
+    const el = await mount();
+    const asked = sinon.spy();
+    el.addEventListener('talk-new-session', asked);
+    await setText(el, '/new');
+    await press(el, 'Enter');
+    expect(asked.calledOnce).to.equal(true);
+    expect(textarea(el).value).to.equal('');
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it('/resume opens the picker', async () => {
+    const el = await mount();
+    const asked = sinon.spy();
+    el.addEventListener('talk-open-session-picker', asked);
+    await setText(el, '/res');
+    await press(el, 'Enter');
+    expect(asked.calledOnce).to.equal(true);
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it('/interrupt and /release drive the session', async () => {
+    const el = await mount();
+    await setText(el, '/interrupt');
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 1);
+    expect(commandBodies()[0]).to.include({ interrupt: true });
+    await setText(el, '/release');
+    await press(el, 'Enter');
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/control/release'))
+    );
+  });
+
+  it('/status says where the message would go', async () => {
+    const el = await mount();
+    await setText(el, '/status');
+    await press(el, 'Enter');
+    expect(el.shadowRoot!.querySelector('.hint')!.textContent).to.contain(
+      'You have this session'
+    );
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it('Esc closes the menu without interrupting', async () => {
+    const el = await mount();
+    await setText(el, '/');
+    await press(el, 'Escape');
+    expect(el.shadowRoot!.querySelector('talk-command-menu')).to.not.exist;
+    expect(commandBodies()).to.have.length(0);
+  });
+
+  it('unknown slash text is sent as a normal message', async () => {
+    const el = await mount();
+    await setText(el, '/deploy');
+    expect(el.shadowRoot!.querySelector('talk-command-menu')).to.not.exist;
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 1);
+    expect(commandBodies()[0].message).to.equal('/deploy');
+
+    await setText(el, '/new please');
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 2);
+    expect(commandBodies()[1].message).to.equal('/new please');
+  });
+  it('an unavailable command is not sent as a message', async () => {
+    const el = await mount({ supports_interrupt: false });
+    await setText(el, '/interrupt');
+    expect(el.shadowRoot!.querySelector('talk-command-menu')).to.not.exist;
+    await press(el, 'Enter');
+    expect(commandBodies()).to.have.length(0);
+    expect(el.shadowRoot!.querySelector('.hint')!.textContent).to.contain(
+      '/interrupt is not available'
+    );
+  });
+
+  it('/resume leaves focus to the picker', async () => {
+    const el = await mount();
+    const focus = sinon.spy(el, 'focusInput');
+    await setText(el, '/resume');
+    await press(el, 'Enter');
+    expect(focus.called).to.equal(false);
+  });
+
+  it("a new session's first prompt is recalled there and nowhere else", async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/runtime-sessions/') && url.endsWith('/control'))
+        return json(commandControl());
+      if (url.includes('/control/'))
+        return json({
+          status: 'delivered',
+          published: true,
+          target_session_id: 'sess-new',
+        });
+      return new Response('', { status: 200 });
+    });
+    const el = await mount();
+    el.sessionId = null;
+    await el.updateComplete;
+    await setText(el, 'start fresh');
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 1);
+    await waitUntil(() => el.pendingMessages[0]?.state === 'sent');
+
+    // Still starting a session: nothing to recall, no shared bucket.
+    const up = await press(el, 'ArrowUp');
+    expect(up.defaultPrevented).to.equal(false);
+    expect(textarea(el).value).to.equal('');
+
+    el.sessionId = 'sess-new';
+    await el.updateComplete;
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('start fresh');
+
+    el.sessionId = 'sess-1';
+    await el.updateComplete;
+    await setText(el, '');
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('');
+  });
+});

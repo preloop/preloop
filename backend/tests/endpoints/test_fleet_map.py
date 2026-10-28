@@ -54,3 +54,37 @@ def test_route_forwards_the_activity_window() -> None:
             response = client.get("/api/v1/fleet/map?active_within_minutes=168")
             assert response.status_code == 200
             assert build.call_args.kwargs["active_within_minutes"] == 168
+
+
+def test_members_reach_every_fleet_read_without_device_fleet_permission() -> None:
+    """Authorization is per source in the services, not a whole-route 403."""
+    from datetime import UTC, datetime
+
+    from preloop.schemas.fleet_map import (
+        FleetCodeActivityResponse,
+        FleetUsageResponse,
+    )
+
+    now = datetime.now(UTC)
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    member = models.User(id=uuid4(), account_id=uuid4(), is_superuser=False)
+    app.dependency_overrides[get_current_active_user] = lambda: member
+    app.dependency_overrides[get_db_session] = lambda: MagicMock()
+    module = "preloop.api.endpoints.fleet_map"
+    with (
+        patch("preloop.utils.permissions.user_holds_permission", return_value=False),
+        patch(f"{module}.build_fleet_map", return_value=FleetMapResponse()),
+        patch(
+            f"{module}.build_code_activity",
+            return_value=FleetCodeActivityResponse(since=now),
+        ),
+        patch(
+            f"{module}.build_fleet_usage",
+            return_value=FleetUsageResponse(since=now, until=now),
+        ),
+        TestClient(app) as client,
+    ):
+        for path in ("map", "code-activity", "usage"):
+            assert client.get(f"/api/v1/fleet/{path}").status_code == 200

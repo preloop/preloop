@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from sqlalchemy.orm import Session
+
+from preloop.models import models
 from preloop.models.crud import crud_api_usage, crud_runtime_session
 
 
@@ -242,3 +246,114 @@ def test_get_runtime_principal_gateway_averages_excludes_session_and_zeros(
         "avg_total_tokens_per_request": 0.0,
         "avg_cost_per_request": 0.0,
     }
+
+
+def test_list_session_request_keys_pages_real_requests_by_keyset(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """Keys page oldest-first across timestamp ties and skip internal analysis."""
+    account = create_account()
+    other_account = create_account()
+    runtime_session = _create_runtime_session(db_session, account.id)
+    other_session = _create_runtime_session(db_session, account.id)
+    db_session.commit()
+    base = datetime.now(UTC) - timedelta(hours=1)
+    real = []
+    for offset, meta, counted in [
+        (0, None, True),
+        (1, {"purpose": "customer.task", "usage_details": {"blob": "x" * 64}}, True),
+        (1, {"purpose": "governance_session_digest"}, False),
+        (1, None, True),
+        (2, {"purpose": "session_title"}, False),
+        (3, {}, True),
+    ]:
+        row = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.2,
+            account_id=str(account.id),
+            runtime_session_id=str(runtime_session.id),
+            meta_data=meta,
+            model_alias="test/task",
+            provider_name="openai",
+            prompt_tokens=123,
+        )
+        row.timestamp = base + timedelta(minutes=offset)
+        if counted:
+            real.append(row)
+    for owner, session_id in (
+        (account.id, other_session.id),
+        (other_account.id, runtime_session.id),
+    ):
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.2,
+            account_id=str(owner),
+            runtime_session_id=str(session_id),
+        )
+    db_session.commit()
+    expected = sorted((r.timestamp, r.id) for r in real)
+
+    keys = []
+    cursor = None
+    while page := crud_api_usage.list_session_request_keys(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        after=cursor,
+        limit=1,
+    ):
+        assert set(vars(page[0])) == {"id", "timestamp"}
+        keys.extend(page)
+        cursor = (page[-1].timestamp, page[-1].id)
+
+    assert [(k.timestamp, k.id) for k in keys] == expected
+    full = crud_api_usage.list_session_request_rows(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        limit=100,
+    )
+    assert [k.id for k in keys] == [
+        r.id
+        for r in full
+        if (r.meta_data or {}).get("purpose")
+        not in {"governance_session_digest", "session_title"}
+    ]
+
+    measurements = []
+    cursor = None
+    while page := crud_api_usage.list_session_context_measurements(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        start_date=base + timedelta(minutes=1),
+        end_date=base + timedelta(minutes=3),
+        after=cursor,
+        limit=1,
+    ):
+        assert set(vars(page[0])) == {
+            "id",
+            "timestamp",
+            "ai_model_id",
+            "model_alias",
+            "provider_name",
+            "prompt_tokens",
+        }
+        assert page[0].model_alias == "test/task"
+        assert page[0].provider_name == "openai"
+        assert page[0].prompt_tokens == 123
+        measurements.extend(page)
+        cursor = (page[-1].timestamp, page[-1].id)
+    assert [(row.timestamp, row.id) for row in measurements] == [
+        key
+        for key in expected
+        if base + timedelta(minutes=1)
+        <= key[0].replace(tzinfo=UTC)
+        < base + timedelta(minutes=3)
+    ]

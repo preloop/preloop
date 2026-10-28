@@ -1,0 +1,28 @@
+name: Install locked CI Python dependencies
+description: Reuse cached wheels while creating a clean job-local environment.
+inputs:
+  requirements:
+    description: Hash-pinned requirements file, relative to the repository.
+    default: .github/requirements/app-dev.txt
+  install-project:
+    description: Install this repository editable without resolving dependencies.
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Set up cached installer
+      uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      with:
+        version: '0.13.5'
+        # Persistent runners already retain this cache. Avoid redundant archive
+        # transfers and concurrent archive extraction into their local cache.
+        enable-cache: ${{ runner.environment == 'github-hosted' }}
+        cache-local-path: ${{ runner.tool_cache }}/preloop-uv-cache
+        cache-dependency-glob: ${{ inputs.requirements }}
+        prune-cache: 'false'
+    - name: Install into a fresh environment
+      shell: bash
+      env:
+        REQUIREMENTS_PATH: ${{ inputs.requirements }}
+        INSTALL_PROJECT: ${{ inputs.install-project }}
+      run: python "${GITHUB_WORKSPACE}/.github/actions/install-ci-python-deps/install.py"

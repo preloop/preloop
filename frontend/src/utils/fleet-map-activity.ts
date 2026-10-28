@@ -416,3 +416,32 @@ export class FleetActivityTracker {
     this.timer = setTimeout(() => this.flush(), delay);
   }
 }
+
+/**
+ * The agent and flow node ids a realtime message names, from the envelope
+ * and its payload (`managed_agent_id`, `flow_id`, `flow_ids`). Empty when it
+ * names neither, such as an approval or a gateway call from a person.
+ */
+export function realtimeNodeIds(message: unknown): string[] {
+  const record =
+    message && typeof message === 'object'
+      ? (message as Record<string, unknown>)
+      : {};
+  const payload =
+    record.payload && typeof record.payload === 'object'
+      ? (record.payload as Record<string, unknown>)
+      : {};
+  const id = (value: unknown): string =>
+    typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  const ids = new Set<string>();
+  for (const source of [record, payload]) {
+    const agent = id(source.managed_agent_id);
+    if (agent) ids.add(`agent:${agent}`);
+    const flow = id(source.flow_id);
+    if (flow) ids.add(`flow:${flow}`);
+    if (Array.isArray(source.flow_ids))
+      for (const value of source.flow_ids)
+        if (id(value)) ids.add(`flow:${id(value)}`);
+  }
+  return [...ids];
+}

@@ -123,6 +123,9 @@ class LifecycleProvider(Protocol):
     async def runtime_evidence(self, sha: str) -> dict[str, Any]:
         """Return CI check runs, artifacts and previews recorded for ``sha``."""
 
+    async def check_evidence(self, sha: str) -> dict[str, Any]:
+        """Return only normalized check runs and read failures for a CI wait."""
+
 
 class GitHubRequests(Protocol):
     """Existing tracker transport handles PAT, installation and OAuth auth."""
@@ -338,6 +341,41 @@ class GitHubLifecycleProvider:
         )
         return result["html_url"]
 
+    async def _check_runs(self, sha: str) -> list[dict[str, Any]]:
+        """Normalize one bounded GitHub check-run read at the pinned SHA."""
+        raw = await self._request(
+            "GET", f"{self.root}/commits/{sha}/check-runs", params={"per_page": 100}
+        )
+        listed = raw.get("check_runs") or []
+        if int(raw.get("total_count") or 0) > len(listed):
+            raise ValueError("check_runs_truncated")
+        checks: list[dict[str, Any]] = []
+        for run in listed:
+            output = run.get("output") or {}
+            checks.append(
+                {
+                    "id": f"check:{run['id']}",
+                    "name": str(run.get("name") or "")[:EVIDENCE_TEXT_LIMIT],
+                    "status": run.get("status"),
+                    "conclusion": run.get("conclusion"),
+                    "url": run.get("html_url"),
+                    "summary": str(output.get("title") or output.get("summary") or "")[
+                        :EVIDENCE_TEXT_LIMIT
+                    ],
+                }
+            )
+        return checks
+
+    async def check_evidence(self, sha: str) -> dict[str, Any]:
+        """Poll only GitHub checks; a failed read remains explicitly unknown."""
+        result: dict[str, Any] = {"revision": sha, "checks": [], "unavailable": []}
+        try:
+            async with asyncio.timeout(EVIDENCE_TIMEOUT_SECONDS):
+                result["checks"] = await self._check_runs(sha)
+        except Exception as exc:  # noqa: BLE001 - best-effort evidence read
+            result["unavailable"].append({"source": "checks", "reason": repr(exc)})
+        return result
+
     async def runtime_evidence(self, sha: str) -> dict[str, Any]:
         """Collect the runtime evidence GitHub already holds for one commit.
 
@@ -365,21 +403,7 @@ class GitHubLifecycleProvider:
             return str(value or "")[:EVIDENCE_TEXT_LIMIT]
 
         async def checks() -> None:
-            raw = await self._request(
-                "GET", f"{self.root}/commits/{sha}/check-runs", params={"per_page": 100}
-            )
-            for run in raw.get("check_runs") or []:
-                output = run.get("output") or {}
-                bundle["checks"].append(
-                    {
-                        "id": f"check:{run['id']}",
-                        "name": text(run.get("name")),
-                        "status": run.get("status"),
-                        "conclusion": run.get("conclusion"),
-                        "url": run.get("html_url"),
-                        "summary": text(output.get("title") or output.get("summary")),
-                    }
-                )
+            bundle["checks"] = await self._check_runs(sha)
 
         async def artifacts() -> None:
             raw = await self._request(

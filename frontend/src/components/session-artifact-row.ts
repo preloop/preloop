@@ -426,7 +426,7 @@ export class SessionArtifactRow extends LitElement {
     const load = this.text;
     if (!load) {
       return html`<pre class="excerpt" data-testid="artifact-excerpt">
-Loading...</pre>`;
+Loading…</pre>`;
     }
     if (load.status === 'error') {
       return html`<div class="error">${load.message}</div>`;
@@ -496,7 +496,7 @@ ${shown}${more ? '\n...' : ''}</pre>
           ?disabled=${this.audioLoading}
           @click=${() => this.playAudio()}
         >
-          ${this.audioLoading ? `Loading ${noun}...` : `Play ${noun}`}
+          ${this.audioLoading ? `Loading ${noun}…` : `Play ${noun}`}
         </button>
         <button class="link" @click=${() => this.download()}>Download</button>
       </div>

@@ -35,7 +35,11 @@ export function jumpSessionApproval(host: LitElement, id: string): void {
     ...host.renderRoot.querySelectorAll<HTMLElement>('[data-approval-id]'),
   ].find((r) => r.dataset.approvalId === id);
   row?.scrollIntoView({ block: 'center' });
-  row?.focus({ preventScroll: true });
+  // Land on the card itself when it takes Y/N, otherwise on its row.
+  const card = row?.querySelector<
+    HTMLElement & { focusChoices?: () => boolean }
+  >('session-approval-card');
+  if (!card?.focusChoices?.()) row?.focus({ preventScroll: true });
 }
 
 export function renderSessionActivity(

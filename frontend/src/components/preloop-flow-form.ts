@@ -428,9 +428,8 @@ export class PreloopFlowForm extends LitElement {
 
       .callable-flows h5 {
         font-weight: 600;
-        color: var(--sl-color-neutral-600);
-        text-transform: uppercase;
-        font-size: 0.8rem;
+        color: var(--sl-color-neutral-700);
+        font-size: var(--console-text-body);
         margin: 0 0 0.5rem 0;
       }
 
@@ -2229,7 +2228,7 @@ export class PreloopFlowForm extends LitElement {
     return html`
       <div data-label-routing-editor>
         <h5
-          style="font-weight: 600; color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
+          style="font-weight: 600; font-size: var(--console-text-body); color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
         >
           Model by label
         </h5>
@@ -2632,7 +2631,7 @@ export class PreloopFlowForm extends LitElement {
     return html`
       <div data-routing-editor>
         <h5
-          style="font-weight: 600; color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
+          style="font-weight: 600; font-size: var(--console-text-body); color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
         >
           Model routing rules
         </h5>
@@ -4540,7 +4539,7 @@ export class PreloopFlowForm extends LitElement {
         >
           <sl-spinner style="font-size: 2.5rem;"></sl-spinner>
           <div style="color: var(--sl-color-neutral-600);">
-            Loading flow reference models, tools, and trackers...
+            Loading flow reference models, tools, and trackers…
           </div>
         </div>
       `;
@@ -5091,9 +5090,9 @@ export class PreloopFlowForm extends LitElement {
                   ? html`
                       <div>
                         <h5
-                          style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
+                          style="font-weight: 600; color: var(--sl-color-neutral-700); font-size: var(--console-text-body); margin: 0 0 0.5rem 0;"
                         >
-                          Built-in Tools
+                          Built-in tools
                         </h5>
                         <div
                           style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"
@@ -5142,9 +5141,9 @@ export class PreloopFlowForm extends LitElement {
                   ? html`
                       <div style="margin-top: var(--sl-spacing-medium);">
                         <h5
-                          style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
+                          style="font-weight: 600; color: var(--sl-color-neutral-700); font-size: var(--console-text-body); margin: 0 0 0.5rem 0;"
                         >
-                          MCP Server Tools
+                          MCP server tools
                         </h5>
                         <div
                           style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"

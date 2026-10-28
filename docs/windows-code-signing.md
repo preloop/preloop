@@ -122,13 +122,14 @@ binaries only after the Defender gate passes (and only while
 ## Ongoing release hygiene
 
 When `VIRUSTOTAL_API_KEY` is set, the release workflow uploads
-`preloop-windows-*.exe` to VirusTotal and appends analysis links to the
-release notes.
+`preloop-windows-*.exe` to VirusTotal. The read-only job does not modify release
+notes; inspect the VirusTotal job output and look up each file by its SHA-256
+hash on VirusTotal.
 
 After each Windows release (especially before SignPath reputation builds):
 
-1. Open the VirusTotal links from the release notes (or upload manually if the
-   secret is not configured)
+1. Inspect the VirusTotal job output and look up the released binaries by
+   SHA-256 (or upload manually if the secret is not configured)
 2. If Microsoft flags the binary, submit a false positive at
    [WDSI file submission](https://www.microsoft.com/en-us/wdsi/filesubmission)
    with the GitHub release URL and source repo

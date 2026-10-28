@@ -4,6 +4,101 @@ info:
   description: REST API for Preloop issue tracking management
   version: 0.17.1
 paths:
+  /api/v1/overview/bootstrap:
+    get:
+      tags:
+      - overview
+      summary: Overview Bootstrap
+      description: 'Stream independently authorized results, with no cross-request
+        cache.
+
+
+        Every read traverses its ordinary route and dependency chain, including
+
+        tenant filters, permissions and licensed capabilities. The manifest is
+
+        fixed, read-only and bounded. No URL or method is accepted from a caller.'
+      operationId: overview_bootstrap_api_v1_overview_bootstrap_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Start Date
+      - name: prior_start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Prior Start
+      - name: prior_end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Prior End
+      - name: now
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Now
+      - name: phase
+        in: query
+        required: false
+        schema:
+          enum:
+          - full
+          - gateway
+          type: string
+          default: full
+          title: Phase
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/x-ndjson: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/overview/shell:
+    get:
+      tags:
+      - overview
+      summary: Overview Shell
+      description: Read the Overview shell in parallel without cross-user caching.
+      operationId: overview_shell_api_v1_overview_shell_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/x-ndjson: {}
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/auth/register:
     post:
       tags:
@@ -1184,7 +1279,8 @@ paths:
       - Auth
       - Passkeys
       summary: Authentication Verify
-      description: Complete passkey sign-in; returns access and refresh tokens.
+      description: Audit one final passkey outcome, including challenge and policy
+        failures.
       operationId: authentication_verify_api_v1_auth_webauthn_authenticate_verify_post
       requestBody:
         content:
@@ -4387,25 +4483,39 @@ paths:
       description: Bound contribution fan-out while async providers run on the API
         loop.
       operationId: list_extension_attention_items_api_v1_attention_extension_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: include_delivery_reports
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Delivery Reports
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: array
                 items:
                   $ref: '#/components/schemas/ExtensionAttentionItem'
-                type: array
                 title: Response List Extension Attention Items Api V1 Attention Extension
                   Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      security:
-      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/attention/dismissals:
     get:
@@ -5264,8 +5374,9 @@ paths:
       summary: Scan Mcp Server
       description: "Trigger a tool discovery scan for an MCP server.\n\nArgs:\n  \
         \  server_id: MCP server ID\n    current_user: Current authenticated user\n\
-        \    db: Database session\n\nReturns:\n    Success message with tool count\n\
-        \nRaises:\n    HTTPException: If server not found or scan fails"
+        \    db: Database session\n\nReturns:\n    Success message with tool count;\
+        \ failed scans return HTTP 502.\n\nRaises:\n    HTTPException: If server not\
+        \ found or scan fails"
       operationId: scan_mcp_server_api_v1_mcp_servers__server_id__scan_post
       security:
       - bearerAuth: []
@@ -5399,6 +5510,43 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/mcp-servers/{server_id}/oauth/disconnect:
+    post:
+      tags:
+      - MCP Servers
+      summary: Disconnect Mcp Oauth
+      description: Remove local grants and pending transactions. No upstream revocation.
+      operationId: disconnect_mcp_oauth_api_v1_mcp_servers__server_id__oauth_disconnect_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: server_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Server Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPServerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/oauth/authorize:
     get:
       tags:
@@ -5416,13 +5564,11 @@ paths:
         never the reusable access token.
 
 
-        1. Fetches the server''s /.well-known/oauth-authorization-server metadata.
+        Discovers the protected resource and selected issuer, configures a public
 
-        2. Dynamically registers as an OAuth client (RFC 7591) if needed.
+        or pre-registered client, and stores a durable browser-bound PKCE
 
-        3. Generates PKCE code_challenge / code_verifier.
-
-        4. Redirects the user to the external server''s authorization endpoint.'
+        transaction before redirecting to provider consent.'
       operationId: mcp_server_oauth_authorize_api_v1_mcp_servers__server_id__oauth_authorize_get
       parameters:
       - name: server_id
@@ -5465,26 +5611,42 @@ paths:
       tags:
       - MCP Servers OAuth
       summary: Mcp Server Oauth Callback
-      description: 'Handle the OAuth callback from an external MCP server.
-
-
-        Exchanges the authorization code for access/refresh tokens using PKCE,
-
-        saves them in the MCP server''s auth_config, and redirects to the frontend.'
+      description: Consume a durable browser-bound transaction before any token exchange.
       operationId: mcp_server_oauth_callback_api_v1_mcp_servers_oauth_callback_get
       parameters:
-      - name: code
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Code
       - name: state
         in: query
         required: true
         schema:
           type: string
+          maxLength: 512
           title: State
+      - name: code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+      - name: error
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Error
+      - name: iss
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2048
+          - type: 'null'
+          title: Iss
       responses:
         '200':
           description: Successful Response
@@ -14560,6 +14722,34 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/delivery-reports/attention:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Delivery Report Attention
+      description: Pending decisions from up to 100 runs for standalone API clients.
+      operationId: delivery_report_attention_api_v1_delivery_reports_attention_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/DeliveryReportAttention'
+                type: array
+                title: Response Delivery Report Attention Api V1 Delivery Reports
+                  Attention Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/delivery-reports/{execution_id}:
     get:
       tags:
@@ -14595,6 +14785,63 @@ paths:
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/delivery-reports/{execution_id}/actions:
+    post:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Act On Delivery Report
+      description: 'Open a proposed follow-up, reopen an issue, or dismiss a proposal.
+
+
+        The click is the approval: Open issue and Reopen write to the tracker
+
+        whatever the account''s ``tracker_writes`` rules say for the run itself.
+
+        A stale reopen request (new commits on the closing pull request, or an
+
+        issue edit after the assessment) is refused with 409 ``stale``. Close
+
+        is always refused with 403 ``close_denied``, and the attempt is logged.'
+      operationId: act_on_delivery_report_api_v1_delivery_reports__execution_id__actions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportActionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportActionResult'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not Found
+        '409':
+          description: Conflict
+        '422':
+          description: Unprocessable Entity
+        '502':
+          description: Bad Gateway
+        '401':
+          description: Invalid or expired credential
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
@@ -22767,6 +23014,63 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/delivery-report/subscription:
+    get:
+      tags:
+      - Delivery Report
+      summary: Read your own Delivery Report email subscription
+      description: Return whether the caller receives the report email.
+      operationId: read_delivery_report_subscription_api_v1_delivery_report_subscription_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportSubscription'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Delivery Report
+      summary: Opt out of, or back into, the Delivery Report email
+      description: Change only the caller's own subscription.
+      operationId: update_delivery_report_subscription_api_v1_delivery_report_subscription_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportSubscriptionUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportSubscription'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/runtime-sessions/settings/embedding:
     get:
@@ -32539,28 +32843,121 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DeliveryReportActionRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - open_issue
+          - reopen
+          - dismiss
+          - close
+          title: Kind
+        index:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Index
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - kind
+      title: DeliveryReportActionRequest
+      description: 'One click on a proposal in the report page.
+
+
+        ``open_issue`` names the follow-up by ``index``; ``reopen`` and ``close``
+
+        name the issue by ``ref``; ``dismiss`` names the proposal by ``key``
+
+        (``follow_up:<index>`` or ``reopen:<ref>``) and needs a ``reason``.'
+    DeliveryReportActionResult:
+      properties:
+        key:
+          type: string
+          title: Key
+        decision:
+          additionalProperties: true
+          type: object
+          title: Decision
+      type: object
+      required:
+      - key
+      - decision
+      title: DeliveryReportActionResult
+      description: The decision stored on the run for the proposal.
     DeliveryReportActions:
       properties:
         open_issue:
           type: boolean
           title: Open Issue
-          default: false
+          default: true
         reopen:
           type: boolean
           title: Reopen
-          default: false
+          default: true
         dismiss:
           type: boolean
           title: Dismiss
-          default: false
+          default: true
       type: object
       title: DeliveryReportActions
       description: 'Which report actions this server can carry out.
 
 
-        Opening a proposed follow-up and reopening an issue are tracker writes
+        All three are served by ``POST /delivery-reports/{id}/actions``. A
 
-        that are not implemented yet; the console renders them disabled.'
+        server that reports one as false (an older build) gets it rendered
+
+        disabled in the console.'
+    DeliveryReportAttention:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        proposals:
+          items:
+            $ref: '#/components/schemas/DeliveryReportPendingProposal'
+          type: array
+          title: Proposals
+        fingerprint:
+          type: string
+          title: Fingerprint
+      type: object
+      required:
+      - id
+      - proposals
+      - fingerprint
+      title: DeliveryReportAttention
+      description: Pending decisions from one report; other report findings stay out.
     DeliveryReportDetail:
       properties:
         id:
@@ -32639,6 +33036,11 @@ components:
             request, after the assessed revision.'
         actions:
           $ref: '#/components/schemas/DeliveryReportActions'
+        rerun_projects:
+          items:
+            type: string
+          type: array
+          title: Rerun Projects
       type: object
       required:
       - id
@@ -32664,6 +33066,38 @@ components:
       - total
       title: DeliveryReportList
       description: A page of runs and the total that matched the filter.
+    DeliveryReportPendingProposal:
+      properties:
+        key:
+          type: string
+          title: Key
+        kind:
+          type: string
+          title: Kind
+        title:
+          type: string
+          title: Title
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        stale_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stale Reason
+        unconfirmed:
+          type: boolean
+          title: Unconfirmed
+          default: false
+      type: object
+      required:
+      - key
+      - kind
+      - title
+      title: DeliveryReportPendingProposal
+      description: A report proposal that still needs a person, not a run in progress.
     DeliveryReportPolicy:
       properties:
         enabled:
@@ -32747,6 +33181,12 @@ components:
           minimum: 1.0
           title: Issue Inactive Days
           default: 14
+        audit_ci_max_wait_minutes:
+          type: integer
+          maximum: 1440.0
+          minimum: 1.0
+          title: Audit Ci Max Wait Minutes
+          default: 30
         ui_screenshot_min_lines:
           type: integer
           minimum: 0.0
@@ -32768,6 +33208,10 @@ components:
           - sponsoring_lead
           title: Recipients
           default: account_owner
+        per_member_updates:
+          type: boolean
+          title: Per Member Updates
+          default: false
         sponsoring_lead_user_id:
           anyOf:
           - type: string
@@ -32956,6 +33400,34 @@ components:
       - window
       title: DeliveryReportRow
       description: One run on the collection page.
+    DeliveryReportSubscription:
+      properties:
+        opted_out:
+          type: boolean
+          title: Opted Out
+        is_recipient:
+          type: boolean
+          title: Is Recipient
+        report_enabled:
+          type: boolean
+          title: Report Enabled
+      type: object
+      required:
+      - opted_out
+      - is_recipient
+      - report_enabled
+      title: DeliveryReportSubscription
+      description: Whether the signed-in person receives the report email.
+    DeliveryReportSubscriptionUpdate:
+      properties:
+        opted_out:
+          type: boolean
+          title: Opted Out
+      type: object
+      required:
+      - opted_out
+      title: DeliveryReportSubscriptionUpdate
+      description: Opt out of, or back into, the report email.
     DeliveryReportWindow:
       properties:
         from:
@@ -33785,6 +34257,31 @@ components:
         approvals are stored. A parked run holds no container and no runner: this
 
         is a governance object, not a spinner.'
+    ExecutionPullRequest:
+      properties:
+        url:
+          type: string
+          title: Url
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+        revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Revision
+        purpose_verdict:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose Verdict
+      type: object
+      required:
+      - url
+      title: ExecutionPullRequest
+      description: Forge state and the newest assessment at the PR's current head.
     ExecutionResumeTotals:
       properties:
         total_tokens:
@@ -34211,6 +34708,10 @@ components:
           type: string
           format: date-time
           title: Opened At
+        delivery_report:
+          anyOf:
+          - $ref: '#/components/schemas/DeliveryReportAttention'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -34222,7 +34723,7 @@ components:
       - severity
       - opened_at
       title: ExtensionAttentionItem
-      description: Neutral plugin item. Only local console destinations are accepted.
+      description: Console attention contribution with a local destination.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -34720,6 +35221,16 @@ components:
             type: string
           type: array
           title: Unavailable
+          description: 'Sources missing from this graph: a source the caller may not
+            view (also listed in restricted) or one that failed to load.'
+        restricted:
+          items:
+            type: string
+          type: array
+          title: Restricted
+          description: 'Sources not shared with the caller (agents, models, runners,
+            users, devices): the permission is missing, or rows exist and the resource
+            authorizer shares none of them.'
         active_within_minutes:
           anyOf:
           - type: integer
@@ -36013,6 +36524,10 @@ components:
           title: Estimated Cost
           description: Estimated cost in USD for this execution
           default: 0.0
+        pull_request:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionPullRequest'
+          - type: 'null'
         runtime_session_id:
           anyOf:
           - type: string
@@ -38187,9 +38702,12 @@ components:
           enum:
           - legacy
           - isolated
+          - read_only
           title: Publication Mode
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
+            Read_only is a dedicated restricted CI review with a scoped read-only
+            GitHub App clone and no provider publication or MCP authority.
           default: legacy
         publication_approval:
           anyOf:
@@ -38321,9 +38839,12 @@ components:
           enum:
           - legacy
           - isolated
+          - read_only
           title: Publication Mode
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
+            Read_only is a dedicated restricted CI review with a scoped read-only
+            GitHub App clone and no provider publication or MCP authority.
           default: legacy
         publication_approval:
           anyOf:
@@ -40764,6 +41285,17 @@ components:
           type: string
           format: date-time
           title: Updated At
+        connection_state:
+          anyOf:
+          - type: string
+            enum:
+            - disconnected
+            - connecting
+            - connected
+            - reconnect_required
+          - type: 'null'
+          title: Connection State
+          description: 'OAuth state: disconnected, connecting, connected, reconnect_required'
         warnings:
           items:
             type: string

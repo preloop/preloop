@@ -258,6 +258,20 @@ describe('NotificationPreferencesView', () => {
       expect(el.shadowRoot?.textContent).to.contain('Send test question');
     });
 
+    it('keeps the Admin chip out of the test-send heading', async () => {
+      fetchStub = stubAdminAndTestPush({ isSuperuser: true });
+      const el = await mount();
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.test-send-card'),
+        'test-send card should render for admins',
+        { timeout: 4000 }
+      );
+      const heading = el.shadowRoot!.querySelector('.test-send-card h2')!;
+      expect(heading.textContent!.trim()).to.equal('Test push delivery');
+      const chip = el.shadowRoot!.querySelector('.test-send-title sl-badge');
+      expect(chip?.textContent?.trim()).to.equal('Admin');
+    });
+
     it('posts the requested kind to the test-push endpoint', async () => {
       fetchStub = stubAdminAndTestPush({
         isSuperuser: true,

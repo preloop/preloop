@@ -63,7 +63,7 @@ def ci_http(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> None:
     def sessions() -> Any:
         yield db_session
 
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
 
 
 @pytest.mark.parametrize("transport", ["bearer", "header", "query", "duplicate"])
@@ -178,9 +178,12 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     assert actual == declared
     assert actual["GET /api/v1/auth/api-keys"] == "deny"
     assert actual["GET /api/v1/fleet/code-activity"] == "deny"
+    assert actual["GET /api/v1/delivery-reports/attention"] == "deny"
     assert actual["POST /api/v1/chat/setup"] == "deny"
     assert actual["POST /api/v1/chat/setup/{draft_id}/finish"] == "deny"
     assert actual["POST /api/v1/chat/setup/slack/oauth"] == "deny"
+    assert actual["GET /api/v1/overview/bootstrap"] == "deny"
+    assert actual["GET /api/v1/overview/shell"] == "deny"
     assert actual["GET /docs/api"] == "deny"
     assert actual["MOUNT /mcp"] == "deny"
     assert actual["MOUNT /static"] == "deny"
@@ -261,6 +264,8 @@ def test_real_routes_deny_valid_requests_without_side_effects(
         ),
         ("GET", "/api/v1/runtime-sessions", None),
         ("GET", "/api/v1/runners", None),
+        ("GET", "/api/v1/overview/bootstrap", None),
+        ("GET", "/api/v1/overview/shell", None),
         ("POST", "/api/v1/auth/refresh", {"refresh_token": token}),
     ]
     requests.extend(
@@ -420,6 +425,62 @@ def test_mounted_allow_policy_fails_at_startup() -> None:
     )
     with pytest.raises(ValueError, match="Mounted restricted CI operations"):
         app.build_middleware_stack()
+
+
+def test_machine_policy_validation_enumerates_effective_routes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import FastAPI
+
+    from preloop.api.auth import ci_policy
+
+    app = FastAPI()
+    calls = 0
+    original = ci_policy.effective_routes
+
+    def counted_routes(current_app: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        yield from original(current_app)
+
+    monkeypatch.setattr(ci_policy, "effective_routes", counted_routes)
+    ci_policy.validate_machine_policies(
+        app,
+        {
+            ("GET", "/first"): CiAction.READ_EXECUTION,
+            ("POST", "/second"): CiAction.TRIGGER,
+        },
+    )
+    assert calls == 1
+
+
+def test_machine_policy_validation_still_rejects_mounted_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import FastAPI
+
+    from preloop.api.auth import ci_policy
+
+    app = FastAPI()
+    app.mount("/mounted", FastAPI())
+    calls = 0
+    original = ci_policy.effective_routes
+
+    def counted_routes(current_app: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        yield from original(current_app)
+
+    monkeypatch.setattr(ci_policy, "effective_routes", counted_routes)
+    with pytest.raises(ValueError, match="Mounted restricted CI operations"):
+        ci_policy.validate_machine_policies(
+            app,
+            {
+                ("GET", "/ordinary"): CiAction.READ_EXECUTION,
+                ("GET", "/mounted/probe"): CiAction.READ_EXECUTION,
+            },
+        )
+    assert calls == 1
 
 
 def test_dotted_machine_marked_legacy_key_cannot_fall_back(

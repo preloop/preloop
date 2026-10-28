@@ -446,37 +446,18 @@ CREATE OR REPLACE TRIGGER agent_usage_track_update AFTER UPDATE ON api_usage
  EXECUTE FUNCTION agent_usage_track_update();
 """
 
-BACKFILL = """
-WITH batch AS MATERIALIZED (
- SELECT u AS usage, u.id FROM api_usage u
- WHERE u.action_type='model_gateway' AND u.account_id IS NOT NULL
- AND u.id > COALESCE((SELECT last_usage_id FROM agent_usage_backfill WHERE name='agents'), '00000000-0000-0000-0000-000000000000'::uuid)
- ORDER BY u.id LIMIT 500 FOR UPDATE OF u
-), claimed AS (
- INSERT INTO agent_usage_counted(usage_id) SELECT id FROM batch
- ON CONFLICT DO NOTHING RETURNING usage_id
-), applied AS MATERIALIZED (
- SELECT agent_usage_apply(batch.usage,1) FROM batch JOIN claimed ON claimed.usage_id=batch.id
-)
-UPDATE agent_usage_backfill SET
- last_usage_id=COALESCE((SELECT id FROM batch ORDER BY id DESC LIMIT 1),last_usage_id),
- ready=NOT EXISTS(SELECT 1 FROM batch)
-WHERE name='agents' AND (SELECT count(*) FROM applied)>=0
-RETURNING ready
-"""
-
 
 def upgrade() -> None:
-    """Install capture before scanning history; commit each bounded batch.
+    """Install capture and register the history backfill; do not run it.
 
-    The ID ledger makes each batch retryable. Source row locks serialize the
-    backfill with updates/deletes; new inserts are counted by the trigger.
-    Reads stay on the existing path until the complete backfill is committed.
+    The triggers count every new request from this commit on. Historical
+    requests are counted after the deploy by ``preloop.models.backfills``,
+    which advances the ``agents`` registry row in committed, resumable batches.
+    Reads stay on the existing path until that row is ``ready``. A database
+    whose backfill already completed keeps ``ready=true``: the registry
+    insert is ``ON CONFLICT DO NOTHING`` and nothing here scans ``api_usage``.
     """
     op.execute(sa.text(DDL))
-    with op.get_context().autocommit_block():
-        while not op.get_bind().execute(sa.text(BACKFILL)).scalar_one():
-            pass
 
 
 def downgrade() -> None:

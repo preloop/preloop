@@ -7,7 +7,7 @@ that verify their own credentials), but not the general account API.
 """
 
 import logging
-from typing import Iterator
+from typing import Callable, Iterator
 from uuid import uuid4
 
 import pytest
@@ -379,3 +379,32 @@ def test_mcp_only_classification(scopes, expected) -> None:
     key = Key()
     key.scopes = scopes
     assert key_scopes.is_mcp_only_api_key(key) is expected
+
+
+@pytest.mark.parametrize("mode", ["off", "audit", "enforce"])
+def test_read_only_review_runtime_always_denied_rest(
+    db_session: Session,
+    test_user: models.User,
+    api_client: TestClient,
+    enforcement_mode: Callable[[str], None],
+    mode: str,
+) -> None:
+    enforcement_mode(mode)
+    _, token = crud_api_key.create_runtime_key(
+        db_session,
+        name="read-only-review",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        scopes=["mcp:read", "mcp:write"],
+        context_data={"read_only_review": True},
+    )
+    for path in (
+        "/api/v1/trackers",
+        "/api/v1/auth/api-keys",
+        "/api/v1/auth/runtime-sessions/token",
+    ):
+        response = api_client.post(
+            path, headers={"Authorization": f"Bearer {token}"}, json={}
+        )
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"]["code"] == "api_key_scope_denied"

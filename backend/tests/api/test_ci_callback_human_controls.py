@@ -84,7 +84,7 @@ def test_machine_null_update_denies_without_changing_receiver(
     app = FastAPI()
     app.include_router(event_webhooks.router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = sessions
-    monkeypatch.setattr(ci_auth, "get_db_session", sessions)
+    monkeypatch.setattr(ci_auth, "get_auth_db_session", sessions)
     app.add_middleware(ci_auth.RestrictedCiAuthMiddleware)
     response = TestClient(app).patch(
         f"/api/v1/event-webhooks/endpoints/{endpoint.id}",

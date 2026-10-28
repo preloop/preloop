@@ -1,3 +1,4 @@
+import { stripBillingHeader } from '../../utils/session-subject';
 import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
@@ -2464,7 +2465,7 @@ export class RuntimeSessionsView extends LitElement {
     message: FlowGatewayConversationPreviewMessage
   ) {
     const previewText = message.text
-      ? message.text
+      ? stripBillingHeader(message.text)
       : message.redacted
         ? 'Content redacted by capture policy.'
         : 'No text content captured.';
@@ -2697,7 +2698,7 @@ export class RuntimeSessionsView extends LitElement {
               ? html`
                   <div class="loading-state">
                     <sl-spinner></sl-spinner>
-                    <div>Loading captured session content...</div>
+                    <div>Loading captured session content…</div>
                   </div>
                 `
               : this.gatewayEvents.length === 0
@@ -2733,7 +2734,7 @@ export class RuntimeSessionsView extends LitElement {
         <sl-card>
           <div class="loading-state">
             <sl-spinner></sl-spinner>
-            <div>Loading session details...</div>
+            <div>Loading session details…</div>
           </div>
         </sl-card>
       `;
@@ -3030,7 +3031,7 @@ export class RuntimeSessionsView extends LitElement {
                       <sl-card>
                         <div class="loading-state">
                           <sl-spinner></sl-spinner>
-                          <div>Loading sessions...</div>
+                          <div>Loading sessions…</div>
                         </div>
                       </sl-card>
                     `

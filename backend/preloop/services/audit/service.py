@@ -235,6 +235,30 @@ def _sanitize_reference_record(record: Dict[str, Any]) -> Dict[str, Any]:
 class AuditActionType:
     """Constants for audit action types."""
 
+    # Authentication and enterprise identity lifecycle events
+    AUTH_LOGIN_SUCCEEDED = "auth.login.succeeded"
+    AUTH_LOGIN_FAILED = "auth.login.failed"
+    SSO_LOGIN_SUCCEEDED = "sso.login.succeeded"
+    SSO_LOGIN_FAILED = "sso.login.failed"
+    SSO_JIT_PROVISIONED = "sso.jit.provisioned"
+    SSO_ROLE_MAPPED = "sso.role_mapped"
+    SSO_BREAK_GLASS_USED = "sso.break_glass.used"
+    SSO_ENFORCEMENT_BLOCKED = "sso.enforcement.blocked"
+    ACCESS_REVOKED = "access.revoked"
+    SSO_CONNECTION_CREATED = "sso.connection.created"
+    SSO_CONNECTION_UPDATED = "sso.connection.updated"
+    SSO_CONNECTION_DELETED = "sso.connection.deleted"
+    SSO_DOMAIN_VERIFIED = "sso.domain.verified"
+    SSO_DOMAIN_REMOVED = "sso.domain.removed"
+    SSO_POLICY_CHANGED = "sso.policy.changed"
+    SCIM_TOKEN_CREATED = "scim.token.created"
+    SCIM_TOKEN_REVOKED = "scim.token.revoked"
+    SCIM_USER_CREATED = "scim.user.created"
+    SCIM_USER_UPDATED = "scim.user.updated"
+    SCIM_USER_DEACTIVATED = "scim.user.deactivated"
+    SCIM_USER_DELETED = "scim.user.deleted"
+    SCIM_GROUP_UPDATED = "scim.group.updated"
+
     # Tool call actions
     TOOL_CALL = "tool_call"
 

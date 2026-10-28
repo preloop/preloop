@@ -2719,6 +2719,9 @@ async def test_get_pull_request_gitlab_mr(db_session: Session, test_user: User):
                 "url": "https://gitlab.com/group/project/-/merge_requests/5",
                 "source_branch": "feature",
                 "target_branch": "main",
+                "head_sha": "a" * 40,
+                "merge_commit_sha": "b" * 40,
+                "checks": [{"state": "success"}],
             }
         )
         mock_tracker.get_mr_discussions = AsyncMock(return_value=[])
@@ -2731,6 +2734,9 @@ async def test_get_pull_request_gitlab_mr(db_session: Session, test_user: User):
     assert response.number == 5
     assert response.title == "Test MR"
     assert response.state == "opened"
+    assert response.head_sha == "a" * 40
+    assert response.merge_commit_sha == "b" * 40
+    assert response.checks == [{"state": "success"}]
     mock_tracker.get_merge_request.assert_called_once_with("5")
 
 

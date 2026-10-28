@@ -85,10 +85,9 @@ from preloop.services.flow_pr_binding import (
     DECISION_MARKER,
     PR_OPENED_MARKER,
     MAX_PUBLISHED_PRS,
-    brief_from_result,
     find_bound_execution,
     max_resumes_per_pr,
-    merge_result_preserving_pr_binding,
+    merge_result_with_brief,
     note_resume_started,
     parse_decision_marker,
     parse_pr_opened_marker,
@@ -249,6 +248,10 @@ _APPROVAL_CANCEL_ON_TERMINAL = frozenset(
 
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
+
+# Cleanup only: preserve artifacts before Kubernetes stop deletes the Job.
+# This does not change the execution deadline or turn a timeout into success.
+TIMEOUT_ARTIFACT_CAPTURE_SECONDS = 10
 
 # Marker printed by the agent script immediately before the agent command runs.
 # Sentinel detection is suppressed until this marker is seen in the logs,
@@ -1229,11 +1232,21 @@ class FlowExecutionOrchestrator:
                 f"Failed to publish execution warning: {publish_error}",
             )
 
+    def _read_only_review_mode(self) -> bool:
+        """Retain the startup capability even if the flow is edited later."""
+        from preloop.services.read_only_review import read_only_review
+
+        return bool(
+            getattr(self, "_read_only_review_execution", False)
+        ) or read_only_review(self._effective_git_clone_config())
+
     async def _get_tracker_client_for_status(self):
         """Get a tracker client for updating commit status.
 
         Returns None if we can't get a valid client (e.g., no project configured).
         """
+        if self._read_only_review_mode():
+            return None
         if self._tracker_client is not None:
             logger.debug("[CommitStatus] Using cached tracker client")
             return self._tracker_client
@@ -2820,19 +2833,56 @@ class FlowExecutionOrchestrator:
         return found
 
     def _git_clone_config_for_trigger(self) -> Any:
-        """Clone config reduced to the repository the payload named.
+        """Clone config for the triggered repository or a scheduled report.
 
         The stored config is not modified. Clone entries are a hard selection:
         the payload repository is cloned only when it is one of them (or one
         of the flow's projects). A payload that names something else clears
         the list, so a fixed clone of a different repository is not checked
-        out under the payload's commit. That empty checkout is logged.
+        out under the payload's commit. That empty checkout is logged. A
+        scheduled assessed report with no explicit repositories gets the
+        account's active code-host projects under its policy scope.
         """
         config = self._effective_git_clone_config()
         if not isinstance(config, dict):
             return config
         identity = self._cached_payload_identity()
         if not identity:
+            if (
+                config.get("enabled") is True
+                and is_delivery_report_flow(getattr(self, "flow", None))
+                and not config.get("repositories")
+            ):
+                from preloop.models.crud import crud_delivery_report_policy
+
+                run = self._plan_delivery_report_run()
+                if run is not None and run.calls_model:
+                    assert self.flow is not None
+                    scope = {name.lower() for name in run.policy.projects}
+                    repositories = []
+                    for (
+                        name,
+                        project_id,
+                        tracker_id,
+                        branch,
+                    ) in crud_delivery_report_policy.code_repositories(
+                        self.db, account_id=self.flow.account_id
+                    ):
+                        if scope and name not in scope:
+                            continue
+                        project_policy = run.project_policies.get(name)
+                        if project_policy is not None and not project_policy.enabled:
+                            continue
+                        entry: Dict[str, Any] = {
+                            "project_id": project_id,
+                            "tracker_id": tracker_id,
+                        }
+                        if branch:
+                            entry["branch"] = branch
+                        else:
+                            entry["use_remote_default"] = True
+                        repositories.append(entry)
+                    return {**config, "repositories": repositories}
             return config
 
         project_id = self._resolve_trigger_project_id(
@@ -2865,10 +2915,20 @@ class FlowExecutionOrchestrator:
             return narrowed
 
         if project_id:
-            entry: Dict[str, Any] = {
-                "project_id": project_id,
-                "clone_path": "/workspace",
-            }
+            # A tracker-only entry configures auto-detected clones. Preserve its
+            # credentials and checkout options, but only after the payload has
+            # resolved to a permitted project. Explicit repository matches above
+            # take precedence; entries for other repositories are never defaults.
+            auto_detect = next(
+                (
+                    repo
+                    for repo in repositories
+                    if not repo.get("project_id") and not repo.get("repository_url")
+                ),
+                {},
+            )
+            entry: Dict[str, Any] = {"clone_path": "/workspace", **auto_detect}
+            entry["project_id"] = project_id
             if identity.get("clone_url"):
                 entry["repository_url"] = identity["clone_url"]
             narrowed = dict(config)
@@ -3223,9 +3283,22 @@ class FlowExecutionOrchestrator:
         Args:
             execution_context: Context to extend in place.
         """
-        repositories = (self._effective_git_clone_config() or {}).get(
-            "repositories", []
-        )
+        from preloop.services.read_only_review import prepare_read_only_review
+
+        if self._read_only_review_mode():
+            self._read_only_review_execution = True
+            lease = await prepare_read_only_review(
+                self.db, self.flow, self.execution_log, execution_context
+            )
+            self._read_only_review_leases = [
+                *getattr(self, "_read_only_review_leases", []),
+                lease,
+            ]
+            return
+        clone_config = execution_context.get("git_clone_config")
+        if clone_config is None:
+            clone_config = self._effective_git_clone_config()
+        repositories = (clone_config or {}).get("repositories", [])
         if repositories:
             logger.info(
                 f"Preparing git credentials for {len(repositories)} configured repositories"
@@ -3409,6 +3482,17 @@ class FlowExecutionOrchestrator:
         self, *, resolved_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        # Every new context, including recovery, rechecks the immutable CI
+        # principal snapshot before any token or broad clone credential exists.
+        if (
+            getattr(getattr(self, "execution_log", None), "ci_principal_id", None)
+            is not None
+        ):
+            from preloop.models import crud
+
+            crud.crud_ci_execution.authorize_dispatch(
+                self.db, execution=self.execution_log
+            )
         self._apply_harness_routing_decision()
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
@@ -4544,7 +4628,11 @@ class FlowExecutionOrchestrator:
         return archive
 
     async def _capture_result_artifact(
-        self, agent_executor: Any, session_reference: str
+        self,
+        agent_executor: Any,
+        session_reference: str,
+        *,
+        timeout_seconds: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Capture the agent's structured result artifact, if any.
 
@@ -4558,28 +4646,64 @@ class FlowExecutionOrchestrator:
         persistence at finalize time. It must happen here because both
         artifacts are only readable before the executor is cleaned up, and
         this method is called on every terminal path.
+
+        Timeout cleanup supplies ``timeout_seconds`` to bound transfers and
+        prioritize result.json over bulk captures. An already read result is
+        retained and validated even when a later transfer exceeds that bound.
         """
         from preloop.services.flow_artifacts import (
             extract_result_json,
             sanitize_captured_result,
         )
 
-        await self._capture_evidence_archive(agent_executor, session_reference)
-        await self._capture_workspace_snapshot(agent_executor, session_reference)
-        getter = getattr(agent_executor, "get_result_artifact", None)
         artifact: Optional[Dict[str, Any]] = None
-        if callable(getter):
+
+        async def collect() -> None:
+            nonlocal artifact
+            # Normal terminal capture retains its original ordering. Timeout
+            # cleanup prioritizes the small result so a slow snapshot/evidence
+            # transfer cannot discard a document already available to read.
+            if timeout_seconds is None:
+                await self._capture_evidence_archive(agent_executor, session_reference)
+                await self._capture_workspace_snapshot(
+                    agent_executor, session_reference
+                )
+            getter = getattr(agent_executor, "get_result_artifact", None)
+            if callable(getter):
+                try:
+                    captured = await getter(session_reference)
+                except Exception as e:
+                    logger.warning(f"Failed to capture result artifact: {e}")
+                    captured = None
+                if isinstance(captured, dict):
+                    artifact = captured
+            if timeout_seconds is not None:
+                await self._capture_evidence_archive(agent_executor, session_reference)
+            if not isinstance(artifact, dict):
+                archive = await self._evidence_bytes_for_result_extract()
+                if archive:
+                    artifact = extract_result_json(archive)
+            if timeout_seconds is not None:
+                await self._capture_workspace_snapshot(
+                    agent_executor, session_reference
+                )
+
+        if timeout_seconds is None:
+            await collect()
+        else:
             try:
-                captured = await getter(session_reference)
-            except Exception as e:
-                logger.warning(f"Failed to capture result artifact: {e}")
-                captured = None
-            if isinstance(captured, dict):
-                artifact = captured
-        if not isinstance(artifact, dict):
-            archive = await self._evidence_bytes_for_result_extract()
-            if archive:
-                artifact = extract_result_json(archive)
+                await asyncio.wait_for(collect(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed-out execution artifact capture exceeded cleanup bound"
+                )
+            except Exception as capture_error:
+                logger.warning(
+                    "Timed-out execution artifact capture failed (%s)",
+                    type(capture_error).__name__,
+                )
+        # Keep validation outside the cancellable transfers. A document read
+        # before a later transfer stalled still goes through the same boundary.
         sanitized = sanitize_captured_result(artifact)
         persisted = self._persist_cra_result_boundary(
             sanitized, session_reference=session_reference
@@ -5499,6 +5623,8 @@ class FlowExecutionOrchestrator:
         already written, so every problem here becomes a receipt on the
         result and a warning on the timeline.
         """
+        if self._read_only_review_mode():
+            return
         if not isinstance(merged_result, dict) or not self.flow:
             return
         plan = resolve_follow_up_filing(getattr(self.flow, "git_clone_config", None))
@@ -5599,19 +5725,23 @@ class FlowExecutionOrchestrator:
     def _delivery_report_inputs(
         self, trigger_event_data: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Seed the window's completed merge audits for a Delivery Report run.
+        """Seed the merge audits and the report checks for a Delivery Report run.
 
-        The run reads them as ``previous/merge_audits.json`` beside the
-        previous report, so an audited closed issue is not assessed again.
-        A failed read leaves the trigger data as it was; the report pass
+        The run reads the window's completed merge audits as
+        ``previous/merge_audits.json`` beside the previous report, so an
+        audited closed issue is not assessed again, and runs the fetch-scope
+        and parent-commit checks from ``tools/delivery_report_checks.py``.
+        A failed audit read seeds the checks only; the report pass
         applies the audits again when the run ends.
         """
         from preloop.services.delivery_report import (
             load_merge_audits,
             with_merge_audits_seed,
+            with_report_checks_seed,
         )
         from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
 
+        trigger_event_data = with_report_checks_seed(trigger_event_data)
         payload = (trigger_event_data or {}).get("payload")
         window = payload.get("window") if isinstance(payload, dict) else None
         run = self._plan_delivery_report_run()
@@ -5649,13 +5779,19 @@ class FlowExecutionOrchestrator:
             return cached
         from preloop.services.delivery_report import plan_policy_run
 
+        details = getattr(self.execution_log, "trigger_event_details", None) or {}
+        project = details.get("delivery_report_project")
         try:
             run = plan_policy_run(
                 self.db,
                 flow=self.flow,
                 exclude_execution_id=getattr(self.execution_log, "id", None),
+                project=project,
             )
         except Exception:
+            # A scoped manual run must never fall back to an account-wide run.
+            if project is not None:
+                raise
             logger.warning("Could not read the delivery report policy", exc_info=True)
             return None
         self._delivery_report_run = run
@@ -5707,7 +5843,7 @@ class FlowExecutionOrchestrator:
             run = getattr(self, "_delivery_report_run", None)
             if run is not None and run.decision == "disabled":
                 return merged_result
-            return finalize_delivery_report_for_execution(
+            merged_result = finalize_delivery_report_for_execution(
                 self.db,
                 flow=self.flow,
                 execution=self.execution_log,
@@ -5717,6 +5853,105 @@ class FlowExecutionOrchestrator:
         except Exception:
             logger.exception("Finalizing the delivery report failed")
             return merged_result
+        self._delivery_report_finalized = True
+        return merged_result
+
+    async def _send_finalized_delivery_report(self, merged_result: Any) -> Any:
+        """Distribute the report once :meth:`_finalize_delivery_report` built it."""
+        if not getattr(self, "_delivery_report_finalized", False):
+            return merged_result
+        from preloop.plugins import get_plugin_manager
+
+        distributor = get_plugin_manager().get_service("delivery_report_distributor")
+        if (
+            distributor is not None
+            and isinstance(merged_result, dict)
+            and merged_result.get("status") == "success"
+        ):
+            try:
+                from preloop.services.delivery_report_facts import (
+                    collect_forge_engagement,
+                )
+
+                engagement = await collect_forge_engagement(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    report=merged_result,
+                )
+                merged_result = {**merged_result, "engagement": engagement}
+            except Exception:
+                logger.warning("Could not read report engagement", exc_info=True)
+        run = getattr(self, "_delivery_report_run", None)
+        return await self._distribute_delivery_report(merged_result, run)
+
+    async def _distribute_delivery_report(
+        self, merged_result: Any, run: Optional["PolicyRun"]
+    ) -> Any:
+        """Email the finished report to its recipients and record it (#2020).
+
+        Deterministic and assessed reports both go out here, once per run.
+        A failed send is logged and leaves the report as it is.
+        """
+        from preloop.services.delivery_report_email import (
+            DISTRIBUTION_KEY,
+            distribute_report,
+        )
+
+        if not isinstance(merged_result, dict):
+            return merged_result
+        try:
+            from preloop.plugins import get_plugin_manager
+
+            distributor = get_plugin_manager().get_service(
+                "delivery_report_distributor"
+            )
+            if distributor is None:
+                record = await distribute_report(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
+            else:
+                record = await distributor(
+                    self.db,
+                    flow=self.flow,
+                    execution=self.execution_log,
+                    report=merged_result,
+                    policy=run.policy if run is not None else None,
+                )
+        except Exception:
+            logger.exception("Emailing the delivery report failed")
+            return merged_result
+        if record is not None:
+            merged_result = {**merged_result, DISTRIBUTION_KEY: record}
+        return merged_result
+
+    async def _refresh_delivery_report_facts(self) -> None:
+        """Read missing PR file lists before a deterministic report (#2020).
+
+        Bounded forge reads; a failure leaves the ledger as it was and the
+        report is built from what it holds.
+        """
+        from preloop.services.delivery_report import _parse_time, report_window
+        from preloop.services.delivery_report_facts import (
+            refresh_pull_request_details,
+        )
+
+        payload = (self.trigger_event_data or {}).get("payload")
+        window = report_window(payload)
+        end = _parse_time(window.get("to")) or datetime.now(timezone.utc)
+        try:
+            await refresh_pull_request_details(
+                self.db,
+                account_id=self.flow.account_id,
+                start=_parse_time(window.get("from")),
+                end=end,
+            )
+        except Exception:
+            logger.warning("Could not refresh PR details for the report", exc_info=True)
+            self.db.rollback()
 
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
@@ -5840,6 +6075,8 @@ class FlowExecutionOrchestrator:
         container's clone fallback (``_resolve_git_clone_repositories``).
         ``context`` overrides the execution context (host checkout context).
         """
+        if self._read_only_review_mode():
+            return []
         from preloop.api.common import get_tracker_client
         from preloop.models.crud import crud_project
 
@@ -6762,6 +6999,24 @@ class FlowExecutionOrchestrator:
             # The agent script already asked, in the container where the work
             # happened. A second round would be a second model call for the
             # same answer, from a session that knows strictly less.
+            log_lines = (
+                prior_log_lines or self.execution_logger.get_agent_output_lines()
+            )
+            armed_lines = _armed_log_lines(log_lines)
+            # A truncated tail may retain only the result marker. The
+            # observed in-place round still makes its explicit failure useful.
+            nudge_start = (
+                armed_lines.index(COMPLETION_NUDGE_MARKER) + 1
+                if COMPLETION_NUDGE_MARKER in armed_lines
+                else 0
+            )
+            failure_reason = _failure_report_in_log_lines(armed_lines[nudge_start:])
+            if failure_reason is not None:
+                return _finish(
+                    "explicit_failure",
+                    reason=failure_reason,
+                    channel="inplace_failure_report",
+                )
             return _finish("skipped_inplace_nudge_used")
 
         actions_taken = self.execution_logger.get_actions_taken()
@@ -7816,18 +8071,25 @@ class FlowExecutionOrchestrator:
                     "elapsed_seconds": elapsed,
                 },
             )
-            await agent_executor.stop(session_reference)
+            # Docker retains stopped containers, but Kubernetes stop deletes
+            # the Job and its pods. Read available artifacts first, within a
+            # short cleanup bound, and always stop even if capture fails or
+            # this monitor is canceled. The execution still failed its budget.
+            try:
+                result_artifact = await self._capture_result_artifact(
+                    agent_executor,
+                    session_reference,
+                    timeout_seconds=TIMEOUT_ARTIFACT_CAPTURE_SECONDS,
+                )
+            finally:
+                await agent_executor.stop(session_reference)
 
-            # A timed-out eval run may still have written result.json; the
-            # stopped container is kept, so the artifact is reachable.
             timeout_result = {
                 "status": "FAILED",
                 "error_message": timeout_budget.timeout_message(elapsed),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                "result": await self._capture_result_artifact(
-                    agent_executor, session_reference
-                ),
+                "result": result_artifact,
             }
             self._name_stream_stall(timeout_result, timeout_budget)
             return timeout_result
@@ -9292,6 +9554,8 @@ class FlowExecutionOrchestrator:
                         "product_provenance_failed", {"reason": str(exc)}
                     )
         self._attach_product_evidence_records(agent_result, provenance=provenance)
+        if self._read_only_review_mode():
+            return
         policy = getattr(self, "_isolated_publication_policy", None)
         if policy is None:
             return
@@ -9573,6 +9837,25 @@ class FlowExecutionOrchestrator:
             # Stage 2: Create execution log
             self._create_execution_log()
 
+            from preloop.services.read_only_review import validate_read_only_flow
+
+            validate_read_only_flow(self.flow)
+            if (
+                getattr(getattr(self, "execution_log", None), "ci_principal_id", None)
+                is not None
+            ):
+                from preloop.models import crud
+
+                crud.crud_ci_execution.authorize_dispatch(
+                    self.db, execution=self.execution_log
+                )
+            self._read_only_review_execution = self._read_only_review_mode()
+            if (
+                self._read_only_review_execution
+                and not self.execution_log.ci_principal_id
+            ):
+                raise ValueError("Read-only review requires a restricted CI execution")
+
             # Publish execution_started event for UI notification
             # This allows the flow executions list to update automatically
             await self._publish_update(
@@ -9617,6 +9900,8 @@ class FlowExecutionOrchestrator:
                         f"Delivery Report (no model call): {report_run.decision}"
                     ),
                 )
+                if report_run.decision != "disabled":
+                    await self._refresh_delivery_report_facts()
                 agent_result = self._run_deterministic_delivery_report(report_run)
             elif backport_plan is not None:
                 await self._update_execution_log(
@@ -9829,14 +10114,10 @@ class FlowExecutionOrchestrator:
                     "Could not refresh execution log before merging result",
                     exc_info=True,
                 )
-            merged_result = merge_result_preserving_pr_binding(
+            merged_result = merge_result_with_brief(
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
-            # The change brief the agent wrote into the PR body it published.
-            brief = brief_from_result(agent_result.get("result"))
-            if brief is not None and isinstance(merged_result, dict):
-                merged_result["brief"] = brief
 
             # Only the executor's runtime observation owns this key. Agent
             # result.json claims cannot overwrite or fabricate termination.
@@ -9869,6 +10150,7 @@ class FlowExecutionOrchestrator:
             # rules, the delta and the spend to the agent's report. The agent
             # cannot author what the run spent or what the last report asked.
             merged_result = self._finalize_delivery_report(merged_result)
+            merged_result = await self._send_finalized_delivery_report(merged_result)
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):
@@ -10104,5 +10386,21 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
+            leases = getattr(self, "_read_only_review_leases", [])
+            if leases and self._execution_reached_terminal_state():
+                import httpx
+                from preloop.services.publication_credentials import (
+                    revoke_repository_lease,
+                )
+                from preloop.services.trusted_publisher import PublicationError
+
+                async with httpx.AsyncClient() as client:
+                    for lease in leases:
+                        try:
+                            await revoke_repository_lease(lease, client)
+                        except PublicationError:
+                            logger.warning(
+                                "Read-only review lease revocation failed; expiry remains enforced"
+                            )
             # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

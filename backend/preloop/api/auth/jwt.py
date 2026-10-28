@@ -179,6 +179,7 @@ def _authenticate_with_api_key(
     allow_stale_runtime_session: bool = False,
     allow_ended_runtime_session: bool = False,
     allow_restricted_runtime: bool = False,
+    allow_read_only_review: bool = False,
 ) -> User:
     """Validate an API key and return its active owner.
 
@@ -188,8 +189,20 @@ def _authenticate_with_api_key(
     not reject the credential — callers resolve/reopen the agent's identity
     session instead. ``allow_ended_runtime_session`` only skips the ended
     check, so a browser adapter can flush steps after the run; a missing
-    session is still rejected.
+    session is still rejected. ``allow_read_only_review`` is an explicit
+    inference-only capability exception; all account/runtime callers must
+    retain its default denial.
     """
+    from preloop.api.auth.key_scopes import is_read_only_review_api_key
+
+    if is_read_only_review_api_key(api_key) and not allow_read_only_review:
+        raise HTTPException(
+            403,
+            detail={
+                "code": "api_key_scope_denied",
+                "message": "Review credentials cannot authenticate an account or runtime channel",
+            },
+        )
     if (
         api_key is not None
         and getattr(api_key, "requires_machine_authorization", False) is True
@@ -989,6 +1002,7 @@ def get_user_from_token_if_valid_sync(
     *,
     allow_ended_runtime_session: bool = False,
     allow_restricted_runtime: bool = False,
+    allow_read_only_review: bool = False,
 ) -> Optional[User]:
     """Sync variant for short-lived sessions in WebSocket handlers.
 
@@ -1015,6 +1029,7 @@ def get_user_from_token_if_valid_sync(
                     api_key,
                     allow_ended_runtime_session=allow_ended_runtime_session,
                     allow_restricted_runtime=allow_restricted_runtime,
+                    allow_read_only_review=allow_read_only_review,
                 )
 
         token_data = decode_token(token)

@@ -1,6 +1,6 @@
 """CRUD operations for MCPServer model."""
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -12,9 +12,118 @@ from .base import CRUDBase
 class CRUDMCPServer(CRUDBase[models.MCPServer]):
     """CRUD operations for MCPServer model."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with the MCPServer model."""
         super().__init__(model=models.MCPServer)
+
+    def create(
+        self, db: Session, *, obj_in: dict[str, Any], commit: bool = True
+    ) -> models.MCPServer:
+        """Create with OAuth material protected by the existing secret backend."""
+        values = dict(obj_in)
+        oauth_config = (
+            values.get("auth_config") if values.get("auth_type") == "oauth" else None
+        )
+        if oauth_config:
+            from .upstream_mcp_oauth import public_auth_config
+
+            values["auth_config"] = public_auth_config(oauth_config)
+        server = super().create(db, obj_in=values, commit=False)
+        if oauth_config:
+            from .upstream_mcp_oauth import crud_upstream_mcp_oauth
+
+            crud_upstream_mcp_oauth.protect_config(db, server, dict(oauth_config))
+        if commit:
+            db.commit()
+            db.refresh(server)
+        return server
+
+    def update(
+        self,
+        db: Session,
+        *,
+        db_obj: models.MCPServer,
+        obj_in: dict[str, Any],
+        commit: bool = True,
+    ) -> models.MCPServer:
+        """Serialize configuration replacement with callbacks and refresh results."""
+        from .upstream_mcp_oauth import crud_upstream_mcp_oauth, public_auth_config
+        from preloop.models.schemas.mcp_server import merge_auth_config
+        from preloop.utils.redaction import REDACTED_STRING
+
+        server = (
+            db.query(self.model)
+            .filter_by(id=db_obj.id, account_id=db_obj.account_id)
+            .populate_existing()
+            .with_for_update()
+            .one()
+        )
+        inline_secrets = public_auth_config(server.auth_config) != server.auth_config
+        old_url, old_type = server.url, server.auth_type
+        old_transport, old_disabled = server.transport, server.status == "disabled"
+        config = (
+            crud_upstream_mcp_oauth.config_for_edit(db, server)
+            if old_type == "oauth"
+            else server.auth_config
+        )
+        changes = dict(obj_in)
+        incoming = changes.pop("auth_config", config)
+        next_config = merge_auth_config(incoming, config)
+        if (
+            old_type == "oauth"
+            and isinstance(incoming, dict)
+            and incoming.get("access_token") == REDACTED_STRING
+        ):
+            for key in ("expires_at", "token_type"):
+                next_config.pop(key, None)
+                if key in (config or {}):
+                    next_config[key] = config[key]
+        for key, value in changes.items():
+            setattr(server, key, value)
+        changed = (
+            old_url != server.url
+            or old_type != server.auth_type
+            or old_transport != server.transport
+            or old_disabled != (server.status == "disabled")
+            or next_config != config
+        )
+        if changed:
+            crud_upstream_mcp_oauth.invalidate(db, server.id)
+        if server.auth_type == "oauth":
+            next_config = next_config or {}
+            # Consent/client changes require a new grant; name/prefix edits and
+            # unchanged fields submitted by the form preserve the connection.
+            binding_changed = old_url != server.url or any(
+                next_config.get(key) != (config or {}).get(key)
+                for key in ("issuer", "client_id", "token_endpoint", "scope", "scopes")
+            )
+            # Disabling drops the grant, so the server reads as disconnected
+            # and a re-enabled server needs a fresh consent.
+            if binding_changed or server.status == "disabled":
+                next_config = {
+                    key: value
+                    for key, value in next_config.items()
+                    if key not in {"access_token", "refresh_token", "expires_at"}
+                }
+            server.auth_config = public_auth_config(next_config)
+            if changed or inline_secrets:
+                crud_upstream_mcp_oauth.protect_config(db, server, next_config)
+        elif old_type == "oauth":
+            # The OAuth grant and client secret live only in the encrypted store:
+            # resolve echoed markers against the public fields, never the secrets.
+            server.auth_config = (
+                merge_auth_config(incoming, public_auth_config(config))
+                if "auth_config" in obj_in
+                else None
+            )
+        elif "auth_config" in obj_in:
+            server.auth_config = next_config
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        db.refresh(server)
+        return server
 
     def get(
         self, db: Session, id: UUID, account_id: Optional[str] = None
@@ -264,9 +373,13 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
                 self.model.id == id,
                 self.model.account_id == account_id,
             )
+            .with_for_update()
             .first()
         )
         if db_server:
+            from .upstream_mcp_oauth import crud_upstream_mcp_oauth
+
+            crud_upstream_mcp_oauth.invalidate(db, db_server.id)
             db.delete(db_server)
             db.commit()
         return db_server

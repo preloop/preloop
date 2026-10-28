@@ -58,7 +58,7 @@ async function waitForAgents(el: AgentsView): Promise<void> {
   await waitUntil(
     () =>
       !el.shadowRoot?.querySelector('sl-spinner') &&
-      !(el.shadowRoot?.textContent || '').includes('Loading agents...') &&
+      !(el.shadowRoot?.textContent || '').includes('Loading agents…') &&
       !!el.shadowRoot?.querySelector(
         'table.agents-table tbody tr, sl-card.agent-card, .agent-node, .empty-state'
       ),

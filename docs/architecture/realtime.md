@@ -26,6 +26,21 @@ Single WebSocket connection per client with pub/sub message routing:
 
 ## Execution log persistence
 
+Account events and gateway execution events are encoded before submission to a
+process-local realtime publisher. API, scheduler and worker startup attach its
+single drain task to the event loop that owns the shared NATS client. Calls from
+worker threads or other event loops enqueue bytes without waiting for NATS, so
+gateway bookkeeping cannot hold a database connection during a forced flush on
+the wrong event loop.
+
+The publisher bounds pending work by both message count and payload bytes,
+including in-flight messages and thread hand-offs. Each publish has a timeout;
+shutdown drains within a deadline and rejects new work. Rejected messages and
+publish failures are counted and logged. This is best-effort live delivery:
+overflow, timeout or shutdown can lose a notification, while persisted activity
+remains available through history reads. It does not replace durable task
+publication or its JetStream acknowledgement.
+
 Each API process receives realtime flow updates through Core NATS. A separate
 `log-persisters` queue subscription assigns each log to one process for database
 persistence. Each process has one writer with a bounded queue of 10,000 entries

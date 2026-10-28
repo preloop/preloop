@@ -944,6 +944,9 @@ def _register_control_plane_routes(
     pay for flow orchestration, MCP HTTP, or the control-plane surface.
     """
     from preloop.api.auth import auth_router, get_current_active_user
+    from preloop.api.endpoints.overview import router as overview_router
+
+    app.include_router(overview_router, prefix="/api/v1", tags=["overview"])
     from preloop.api.endpoints import (
         account,
         agent_control,
@@ -996,6 +999,7 @@ def _register_control_plane_routes(
     )
     from preloop.api.endpoints import search as search_router
     from preloop.api.endpoints import delivery_report_policy
+    from preloop.api.endpoints import delivery_report_subscription
     from preloop.api.endpoints import (
         security_maintenance,
         security_screen,
@@ -1438,6 +1442,20 @@ def _register_control_plane_routes(
         tags=["Delivery Report"],
         dependencies=[Depends(get_current_active_user)],
     )
+    app.include_router(
+        delivery_report_subscription.router,
+        prefix="/api/v1",
+        tags=["Delivery Report"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    # The opt-out link in every report email: the signed token is the
+    # credential, so it is mounted without authentication.
+    app.include_router(
+        delivery_report_subscription.public_router,
+        prefix="/api/v1",
+        tags=["Delivery Report"],
+        include_in_schema=False,
+    )
 
     # Per account opt in for embedding session content, including how much of
     # a session is embedded. Read is a sessions permission, write is a budget
@@ -1573,7 +1591,10 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={
-                "detail": ("Database connections are saturated. Please retry shortly.")
+                "detail": (
+                    "Server database connection pool is exhausted. "
+                    "Please retry shortly."
+                )
             },
             headers={"Retry-After": "1"},
         )

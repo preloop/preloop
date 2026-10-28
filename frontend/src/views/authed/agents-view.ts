@@ -3556,7 +3556,7 @@ export class AgentsView extends LitElement {
    */
   private renderEmptyState() {
     if (this.loading) {
-      return html`<div class="empty-state">Loading agents...</div>`;
+      return html`<div class="empty-state">Loading agents…</div>`;
     }
     if (this.agentFiltersActive) {
       return html`<div class="empty-state" data-empty="filtered">
@@ -4279,7 +4279,7 @@ export class AgentsView extends LitElement {
                     <div
                       style="margin-top: 16px; font-family: monospace; color: var(--sl-color-neutral-600);"
                     >
-                      Loading topology data...
+                      Loading topology data…
                     </div>
                   </div>
                 `

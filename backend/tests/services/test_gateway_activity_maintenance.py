@@ -145,9 +145,11 @@ def test_retention_skips_unlimited_history(db_session, test_user, monkeypatch):
 def test_run_respects_disabled_halves(db_session, monkeypatch):
     monkeypatch.setattr(settings, "gateway_activity_compaction_enabled", False)
     monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_size_backfill_enabled", False)
     monkeypatch.setattr(settings, "flow_log_gateway_compaction_enabled", False)
     summary = maintenance.run_gateway_activity_maintenance(db_session)
     assert summary["compaction"] is None and summary["retention"] is None
+    assert summary["size_backfill"] is None
     assert summary["flow_log_compaction"] is None
 
 
@@ -234,6 +236,111 @@ def test_walk_restarts_daily(db_session, test_user, cap, monkeypatch):
     assert maintenance._compaction_cursor.get("after") is None
 
 
+def _forget_sizes(db_session, rows) -> None:
+    """Make rows look like they were written before metadata_bytes existed."""
+    db_session.query(models.RuntimeSessionActivity).filter(
+        models.RuntimeSessionActivity.id.in_([r.id for r in rows])
+    ).update({"metadata_bytes": None}, synchronize_session=False)
+    db_session.flush()
+
+
+def _db_text_bytes(db_session, row) -> int:
+    from sqlalchemy import text
+
+    return db_session.execute(
+        text(
+            "SELECT octet_length(metadata::text) FROM runtime_session_activity "
+            "WHERE id = :id"
+        ),
+        {"id": row.id},
+    ).scalar_one()
+
+
+def test_size_backfill_fills_legacy_rows_in_batches(db_session, test_user):
+    session = _session(db_session, test_user.account_id)
+    rows = [_row(db_session, session, turns=3) for _ in range(5)]
+    _forget_sizes(db_session, rows)
+
+    # Windows cover the whole table, so other rows may share a window.
+    first = maintenance.backfill_metadata_sizes(db_session, batch_size=2, max_batches=1)
+    assert first.batches == 1 and first.sized_rows <= 2 and not first.exhausted
+    rest = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=2, max_batches=100_000
+    )
+    assert first.sized_rows + rest.sized_rows >= 5 and rest.exhausted
+
+    for row in rows:
+        db_session.refresh(row)
+        assert row.metadata_bytes == _db_text_bytes(db_session, row)
+    again = maintenance.backfill_metadata_sizes(db_session, batch_size=2, max_batches=5)
+    assert again.sized_rows == 0 and again.exhausted
+
+
+def test_size_backfill_stops_walking_after_a_complete_walk(
+    db_session, test_user, monkeypatch
+):
+    """Once the backlog is gone, later passes do not rescan the table."""
+    session = _session(db_session, test_user.account_id)
+    row = _row(db_session, session, turns=2)
+    _forget_sizes(db_session, [row])
+    done = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=1000, max_batches=1000
+    )
+    assert done.exhausted and done.sized_rows >= 1
+
+    def no_walk(*args, **kwargs):
+        raise AssertionError("walked again after completion")
+
+    monkeypatch.setattr(
+        maintenance.crud_runtime_session_activity,
+        "backfill_metadata_bytes_batch",
+        no_walk,
+    )
+    later = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=10, max_batches=5
+    )
+    assert later.exhausted and later.batches == 0
+
+
+def test_size_backfill_window_is_bounded_without_matches(db_session, test_user):
+    """A window of already-sized rows costs one bounded batch, not a scan."""
+    session = _session(db_session, test_user.account_id)
+    rows = [_row(db_session, session, turns=1) for _ in range(3)]
+    ordered = sorted(r.id for r in rows)
+    updated, last = (
+        maintenance.crud_runtime_session_activity.backfill_metadata_bytes_batch(
+            db_session, limit=1, after=ordered[0]
+        )
+    )
+    assert updated == 0
+    assert last is not None and last > ordered[0]
+
+
+def test_size_backfill_dry_run_writes_nothing(db_session, test_user):
+    session = _session(db_session, test_user.account_id)
+    row = _row(db_session, session, turns=3)
+    _forget_sizes(db_session, [row])
+    result = maintenance.backfill_metadata_sizes(
+        db_session, batch_size=10, max_batches=1, dry_run=True
+    )
+    assert result.sized_rows == 0
+    db_session.refresh(row)
+    assert row.metadata_bytes is None
+
+
+def test_run_includes_size_backfill(db_session, test_user, monkeypatch):
+    monkeypatch.setattr(settings, "gateway_activity_compaction_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_size_backfill_enabled", True)
+    session = _session(db_session, test_user.account_id)
+    row = _row(db_session, session, turns=2)
+    _forget_sizes(db_session, [row])
+    summary = maintenance.run_gateway_activity_maintenance(db_session)
+    assert summary["size_backfill"]["sized_rows"] >= 1
+    db_session.refresh(row)
+    assert row.metadata_bytes == _db_text_bytes(db_session, row)
+
+
 def _execution(db_session, account_id, *, held: bool = False):
     flow = models.Flow(
         account_id=account_id,
@@ -316,6 +423,7 @@ def test_run_compacts_flow_logs_only_when_enabled(
 ):
     monkeypatch.setattr(settings, "gateway_activity_compaction_enabled", False)
     monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_size_backfill_enabled", False)
     row = _flow_row(db_session, _execution(db_session, test_user.account_id), turns=8)
 
     monkeypatch.setattr(settings, "flow_log_gateway_compaction_enabled", False)

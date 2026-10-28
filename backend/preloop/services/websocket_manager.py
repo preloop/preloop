@@ -605,7 +605,13 @@ class WebSocketManager:
         # Skip logging for high-frequency message types when no one is listening
         # to avoid log spam that can crash the pod
         msg_type = data.get("type", "unknown")
-        high_freq_types = {"agent_log_line", "token_usage_update", "tool_calls_update"}
+        high_freq_types = {
+            "agent_log_line",
+            "token_usage_update",
+            "tool_calls_update",
+            # Live reply deltas: several a second while an agent answers.
+            "managed_agent_session_progress",
+        }
 
         if account_id:
             # The matching count only ever feeds a log line, so it is computed

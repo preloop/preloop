@@ -14,6 +14,7 @@ from ..config import logger
 from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
+    TrackerRateLimitError,
     TrackerResponseError,
 )
 from .base import BaseTracker
@@ -25,6 +26,9 @@ from .utils import (
     HTTP_STATUS_UNAUTHORIZED,
     HTTP_STATUS_NOT_FOUND,
     HTTP_STATUS_CONFLICT,
+    HTTP_STATUS_NOT_MODIFIED,
+    ConditionalResponse,
+    parse_retry_after,
 )
 from preloop.models.models.project import Project
 from preloop.models.models.organization import Organization
@@ -54,6 +58,29 @@ def _discussion_notes(discussion: Any) -> List[Any]:
     if notes:
         return list(notes)
     return []
+
+
+def _review_from_system_note(note: Any) -> Optional[Dict[str, str]]:
+    """Read a dated GitLab approval note as a forge review event.
+
+    Args:
+        note: A python-gitlab MR note.
+
+    Returns:
+        Immutable user id and approval time, or None for other notes.
+    """
+    author = getattr(note, "author", None)
+    body = str(getattr(note, "body", "") or "").lower()
+    submitted_at = getattr(note, "created_at", None)
+    if (
+        not getattr(note, "system", False)
+        or not body.startswith("approved this merge request")
+        or not isinstance(author, dict)
+        or author.get("id") is None
+        or not submitted_at
+    ):
+        return None
+    return {"user_id": str(author["id"]), "submitted_at": str(submitted_at)}
 
 
 class GitLabTracker(BaseTracker):
@@ -133,6 +160,69 @@ class GitLabTracker(BaseTracker):
                 f"An unexpected error occurred in GitLab request: {e}", exc_info=True
             )
             raise TrackerResponseError(f"GitLab API error: {e}")
+
+    async def conditional_get(
+        self, path: str, etag: Optional[str], *, streamed: bool = False
+    ) -> ConditionalResponse:
+        """GET an API path with ``If-None-Match``; 304 means unchanged.
+
+        python-gitlab sleeps through 429s itself and drops response headers
+        on errors, so this one read goes through the client's session and
+        auth options directly and reports throttling with its advised wait.
+
+        Args:
+            path: Path under ``/api/v4``.
+            etag: Validator from the previous read, or None for a plain GET.
+            streamed: Return the raw response body for bounded trace reads.
+
+        Returns:
+            The status, the body on 200, and the validator for next time.
+
+        Raises:
+            TrackerRateLimitError: On 429.
+            TrackerAuthenticationError: On 401.
+            TrackerResponseError: On any other error status.
+            TrackerConnectionError: On network failure.
+        """
+        if self.gl is None:
+            raise TrackerConnectionError("GitLab client is not initialized")
+        gl = self.gl
+
+        def send() -> Any:
+            opts = gl._get_session_opts()
+            if streamed:
+                opts["stream"] = True
+            if etag:
+                opts["headers"]["If-None-Match"] = etag
+            return gl.session.request("GET", gl._build_url(path), **opts)
+
+        try:
+            response = await asyncio.to_thread(send)
+        except Exception as e:
+            raise TrackerConnectionError(f"GitLab connection error: {e}")
+        if streamed and response.status_code >= 300:
+            response.close()
+        if response.status_code == HTTP_STATUS_NOT_MODIFIED:
+            return ConditionalResponse(
+                HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("ETag") or etag
+            )
+        if response.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise TrackerAuthenticationError("GitLab authentication failed")
+        if response.status_code == 429:
+            raise TrackerRateLimitError(
+                "GitLab rate limit reached (429).",
+                retry_after=parse_retry_after(response.headers),
+            )
+        if response.status_code >= 400:
+            raise TrackerResponseError(
+                f"GitLab API error: {response.status_code}",
+                status_code=response.status_code,
+            )
+        return ConditionalResponse(
+            response.status_code,
+            response if streamed else response.json(),
+            response.headers.get("ETag"),
+        )
 
     async def _make_request_no_retry(self, method, *args, **kwargs):
         """
@@ -1485,8 +1575,12 @@ class GitLabTracker(BaseTracker):
             )
 
             all_comments = []
+            reviews = []
             for note in notes:
-                if note.system:  # Skip system notes
+                if note.system:
+                    review = _review_from_system_note(note)
+                    if review is not None:
+                        reviews.append(review)
                     continue
 
                 all_comments.append(
@@ -1494,6 +1588,11 @@ class GitLabTracker(BaseTracker):
                         "id": str(note.id),
                         "author": note.author.get("username")
                         if hasattr(note, "author") and isinstance(note.author, dict)
+                        else None,
+                        "author_id": str(note.author["id"])
+                        if hasattr(note, "author")
+                        and isinstance(note.author, dict)
+                        and note.author.get("id") is not None
                         else None,
                         "body": note.body or "",
                         "created_at": note.created_at,
@@ -1550,6 +1649,11 @@ class GitLabTracker(BaseTracker):
                 "author": mr.author.get("username")
                 if hasattr(mr, "author") and isinstance(mr.author, dict)
                 else None,
+                "author_id": str(mr.author["id"])
+                if hasattr(mr, "author")
+                and isinstance(mr.author, dict)
+                and mr.author.get("id") is not None
+                else None,
                 "assignees": [
                     a.get("username")
                     for a in (mr.assignees if hasattr(mr, "assignees") else [])
@@ -1565,10 +1669,19 @@ class GitLabTracker(BaseTracker):
                 "created_at": mr.created_at,
                 "updated_at": mr.updated_at,
                 "merged_at": mr.merged_at if hasattr(mr, "merged_at") else None,
+                "head_sha": getattr(mr, "sha", None),
+                "merge_commit_sha": getattr(mr, "merge_commit_sha", None)
+                or getattr(mr, "squash_commit_sha", None),
+                "checks": [{"state": mr.head_pipeline.get("status") or "unknown"}]
+                if isinstance(getattr(mr, "head_pipeline", None), dict)
+                and mr.head_pipeline.get("sha") == getattr(mr, "sha", None)
+                and getattr(mr, "sha", None)
+                else [],
                 "work_in_progress": mr.work_in_progress
                 if hasattr(mr, "work_in_progress")
                 else False,
                 "comments": all_comments,
+                "reviews": reviews,
                 "changes": changes,
             }
 

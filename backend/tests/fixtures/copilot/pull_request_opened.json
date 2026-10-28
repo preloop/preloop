@@ -1,0 +1,29 @@
+{
+  "action": "opened",
+  "number": 41,
+  "pull_request": {
+    "number": 41,
+    "html_url": "https://github.com/example-org/example-repo/pull/41",
+    "state": "open",
+    "merged": false,
+    "merged_at": null,
+    "draft": true,
+    "title": "Add the export button to the report page",
+    "body": "Adds an export button to the report page.\n\nFixes #12\n\n<!-- START COPILOT CODING AGENT TIPS -->",
+    "created_at": "2026-09-01T09:00:00Z",
+    "user": {
+      "login": "Copilot",
+      "id": 198982749,
+      "node_id": "BOT_kgDOC9w8XQ",
+      "type": "Bot",
+      "html_url": "https://github.com/apps/copilot-swe-agent"
+    },
+    "head": {
+      "ref": "copilot/fix-12",
+      "sha": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "base": {"ref": "main"}
+  },
+  "repository": {"full_name": "example-org/example-repo"},
+  "sender": {"login": "Copilot", "id": 198982749, "type": "Bot"}
+}

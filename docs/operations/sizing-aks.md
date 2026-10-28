@@ -63,9 +63,8 @@ Where the numbers come from:
   running on laptops or private runners only send traffic through the
   gateway; they do not count here.
 - **API 2, gateway 2 / 5, flow-execution 3**, from production shape: the
-  `database.pool` comment ("production actually runs api=2, gateway HPA
-  (min 2 / max 5), and several worker pools") and its budget line
-  "flow-execution=3, other workers=5". We read "other workers=5" as the
+  `database.pool` budget comment (api=2, gateway min 2 / max 5,
+  flow-execution=3, other workers=5). We read "other workers=5" as the
   default pool (3) plus the scheduler (1) plus the monitor (1), which all
   use the `database.pool.worker` pool.
 - **Small** keeps the chart defaults for every replica count.
@@ -186,25 +185,29 @@ this).
 
 ### Connection budget
 
-Each pod opens two SQLAlchemy pools plus one health-check connection (from
-production shape, the `database.pool` comment):
+Each pod can open two request pools plus one health-check connection.
+API/gateway processes also use a dedicated credential-check pool:
 
 - steady per pod = size x 2 + 1
 - ceiling per pod = (size + maxOverflow) x 2 + 1
+- API/gateway pods add auth pool size (default 2) to steady connections and
+  auth size plus overflow (default 5) to the ceiling. See
+  [credential-check settings](../guide/flows/restricted-ci.md#credential-check-resilience).
 
 Applied to the tiers (derived), with the gateway at its HPA minimum and
 maximum:
 
 | Tier | Steady at gateway min | Ceiling at gateway min | Steady at gateway max | Ceiling at gateway max |
 |---|---|---|---|---|
-| Small | 79 | 191 | 118 | 314 |
-| Medium | 148 | 316 | 187 | 439 |
-| Large | 190 | 374 | 294 | 702 |
+| Small | 81 | 206 | 120 | 344 |
+| Medium | 152 | 336 | 191 | 474 |
+| Large | 194 | 394 | 298 | 762 |
 
-The Medium row matches the budget in the `values.yaml` comment. That comment
-records a measured production peak of about 65 connections in total, so the
-ceiling is deliberately oversubscribed against `max_connections`; the steady
-total is what must fit.
+The Medium row matches the budget in the `values.yaml` comment. Its retained
+connections fit within the in-cluster database limit; overflow is deliberately
+oversubscribed and simultaneous bursts can exhaust the server. Reserve capacity
+for dedicated lock connections and maintenance as well. Recompute both totals
+when changing replicas or either request or auth pool settings.
 
 Flexible Server sets `max_connections` from the SKU and keeps 15 slots
 reserved, so user connections are `max_connections - 15`
