@@ -4,10 +4,11 @@ import logging
 import secrets
 import string
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import (
+    Form,
     APIRouter,
     BackgroundTasks,
     Depends,
@@ -1074,7 +1075,12 @@ async def reset_password(
 
 
 async def _audited_password_login(
-    username: str, password: str, db: Session, source_ip: str | None
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: str | None,
+    *,
+    account_id: UUID | None = None,
 ) -> tuple[UserModel | None, dict[str, Any]]:
     """Audit the final password result, including landing-policy refusals."""
     from preloop.api.loop_safety import run_db_off_loop
@@ -1084,7 +1090,10 @@ async def _audited_password_login(
         record_login_event,
     )
 
-    from preloop.services.authentication_policy import new_authentication
+    from preloop.services.authentication_policy import (
+        new_authentication,
+        select_authenticated_membership,
+    )
 
     user = None
     auth_context: dict[str, Any] = {}
@@ -1095,6 +1104,12 @@ async def _audited_password_login(
         if user is not None:
             reason_code = "identity_or_policy_rejected"
             user = await _landing_row(user, db)
+            if account_id is not None:
+                user = await run_db_off_loop(
+                    lambda: select_authenticated_membership(
+                        db, user, account_id=account_id
+                    )
+                )
             auth_context = await run_db_off_loop(
                 lambda: new_authentication(
                     db, user, method="password", source_ip=source_ip
@@ -1150,6 +1165,7 @@ async def login_form(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db_session),
+    account_id: Annotated[UUID | None, Form()] = None,
 ) -> Dict[str, str]:
     """Login to get an access token using form data (required for OAuth2 flow).
 
@@ -1166,7 +1182,11 @@ async def login_form(
             address and this password user has not verified one yet.
     """
     user, auth_context = await _audited_password_login(
-        form_data.username, form_data.password, db, get_client_ip(request)
+        form_data.username,
+        form_data.password,
+        db,
+        get_client_ip(request),
+        account_id=account_id,
     )
     if not user:
         raise HTTPException(
@@ -1223,7 +1243,11 @@ async def login_json(
             address and this password user has not verified one yet.
     """
     user, auth_context = await _audited_password_login(
-        request.username, request.password, db, get_client_ip(http_request)
+        request.username,
+        request.password,
+        db,
+        get_client_ip(http_request),
+        account_id=request.account_id,
     )
     if not user:
         raise HTTPException(

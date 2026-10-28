@@ -1600,3 +1600,10 @@ creation stay in EE. The shared identity CRUD accepts explicit OIDC/SAML sources
 while preserving canonical verified-email linkage, account membership boundaries
 and provider-link locking. The optional `ee` dependency extra supplies the SAML
 XML toolkit; core modules do not import it.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.

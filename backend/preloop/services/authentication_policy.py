@@ -162,3 +162,30 @@ def authorize_session_record(
     return authorize_authentication(
         db, user, claims=context if isinstance(context, dict) else {}, purpose=purpose
     )
+
+
+def select_authenticated_membership(
+    db: Session, user: models.User, *, account_id: UUID | None
+) -> models.User:
+    """Select an already-held membership only after proving this person's credential.
+
+    Unknown, other-person and inactive destinations share one refusal. This is
+    fresh authentication; it does not upgrade an existing switched session.
+    """
+    if account_id is None:
+        return user
+    from preloop.api.auth.email_verification import enforce_verified_email
+    from preloop.api.auth.identity import require_active_identity
+    from preloop.models.crud import crud_person
+
+    for candidate in crud_person.list_memberships(db, person_id=user.person_id):
+        if candidate.person_id == user.person_id and candidate.account_id == account_id:
+            try:
+                require_active_identity(db, candidate)
+                enforce_verified_email(candidate, db)
+            except HTTPException as exc:
+                raise HTTPException(
+                    status_code=401, detail="Invalid account selection"
+                ) from exc
+            return candidate
+    raise HTTPException(status_code=401, detail="Invalid account selection")
