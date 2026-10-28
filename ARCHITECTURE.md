@@ -1581,3 +1581,30 @@ deletion revokes its claims before cascading configuration, retaining assignment
 claimed by other sources. Account hierarchy `access_grant_id` stays independent.
 The CRUD boundary validates tenant references and rejects owner authority;
 protocol adapters and role selection remain in the enterprise plugin.
+
+
+### Session authentication assurance
+
+Core carries a bounded authentication context through browser JWTs, account switch
+extensions, CLI consent/exchange and opaque MCP OAuth access/refresh records. The
+optional `authentication_policy` plugin service can enforce account methods at
+issuance, access and refresh. A membership-local `non_sso_auth_generation` is separate
+from canonical person/session revocation; all session types still honor ordinary
+`auth_generation`. Original authentication account/generation remain distinct from
+the selected account to prevent switches from upgrading or reviving assurance.
+The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.
+
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.

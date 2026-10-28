@@ -1,5 +1,7 @@
 """ORM model definitions."""
 
+from .sso_break_glass_notice import SsoBreakGlassNotice
+
 from .oauth_connection import OAuthProviderConfiguration, OAuthConnectionTransaction
 from .account import Account
 from .account_halt import AccountHalt, HALT_SCOPES
@@ -207,6 +209,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "SsoBreakGlassNotice",
     "UpstreamMCPOAuthConnection",
     "UpstreamMCPOAuthTransaction",
     "AgentUsageTotal",

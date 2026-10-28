@@ -1259,6 +1259,14 @@ paths:
       summary: Authentication Options
       description: 'Begin passkey sign-in. Discoverable credentials: no username needed.'
       operationId: authentication_options_api_v1_auth_webauthn_authenticate_options_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AuthenticationOptionsRequest'
+              - type: 'null'
+              title: Body
       responses:
         '200':
           description: Successful Response
@@ -1266,6 +1274,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthenticationOptionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
@@ -29486,6 +29500,17 @@ components:
       type: object
       title: AuthUserUpdate
       description: User update model.
+    AuthenticationOptionsRequest:
+      properties:
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+      type: object
+      title: AuthenticationOptionsRequest
+      description: Optional account destination, signed into the passkey challenge.
     AuthenticationOptionsResponse:
       properties:
         options:
@@ -29510,6 +29535,12 @@ components:
         challenge_token:
           type: string
           title: Challenge Token
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
       type: object
       required:
       - credential
@@ -30279,6 +30310,12 @@ components:
       title: Body_import_usage_csv_api_v1_usage_import_csv_post
     Body_login_form_api_v1_auth_token_post:
       properties:
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
         grant_type:
           anyOf:
           - type: string
@@ -41110,6 +41147,13 @@ components:
         password:
           type: string
           title: Password
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+          description: Optional already-held account to select after credential verification
       type: object
       required:
       - username

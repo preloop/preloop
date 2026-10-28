@@ -153,7 +153,12 @@ def _expected_origin(request: Request) -> str:
 
 
 def _issue_challenge_token(
-    challenge: bytes, purpose: str, user_id: str = "", *, auth_generation: int = 0
+    challenge: bytes,
+    purpose: str,
+    user_id: str = "",
+    *,
+    auth_generation: int = 0,
+    account_id: uuid.UUID | None = None,
 ) -> str:
     """Sign the ceremony challenge into a short-lived stateless token."""
     return jwt.encode(
@@ -162,6 +167,7 @@ def _issue_challenge_token(
             "purpose": purpose,
             "user_id": user_id,
             "gen": auth_generation,
+            "account_id": str(account_id) if account_id else None,
             "exp": datetime.now(UTC) + timedelta(seconds=CHALLENGE_TTL_SECONDS),
         },
         SECRET_KEY,
@@ -208,6 +214,12 @@ class RegistrationVerifyRequest(BaseModel):
     name: Optional[str] = None
 
 
+class AuthenticationOptionsRequest(BaseModel):
+    """Optional account destination, signed into the passkey challenge."""
+
+    account_id: uuid.UUID | None = None
+
+
 class AuthenticationOptionsResponse(BaseModel):
     """Options for navigator.credentials.get plus the challenge token."""
 
@@ -220,6 +232,7 @@ class AuthenticationVerifyRequest(BaseModel):
 
     credential: dict
     challenge_token: str
+    account_id: uuid.UUID | None = None
 
 
 class PasskeySummary(BaseModel):
@@ -362,7 +375,9 @@ def registration_verify(
     "/authenticate/options",
     response_model=AuthenticationOptionsResponse,
 )
-def authentication_options(request: Request) -> AuthenticationOptionsResponse:
+def authentication_options(
+    request: Request, body: AuthenticationOptionsRequest | None = None
+) -> AuthenticationOptionsResponse:
     """Begin passkey sign-in. Discoverable credentials: no username needed."""
     _require_enabled()
     _check_challenge_rate_limit(request)
@@ -374,7 +389,11 @@ def authentication_options(request: Request) -> AuthenticationOptionsResponse:
 
     return AuthenticationOptionsResponse(
         options=json.loads(options_to_json(options)),
-        challenge_token=_issue_challenge_token(options.challenge, "authenticate"),
+        challenge_token=_issue_challenge_token(
+            options.challenge,
+            "authenticate",
+            account_id=body.account_id if body else None,
+        ),
     )
 
 
@@ -431,6 +450,8 @@ def _authentication_verify(
     _require_enabled()
 
     payload = _read_challenge_token(body.challenge_token, "authenticate")
+    if payload.get("account_id") != (str(body.account_id) if body.account_id else None):
+        raise HTTPException(status_code=400, detail="Passkey account selection changed")
 
     raw_id = body.credential.get("rawId") or body.credential.get("id") or ""
     credential_id_b64 = raw_id.rstrip("=")
@@ -468,6 +489,9 @@ def _authentication_verify(
             detail="User not found or inactive",
         )
 
+    from preloop.services.authentication_policy import select_authenticated_membership
+
+    user = select_authenticated_membership(db, user, account_id=body.account_id)
     request.state.auth_audit_user = user
 
     # A passkey is a second way into the same local account, so it obeys the
@@ -475,6 +499,11 @@ def _authentication_verify(
     # registering a passkey would be a way around REQUIRE_EMAIL_VERIFICATION.
     require_active_identity(db, user)
     enforce_verified_email(user, db)
+    from preloop.services.authentication_policy import new_authentication
+
+    auth_context = new_authentication(
+        db, user, method="passkey", source_ip=get_client_ip(request)
+    )
 
     crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 
@@ -536,9 +565,13 @@ def _authentication_verify(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         auth_generation=generation,
+        auth_context=auth_context,
     )
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {

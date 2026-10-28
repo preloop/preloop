@@ -293,6 +293,9 @@ async def test_issue_jwt_tokens_uses_long_lived_cli_refresh_tokens():
     user = MagicMock()
     user.id = db_code.user_id
     user.auth_generation = 3
+    db_code.account_id = user.account_id
+    db_code.auth_generation = 3
+    db_code.auth_context = {"amr": ["password"], "nsg": 4}
     captured = []
 
     def _capture_token(*args, **kwargs):
