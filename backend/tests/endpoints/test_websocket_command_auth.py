@@ -94,6 +94,7 @@ def _ws_env(db_session, token_user):
     event_bus = MagicMock()
     event_bus.connect = AsyncMock()
     event_bus.close = AsyncMock()
+    event_bus.nc.flush = AsyncMock()
     event_bus.nc.subscribe = AsyncMock(return_value=MagicMock(unsubscribe=AsyncMock()))
     with (
         patch(f"{WS}.get_db_session", _session),
@@ -200,6 +201,7 @@ def _execution_socket_command(client, execution_id, command="stop"):
     url = f"/api/v1/ws/flow-executions/{execution_id}?token=t"
     with client.websocket_connect(url) as ws:
         assert ws.receive_json()["type"] == "connected"
+        assert ws.receive_json()["type"] == "snapshot"
         ws.send_json({"command": command, "message": "hi"})
         return ws.receive_json()
 
