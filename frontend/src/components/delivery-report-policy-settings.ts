@@ -6,6 +6,8 @@ import {
   getUserProfile,
   hasPermission,
   onApiCachesInvalidated,
+  type UserProfile,
+  type FeaturesResponse,
 } from '../api';
 import {
   getReportRecipients,
@@ -68,6 +70,17 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** A membership hint for preserving local drafts, never an authorization check. */
+function tokenSubject(token: string): string | null {
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const subject = JSON.parse(atob(payload)).sub;
+    return typeof subject === 'string' ? subject : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The Delivery Report policy card (#2020).
  *
@@ -85,11 +98,14 @@ export class DeliveryReportPolicySettings extends LitElement {
   @state() private canManage = false;
   @state() private memberUpdatesAvailable = false;
   @state() private recipientsVisible = false;
+  @state() private recipientsAvailable = false;
   @state() private canManageRecipients = false;
   @state() private recipients: ReportRecipients | null = null;
   @state() private recipientDraft: ReportRecipients | null = null;
   @state() private roleChanges: Record<string, ReportRole | null> = {};
   @state() private recipientError = '';
+  @state() private recipientsLoading = false;
+  private identity?: { userId: string; accountId: string; token: string };
   private stopInvalidation?: () => void;
   @state() private saving = false;
   @state() private error = '';
@@ -187,14 +203,21 @@ export class DeliveryReportPolicySettings extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.stopInvalidation = onApiCachesInvalidated(() => {
-      ++this.generation;
-      this.layer = null;
-      this.draft = null;
-      this.recipients = null;
-      this.recipientDraft = null;
-      this.subscription = null;
-      this.roleChanges = {};
-      this.saving = false;
+      const token = localStorage.getItem('accessToken');
+      if (
+        token &&
+        this.identity &&
+        (token === this.identity.token ||
+          (tokenSubject(token) === this.identity.userId &&
+            tokenSubject(this.identity.token) === this.identity.userId))
+      ) {
+        // Refresh must not cancel a save or replace an unsaved draft.
+        this.identity.token = token;
+        const generation = this.generation;
+        queueMicrotask(() => void this.refreshAccess(generation));
+      } else {
+        this.clearContext();
+      }
     });
     // A card moved in the DOM reads its layer again; the first read comes
     // from updated(), once project-id is known.
@@ -207,6 +230,83 @@ export class DeliveryReportPolicySettings extends LitElement {
 
   private get isProject(): boolean {
     return !!this.projectId;
+  }
+
+  private get memberUpdatesThroughPolicy(): boolean {
+    return this.memberUpdatesAvailable && !this.recipientsAvailable;
+  }
+
+  private clearContext(): void {
+    const generation = ++this.generation;
+    this.identity = undefined;
+    this.layer = null;
+    this.draft = null;
+    this.recipients = null;
+    this.recipientDraft = null;
+    this.subscription = null;
+    this.roleChanges = {};
+    this.recipientsLoading = false;
+    this.saving = false;
+    queueMicrotask(() => {
+      if (
+        this.isConnected &&
+        generation === this.generation &&
+        localStorage.getItem('accessToken')
+      )
+        void this.load();
+    });
+  }
+
+  private applyAccess(
+    profile: UserProfile,
+    features: FeaturesResponse | null
+  ): void {
+    this.canManage = hasPermission(
+      profile.permissions,
+      this.isProject ? 'edit_projects' : 'manage_budgets'
+    );
+    this.memberUpdatesAvailable =
+      features?.features.delivery_report_member_updates === true &&
+      !this.isProject;
+    this.recipientsAvailable =
+      !this.isProject && features?.features.delivery_report_recipients === true;
+    this.recipientsVisible =
+      this.recipientsAvailable &&
+      hasPermission(profile.permissions, 'view_policies');
+    this.canManageRecipients = hasPermission(
+      profile.permissions,
+      'manage_policies'
+    );
+  }
+
+  private async refreshAccess(generation: number): Promise<void> {
+    if (!this.isConnected || generation !== this.generation) return;
+    try {
+      const [profile, features] = await Promise.all([
+        getUserProfile(),
+        getFeatures(),
+      ]);
+      if (generation !== this.generation) return;
+      if (
+        profile.id !== this.identity?.userId ||
+        profile.account_id !== this.identity?.accountId
+      ) {
+        this.clearContext();
+        return;
+      }
+      this.applyAccess(profile, features);
+      if (!this.recipientsVisible) {
+        this.recipients = null;
+        this.recipientDraft = null;
+        this.roleChanges = {};
+      } else if (!this.recipientDraft && !this.recipientsLoading) {
+        void this.loadRecipients(generation);
+      }
+    } catch {
+      if (generation === this.generation)
+        this.error =
+          'Could not refresh access. Reload the page to try again; your edits are retained.';
+    }
   }
 
   private async load(): Promise<void> {
@@ -226,22 +326,12 @@ export class DeliveryReportPolicySettings extends LitElement {
         getFeatures().catch(() => null),
       ]);
       if (generation !== this.generation) return;
-      this.canManage =
-        !!profile &&
-        hasPermission(
-          profile?.permissions,
-          this.isProject ? 'edit_projects' : 'manage_budgets'
-        );
-      this.memberUpdatesAvailable =
-        features?.features.delivery_report_member_updates === true &&
-        !this.isProject;
-      this.recipientsVisible =
-        !this.isProject &&
-        !!profile &&
-        features?.features.delivery_report_recipients === true &&
-        hasPermission(profile?.permissions, 'view_policies');
-      this.canManageRecipients =
-        !!profile && hasPermission(profile?.permissions, 'manage_policies');
+      this.identity = {
+        userId: profile.id,
+        accountId: profile.account_id,
+        token: localStorage.getItem('accessToken') ?? '',
+      };
+      this.applyAccess(profile, features);
       this.adopt(layer);
       if (this.recipientsVisible) void this.loadRecipients(generation);
       if (!this.isProject) {
@@ -313,7 +403,9 @@ export class DeliveryReportPolicySettings extends LitElement {
     // The EE recipients API owns these controls. Preserve stored values,
     // including hidden feature settings, rather than reconstructing defaults.
     for (const key of RECIPIENT_POLICY_FIELDS) {
-      if (key in layer.overrides) out[key] = layer.overrides[key];
+      if (key === 'per_member_updates' && this.memberUpdatesThroughPolicy) {
+        if (!same(draft[key], defaults[key])) out[key] = draft[key];
+      } else if (key in layer.overrides) out[key] = layer.overrides[key];
     }
     const writes: Record<string, unknown> = {};
     for (const key of ['create_follow_up', 'reopen'] as const) {
@@ -344,6 +436,15 @@ export class DeliveryReportPolicySettings extends LitElement {
         const current = await getDeliveryReportPolicy();
         if (generation !== this.generation) return;
         for (const key of RECIPIENT_POLICY_FIELDS) {
+          if (
+            key === 'per_member_updates' &&
+            this.memberUpdatesThroughPolicy &&
+            !same(
+              this.draft?.per_member_updates,
+              this.layer?.effective.per_member_updates
+            )
+          )
+            continue;
           delete overrides[key];
           if (key in current.overrides)
             Object.assign(overrides, { [key]: current.overrides[key] });
@@ -606,6 +707,23 @@ export class DeliveryReportPolicySettings extends LitElement {
           an issue.
         </p>
       </div>
+      ${
+        this.memberUpdatesThroughPolicy
+          ? html`<div class="group">
+              <sl-switch
+                data-field="per_member_updates"
+                .checked=${live(draft.per_member_updates)}
+                ?disabled=${!this.canManage || this.saving}
+                @sl-change=${(event: Event) => this.set('per_member_updates', (event.target as HTMLInputElement).checked)}
+                >Send short updates to account members</sl-switch
+              >
+              <p class="meta">
+                Off by default. Each person receives one update per report
+                period, based on the work they reviewed or discussed.
+              </p>
+            </div>`
+          : nothing
+      }
       ${this.renderRecipients()}
       ${
         this.subscription?.is_recipient
@@ -628,6 +746,7 @@ export class DeliveryReportPolicySettings extends LitElement {
 
   private async loadRecipients(generation = this.generation): Promise<void> {
     this.recipientError = '';
+    this.recipientsLoading = true;
     try {
       const data = await getReportRecipients();
       if (generation !== this.generation) return;
@@ -638,6 +757,8 @@ export class DeliveryReportPolicySettings extends LitElement {
       if (generation !== this.generation) return;
       this.recipientError =
         error instanceof Error ? error.message : 'Could not load recipients.';
+    } finally {
+      if (generation === this.generation) this.recipientsLoading = false;
     }
   }
 
@@ -716,12 +837,14 @@ export class DeliveryReportPolicySettings extends LitElement {
       ${this.recipientError ? html`<p class="error" role="alert">${this.recipientError}</p>` : nothing}
       ${
         !draft
-          ? html`<sl-button
-              size="small"
-              data-action="retry-recipients"
-              @click=${() => void this.loadRecipients()}
-              >Reload recipients</sl-button
-            >`
+          ? this.recipientsLoading
+            ? html`<p role="status">Loading recipients…</p>`
+            : html`<sl-button
+                size="small"
+                data-action="retry-recipients"
+                @click=${() => void this.loadRecipients()}
+                >Reload recipients</sl-button
+              >`
           : html`
               ${
                 this.memberUpdatesAvailable
