@@ -118,15 +118,16 @@ explicit reprovisioning.
 ## Own-execution tool evidence
 
 Grant the separate action `execution:evidence:read` to retrieve
-`GET /api/v1/flows/executions/{id}/tool-evidence?skip=0&limit=10` (maximum 25 records
-per page, with a 4 MiB aggregate records cap). Continue using `next_skip`, since
+`GET /api/v1/flows/executions/{id}/tool-evidence?skip=0&limit=10` (maximum 10 records
+per page, with an 8 MiB aggregate records cap; a page always holds at least one
+record). Continue using `next_skip`, since
 the byte cap can return fewer records than `limit`. Fresh principal, project, flow and execution ownership checks apply to
 every page. General logs, artifacts, prompts and other principals' executions
 remain unavailable to the CI credential. Key rotation retains principal ownership;
 revocation or binding changes deny subsequent reads.
 
 Enterprise rollout requires the coordinated EE action mapping
-`READ_EVIDENCE: "view_flows"` (EE !291) and the matching core revision.
+`READ_EVIDENCE: "view_flows"` and the matching core revision.
 Deploy both before granting or advertising this action; an older EE authorizer
 fails closed even when a principal grant contains the new action.
 
@@ -136,7 +137,12 @@ batch and its results, including when prose follows that batch; response-side
 capture retains the current response. Replayed
 older request history is deliberately excluded, so storage grows with new exchanges
 rather than accumulated history. `capture_complete` refers to this declared scope,
-not a historical conversation import. Repeated retries can repeat the latest exchange.
+not a historical conversation import. Request-side observations whose call ID was
+already stored with the same sanitized content digest are omitted; changed
+observations under the same call ID remain retained (`request_duplicates_omitted` counts
+them), so retries do not repeat an exchange. If an evidence write fails, the
+usage row and agent log batch are still stored, and a record with
+`capture_failed: true` and `capture_complete: false` takes its place.
 Codex native command events are captured before the ordinary log-string cap.
 Gateway call IDs and native item IDs are distinct namespaces; match only actual
 correlation data, never infer that a model-requested call executed. Native exit

@@ -1575,10 +1575,15 @@ def get_execution_tool_evidence(
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
     skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=25),
+    limit: int = Query(10, ge=1, le=10),
     current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ) -> Dict[str, Any]:
-    """Read bounded tool-only evidence; never grant general execution-log access."""
+    """Read bounded tool-only evidence; never grant general execution-log access.
+
+    A page holds at most 10 records and at most 8 MiB of encoded records; the
+    first record is always returned. When the byte budget cuts a page short,
+    ``has_more`` is true and ``next_skip`` gives the offset of the next page.
+    """
     from preloop.models.crud.execution_tool_evidence import (
         callback_diagnostics,
         evidence_page,
