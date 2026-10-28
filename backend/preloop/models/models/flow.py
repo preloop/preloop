@@ -124,6 +124,15 @@ class Flow(Base):
         nullable=True,
         index=True,
     )
+    # User who created the flow. Hosted executions of this flow may use a
+    # subscription-OAuth model only when this user owns the subscription and
+    # opted in (``AIModel.owner_flow_use_user_id``). NULL: no recorded owner.
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Template tracking for flows cloned from presets
     # Allows auto-updating non-customized flows when presets change

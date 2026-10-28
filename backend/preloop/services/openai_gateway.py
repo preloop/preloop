@@ -138,6 +138,7 @@ from preloop.services.model_gateway_auth import (
     compute_authorized_model_ids,
     resolve_managed_agent_id_for_context,
 )
+from preloop.services.subscription_flow_use import OWNER_FLOW_SUBSCRIPTION_USE
 from preloop.services.model_allowlist import (
     MODEL_NOT_ALLOWED_ERROR_CODE,
     format_model_not_allowed_detail,
@@ -4617,10 +4618,18 @@ class OpenAIGatewayService:
             )
             or "none"
         )
-        if any(
+        bound_match = any(
             bool(getattr(ai_model, "is_principal_bound_oauth", False))
             for ai_model in unauthorized_matches
-        ):
+        )
+        if bound_match and self._is_flow_execution_credential():
+            message = (
+                f"Model '{requested_model}' uses subscription credentials. A "
+                "flow execution may use it only when the subscription's owner "
+                "turned on 'Use from my flows' for this model and owns the "
+                f"flow. Models available to this credential: {available}."
+            )
+        elif bound_match:
             message = (
                 f"Model '{requested_model}' is bound to another agent's "
                 "subscription credentials and can't serve this credential. "
@@ -4639,6 +4648,15 @@ class OpenAIGatewayService:
             message=message,
             code="model_not_authorized",
         )
+
+    def _is_flow_execution_credential(self) -> bool:
+        """Whether the bearer is a flow-execution runtime key with no agent."""
+        api_key = self.auth_context.api_key
+        context = getattr(api_key, "context_data", None) if api_key else None
+        if not isinstance(context, dict) or context.get("managed_agent_id"):
+            return False
+        principal = context.get("runtime_principal") or {}
+        return isinstance(principal, dict) and principal.get("type") == "flow_execution"
 
     def _maybe_rebind_same_lineage_sibling(
         self,
@@ -11020,6 +11038,15 @@ class OpenAIGatewayService:
             api_equivalent_cost = estimated_cost
             estimated_cost = 0.0
             cost_source = "subscription"
+        # A subscription-OAuth row can reach a flow-execution credential only
+        # through the owner opt-in, so tag those rows for "used by your flows".
+        subscription_use = (
+            OWNER_FLOW_SUBSCRIPTION_USE
+            if bool(getattr(ai_model, "is_principal_bound_oauth", False))
+            and runtime_context.get("flow_execution_id")
+            and self._is_flow_execution_credential()
+            else None
+        )
         from preloop.services.analytics_detail_policy import (
             should_degrade_gateway_analytics,
         )
@@ -11118,6 +11145,7 @@ class OpenAIGatewayService:
                 "upstream_retries": upstream_retries,
                 "usage_estimated": usage_estimated or None,
                 "api_equivalent_cost": api_equivalent_cost,
+                "subscription_use": subscription_use,
                 "context_optimization": (
                     self._last_context_optimization.to_meta()
                     if self._last_context_optimization

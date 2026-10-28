@@ -187,7 +187,13 @@ rejections and unhandled errors retain it. CLI and console REST URL builders
 share a prefix within each client; they do not negotiate versions by header.
 
 Flow routing admission rejects agent-bound subscription models for ordinary
-ephemeral execution credentials before creating executions. Matrix admission
+ephemeral execution credentials before creating executions, unless the
+subscription's owner opted in ("Use from my flows",
+`ai_model.owner_flow_use_user_id`) and also owns the flow
+(`flow.created_by_user_id`). The gateway applies the same rule to the
+execution's runtime credential (`services/subscription_flow_use.py`) without
+touching agent bindings; refreshes stay serialized on the credential row, so
+the onboarded agent and hosted runs share one token lineage. Matrix admission
 validates all cells before writing the batch. Authoritative orchestrator startup
 rechecks legacy queued rows before runtime launch and records incompatible
 subscription selections as terminal `model_config` failures. Persistent agents, private host

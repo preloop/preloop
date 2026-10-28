@@ -443,7 +443,12 @@ def create_flow(
     except CallableFlowsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    flow = crud_flow.create(db=db, flow_in=flow_in, account_id=current_user.account_id)
+    flow = crud_flow.create(
+        db=db,
+        flow_in=flow_in,
+        account_id=current_user.account_id,
+        created_by_user_id=current_user.id,
+    )
 
     log_config_change(
         db,
@@ -831,6 +836,7 @@ def clone_preset(
         name=None,
         bound_ai_model_id=bound_ai_model_id,
         flow_crud=crud_flow,
+        created_by_user_id=current_user.id,
     )
 
 
