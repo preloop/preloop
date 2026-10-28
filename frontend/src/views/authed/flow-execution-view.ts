@@ -1892,21 +1892,25 @@ export class FlowExecutionView extends LitElement {
       clearInterval(this.bufferFlushInterval);
       this.bufferFlushInterval = undefined;
     }
-    // Flush any remaining logs when stopping
-    if (this.logBuffer.length > 0) {
-      this.logs = [...this.logs, ...this.logBuffer];
-      this.logBuffer = [];
-      if (this.isAutoScroll) {
-        this.updateComplete.then(() => this.scrollToBottom());
-      }
-    }
+    // Drain through the same recovery-aware deduplication as periodic flushes.
+    this.flushLogBuffer(this.logBuffer.length);
   }
 
-  flushLogBuffer() {
+  flushLogBuffer(limit = this.MAX_LINES_PER_FLUSH) {
     if (this.logBuffer.length === 0) return;
 
-    // Take up to MAX_LINES_PER_FLUSH from buffer
-    const linesToAdd = this.logBuffer.splice(0, this.MAX_LINES_PER_FLUSH);
+    // A late live event may already be in an initial/recovery persisted page.
+    // Deduplicate at flush time because recovery can finish after enqueueing.
+    const key = (log: FlowExecutionUpdate) =>
+      JSON.stringify([log.type, log.timestamp, log.payload]);
+    const seen = new Set(this.logs.map(key));
+    const linesToAdd = this.logBuffer.splice(0, limit).filter((log) => {
+      const id = key(log);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (linesToAdd.length === 0) return;
     this.logs = [...this.logs, ...linesToAdd];
 
     // Scroll after adding lines
