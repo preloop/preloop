@@ -324,6 +324,12 @@ class TestExchangeAuthorizationCode:
         db_code.is_used = False
         db_code.user_id = uuid4()
         db_code.account_id = uuid4()
+        mock_db.query.return_value.filter.return_value.first.return_value.id = (
+            db_code.user_id
+        )
+        mock_db.query.return_value.filter.return_value.first.return_value.account_id = (
+            db_code.account_id
+        )
         db_code.scopes = ["read"]
         db_code.resource = None
 
@@ -531,6 +537,10 @@ class TestExchangeRefreshToken:
         db_old_refresh.expires_at = int(time.time()) + 3600
         db_old_refresh.user_id = user_id
         db_old_refresh.account_id = account_id
+        mock_db.query.return_value.filter.return_value.first.return_value.id = user_id
+        mock_db.query.return_value.filter.return_value.first.return_value.account_id = (
+            account_id
+        )
 
         refresh = RefreshToken(
             token="old_refresh",
@@ -591,6 +601,12 @@ class TestExchangeRefreshToken:
         db_old.expires_at = int(time.time()) + 3600
         db_old.user_id = uuid4()
         db_old.account_id = uuid4()
+        mock_db.query.return_value.filter.return_value.first.return_value.id = (
+            db_old.user_id
+        )
+        mock_db.query.return_value.filter.return_value.first.return_value.account_id = (
+            db_old.account_id
+        )
 
         refresh = RefreshToken(
             token="tok",
@@ -641,6 +657,7 @@ class TestLoadAccessToken:
         db_token.scopes = ["read"]
         db_token.resource = None
         db_token.user_id = user.id
+        db_token.account_id = user.account_id
 
         with (
             patch("preloop.services.oauth_provider._get_db", return_value=mock_db),
@@ -825,6 +842,10 @@ class TestCreateAuthorizationCodeForUser:
     def test_creates_and_returns_code(self, provider, mock_db):
         user_id = uuid4()
         account_id = uuid4()
+        mock_db.query.return_value.filter.return_value.first.return_value.id = user_id
+        mock_db.query.return_value.filter.return_value.first.return_value.account_id = (
+            account_id
+        )
 
         with (
             patch("preloop.services.oauth_provider._get_db", return_value=mock_db),

@@ -475,6 +475,11 @@ def _authentication_verify(
     # registering a passkey would be a way around REQUIRE_EMAIL_VERIFICATION.
     require_active_identity(db, user)
     enforce_verified_email(user, db)
+    from preloop.services.authentication_policy import new_authentication
+
+    auth_context = new_authentication(
+        db, user, method="passkey", source_ip=get_client_ip(request)
+    )
 
     crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 
@@ -536,9 +541,13 @@ def _authentication_verify(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         auth_generation=generation,
+        auth_context=auth_context,
     )
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {

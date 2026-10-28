@@ -15,7 +15,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Depends
+from fastapi import APIRouter, Form, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from mcp.server.auth.provider import construct_redirect_uri
@@ -169,21 +169,29 @@ class OAuthConsentRequest(BaseModel):
 
 @router.post("/api/v1/auth/oauth-consent")
 async def api_oauth_authorize(
-    payload: OAuthConsentRequest, current_user=Depends(get_current_active_user)
+    payload: OAuthConsentRequest,
+    request: Request,
+    current_user=Depends(get_current_active_user),
 ):
     """Handle OAuth consent from the authenticated frontend SPA."""
     validation = _validate_client_and_redirect(payload.client_id, payload.redirect_uri)
     if validation["error"]:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=400, detail=validation["error"])
 
     provider = _get_oauth_provider()
     if not provider:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=500, detail="OAuth not configured")
 
+    from preloop.api.auth.jwt import decode_token
+    from preloop.services.authentication_policy import authentication_claims
+
+    scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Person session required")
+    token_data = decode_token(bearer)
+    if token_data.refresh or token_data.sub != str(current_user.id):
+        raise HTTPException(status_code=401, detail="Person session required")
+    auth_context = authentication_claims(token_data.claims)
     scope_list = payload.scopes.split() if payload.scopes else []
     code = provider.create_authorization_code_for_user(
         client_id=payload.client_id,
@@ -196,6 +204,7 @@ async def api_oauth_authorize(
         code_challenge=payload.code_challenge,
         scopes=scope_list,
         resource=payload.resource or None,
+        auth_context=auth_context,
     )
 
     logger.info(
@@ -308,6 +317,14 @@ async def consent_submit(
                 resource=resource,
             )
 
+        from preloop.api.auth.identity import require_active_identity
+        from preloop.api.auth.email_verification import enforce_verified_email
+        from preloop.services.authentication_policy import new_authentication
+
+        require_active_identity(db, user)
+        enforce_verified_email(user, db)
+        auth_context = new_authentication(db, user, method="password")
+
         # Create authorization code
         scope_list = scopes.split() if scopes else []
         code = provider.create_authorization_code_for_user(
@@ -321,6 +338,7 @@ async def consent_submit(
             code_challenge=code_challenge,
             scopes=scope_list,
             resource=resource or None,
+            auth_context=auth_context,
         )
 
         # Redirect back to client with authorization code

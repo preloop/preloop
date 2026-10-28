@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +20,24 @@ from preloop.api.endpoints.oauth_consent import (
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def canonical_identity_boundary(monkeypatch):
+    """Protocol fixtures represent a verified, active canonical identity."""
+    from preloop.models.crud import crud_person, crud_account
+
+    person = SimpleNamespace(
+        id=uuid4(),
+        username="protocol-person",
+        email="protocol@example.test",
+        identity_status="active",
+        email_verified_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(crud_person, "resolve_for_membership", lambda *a, **kw: person)
+    monkeypatch.setattr(
+        crud_account, "get", lambda *a, **kw: SimpleNamespace(is_active=True)
+    )
 
 
 @pytest.fixture(autouse=True)

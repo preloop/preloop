@@ -36,6 +36,10 @@ from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.user import User
 from preloop.schemas.auth import TokenData
+from preloop.services.authentication_policy import (
+    authentication_claims,
+    authorize_authentication,
+)
 
 SECRET_KEY: str = settings.security.secret_key
 ALGORITHM = "HS256"
@@ -491,6 +495,7 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
     *,
     auth_generation: int = 0,
+    auth_context: dict[str, Any] | None = None,
 ) -> str:
     """Create a JWT access token.
 
@@ -504,6 +509,7 @@ def create_access_token(
         JWT access token.
     """
     to_encode = data.copy()
+    to_encode.update(authentication_claims(auth_context))
 
     if expires_delta:
         expire = datetime.now(UTC) + expires_delta
@@ -521,6 +527,7 @@ def create_refresh_token(
     session_started_at: Optional[datetime] = None,
     *,
     auth_generation: int = 0,
+    auth_context: dict[str, Any] | None = None,
 ) -> str:
     """Create a JWT refresh token carrying the session start claim.
 
@@ -546,6 +553,7 @@ def create_refresh_token(
         },
         expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
         auth_generation=auth_generation,
+        auth_context=auth_context,
     )
 
 
@@ -734,6 +742,7 @@ def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
     require_active_identity(db, user)
     reject_stale_token_generation(user, token_data)
     reject_revoked_cli_session(db, user, token_data)
+    authorize_authentication(db, user, claims=token_data.claims, purpose="access")
     if account_hooks.is_token_revoked(db, user, token_data.claims):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

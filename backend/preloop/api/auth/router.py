@@ -1075,7 +1075,7 @@ async def reset_password(
 
 async def _audited_password_login(
     username: str, password: str, db: Session, source_ip: str | None
-) -> UserModel | None:
+) -> tuple[UserModel | None, dict[str, Any]]:
     """Audit the final password result, including landing-policy refusals."""
     from preloop.api.loop_safety import run_db_off_loop
     from preloop.services.auth_audit import (
@@ -1084,7 +1084,10 @@ async def _audited_password_login(
         record_login_event,
     )
 
+    from preloop.services.authentication_policy import new_authentication
+
     user = None
+    auth_context: dict[str, Any] = {}
     succeeded = False
     reason_code = "invalid_credentials"
     try:
@@ -1092,8 +1095,13 @@ async def _audited_password_login(
         if user is not None:
             reason_code = "identity_or_policy_rejected"
             user = await _landing_row(user, db)
+            auth_context = await run_db_off_loop(
+                lambda: new_authentication(
+                    db, user, method="password", source_ip=source_ip
+                )
+            )
             succeeded = True
-        return user
+        return user, auth_context
     except Exception as exc:
         reason_code = login_failure_reason(exc, method="password")
         raise
@@ -1157,7 +1165,7 @@ async def login_form(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await _audited_password_login(
+    user, auth_context = await _audited_password_login(
         form_data.username, form_data.password, db, get_client_ip(request)
     )
     if not user:
@@ -1174,6 +1182,7 @@ async def login_form(
         data={"sub": str(user.id), "scopes": form_data.scopes or []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
@@ -1182,6 +1191,7 @@ async def login_form(
         sub=str(user.id),
         scopes=form_data.scopes or [],
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {
@@ -1212,7 +1222,7 @@ async def login_json(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await _audited_password_login(
+    user, auth_context = await _audited_password_login(
         request.username, request.password, db, get_client_ip(http_request)
     )
     if not user:
@@ -1229,12 +1239,16 @@ async def login_json(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
     # sliding session window (sat claim).
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {
@@ -1303,6 +1317,11 @@ def refresh_token(
 
         require_active_identity(session, user)
         reject_stale_token_generation(user, token_data)
+        from preloop.services.authentication_policy import authorize_authentication
+
+        auth_context = authorize_authentication(
+            db, user, claims=token_data.claims, purpose="refresh"
+        )
 
         # A session may not outlive the verification requirement either: a
         # user who was signed in when the setting went on stops rotating.
@@ -1329,6 +1348,7 @@ def refresh_token(
             data={"sub": token_data.sub, "scopes": token_data.scopes},
             expires_delta=access_token_expires,
             auth_generation=generation,
+            auth_context=auth_context,
         )
 
         # Rotate the refresh token, carrying the original session start
@@ -1338,6 +1358,7 @@ def refresh_token(
             scopes=token_data.scopes,
             session_started_at=session_started_at,
             auth_generation=generation,
+            auth_context=auth_context,
         )
 
         return {
