@@ -8434,8 +8434,19 @@ class OpenAIGatewayService:
                     message="Conflicting structured response formats",
                 )
         if response_format is not None:
-            # Structured output is an explicit contract. Unsupported providers
-            # must reject it instead of LiteLLM silently dropping the schema.
+            # Preserve the schema contract while keeping ordinary unsupported
+            # option dropping. With global drop_params=False LiteLLM otherwise
+            # rejects unrelated client flags such as parallel_tool_calls.
+            supported = litellm.get_supported_openai_params(model=kwargs["model"])
+            if not supported or "response_format" not in supported:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="The selected provider/model does not support structured response_format",
+                )
+            for key in litellm.OPENAI_CHAT_COMPLETION_PARAMS:
+                if key not in supported and key not in {"model", "messages"}:
+                    kwargs.pop(key, None)
             kwargs["response_format"] = response_format
             kwargs["drop_params"] = False
         # Identify as Preloop on every upstream. User-Agent is global so

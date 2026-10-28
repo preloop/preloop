@@ -65,3 +65,57 @@ def test_native_script_disables_unconstrained_followup_and_clears_stale_result()
     assert "rm -f -- /workspace/result.json" in script
     assert "--output-schema /tmp/preloop-native-result-schema.json" in script
     assert "PRELOOP_COMPLETION_NUDGE_START" not in script
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"feedback": {"enabled": True}},
+        {"max_resumes_per_pr": 2},
+        {"cli_session_restore_archive": "archive"},
+        {"native_session_reference": {"session_id": "prior"}},
+        {"confirmation_nudge": True},
+    ],
+)
+def test_native_result_save_rejects_resume_policies(policy: dict) -> None:
+    from pydantic import ValidationError
+    from preloop.models.schemas.flow import FlowCreate, FlowUpdate
+
+    config = {"native_result": True, **policy}
+    with pytest.raises(ValidationError, match="native_result"):
+        FlowCreate(
+            name="Review",
+            prompt_template="Review",
+            agent_type="codex",
+            agent_config=config,
+            result_schema=SCHEMA,
+        )
+    with pytest.raises(ValidationError, match="native_result"):
+        FlowUpdate(agent_config=config)
+
+
+def test_native_result_admission_refuses_historical_resume_without_cold_fallback() -> (
+    None
+):
+    from types import SimpleNamespace
+    from preloop.services.native_result import validate_native_result_admission
+
+    flow = SimpleNamespace(
+        agent_config={"native_result": True, "max_resumes_per_pr": 0}
+    )
+    validate_native_result_admission(flow, {})
+    with pytest.raises(ValueError, match="cold start"):
+        validate_native_result_admission(
+            flow,
+            {
+                "_resume": {
+                    "execution_id": "prior",
+                    "cli_session": {"session_id": "prior"},
+                }
+            },
+        )
+    flow.agent_config["feedback"] = {"enabled": True}
+    with pytest.raises(ValueError, match="feedback"):
+        validate_native_result_admission(flow)
+    flow.agent_config["native_result"] = False
+    validate_native_result_admission(flow, {"_resume": {"execution_id": "prior"}})

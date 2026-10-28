@@ -37,7 +37,12 @@ def bus() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_execution_socket_sends_snapshot_after_subscribe() -> None:
+@pytest.mark.parametrize(
+    "event_type,seq", [("status_update", 5), ("model_gateway_call", 3)]
+)
+async def test_execution_socket_sends_snapshot_after_subscribe(
+    event_type: str, seq: int
+) -> None:
     client, event_bus = socket(), bus()
     execution_id = uuid4()
     order = []
@@ -62,9 +67,9 @@ async def test_execution_socket_sends_snapshot_after_subscribe() -> None:
                 SimpleNamespace(
                     data=json.dumps(
                         {
-                            "type": "status_update",
+                            "type": event_type,
                             "execution_id": str(execution_id),
-                            "seq": 5,
+                            "seq": seq,
                             "payload": {"status": "STOPPED"},
                         }
                     ).encode()
@@ -96,7 +101,7 @@ async def test_execution_socket_sends_snapshot_after_subscribe() -> None:
     assert [call.args[0]["type"] for call in client.send_json.call_args_list] == [
         "connected",
         "snapshot",
-        "status_update",
+        event_type,
     ]
     assert client.send_json.call_args_list[1].args[0] == snapshot
     event_bus.nc.flush.assert_awaited_once()
@@ -143,6 +148,11 @@ async def test_flow_stream_filters_before_send_and_rechecks_permission(
             await handler(
                 SimpleNamespace(data=json.dumps({**base, **changes}).encode())
             )
+        if revoked:
+            # A queued event must not authorize again after revocation, and
+            # an idle receive must be cancelled without waiting sixty seconds.
+            await handler(SimpleNamespace(data=json.dumps(base).encode()))
+            await asyncio.Event().wait()
         raise WebSocketDisconnect()
 
     event_bus.nc.subscribe.side_effect = subscribe
@@ -155,9 +165,7 @@ async def test_flow_stream_filters_before_send_and_rechecks_permission(
     assert reads.await_count == 2  # wrong scope and log frames never query or send
     if revoked:
         client.send_text.assert_not_called()
-        assert any(
-            call.kwargs.get("code") == 1008 for call in client.close.call_args_list
-        )
+        client.close.assert_awaited_once_with(code=1008)
     else:
         client.send_text.assert_awaited_once()
         encoded = client.send_text.call_args.args[0]

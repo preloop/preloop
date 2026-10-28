@@ -69,3 +69,60 @@ def test_oversize_record_is_explicitly_missing_not_truncated_json() -> None:
     )
     assert document["capture_complete"] is False
     assert document["observations"] == []
+
+
+def test_latest_exchange_capture_grows_linearly_for_replayed_history() -> None:
+    history = []
+    captured_bytes = 0
+    for index in range(100):
+        history.extend(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": f"call-{index}",
+                    "name": "read",
+                    "arguments": "x" * 1000,
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": f"call-{index}",
+                    "output": "y" * 1000,
+                },
+            ]
+        )
+        document = capture_tools({"input": history}, {}, capture_content=True)
+        assert document["request_scope"] == "latest_tool_exchange"
+        assert document["capture_complete"] is True
+        assert [r["call_id"] for r in document["observations"]] == [f"call-{index}"] * 2
+        captured_bytes += len(json.dumps(document))
+    assert captured_bytes < 300000
+
+
+def test_latest_chat_parallel_results_survive_history_selection() -> None:
+    history = [
+        {"role": "tool", "tool_call_id": "old", "content": "old"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": name, "function": {"name": "read", "arguments": "{}"}}
+                for name in ("one", "two")
+            ],
+        },
+        *[
+            {"role": "tool", "tool_call_id": name, "content": "ok"}
+            for name in ("one", "two")
+        ],
+    ]
+    doc = capture_tools({"messages": history}, {}, capture_content=True)
+    assert [r["call_id"] for r in doc["observations"]] == ["one", "two", "one", "two"]
+    assert doc["capture_complete"]
+
+
+def test_sanitization_precedes_canonicalization_of_nested_argument_json() -> None:
+    doc = capture_tools(
+        {},
+        response('{"password":"secret","text":"\\ud800\\u0000x"}'),
+        capture_content=True,
+    )
+    assert json.loads(doc["observations"][0]["value"])["text"] == "x"
+    assert doc["observations"][0]["redacted"]

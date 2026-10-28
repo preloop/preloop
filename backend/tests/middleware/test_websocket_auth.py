@@ -125,7 +125,12 @@ class TestWebSocketAuthMiddleware:
     @patch(
         "preloop.api.middleware.websocket_auth.WebSocketAuthMiddleware._validate_token"
     )
-    async def test_authenticated_path_with_valid_token(self, mock_validate, middleware):
+    @pytest.mark.parametrize(
+        "path", ["/api/v1/ws", "/api/v1/ws/flows/flow-id/lifecycle"]
+    )
+    async def test_authenticated_path_with_valid_token(
+        self, mock_validate, middleware, path
+    ):
         """Authenticated WebSocket path with valid token should be allowed."""
         mock_user = MagicMock()
         mock_user.id = "user-123"
@@ -135,7 +140,7 @@ class TestWebSocketAuthMiddleware:
 
         scope = {
             "type": "websocket",
-            "path": "/api/v1/ws",
+            "path": path,
             "headers": [(b"authorization", b"Bearer valid-token")],
             "query_string": b"",
             "state": {},

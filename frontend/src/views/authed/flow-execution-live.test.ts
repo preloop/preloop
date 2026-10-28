@@ -82,6 +82,15 @@ describe('execution live metadata', () => {
   });
 
   it('refreshes a private assignment and the terminal reason without reloading logs', async () => {
+    // Startup recovery deliberately reloads retained logs after subscribing.
+    // Measure status-only refreshes after that independent recovery finishes.
+    await waitUntil(
+      () =>
+        (view as any).realtimeRecoveryTimer === undefined &&
+        !(view as any).realtimeRecovery &&
+        (view as any).metadataRefreshTimer === undefined &&
+        !(view as any).metadataRefreshRunning
+    );
     snapshot = {
       ...snapshot,
       status: 'RUNNING',

@@ -85,8 +85,9 @@ event received during the database read from overtaking the snapshot. Snapshot
 fields are `execution_id`, `flow_id`, `status`, `agent_session_reference`,
 `start_time`, `end_time`, `stop_requested_at`, `stop_confirmed_at`, `seq`,
 `lifecycle_seq`, and `sequence_domain`. Datetimes are ISO strings; absent values
-are null. Events allocated at or below the snapshot watermark are superseded by
-the authoritative state; retrieve retained logs separately.
+are null. Lifecycle events at or below the snapshot watermark are superseded by
+the authoritative state. Activity payloads are not contained in that snapshot:
+queued log, gateway and tool events still pass through after the snapshot.
 
 Every orchestrator, runner and model-gateway execution update allocates `seq`
 through an atomic PostgreSQL upsert in the CRUD layer. The independent
@@ -104,9 +105,13 @@ one recovery request group per two seconds, including ongoing gap bursts.
 
 For recovery, GET `/api/v1/flow-executions/{execution_id}/lifecycle` reads state
 and allocation watermarks in one authorized database statement. Keep the largest
-seen sequence, suppress duplicate/older events, and coalesce a refresh after a
-jump greater than one. A refresh should re-read execution details and retained
-logs as needed. Discard a late snapshot whose cursor is below the local cursor.
+seen sequence and coalesce a refresh after a jump greater than one. Suppress
+older lifecycle state, but do not discard unseen activity solely because its
+sequence is below a snapshot watermark. The console tracks the most recent
+4,096 activity sequences for duplicate suppression and merges retained logs,
+bounded gateway metadata and tool activity during recovery. Overlapping log
+pages are deduplicated while their pagination offset advances by stored rows
+read. Discard a late snapshot whose cursor is below the local cursor.
 The console refreshes on initial subscription and reconnection as well. Core
 NATS provides no durable replay; a missed final event with no later sequence
 cannot itself announce a gap. Consumers needing eventual terminal state must

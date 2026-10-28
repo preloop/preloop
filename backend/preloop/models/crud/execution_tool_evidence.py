@@ -8,12 +8,17 @@ from sqlalchemy.dialects.postgresql import insert
 
 from sqlalchemy.orm import Session
 
+from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
+
 from preloop.models import models
 from preloop.services.execution_tool_evidence import (
     EVIDENCE_TYPE,
     canonical_bytes,
     digest,
 )
+
+
+MAX_PAGE_BYTES = 4 * 1024 * 1024
 
 
 def persist_tool_evidence(
@@ -30,7 +35,9 @@ def persist_tool_evidence(
         "api_usage_id": str(usage.id),
     }
     sanitized = apply_storage_redaction(str(usage.account_id), document)
-    sanitized["storage_redacted"] = sanitized != document
+    sanitized["storage_redacted"] = (
+        document.get("storage_redacted", False) or sanitized != document
+    )
     _persist_document(
         db,
         execution_id=usage.flow_execution_id,
@@ -51,7 +58,12 @@ def _persist_document(
     """Idempotent observations keep duplicate log fetches out of the audit."""
     from preloop.utils.secret_scrubbing import scrub_structure
 
-    cleaned = scrub_structure(document)
+    source_id = sanitize_for_jsonb(source_id)
+    safe = sanitize_for_jsonb(document)
+    if safe != document:
+        safe["storage_redacted"] = True
+        safe["capture_complete"] = False
+    cleaned = scrub_structure(safe)
     if cleaned != document:
         cleaned["storage_redacted"] = True
     document = cleaned
@@ -117,28 +129,33 @@ def persist_native_command_evidence(
         return
     raw = item.get("command")
     value = _redact_value(raw) if settings.model_gateway_capture_content else None
-    complete = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
+    bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
+    storage_redacted = sanitize_for_jsonb(raw) != raw
+    complete = bounded and not storage_redacted
     document = {
         "version": 1,
         "execution_id": str(execution_id),
         "capture_complete": complete,
+        "storage_redacted": storage_redacted,
         "observations": [
             {
                 "source": "native",
                 "kind": "command",
                 "event": event["type"],
                 "item_id": item_id,
-                "value": value if complete else None,
+                "value": value if bounded else None,
                 "exit_code": item.get("exit_code")
                 if type(item.get("exit_code")) is int
                 else None,
                 "redacted": raw != value,
-                "truncated": not complete,
+                "truncated": not bounded,
             }
         ],
     }
     sanitized = apply_storage_redaction(account_id, document)
-    sanitized["storage_redacted"] = sanitized != document
+    sanitized["storage_redacted"] = (
+        document.get("storage_redacted", False) or sanitized != document
+    )
     _persist_document(
         db,
         execution_id=UUID(str(execution_id)),
@@ -159,29 +176,35 @@ def evidence_page(
         models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
     )
     total = query.count()
-    rows = (
-        query.order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
-        .offset(skip)
-        .limit(limit)
-        .all()
+    ordered = query.order_by(
+        models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id
     )
     records = []
-    for row in rows:
+    page_bytes = 2  # JSON array brackets; metadata envelope is bounded separately.
+    # One-row queries bound driver buffering too (yield_per is not sufficient
+    # with every DBAPI cursor). Fetch at most one candidate beyond the page.
+    for index in range(limit):
+        row = ordered.offset(skip + index).limit(1).first()
+        if row is None:
+            break
         stored = row.metadata_ or {}
         try:
             document = json.loads("".join(stored["chunks"]))
             valid = digest(document) == stored["sha256"]
         except (KeyError, TypeError, ValueError):
             document, valid = None, False
-        records.append(
-            {
-                "id": str(row.id),
-                "api_usage_id": stored.get("api_usage_id"),
-                "sha256": stored.get("sha256"),
-                "integrity_valid": valid,
-                "document": document if valid else None,
-            }
-        )
+        record = {
+            "id": str(row.id),
+            "api_usage_id": stored.get("api_usage_id"),
+            "sha256": stored.get("sha256"),
+            "integrity_valid": valid,
+            "document": document if valid else None,
+        }
+        record_bytes = len(canonical_bytes(record)) + bool(records)
+        if records and page_bytes + record_bytes > MAX_PAGE_BYTES:
+            break
+        records.append(record)
+        page_bytes += record_bytes
     expected_query = db.query(models.ApiUsage).filter(
         models.ApiUsage.flow_execution_id == execution.id
     )
@@ -200,7 +223,8 @@ def evidence_page(
         "records": records,
         "skip": skip,
         "total": total,
-        "has_more": skip + len(rows) < total,
+        "has_more": skip + len(records) < total,
+        "next_skip": skip + len(records),
         "gateway_request_count": expected,
         "missing_gateway_requests": missing,
         "coverage": "missing" if missing else ("captured" if total else "unavailable"),

@@ -378,3 +378,41 @@ def test_native_responses_schema_is_forwarded_without_silent_drop() -> None:
         "json_schema": {"name": "review", "schema": schema, "strict": True},
     }
     assert kwargs["drop_params"] is False
+
+
+def test_schema_keeps_selective_dropping_for_unrelated_unsupported_flags() -> None:
+    model = SimpleNamespace(
+        provider_name="openai", model_identifier="example", api_endpoint=None
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.get_supported_openai_params",
+        return_value=["response_format", "temperature"],
+    ):
+        kwargs = _build_kwargs(
+            model,
+            {
+                "response_format": {"type": "json_object"},
+                "parallel_tool_calls": True,
+                "temperature": 0.1,
+            },
+        )
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["drop_params"] is False
+    assert "parallel_tool_calls" not in kwargs
+    assert kwargs["temperature"] == 0.1
+    assert kwargs["messages"] and kwargs["model"]
+
+
+def test_zai_schema_rejects_unsupported_format_explicitly() -> None:
+    from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+    model = SimpleNamespace(
+        provider_name="zai",
+        model_identifier="glm-5.3",
+        api_endpoint="https://api.z.ai/api/paas/v4",
+    )
+    with pytest.raises(ModelGatewayAPIError, match="structured response_format"):
+        _build_kwargs(
+            model,
+            {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},
+        )
