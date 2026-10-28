@@ -114,8 +114,7 @@ def test_preview_post_renderer_prevents_rollout_overlap() -> None:
             continue
         assert preview["spec"]["strategy"] == {"type": "Recreate"}
         pod = preview["spec"]["template"]["spec"]
-        assert pod["terminationGracePeriodSeconds"] <= 90
-        assert pod["containers"] == original["spec"]["template"]["spec"]["containers"]
+        assert pod == original["spec"]["template"]["spec"]
     # The normal render retains its original rolling deployment strategy.
     gateway = next(
         doc

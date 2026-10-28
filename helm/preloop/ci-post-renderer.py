@@ -7,7 +7,7 @@ import yaml
 
 
 def main() -> None:
-    """Prevent simultaneous replacement pods and long preview draining."""
+    """Prevent simultaneous replacement pods while preserving graceful draining."""
     documents = list(yaml.safe_load_all(sys.stdin))
     for document in documents:
         if not document or document.get("kind") != "Deployment":
@@ -16,10 +16,6 @@ def main() -> None:
         # Recreate waits for old pods to stop before creating replacements.
         # maxSurge=0 alone still permits terminating pods to overlap new pods.
         spec["strategy"] = {"type": "Recreate"}
-        pod = spec["template"]["spec"]
-        pod["terminationGracePeriodSeconds"] = min(
-            pod.get("terminationGracePeriodSeconds", 30), 90
-        )
     yaml.safe_dump_all(documents, sys.stdout, sort_keys=False)
 
 

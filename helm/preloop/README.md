@@ -1068,6 +1068,6 @@ pod. Check the rendered footprint against namespace quotas, including rollout
 and hook headroom, before enabling additional parallel environments.
 
 The GitLab preview jobs also apply `ci-post-renderer.py`: preview Deployments
-use Recreate and bounded termination, allowing brief downtime while avoiding
+use Recreate while preserving the chart's drain settings, allowing downtime while avoiding
 overlapping rollout pods. Ordinary chart consumers keep their rolling strategy.
 The renderer requires Python with PyYAML, installed by the preview jobs.
