@@ -38,6 +38,7 @@ from .flow_artifact import FlowArtifact
 from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
+from .execution_realtime_cursor import ExecutionRealtimeCursor
 from .fleet import FleetFinding, FleetAlertSettings
 from .live_activity import (
     ActivityRollup,
@@ -303,6 +304,7 @@ __all__ = [
     "FlowArtifact",
     "FlowExecution",
     "ExecutionResultGrant",
+    "ExecutionRealtimeCursor",
     "FlowRunner",
     "FlowRunnerAssignment",
     "RUNNER_SESSION_LIVE_STATES",

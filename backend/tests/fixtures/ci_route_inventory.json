@@ -162,6 +162,7 @@
   "GET /api/v1/fleet/code-activity": "deny",
   "GET /api/v1/fleet/map": "deny",
   "GET /api/v1/fleet/usage": "deny",
+  "GET /api/v1/flow-executions/{execution_id}/lifecycle": "deny",
   "GET /api/v1/flows": "deny",
   "GET /api/v1/flows/batches/{batch_id}/executions": "deny",
   "GET /api/v1/flows/executions": "execution:read",
@@ -545,6 +546,7 @@
   "WEBSOCKET /api/v1/ws": "deny",
   "WEBSOCKET /api/v1/ws/desktop/{view_id}": "deny",
   "WEBSOCKET /api/v1/ws/flow-executions/{execution_id}": "deny",
+  "WEBSOCKET /api/v1/ws/flows/{flow_id}/lifecycle": "deny",
   "WEBSOCKET /api/v1/ws/runtime-sessions/{runtime_session_id}": "deny",
   "WEBSOCKET /api/v1/ws/unified": "deny"
 }

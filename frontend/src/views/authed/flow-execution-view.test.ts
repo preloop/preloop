@@ -2772,4 +2772,81 @@ describe('FlowExecutionView', () => {
       );
     }
   });
+  it('coalesces gaps, ignores reordered events and recovers retained logs with a snapshot', async () => {
+    const element = await load('exec-running');
+    const state = element as any;
+    const live = {
+      type: 'agent_log_line',
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { line: 'live' },
+    };
+    state.logs = [live];
+    state.realtimeSequence.value = 10;
+    fetchStub.resetHistory();
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes('/lifecycle'))
+        return new Response(
+          JSON.stringify({
+            type: 'snapshot',
+            execution_id: 'exec-running',
+            seq: 14,
+            status: 'STOPPED',
+            agent_session_reference: 'run-1',
+            stop_confirmed_at: '2026-10-28T10:00:03Z',
+          }),
+          { status: 200 }
+        );
+      if (url.includes('/logs'))
+        return new Response(
+          JSON.stringify({
+            logs: [
+              {
+                type: 'agent_log_line',
+                timestamp: '2026-10-28T10:00:01Z',
+                payload: { line: 'recovered' },
+              },
+              live,
+            ],
+          }),
+          { status: 200 }
+        );
+      return new Response('{}', { status: 503 });
+    });
+    for (const seq of [12, 14])
+      state.handleWebSocketMessage({
+        type: 'agent_log_line',
+        execution_id: 'exec-running',
+        seq,
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'new' },
+      });
+    state.handleWebSocketMessage({
+      type: 'status_update',
+      execution_id: 'exec-running',
+      seq: 13,
+      payload: { status: 'FAILED' },
+    });
+    expect(state.execution.status).to.equal('RUNNING');
+    await waitUntil(() => state.execution.status === 'STOPPED');
+    expect(state.execution.agent_session_reference).to.equal('run-1');
+    expect(
+      state.logs.filter((log: any) => log.payload?.line === 'live')
+    ).to.have.length(1);
+    expect(
+      state.logs.some((log: any) => log.payload?.line === 'recovered')
+    ).to.equal(true);
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString().includes('/lifecycle'))
+    ).to.have.length(1);
+    state.applyLifecycleSnapshot({
+      type: 'snapshot',
+      execution_id: 'exec-running',
+      seq: 9,
+      status: 'RUNNING',
+    });
+    expect(state.execution.status).to.equal('STOPPED');
+  });
 });
