@@ -42,10 +42,10 @@ allowed_mcp_tools:
 # Tool enablement is the allowlist. Name-only entries are the legacy
 # shape and mean Preloop builtins on preloop-mcp.
 # sandbox_type: exec (the preset default) launches Codex with --yolo.
-# sandbox_type: read-only launches with --sandbox read-only, disables
-# the shell_tool feature, and does not pass --yolo. config.toml pins
-# approval_policy = "never", which is already the codex exec default,
-# so the run does not wait for a person. That is the platform shell lock.
+# sandbox_type: read-only uses -c 'sandbox_mode="read-only"' and
+# -c 'approval_policy="never"' plus --disable shell_tool, without --yolo.
+# These flags preserve the platform shell lock for exec and exec resume,
+# including reminders and recovery, without waiting for a person.
 git_clone_config: null
 timeout_seconds: 1800          # Optional per-flow wall-clock budget
 is_preset: true

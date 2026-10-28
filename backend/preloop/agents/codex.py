@@ -958,25 +958,17 @@ exit $CODEX_EXIT_CODE
         return config.get("sandbox_type") == "read-only"
 
     def _codex_sandbox_flags(self, shell_locked: bool) -> str:
-        """Return the Codex exec sandbox flags for this run.
+        """Preserve read-only restrictions across both exec and exec resume.
 
-        The locked path is ``--sandbox read-only --disable shell_tool``
-        and no ``--yolo``. Codex 0.153.4 (the pinned CLI) documents
-        ``read-only`` as a sandbox value and ``shell_tool`` as a stable
-        feature. ``codex exec`` already sets ``AskForApproval::Never``, so
-        omitting ``--yolo`` does not wait for a person. ``--yolo`` is the
-        alias that also selects ``danger-full-access``. The locked path
-        still writes ``approval_policy = "never"`` into config.toml so a
-        resume cannot fall back to prompting.
-
-        Args:
-            shell_locked: Result of ``_shell_locked`` for this execution.
-
-        Returns:
-            Flags inserted into each ``codex exec`` invocation.
+        Codex 0.153.4 accepts --sandbox only on exec. Both subcommands accept
+        config overrides, so pin the sandbox and approvals there and keep the
+        shell tool disabled for locked flows, including reminders and recovery.
         """
         if shell_locked:
-            return "--sandbox read-only --disable shell_tool"
+            return (
+                "-c 'sandbox_mode=\"read-only\"' "
+                "-c 'approval_policy=\"never\"' --disable shell_tool"
+            )
         return "--yolo"
 
     def _build_codex_auth_config(

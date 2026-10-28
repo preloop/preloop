@@ -6962,6 +6962,24 @@ class FlowExecutionOrchestrator:
             # The agent script already asked, in the container where the work
             # happened. A second round would be a second model call for the
             # same answer, from a session that knows strictly less.
+            log_lines = (
+                prior_log_lines or self.execution_logger.get_agent_output_lines()
+            )
+            armed_lines = _armed_log_lines(log_lines)
+            # A truncated tail may retain only the result marker. The
+            # observed in-place round still makes its explicit failure useful.
+            nudge_start = (
+                armed_lines.index(COMPLETION_NUDGE_MARKER) + 1
+                if COMPLETION_NUDGE_MARKER in armed_lines
+                else 0
+            )
+            failure_reason = _failure_report_in_log_lines(armed_lines[nudge_start:])
+            if failure_reason is not None:
+                return _finish(
+                    "explicit_failure",
+                    reason=failure_reason,
+                    channel="inplace_failure_report",
+                )
             return _finish("skipped_inplace_nudge_used")
 
         actions_taken = self.execution_logger.get_actions_taken()

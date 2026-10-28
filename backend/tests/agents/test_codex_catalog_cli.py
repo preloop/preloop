@@ -163,3 +163,115 @@ def test_pinned_cli_spawns_custom_model_with_effort(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_pinned_cli_read_only_resume_preserves_sandbox(tmp_path: Path) -> None:
+    """Exercise the real resume parser and retained policy without inference."""
+    import shlex
+    from unittest.mock import patch
+
+    from preloop.agents.codex import CodexAgent
+
+    binary = os.environ.get("PRELOOP_TEST_CODEX_BINARY")
+    if not binary:
+        pytest.skip("requires a local pinned Codex binary")
+    requests: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802 - HTTP server interface
+            requests.append(
+                json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+            item = {
+                "id": "msg_fixture",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fixture done", "annotations": []}
+                ],
+            }
+            response = {
+                "id": "resp_fixture",
+                "status": "completed",
+                "output": [item],
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            }
+            events = [
+                {
+                    "type": "response.created",
+                    "response": {**response, "output": [], "status": "in_progress"},
+                },
+                {"type": "response.output_item.done", "output_index": 0, "item": item},
+                {"type": "response.completed", "response": response},
+            ]
+            data = "".join("data: " + json.dumps(e) + "\n\n" for e in events).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # Deliberately weaker defaults prove that the invocation pins policy.
+        (tmp_path / "config.toml").write_text(
+            'model = "example/custom"\nmodel_provider = "fixture"\n'
+            'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n'
+            '[model_providers.fixture]\nname = "Fixture"\nwire_api = "responses"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n'
+            'env_key = "FIXTURE_API_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+        )
+        with patch.object(
+            CodexAgent, "_detect_kubernetes_environment", return_value=False
+        ):
+            flags = shlex.split(CodexAgent({})._codex_sandbox_flags(True))
+        env = {
+            "PATH": os.environ["PATH"],
+            "CODEX_HOME": str(tmp_path),
+            "FIXTURE_API_KEY": "dummy",
+            "PRELOOP_DISABLE_TELEMETRY": "true",
+        }
+        for command in [["exec"], ["exec", "resume", "--last"]]:
+            result = subprocess.run(
+                [
+                    binary,
+                    *command,
+                    "--json",
+                    "--skip-git-repo-check",
+                    *flags,
+                    "fixture",
+                ],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert '"type":"turn.completed"' in result.stdout
+        assert len(requests) == 2
+        for request in requests:
+            names = {tool.get("name") for tool in request["tools"]}
+            assert "exec_command" not in names
+            assert "write_stdin" not in names
+        contexts = [
+            json.loads(line)["payload"]
+            for rollout in tmp_path.rglob("rollout-*.jsonl")
+            for line in rollout.read_text().splitlines()
+            if json.loads(line).get("type") == "turn_context"
+        ]
+        assert len(contexts) >= 2
+        assert all(
+            context["sandbox_policy"]["type"] == "read-only" for context in contexts
+        )
+        assert all(context["approval_policy"] == "never" for context in contexts)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

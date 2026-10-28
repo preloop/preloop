@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/codeql.yml"
@@ -68,3 +69,25 @@ def test_go_codeql_sets_up_go_before_autobuild() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Initialize CodeQL"
     )
+
+
+def test_codeql_avoids_private_ubuntu_latest_alias() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    assert workflow["jobs"]["changes"]["runs-on"] == "ubuntu-24.04"
+    assert workflow["jobs"]["analyze"]["runs-on"] == "ubuntu-24.04"
+
+
+@pytest.mark.parametrize(
+    ("filename", "job"),
+    [
+        ("zizmor.yml", "zizmor"),
+        ("docs.yml", "build"),
+        ("secret-scan.yml", "gitleaks"),
+        ("preloop-flow-trigger.yml", "trigger"),
+    ],
+)
+def test_pr_support_jobs_avoid_private_ubuntu_latest_alias(
+    filename: str, job: str
+) -> None:
+    workflow = yaml.safe_load(WORKFLOW.with_name(filename).read_text())
+    assert workflow["jobs"][job]["runs-on"] == "ubuntu-24.04"
