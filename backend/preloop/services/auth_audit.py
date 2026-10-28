@@ -259,6 +259,8 @@ def login_failure_reason(error: Exception, *, method: str) -> str:
         return "invalid_credentials" if method == "password" else f"{method}_rejected"
     if error.status_code == 403:
         return "identity_or_policy_rejected"
+    if error.status_code == 409:
+        return "identity_conflict"
     if error.status_code == 429:
         return "rate_limited"
     return "internal_error"
