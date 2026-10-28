@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from preloop.utils.secret_scrubbing import scrub_structure
+from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 
 EVIDENCE_TYPE = "execution_tool_evidence"
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
@@ -38,6 +39,7 @@ def _redact_value(value: Any) -> Any:
     """Keep exact nonsecret wire strings while scrubbing structured secrets."""
     from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 
+    value = sanitize_for_jsonb(value)
     if isinstance(value, dict):
         return {
             key: "[REDACTED]"
@@ -80,9 +82,10 @@ def capture_tools(
     observations: list[dict[str, Any]] = []
     incomplete = False
     remaining = MAX_EVIDENCE_BYTES
+    storage_redacted = False
 
     def add(item: dict[str, Any], source: str, kind: str) -> None:
-        nonlocal incomplete, remaining
+        nonlocal incomplete, remaining, storage_redacted
         function = item.get("function")
         function = function if isinstance(function, dict) else item
         raw = (
@@ -104,7 +107,10 @@ def capture_tools(
         if name is not None and (not isinstance(name, str) or len(name) > 256):
             incomplete = True
             name = None
-        value = _redact_value(raw) if capture_content else None
+        safe_raw = sanitize_for_jsonb(raw)
+        if safe_raw != raw:
+            incomplete = storage_redacted = True
+        value = _redact_value(safe_raw) if capture_content else None
         if isinstance(value, str):
             # Keep exact wire argument strings. This redacts recognized secrets
             # without reserializing JSON or applying the 8KiB preview limit.
@@ -112,6 +118,8 @@ def capture_tools(
 
             value = ModelGatewayEventEmitter._redact_for_tool_activity(value)
         redacted = not capture_content or value != raw
+        if capture_content and value != raw:
+            incomplete = storage_redacted = True
         record = {
             "source": source,
             "kind": kind,
@@ -121,6 +129,11 @@ def capture_tools(
             "redacted": redacted,
             "truncated": False,
         }
+        safe_record = sanitize_for_jsonb(record)
+        if safe_record != record:
+            incomplete = storage_redacted = True
+            safe_record["redacted"] = True
+        record = safe_record
         encoded = canonical_bytes(record)
         if len(observations) >= MAX_OBSERVATIONS or len(encoded) > remaining:
             incomplete = True
@@ -159,12 +172,48 @@ def capture_tools(
             if isinstance(choice, dict):
                 scan([choice.get("message")], "response")
     if isinstance(request, dict):
-        scan(request.get("messages"), "request")
-        scan(request.get("input"), "request")
+        scan(_latest_tool_exchange(request.get("messages")), "request")
+        scan(_latest_tool_exchange(request.get("input")), "request")
     return {
         "version": 1,
+        "request_scope": "latest_tool_exchange",
+        "storage_redacted": storage_redacted,
         "observations": observations,
         "capture_complete": not incomplete,
         "content_capture_enabled": capture_content,
         "response_available": isinstance(response, dict),
     }
+
+
+def _latest_tool_exchange(items: Any) -> list[dict[str, Any]]:
+    """Select the trailing call/result exchange, not replayed conversation history.
+
+    Chat/Anthropic envelopes terminate at their latest assistant tool call.
+    Flat Responses input keeps a contiguous call batch and its result batch.
+    Older calls were observed in earlier responses; historical imports are not
+    asserted complete by this per-request capture contract.
+    """
+    if not isinstance(items, list):
+        return []
+    selected = []
+    saw_calls = False
+    calls = {"function_call", "tool_use", "custom_tool_call"}
+    results = {"function_call_output", "tool_result", "custom_tool_call_output"}
+    for item in reversed(items):
+        if not isinstance(item, dict):
+            break
+        content = item.get("content")
+        blocks = content if isinstance(content, list) else []
+        has_calls = bool(item.get("tool_calls")) or item.get("type") in calls
+        has_calls |= any(isinstance(b, dict) and b.get("type") in calls for b in blocks)
+        has_results = item.get("role") == "tool" or item.get("type") in results
+        has_results |= any(
+            isinstance(b, dict) and b.get("type") in results for b in blocks
+        )
+        if not (has_calls or has_results) or (saw_calls and has_results):
+            break
+        selected.append(item)
+        saw_calls |= has_calls
+        if has_calls and item.get("role") == "assistant":
+            break
+    return list(reversed(selected))

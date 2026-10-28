@@ -183,3 +183,195 @@ def test_missing_historical_capture_is_not_reported_complete(
     assert response.json()["missing_gateway_requests"] == 1
     assert response.json()["coverage"] == "missing"
     assert response.json()["records"] == []
+
+
+def test_unsafe_gateway_and_native_bytes_preserve_batch_and_hashes(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    import json
+    from unittest.mock import patch
+    from preloop.models.crud.flow_execution_log import crud_flow_execution_log
+
+    _, _, token, context, execution = owned_run(db_session, ci_resources)
+    doc = capture_tools(
+        {
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "binary",
+                    "output": "before\x00\ud800after",
+                }
+            ]
+        },
+        {},
+        capture_content=True,
+    )
+    persist_tool_evidence(
+        db_session,
+        usage=SimpleNamespace(
+            id=uuid4(), flow_execution_id=execution.id, account_id=context.account_id
+        ),
+        document=doc,
+    )
+    events = [
+        {"type": "agent_log_line", "payload": {"line": "surrounding log"}},
+        {
+            "type": "agent_log_line",
+            "payload": {
+                "line": json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "binary-native\x00\ud800",
+                            "type": "command_execution",
+                            "command": "before\x00\ud800after",
+                            "exit_code": 0,
+                        },
+                    }
+                )
+            },
+        },
+    ]
+    for event in events:
+        event["_persistence_id"] = str(uuid4())
+    with patch("preloop.config.settings.model_gateway_capture_content", True):
+        crud_flow_execution_log.append_logs(
+            db_session, [(str(execution.id), event) for event in events]
+        )
+    db_session.commit()
+    body = client.get(
+        f"/api/v1/flows/executions/{execution.id}/tool-evidence",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    assert body["total"] == 2
+    for record in body["records"]:
+        assert record["integrity_valid"]
+        assert digest(record["document"]) == record["sha256"]
+        assert record["document"]["storage_redacted"]
+        assert not record["document"]["capture_complete"]
+        assert record["document"]["observations"][0]["value"] == "beforeafter"
+        assert record["document"]["observations"][0]["redacted"]
+    logs = crud_flow_execution_log.get_by_execution_id(
+        db_session, execution_id=execution.id
+    )
+    assert any("surrounding log" in str(row.metadata_) for row in logs)
+
+
+def test_page_byte_cap_progress_missing_coverage_and_corrupt_chunks(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    from preloop.models import models
+    from preloop.models.crud.base import CRUDBase
+    from preloop.models.crud.execution_tool_evidence import MAX_PAGE_BYTES
+    from preloop.services.execution_tool_evidence import canonical_bytes
+
+    _, _, token, context, execution = owned_run(db_session, ci_resources)
+    for index in range(4):
+        usage = CRUDBase(models.ApiUsage).create(
+            db_session,
+            obj_in={
+                "account_id": context.account_id,
+                "flow_execution_id": execution.id,
+                "endpoint": "/responses",
+                "method": "POST",
+                "status_code": 200,
+                "duration": 0.1,
+            },
+        )
+        if index < 3:
+            persist_tool_evidence(
+                db_session,
+                usage=usage,
+                document=capture_tools(
+                    {
+                        "input": [
+                            {
+                                "type": "function_call_output",
+                                "call_id": str(index),
+                                "output": "x" * 1500000,
+                            }
+                        ]
+                    },
+                    {},
+                    capture_content=True,
+                ),
+            )
+    CRUDBase(models.FlowExecutionLog).create(
+        db_session,
+        obj_in={
+            "execution_id": execution.id,
+            "log_type": "execution_tool_evidence",
+            "metadata_": {"chunks": ["broken"], "sha256": "bad"},
+        },
+    )
+    db_session.commit()
+    url = f"/api/v1/flows/executions/{execution.id}/tool-evidence"
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.get(url + "?limit=25", headers=headers).json()
+    assert first["has_more"] and first["next_skip"] == 2
+    assert len(canonical_bytes(first["records"])) <= MAX_PAGE_BYTES
+    second = client.get(
+        url + f"?skip={first['next_skip']}&limit=25", headers=headers
+    ).json()
+    assert not second["has_more"] and second["next_skip"] == 4
+    assert first["missing_gateway_requests"] == second["missing_gateway_requests"] == 1
+    records = first["records"] + second["records"]
+    assert len({r["id"] for r in records}) == 4
+    corrupt = [r for r in records if not r["integrity_valid"]]
+    assert len(corrupt) == 1 and corrupt[0]["document"] is None
+
+
+def test_callback_diagnostics_only_return_owned_safe_projection(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    from datetime import datetime
+    from preloop.models import models
+    from preloop.models.crud.base import CRUDBase
+
+    principal, _, token, context, execution = owned_run(db_session, ci_resources)
+    other, _, _ = provision(db_session, ci_resources)
+    own_delivery = None
+    for owner in (principal, other):
+        endpoint = CRUDBase(models.WebhookEndpoint).create(
+            db_session,
+            obj_in={
+                "account_id": context.account_id,
+                "ci_principal_id": owner.id,
+                "url": "https://private.example/hook",
+                "secret_encrypted": "private-key",
+            },
+        )
+        delivery = CRUDBase(models.WebhookDelivery).create(
+            db_session,
+            obj_in={
+                "account_id": context.account_id,
+                "endpoint_id": endpoint.id,
+                "event_id": uuid4(),
+                "event_type": "flow.execution.finished",
+                "subject_id": execution.id,
+                "occurred_at": datetime.now(),
+                "next_attempt_at": datetime.now(),
+                "payload": {"private": "body"},
+                "last_error": "private-error",
+                "status": "delivered",
+                "attempt_count": 2,
+                "response_status": 204,
+            },
+        )
+        if owner.id == principal.id:
+            own_delivery = str(delivery.id)
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/tool-evidence",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    deliveries = response.json()["terminal_deliveries"]
+    assert len(deliveries) == 1 and deliveries[0]["id"] == own_delivery
+    assert set(deliveries[0]) == {
+        "id",
+        "status",
+        "attempt_count",
+        "response_status",
+        "next_attempt_at",
+    }
+    assert "private" not in response.text
