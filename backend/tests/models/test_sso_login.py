@@ -4,6 +4,8 @@ from datetime import timedelta
 
 import pytest
 
+from preloop.models import models
+
 from preloop.models.crud import (
     crud_account,
     crud_account_sso_connection,
@@ -424,6 +426,20 @@ def test_saml_provider_namespace_and_membership_source(db_session, test_user):
         source="saml",
     )
     assert person.id == test_user.person_id and member.id == test_user.id
+    destination = crud_account.create(
+        db_session, obj_in={"organization_name": "SAML destination", "is_active": True}
+    )
+    created = sso_login.create_membership(
+        db_session,
+        account_id=destination.id,
+        person=person,
+        email=test_user.email,
+        full_name=None,
+        source="saml",
+    )
+    db_session.expire(created)
+    assert created.user_source == models.UserSource.SAML
+    assert created.account_id == destination.id and created.person_id == person.id
     with pytest.raises(IdentityConflictError, match="verified_email_required"):
         sso_login.resolve_identity(
             db_session,

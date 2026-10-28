@@ -43,6 +43,7 @@ CONNECTION_UPDATABLE_FIELDS = frozenset(
         "saml_idp_metadata_url",
         "saml_idp_certs",
         "saml_sp_signing_key_ref_id",
+        "saml_sp_certificate",
         "saml_want_assertions_signed",
         "default_role",
         "jit_enabled",
