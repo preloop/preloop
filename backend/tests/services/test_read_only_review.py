@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.codex import CodexAgent
 from preloop.api.auth.key_scopes import (
     enforce_api_key_route_scope,
     enforce_runtime_api_key_scope,
@@ -54,6 +55,8 @@ def review() -> tuple[Any, Any]:
         account_id=binding.account_id,
         git_clone_config=config,
         runner_pool="server",
+        agent_type="codex",
+        agent_config={},
         allowed_mcp_tools=[],
         allowed_mcp_servers=[],
     )
@@ -123,7 +126,7 @@ async def test_scoped_lease_binds_exact_repo_and_revision_without_broad_resolver
     repository = context["git_clone_config"]["repositories"][0]
     assert repository["commit"] == binding.head_sha
     assert "repository_url" not in flow.git_clone_config["repositories"][0]
-    executor = ContainerAgentExecutor.__new__(ContainerAgentExecutor)
+    executor = CodexAgent.__new__(CodexAgent)
     executor.logger = MagicMock()
     assert executor._resolve_repository_token(repository, context)[0] == "only-read"
     # Exercise the final native clone generator with conflicting moving-PR
@@ -284,6 +287,7 @@ async def test_native_result_persists_and_owned_callback_remains_available(
     resources = ci_resources.__wrapped__(db_session)
     _, _, flow, _ = resources
     flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    flow.agent_type = "codex"
     db_session.commit()
     monkeypatch.setattr(
         publication_credentials, "validate_publication_tracker", lambda tracker: None
@@ -487,3 +491,154 @@ async def test_invalid_lease_never_enters_context(
         with pytest.raises(ValueError, match="invalid or expired"):
             await prepare_read_only_review(MagicMock(), flow, MagicMock(), context)
     assert "git_credentials_map" not in context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_type,agent_config",
+    [
+        ("openhands", {}),
+        ("unknown", {}),
+        ("claude_code", {}),
+        ("codex", {"execution_path": "persistent"}),
+        ("codex", {"agent_config": {"execution_path": "persistent"}}),
+        ("codex", {"host_exec_profile": "local"}),
+        ("codex", {"agent_config": {"host_exec_profile": "local"}}),
+        ("codex", {"harness": "codex"}),
+        ("codex", {"agent_config": {"harness": "codex"}}),
+    ],
+)
+async def test_unsupported_executor_rejected_before_lease(
+    review: tuple[Any, Any], agent_type: str, agent_config: dict[str, Any]
+) -> None:
+    _, flow = review
+    flow.agent_type = agent_type
+    flow.agent_config = agent_config
+    with patch(
+        "preloop.services.read_only_review.mint_repository_lease", AsyncMock()
+    ) as mint:
+        with pytest.raises(ValueError, match="supported hosted native executor"):
+            await prepare_read_only_review(MagicMock(), flow, MagicMock(), {})
+    mint.assert_not_awaited()
+
+
+def test_supported_review_executors_inherit_native_checkout() -> None:
+    from preloop.agents.factory import _AGENT_EXECUTOR_REGISTRY
+    from preloop.services.read_only_review import READ_ONLY_NATIVE_AGENT_TYPES
+
+    for agent_type in READ_ONLY_NATIVE_AGENT_TYPES:
+        executor = _AGENT_EXECUTOR_REGISTRY[agent_type]
+        assert (
+            executor._prepare_init_commands
+            is ContainerAgentExecutor._prepare_init_commands
+        )
+        assert (
+            executor._prepare_git_clone_command
+            is ContainerAgentExecutor._prepare_git_clone_command
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"agent_type": "openhands"},
+        {"agent_type": "gemini"},
+        {"agent_config": {"execution_path": "persistent"}},
+        {"agent_config": {"agent_config": {"execution_path": "persistent"}}},
+        {"agent_config": {"host_exec_profile": "local"}},
+        {"agent_config": {"harness": "codex"}},
+        {"host_exec_profile": "local"},
+        {"trigger_event_data": {"_runner": "private"}},
+        {"trigger_event_data": {"payload": {"_runner": "auto"}}},
+    ],
+)
+async def test_effective_executor_overrides_rejected_before_lease_and_launch(
+    review: tuple[Any, Any], override: dict[str, Any]
+) -> None:
+    from preloop.agents.factory import create_executor_for_execution
+
+    _, flow = review
+    context = {
+        "read_only_review": True,
+        "agent_type": "codex",
+        "agent_config": {},
+        **override,
+    }
+    with patch(
+        "preloop.services.read_only_review.mint_repository_lease", AsyncMock()
+    ) as mint:
+        with pytest.raises(ValueError):
+            await prepare_read_only_review(MagicMock(), flow, MagicMock(), context)
+    mint.assert_not_awaited()
+    with pytest.raises(ValueError):
+        create_executor_for_execution(
+            context["agent_type"],
+            context["agent_config"],
+            flow=flow,
+            execution_context=context,
+        )
+
+
+def test_read_only_factory_rejects_runner_resume_and_preserves_codex(
+    review: tuple[Any, Any],
+) -> None:
+    from preloop.agents.factory import create_executor_for_execution
+
+    _, flow = review
+    context = {"read_only_review": True}
+    with pytest.raises(ValueError, match="private runner"):
+        create_executor_for_execution(
+            "codex",
+            {},
+            flow=flow,
+            execution_context=context,
+            execution=SimpleNamespace(agent_session_reference="runner:private:job"),
+        )
+    with patch(
+        "preloop.agents.factory.create_agent_executor", return_value="native"
+    ) as create:
+        assert (
+            create_executor_for_execution(
+                "codex", {}, flow=flow, execution_context=context
+            )
+            == "native"
+        )
+    create.assert_called_once_with("codex", {})
+
+
+@pytest.mark.asyncio
+async def test_runner_resume_rejected_before_lease(review: tuple[Any, Any]) -> None:
+    _, flow = review
+    execution = SimpleNamespace(agent_session_reference="runner:private:job")
+    with patch(
+        "preloop.services.read_only_review.mint_repository_lease", AsyncMock()
+    ) as mint:
+        with pytest.raises(ValueError, match="private runner"):
+            await prepare_read_only_review(MagicMock(), flow, execution, {})
+    mint.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "config,context_config",
+    [
+        ({}, {"execution_path": "persistent"}),
+        ({"execution_path": "persistent"}, {}),
+    ],
+)
+def test_factory_checks_both_effective_configuration_sources(
+    review: tuple[Any, Any], config: dict[str, Any], context_config: dict[str, Any]
+) -> None:
+    from preloop.agents.factory import create_executor_for_execution
+
+    _, flow = review
+    with pytest.raises(ValueError, match="supported hosted native executor"):
+        create_executor_for_execution(
+            "codex",
+            config,
+            flow=flow,
+            execution_context={
+                "read_only_review": True,
+                "agent_config": context_config,
+            },
+        )

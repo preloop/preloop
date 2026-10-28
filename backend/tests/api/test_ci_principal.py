@@ -647,6 +647,7 @@ def test_read_only_mode_is_immutable_in_principal_binding(
         publication_credentials, "validate_publication_tracker", lambda tracker: None
     )
     flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    flow.agent_type = "codex"
     db_session.commit()
     principal, key, secret = crud.crud_ci_principal.provision(
         db_session, actor=owner, name="Read only", grant=grant
@@ -665,3 +666,17 @@ def test_read_only_mode_is_immutable_in_principal_binding(
     flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "legacy"}
     db_session.commit()
     assert crud.crud_ci_principal.authenticate(db_session, token=secret) is None
+
+
+@pytest.mark.parametrize("agent_type", ["openhands", "unknown", "claude_code"])
+def test_read_only_unsupported_executor_cannot_provision(
+    db_session: Session, ci_resources: Any, agent_type: str
+) -> None:
+    owner, project, flow, grant = ci_resources
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    flow.agent_type = agent_type
+    db_session.commit()
+    with pytest.raises(ValueError, match="supported hosted native executor"):
+        crud.crud_ci_principal.provision(
+            db_session, actor=owner, name="Rejected review", grant=grant
+        )

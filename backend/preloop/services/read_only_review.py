@@ -13,6 +13,11 @@ from preloop.services.publication_credentials import mint_repository_lease
 from preloop.services.trusted_publisher import PublicationLease
 
 
+# Initial native capability is verified against the actual Codex executor.
+# New executors require an explicit exact-checkout and launch-boundary review.
+READ_ONLY_NATIVE_AGENT_TYPES: frozenset[str] = frozenset({"codex"})
+
+
 def read_only_review(config: Any) -> bool:
     """Whether an administrator selected the read-only review contract."""
     return isinstance(config, dict) and config.get("publication_mode") == "read_only"
@@ -49,6 +54,7 @@ def validate_read_only_flow(flow: Any) -> None:
     if not read_only_review(config):
         return
     validate_read_only_configuration(config)
+    validate_read_only_executor(flow)
     if (
         flow.runner_pool != "server"
         or flow.allowed_mcp_servers
@@ -59,6 +65,46 @@ def validate_read_only_flow(flow: Any) -> None:
         )
 
 
+def validate_read_only_executor(
+    flow: Any, context: dict[str, Any] | None = None, execution: Any = None
+) -> None:
+    """Check effective routing at admission, before lease issuance, and launch."""
+    from preloop.services.runner_service import unwrap_agent_config
+
+    reference = getattr(execution, "agent_session_reference", None)
+    if isinstance(reference, str) and reference.startswith("runner:"):
+        raise ValueError("Read-only review cannot resume a private runner session")
+    context = context or {}
+    kind = context.get("agent_type", getattr(flow, "agent_type", None))
+    configs = [getattr(flow, "agent_config", None), context.get("agent_config")]
+    if (
+        kind not in READ_ONLY_NATIVE_AGENT_TYPES
+        or getattr(flow, "runner_pool", None) != "server"
+    ):
+        raise ValueError("Read-only review requires a supported hosted native executor")
+    for config in configs:
+        config = unwrap_agent_config(config) or {}
+        if not isinstance(config, dict):
+            raise ValueError("Read-only review requires valid native configuration")
+        for source in (config, config.get("agent_config") or {}):
+            if isinstance(source, dict) and (
+                source.get("execution_path") == "persistent"
+                or source.get("host_exec_profile")
+                or source.get("harness")
+            ):
+                raise ValueError(
+                    "Read-only review requires a supported hosted native executor"
+                )
+    details = context.get("trigger_event_data") or {}
+    payload = details.get("payload") or {}
+    if context.get("host_exec_profile") or any(
+        source.get("_runner") not in (None, "server")
+        for source in (details, payload)
+        if isinstance(source, dict)
+    ):
+        raise ValueError("Read-only review cannot override hosted native routing")
+
+
 async def prepare_read_only_review(
     db: Session,
     flow: models.Flow,
@@ -67,6 +113,7 @@ async def prepare_read_only_review(
 ) -> PublicationLease:
     """Reauthorize persisted ownership, then mint only a read-scoped App lease."""
     validate_read_only_flow(flow)
+    validate_read_only_executor(flow, context, execution)
     binding = crud.crud_ci_execution.authorize_dispatch(db, execution=execution)
     if binding is None or not read_only_review(flow.git_clone_config):
         raise ValueError("Read-only review requires a restricted CI execution")

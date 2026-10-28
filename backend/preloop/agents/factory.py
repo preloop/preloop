@@ -106,6 +106,25 @@ def create_executor_for_execution(
     )
     from preloop.services.runner_service import AUTO_RUNNER_POOL, resolve_runner_pool
 
+    from preloop.services.read_only_review import (
+        read_only_review,
+        validate_read_only_executor,
+    )
+
+    if (execution_context or {}).get("read_only_review") is True or read_only_review(
+        getattr(flow, "git_clone_config", None)
+    ):
+        validate_read_only_executor(flow, execution_context, execution)
+        validate_read_only_executor(
+            flow,
+            {
+                **(execution_context or {}),
+                "agent_type": agent_type,
+                "agent_config": config,
+            },
+            execution,
+        )
+
     persistent = _persistent_agent_config(
         config, flow=flow, execution_context=execution_context
     )

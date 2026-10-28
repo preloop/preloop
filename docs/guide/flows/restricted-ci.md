@@ -40,6 +40,10 @@ example below.
 
 For a review that must clone source without provider write credentials, set
 `git_clone_config.publication_mode` to `"read_only"` on the dedicated flow above.
+Select `agent_type: codex`, the supported hosted native executor in this initial
+mode. The default `openhands` executor is rejected because
+its checkout does not implement this capability. Persistent execution, private
+runners, host profiles and harness routing are unsupported in this initial mode.
 Keep the repository's existing owning GitHub App tracker ID. A different tracker,
 arbitrary URL, shared flow, or second repository is rejected. The flow must be
 enabled for preview and provisioning; enabling a flow does not issue a CI key or
