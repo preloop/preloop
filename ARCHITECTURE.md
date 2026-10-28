@@ -106,11 +106,16 @@ records were true when written; the signing key lives beside the records.
 Password and passkey sign-in record one final `auth.login.succeeded` or
 `auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
 plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
-Payloads retain only bounded identity metadata; tokens, assertions and nested
+Payloads retain bounded identity metadata, known changed-field names and
+UUID-only owner lists; tokens, assertions and nested
 provider payloads are excluded. Known identities route to their account audit
 trail and period exports; attempts without a trustworthy account emit a
 content-free service security log, never a caller-selected tenant row. Existing
-`user.login` activity events remain available for cohort metrics.
+`user.login` activity events remain available for cohort metrics. SSO labels
+retain their schema bounds (name 255, domain 253, group/issuer/entity 512 characters);
+secret-looking identifier labels remain intentional identifiers. Identity URLs
+drop userinfo, query strings and fragments. Owner lists retain at most 100 UUIDs
+and report the original total when truncated; nested values never survive.
 
 Authentication audit volume is intentionally one outcome per attempt, without
 sampling or deduplication. Password login and passkey verification have no

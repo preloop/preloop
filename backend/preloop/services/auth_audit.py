@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -22,6 +23,7 @@ _SAFE_FIELDS = frozenset(
         "reason_code",
         "person_id",
         "scim_token_prefix",
+        "prefix",
         "connection_id",
         "domain_id",
         "policy_id",
@@ -42,19 +44,101 @@ _SAFE_FIELDS = frozenset(
 )
 
 
-def sanitize_auth_payload(
-    details: Mapping[str, Any] | None,
-) -> dict[str, str | int | bool]:
-    """Keep only bounded scalar identity metadata; never retain protocol payloads."""
-    return {
-        key: (
-            str(value)[: 12 if key == "scim_token_prefix" else 128]
-            if isinstance(value, (str, UUID))
-            else value
-        )
-        for key, value in (details or {}).items()
-        if key in _SAFE_FIELDS and isinstance(value, (str, UUID, int, bool))
+# Existing SSO configuration identifiers retain their API schema lengths.
+_SSO_IDENTIFIER_LIMITS = {
+    "name": 255,
+    "domain": 253,
+    "idp_group": 512,
+    "oidc_issuer": 512,
+    "saml_idp_entity_id": 512,
+}
+_SSO_CHANGE_FIELDS = frozenset(
+    {
+        "name",
+        "enabled",
+        "oidc_issuer",
+        "oidc_client_id",
+        "oidc_client_secret",
+        "oidc_scopes",
+        "groups_claim",
+        "saml_idp_entity_id",
+        "saml_idp_sso_url",
+        "saml_idp_metadata_url",
+        "saml_idp_certs",
+        "saml_sp_signing_key",
+        "saml_want_assertions_signed",
+        "default_role",
+        "jit_enabled",
+        "attribute_mapping",
     }
+)
+_MAX_AUDIT_OWNER_IDS = 100
+
+
+def _identity_url(value: str, *, issuer: bool) -> str | None:
+    """Retain URL identity while removing userinfo, queries and fragments."""
+    try:
+        parts = urlsplit(value)
+        if issuer and parts.scheme not in {"https", "http"}:
+            return None
+        authority = ""
+        if parts.netloc:
+            host = parts.hostname
+            if not host:
+                return None
+            authority = f"[{host}]" if ":" in host else host
+            if parts.port is not None:
+                authority += f":{parts.port}"
+        elif issuer:
+            return None
+        # SAML entity IDs may also be URNs or opaque configured identifiers.
+        return urlunsplit((parts.scheme, authority, parts.path, "", ""))
+    except ValueError:
+        return None
+
+
+def sanitize_auth_payload(details: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep bounded identifiers, never credential values or nested payloads.
+
+    Approved configuration labels intentionally survive even when their text
+    resembles a secret field name (for example the group ``api_key_admins``).
+    Changed-field lists contain known field *names*, including secret fields,
+    never their values. Owner lists accept UUIDs only; excessive lists carry an
+    explicit total alongside the bounded prefix rather than truncating silently.
+    """
+    clean: dict[str, Any] = {}
+    for key, value in (details or {}).items():
+        if key == "changed" and isinstance(value, (list, tuple)):
+            clean[key] = sorted(
+                {
+                    item
+                    for item in value[:128]
+                    if isinstance(item, str) and item in _SSO_CHANGE_FIELDS
+                }
+            )
+        elif key == "break_glass_owner_ids" and isinstance(value, (list, tuple)):
+            owners = []
+            for item in value[:_MAX_AUDIT_OWNER_IDS]:
+                if isinstance(item, (str, UUID)):
+                    try:
+                        owners.append(str(UUID(str(item))))
+                    except ValueError:
+                        pass
+            clean[key] = owners
+            if len(value) > _MAX_AUDIT_OWNER_IDS:
+                clean["break_glass_owner_ids_total"] = len(value)
+        elif key in _SSO_IDENTIFIER_LIMITS and isinstance(value, str):
+            if key in {"oidc_issuer", "saml_idp_entity_id"}:
+                value = _identity_url(value, issuer=key == "oidc_issuer")
+            if value is not None:
+                clean[key] = value[: _SSO_IDENTIFIER_LIMITS[key]]
+        elif key in _SAFE_FIELDS and isinstance(value, (str, UUID, int, bool)):
+            clean[key] = (
+                str(value)[: 12 if key in {"prefix", "scim_token_prefix"} else 128]
+                if isinstance(value, (str, UUID))
+                else value
+            )
+    return clean
 
 
 def record_auth_event(
