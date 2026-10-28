@@ -17,8 +17,22 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.router import router
 from preloop.models.crud import crud_account
 from preloop.models.db.session import get_db_session
-from preloop.services.auth_audit import record_auth_event, sanitize_auth_payload
+from preloop.services.auth_audit import (
+    login_failure_reason,
+    record_auth_event,
+    sanitize_auth_payload,
+)
 from preloop.services.retention_export import MEMBER_AUDIT, build_period_export
+
+
+def test_identity_conflict_is_distinct_from_an_internal_failure() -> None:
+    assert (
+        login_failure_reason(HTTPException(409, "Ambiguous identity"), method="social")
+        == "identity_conflict"
+    )
+    assert login_failure_reason(RuntimeError("storage failure"), method="social") == (
+        "internal_error"
+    )
 
 
 def test_secret_fields_and_nested_payloads_are_dropped() -> None:
