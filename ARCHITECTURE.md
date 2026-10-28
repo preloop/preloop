@@ -1485,3 +1485,12 @@ coverage/redaction flags. STOPPED writes queue the existing principal-filtered
 completion outbox transactionally. Codex's opt-in native result schema uses CLI
 structured output plus the existing capture-time validation gate; protocol
 translation preserves the requested schema or fails explicitly.
+
+Completed human-owned reviews can be exported through an explicit, expiring
+`execution_result_grant`, without adopting their execution into a CI principal.
+The CRUD layer binds current owner consent to original provider revisions and
+result/event digests; immutable grant fields and monotonic revocation are guarded
+in PostgreSQL. Export checks authority before and after a bounded provider read.
+The separate publisher verifies the public receipt, exact head/base and stable
+publication marker, then requires independent provider read-back. It neither
+launches a model nor receives publication authority from the export grant.

@@ -247,7 +247,9 @@ async def _create_review_client(source: _ProviderRead) -> Any:
     return client
 
 
-async def _read_provider(source: _ProviderRead) -> CiReviewBinding:
+async def _read_provider(
+    source: _ProviderRead, *, expected_base_sha: str | None = None
+) -> CiReviewBinding:
     """One bounded immutable-ID read using the trusted integration snapshot."""
     context = source.context
     try:
@@ -268,7 +270,18 @@ async def _read_provider(source: _ProviderRead) -> CiReviewBinding:
                     client.gl.http_get,
                     f"/projects/{repository}/merge_requests/{number}",
                 )
-            return _accepted_binding(source, pr)
+            binding = _accepted_binding(source, pr)
+            if expected_base_sha is not None:
+                revisions = pr.get(
+                    "base" if context.tracker_type == "github" else "diff_refs"
+                )
+                key = "sha" if context.tracker_type == "github" else "base_sha"
+                if (
+                    not isinstance(revisions, dict)
+                    or revisions.get(key) != expected_base_sha
+                ):
+                    raise CiReviewDeniedError("Result export base revision changed")
+            return binding
     except TrackerResponseError as error:
         if error.status_code in {403, 404}:
             raise CiReviewDeniedError(
