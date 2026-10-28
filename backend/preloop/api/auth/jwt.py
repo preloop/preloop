@@ -825,6 +825,11 @@ def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        if isinstance(token_data.claims, dict) and token_data.claims.get("purpose"):
+            raise HTTPException(
+                status_code=401, detail="A scoped authorization code is not a session"
+            )
+
         user_id_str = getattr(token_data, "sub", "")
         if not user_id_str:
             raise HTTPException(
@@ -1045,6 +1050,9 @@ def get_user_from_token_if_valid_sync(
         # TokenData model, not a dict — read the refresh flag as an attribute so
         # refresh tokens can't authenticate WebSocket/gateway sessions.
         if getattr(token_data, "refresh", False):
+            return None
+
+        if isinstance(token_data.claims, dict) and token_data.claims.get("purpose"):
             return None
 
         user_id_str = getattr(token_data, "sub", "")

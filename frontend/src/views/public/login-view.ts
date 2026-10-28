@@ -394,7 +394,7 @@ export class LoginView extends LitElement {
             style="box-sizing:border-box;width:100%;font:inherit;padding:0.75rem;border:1px solid var(--console-hairline);border-radius:var(--sl-border-radius-small);background:var(--console-page);color:var(--sl-color-neutral-900);"
           />
         </div>
-        ${this.ssoUrl ? html`<sl-button id="continue-sso" href=${this.ssoUrl} variant="primary" style="width:100%">Continue with SSO</sl-button>` : html`<sl-button type="submit" variant="primary" style="width:100%" ?loading=${this.discovering}>Continue</sl-button>`}
+        ${this.ssoUrl ? html`<sl-button id="continue-sso" rel="noopener" href=${this.ssoUrl} variant="primary" style="width:100%">Continue with SSO</sl-button>` : html`<sl-button type="submit" variant="primary" style="width:100%" ?loading=${this.discovering}>Continue</sl-button>`}
       </form>
       <sl-button
         id="other-sign-in-methods"

@@ -129,6 +129,11 @@ describe('Email-first SSO sign-in', () => {
     expect(button.getAttribute('href')).to.equal(
       `${location.origin}/api/v1/auth/sso/connection-a/start`
     );
+    await (button as HTMLElement & { updateComplete: Promise<unknown> })
+      .updateComplete;
+    expect(button.shadowRoot!.querySelector('a')!.rel).not.to.contain(
+      'noreferrer'
+    );
     const call = fetchStub
       .getCalls()
       .find((call) => String(call.args[0]).endsWith('/sso/discover'))!;

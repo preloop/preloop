@@ -9,13 +9,18 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 
 
-def email_domain(email: str | None) -> str:
-    """Match canonical email domains to the IDNA form stored by domain claims."""
-    domain = (email or "").rpartition("@")[2].strip().rstrip(".").lower()
+def canonical_domain(domain: str | None) -> str:
+    """Normalize either stored Unicode or ASCII domain claims consistently."""
+    value = (domain or "").strip().rstrip(".").lower()
     try:
-        return domain.encode("idna").decode("ascii")
+        return value.encode("idna").decode("ascii")
     except UnicodeError:
         return ""
+
+
+def email_domain(email: str | None) -> str:
+    """Match canonical email domains to the IDNA form stored by domain claims."""
+    return canonical_domain((email or "").rpartition("@")[2])
 
 
 def owners(db: Session, *, account_id: UUID) -> list[models.User]:
@@ -29,13 +34,8 @@ def owners(db: Session, *, account_id: UUID) -> list[models.User]:
                 models.User.account_id == account_id,
                 models.User.is_active.is_(True),
                 models.Role.name == "owner",
-                or_(
-                    models.Role.account_id == account_id,
-                    (
-                        models.Role.account_id.is_(None)
-                        & models.Role.is_system_role.is_(True)
-                    ),
-                ),
+                models.Role.is_system_role.is_(True),
+                models.Role.account_id.is_(None),
             )
         ).unique()
     )
@@ -43,6 +43,8 @@ def owners(db: Session, *, account_id: UUID) -> list[models.User]:
 
 def revoke_non_sso(db: Session, *, account_id: UUID, domains: set[str]) -> int:
     """Bump matching memberships only, without changing the canonical person."""
+    domains = {canonical_domain(domain) for domain in domains}
+    domains.discard("")
     rows = list(
         db.execute(
             select(models.User, models.Person.email_normalized)

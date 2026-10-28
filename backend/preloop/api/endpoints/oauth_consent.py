@@ -182,16 +182,9 @@ async def api_oauth_authorize(
     if not provider:
         raise HTTPException(status_code=500, detail="OAuth not configured")
 
-    from preloop.api.auth.jwt import decode_token
-    from preloop.services.authentication_policy import authentication_claims
+    from preloop.services.authentication_policy import request_authentication_context
 
-    scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Person session required")
-    token_data = decode_token(bearer)
-    if token_data.refresh or token_data.sub != str(current_user.id):
-        raise HTTPException(status_code=401, detail="Person session required")
-    auth_context = authentication_claims(token_data.claims)
+    auth_context = request_authentication_context(request, current_user)
     scope_list = payload.scopes.split() if payload.scopes else []
     code = provider.create_authorization_code_for_user(
         client_id=payload.client_id,

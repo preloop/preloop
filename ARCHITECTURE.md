@@ -1608,6 +1608,14 @@ reachable after a different account was last active without treating an existing
 session switch as fresh credential proof. Unknown and unavailable destinations
 share one refusal.
 
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.
+
 ### Optional enterprise single sign-on settings
 
 Account settings includes a Single sign-on tab. The Lit console checks the
@@ -1626,3 +1634,5 @@ The API remains responsible for the recent administrator test requirement and
 authentication enforcement.
 
 Test sign-in obtains a one-use start URL through an authenticated POST. SAML metadata imports are previewed before applying them to the unsaved editor; only public SP certificates are displayed. A refused account switch can request fresh password/passkey authentication bound to that account, preserving the existing session until credential proof succeeds. All owners retain emergency access, which the enterprise plugin audits and notifies.
+
+Public SSO starts require the configured console/backend Origin or Referer before minting state. The validated local login link explicitly preserves the browser referrer rather than inheriting Shoelace's `noreferrer` default; originless shared URLs remain refused.
