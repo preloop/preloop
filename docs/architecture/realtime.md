@@ -97,6 +97,10 @@ Publishers can deliver out of order; failures after allocation leave holes.
 Cursors survive worker restarts and are scoped to an execution, never an account.
 Deploy migration `20261120_execution_realtime_seq` before the new publishers.
 During a rolling deployment, old publishers can still emit unsequenced events.
+If allocation is unavailable, publishers preserve best-effort delivery with an
+explicit unsequenced `resync_required` marker instead of fabricating a cursor or
+dropping a log notification. The console coalesces recovery and admits at most
+one recovery request group per two seconds, including ongoing gap bursts.
 
 For recovery, GET `/api/v1/flow-executions/{execution_id}/lifecycle` reads state
 and allocation watermarks in one authorized database statement. Keep the largest

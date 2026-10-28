@@ -1163,6 +1163,7 @@ export class FlowExecutionView extends LitElement {
   private realtimeRecovery?: Promise<void>;
   private realtimeRecoveryTimer?: number;
   private realtimeRecoveryPending = false;
+  private nextRealtimeRecoveryAt = 0;
 
   private scheduleRealtimeRecovery() {
     if (!this.isConnected) return;
@@ -1171,16 +1172,20 @@ export class FlowExecutionView extends LitElement {
       return;
     }
     if (this.realtimeRecoveryTimer !== undefined) return;
-    this.realtimeRecoveryTimer = window.setTimeout(() => {
-      this.realtimeRecoveryTimer = undefined;
-      const generation = this.executionGeneration;
-      this.realtimeRecoveryPending = false;
-      this.realtimeRecovery = this.recoverRealtime().finally(() => {
-        if (generation !== this.executionGeneration) return;
-        this.realtimeRecovery = undefined;
-        if (this.realtimeRecoveryPending) this.scheduleRealtimeRecovery();
-      });
-    }, 100);
+    this.realtimeRecoveryTimer = window.setTimeout(
+      () => {
+        this.realtimeRecoveryTimer = undefined;
+        const generation = this.executionGeneration;
+        this.realtimeRecoveryPending = false;
+        this.nextRealtimeRecoveryAt = Date.now() + 2000;
+        this.realtimeRecovery = this.recoverRealtime().finally(() => {
+          if (generation !== this.executionGeneration) return;
+          this.realtimeRecovery = undefined;
+          if (this.realtimeRecoveryPending) this.scheduleRealtimeRecovery();
+        });
+      },
+      Math.max(100, this.nextRealtimeRecoveryAt - Date.now())
+    );
   }
 
   private async recoverRealtime() {
@@ -1259,6 +1264,7 @@ export class FlowExecutionView extends LitElement {
     this.realtimeRecoveryTimer = undefined;
     this.realtimeRecovery = undefined;
     this.realtimeRecoveryPending = false;
+    this.nextRealtimeRecoveryAt = 0;
     this.timelineRowsShown = TIMELINE_ROWS_SHOWN;
     this.metadataRevision++;
     this.observedAgentStart = undefined;

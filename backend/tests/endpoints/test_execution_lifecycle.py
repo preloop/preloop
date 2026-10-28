@@ -256,3 +256,40 @@ async def test_lifecycle_recovery_checks_permission_before_read() -> None:
             )
     assert error.value.status_code == 403
     read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cursor_failure_preserves_delivery_and_explicitly_requests_recovery() -> (
+    None
+):
+    from preloop.services import execution_realtime
+
+    event = {
+        "type": "status_update",
+        "execution_id": str(uuid4()),
+        "seq": 999,
+        "lifecycle_seq": 999,
+        "payload": {"status": "STOPPED"},
+    }
+    with (
+        patch.object(
+            execution_realtime,
+            "run_db_sync",
+            side_effect=RuntimeError("db unavailable"),
+        ),
+        patch.object(
+            execution_realtime,
+            "run_db_async",
+            AsyncMock(side_effect=RuntimeError("db unavailable")),
+        ),
+    ):
+        for result in [
+            execution_realtime.stamp_execution_event(event),
+            await execution_realtime.stamp_execution_event_async(event),
+        ]:
+            assert result["payload"] == event["payload"]
+            assert result["resync_required"] is True
+            assert "seq" not in result and "lifecycle_seq" not in result
+            projected = execution_realtime.lifecycle_event(result)
+            assert projected["resync_required"] is True
+            assert "seq" not in projected
