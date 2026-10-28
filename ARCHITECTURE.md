@@ -1593,3 +1593,10 @@ from canonical person/session revocation; all session types still honor ordinary
 `auth_generation`. Original authentication account/generation remain distinct from
 the selected account to prevent switches from upgrading or reviving assurance.
 The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.
