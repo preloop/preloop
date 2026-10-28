@@ -70,6 +70,13 @@ def _cli_login(
     db_code.code_challenge = ""
     db_code.client_id = "cli"
     db_code.user_id = user.id
+    db_code.account_id = user.account_id
+    db_code.auth_generation = user.auth_generation
+    db_code.auth_context = {
+        "amr": ["password"],
+        "auth_account_id": str(user.account_id),
+        "nsg": user.non_sso_auth_generation,
+    }
     with patch(
         "preloop.models.crud.oauth_mcp_token.crud_oauth_mcp_auth_code"
     ) as auth_codes:

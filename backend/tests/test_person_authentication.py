@@ -519,6 +519,13 @@ async def test_onboarding_claim_consumption_and_canonical_password_are_atomic(
         full_name="Claimed Person",
         claim_token=token,
     )
+    before = (
+        source.onboarding_claim_hash,
+        person.hashed_password,
+        person.username,
+        person.email_verified_at,
+        person.auth_generation,
+    )
     if policy_denies:
         from unittest.mock import Mock
         from preloop.services import authentication_policy
@@ -533,7 +540,16 @@ async def test_onboarding_claim_consumption_and_canonical_password_are_atomic(
         with pytest.raises(HTTPException, match="SSO required"):
             await complete_onboarding(body, db_session)
         assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["password"]
-        return
+        db_session.refresh(source)
+        db_session.refresh(person)
+        assert (
+            source.onboarding_claim_hash,
+            person.hashed_password,
+            person.username,
+            person.email_verified_at,
+            person.auth_generation,
+        ) == before
+        gate.authorize.side_effect = None
     result = await complete_onboarding(body, db_session)
     assert result["access_token"] and result["refresh_token"]
     assert decode_token(result["access_token"]).claims["amr"] == ["password"]

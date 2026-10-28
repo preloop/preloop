@@ -142,3 +142,55 @@ def test_selective_revocation_normalizes_stored_claim_and_preserves_sibling(
         test_user.auth_generation,
         sibling.auth_generation,
     ) == generations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deny", [False, True])
+async def test_opaque_exchange_gates_before_rows_and_preserves_context(
+    db_session, test_user, monkeypatch, deny
+):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from preloop.api.endpoints.oauth_server import _issue_opaque_tokens
+    from preloop.services import authentication_policy
+
+    context = {
+        "amr": ["password"],
+        "auth_account_id": str(test_user.account_id),
+        "nsg": 0,
+    }
+    code = SimpleNamespace(
+        user_id=test_user.id,
+        account_id=test_user.account_id,
+        client_id="synthetic-mcp",
+        auth_generation=test_user.auth_generation,
+        auth_context=context,
+        scopes=["read"],
+        resource=None,
+    )
+    gate = Mock()
+    if deny:
+        gate.authorize.side_effect = HTTPException(403, "SSO required")
+    monkeypatch.setattr(
+        authentication_policy,
+        "get_plugin_manager",
+        lambda: Mock(get_service=Mock(return_value=gate)),
+    )
+    response = await _issue_opaque_tokens(db_session, code)
+    payload = json.loads(response.body)
+    access = list(db_session.scalars(select(models.OAuthMCPAccessToken)))
+    refresh = list(db_session.scalars(select(models.OAuthMCPRefreshToken)))
+    assert gate.authorize.call_args.kwargs["purpose"] == "exchange"
+    if deny:
+        assert payload["error"] == "invalid_grant"
+        assert not access and not refresh
+    else:
+        assert response.status_code == 200
+        assert payload["access_token"] and payload["refresh_token"]
+        assert len(access) == len(refresh) == 1
+        for row in [*access, *refresh]:
+            assert row.auth_context == context
+            assert row.auth_generation == test_user.auth_generation

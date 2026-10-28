@@ -2561,15 +2561,20 @@ async def complete_onboarding(
             membership_id=user.id,
             hashed_password=get_password_hash(request.password),
             expected_generation=person.auth_generation,
+            commit=False,
         )
         require_active_identity(session, user)
+        from preloop.services.authentication_policy import new_authentication
+
+        auth_context = new_authentication(db, user, method="password")
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
     except (IdentityConflictError, IdentityUnavailableError, ValueError):
         session.rollback()
         raise _refuse_claim()
 
-    from preloop.services.authentication_policy import new_authentication
-
-    auth_context = new_authentication(db, user, method="password")
     # Create access and refresh tokens for auto-login
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     generation = user_auth_generation(user)
