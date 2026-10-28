@@ -73,6 +73,12 @@ class ModelRoutingError(ValueError):
     """Invalid routing policy or unusable selected model. Fail closed."""
 
 
+class FlowModelPrincipalError(ModelRoutingError):
+    """The selected model cannot authorize this flow's runtime principal."""
+
+    category = "model_config"
+
+
 def model_has_credential_source(model: models.AIModel) -> bool:
     """True when an AI model row has some way to authenticate at run time."""
     if model.credentials_secret_id:
@@ -770,7 +776,7 @@ def validate_execution_model_principal(
     model = crud_ai_model.get(db, id=str(model_id))
     if model is None or model.is_principal_bound_oauth is not True:
         return
-    raise ModelRoutingError(
+    raise FlowModelPrincipalError(
         "The selected model uses agent-bound subscription credentials, "
         "which cannot authorize an ephemeral flow's runtime credential. "
         "Select a server-usable API-key or hosted model. Changing runner_pool "

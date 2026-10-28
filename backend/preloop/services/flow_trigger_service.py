@@ -41,7 +41,6 @@ from preloop.services.model_routing import (
     apply_no_progress_escalation,
     load_source_execution_for_flow,
     prepare_execution_routing,
-    validate_execution_model_principal,
 )
 from preloop.services.webhook_delivery_dedupe import (
     delivery_key_for_event,
@@ -1741,11 +1740,6 @@ class FlowTriggerService:
                     return lifecycle_execution
 
         if precreated_execution is not None:
-            # Recovered or controller-reserved rows may predate routing
-            # admission. Never dispatch an incompatible legacy selection.
-            validate_execution_model_principal(
-                self.db, flow, precreated_execution.trigger_event_details or {}
-            )
             execution = precreated_execution
             execution_id = execution.id
         else:

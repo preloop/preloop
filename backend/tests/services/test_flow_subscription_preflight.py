@@ -240,23 +240,87 @@ def test_trigger_http_returns_422_without_creating_or_dispatching(
 
 
 @pytest.mark.asyncio
-async def test_legacy_precreated_execution_cannot_bypass_dispatch_admission(
-    selection: tuple[SimpleNamespace, models.AIModel],
+@pytest.mark.parametrize("worker", [True, False])
+async def test_legacy_execution_fails_before_runtime_launch(
+    db_session: Any, test_user: models.User, worker: bool
 ) -> None:
-    flow, model = selection
-    execution = SimpleNamespace(id=uuid4(), trigger_event_details={})
-    service = FlowTriggerService(MagicMock())
+    from preloop.models import crud
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+    from preloop.services import flow_execution_runner as runner
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+    from tests.services.test_model_routing import _flow, _usable_model
+
+    model = _usable_model(db_session, test_user.account_id)
+    model.credentials_secret.secret_kind = "ai_model_credentials"
+    model.credentials_secret.meta_data = {"credential_type": "oauth_openai_codex"}
+    flow = _flow(db_session, test_user, ai_model_id=model.id)
+    flow.runner_pool = "server"
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id, status="PENDING", trigger_event_details={}
+        ),
+    )
+    execution_id = execution.id
+    db_session.commit()
     with (
-        patch.object(service, "_authorize_flow_run", new_callable=AsyncMock),
-        patch.object(service, "_flows_halted", return_value=False),
-        patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
+        patch.object(runner, "get_db_session", return_value=iter([db_session])),
+        patch.object(runner, "get_nats_client", new_callable=AsyncMock),
+        patch.object(runner, "flows_halted", return_value=False),
         patch(
-            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            "preloop.services.flow_execution_dispatcher.settings.flow_execution_worker_enabled",
+            worker,
+        ),
+        patch.object(
+            FlowExecutionOrchestrator,
+            "_prepare_execution_context",
             new_callable=AsyncMock,
-        ) as dispatch,
+        ) as prepare,
+        patch.object(
+            FlowExecutionOrchestrator, "_run_agent_with_retries", new_callable=AsyncMock
+        ) as launch,
+        patch.object(
+            FlowExecutionOrchestrator, "_publish_update", new_callable=AsyncMock
+        ),
+        patch.object(
+            FlowExecutionOrchestrator, "_update_commit_status", new_callable=AsyncMock
+        ),
+        patch.object(
+            FlowExecutionOrchestrator, "_notify_terminal", new_callable=AsyncMock
+        ),
+        patch.object(
+            FlowExecutionOrchestrator, "_start_queued_followup", new_callable=AsyncMock
+        ),
+        patch.object(FlowExecutionOrchestrator, "_sync_runtime_session"),
+        patch.object(FlowExecutionOrchestrator, "_cleanup_temporary_api_token"),
     ):
-        with pytest.raises(ModelRoutingError, match="agent-bound subscription"):
-            await service._start_flow_execution(
-                flow, {}, MagicMock(), precreated_execution=execution
+        if worker:
+            result = await runner.claim_and_run_execution(str(execution_id))
+            assert result["final_status"] == "FAILED"
+        else:
+            # The local dispatch callback uses this same shared entrypoint.
+            orchestrator = FlowExecutionOrchestrator(
+                db_session,
+                flow_id=flow.id,
+                trigger_event_data={},
+                nats_client=AsyncMock(),
             )
-    dispatch.assert_not_awaited()
+            orchestrator.execution_log = execution
+            await runner.run_existing_execution(orchestrator)
+    stored = crud.crud_flow_execution.get(db_session, id=execution_id)
+    assert stored.status == "FAILED"
+    assert stored.failure_category == "model_config"
+    assert "agent-bound subscription" in stored.error_message
+    assert stored.end_time is not None
+    assert stored.agent_session_reference is None
+    assert (
+        crud.crud_flow_execution.claim_execution(
+            db_session,
+            execution_id=execution_id,
+            worker_id="another-worker",
+            stale_after_seconds=120,
+        )
+        is None
+    )
+    prepare.assert_not_awaited()
+    launch.assert_not_awaited()

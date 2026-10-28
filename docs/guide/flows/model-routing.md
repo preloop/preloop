@@ -101,6 +101,10 @@ creating an execution or launching a worker. Matrix admission validates every
 cell before creating any execution. The same check covers defaults, label
 rules, retries and restricted CI. Gateway authorization remains enforced at
 request time; successful admission does not guarantee future credential health.
+Legacy queued executions are checked again at authoritative startup before
+context preparation or runtime launch. An incompatible subscription selection
+ends as `FAILED` with category `model_config`, rather than remaining pending
+for repeated recovery.
 
 For an ordinary ephemeral Codex flow, select an API-key or hosted model that
 supports Responses. `credentials_status: active` describes the secret's state.

@@ -188,7 +188,9 @@ share a prefix within each client; they do not negotiate versions by header.
 
 Flow routing admission rejects agent-bound subscription models for ordinary
 ephemeral execution credentials before creating executions. Matrix admission
-validates all cells before writing the batch. Persistent agents, private host
+validates all cells before writing the batch. Authoritative orchestrator startup
+rechecks legacy queued rows before runtime launch and records incompatible
+subscription selections as terminal `model_config` failures. Persistent agents, private host
 profiles and persistent employee identities keep their existing admission
 and gateway ownership checks. See [model routing](docs/guide/flows/model-routing.md#subscription-credentials-and-execution-identity).
 
