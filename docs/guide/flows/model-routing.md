@@ -86,3 +86,36 @@ maps. A saved catalog model still supplies the requested identifier when
 rule targets, eval matrix entries, hosted execution, or native session resume.
 The runner must independently support the native profile. Empty routing rule
 sets behave like absent routing configuration.
+
+## Subscription credentials and execution identity
+
+An active model registration does not authorize every executor to use it.
+Ordinary ephemeral flows have their own runtime credential, with no identity
+of an enrolled agent. Selecting an agent-bound Codex or Claude subscription
+model, including through a matrix cell, cannot transfer that agent's identity.
+Changing `runner_pool` to a private pool still launches an independent Docker
+job unless a supported native host profile was explicitly configured.
+
+Trigger admission rejects these subscription selections with HTTP 422 before
+creating an execution or launching a worker. Matrix admission validates every
+cell before creating any execution. The same check covers defaults, label
+rules, retries and restricted CI. Gateway authorization remains enforced at
+request time; successful admission does not guarantee future credential health.
+Legacy queued executions are checked again at authoritative startup before
+context preparation or runtime launch. An incompatible subscription selection
+ends as `FAILED` with category `model_config`, rather than remaining pending
+for repeated recovery.
+
+For an ordinary ephemeral Codex flow, select an API-key or hosted model that
+supports Responses. `credentials_status: active` describes the secret's state.
+`supports_server_side_generation` describes Preloop's own generation eligibility
+(for example summaries); it is not a complete executor/model compatibility API.
+There is no separate dry-run model-compatibility endpoint.
+
+Persistent execution with `agent_config.execution_path: persistent` and
+`target_agent_id` uses the enrolled target's identity and existing permissions.
+A private native `host_exec_profile` uses the host CLI's local authentication
+and model map. Neither route borrows the model registration's credentials for
+an ephemeral flow. They have distinct checkout, completion and permission
+contracts, and neither is supported by the
+[native restricted CI read-only review mode](restricted-ci.md#read-only-native-github-app-review).

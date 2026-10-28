@@ -2249,3 +2249,36 @@ async def test_local_or_private_preview_url_is_refused(rig: tuple, url: str) -> 
     ]
     assert runtime["previews"] == []
     assert runtime["unavailable"][0]["reason"].startswith("refused preview:9")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["pickup", "audit"])
+async def test_subscription_model_rejected_before_lifecycle_reservation(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from preloop.services.model_routing import ModelRoutingError
+    from tests.services.test_model_routing import _usable_model
+
+    service, transport, implementer, audit = rig
+    flow = implementer if kind == "pickup" else audit
+    model = _usable_model(service.db, service.account_id)
+    model.credentials_secret.secret_kind = "ai_model_credentials"
+    model.credentials_secret.meta_data = {"credential_type": "oauth_openai_codex"}
+    flow.ai_model_id = model.id
+    service.db.flush()
+    if kind == "pickup":
+        contract = await contract_for(service)
+        await service.refine(contract)
+        await service.ready(contract.issue_revision)
+    else:
+        transport.merge()
+    create = Mock()
+    monkeypatch.setattr(crud_issue_lifecycle, "create_execution", create)
+    dispatch = AsyncMock()
+    with pytest.raises(ModelRoutingError, match="agent-bound subscription"):
+        if kind == "pickup":
+            await service.schedule_pickup(flow, {}, dispatch)
+        else:
+            await service.schedule_audit(flow, dispatch)
+    create.assert_not_called()
+    dispatch.assert_not_awaited()

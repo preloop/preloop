@@ -9914,6 +9914,16 @@ class FlowExecutionOrchestrator:
                 )
                 agent_result = await self._run_backport_within_budget(backport_plan)
             else:
+                # Legacy queued rows can bypass trigger admission. Check the
+                # actual model branch before context preparation/runtime launch;
+                # deterministic backport/report branches invoke no model.
+                from preloop.services.model_routing import (
+                    validate_execution_model_principal,
+                )
+
+                validate_execution_model_principal(
+                    self.db, self.flow, self.trigger_event_data or {}
+                )
                 # Stage 3: Prepare execution context
                 execution_context = await self._prepare_execution_context()
 

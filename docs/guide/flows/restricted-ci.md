@@ -36,6 +36,17 @@ its stored project/flow/repository snapshot is immutable. Configure the flow
 to return a structured result with a `review` string when using the publication
 example below.
 
+## Model eligibility
+
+The dedicated hosted flow must use a model its execution credential can invoke.
+An agent-bound Codex or Claude subscription model is not eligible: selecting
+its registration does not attach its owning agent to the CI execution. Use a
+server-usable API-key or hosted model; Codex also requires Responses support.
+Admission returns HTTP 422 before creating an execution for this incompatible
+selection. Active credentials alone do not establish eligibility, and
+`supports_server_side_generation` is not a complete executor compatibility check.
+See [subscription credentials and execution identity](model-routing.md#subscription-credentials-and-execution-identity).
+
 ## Read-only native GitHub App review
 
 For a review that must clone source without provider write credentials, set
