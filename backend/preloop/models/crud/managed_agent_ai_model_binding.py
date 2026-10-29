@@ -351,6 +351,53 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
             db.flush()
         return row
 
+    def subscription_owner_user_ids(
+        self, db: Session, *, account_id: str, ai_model: AIModel
+    ) -> set[str]:
+        """Owners of the active agents bound to one subscription lineage.
+
+        A subscription lineage is every model row on the same credential
+        secret (the gateway registers siblings on the onboarded secret), or
+        the row alone when it has no secret. Only active bindings of agents
+        in ``lifecycle_state == "active"`` count.
+
+        Args:
+            db: Active database session.
+            account_id: Account that owns the model.
+            ai_model: Subscription-OAuth model row.
+
+        Returns:
+            Distinct ``owner_user_id`` strings; ``""`` stands for an agent
+            with no recorded owner so callers can treat it as ambiguous.
+        """
+        from ..models.managed_agent import ManagedAgent
+
+        query = (
+            db.query(ManagedAgent.owner_user_id)
+            .join(
+                self.model,
+                self.model.managed_agent_id == ManagedAgent.id,
+            )
+            .join(AIModel, AIModel.id == self.model.ai_model_id)
+            .filter(
+                self.model.account_id == account_id,
+                ManagedAgent.account_id == account_id,
+                AIModel.account_id == account_id,
+                self.model.status != "inactive",
+                ManagedAgent.lifecycle_state == "active",
+            )
+        )
+        if ai_model.credentials_secret_id is not None:
+            query = query.filter(
+                AIModel.credentials_secret_id == ai_model.credentials_secret_id
+            )
+        else:
+            query = query.filter(AIModel.id == ai_model.id)
+        return {
+            str(owner_user_id) if owner_user_id is not None else ""
+            for (owner_user_id,) in query.distinct().all()
+        }
+
 
 crud_managed_agent_ai_model_binding = CRUDManagedAgentAIModelBinding(
     ManagedAgentAIModelBinding

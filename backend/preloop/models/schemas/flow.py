@@ -1874,6 +1874,9 @@ class FlowUpdate(FlowBase):
 class FlowResponse(FlowBase):
     id: UUID
     account_id: Optional[UUID] = None
+    # User who created the flow (its owner for subscription opt-in checks).
+    # Null when no owner was recorded.
+    created_by_user_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
     # Catalog identity for built-in presets. Null for account flows and for

@@ -42,16 +42,18 @@ example below.
 
 ## Model eligibility
 
-On the hosted executor, the flow must use a model its execution credential can
-invoke.
-An agent-bound Codex or Claude subscription model is not eligible: selecting
-its registration does not attach its owning agent to the CI execution. Use a
-server-usable API-key or hosted model; Codex also requires Responses support.
-Admission returns HTTP 422 before creating an execution for this incompatible
-selection. Active credentials alone do not establish eligibility, and
-`supports_server_side_generation` is not a complete executor compatibility check.
-To review with a subscription, run the read-only review on a private runner
-Codex host profile instead; there the host's own Codex login serves the model.
+The dedicated hosted flow must use a model its execution credential can invoke:
+an API-key or hosted model (Codex also requires Responses support), or a Codex
+or Claude subscription model whose owner turned on **Use from my flows** and
+also owns this flow. The native read-only review on the server pool works
+with such a subscription model; usage is attributed to the review execution.
+Any other subscription selection is refused with HTTP 422 before an execution
+is created: selecting its registration does not attach its owning agent to the
+CI execution. Active credentials alone do not establish eligibility, and
+`supports_server_side_generation` is not an executor compatibility check.
+Alternatively, run the read-only review on a private runner Codex host profile;
+there the host's own Codex login serves the model and no subscription
+registration needs to be shared with flows.
 See [subscription credentials and execution identity](model-routing.md#subscription-credentials-and-execution-identity).
 
 ## Read-only native GitHub App review

@@ -412,6 +412,7 @@ def resolve_or_create_flow(
             flow_crud=crud,
             clear_event_triggers=True,
             is_enabled=True,
+            created_by_user_id=getattr(current_user, "id", None),
         )
     except HTTPException as exc:
         raise _http(exc.status_code, exc.detail) from exc

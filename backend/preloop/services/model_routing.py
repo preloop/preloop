@@ -754,6 +754,14 @@ def validate_execution_model_principal(
     credential to a managed agent. Persistent agents and local host profiles
     keep their existing identity/credential admission. Employee event flows
     require persistent execution and are covered by that existing path.
+
+    The one exception is the owner opt-in
+    (:func:`preloop.services.subscription_flow_use.flow_may_use_subscription`):
+    a subscription's owner may let flows they own use it.
+
+    Raises:
+        FlowModelPrincipalError: The selection is subscription-bound and the
+            owner opt-in does not cover this flow.
     """
     from preloop.services.host_exec import (
         host_exec_harness,
@@ -776,14 +784,21 @@ def validate_execution_model_principal(
     model = crud_ai_model.get(db, id=str(model_id))
     if model is None or model.is_principal_bound_oauth is not True:
         return
+    from preloop.services.subscription_flow_use import flow_may_use_subscription
+
+    if flow_may_use_subscription(db, flow, model):
+        # The subscription's owner opted in and owns this flow. The gateway
+        # re-checks the same rule for the execution's runtime credential.
+        return
     raise FlowModelPrincipalError(
         "The selected model uses agent-bound subscription credentials, "
-        "which cannot authorize an ephemeral flow's runtime credential. "
-        "Select a server-usable API-key or hosted model. Changing runner_pool "
-        "or setting target_agent_id on an ephemeral flow does not transfer "
-        "the owning agent's identity. To use a subscription, run the flow on "
-        "a private runner with a host_exec_profile: the host CLI's own login "
-        "serves the model, including for restricted CI read-only review."
+        "which cannot authorize an ephemeral flow's runtime credential "
+        "unless the subscription's owner enabled 'Use from my flows' on the "
+        "model and also owns this flow. Otherwise select a server-usable "
+        "API-key or hosted model. Changing runner_pool or setting "
+        "target_agent_id on an ephemeral flow does not transfer the owning "
+        "agent's identity. A private runner host_exec_profile uses the host "
+        "CLI's own login instead, including for restricted CI read-only review."
     )
 
 

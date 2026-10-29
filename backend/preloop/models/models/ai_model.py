@@ -61,6 +61,14 @@ class AIModel(Base):
         UUID(as_uuid=True), ForeignKey("account.id"), nullable=True, index=True
     )
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Subscription-OAuth opt-in: the user who allowed their own hosted flow
+    # executions to use this subscription. Applies only while that user still
+    # owns the subscription (see ``services.subscription_flow_use``).
+    owner_flow_use_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Additional parameters
     model_parameters: Mapped[Optional[Dict]] = mapped_column(JSONB, nullable=True)

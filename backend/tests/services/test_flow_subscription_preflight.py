@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -324,3 +324,101 @@ async def test_legacy_execution_fails_before_runtime_launch(
     )
     prepare.assert_not_awaited()
     launch.assert_not_awaited()
+
+
+OPT_IN = "preloop.services.subscription_flow_use.flow_may_use_subscription"
+
+
+@pytest.mark.parametrize("path", ["default", "matrix", "rule", "retry", "continuation"])
+def test_owner_opt_in_admits_subscription_at_every_routing_site(
+    selection: tuple[SimpleNamespace, models.AIModel], path: str
+) -> None:
+    """The owner opt-in is the one predicate every admission site consults."""
+    flow, model = selection
+    kwargs: dict[str, Any] = {}
+    if path == "matrix":
+        kwargs["authorized_matrix"] = {"ai_model_id": str(model.id)}
+    if path == "rule":
+        flow.agent_config["model_routing"] = {
+            "version": 1,
+            "rules": [
+                {
+                    "id": "review",
+                    "labels": {"any": ["review"]},
+                    "agent_type": "codex",
+                    "ai_model_id": str(model.id),
+                }
+            ],
+        }
+    if path in {"retry", "continuation"}:
+        kwargs.update(
+            source_execution=SimpleNamespace(
+                id=uuid4(),
+                flow_id=flow.id,
+                trigger_event_details={
+                    "_model_routing": {
+                        "schema_version": 1,
+                        "agent_type": "codex",
+                        "ai_model_id": str(model.id),
+                        "source": "default",
+                    }
+                },
+            ),
+            pin_kind=path,
+        )
+    with (
+        patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
+        patch(OPT_IN, return_value=True) as opt_in,
+    ):
+        details = prepare_execution_routing(
+            MagicMock(), flow, {"payload": {"labels": ["review"]}}, **kwargs
+        )
+    from preloop.models.models.flow_execution import (
+        resolve_execution_agent_selection,
+    )
+
+    _, selected = resolve_execution_agent_selection(
+        details, flow_agent_type=flow.agent_type, flow_ai_model_id=flow.ai_model_id
+    )
+    assert str(selected) == str(model.id)
+    opt_in.assert_called_with(ANY, flow, model)
+
+
+def test_owner_opt_in_admits_no_progress_escalation(
+    selection: tuple[SimpleNamespace, models.AIModel],
+) -> None:
+    from preloop.services.model_routing import apply_no_progress_escalation
+
+    flow, model = selection
+    with (
+        patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
+        patch(OPT_IN, return_value=True),
+    ):
+        details = apply_no_progress_escalation(
+            MagicMock(),
+            flow,
+            {},
+            escalation={"ai_model_id": str(model.id)},
+            retry_of_execution_id=uuid4(),
+        )
+    assert details["_model_routing"]["ai_model_id"] == str(model.id)
+
+
+def test_owner_opt_in_admits_restricted_ci_preparation(
+    selection: tuple[SimpleNamespace, models.AIModel],
+) -> None:
+    from preloop.services.ci_execution import _prepare_execution
+
+    flow, model = selection
+    with (
+        patch("preloop.services.ci_execution.crud.crud_ci_principal.authorize"),
+        patch("preloop.services.ci_execution._review_flow", return_value=flow),
+        patch("preloop.services.ci_execution.ci_review_event", return_value={}),
+        patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
+        patch(OPT_IN, return_value=True),
+        patch("preloop.services.ci_execution.crud.crud_ci_execution.create") as create,
+        patch("preloop.services.ci_execution.crud.crud_flow.get", return_value=flow),
+        patch("preloop.services.ci_execution.execution_projection", return_value={}),
+    ):
+        _prepare_execution(MagicMock(), MagicMock(), MagicMock())
+    create.assert_called_once()

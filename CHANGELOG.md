@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports a receipt the control plane requires for success. Runners advertise
   the `host_read_only_review` profile capability; older runners are not assigned
   this work.
+- **Use from my flows.** The owner of a Codex or Claude subscription model can
+  let flows they own use it from hosted executions (console switch on the
+  model page, `preloop models flow-use <id> on`, or
+  `PUT /api/v1/ai-models/{id}/owner-flow-use`). Admission and the gateway
+  accept the selection only when the flow's owner (`created_by_user_id`, now
+  recorded on new flows) is the subscription's owner; other users' flows and
+  other agents stay refused, and the onboarded agent's bindings and sign-in are
+  untouched. Usage is attributed to the execution with
+  `meta_data.subscription_use: "owner_flow"`.
 
 ### Telemetry
 

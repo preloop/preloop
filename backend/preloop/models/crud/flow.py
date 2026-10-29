@@ -373,6 +373,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         flow_in: schemas.FlowCreate,
         account_id: Optional[Union[str, UUID]] = None,
         commit: bool = True,
+        created_by_user_id: Optional[Union[str, UUID]] = None,
     ) -> models.Flow:
         """
         Create a new flow.
@@ -382,11 +383,14 @@ class CRUDFlow(CRUDBase[models.Flow]):
             flow_in: The data for the new flow.
             account_id: Account ID (string or UUID).
             commit: Commit the new flow, or only flush it in a caller's transaction.
+            created_by_user_id: User creating the flow, recorded as its owner.
 
         Returns:
             The created flow object.
         """
         db_flow = self.model(**flow_in.model_dump())
+        if created_by_user_id is not None:
+            db_flow.created_by_user_id = UUID(str(created_by_user_id))
         if account_id:
             db_flow.account_id = (
                 str(account_id) if isinstance(account_id, UUID) else account_id

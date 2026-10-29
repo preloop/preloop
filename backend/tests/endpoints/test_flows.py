@@ -70,8 +70,12 @@ async def test_create_flow(mock_account: Account, mocker: MockerFixture):
 
     # Assert
     assert result.name == flow_in.name
+    # The creator is recorded as the flow owner (subscription opt-in rule).
     mock_crud_flow.create.assert_called_once_with(
-        db=mocker.ANY, flow_in=flow_in, account_id=mock_account.account_id
+        db=mocker.ANY,
+        flow_in=flow_in,
+        account_id=mock_account.account_id,
+        created_by_user_id=mock_account.id,
     )
 
 
@@ -2954,7 +2958,7 @@ async def test_create_flow_with_schedule_config_defaults_source(
         trigger_event_source=None, trigger_event_types=["schedule"]
     )
 
-    def fake_create(db, flow_in, account_id):
+    def fake_create(db, flow_in, account_id, created_by_user_id=None):
         return schemas.FlowResponse(
             **flow_in.model_dump(),
             id=uuid.uuid4(),
@@ -3281,7 +3285,7 @@ async def test_create_webhook_flow_keeps_supersede_flag(
 ):
     """The generated secret is added to, not substituted for, the config."""
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
-    mock_crud_flow.create.side_effect = lambda db, flow_in, account_id: (
+    mock_crud_flow.create.side_effect = lambda db, flow_in, account_id, **_: (
         schemas.FlowResponse(
             **flow_in.model_dump(),
             id=uuid.uuid4(),
