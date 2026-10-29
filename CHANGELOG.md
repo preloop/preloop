@@ -87,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stored model gateway call rows no longer lose the call's own content when
+  they exceed `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`. The response, the
+  messages the call added and the last user message are always kept, and the
+  `request` and `response` keys are never removed. Long text is cut in the
+  middle with a `[... truncated N chars ...]` marker (head and tail kept,
+  `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS`, default 2048), largest tool
+  outputs first and the response last. The default cap rises from 32768 bytes to
+  8 MB (8388608), a guard against runaway payloads rather than a size
+  budget; normal calls are stored whole. `body_compaction` records every step, and the session views
+  show a Truncated badge on cut text. Rows already stored under the old cap
+  keep what they lost. Applies to flow execution logs too.
+
 - **Paging stored gateway payloads no longer serialises every row to measure
   it.** The byte-budgeted payload reader computed
   `octet_length(metadata::text)` per candidate row, which detoasts and

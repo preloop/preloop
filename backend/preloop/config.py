@@ -1391,16 +1391,27 @@ class Settings(BaseSettings):
         ),
     )
     model_gateway_activity_max_stored_bytes: int = Field(
-        32768,
+        8388608,
         description=(
-            "Upper bound, in bytes of JSON, for the metadata stored on one "
+            "Guard, in bytes of JSON, against a runaway payload on one "
             "model_gateway_call row in runtime_session_activity or "
-            "flow_execution_log. Each row "
-            "keeps only the messages new to that call (replayed history is "
-            "already on the session's earlier rows); a call still larger than "
-            "this has its tool definitions reduced to names, then its raw "
-            "message arrays dropped, then long strings cut. 0 disables the "
-            "byte cap. Tune via MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES."
+            "flow_execution_log; not a size budget. Each row keeps only the "
+            "messages new to that call (replayed history is already on the session's earlier "
+            "rows). A call still larger than this keeps its response, its new "
+            "messages and the last user message: tool definitions are reduced "
+            "to names, tool_activity and tools entries are dropped, then long "
+            "strings are cut in the middle (request context, then the new "
+            "messages, then the response). 0 disables the byte cap. Tune via "
+            "MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES."
+        ),
+    )
+    model_gateway_activity_truncate_keep_chars: int = Field(
+        2048,
+        description=(
+            "Characters kept at the start and at the end of a string that is "
+            "cut in the middle to fit MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES. "
+            "The response keeps four times as many at its start. Tune via "
+            "MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS."
         ),
     )
     gateway_activity_compaction_enabled: bool = Field(
@@ -2106,7 +2117,10 @@ class Settings(BaseSettings):
                 os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS", "8192")
             ),
             model_gateway_activity_max_stored_bytes=int(
-                os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES", "32768")
+                os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES", "8388608")
+            ),
+            model_gateway_activity_truncate_keep_chars=int(
+                os.getenv("MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS", "2048")
             ),
             gateway_activity_compaction_enabled=os.getenv(
                 "GATEWAY_ACTIVITY_COMPACTION_ENABLED", "true"

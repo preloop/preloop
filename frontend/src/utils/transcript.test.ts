@@ -3,6 +3,7 @@ import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 import {
   buildConversation,
   collectRawToolResultPrefixes,
+  hasTruncationMarker,
   isModelGatewayEventType,
   matchInjectedSegment,
 } from './transcript';
@@ -895,5 +896,35 @@ describe('buildConversation with a history=delta page (#1586)', () => {
   it('still keeps "continue" said twice at two positions', () => {
     const rendered = texts(delta);
     expect(rendered.split('"continue"').length - 1).to.equal(2);
+  });
+});
+
+describe('hasTruncationMarker', () => {
+  it('detects the middle cut and the older tail cut', () => {
+    expect(
+      hasTruncationMarker('head\n[... truncated 4096 chars ...]\ntail')
+    ).to.equal(true);
+    expect(hasTruncationMarker('head... [truncated 120 bytes]')).to.equal(true);
+    expect(hasTruncationMarker('an ordinary [...] ellipsis')).to.equal(false);
+    expect(hasTruncationMarker(undefined)).to.equal(false);
+  });
+
+  it('marks a stored message cut in the middle as truncated', () => {
+    const cut = 'Here is the plan\n[... truncated 9000 chars ...]\nDone.';
+    const { items } = buildConversation([
+      gatewayEvent(
+        'e1',
+        '2026-10-29T10:00:00Z',
+        [
+          { role: 'user', text: 'Plan the refactor' },
+          { role: 'assistant', text: cut, source: 'response' },
+        ],
+        {}
+      ),
+    ]);
+    const response = items.find(
+      (item) => item.type === 'message' && item.kind === 'agent_response'
+    );
+    expect(response).to.include({ text: cut, truncated: true });
   });
 });

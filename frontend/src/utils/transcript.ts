@@ -37,6 +37,19 @@ export {
   isHarnessSideRequest,
 } from './harness-side-request';
 
+/**
+ * Markers the server writes when it shortens stored text: the middle cut of
+ * a gateway call row ("[... truncated 1234 chars ...]") and the older tail
+ * cut ("... [truncated 1234 bytes]").
+ */
+export const TRUNCATION_MARKER_RE =
+  /\[\.\.\. truncated \d+ chars \.\.\.\]|\.\.\. \[truncated \d+ bytes\]/;
+
+/** True when stored text carries a server truncation marker. */
+export function hasTruncationMarker(text: unknown): boolean {
+  return typeof text === 'string' && TRUNCATION_MARKER_RE.test(text);
+}
+
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
 
@@ -500,7 +513,7 @@ export function buildConversation(
         text,
         timestamp: event.timestamp || null,
         redacted: Boolean(message.redacted),
-        truncated: Boolean(message.truncated),
+        truncated: Boolean(message.truncated) || hasTruncationMarker(text),
         toolCallIds: message.tool_call_ids,
       };
 
