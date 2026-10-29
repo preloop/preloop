@@ -13494,6 +13494,95 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ai-models/{model_id}/owner-flow-use:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Owner Flow Subscription Use
+      description: Whether hosted flows owned by the subscription's owner may use
+        it.
+      operationId: get_ai_model_owner_flow_use_api_v1_ai_models__model_id__owner_flow_use_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelOwnerFlowUseRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Set Owner Flow Subscription Use
+      description: 'Let (or stop) the subscription owner''s own flows use this model.
+
+
+        Only the user who owns the subscription (the owner of the managed agent
+
+        bound to it) may change this. Account admins cannot set it for another
+
+        user: a flow may spend a subscription only with its owner''s consent.'
+      operationId: set_ai_model_owner_flow_use_api_v1_ai_models__model_id__owner_flow_use_put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIModelOwnerFlowUseUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelOwnerFlowUseRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/pricing:
     get:
       tags:
@@ -23802,6 +23891,65 @@ components:
       - model_identifier
       title: AIModelOverviewItem
       description: 'One row of the Models page: what this model did in the window.'
+    AIModelOwnerFlowUsage:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        execution_count:
+          type: integer
+          title: Execution Count
+          default: 0
+        api_equivalent_cost:
+          type: number
+          title: Api Equivalent Cost
+          description: Estimated pay-per-use price; the subscription paid it.
+          default: 0.0
+      type: object
+      title: AIModelOwnerFlowUsage
+      description: Last-30-day usage of a subscription model by its owner's flows.
+    AIModelOwnerFlowUseRead:
+      properties:
+        applicable:
+          type: boolean
+          title: Applicable
+          description: The model uses subscription (OAuth) credentials.
+        enabled:
+          type: boolean
+          title: Enabled
+          description: The subscription's current owner allows flows they own to use
+            it.
+        can_manage:
+          type: boolean
+          title: Can Manage
+          description: The current user owns the subscription and may toggle it.
+        usage:
+          anyOf:
+          - $ref: '#/components/schemas/AIModelOwnerFlowUsage'
+          - type: 'null'
+          description: Owner-flow usage, shown to the owner only.
+      type: object
+      required:
+      - applicable
+      - enabled
+      - can_manage
+      title: AIModelOwnerFlowUseRead
+      description: Owner opt-in state for using a subscription model from own flows.
+    AIModelOwnerFlowUseUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: AIModelOwnerFlowUseUpdate
+      description: Turn the owner-flow subscription opt-in on or off.
     AIModelPrice:
       properties:
         input_per_1m:
@@ -35698,6 +35846,12 @@ components:
           - type: string
           - type: 'null'
           title: Id
+        created_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Created By User Id
         created_at:
           type: string
           format: date-time
