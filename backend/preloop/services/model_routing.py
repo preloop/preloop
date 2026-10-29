@@ -797,7 +797,8 @@ def validate_execution_model_principal(
         "model and also owns this flow. Otherwise select a server-usable "
         "API-key or hosted model. Changing runner_pool or setting "
         "target_agent_id on an ephemeral flow does not transfer the owning "
-        "agent's identity."
+        "agent's identity. A private runner host_exec_profile uses the host "
+        "CLI's own login instead, including for restricted CI read-only review."
     )
 
 

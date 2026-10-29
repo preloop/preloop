@@ -50,7 +50,8 @@ export interface CiPreview {
   repository_identifier: string;
   repository_slug: string;
   tracker_type: string;
-  runner_pool: 'server';
+  /** `server`, or the named private pool of a read-only host-profile review. */
+  runner_pool: string;
 }
 export interface CiIssued {
   key_id: string;

@@ -1232,6 +1232,40 @@ class FlowExecutionOrchestrator:
                 f"Failed to publish execution warning: {publish_error}",
             )
 
+    async def _revoke_read_only_review_leases(self) -> None:
+        """Revoke read-only review leases once the execution is terminal.
+
+        Covers leases this orchestrator minted for the hosted executor and
+        leases this process delivered to a private runner. A lease that is
+        not revoked here still expires at GitHub's deadline.
+        """
+        leases = getattr(self, "_read_only_review_leases", [])
+        if (
+            getattr(self, "_read_only_review_execution", False)
+            and self.execution_log is not None
+            and self._execution_reached_terminal_state()
+        ):
+            from preloop.services.read_only_review import (
+                revoke_delivered_read_leases,
+            )
+
+            await revoke_delivered_read_leases(self.execution_log.id)
+        if leases and self._execution_reached_terminal_state():
+            import httpx
+            from preloop.services.publication_credentials import (
+                revoke_repository_lease,
+            )
+            from preloop.services.trusted_publisher import PublicationError
+
+            async with httpx.AsyncClient() as client:
+                for lease in leases:
+                    try:
+                        await revoke_repository_lease(lease, client)
+                    except PublicationError:
+                        logger.warning(
+                            "Read-only review lease revocation failed; expiry remains enforced"
+                        )
+
     def _read_only_review_mode(self) -> bool:
         """Retain the startup capability even if the flow is edited later."""
         from preloop.services.read_only_review import read_only_review
@@ -3272,7 +3306,12 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
-    async def _attach_git_credentials(self, execution_context: Dict[str, Any]) -> None:
+    async def _attach_git_credentials(
+        self,
+        execution_context: Dict[str, Any],
+        *,
+        mint_read_lease: Optional[bool] = None,
+    ) -> None:
         """Resolve clone credentials for the flow's repositories.
 
         Adds ``git_credentials_map`` (keyed by tracker id) for the effective
@@ -3282,18 +3321,31 @@ class FlowExecutionOrchestrator:
 
         Args:
             execution_context: Context to extend in place.
+            mint_read_lease: Read-only review only. None mints for the hosted
+                executor and skips minting for a private-runner host profile,
+                whose lease is minted with the delivered checkout plan.
         """
-        from preloop.services.read_only_review import prepare_read_only_review
+        from preloop.services.read_only_review import (
+            prepare_read_only_review,
+            read_only_private_runner,
+        )
 
         if self._read_only_review_mode():
             self._read_only_review_execution = True
+            if mint_read_lease is None:
+                mint_read_lease = not read_only_private_runner(self.flow)
             lease = await prepare_read_only_review(
-                self.db, self.flow, self.execution_log, execution_context
+                self.db,
+                self.flow,
+                self.execution_log,
+                execution_context,
+                mint=mint_read_lease,
             )
-            self._read_only_review_leases = [
-                *getattr(self, "_read_only_review_leases", []),
-                lease,
-            ]
+            if lease is not None:
+                self._read_only_review_leases = [
+                    *getattr(self, "_read_only_review_leases", []),
+                    lease,
+                ]
             return
         clone_config = execution_context.get("git_clone_config")
         if clone_config is None:
@@ -3374,7 +3426,7 @@ class FlowExecutionOrchestrator:
             # Read by the shared clone resolvers: the git credential must come
             # from the bound code-host tracker only, never the issue tracker.
             context["repository_binding"] = binding.summary()
-        await self._attach_git_credentials(context)
+        await self._attach_git_credentials(context, mint_read_lease=True)
         return context
 
     def _apply_harness_routing_decision(self) -> None:
@@ -10405,21 +10457,6 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            leases = getattr(self, "_read_only_review_leases", [])
-            if leases and self._execution_reached_terminal_state():
-                import httpx
-                from preloop.services.publication_credentials import (
-                    revoke_repository_lease,
-                )
-                from preloop.services.trusted_publisher import PublicationError
-
-                async with httpx.AsyncClient() as client:
-                    for lease in leases:
-                        try:
-                            await revoke_repository_lease(lease, client)
-                        except PublicationError:
-                            logger.warning(
-                                "Read-only review lease revocation failed; expiry remains enforced"
-                            )
+            await self._revoke_read_only_review_leases()
             # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

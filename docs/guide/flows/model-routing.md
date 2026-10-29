@@ -184,5 +184,11 @@ Persistent execution with `agent_config.execution_path: persistent` and
 A private native `host_exec_profile` uses the host CLI's local authentication
 and model map. Neither route borrows the model registration's credentials for
 an ephemeral flow. They have distinct checkout, completion and permission
-contracts, and neither is supported by the
-[native restricted CI read-only review mode](restricted-ci.md#read-only-native-github-app-review).
+contracts. A private Codex host profile is also a supported executor for the
+[native restricted CI read-only review mode](restricted-ci.md#read-only-review-on-a-private-runner):
+that is the route for reviewing with the host CLI's own Codex login, without
+the owner opt-in (**Use from my flows**) that lets a hosted flow use a
+subscription. There the selected
+model only names the alias the profile's `model_map` translates, and the host
+CLI's own login serves it. Persistent execution remains unsupported for
+read-only review.

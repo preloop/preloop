@@ -51,6 +51,12 @@ func codexApprovalInstalled() bool {
 }
 
 func prepareCodexHostExec(p hostExecProfile, job map[string]any, workspace, scratch, token string) ([]string, string, []string, []string, error) {
+	return prepareCodexHostExecSandbox(p, job, workspace, scratch, token, false)
+}
+
+// prepareCodexHostExecSandbox builds Codex exec arguments. readOnly selects
+// the read-only sandbox for read-only review and refuses an MCP token.
+func prepareCodexHostExecSandbox(p hostExecProfile, job map[string]any, workspace, scratch, token string, readOnly bool) ([]string, string, []string, []string, error) {
 	if err := validateCodexHostExecProfile(p); err != nil {
 		return nil, "", nil, nil, err
 	}
@@ -61,7 +67,16 @@ func prepareCodexHostExec(p hostExecProfile, job map[string]any, workspace, scra
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
-	args := []string{"exec", "--json", "--color", "never", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", workspace, "-c", `approval_policy="never"`}
+	sandbox := "workspace-write"
+	if readOnly {
+		// Read-only review: Codex may read the checkout but not change it,
+		// and it has no MCP server (the lease carries none).
+		if token != "" {
+			return nil, "", nil, nil, fmt.Errorf("read_only_review_unsupported: read-only review runs without MCP")
+		}
+		sandbox = hostExecReadOnlySandbox
+	}
+	args := []string{"exec", "--json", "--color", "never", "--sandbox", sandbox, "--skip-git-repo-check", "-C", workspace, "-c", `approval_policy="never"`}
 	if model := jobModelIdentifier(job); model != "" {
 		alias := p.ModelMap[model]
 		if alias == "" {

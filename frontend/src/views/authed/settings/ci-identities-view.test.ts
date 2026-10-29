@@ -179,6 +179,69 @@ describe('restricted CI settings view', () => {
           body: [
             flow,
             { ...flow, id: 'local', runner_pool: 'local' },
+            {
+              ...flow,
+              id: 'host-review',
+              agent_type: 'codex',
+              runner_pool: 'local',
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-wrapped',
+              agent_type: 'codex',
+              runner_pool: 'local',
+              agent_config: {
+                agent_config: { host_exec_profile: 'codex-review' },
+              },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-openhands',
+              agent_type: 'openhands',
+              runner_pool: 'local',
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-mcp',
+              agent_type: 'codex',
+              runner_pool: 'local',
+              allowed_mcp_servers: ['preloop'],
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
+            {
+              ...flow,
+              id: 'host-legacy',
+              runner_pool: 'local',
+              agent_config: { host_exec_profile: 'codex-review' },
+            },
+            {
+              ...flow,
+              id: 'auto-review',
+              runner_pool: 'auto',
+              agent_config: { host_exec_profile: 'codex-review' },
+              git_clone_config: {
+                ...flow.git_clone_config,
+                publication_mode: 'read_only',
+              },
+            },
             { ...flow, id: 'shared', account_id: null },
             { ...flow, id: 'disabled', is_enabled: false },
             { ...flow, id: 'other', trigger_project_ids: ['project-b'] },
@@ -192,7 +255,7 @@ describe('restricted CI settings view', () => {
       [...element.querySelectorAll('#ci-flow option')].map(
         (option) => (option as HTMLOptionElement).value
       )
-    ).to.eql(['', 'flow-a']);
+    ).to.eql(['', 'flow-a', 'host-review', 'host-wrapped']);
     expect(
       (element.querySelector('#ci-create') as HTMLButtonElement).disabled
     ).to.equal(true);
