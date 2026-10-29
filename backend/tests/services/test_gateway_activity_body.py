@@ -441,3 +441,64 @@ def test_truncate_middle_keeps_head_and_tail():
     assert cut.endswith("b" * 50)
     assert "[... truncated 9850 chars ...]" in cut
     assert truncate_middle("short", head=100, tail=50) == "short"
+
+
+def test_text_less_assistant_turns_still_bound_the_preview():
+    """Tool-call-only assistant turns have no preview text; history stays out."""
+    raw: list[dict] = [{"role": "user", "content": "go"}]
+    preview: list[dict] = [{"source": "request", "role": "user", "text": "go"}]
+    for turn in range(60):
+        raw.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": f"c{turn}", "function": {"name": "read"}}],
+            }
+        )
+        raw.append({"role": "tool", "tool_call_id": f"c{turn}", "content": "r" * 5000})
+        # The preview builder skips the empty assistant message.
+        preview.append({"source": "request", "role": "tool", "text": "r" * 5000})
+    preview.append({"source": "response", "role": "assistant", "text": "done"})
+    payload = {
+        "total_tokens": 1,
+        "request": {"model": "m", "messages": raw},
+        "response": {"choices": [{"message": {"content": "done"}}]},
+        "conversation_preview": {"messages": preview, "metadata": {}},
+    }
+    slim = slim_gateway_payload(payload, max_bytes=8_388_608)
+    messages = slim["conversation_preview"]["messages"]
+    assert [m["role"] for m in messages] == ["user", "tool", "assistant"]
+    assert [m["position"] for m in messages] == [0, 60, 61]
+    metadata = slim["conversation_preview"]["metadata"]
+    assert metadata["history_window_start"] == 60
+    assert metadata["history_window_elided_count"] == 59
+    assert payload_bytes(slim) < 20_000
+
+
+def test_long_tool_call_arguments_are_never_cut():
+    arguments = '{"path": "a.py", "content": "' + "x" * 40_000 + '"}'
+    payload = _call_payload(2)
+    payload["response"] = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "y" * 40_000,
+                    "tool_calls": [
+                        {
+                            "id": "w",
+                            "function": {"name": "write", "arguments": arguments},
+                        }
+                    ],
+                },
+            }
+        ],
+        "content": [{"type": "tool_use", "id": "w2", "input": {"body": "z" * 9_000}}],
+    }
+    slim = slim_gateway_payload(payload, max_bytes=65_536)
+    assert payload_bytes(slim) <= 65_536
+    message = slim["response"]["choices"][0]["message"]
+    assert message["tool_calls"][0]["function"]["arguments"] == arguments
+    assert slim["response"]["content"] == payload["response"]["content"]
+    assert "[... truncated " in message["content"]

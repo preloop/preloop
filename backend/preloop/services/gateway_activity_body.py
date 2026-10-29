@@ -111,7 +111,20 @@ def _last_user_index(messages: list[Any]) -> Optional[int]:
     return None
 
 
-def _slim_preview(preview: Any) -> Any:
+def _slim_preview(preview: Any, *, new_raw_items: Optional[int] = None) -> Any:
+    """Keep the preview messages new to this call, plus the last user one.
+
+    Args:
+        preview: The ``conversation_preview`` dict.
+        new_raw_items: How many raw request items (``messages`` plus
+            ``input``) follow the raw request's last assistant item, or None
+            when the raw request was not cut. The preview skips assistant
+            turns without text (tool-call-only turns), so its own assistant
+            boundary can miss replayed history; each raw item yields at most
+            one preview message and system or instructions previews come
+            first, so the last ``new_raw_items`` request previews always
+            cover the new messages and bound the window.
+    """
     if not isinstance(preview, dict):
         return preview
     messages = preview.get("messages")
@@ -135,6 +148,21 @@ def _slim_preview(preview: Any) -> Any:
             ),
             len(messages),
         )
+    if new_raw_items is not None and len(request_indexes) > new_raw_items:
+        bounded = request_indexes[len(request_indexes) - new_raw_items :]
+        raw_start = (
+            bounded[0]
+            if bounded
+            else next(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if isinstance(message, dict) and message.get("source") == "response"
+                ),
+                len(messages),
+            )
+        )
+        window_start = max(window_start, raw_start)
     keep_user = _last_user_index(messages)
     kept: list[Any] = []
     elided = 0
@@ -247,7 +275,16 @@ def slim_gateway_payload(
     if starts:
         marker["request_history_start"] = starts
     if "conversation_preview" in payload:
-        result["conversation_preview"] = _slim_preview(payload["conversation_preview"])
+        new_raw_items: Optional[int] = None
+        if isinstance(request, dict) and any(starts.values()):
+            new_raw_items = sum(
+                len(request[key])
+                for key in starts
+                if isinstance(request.get(key), list)
+            )
+        result["conversation_preview"] = _slim_preview(
+            payload["conversation_preview"], new_raw_items=new_raw_items
+        )
 
     live_ids = _call_ids(request.get("messages") if isinstance(request, dict) else None)
     live_ids |= _call_ids(request.get("input") if isinstance(request, dict) else None)
@@ -332,6 +369,12 @@ class _Slot:
         return self.container[self.key]
 
 
+# Strings never cut in the middle: a cut tool-call argument is invalid JSON.
+_UNCUT_KEYS = frozenset({"arguments", "id", "call_id", "tool_call_id", "name"})
+# Tool calls in Anthropic and Responses API shapes; their input stays whole.
+_TOOL_CALL_TYPES = frozenset({"tool_use", "server_tool_use", "function_call"})
+
+
 def _string_slots(
     value: Any, *, preview_message: Optional[dict[str, Any]] = None
 ) -> list[_Slot]:
@@ -340,6 +383,8 @@ def _string_slots(
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
+            if node.get("type") in _TOOL_CALL_TYPES:
+                continue
             items: Any = node.items()
         elif isinstance(node, list):
             items = enumerate(node)
@@ -347,7 +392,8 @@ def _string_slots(
             continue
         for key, item in items:
             if isinstance(item, str):
-                slots.append(_Slot(node, key, preview_message))
+                if key not in _UNCUT_KEYS:
+                    slots.append(_Slot(node, key, preview_message))
             elif isinstance(item, (dict, list)):
                 stack.append(item)
     return slots

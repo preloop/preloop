@@ -68,8 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_gateway_call` row in `runtime_session_activity` used to store the
   whole conversation the call replayed, so storage grew with the square of
   session length. It now stores the messages new to that call, with their
-  original positions, plus the response, capped at
-  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 32768). The console
+  original positions, plus the response, bounded by
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608). The console
   stitches the conversation back together across a session's rows. An hourly
   maintenance task, `maintain_gateway_activity`, compacts rows written by
   older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,

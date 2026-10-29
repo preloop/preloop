@@ -36,8 +36,8 @@ Rows are now stored slim:
 `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608, 8 MB) is a guard
 against runaway payloads, not a size budget. A row already holds only what
 the call added, so a normal call is stored whole, untruncated. Only a call
-whose stored form would exceed the cap is shortened, and even then Preloop
-never removes:
+whose stored form would exceed the cap is shortened. Short of the final
+fallback described below, Preloop never removes:
 
 - the model response: its text, the tool calls it made, the finish reason
   and usage,
@@ -59,10 +59,18 @@ It shortens in this order and stops as soon as the row fits:
 5. Only then is long response text cut, middle out, keeping four times as
    much at the start (8192 characters by default).
 
+Tool-call arguments and tool-call inputs are never cut, because a cut
+argument is no longer valid JSON.
+
 A cap far below the size of the call can need more: text is cut harder (down
 to 64 characters at each end), then only the newest new message and the last
-user message are kept, then the response is cut harder. The `request` and
-`response` keys are always present.
+user message are kept, then the response text is cut harder. If even that
+does not fit (a cap smaller than the bare structure of the call), the
+contents of `request` and `response` are replaced with
+`{"omitted_for_size": true}`, the preview is removed and the marker records
+`content_omitted_for_size`. The keys stay so a reader can tell the content
+was removed, not absent. With the default cap this only happens for a
+single call larger than 8 MB whose tool arguments alone exceed the cap.
 
 The session views show a **Truncated** badge on every message or tool
 result that was cut.
@@ -77,6 +85,7 @@ result that was cut.
 | `keys_omitted` | Derived keys that were dropped (`tool_activity`, `tools`) |
 | `request_context_shortened`, `messages_shortened`, `response_shortened` | `strings` cut, `chars_removed`, and the characters kept (`keep_chars` or `head_chars`) |
 | `messages_shortened_further`, `delta_messages_elided`, `response_shortened_further` | The last-resort steps above, when they ran |
+| `content_omitted_for_size` | The final fallback ran: request and response contents replaced with `{"omitted_for_size": true}` |
 
 ### Why the cap is large
 
