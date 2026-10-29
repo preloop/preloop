@@ -63,7 +63,8 @@ For a review that must clone source without provider write credentials, set
 Select `agent_type: codex`. Two executors are supported:
 
 - **Hosted:** `runner_pool: "server"`, the ephemeral hosted Codex executor. The
-  model must be a server-usable API-key or hosted model (see
+  model must be a server-usable API-key or hosted model, or a subscription
+  model whose owner turned on **Use from my flows** and owns this flow (see
   [Model eligibility](#model-eligibility)).
 - **Private runner:** a named private runner pool plus
   `agent_config.host_exec_profile` naming a Codex host profile. Codex runs on

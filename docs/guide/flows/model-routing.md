@@ -186,7 +186,9 @@ and model map. Neither route borrows the model registration's credentials for
 an ephemeral flow. They have distinct checkout, completion and permission
 contracts. A private Codex host profile is also a supported executor for the
 [native restricted CI read-only review mode](restricted-ci.md#read-only-review-on-a-private-runner):
-that is the route for reviewing with a Codex subscription. There the selected
+that is the route for reviewing with the host CLI's own Codex login, without
+the owner opt-in (**Use from my flows**) that lets a hosted flow use a
+subscription. There the selected
 model only names the alias the profile's `model_map` translates, and the host
 CLI's own login serves it. Persistent execution remains unsupported for
 read-only review.
