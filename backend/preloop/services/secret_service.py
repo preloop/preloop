@@ -61,10 +61,13 @@ OAUTH_REFRESH_HISTORY_LIMIT = 64
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth"
-OPENAI_CODEX_REFRESH_SKEW_MS = 60_000
+# The gateway refreshes 10 minutes before expiry, ahead of the clients' own
+# 5-minute window plus the CLI's 2-minute marker poll, so a holder that pulls
+# Preloop's rotated bundle never refreshes the consumed token itself.
+OPENAI_CODEX_REFRESH_SKEW_MS = 600_000
 ANTHROPIC_CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_CLAUDE_CODE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-ANTHROPIC_CLAUDE_CODE_REFRESH_SKEW_MS = 60_000
+ANTHROPIC_CLAUDE_CODE_REFRESH_SKEW_MS = 600_000
 # platform.claude.com sits behind Cloudflare, which rejects requests whose
 # signature does not look like the real Claude Code client with HTTP 403
 # "error code: 1010" (browser-signature ban) — BEFORE the OAuth handler runs.
@@ -135,7 +138,9 @@ class CredentialRefreshError(ValueError):
             )
         return (
             prefix
-            + f"The subscription authorization is no longer valid. Run `{login}`, "
+            + "The subscription authorization is no longer valid. If the local "
+            + "login is still signed in, run `preloop agents sync-credentials "
+            + f'"{agent}"` first. Otherwise run `{login}`, '
             + f'then `preloop agents reconnect "{agent}" --from-local` '
             + "with an updated Preloop CLI. Your enrollment is preserved."
         )
