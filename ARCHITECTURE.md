@@ -966,7 +966,13 @@ are hidden and direct navigation redirects. Device identity is an exact tenant-s
 fingerprint match; legacy runners remain separate and hostnames are hints only.
 Fleet findings and audited alert settings persist in core; device projections are
 computed by the plugin. None of this enables or advertises a fleet feature in the
-open-source edition.
+open-source edition. The device table combines runner, governed/ungoverned agent
+and roster-state filters over the bounded projection. Its limits disclosure
+explains observation freshness and identity hints. Roster administration requires
+`manage_device_fleet`: the console reviews a selected CSV and obtains explicit
+consent before complete replacement through the optional service's multipart
+endpoint. Person/group display-name retention is opt-in; backend validation
+rejects an invalid snapshot atomically.
 
 Agent detail obtains device links from the optional fleet service, using the same
 projection and fleet read permission as the device page. Standalone instances and
