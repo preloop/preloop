@@ -233,6 +233,7 @@ func postSessionStart(cred permissionHookCredential, req sessionStartRequest) (s
 }
 
 func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
+	started := time.Now()
 	errOut := cmd.ErrOrStderr()
 	source := normalizePermissionSource(mustFlagString(cmd, "source"))
 	if source == "" {
@@ -267,10 +268,11 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	// The local subscription login may have rotated while no session ran.
-	// Reconcile before the first model call so the gateway holds the live
-	// token. Best effort: never touches stdout or the hook result.
+	// Reconcile before the first model call (the host waits for this hook),
+	// but after registration and notes, inside what is left of the budget.
+	// Best effort: never touches stdout or the hook result.
 	if !sessionHookRegisterOnly(cmd) {
-		maybeSyncSubscriptionOAuthFromHook(source)
+		defer runSessionSubscriptionSync(source, started)
 	}
 	isPrompt := strings.EqualFold(event.HookEventName, "UserPromptSubmit") || strings.EqualFold(event.HookEventName, "beforeSubmitPrompt")
 	existing, haveFile := readSessionHandoff(externalID)
@@ -426,4 +428,37 @@ func writeSessionAdditionalContext(out io.Writer, hookEventName, text string) {
 		return
 	}
 	fmt.Fprintln(out, string(data)) //nolint:errcheck
+}
+
+// sessionSubscriptionSyncBudget is the share of the 10 s host timeout the
+// session hook may spend, end to end, before it must exit.
+const sessionSubscriptionSyncBudget = 8 * time.Second
+
+// sessionSubscriptionSyncMax caps the sync itself on the session path.
+const sessionSubscriptionSyncMax = 4 * time.Second
+
+// runSessionSubscriptionSync runs the subscription sync with a deadline of
+// whatever remains of the session hook budget (at most
+// sessionSubscriptionSyncMax). When the deadline passes the hook returns and
+// the next hook retries; every write the sync makes is atomic, and an
+// unsaved stamp only means the next pass reconciles again.
+func runSessionSubscriptionSync(source string, started time.Time) {
+	budget := sessionSubscriptionSyncBudget - time.Since(started)
+	if budget > sessionSubscriptionSyncMax {
+		budget = sessionSubscriptionSyncMax
+	}
+	if budget < time.Second {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		maybeSyncSubscriptionOAuthFromHook(source)
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }

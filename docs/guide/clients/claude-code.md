@@ -84,7 +84,10 @@ To reconcile by hand (no hooks installed, or after a gateway refresh error):
 preloop agents sync-credentials "Claude Code"
 ```
 
-It prints which direction ran and never prints tokens. Sync cannot revive a
+It prints which direction ran and never prints tokens. If the enrollment's
+Claude Code models point at more than one stored credential, the sync refuses
+(one rotating token must live in one place) and asks you to run
+`preloop agents reconnect "Claude Code" --from-local`, which merges them. Sync cannot revive a
 lineage that the provider has already revoked on both sides: if the local login
 is also signed out, sign in again and reconnect as below.
 

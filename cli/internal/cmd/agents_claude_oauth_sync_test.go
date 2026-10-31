@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -37,6 +39,7 @@ type claudeSyncFixture struct {
 	marker       map[string]interface{}
 	listStatus   int
 	exportsTaken int
+	splitSecrets bool
 }
 
 func newClaudeSyncFixture(t *testing.T) *claudeSyncFixture {
@@ -103,6 +106,23 @@ func (f *claudeSyncFixture) writeLocal(access, refresh string, expires int64) {
 	_ = os.Chtimes(f.credPath, future, future)
 }
 
+func (f *claudeSyncFixture) opusSecret() string {
+	if f.splitSecrets {
+		return "secret-claude-split"
+	}
+	return "secret-claude"
+}
+
+func (f *claudeSyncFixture) stampSynced(expires int64) {
+	f.t.Helper()
+	state := f.state()
+	state.ClaudeOAuthSyncedLocalExpiresMS = expires
+	state.ClaudeOAuthSyncedServerExpiresMS = expires
+	if err := saveLocalEnrollmentState(state); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 func (f *claudeSyncFixture) state() *localEnrollmentState {
 	f.t.Helper()
 	state, err := loadLocalEnrollmentState(f.agent)
@@ -146,7 +166,7 @@ func (f *claudeSyncFixture) handle(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				ID: "model-opus", Name: "Example Opus", CredentialType: anthropicClaudeCodeOAuthCredentialType,
-				CredentialsSecretID: "secret-claude", MetaData: map[string]interface{}{"managed_agent_id": "agent-claude-1"},
+				CredentialsSecretID: f.opusSecret(), MetaData: map[string]interface{}{"managed_agent_id": "agent-claude-1"},
 			},
 			codex,
 		})
@@ -427,15 +447,152 @@ func TestSubscriptionHookSyncSkipsFlowCredentialRuns(t *testing.T) {
 	}
 }
 
-func TestSyncCredentialsAcceptsClaudeCode(t *testing.T) {
+func TestSyncCredentialsDispatchesClaudeCode(t *testing.T) {
 	f := newClaudeSyncFixture(t)
-	_ = f
-	outcome, err := syncClaudeOAuthCredentials(f.agent, nil, true)
-	if err != nil || outcome.Direction != claudeOAuthSyncDirectionPush {
-		t.Fatalf("forced sync = %+v, %v", outcome, err)
+	if err := os.WriteFile(filepath.Join(f.home, ".claude.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	err = runAgentsSyncCredentials(agentsSyncCredentialsCmd, []string{"Cursor"})
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runAgentsSyncCredentials(cmd, []string{"Claude Code"}); err != nil {
+		t.Fatalf("sync-credentials Claude Code: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "Pushed the local Claude Code login") || strings.Count(text, "\n") != 1 ||
+		strings.Contains(text, claudeSyncLocalRefresh) {
+		t.Fatalf("output = %q", text)
+	}
+	if len(f.puts) != 1 {
+		t.Fatalf("puts = %d", len(f.puts))
+	}
+	err := runAgentsSyncCredentials(&cobra.Command{}, []string{"Cursor"})
 	if err == nil || !strings.Contains(err.Error(), "Codex CLI and Claude Code") {
 		t.Fatalf("refusal = %v", err)
+	}
+}
+
+func TestClaudeOAuthSyncConflictLaterExpiryWins(t *testing.T) {
+	t.Run("server wins", func(t *testing.T) {
+		f := newClaudeSyncFixture(t)
+		f.stampSynced(claudeSyncLocalExpires - 1000)
+		f.marker["expires"] = claudeSyncServerExpires
+		outcome, err := syncClaudeOAuthCredentials(f.agent, f.state(), false)
+		if err != nil || outcome.Direction != claudeOAuthSyncDirectionPull || !outcome.Conflict || len(f.puts) != 0 {
+			t.Fatalf("outcome = %+v, %v, puts=%d", outcome, err, len(f.puts))
+		}
+	})
+	t.Run("local wins", func(t *testing.T) {
+		f := newClaudeSyncFixture(t)
+		f.stampSynced(claudeSyncLocalExpires - 2000)
+		f.marker["expires"] = claudeSyncLocalExpires - 1000
+		outcome, err := syncClaudeOAuthCredentials(f.agent, f.state(), false)
+		if err != nil || outcome.Direction != claudeOAuthSyncDirectionPush || !outcome.Conflict || f.exportsTaken != 0 {
+			t.Fatalf("outcome = %+v, %v, exports=%d", outcome, err, f.exportsTaken)
+		}
+	})
+}
+
+func claudeKeychainBlob(access, refresh string, expires int64) string {
+	data, _ := json.Marshal(map[string]interface{}{"claudeAiOauth": map[string]interface{}{
+		"accessToken": access, "refreshToken": refresh, "expiresAt": expires,
+		"scopes": []string{"user:inference"}, "subscriptionType": "max",
+	}})
+	return string(data)
+}
+
+func useFakeClaudeKeychain(t *testing.T, blob *string) {
+	t.Helper()
+	prevSync, prevRead, prevWrite := readClaudeKeychainBlobForSync, readClaudeOffboardKeychain, writeClaudeOffboardKeychain
+	readClaudeKeychainBlobForSync = func() (string, error) { return *blob, nil }
+	readClaudeOffboardKeychain = func() (string, error) { return *blob, nil }
+	writeClaudeOffboardKeychain = func(next string) error { *blob = next; return nil }
+	t.Cleanup(func() {
+		readClaudeKeychainBlobForSync, readClaudeOffboardKeychain, writeClaudeOffboardKeychain = prevSync, prevRead, prevWrite
+	})
+}
+
+func TestClaudeOAuthSyncKeychainPushAndPull(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	_ = os.Remove(f.credPath)
+	blob := claudeKeychainBlob(claudeSyncLocalAccess, claudeSyncLocalRefresh, claudeSyncLocalExpires)
+	useFakeClaudeKeychain(t, &blob)
+
+	outcome, err := syncClaudeOAuthCredentials(f.agent, f.state(), false)
+	if err != nil || outcome.Direction != claudeOAuthSyncDirectionPush || len(f.puts) != 1 {
+		t.Fatalf("keychain push = %+v, %v", outcome, err)
+	}
+	payload, _ := f.puts[0]["credential_payload"].(map[string]interface{})
+	if payload["refresh"] != claudeSyncLocalRefresh {
+		t.Fatal("push did not carry the Keychain login")
+	}
+
+	state := f.state()
+	state.ClaudeOAuthServerCheckedAt = ""
+	_ = saveLocalEnrollmentState(state)
+	f.marker["expires"] = claudeSyncServerExpires
+	outcome, err = syncClaudeOAuthCredentials(f.agent, f.state(), false)
+	if err != nil || outcome.Direction != claudeOAuthSyncDirectionPull || outcome.Destination != "the macOS Keychain" {
+		t.Fatalf("keychain pull = %+v, %v", outcome, err)
+	}
+	cred := parseClaudeOAuthCredentialBlob(blob, 0)
+	if cred == nil || cred.RefreshToken != claudeSyncServerRefresh || cred.ExpiresAtMS != claudeSyncServerExpires {
+		t.Fatal("Keychain login not replaced")
+	}
+	if !strings.Contains(blob, "subscriptionType") {
+		t.Fatal("pull dropped Keychain fields")
+	}
+	if _, err := os.Stat(f.credPath); !os.IsNotExist(err) {
+		t.Fatal("a Keychain pull wrote a credentials file")
+	}
+}
+
+func TestClaudeOAuthSyncRefusesSplitSecrets(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	f.splitSecrets = true
+	_, err := syncClaudeOAuthCredentials(f.agent, f.state(), false)
+	if err == nil || !strings.Contains(err.Error(), "reconnect") {
+		t.Fatalf("split secrets = %v", err)
+	}
+	if len(f.puts) != 0 || f.exportsTaken != 0 {
+		t.Fatal("a split enrollment was synced")
+	}
+}
+
+func TestClaudeOAuthLocalReadFailureHonoursBackoff(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	reads := 0
+	prev := readClaudeKeychainBlobForSync
+	readClaudeKeychainBlobForSync = func() (string, error) {
+		reads++
+		return "", errors.New("keychain locked")
+	}
+	t.Cleanup(func() { readClaudeKeychainBlobForSync = prev })
+	if _, err := syncClaudeOAuthCredentials(f.agent, f.state(), false); err == nil {
+		t.Fatal("expected a read failure")
+	}
+	if _, err := syncClaudeOAuthCredentials(f.agent, f.state(), false); err != nil {
+		t.Fatalf("back-off pass returned %v", err)
+	}
+	if reads != 1 || len(f.requestLog()) != 0 {
+		t.Fatalf("reads=%d requests=%v", reads, f.requestLog())
+	}
+}
+
+func TestSessionSubscriptionSyncHonoursDeadline(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	prev := syncClaudeOAuthFromHook
+	syncClaudeOAuthFromHook = func() { <-release }
+	t.Cleanup(func() { syncClaudeOAuthFromHook = prev })
+	begin := time.Now()
+	runSessionSubscriptionSync(permissionSourceClaudeCode, time.Now().Add(-(sessionSubscriptionSyncBudget - 1500*time.Millisecond)))
+	if elapsed := time.Since(begin); elapsed > 3*time.Second {
+		t.Fatalf("sync ignored the remaining budget: %s", elapsed)
+	}
+	begin = time.Now()
+	runSessionSubscriptionSync(permissionSourceClaudeCode, time.Now().Add(-sessionSubscriptionSyncBudget))
+	if time.Since(begin) > 100*time.Millisecond {
+		t.Fatal("an exhausted budget still ran the sync")
 	}
 }

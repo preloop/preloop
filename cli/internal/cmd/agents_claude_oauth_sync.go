@@ -16,6 +16,7 @@ package cmd
 // change a hook decision, and never write to stdout.
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -64,6 +65,12 @@ var readClaudeKeychainBlobForSync = func() (string, error) {
 // active local store, preserving fields Preloop does not hold (scopes,
 // subscriptionType). Tests replace it.
 var writeClaudeSubscriptionCredentialForSync = writeClaudeSubscriptionCredential
+
+// errClaudeOAuthSplitSecrets refuses a sync when the enrollment's Claude Code
+// rows point at more than one credential secret.
+var errClaudeOAuthSplitSecrets = errors.New(
+	`claude code oauth sync: this enrollment's Claude Code models use more than one stored credential; run preloop agents reconnect "Claude Code" --from-local to merge them`,
+)
 
 type claudeOAuthLocalBundle struct {
 	Credential *claudeOAuthCredential
@@ -243,6 +250,11 @@ func syncClaudeOAuthCredentials(
 		}
 		state = loaded
 	}
+	// Back-off first, so a persistent local read error (for example a
+	// Keychain failure) logs once a minute rather than on every hook.
+	if !force && claudeOAuthSyncBackoffActive(state) {
+		return claudeOAuthSyncOutcome{Unchanged: true}, nil
+	}
 	checkDue := force || claudeOAuthServerCheckDue(state)
 	bundle, err := evaluateClaudeOAuthLocalBundle(state, checkDue)
 	if err != nil {
@@ -258,9 +270,6 @@ func syncClaudeOAuthCredentials(
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil
 	}
 	if !force && !bundle.Newer && !checkDue {
-		return claudeOAuthSyncOutcome{Unchanged: true}, nil
-	}
-	if !force && claudeOAuthSyncBackoffActive(state) {
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil
 	}
 	client, err := newClaudeOAuthSyncClient()
@@ -303,6 +312,13 @@ func reconcileClaudeOAuthBundle(
 		groups = listed
 		ids = codexOAuthGroupTargetIDs(groups)
 		markers, _, markerErr = readCodexOAuthMarkers(client, ids)
+	}
+	// One rotating bundle must live in exactly one secret. A split
+	// enrollment is repaired by reconnect, which uploads once and attaches
+	// the other rows; syncing into several secrets would recreate the
+	// two-holder race.
+	if len(ids) > 1 {
+		return recordClaudeOAuthSyncFailure(state, errClaudeOAuthSplitSecrets)
 	}
 	best := newestClaudeOAuthMarker(markers)
 	serverNewer := best != nil && claudeServerMarkerNewer(*best, state, bundle.Credential.ExpiresAtMS)
