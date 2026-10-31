@@ -67,6 +67,7 @@ from preloop.services.harness_inventory import (
     viewer_is_account_admin,
 )
 from preloop.services.runner_presence import derive_presence, parse_idle_seconds
+from preloop.sync.services.realtime_publisher import PERSISTED_FLAG
 from preloop.services.runner_service import (
     derive_execution_runner,
     emit_runner_deleted,
@@ -778,6 +779,8 @@ async def persist_runner_logs(
                     "execution_id": str(execution_id),
                     "type": "agent_log_line",
                     "payload": {"line": line},
+                    # Committed above; the log persister must not store it again.
+                    PERSISTED_FLAG: True,
                 },
             )
 

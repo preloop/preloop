@@ -1862,6 +1862,10 @@ class FlowCreate(FlowBase):
 
 
 class FlowUpdate(FlowBase):
+    # No default: an omitted harness means "keep the stored one". Inheriting
+    # FlowBase's "openhands" made partial updates validate as OpenHands.
+    agent_type: Optional[str] = None
+
     @field_validator("result_schema")
     @classmethod
     def validate_result_schema(

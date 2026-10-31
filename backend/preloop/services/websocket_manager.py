@@ -18,6 +18,7 @@ from sqlalchemy.exc import (
 )
 
 from preloop.sync.services.event_bus import get_task_publisher
+from preloop.sync.services.realtime_publisher import PERSISTED_FLAG
 from preloop.models.db.session import get_db_session as get_db
 from preloop.services.account_realtime import (
     ACCOUNT_REALTIME_TOPICS,
@@ -339,6 +340,22 @@ async def _log_writer_worker() -> None:
                 queue.qsize(),
             )
         raise
+
+
+async def persist_flow_update(data: dict) -> bool:
+    """Queue one flow-updates message for storage unless it is already stored.
+
+    Args:
+        data: Decoded flow-updates message.
+
+    Returns:
+        True when the message was queued for persistence.
+    """
+    execution_id = data.get("execution_id")
+    if not execution_id or data.get(PERSISTED_FLAG) is True:
+        return False
+    await persist_execution_log(execution_id, data)
+    return True
 
 
 async def persist_execution_log(execution_id: str, log_data: dict) -> None:
@@ -780,10 +797,7 @@ async def nats_consumer(manager: "WebSocketManager"):
 
     async def persistence_handler(msg: Msg):
         try:
-            data = json.loads(msg.data.decode())
-            execution_id = data.get("execution_id")
-            if execution_id:
-                await persist_execution_log(execution_id, data)
+            await persist_flow_update(json.loads(msg.data.decode()))
         except Exception as e:
             logger.error(f"Error persisting log: {e}")
 
