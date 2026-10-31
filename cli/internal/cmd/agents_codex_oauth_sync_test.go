@@ -578,11 +578,11 @@ func TestSyncCredentialsPrintsRowsAndRefusesOtherAgents(t *testing.T) {
 	}
 
 	refused := &cobra.Command{}
-	err := runAgentsSyncCredentials(refused, []string{"Claude Code"})
+	err := runAgentsSyncCredentials(refused, []string{"Cursor"})
 	if err == nil {
 		t.Fatal("expected non-zero refusal")
 	}
-	if err.Error() != "sync-credentials only supports Codex CLI" || strings.Contains(err.Error(), "\n") {
+	if err.Error() != "sync-credentials only supports Codex CLI and Claude Code" || strings.Contains(err.Error(), "\n") {
 		t.Fatalf("refusal = %q", err.Error())
 	}
 }

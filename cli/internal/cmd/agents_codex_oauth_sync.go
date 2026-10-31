@@ -119,10 +119,15 @@ type codexOAuthServerMarker struct {
 
 var agentsSyncCredentialsCmd = &cobra.Command{
 	Use:   "sync-credentials [agent]",
-	Short: "Reconcile the local Codex ChatGPT login with Preloop's copy",
-	Long: `Keep the local Codex ChatGPT OAuth bundle and Preloop's stored copy on
-the same lineage. The refresh token is single-use, so the two copies must
-not drift apart.
+	Short: "Reconcile a local subscription login (Codex CLI, Claude Code) with Preloop's copy",
+	Long: `Keep the local subscription OAuth bundle (Codex ChatGPT login or Claude
+Code login) and Preloop's stored copy on the same lineage. The refresh token
+is single-use, so the two copies must not drift apart.
+
+For Claude Code the local login is the macOS Keychain entry
+"Claude Code-credentials" or ~/.claude/.credentials.json. Preloop's newer
+copy is written back there; otherwise the local login is pushed. When both
+changed, the copy that expires later wins.
 
 When Preloop's copy is newer (the gateway refreshed it), it is written back
 to ~/.codex/auth.json, or to the macOS Keychain entry when that is where
@@ -130,14 +135,16 @@ Codex keeps its login. Otherwise the local bundle is pushed onto every model
 row tagged for this enrollment. When both changed since the last sync, the
 copy with the later last_refresh wins and replaces the other.
 
-The Codex permission hook does this automatically. This command is the
-manual form, for a host whose hook is not installed. Codex only. Other
-agents are refused in one line. Output says which direction ran and never
+The Preloop hooks do this automatically at session start, on each prompt
+and before tool calls. This command is the manual form, for a host whose
+hooks are not installed or after a gateway refresh failure. Codex CLI
+(the default) and Claude Code only; other agents are refused in one line. Output says which direction ran and never
 prints token material.
 
 Examples:
   preloop agents sync-credentials
-  preloop agents sync-credentials "Codex CLI"`,
+  preloop agents sync-credentials "Codex CLI"
+  preloop agents sync-credentials "Claude Code"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgentsSyncCredentials,
 }
@@ -155,8 +162,9 @@ func runAgentsSyncCredentials(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !isCodexCLIAgent(AgentConfig{Name: canonical}) {
-		return fmt.Errorf("sync-credentials only supports Codex CLI")
+	probe := AgentConfig{Name: canonical}
+	if !isCodexCLIAgent(probe) && !isClaudeCodeAgent(probe) {
+		return fmt.Errorf("sync-credentials only supports Codex CLI and Claude Code")
 	}
 	discovered, err := discoverAgents(cmd.OutOrStdout(), false)
 	if err != nil {
@@ -164,11 +172,18 @@ func runAgentsSyncCredentials(cmd *cobra.Command, args []string) error {
 	}
 	agent, err := findDiscoveredAgent(discovered, canonical)
 	if err != nil {
-		return fmt.Errorf("Codex CLI is not installed on this machine")
+		return fmt.Errorf("%s is not installed on this machine", canonical)
 	}
 	state, err := loadLocalEnrollmentState(agent)
 	if err != nil {
-		return fmt.Errorf("Codex CLI is not enrolled on this machine")
+		return fmt.Errorf("%s is not enrolled on this machine", canonical)
+	}
+	if isClaudeCodeAgent(agent) {
+		outcome, err := syncClaudeOAuthCredentials(agent, state, true)
+		if len(outcome.Updated) > 0 || err == nil {
+			fmt.Fprintln(cmd.OutOrStdout(), formatClaudeOAuthSyncOutcome(outcome)) //nolint:errcheck
+		}
+		return err
 	}
 	outcome, err := syncCodexOAuthCredentials(agent, state, true)
 	if len(outcome.Updated) > 0 || err == nil {
@@ -849,19 +864,33 @@ func codexEnrollmentStateStillPresent(state *localEnrollmentState) bool {
 // listCodexOAuthGroups resolves this enrollment's managed agent and groups
 // its Codex OAuth model rows by credentials secret.
 func listCodexOAuthGroups(client *api.Client, agent AgentConfig) ([]codexOAuthSyncGroup, error) {
-	managed, err := getManagedAgentForDiscovered(client, agent)
+	groups, err := listSubscriptionOAuthGroups(client, agent, openaiCodexOAuthCredentialType)
 	if err != nil {
 		return nil, fmt.Errorf("codex oauth sync: %w", err)
 	}
+	return groups, nil
+}
+
+// listSubscriptionOAuthGroups resolves this enrollment's managed agent and
+// groups its model rows of credentialType by credentials secret.
+func listSubscriptionOAuthGroups(
+	client *api.Client,
+	agent AgentConfig,
+	credentialType string,
+) ([]codexOAuthSyncGroup, error) {
+	managed, err := getManagedAgentForDiscovered(client, agent)
+	if err != nil {
+		return nil, err
+	}
 	agentID := strings.TrimSpace(managed.ID)
 	if agentID == "" {
-		return nil, fmt.Errorf("codex oauth sync: managed agent has no id")
+		return nil, fmt.Errorf("managed agent has no id")
 	}
 	var models []aiModelResponse
 	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
-		return nil, fmt.Errorf("codex oauth sync: list models: %w", err)
+		return nil, fmt.Errorf("list models: %w", err)
 	}
-	return codexOAuthGroupsForEnrollment(models, agentID), nil
+	return subscriptionOAuthGroupsForEnrollment(models, agentID, credentialType), nil
 }
 
 // pushCodexOAuthBundle PUTs the payload once per distinct secret.
@@ -870,21 +899,32 @@ func pushCodexOAuthBundle(
 	groups []codexOAuthSyncGroup,
 	payload map[string]interface{},
 ) ([]aiModelResponse, error) {
+	updated, err := pushSubscriptionOAuthBundle(client, groups, openaiCodexOAuthCredentialType, payload)
+	if err != nil {
+		return updated, fmt.Errorf("codex oauth sync: %w", err)
+	}
+	return updated, nil
+}
+
+// pushSubscriptionOAuthBundle PUTs a subscription OAuth payload once per
+// distinct secret.
+func pushSubscriptionOAuthBundle(
+	client *api.Client,
+	groups []codexOAuthSyncGroup,
+	credentialType string,
+	payload map[string]interface{},
+) ([]aiModelResponse, error) {
 	updated := make([]aiModelResponse, 0)
 	for _, group := range groups {
 		target := group.models[0]
 		body := map[string]interface{}{
-			"credential_type":    openaiCodexOAuthCredentialType,
+			"credential_type":    credentialType,
 			"credential_payload": payload,
 		}
 		var response aiModelResponse
 		path := api.RESTPrefix + "/ai-models/" + url.PathEscape(strings.TrimSpace(target.ID))
 		if err := client.Put(path, body, &response); err != nil {
-			return updated, fmt.Errorf(
-				"codex oauth sync: update model %s: %w",
-				strings.TrimSpace(target.ID),
-				err,
-			)
+			return updated, fmt.Errorf("update model %s: %w", strings.TrimSpace(target.ID), err)
 		}
 		updated = append(updated, group.models...)
 	}
@@ -893,10 +933,21 @@ func pushCodexOAuthBundle(
 
 // codexOAuthGroupsForEnrollment returns one group per distinct
 // credentials_secret_id among oauth_openai_codex rows tagged with this
+// enrollment.
+func codexOAuthGroupsForEnrollment(models []aiModelResponse, managedAgentID string) []codexOAuthSyncGroup {
+	return subscriptionOAuthGroupsForEnrollment(models, managedAgentID, openaiCodexOAuthCredentialType)
+}
+
+// subscriptionOAuthGroupsForEnrollment returns one group per distinct
+// credentials_secret_id among credentialType rows tagged with this
 // enrollment. Rows that share a secret are fixed by a single PUT. A row
 // with no secret id is its own group. Other credential types are skipped
 // so an API-key row for the same enrollment is not overwritten.
-func codexOAuthGroupsForEnrollment(models []aiModelResponse, managedAgentID string) []codexOAuthSyncGroup {
+func subscriptionOAuthGroupsForEnrollment(
+	models []aiModelResponse,
+	managedAgentID string,
+	credentialType string,
+) []codexOAuthSyncGroup {
 	managedAgentID = strings.TrimSpace(managedAgentID)
 	if managedAgentID == "" {
 		return nil
@@ -904,7 +955,7 @@ func codexOAuthGroupsForEnrollment(models []aiModelResponse, managedAgentID stri
 	groups := make([]codexOAuthSyncGroup, 0)
 	index := map[string]int{}
 	for _, model := range models {
-		if !codexModelTaggedForEnrollment(model, managedAgentID) {
+		if !subscriptionModelTaggedForEnrollment(model, managedAgentID, credentialType) {
 			continue
 		}
 		secretID := strings.TrimSpace(model.CredentialsSecretID)
@@ -923,7 +974,11 @@ func codexOAuthGroupsForEnrollment(models []aiModelResponse, managedAgentID stri
 }
 
 func codexModelTaggedForEnrollment(model aiModelResponse, managedAgentID string) bool {
-	if strings.TrimSpace(model.CredentialType) != openaiCodexOAuthCredentialType {
+	return subscriptionModelTaggedForEnrollment(model, managedAgentID, openaiCodexOAuthCredentialType)
+}
+
+func subscriptionModelTaggedForEnrollment(model aiModelResponse, managedAgentID, credentialType string) bool {
+	if strings.TrimSpace(model.CredentialType) != credentialType {
 		return false
 	}
 	if model.MetaData == nil {
