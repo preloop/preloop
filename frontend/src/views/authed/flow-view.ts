@@ -776,14 +776,16 @@ export class FlowView extends LitElement {
         ${
           parts.length
             ? parts.map(
-                (part, index) => html`${index ? ' · ' : ''}<span
-                    title=${part.title}
-                    >${part.text}</span
-                  >${
-                    sourceLabel[part.source]
-                      ? html` <span class="meta">(${sourceLabel[part.source]})</span>`
-                      : ''
-                  }`
+                (part, index) =>
+                  html`${index ? ' · ' : ''}<span title=${part.title}
+                      >${part.text}</span
+                    >${
+                      sourceLabel[part.source]
+                        ? html` <span class="meta"
+                            >(${sourceLabel[part.source]})</span
+                          >`
+                        : ''
+                    }`
               )
             : 'None'
         }
@@ -1246,7 +1248,6 @@ export class FlowView extends LitElement {
                     `
                   : ''
               }
-
               ${this.renderRunLimits()}
 
               <span class="detail-label">Status</span>
