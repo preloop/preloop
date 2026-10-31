@@ -967,6 +967,13 @@ class FlowExecutionOrchestrator:
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
+        # Hosted read-only review startup receipt: the admitted commit the
+        # container pins to, whether its startup line was seen before the
+        # agent started, and the receipt persisted from that observation.
+        self._read_only_admitted_commit: Optional[str] = None
+        self._read_only_startup_seen = False
+        self._read_only_setup_failed = False
+        self._startup_receipt: Optional[Dict[str, Any]] = None
         # One-shot completion-confirmation round (layer 2): at most one nudge
         # per execution, across all attempts. Set the moment a nudge is
         # considered, so even an errored nudge is never repeated.
@@ -1232,6 +1239,63 @@ class FlowExecutionOrchestrator:
                 f"Failed to publish execution warning: {publish_error}",
             )
 
+    def _note_read_only_startup_line(self, line: str) -> None:
+        """Track the hosted read-only startup line and setup failures.
+
+        The startup line counts only before the agent starts; anything the
+        agent prints later cannot author it. A setup failure line at any
+        time withdraws the receipt (it can only make the receipt weaker).
+        """
+        commit = getattr(self, "_read_only_admitted_commit", None)
+        if not commit:
+            return
+        from preloop.services.read_only_review import read_only_startup_line
+        from preloop.utils.workspace_snapshot import SETUP_FAILED_MARKER
+
+        if line.startswith(SETUP_FAILED_MARKER):
+            if not self._read_only_setup_failed:
+                self._read_only_setup_failed = True
+                if self._startup_receipt is not None:
+                    self._persist_startup_receipt(
+                        checkout_verified=False, setup_completed=False
+                    )
+            return
+        if not self._agent_exec_started and line == read_only_startup_line(commit):
+            self._read_only_startup_seen = True
+
+    def _record_read_only_startup(self) -> None:
+        """Persist the startup receipt once the agent start is observed."""
+        if (
+            not getattr(self, "_read_only_admitted_commit", None)
+            or not self._read_only_startup_seen
+            or self._read_only_setup_failed
+            or self._startup_receipt is not None
+        ):
+            return
+        from preloop.services.read_only_review import hosted_startup_receipt
+
+        self._startup_receipt = hosted_startup_receipt(
+            str(self._read_only_admitted_commit),
+            setup_completed=True,
+            agent_started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._persist_startup_receipt()
+
+    def _persist_startup_receipt(self, **changes: Any) -> None:
+        """Write the startup receipt; a storage failure never fails the run."""
+        if self._startup_receipt is None or self.execution_log is None:
+            return
+        self._startup_receipt = {**self._startup_receipt, **changes}
+        try:
+            crud_flow_execution.record_startup_receipt(
+                self.db,
+                execution_id=self.execution_log.id,
+                receipt=self._startup_receipt,
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("Failed to persist the read-only startup receipt")
+
     async def _revoke_read_only_review_leases(self) -> None:
         """Revoke read-only review leases once the execution is terminal.
 
@@ -1257,14 +1321,18 @@ class FlowExecutionOrchestrator:
             )
             from preloop.services.trusted_publisher import PublicationError
 
+            revoked = 0
             async with httpx.AsyncClient() as client:
                 for lease in leases:
                     try:
                         await revoke_repository_lease(lease, client)
+                        revoked += 1
                     except PublicationError:
                         logger.warning(
                             "Read-only review lease revocation failed; expiry remains enforced"
                         )
+            if getattr(self, "_startup_receipt", None) is not None:
+                self._persist_startup_receipt(lease_revoked=revoked == len(leases))
 
     def _read_only_review_mode(self) -> bool:
         """Retain the startup capability even if the flow is edited later."""
@@ -3341,6 +3409,11 @@ class FlowExecutionOrchestrator:
                 execution_context,
                 mint=mint_read_lease,
             )
+            if mint_read_lease:
+                repositories = (execution_context.get("git_clone_config") or {}).get(
+                    "repositories"
+                ) or [{}]
+                self._read_only_admitted_commit = repositories[0].get("commit")
             if lease is not None:
                 self._read_only_review_leases = [
                     *getattr(self, "_read_only_review_leases", []),
@@ -3983,9 +4056,11 @@ class FlowExecutionOrchestrator:
         # suppressed until this marker is seen, preventing false
         # positives from the prompt echo that contains the sentinel
         # instruction text.
+        self._note_read_only_startup_line(log_line.strip())
         if not self._agent_exec_started and log_line.strip() == AGENT_EXEC_START_MARKER:
             self._agent_exec_started = True
             logger.info(f"Agent exec start marker seen at log line #{log_count}")
+            self._record_read_only_startup()
 
         # Detect success sentinel — but ONLY after the agent exec
         # start marker has been seen (to ignore prompt echo).
@@ -4764,6 +4839,12 @@ class FlowExecutionOrchestrator:
         # Keep validation outside the cancellable transfers. A document read
         # before a later transfer stalled still goes through the same boundary.
         sanitized = sanitize_captured_result(artifact)
+        if sanitized is not None and getattr(self, "_read_only_admitted_commit", None):
+            # A hosted review's result.json is agent-authored; only a private
+            # runner completion may carry the runner's read-only receipt.
+            from preloop.services.read_only_review import HOST_READ_ONLY_RESULT_KEY
+
+            sanitized.pop(HOST_READ_ONLY_RESULT_KEY, None)
         persisted = self._persist_cra_result_boundary(
             sanitized, session_reference=session_reference
         )
@@ -4781,6 +4862,16 @@ class FlowExecutionOrchestrator:
         capture. The stored document and its result schema outcome must
         describe the same document, so both checks run again here.
         """
+        if isinstance(artifact, dict) and getattr(
+            self, "_read_only_admitted_commit", None
+        ):
+            from preloop.services.read_only_review import HOST_READ_ONLY_RESULT_KEY
+
+            artifact = {
+                key: value
+                for key, value in artifact.items()
+                if key != HOST_READ_ONLY_RESULT_KEY
+            }
         persisted = self._persist_cra_result_boundary(
             artifact, session_reference=session_reference
         )

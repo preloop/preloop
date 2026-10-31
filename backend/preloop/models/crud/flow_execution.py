@@ -1038,6 +1038,22 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def record_startup_receipt(
+        self, db: Session, *, execution_id: uuid.UUID, receipt: dict[str, Any]
+    ) -> None:
+        """Persist the controller-observed startup receipt and commit.
+
+        Args:
+            db: Database session.
+            execution_id: Execution the receipt describes.
+            receipt: Bounded receipt fields; never agent output or credentials.
+        """
+        execution = self.get(db, id=execution_id)
+        if execution is None:
+            return
+        execution.startup_receipt = dict(receipt)  # type: ignore[assignment]
+        db.commit()
+
     def record_native_resume(
         self, db: Session, *, execution_id: uuid.UUID, outcome: dict
     ) -> None:
