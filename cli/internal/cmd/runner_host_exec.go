@@ -871,10 +871,13 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 				stdin, err = claudeHostExecPrompt(job)
 			}
 			if err == nil && gatewayMarker != "" {
-				gatewayEnv, gatewayArgs, gatewayFiles, ok, planErr := claudeHostGatewayPlan(gatewayMarker, env, scratch)
+				gatewayEnv, gatewayArgs, gatewayFiles, ok, managed, planErr := claudeHostGatewayPlan(gatewayMarker, env, scratch, workspace)
 				err = planErr
 				files = append(files, gatewayFiles...)
 				gatewayNotice = hostExecGatewayNotice(wantHarness, ok)
+				if managed {
+					gatewayNotice = hostExecGatewayNotice("claude_code_managed_headers", false)
+				}
 				env = mergeHostExecManagedEnv(env, gatewayEnv)
 				args = append(args, gatewayArgs...)
 			}

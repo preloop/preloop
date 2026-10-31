@@ -202,7 +202,7 @@ func TestClaudeGatewayPlanMergesSettingsLevelCustomHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	scratch := t.TempDir()
-	env, args, files, ok, err := claudeHostGatewayPlan(hostGatewayTestMarker, nil, scratch)
+	env, args, files, ok, _, err := claudeHostGatewayPlan(hostGatewayTestMarker, nil, scratch, "")
 	if err != nil || !ok || len(env) != 0 || len(args) != 2 || args[0] != "--settings" || len(files) != 1 {
 		t.Fatalf("plan = %v %v %v %v %v", env, args, files, ok, err)
 	}
@@ -216,5 +216,58 @@ func TestClaudeGatewayPlanMergesSettingsLevelCustomHeaders(t *testing.T) {
 	}
 	if info, _ := os.Stat(args[1]); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", info.Mode())
+	}
+}
+
+func isolateClaudeSettings(t *testing.T) (user, managed string) {
+	t.Helper()
+	user = t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", user)
+	managed = filepath.Join(t.TempDir(), "managed-settings.json")
+	previous := claudeManagedSettingsPath
+	claudeManagedSettingsPath = func() string { return managed }
+	t.Cleanup(func() { claudeManagedSettingsPath = previous })
+	return user, managed
+}
+
+func writeSettings(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeGatewayRoutingFollowsSettingsPrecedence(t *testing.T) {
+	user, managed := isolateClaudeSettings(t)
+	project := t.TempDir()
+	// Routed only in project settings: the run in that workspace is routed.
+	writeSettings(t, filepath.Join(project, ".claude", "settings.json"), `{"env":{"ANTHROPIC_BASE_URL":"https://preloop.example.com/anthropic"}}`)
+	if _, ok := claudeHostGatewayEnvIn(hostGatewayTestMarker, nil, project); !ok {
+		t.Fatal("project-level routing not honoured")
+	}
+	// User local overriding the user file away from Preloop: not routed.
+	writeSettings(t, filepath.Join(user, "settings.json"), `{"env":{"ANTHROPIC_BASE_URL":"https://preloop.example.com/anthropic"}}`)
+	writeSettings(t, filepath.Join(user, "settings.local.json"), `{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com"}}`)
+	if _, ok := claudeHostGatewayEnvIn(hostGatewayTestMarker, nil, ""); ok {
+		t.Fatal("last writer is not Preloop, but reported routed")
+	}
+	// Project headers merge into the per-run settings file.
+	writeSettings(t, filepath.Join(project, ".claude", "settings.local.json"), "{\r\n\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"X-Team: blue\"}}\r\n")
+	_, args, _, ok, managedHeaders, err := claudeHostGatewayPlan(hostGatewayTestMarker, nil, t.TempDir(), project)
+	if err != nil || !ok || managedHeaders || len(args) != 2 {
+		t.Fatalf("plan = %v %v %v %v", args, ok, managedHeaders, err)
+	}
+	raw, _ := os.ReadFile(args[1])
+	if !strings.Contains(string(raw), `X-Team: blue\nX-Preloop-Execution: `) {
+		t.Fatalf("settings file = %s", raw)
+	}
+	// Managed headers outrank --settings: reported distinctly, nothing sent.
+	writeSettings(t, managed, `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Fleet: 1"}}`)
+	env, args, files, ok, managedHeaders, err := claudeHostGatewayPlan(hostGatewayTestMarker, nil, t.TempDir(), project)
+	if err != nil || ok || !managedHeaders || env != nil || args != nil || files != nil {
+		t.Fatalf("managed plan = %v %v %v %v %v %v", env, args, files, ok, managedHeaders, err)
 	}
 }
