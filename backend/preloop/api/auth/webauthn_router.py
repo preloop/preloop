@@ -384,6 +384,49 @@ def authentication_verify(
     request: Request,
     db: Session = Depends(get_db_session),
 ) -> dict:
+    """Audit one final passkey outcome, including challenge and policy failures."""
+    from preloop.services.auth_audit import (
+        login_failure_reason,
+        login_subject,
+        record_login_event,
+    )
+
+    succeeded = False
+    reason_code = "internal_error"
+    try:
+        result = _authentication_verify(body, request, db)
+        succeeded = True
+        return result
+    except Exception as exc:
+        reason_code = login_failure_reason(exc, method="passkey")
+        raise
+    finally:
+        try:
+            user = getattr(request.state, "auth_audit_user", None)
+            if user is None:
+                raw_id = body.credential.get("rawId") or body.credential.get("id") or ""
+                cred = crud_webauthn_credential.get_by_credential_id(
+                    db, credential_id=raw_id.rstrip("=")
+                )
+                if cred is not None:
+                    user = login_subject(db, crud_person.get(db, id=cred.person_id))
+            record_login_event(
+                db,
+                user=user,
+                method="passkey",
+                succeeded=succeeded,
+                reason_code=None if succeeded else reason_code,
+                source_ip=get_client_ip(request),
+            )
+        except Exception:
+            logger.warning("Authentication audit submission failed")
+
+
+def _authentication_verify(
+    body: AuthenticationVerifyRequest,
+    request: Request,
+    db: Session = Depends(get_db_session),
+) -> dict:
     """Complete passkey sign-in; returns access and refresh tokens."""
     _require_enabled()
 
@@ -424,6 +467,8 @@ def authentication_verify(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
+
+    request.state.auth_audit_user = user
 
     # A passkey is a second way into the same local account, so it obeys the
     # same verification requirement the password endpoints do. Without this,

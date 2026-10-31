@@ -14,6 +14,7 @@ unchanged against code without it.
 
 from __future__ import annotations
 
+import asyncio
 import traceback
 import uuid
 from contextlib import contextmanager
@@ -34,9 +35,11 @@ PASSWORD = "query-budget-pass-1"
 #: Statements issued by one password sign in (``/token/json``).
 #: Canonical identity reads the person, password hashes, memberships and
 #: account, gates the identity, writes last_login, audits the login, then
-#: the landing row selects and gates the membership again. Measured at 13
-#: for one active membership; a further increase still has to be justified.
-LOGIN_STATEMENTS = 13
+#: the landing row selects and gates the membership again. Authentication
+#: outcomes add one final audit INSERT and one membership reload after commit.
+#: The audit row is not re-read: no caller needs it. Measured at 15 for one
+#: active membership; the two audit INSERTs and zero loop SQL are asserted below.
+LOGIN_STATEMENTS = 15
 #: Statements issued by one warm, priced chat completion without policies.
 #: 24 on the base without the hooks (main at 179298d7): the three price
 #: override lookups each start with a ``has_table`` check.
@@ -52,6 +55,7 @@ class _Statements(list):
     def __init__(self) -> None:
         super().__init__()
         self.from_hooks: list[str] = []
+        self.from_event_loop: list[str] = []
 
 
 @contextmanager
@@ -63,6 +67,12 @@ def _count_statements(db: Session) -> Iterator[_Statements]:
         if text.startswith("SAVEPOINT") or text.startswith("RELEASE SAVEPOINT"):
             return
         statements.append(statement)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            statements.from_event_loop.append(statement)
         if any(
             frame.filename.endswith(HOOKS_FILE) for frame in traceback.extract_stack()
         ):
@@ -116,6 +126,14 @@ def test_password_sign_in_query_count(
 
     assert response.status_code == 200, response.text
     assert statements.from_hooks == []
+    assert statements.from_event_loop == []
+    assert (
+        sum(
+            statement.lstrip().upper().startswith("INSERT INTO AUDIT_LOG")
+            for statement in statements
+        )
+        == 2
+    )
     assert len(statements) == LOGIN_STATEMENTS, statements
 
 
