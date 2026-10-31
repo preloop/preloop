@@ -340,7 +340,9 @@ def refused_or_expired(request: Any) -> bool:
     return status in _REFUSED_STATUSES or status == "expired"
 
 
-def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
+def hosted_approval_gap(
+    db: Any, flow: Any, *, actions: tuple[str, ...] = ("require_approval",)
+) -> Optional[str]:
     """Why a hosted container run cannot honour this flow's approval rules.
 
     Hosted Codex installs the Preloop command hook in its container and
@@ -373,7 +375,11 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
     account_id = getattr(flow, "account_id", None)
     if account_id is None:
         return None
-    names = set(list_native_require_approval_tool_names(db, account_id=account_id))
+    names = set(
+        list_native_require_approval_tool_names(
+            db, account_id=account_id, actions=actions
+        )
+    )
     account = crud_account.get(db, id=str(account_id))
     meta = getattr(account, "meta_data", None) if account is not None else None
     scopes = [(SUBJECT_TYPE_FLOWS, str(flow.id))]
@@ -397,7 +403,7 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
                 if (
                     isinstance(rule, dict)
                     and rule.get("is_enabled", True)
-                    and rule.get("action") == "require_approval"
+                    and rule.get("action") in actions
                     and rule.get("source") in (None, "", "agent")
                 ):
                     names.add(str(tool_name))

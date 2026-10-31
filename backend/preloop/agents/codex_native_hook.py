@@ -23,10 +23,10 @@ This block gives the hosted run the same gate. Before Codex starts it:
 The read-only sandbox is untouched: it disables the shell tool, so it has no
 native commands to gate and no hook is installed there.
 
-When the flow has approval-required native rules, a hook that could not be
-installed fails the run before Codex starts with ``approval_unavailable``
-instead of running those commands ungated. Without such rules a missing hook
-is logged and the run continues as before.
+When any native deny or approval-required rule applies to the flow, a hook
+that could not be installed fails the run before Codex starts with
+``approval_unavailable`` instead of running those commands ungated. With no
+native rule a missing hook is logged and the run continues as before.
 """
 
 from __future__ import annotations
@@ -150,6 +150,10 @@ if [ -n "$_pl_cli" ] && [ -z "$_pl_hook_error" ] && ! command -v python3 >/dev/n
 fi
 if [ -n "$_pl_cli" ] && [ -z "$_pl_hook_error" ]; then
     _pl_hook_cmd="'$_pl_cli' agents permission-hook --source codex_cli --hook-event PreToolUse --require-flow-credential"
+    # 330 s is ample: the hook never waits for a human here. The runtime
+    # credential names this execution, so an approval-required command parks
+    # the run and the hook answers at once (#2137); the decision is applied
+    # on resume, not inside this hook call.
     python3 - "$_pl_hook_cmd" > "$CODEX_HOME/hooks.json" <<'PL_HOOKS'
 import json, sys
 print(json.dumps({{"hooks": {{"PreToolUse": [{{"matcher": "*", "hooks": [

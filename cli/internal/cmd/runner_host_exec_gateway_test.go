@@ -251,3 +251,14 @@ func TestCodexNativeResultCannotTurnAFailedTurnIntoSuccess(t *testing.T) {
 		t.Fatalf("missing answer changed the result: %v", got)
 	}
 }
+
+func TestClaudeGatewayEnvReadsTheProcessBaseURL(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	env, ok := claudeHostGatewayEnv(hostGatewayTestMarker, []string{"ANTHROPIC_BASE_URL=https://preloop.example.com/anthropic"})
+	if !ok || len(env) != 1 || env[0] != "ANTHROPIC_CUSTOM_HEADERS=X-Preloop-Execution: "+hostGatewayTestMarker {
+		t.Fatalf("env = %q ok=%v", env, ok)
+	}
+	if _, ok := claudeHostGatewayEnv(hostGatewayTestMarker, []string{"ANTHROPIC_BASE_URL=https://api.anthropic.com"}); ok {
+		t.Fatal("marker sent to a non-Preloop base URL")
+	}
+}

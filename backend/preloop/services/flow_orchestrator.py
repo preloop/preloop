@@ -7654,10 +7654,13 @@ class FlowExecutionOrchestrator:
             and config.get("sandbox_type") == "read-only"
         ):
             return
-        reason = hosted_approval_gap(self.db, flow)
-        if reason and agent_type == "codex":
-            execution_context["native_hook_required"] = True
+        if agent_type == "codex":
+            # Deny rules are enforced by the same hook, so they make it
+            # required too: a run must not fall open when it cannot install.
+            if hosted_approval_gap(self.db, flow, actions=("require_approval", "deny")):
+                execution_context["native_hook_required"] = True
             return
+        reason = hosted_approval_gap(self.db, flow)
         if reason:
             raise AgentStartError(
                 reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
@@ -8508,15 +8511,41 @@ class FlowExecutionOrchestrator:
             logger.debug("Could not refresh execution before final write")
             return
         stored = getattr(execution, "failure_category", None)
-        if stored not in (
+        if stored in (
             FAILURE_CATEGORY_BUDGET_EXCEEDED,
             FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
         ):
+            kwargs["failure_category"] = stored
+            message = getattr(execution, "error_message", None)
+            if message:
+                kwargs["error_message"] = message
             return
-        kwargs["failure_category"] = stored
-        message = getattr(execution, "error_message", None)
-        if message:
-            kwargs["error_message"] = message
+        if kwargs.get("failure_category") is not None:
+            return
+        derived = derive_failure_category(
+            status=status, error_message=kwargs.get("error_message")
+        )
+        if derived != FAILURE_CATEGORY_UNKNOWN:
+            return
+        # An unclassifiable failure (often the agent's last prose) on a run
+        # that has spent a ceiling: the ceiling is why it stopped.
+        from preloop.services.flow_execution_limits import (
+            describe_execution_limits,
+            evaluate_execution_limits,
+        )
+
+        try:
+            limits, usage = describe_execution_limits(self.db, execution)
+            violation = (
+                None if limits.is_empty else evaluate_execution_limits(limits, usage)
+            )
+        except Exception:  # noqa: BLE001 - classification never fails a write
+            logger.debug("Could not evaluate limits for the final write")
+            return
+        if violation is None:
+            return
+        kwargs["failure_category"] = violation.category
+        kwargs["error_message"] = f"Execution budget exceeded: {violation.message}"
 
     async def _update_execution_log(
         self, status: Optional[str] = None, **kwargs

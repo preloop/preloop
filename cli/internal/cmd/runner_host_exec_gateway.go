@@ -130,6 +130,15 @@ func claudeHostGatewayEnv(marker string, base []string) (env []string, ok bool) 
 		}
 	}
 	if !routed {
+		// No settings-level base URL: Claude Code then reads the process
+		// environment the runner hands it.
+		for _, entry := range base {
+			if url, found := strings.CutPrefix(entry, "ANTHROPIC_BASE_URL="); found && strings.HasSuffix(strings.TrimRight(url, "/"), "/anthropic") {
+				routed = true
+			}
+		}
+	}
+	if !routed {
 		return nil, false
 	}
 	value := hostExecGatewayHeader + ": " + marker

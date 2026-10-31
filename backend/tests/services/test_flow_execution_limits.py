@@ -486,3 +486,56 @@ async def test_agent_error_after_a_default_ceiling_keeps_the_limit_outcome(
     assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
     assert execution.error_message == limit_message
     assert "default execution token ceiling reached" in execution.error_message
+
+
+@pytest.mark.asyncio
+async def test_prose_failure_on_a_spent_ceiling_is_categorised_by_the_ceiling(
+    db_session: Session, test_user, monkeypatch
+):
+    """The run stopped on its turn ceiling but the gateway mark did not land;
+    the final write carries the agent's last prose. It must still read as
+    the ceiling, never ``unknown``."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PRELOOP_DEFAULT_MAX_TURNS", "2")
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    for _ in range(2):
+        _log_usage(db_session, test_user, flow, execution, total_tokens=10)
+    db_session.commit()
+
+    orch = FlowExecutionOrchestrator(db_session, str(flow.id), {}, AsyncMock())
+    orch.execution_log = execution
+    orch._guard_status_write = lambda status, _kwargs: status
+    await orch._update_execution_log(
+        status="FAILED",
+        error_message="Now let me read the core new gateway security module.",
+    )
+    db_session.refresh(execution)
+    assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
+    assert "turn ceiling reached" in execution.error_message
+
+
+@pytest.mark.asyncio
+async def test_prose_failure_without_a_spent_ceiling_stays_unknown(
+    db_session: Session, test_user, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.delenv(name, raising=False)
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    db_session.commit()
+    orch = FlowExecutionOrchestrator(db_session, str(flow.id), {}, AsyncMock())
+    orch.execution_log = execution
+    orch._guard_status_write = lambda status, _kwargs: status
+    await orch._update_execution_log(status="FAILED", error_message="some prose")
+    db_session.refresh(execution)
+    assert execution.failure_category == "unknown"

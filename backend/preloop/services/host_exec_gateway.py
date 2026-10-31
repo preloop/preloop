@@ -308,6 +308,7 @@ def apply_host_gateway_metering(
     pending_job: Optional[Mapping[str, Any]],
     agent_config: Optional[Mapping[str, Any]],
     execution_id: Any,
+    request_count: Optional[int] = None,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Record whether a host run went through the gateway, and enforce it.
 
@@ -319,20 +320,24 @@ def apply_host_gateway_metering(
         pending_job: The persisted host lease.
         agent_config: The flow's ``agent_config``.
         execution_id: The execution.
+        request_count: Gateway rows already counted by the caller (see
+            :func:`count_gateway_requests_settled`); counted here when None.
 
     Returns:
         ``(status, error, result)``; the result always carries the
         server-computed ``gateway_metered`` and ``gateway_request_count``.
     """
-    from preloop.models.crud import crud_api_usage
     from preloop.services.runner_service import HOST_EXEC_LEASE_KEY
     from preloop.services.read_only_review import HOST_READ_ONLY_LEASE_KEY
 
     job = pending_job if isinstance(pending_job, Mapping) else {}
     if job.get("completion_protocol") != "host_exec" or result is None:
         return status, error, result
-    usage = crud_api_usage.get_gateway_usage_for_execution(db, str(execution_id))
-    count = int(usage.get("api_requests") or 0)
+    count = (
+        _gateway_request_count(db, execution_id)
+        if request_count is None
+        else request_count
+    )
     result = {
         **result,
         "gateway_metered": count > 0,
@@ -359,3 +364,57 @@ def apply_host_gateway_metering(
         "without the Preloop model provider)."
     )
     return "FAILED", message, {**result, "failure_category": GATEWAY_BYPASSED}
+
+
+def _gateway_request_count(db: Session, execution_id: Any) -> int:
+    from preloop.models.crud import crud_api_usage
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(db, str(execution_id))
+    return int(usage.get("api_requests") or 0)
+
+
+async def count_gateway_requests_settled(
+    db: Session,
+    *,
+    execution_id: Any,
+    pending_job: Optional[Mapping[str, Any]],
+    attempts: int = 5,
+    delay_seconds: float = 1.0,
+) -> Optional[int]:
+    """Count the execution's gateway rows, waiting briefly for a late row.
+
+    A streamed response's usage row is written after its terminal frame, so
+    a runner can report completion a moment before the row commits. For a
+    host run that could route through the gateway, an empty count is
+    re-read a few times before it is believed, so a metered run is not
+    failed as ``gateway_bypassed``.
+
+    Args:
+        db: Database session (each read is a new statement).
+        execution_id: The execution.
+        pending_job: The persisted lease.
+        attempts: Reads before giving up.
+        delay_seconds: Pause between reads.
+
+    Returns:
+        The count, or None when the lease is not a host lease.
+    """
+    import asyncio
+
+    from preloop.services.runner_service import HOST_EXEC_LEASE_KEY
+
+    job = pending_job if isinstance(pending_job, Mapping) else {}
+    if job.get("completion_protocol") != "host_exec":
+        return None
+    lease = job.get(HOST_EXEC_LEASE_KEY)
+    harness = lease.get("harness") if isinstance(lease, Mapping) else None
+    count = _gateway_request_count(db, execution_id)
+    if harness not in GATEWAY_ROUTABLE_HARNESSES:
+        return count
+    for _ in range(max(attempts - 1, 0)):
+        if count:
+            break
+        await asyncio.sleep(delay_seconds)
+        db.expire_all()
+        count = _gateway_request_count(db, execution_id)
+    return count

@@ -200,3 +200,36 @@ def test_host_sessions_report_gateway_metering_from_gateway_rows(monkeypatch):
         MagicMock(), account_id=uuid4(), execution_id=uuid4()
     )
     assert summary["gateway_metered"] is False
+
+
+@pytest.mark.asyncio
+async def test_settled_count_waits_for_a_late_streamed_row(monkeypatch):
+    from preloop.services.host_exec_gateway import count_gateway_requests_settled
+
+    counts = iter([0, 0, 3])
+    monkeypatch.setattr(
+        "preloop.services.host_exec_gateway._gateway_request_count",
+        lambda _db, _id: next(counts),
+    )
+    count = await count_gateway_requests_settled(
+        MagicMock(), execution_id=uuid4(), pending_job=_lease(), delay_seconds=0
+    )
+    assert count == 3
+
+
+@pytest.mark.asyncio
+async def test_settled_count_does_not_wait_for_unroutable_harnesses(monkeypatch):
+    from preloop.services.host_exec_gateway import count_gateway_requests_settled
+
+    calls = []
+    monkeypatch.setattr(
+        "preloop.services.host_exec_gateway._gateway_request_count",
+        lambda _db, _id: calls.append(1) or 0,
+    )
+    count = await count_gateway_requests_settled(
+        MagicMock(),
+        execution_id=uuid4(),
+        pending_job=_lease(harness="copilot_cli"),
+        delay_seconds=0,
+    )
+    assert count == 0 and len(calls) == 1

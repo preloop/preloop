@@ -175,7 +175,7 @@ def test_orchestrator_gates_hosted_codex_instead_of_refusing(monkeypatch):
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
     monkeypatch.setattr(
-        native_flow_park, "hosted_approval_gap", lambda _db, _flow: "refused"
+        native_flow_park, "hosted_approval_gap", lambda _db, _flow, **_kw: "refused"
     )
     fake = SimpleNamespace(db=None, agent_type=None, flow=SimpleNamespace())
     fake.flow.agent_type = "codex"
@@ -266,3 +266,21 @@ def test_pinned_cli_checksums_are_full_sha256():
 
     assert set(HOOK_CLI_SHA256) == {"amd64", "arm64"}
     assert all(len(v) == 64 and int(v, 16) >= 0 for v in HOOK_CLI_SHA256.values())
+
+
+def test_deny_rules_also_require_the_hosted_hook(monkeypatch):
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    seen = {}
+
+    def gap(_db, _flow, *, actions=("require_approval",)):
+        seen["actions"] = actions
+        return "deny rule applies" if "deny" in actions else None
+
+    monkeypatch.setattr(native_flow_park, "hosted_approval_gap", gap)
+    fake = SimpleNamespace(db=None, agent_type=None, flow=SimpleNamespace())
+    fake.flow.agent_type = "codex"
+    context = {"agent_config": {}}
+    FlowExecutionOrchestrator._refuse_hosted_approval_gap(fake, context)
+    assert "deny" in seen["actions"]
+    assert context["native_hook_required"] is True

@@ -1386,6 +1386,11 @@ async def runner_ws(
                         prompt = flow.prompt_template
                     from preloop.services.host_exec_gateway import (
                         apply_host_gateway_metering,
+                        count_gateway_requests_settled,
+                    )
+
+                    gateway_requests = await count_gateway_requests_settled(
+                        db, execution_id=execution_id, pending_job=leased_job
                     )
 
                     # Server truth: count this run's gateway rows, and fail a
@@ -1398,6 +1403,7 @@ async def runner_ws(
                         pending_job=leased_job,
                         agent_config=getattr(flow, "agent_config", None),
                         execution_id=execution_id,
+                        request_count=gateway_requests,
                     )
                 result_artifact = result if isinstance(result, dict) else None
                 approvals, authority = resolve_persist_authority(
