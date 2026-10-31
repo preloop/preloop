@@ -378,9 +378,9 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
     # Employee-bound flows run with the target agent's native policy (see
     # flow_runtime_token), so that agent's scoped rules apply too.
     agent_id = None
-    if isinstance((getattr(flow, "trigger_config", None) or {}).get(
-        "employee_events"
-    ), dict):
+    if isinstance(
+        (getattr(flow, "trigger_config", None) or {}).get("employee_events"), dict
+    ):
         agent_id = (getattr(flow, "agent_config", None) or {}).get("target_agent_id")
     if agent_id:
         scopes.append((SUBJECT_TYPE_MANAGED_AGENTS, str(agent_id)))

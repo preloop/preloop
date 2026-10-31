@@ -2172,7 +2172,9 @@ class ApprovalService:
         """
         from preloop.services.native_flow_park import NATIVE_PARK_MARKER
 
-        marker = tool_args.get(NATIVE_PARK_MARKER) if isinstance(tool_args, dict) else None
+        marker = (
+            tool_args.get(NATIVE_PARK_MARKER) if isinstance(tool_args, dict) else None
+        )
         if isinstance(marker, dict):
             user_args = {k: v for k, v in tool_args.items() if k != NATIVE_PARK_MARKER}
             stored = await self._storage_redacted_user_args(

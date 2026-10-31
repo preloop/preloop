@@ -650,6 +650,9 @@ async def test_park_marker_survives_reference_only_redaction(monkeypatch) -> Non
         tool_args={"command": "make", native_flow_park.NATIVE_PARK_MARKER: marker},
         managed_agent_id=None,
     )
-    assert stored == {"_reference": "ref-1", native_flow_park.NATIVE_PARK_MARKER: marker}
+    assert stored == {
+        "_reference": "ref-1",
+        native_flow_park.NATIVE_PARK_MARKER: marker,
+    }
     assert native_flow_park.NATIVE_PARK_MARKER not in seen["args"]
     assert native_flow_park.is_native_park(SimpleNamespace(tool_args=stored))
