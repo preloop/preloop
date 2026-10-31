@@ -3063,6 +3063,12 @@ class FlowTriggerService:
 
         await self._authorize_flow_run(flow, authorization_context)
 
+        from preloop.services.read_only_review import reject_human_read_only_trigger
+
+        # Only the restricted CI route may start a read-only review; it never
+        # comes through here. Refuse before the row exists.
+        reject_human_read_only_trigger(flow)
+
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
                 f"Flow '{flow.name}' ({flow.id}) not started: the account "
@@ -3270,6 +3276,10 @@ class FlowTriggerService:
             )
 
         await self._authorize_flow_run(flow, authorization_context)
+
+        from preloop.services.read_only_review import reject_human_read_only_trigger
+
+        reject_human_read_only_trigger(flow)
 
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(

@@ -29,6 +29,53 @@ def read_only_review(config: Any) -> bool:
     return isinstance(config, dict) and config.get("publication_mode") == "read_only"
 
 
+#: Where the CI-identity trigger is documented.
+READ_ONLY_TRIGGER_DOC = "docs/guide/flows/restricted-ci.md"
+
+
+class ReadOnlyHumanTriggerError(ValueError):
+    """A person (console, session or account key) triggered a read-only review.
+
+    Read-only review runs only as a restricted CI execution, so such a trigger
+    would create an execution that fails at startup. Raised before any row is
+    written; the API answers 409.
+    """
+
+
+def read_only_trigger_message(flow_id: Any) -> str:
+    """The refusal a human trigger of a read-only review flow receives.
+
+    Args:
+        flow_id: The flow that was triggered.
+
+    Returns:
+        A sentence naming the CI-identity trigger route and its two fields.
+    """
+    return (
+        "This flow is a read-only review, which runs only from its restricted "
+        "CI identity; no execution was created. Trigger it with that "
+        f"identity's CI key: POST /api/v1/flows/{flow_id}/trigger with a body "
+        'of exactly {"pr_number": <pull request number>, "head_sha": '
+        '"<full head commit SHA>"}. See '
+        f"{READ_ONLY_TRIGGER_DOC}."
+    )
+
+
+def reject_human_read_only_trigger(flow: Any) -> None:
+    """Refuse a non-CI trigger of a read-only review flow before insert.
+
+    Args:
+        flow: Flow row or namespace.
+
+    Raises:
+        ReadOnlyHumanTriggerError: The flow is in read-only review mode.
+    """
+    if read_only_review(getattr(flow, "git_clone_config", None)):
+        raise ReadOnlyHumanTriggerError(
+            read_only_trigger_message(getattr(flow, "id", ""))
+        )
+
+
 def validate_read_only_configuration(config: dict[str, Any]) -> None:
     """Reject publication and alternate repository selection in this mode."""
     shared = config.get("ci_project_selection") is True

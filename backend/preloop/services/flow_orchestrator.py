@@ -1266,6 +1266,83 @@ class FlowExecutionOrchestrator:
                             "Read-only review lease revocation failed; expiry remains enforced"
                         )
 
+    def _flow_preset_slug(self) -> Optional[str]:
+        """Catalog slug of the preset this flow is (or was cloned from)."""
+        from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return None
+        if getattr(flow, "is_preset", False):
+            return PRESET_SLUGS_BY_NAME.get(getattr(flow, "name", None) or "")
+        source_id = getattr(flow, "source_preset_id", None)
+        if not source_id:
+            return None
+        try:
+            from preloop.models.crud import crud_flow
+
+            preset = crud_flow.get(self.db, id=source_id)
+        except Exception:  # noqa: BLE001 - a lookup never fails a run
+            logger.debug("Could not read source preset %s", source_id, exc_info=True)
+            return None
+        if preset is None:
+            return None
+        return PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+
+    def _resolve_native_result(self) -> bool:
+        """Decide native structured results for this run and record the choice.
+
+        The flow's explicit ``agent_config.native_result`` wins; otherwise the
+        review default applies (see :mod:`preloop.services.native_result`).
+        The value and its source are written to the execution's
+        ``trigger_event_details`` under the reserved ``_native_result`` key, so
+        an operator can see which setting a run actually used.
+
+        Returns:
+            Whether this run uses native structured results.
+        """
+        from preloop.services.native_result import (
+            NATIVE_RESULT_RECORD_KEY,
+            resolve_native_result,
+        )
+
+        enabled, source = resolve_native_result(
+            self.flow, preset_slug=self._flow_preset_slug()
+        )
+        self._native_result_effective = enabled
+        self._native_result_source = source
+        execution = getattr(self, "execution_log", None)
+        if execution is not None:
+            details = dict(getattr(execution, "trigger_event_details", None) or {})
+            record = {"value": enabled, "source": source}
+            if details.get(NATIVE_RESULT_RECORD_KEY) != record:
+                details[NATIVE_RESULT_RECORD_KEY] = record
+                try:
+                    from preloop.models.crud import crud_flow_execution
+
+                    self.execution_log = crud_flow_execution.update(
+                        self.db,
+                        db_obj=execution,
+                        obj_in={"trigger_event_details": details},
+                    )
+                except Exception:  # noqa: BLE001 - the record never fails a run
+                    logger.warning(
+                        "Could not record native_result on execution %s",
+                        getattr(execution, "id", None),
+                        exc_info=True,
+                    )
+        return enabled
+
+    def _run_agent_config(self) -> Any:
+        """The flow's ``agent_config`` with the effective native_result applied."""
+        from preloop.services.native_result import apply_native_result_default
+
+        config = self.flow.agent_config
+        enabled = getattr(self, "_native_result_effective", None)
+        if enabled is None:
+            return config
+        return apply_native_result_default(config, enabled)
+
     def _read_only_review_mode(self) -> bool:
         """Retain the startup capability even if the flow is edited later."""
         from preloop.services.read_only_review import read_only_review
@@ -3707,7 +3784,7 @@ class FlowExecutionOrchestrator:
             "execution_id": str(self.execution_log.id),
             "prompt": resolved_prompt,
             "agent_type": effective_agent_type,
-            "agent_config": self.flow.agent_config,
+            "agent_config": self._run_agent_config(),
             "result_schema": getattr(self.flow, "result_schema", None),
             "validate_result": getattr(self.flow, "validate_result", True),
             # The wall clock this run may spend. Harnesses keep their own
@@ -6999,7 +7076,40 @@ class FlowExecutionOrchestrator:
                 " The agent was reminded once in its own container and still "
                 "did not confirm."
             )
+        if not result.error_message:
+            error_message += self._native_result_hint()
         return "FAILED", error_message, result_artifact
+
+    def _native_result_hint(self) -> str:
+        """Name the native-result flag in a Codex no-confirmation failure.
+
+        A Codex review that exits 0 without a result document is the case
+        native structured results exist for, so the message says whether the
+        flag was on for this run and where it is documented.
+        """
+        from preloop.services.native_result import (
+            NATIVE_RESULT_DOC,
+            native_result_enabled,
+        )
+
+        if str(getattr(self, "agent_type", "") or "").lower() != "codex":
+            return ""
+        enabled = getattr(self, "_native_result_effective", None)
+        if enabled is None:
+            enabled = native_result_enabled(
+                getattr(getattr(self, "flow", None), "agent_config", None)
+            )
+        if enabled:
+            return (
+                " agent_config.native_result was on for this run, so the "
+                "Codex CLI was asked to write result.json against the flow "
+                f"result schema and did not; see {NATIVE_RESULT_DOC}."
+            )
+        return (
+            " agent_config.native_result was off for this run; set it to "
+            "true with an enabled result_schema so the Codex CLI writes "
+            f"result.json itself (see {NATIVE_RESULT_DOC})."
+        )
 
     async def _run_confirmation_nudge(
         self, agent_executor: Any, prior_log_lines: List[str]
@@ -9898,7 +10008,10 @@ class FlowExecutionOrchestrator:
                 native_result_cold_start,
             )
 
-            if native_result_cold_start(self.flow, self.trigger_event_data):
+            native_enabled = self._resolve_native_result()
+            if native_result_cold_start(
+                self.flow, self.trigger_event_data, enabled=native_enabled
+            ):
                 await self._emit_execution_warning(COLD_START_MESSAGE)
             validate_read_only_flow(self.flow)
             if (

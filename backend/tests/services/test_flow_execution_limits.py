@@ -22,6 +22,7 @@ from preloop.models.crud import (
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.flow_execution_limits import (
+    DEFAULT_LIMIT_ENV_VARS,
     ExecutionBudgetExceededError,
     ExecutionLimits,
     ExecutionUsage,
@@ -31,6 +32,7 @@ from preloop.services.flow_execution_limits import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
+    FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
     derive_failure_category,
 )
 
@@ -174,7 +176,30 @@ def test_usage_under_the_ceiling_is_untouched(db_session: Session, test_user):
     assert execution.failure_category is None
 
 
-def test_flow_without_limits_is_never_refused(db_session: Session, test_user):
+def test_flow_without_limits_runs_under_the_defaults(
+    db_session: Session, test_user, monkeypatch
+):
+    # Before the defaults a flow without ``limits`` was never refused; now
+    # 10M tokens is past the built-in 2M token ceiling.
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.delenv(name, raising=False)
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    _log_usage(db_session, test_user, flow, execution, total_tokens=10_000_000)
+    db_session.commit()
+
+    with pytest.raises(ExecutionBudgetExceededError):
+        enforce_execution_limits_for_id(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
+
+
+def test_flow_without_limits_is_never_refused_when_defaults_are_disabled(
+    db_session: Session, test_user, monkeypatch
+):
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.setenv(name, "0")
     flow = _create_flow(db_session, test_user)
     execution = _create_execution(db_session, flow)
     _log_usage(db_session, test_user, flow, execution, total_tokens=10_000_000)
@@ -215,7 +240,7 @@ def test_usd_ceiling_does_not_block_an_unpriced_run(db_session: Session, test_us
         test_user,
         flow,
         execution,
-        total_tokens=10_000_000,
+        total_tokens=1_000,
         estimated_cost=None,
         cost_source="unpriced",
     )
@@ -259,7 +284,17 @@ def test_describe_execution_limits_reports_ceilings_and_usage(
     db_session.commit()
 
     limits, usage = describe_execution_limits(db_session, execution)
-    assert limits.as_dict() == {"max_usd": 5.0}
+    # The flow's own USD ceiling, plus the defaults for the two it left unset.
+    assert limits.as_dict() == {
+        "max_usd": 5.0,
+        "max_total_tokens": 2_000_000,
+        "max_turns": 100,
+    }
+    assert limits.sources == {
+        "max_usd": "flow",
+        "max_total_tokens": "default",
+        "max_turns": "default",
+    }
     assert usage.total_tokens == 250
     assert usage.cost_usd == 1.5
     assert usage.turns == 1

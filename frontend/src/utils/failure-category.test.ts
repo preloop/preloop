@@ -21,6 +21,7 @@ describe('failure-category', () => {
       'model_auth',
       'provider_billing',
       'budget_exceeded',
+      'default_limit_reached',
       'model_quota',
       'model_config',
       'no_confirmation',

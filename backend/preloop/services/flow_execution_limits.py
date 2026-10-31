@@ -39,16 +39,25 @@ runtime in this tree exposes a usable max-turns flag today, so the gateway
 count is the enforcement; if a harness grows one, it can read the same value
 from ``agent_config.limits`` and pass it through as an early stop.
 
-Flows without ``limits`` behave exactly as before: the helper returns an
-empty :class:`ExecutionLimits` and callers do no accounting.
+Default ceilings. A flow that sets no ceiling still gets one: 2,000,000
+tokens, 100 turns and 10 USD per execution
+(:data:`DEFAULT_MAX_TOTAL_TOKENS`, :data:`DEFAULT_MAX_TURNS`,
+:data:`DEFAULT_MAX_USD`). A value on the flow wins per key. A self-hosted
+instance replaces a built-in default with ``PRELOOP_DEFAULT_MAX_TOTAL_TOKENS``,
+``PRELOOP_DEFAULT_MAX_TURNS`` or ``PRELOOP_DEFAULT_MAX_USD``; ``0`` there
+removes that default. A run stopped by a default (built-in or instance) fails
+with ``default_limit_reached`` rather than ``budget_exceeded``, and its message
+names the knob that changes it, so a review that ran out of a ceiling nobody
+chose reads differently from one that hit the flow's own.
 """
 
 from __future__ import annotations
 
-import math
 import logging
+import math
+import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
@@ -56,6 +65,7 @@ from sqlalchemy.orm import Session
 
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
+    FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +76,29 @@ LIMITS_KEY = "limits"
 MAX_TOTAL_TOKENS_KEY = "max_total_tokens"
 MAX_USD_KEY = "max_usd"
 MAX_TURNS_KEY = "max_turns"
+
+#: Built-in ceilings for a flow that sets none (founder decision, #2140).
+DEFAULT_MAX_TOTAL_TOKENS = 2_000_000
+DEFAULT_MAX_TURNS = 100
+DEFAULT_MAX_USD = 10.0
+
+#: Environment overrides of the built-in defaults, per ceiling. ``0`` disables
+#: that default; unset, blank or unparsable keeps the built-in value.
+DEFAULT_LIMIT_ENV_VARS: dict[str, str] = {
+    MAX_TOTAL_TOKENS_KEY: "PRELOOP_DEFAULT_MAX_TOTAL_TOKENS",
+    MAX_TURNS_KEY: "PRELOOP_DEFAULT_MAX_TURNS",
+    MAX_USD_KEY: "PRELOOP_DEFAULT_MAX_USD",
+}
+_BUILTIN_DEFAULTS: dict[str, Any] = {
+    MAX_TOTAL_TOKENS_KEY: DEFAULT_MAX_TOTAL_TOKENS,
+    MAX_TURNS_KEY: DEFAULT_MAX_TURNS,
+    MAX_USD_KEY: DEFAULT_MAX_USD,
+}
+
+#: Where an effective ceiling came from.
+LIMIT_SOURCE_FLOW = "flow"
+LIMIT_SOURCE_ENVIRONMENT = "environment"
+LIMIT_SOURCE_DEFAULT = "default"
 
 #: Statuses at which an execution can spend nothing more. Mirrors the
 #: terminal set used by the delegation budget's own accounting.
@@ -104,15 +137,34 @@ class ExecutionBudgetExceededError(Exception):
         super().__init__(message)
         self.message = message
         self.violation = violation
+        self.category = violation.category
 
 
 @dataclass(frozen=True)
 class ExecutionLimits:
-    """The ceilings configured on a flow's ``agent_config.limits``."""
+    """The ceilings that bound one execution.
+
+    ``sources`` names where each set ceiling came from: ``flow`` (the flow's
+    own ``agent_config.limits``), ``environment`` (a ``PRELOOP_DEFAULT_*``
+    override) or ``default`` (the built-in value). A reader of explicit flow
+    limits (:func:`parse_execution_limits`) leaves it empty.
+    """
 
     max_total_tokens: Optional[int] = None
     max_usd: Optional[float] = None
     max_turns: Optional[int] = None
+    sources: dict[str, str] = field(default_factory=dict, compare=False)
+
+    def source_of(self, kind: str) -> str:
+        """Where the ceiling ``kind`` came from; ``flow`` when not recorded."""
+        return self.sources.get(kind, LIMIT_SOURCE_FLOW)
+
+    def describe(self) -> dict[str, dict[str, Any]]:
+        """Wire shape for the console: ``{kind: {"value", "source"}}``."""
+        return {
+            kind: {"value": value, "source": self.source_of(kind)}
+            for kind, value in self.as_dict().items()
+        }
 
     @property
     def is_empty(self) -> bool:
@@ -156,6 +208,20 @@ class LimitViolation:
     limit: Any
     observed: Any
     message: str
+    #: ``flow`` | ``environment`` | ``default``; see :class:`ExecutionLimits`.
+    source: str = LIMIT_SOURCE_FLOW
+
+    @property
+    def is_default(self) -> bool:
+        """True when the ceiling was not chosen on the flow itself."""
+        return self.source != LIMIT_SOURCE_FLOW
+
+    @property
+    def category(self) -> str:
+        """Failure category this violation ends the execution with."""
+        if self.is_default:
+            return FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
+        return FAILURE_CATEGORY_BUDGET_EXCEEDED
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -212,6 +278,72 @@ def parse_execution_limits(
     )
 
 
+def _env_default(kind: str) -> tuple[Optional[Any], str]:
+    """One default ceiling and its source, honouring the environment override.
+
+    Read on every call so a self-hosted operator's change applies on restart
+    and tests can set it with ``monkeypatch.setenv``.
+
+    Args:
+        kind: ``max_total_tokens`` | ``max_turns`` | ``max_usd``.
+
+    Returns:
+        ``(value, source)``; ``value`` is ``None`` when the environment
+        disables this default with ``0``.
+    """
+    name = DEFAULT_LIMIT_ENV_VARS[kind]
+    raw = os.environ.get(name)
+    builtin = _BUILTIN_DEFAULTS[kind]
+    if raw is None or not raw.strip():
+        return builtin, LIMIT_SOURCE_DEFAULT
+    try:
+        number = float(raw.strip())
+    except ValueError:
+        logger.warning("Ignoring %s=%r: not a number", name, raw)
+        return builtin, LIMIT_SOURCE_DEFAULT
+    if number == 0:
+        return None, LIMIT_SOURCE_ENVIRONMENT
+    parsed = (
+        _positive_float(number)
+        if kind == MAX_USD_KEY
+        else (_positive_int(number) if number == int(number) else None)
+    )
+    if parsed is None:
+        logger.warning("Ignoring %s=%r: not a positive ceiling", name, raw)
+        return builtin, LIMIT_SOURCE_DEFAULT
+    return parsed, LIMIT_SOURCE_ENVIRONMENT
+
+
+def resolve_execution_limits(
+    agent_config: Optional[Mapping[str, Any]],
+) -> ExecutionLimits:
+    """The ceilings that actually bound an execution of this flow.
+
+    Per ceiling: the flow's own value wins; otherwise the instance default
+    (``PRELOOP_DEFAULT_*``, where ``0`` means none); otherwise the built-in
+    default. Subscription runs priced at $0 are still bounded by tokens and
+    turns, because those are compared independently of cost.
+
+    Args:
+        agent_config: The flow's ``agent_config`` JSON, possibly None.
+
+    Returns:
+        The effective ceilings with ``sources`` filled in for each one set.
+    """
+    explicit = parse_execution_limits(agent_config)
+    values: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    for kind in (MAX_TOTAL_TOKENS_KEY, MAX_USD_KEY, MAX_TURNS_KEY):
+        value = getattr(explicit, kind)
+        source = LIMIT_SOURCE_FLOW
+        if value is None:
+            value, source = _env_default(kind)
+        values[kind] = value
+        if value is not None:
+            sources[kind] = source
+    return ExecutionLimits(**values, sources=sources)
+
+
 def get_execution_usage(db: Session, execution_id: Any) -> ExecutionUsage:
     """Sum the gateway usage attributed to one execution.
 
@@ -244,7 +376,9 @@ def load_execution_limits(db: Session, execution: Any) -> ExecutionLimits:
 
     Read live rather than snapshotted at launch: lowering a runaway flow's
     ceiling while it runs is exactly when an operator wants the change to
-    take effect, and the value is a property of the flow definition.
+    take effect, and the value is a property of the flow definition. The
+    defaults apply to every ceiling the flow leaves unset (see
+    :func:`resolve_execution_limits`).
 
     Args:
         db: Database session.
@@ -252,19 +386,19 @@ def load_execution_limits(db: Session, execution: Any) -> ExecutionLimits:
             already loaded, otherwise the flow is fetched).
 
     Returns:
-        The parsed ceilings, empty when the flow has none.
+        The effective ceilings, defaults included.
     """
     flow = getattr(execution, "flow", None)
     if flow is None:
         flow_id = getattr(execution, "flow_id", None)
         if flow_id is None:
-            return ExecutionLimits()
+            return resolve_execution_limits(None)
         from preloop.models.crud import crud_flow
 
         flow = crud_flow.get(db, id=flow_id)
     if flow is None:
-        return ExecutionLimits()
-    return parse_execution_limits(getattr(flow, "agent_config", None))
+        return resolve_execution_limits(None)
+    return resolve_execution_limits(getattr(flow, "agent_config", None))
 
 
 def evaluate_execution_limits(
@@ -292,14 +426,14 @@ def evaluate_execution_limits(
         limits.max_total_tokens is not None
         and usage.total_tokens >= limits.max_total_tokens
     ):
-        return LimitViolation(
-            kind=MAX_TOTAL_TOKENS_KEY,
+        return _violation(
+            limits,
+            MAX_TOTAL_TOKENS_KEY,
             limit=limits.max_total_tokens,
             observed=usage.total_tokens,
-            message=(
-                "execution token ceiling reached: "
-                f"{usage.total_tokens} tokens used of "
-                f"{limits.max_total_tokens} allowed"
+            noun="token",
+            used=(
+                f"{usage.total_tokens} tokens used of {limits.max_total_tokens} allowed"
             ),
         )
     if (
@@ -307,28 +441,68 @@ def evaluate_execution_limits(
         and usage.cost_usd is not None
         and usage.cost_usd >= limits.max_usd - _EPSILON
     ):
-        return LimitViolation(
-            kind=MAX_USD_KEY,
+        return _violation(
+            limits,
+            MAX_USD_KEY,
             limit=limits.max_usd,
             observed=usage.cost_usd,
-            message=(
-                "execution USD ceiling reached: "
-                f"${usage.cost_usd:.2f} spent of "
-                f"${limits.max_usd:.2f} allowed"
-            ),
+            noun="USD",
+            used=f"${usage.cost_usd:.2f} spent of ${limits.max_usd:.2f} allowed",
         )
     if limits.max_turns is not None and usage.turns >= limits.max_turns:
-        return LimitViolation(
-            kind=MAX_TURNS_KEY,
+        return _violation(
+            limits,
+            MAX_TURNS_KEY,
             limit=limits.max_turns,
             observed=usage.turns,
-            message=(
-                "execution turn ceiling reached: "
-                f"{usage.turns} turns used of "
-                f"{limits.max_turns} allowed"
-            ),
+            noun="turn",
+            used=f"{usage.turns} turns used of {limits.max_turns} allowed",
         )
     return None
+
+
+def _format_limit(value: Any) -> str:
+    """Render a ceiling the way an operator would type it back."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _violation(
+    limits: ExecutionLimits,
+    kind: str,
+    *,
+    limit: Any,
+    observed: Any,
+    noun: str,
+    used: str,
+) -> LimitViolation:
+    """Build one violation, naming the knob when a default fired.
+
+    A flow's own ceiling reads as before. A default names the flow key that
+    overrides it and, for the built-in value, the environment variable a
+    self-hosted operator can set instead.
+    """
+    source = limits.source_of(kind)
+    if source == LIMIT_SOURCE_FLOW:
+        message = f"execution {noun} ceiling reached: {used}"
+    else:
+        env_name = DEFAULT_LIMIT_ENV_VARS[kind]
+        if source == LIMIT_SOURCE_ENVIRONMENT:
+            origin = f"instance default {env_name}={_format_limit(limit)}"
+            change = f"set agent_config.limits.{kind} on the flow to override it"
+        else:
+            origin = f"built-in default {kind}={_format_limit(limit)}"
+            change = (
+                f"set agent_config.limits.{kind} on the flow, or {env_name} "
+                "on the server, to change it"
+            )
+        message = (
+            f"default execution {noun} ceiling reached: {used} ({origin}; {change})"
+        )
+    return LimitViolation(
+        kind=kind, limit=limit, observed=observed, message=message, source=source
+    )
 
 
 def limit_violation_message(violation: LimitViolation) -> str:
@@ -341,7 +515,13 @@ def limit_violation_message(violation: LimitViolation) -> str:
     return f"Execution budget exceeded: {violation.message}"
 
 
-def mark_execution_budget_exceeded(db: Session, execution: Any, message: str) -> None:
+def mark_execution_budget_exceeded(
+    db: Session,
+    execution: Any,
+    message: str,
+    *,
+    category: str = FAILURE_CATEGORY_BUDGET_EXCEEDED,
+) -> None:
     """Record a run refused for crossing its own ceiling as FAILED.
 
     The gateway sees the ceiling before the orchestrator does; writing the
@@ -357,6 +537,8 @@ def mark_execution_budget_exceeded(db: Session, execution: Any, message: str) ->
         db: Database session.
         execution: The execution to mark.
         message: The readable ceiling message to store.
+        category: ``budget_exceeded`` for the flow's own ceiling,
+            ``default_limit_reached`` for a default one.
     """
     if execution is None:
         return
@@ -369,7 +551,7 @@ def mark_execution_budget_exceeded(db: Session, execution: Any, message: str) ->
         update = FlowExecutionUpdate(
             status="FAILED",
             error_message=message,
-            failure_category=FAILURE_CATEGORY_BUDGET_EXCEEDED,
+            failure_category=category,
             end_time=datetime.now(timezone.utc),
         )
         crud_flow_execution.update(db, db_obj=execution, obj_in=update)
@@ -449,7 +631,7 @@ def enforce_execution_limits_for_id(db: Session, *, execution_id: Any) -> None:
     # an agent that keeps retrying must not be allowed to spend past it just
     # because the row is no longer RUNNING. mark_* is a no-op for terminal
     # rows, so a success is still never rewritten.
-    mark_execution_budget_exceeded(db, execution, message)
+    mark_execution_budget_exceeded(db, execution, message, category=violation.category)
     raise ExecutionBudgetExceededError(message, violation=violation)
 
 

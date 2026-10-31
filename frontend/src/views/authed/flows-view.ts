@@ -227,7 +227,12 @@ export interface FlowListRow {
 
 /** The little the action registry needs to know about a flow row. */
 function flowActionResource(row: FlowListRow): FlowActionResource {
-  return { id: row.id, name: row.name, is_enabled: row.status !== 'paused' };
+  return {
+    id: row.id,
+    name: row.name,
+    is_enabled: row.status !== 'paused',
+    ci_only: row.source?.git_clone_config?.publication_mode === 'read_only',
+  };
 }
 
 const FLOW_STATUS_LABELS: Record<FlowStatus, string> = {

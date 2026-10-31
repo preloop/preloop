@@ -83,6 +83,25 @@ explicit project-selection mode below. The flow must be
 enabled for preview and provisioning; enabling a flow does not issue a CI key or
 trigger a review.
 
+Only the CI identity can start a read-only review. A trigger from a person,
+from the console, a session or an account key, is refused with HTTP 409
+before any execution is created; the message names the route
+(`POST /api/v1/flows/{flow_id}/trigger` with the CI key) and its two body
+fields, `pr_number` and `head_sha`. The console shows **Run now** disabled on
+such a flow with the same explanation.
+
+Codex native structured results are on by default in this mode when the flow
+has a result schema (see
+[Native Codex structured results](repo-review-presets.md#native-codex-structured-results));
+set `agent_config.native_result: false` to opt out.
+
+Each review execution runs under the per-execution ceilings shown as **Run
+limits** on the flow page: the flow's own `agent_config.limits`, otherwise
+2,000,000 tokens, 100 turns and 10 USD (`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
+`PRELOOP_DEFAULT_MAX_TURNS` and `PRELOOP_DEFAULT_MAX_USD` change these on a
+self-hosted instance; `0` turns one off). A run stopped by a default fails
+with `default_limit_reached`.
+
 This mode requires an App installation and the control plane's configured App
 signing key. At execution startup, Preloop rechecks the principal and repository
 binding and requests one repository with `contents: read` (plus GitHub's implicit
@@ -218,6 +237,13 @@ this work; the run waits in the queue for a capable runner.
 6. Provision the CI identity as below (**Settings → CI identities** lists the
    flow; the preview shows your private pool), add the completion subscription,
    and trigger reviews exactly as for the hosted executor.
+
+Run limits: the flow page shows the token, turn and USD ceilings this flow
+runs under. On a host profile the model is served by the host's own login and
+is not metered by the gateway, so those ceilings are not enforced on the
+host run; bound it with the profile's `timeout_seconds` and the flow's
+`timeout_seconds`. The flow page still shows the effective values so a later
+move to the hosted executor carries no surprise.
 
 Limits of a host run compared with the hosted container: the Codex sandbox and
 the approval hook are the only boundaries between the review and the runner
