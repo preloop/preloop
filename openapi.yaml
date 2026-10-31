@@ -25593,6 +25593,14 @@ components:
             request, not a human decision. It remains a denial; adapters must not
             replace required central approval with a local prompt.
           default: false
+        parked:
+          type: boolean
+          title: Parked
+          description: 'True when the call needed a human and the unattended flow
+            execution behind this credential is being paused on approval request_id.
+            The decision is ''deny'': the command must not run. The run resumes on
+            approval and fails closed on refusal or expiry.'
+          default: false
       type: object
       required:
       - decision
@@ -35311,9 +35319,10 @@ components:
             budget_exceeded, model_config, no_confirmation, agent_no_progress, publication_missing,
             result_schema_invalid (result.json does not match the flow result schema),
             setup_failed, verification_failed, verification_blocked, tool_error, agent_error,
-            model_stream_idle (timed out while the model stream was silent), timeout,
-            cancelled, unknown. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            model_stream_idle (timed out while the model stream was silent), approval_denied,
+            approval_timeout, approval_unavailable (an approval-required rule could
+            not pause the run), timeout, cancelled, unknown. Null for successful or
+            still-running executions, and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -51609,7 +51618,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

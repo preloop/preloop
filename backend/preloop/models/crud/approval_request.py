@@ -465,6 +465,63 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             db.commit()
         return int(cancelled)
 
+    def consume_native_grant(
+        self,
+        db: Session,
+        *,
+        request_id: Any,
+        account_id: Any,
+        marker_key: str,
+        fingerprint: str,
+        execution_id: str,
+        commit: bool = True,
+    ) -> bool:
+        """Spend one approved native command park, at most once.
+
+        A native command that parked an unattended run is approved for one
+        run of exactly that command. The resumed execution claims it with a
+        conditional UPDATE on ``tool_result IS NULL`` (native approvals never
+        cache a server-side result, so the column is free), which makes a
+        second identical call go back through the rules instead of riding
+        the same approval.
+
+        Args:
+            db: Database session.
+            request_id: Approval request id.
+            account_id: Owning account, so one account cannot spend another's.
+            marker_key: ``tool_args`` key holding the park marker.
+            fingerprint: Fingerprint of the command being run now.
+            execution_id: Execution spending the grant (recorded).
+            commit: Commit the update.
+
+        Returns:
+            True when this call consumed the grant.
+        """
+        count = (
+            db.query(self.model)
+            .filter(
+                self.model.id == request_id,
+                self.model.account_id == account_id,
+                self.model.status == "approved",
+                self.model.tool_result.is_(None),
+                self.model.tool_args[marker_key]["fingerprint"].astext == fingerprint,
+            )
+            .update(
+                {
+                    "tool_result": {
+                        "native_grant": {
+                            "consumed_at": datetime.now(timezone.utc).isoformat(),
+                            "execution_id": str(execution_id),
+                        }
+                    }
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
 
 # Create instance
 crud_approval_request = CRUDApprovalRequest(ApprovalRequest)

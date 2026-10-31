@@ -4551,6 +4551,11 @@ class FlowExecutionOrchestrator:
                     exc_info=True,
                 )
 
+            if not isinstance(
+                agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
+            ):
+                self._refuse_hosted_approval_gap(execution_context)
+
             # Start the agent
             session_reference = await agent_executor.start(execution_context)
 
@@ -7414,6 +7419,41 @@ class FlowExecutionOrchestrator:
         if not park_request or park_request.get("parked_at") is not None:
             return None
         return park_request
+
+    def _refuse_hosted_approval_gap(self, execution_context: Dict[str, Any]) -> None:
+        """Refuse a hosted launch whose native approval rules would be skipped.
+
+        A hosted container has no native command hook, so an approval-required
+        native rule cannot pause it. Failing before launch keeps the rule
+        meaningful (the private-runner host profile parks instead). Codex in
+        the read-only sandbox runs with its shell tool disabled and has no
+        native commands to gate, so it is not refused.
+
+        Raises:
+            AgentStartError: With ``approval_unavailable`` when a rule applies.
+        """
+        from preloop.agents.errors import AgentStartError
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+        )
+        from preloop.services.native_flow_park import hosted_approval_gap
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return
+        agent_type = str(self.agent_type or flow.agent_type or "")
+        config = execution_context.get("agent_config") or {}
+        if (
+            agent_type == "codex"
+            and isinstance(config, dict)
+            and config.get("sandbox_type") == "read-only"
+        ):
+            return
+        reason = hosted_approval_gap(self.db, flow)
+        if reason:
+            raise AgentStartError(
+                reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
+            )
 
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float

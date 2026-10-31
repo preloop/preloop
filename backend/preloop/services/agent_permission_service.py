@@ -544,6 +544,7 @@ async def request_agent_permission(
     flow_id: Optional[uuid.UUID] = None,
     flow_policy_label: Optional[str] = None,
     approval_request_id: Optional[uuid.UUID] = None,
+    flow_execution_id: Optional[uuid.UUID] = None,
 ) -> Tuple[str, str, Optional[str], bool]:
     """Decide whether an agent's native tool call may proceed.
 
@@ -591,13 +592,19 @@ async def request_agent_permission(
             win.
         approval_request_id: Id the hook proposed for an approval this call
             creates, so the hook can expire it on its own deadline.
+        flow_execution_id: Execution named by an execution-scoped flow
+            credential. Such a run is unattended: a call that needs a human
+            parks the execution instead of holding the hook (see
+            :mod:`preloop.services.native_flow_park`), and the decision is
+            returned as ``"park"``, which callers must send as a deny.
         evaluation_phase: ``pre_tool_use`` checks central native rules before
             the host permission decision, skipping no-rule automatic escalation.
             The default ``permission_request`` preserves remote host prompts.
 
     Returns:
         Tuple of ``(decision, reason, request_id, timed_out)`` where
-        ``decision`` is ``"allow"`` or ``"deny"``, ``request_id`` is set when
+        ``decision`` is ``"allow"``, ``"deny"`` or (only with
+        ``flow_execution_id``) ``"park"``, ``request_id`` is set when
         an approval row was created, and ``timed_out`` is True only when the
         deny is the expiry of an unanswered approval rather than a human (or
         policy) judgement. Both remain denials; adapters must not replace
@@ -610,11 +617,22 @@ async def request_agent_permission(
     if not NATIVE_RULES_OVERRIDE_CLIENT_DECISION and decision == "allow":
         return ("allow", "", None, False)
 
+    from preloop.api.loop_safety import run_db_off_loop
+    from preloop.services import native_flow_park
     from preloop.services.approval_rule_context import (
         SOURCE_AGENT_PERMISSION_HOOK,
         build_rule_context,
     )
     from preloop.services.approval_service import ApprovalService
+
+    if flow_execution_id is not None:
+        # One park per execution: while it waits, nothing else runs and no
+        # second approval is raised for a command the agent tried meanwhile.
+        parked_reason = await run_db_off_loop(
+            lambda: native_flow_park.pending_park_reason(flow_execution_id)
+        )
+        if parked_reason:
+            return ("deny", parked_reason, None, False)
     from preloop.models.crud.approval_request import get_approval_request_async
     from preloop.models.crud.tool_configuration import (
         get_tool_config_by_name_and_source_async,
@@ -658,6 +676,25 @@ async def request_agent_permission(
         # leave native permission processing intact. Never infer client allow.
         if matched_require is None and evaluation_phase == "pre_tool_use":
             return ("allow", "No central native rule requires approval", None, False)
+
+        if matched_require is not None and flow_execution_id is not None:
+            # A run resumed after approval spends that approval once, for
+            # exactly the command that was approved.
+            granted = await run_db_off_loop(
+                lambda: native_flow_park.consume_grant(
+                    execution_id=flow_execution_id,
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
+            )
+            if granted:
+                return (
+                    "allow",
+                    f"Approved in Preloop (approval request {granted}); allowed once",
+                    granted,
+                    False,
+                )
 
         if (
             matched_require is None
@@ -705,6 +742,22 @@ async def request_agent_permission(
             config = existing or await resolve_tool_config(
                 db, account_id, tool_name, workflow.id
             )
+            park_window_seconds: Optional[int] = None
+            approval_tool_args = dict(tool_input or {})
+            approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
+            if flow_execution_id is not None:
+                workflow_for_window = workflow
+                window = await run_db_off_loop(
+                    lambda: native_flow_park.resolve_window(
+                        flow_execution_id, workflow_for_window
+                    )
+                )
+                park_window_seconds = int(window.seconds)
+                approval_tool_args[native_flow_park.NATIVE_PARK_MARKER] = (
+                    native_flow_park.park_marker(
+                        flow_execution_id, tool_name, tool_input
+                    )
+                )
 
             service = ApprovalService(db, base_url)
             approval = await service.create_and_notify(
@@ -712,9 +765,12 @@ async def request_agent_permission(
                 tool_configuration_id=config.id,
                 approval_workflow=workflow,
                 tool_name=tool_name,
-                tool_args=tool_input or {},
+                tool_args=approval_tool_args,
                 agent_reasoning=agent_reasoning,
-                execution_id=None,
+                execution_id=(
+                    str(flow_execution_id) if flow_execution_id is not None else None
+                ),
+                timeout_seconds=park_window_seconds,
                 user_id=user_id,
                 managed_agent_id=managed_agent_id,
                 runtime_session_id=runtime_session_id,
@@ -772,12 +828,49 @@ async def request_agent_permission(
         request_id = str(approval.id)
         status = approval.status
         comment = approval.approver_comment
+        expires_at = getattr(approval, "expires_at", None)
 
     # AI-driven workflows resolve immediately inside create_and_notify.
     if status in ("approved", "declined", "cancelled", "expired"):
         return (
             "allow" if status == "approved" else "deny",
             comment or f"Approval {status}",
+            request_id,
+            status == "expired",
+        )
+
+    if flow_execution_id is not None:
+        parked = await run_db_off_loop(
+            lambda: native_flow_park.park(
+                execution_id=flow_execution_id,
+                approval_request_id=uuid.UUID(request_id),
+                expires_at=expires_at,
+                account_id=account_id,
+                tool_name=tool_name,
+            )
+        )
+        if parked:
+            return (
+                "park",
+                native_flow_park.parked_message(request_id, expires_at),
+                request_id,
+                False,
+            )
+        # Not parked: the run is no longer live, or the request was decided
+        # in the meantime. Never hold an unattended hook; read once and
+        # deny anything that is not an approval.
+        async with get_async_db_session() as poll_db:
+            req = await get_approval_request_async(
+                poll_db, request_id=uuid.UUID(request_id)
+            )
+            status = req.status if req is not None else "missing"
+            comment = req.approver_comment if req is not None else None
+        if status == "approved":
+            return ("allow", comment or "", request_id, False)
+        return (
+            "deny",
+            comment
+            or "Approval required, and this execution could not be paused for it",
             request_id,
             status == "expired",
         )

@@ -276,7 +276,9 @@ class FlowExecutionBase(BaseModel):
             "result schema), setup_failed, "
             "verification_failed, verification_blocked, tool_error, "
             "agent_error, model_stream_idle (timed out while the model "
-            "stream was silent), timeout, cancelled, "
+            "stream was silent), approval_denied, approval_timeout, "
+            "approval_unavailable (an approval-required rule could not pause "
+            "the run), timeout, cancelled, "
             "unknown. Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),

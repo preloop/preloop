@@ -151,6 +151,26 @@ than the platform reporting a missing result. `ExecutionMonitor` sweeps parked
 rows once a minute for expiry, for decisions whose resume dispatch was lost, and
 for the 50 percent and 90 percent window reminders.
 
+**Native commands in unattended flow runs.** When the permission-check
+credential is an execution-scoped flow token, the call comes from an
+unattended run (a private-runner host profile), and a call that needs a human
+never holds the hook. `request_agent_permission` creates the approval with the
+execution id, the resolved approval window and a `_preloop_native_park`
+marker (execution id and a fingerprint of the tool input without Preloop
+markers or `cwd`), requests the park, and answers `deny` with `parked: true`
+(`services/native_flow_park.py`). Further calls from a parked execution are
+denied without a new request. On approval the normal resume runs and is told
+the command has not run; the next call with the same fingerprint spends the
+approval once (conditional update on `tool_result IS NULL`). Refused,
+cancelled or expired native parks do not resume: `resume_parked_executions`
+fails the parked row with `approval_denied` or `approval_timeout`. Lifecycle
+audit rows (`parked`, `native_grant_consumed`, `expired`,
+`execution_failed_closed`, plus the existing created/approved/denied) carry the
+execution id. Hosted containers have no native hook: the orchestrator refuses a
+hosted launch with `approval_unavailable` when an account-wide or flow-scoped
+native `require_approval` rule applies (Codex in the read-only sandbox, whose
+shell is disabled, excepted).
+
 **Structured answers (`input_schema` / `items`).** A question that needs more than a word gets a shape instead of a text box. Both `ask_user` and `request_approval` accept an `input_schema` (a documented JSON Schema subset: `string`, `number`, `boolean`, `enum`, `array` of enums or of objects, `object` with named properties) and `items` (the rows the question is about: `id`, `title`, `description`, optional `severity` and `badges`). Both are normalized and validated when the tool is called, so a malformed schema fails at the source rather than in the browser. Extra keys on item rows are dropped (and recorded in `tool_args.dropped_item_keys`); they do not refuse the question. Item `id` values longer than 200 characters are refused by name. `severity` is display metadata: known values are lowercased, unknown values pass through. An enum is cross-checked against item ids only when at least one value overlaps; a plain multi-select next to a separate item table is allowed. The console renders the schema as a form (`frontend/src/components/answer-form.ts`): an item array becomes a table with a checkbox and per-row fields, booleans become switches, enums become radios or a select, scalars become typed inputs. The filled-in form is submitted as `ApprovalDecision.answer`, validated again server-side (422 with per-field `{path, message}` errors), stored in the new `approval_requests.structured_answer` JSONB column, and returned to the agent as JSON (`{"status", "answer", "answer_text", "approval_id", "answered_by", "answered_at"}`). Fields marked `x-autofill: author | date` are never typed by a human: the client drops them and the server stamps them from the decision record, so attribution stays a platform fact. Requests carrying a form are excluded from batch approval on both the client and the `POST /approval-requests/batch-approve` endpoint, because one shared comment cannot fill several forms. The legacy `options` / `allow_free_text` path is unchanged for callers that do not pass a schema; the mobile apps read the same `question_schema` / `question_items` / `has_answer_form` fields and can post `answer` when they add form rendering. A parked resume carries the same validated JSON in the `_answers_prompt` block, because there is no in-process tool result to return it on.
 
 **Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenCode, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
