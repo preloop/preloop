@@ -62,6 +62,19 @@ class PermissionIdentity:
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
     flow_id: Optional[UUID] = None
+    #: Set only for an execution-scoped flow credential, i.e. an unattended
+    #: run. Approval-required calls park this execution.
+    flow_execution_id: Optional[UUID] = None
+
+
+def _flow_execution_id_from_context(context: dict) -> Optional[UUID]:
+    """Return the execution id an execution-scoped flow token names."""
+    if not context.get("flow_execution_id") or not context.get("flow_id"):
+        return None
+    try:
+        return UUID(str(context.get("flow_execution_id")))
+    except ValueError:
+        return None
 
 
 def _flow_id_from_context(context: dict) -> Optional[UUID]:
@@ -118,6 +131,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
             if runtime_session
             else runtime_session_id,
             flow_id=_flow_id_from_context(context),
+            flow_execution_id=_flow_execution_id_from_context(context),
             runtime_principal_type=principal.get("type")
             or getattr(managed_agent, "session_source_type", None),
             runtime_principal_id=principal.get("id")
@@ -672,6 +686,15 @@ class AgentPermissionCheckResponse(BaseModel):
             "not replace required central approval with a local prompt."
         ),
     )
+    parked: bool = Field(
+        False,
+        description=(
+            "True when the call needed a human and the unattended flow "
+            "execution behind this credential is being paused on approval "
+            "request_id. The decision is 'deny': the command must not run. "
+            "The run resumes on approval and fails closed on refusal or expiry."
+        ),
+    )
 
 
 @router.post(
@@ -801,7 +824,11 @@ async def agent_permission_check(
         flow_id=identity.flow_id,
         flow_policy_label=flow_policy_label,
         approval_request_id=payload.approval_request_id,
+        flow_execution_id=identity.flow_execution_id,
     )
+    parked = decision == "park"
+    if parked:
+        decision = "deny"
     # Claim after the decision, so a Cursor ask response is never called delivered.
     # Copilot has no note carrier. Codex PermissionRequest and Cursor before*
     # hooks defer until carrying output, or become terminal when the run ends.
@@ -856,7 +883,7 @@ async def agent_permission_check(
             )
         )
     decided_by = None
-    if request_id and not timed_out:
+    if request_id and not timed_out and not parked:
         decided_by = await run_db_off_loop(
             lambda: _approval_decided_by(identity, request_id)
         )
@@ -867,6 +894,7 @@ async def agent_permission_check(
         timed_out=timed_out,
         operator_note=operator_note,
         decided_by=decided_by,
+        parked=parked,
     )
 
 

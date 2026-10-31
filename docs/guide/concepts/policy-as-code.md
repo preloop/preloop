@@ -143,7 +143,20 @@ Tool conditions do not accept `redact`. A `sensitive_data` rule does:
 | `inherit_from_parent` | bool | `true` | Not used; `apply` accepts any value and ignores it |
 
 `apply` rejects the unsupported values, also with `--dry-run`, so that a policy
-does not look stricter than it is. A tool the policy does not list is allowed.
+does not look stricter than it is.
+
+**Native tool rules in unattended flow runs.** Rules on native agent tools
+(`Bash`, `Write`, ...) also govern flow executions. A flow run on a private
+runner host profile pauses on a command that needs approval and resumes or
+fails closed (`approval_denied`, `approval_timeout`) on the decision; see the
+[runner guide](../runners/quickstart-linux.md#codex-opencode-and-deepseek-native-profiles).
+Hosted containers have no native command hook yet, so a hosted run is refused
+before launch (`approval_unavailable`) rather than run without the rule when
+any enabled native tool configuration (including agent-pinned ones) has a rule
+requiring approval, or when such a rule is scoped to the flow or to an employee
+flow's target agent.
+
+A tool the policy does not list is allowed.
 To put a tool behind approval, list it under `tools:` with an
 `approval_workflow`. To deny every tool on an MCP server except a list, add a
 `sensitive_data` rule scoped to that server with a CEL `condition`, as the

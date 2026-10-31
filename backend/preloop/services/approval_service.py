@@ -2163,7 +2163,48 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID],
         server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Apply the account's redact rules to the stored argument copy."""
+        """Apply the account's redact rules to the stored argument copy.
+
+        The native park marker is Preloop control metadata, not a user
+        argument: it is kept out of redaction and reattached, so a
+        reference-only rule on a native tool cannot turn a refused park into
+        a resume or make its one-shot grant unspendable.
+        """
+        from preloop.services.native_flow_park import NATIVE_PARK_MARKER
+
+        marker = (
+            tool_args.get(NATIVE_PARK_MARKER) if isinstance(tool_args, dict) else None
+        )
+        if isinstance(marker, dict):
+            user_args = {k: v for k, v in tool_args.items() if k != NATIVE_PARK_MARKER}
+            stored = await self._storage_redacted_user_args(
+                account_id,
+                tool_name=tool_name,
+                tool_args=user_args,
+                managed_agent_id=managed_agent_id,
+                server_name=server_name,
+            )
+            if not isinstance(stored, dict):
+                stored = {}
+            return {**stored, NATIVE_PARK_MARKER: dict(marker)}
+        return await self._storage_redacted_user_args(
+            account_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            managed_agent_id=managed_agent_id,
+            server_name=server_name,
+        )
+
+    async def _storage_redacted_user_args(
+        self,
+        account_id: Any,
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        managed_agent_id: Optional[uuid.UUID],
+        server_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Redact the user arguments of one approval for storage."""
         from preloop.api.loop_safety import run_db_off_loop
         from preloop.services.sensitive_data.storage import (
             StorageScope,

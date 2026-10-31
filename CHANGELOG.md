@@ -87,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rules that require approval now pause unattended flow runs.** On a private
+  runner host profile, a native command matching a `require_approval` rule used
+  to hold the hook for the workflow timeout and, when refused or expired, only
+  denied that command while the run carried on. The command now does not run;
+  the execution parks on a normal approval request linked to it (flow window,
+  console, notifications, audit), resumes on approval with that exact command
+  allowed once, and fails closed with the new `approval_denied` or
+  `approval_timeout` category otherwise. Hosted container runs, which have no
+  native command hook yet, are refused before launch with
+  `approval_unavailable` when such a rule applies, instead of running ungated.
 - Subscription logins no longer break when the local client and the Preloop
   gateway both hold one single-use refresh lineage (`refresh_token_reused` from
   OpenAI, `invalid_grant` from Anthropic). The CLI now reconciles Claude Code's

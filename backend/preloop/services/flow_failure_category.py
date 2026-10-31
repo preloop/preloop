@@ -87,6 +87,16 @@ it*, not about severity:
     model had produced nothing since (issue #872). Distinct from ``timeout``
     because the fix is a shorter ``agent_config.stream_idle_timeout_seconds``
     or another model or provider, not a larger budget.
+``approval_denied``
+    A command in an unattended run matched a rule that requires approval,
+    the run parked, and a human refused (or cancelled) the request. The run
+    fails closed instead of continuing without the command.
+``approval_timeout``
+    The same park, but nobody decided within the flow's approval window.
+``approval_unavailable``
+    The run needed a per-command approval the executor cannot ask for (a
+    hosted container has no native command hook yet), so it was refused
+    before launch rather than run ungated.
 ``timeout``
     The execution exceeded its wall-clock budget.
 ``cancelled``
@@ -136,6 +146,9 @@ FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
 FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
+FAILURE_CATEGORY_APPROVAL_DENIED = "approval_denied"
+FAILURE_CATEGORY_APPROVAL_TIMEOUT = "approval_timeout"
+FAILURE_CATEGORY_APPROVAL_UNAVAILABLE = "approval_unavailable"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
@@ -159,6 +172,9 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
+    FAILURE_CATEGORY_APPROVAL_DENIED,
+    FAILURE_CATEGORY_APPROVAL_TIMEOUT,
+    FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_CANCELLED,
     FAILURE_CATEGORY_UNKNOWN,
