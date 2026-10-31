@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output with no gateway request fails with the new `gateway_bypassed`
   category, unless the flow sets the break-glass
   `agent_config.allow_unmetered_host_model: true` (never in read-only review).
+  The runner also reports the CLI's model call count (`cli_model_calls`,
+  exact for Claude Code, a per-turn lower bound for Codex); CLI calls that
+  exceed the gateway rows by more than 2 calls and more than 20% fail the run
+  as a partial bypass (`gateway_call_check` names the rule that applied).
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
@@ -52,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop fails `default_limit_reached`). The 2,000,000-token built-in default
   stopped legitimate PR reviews, which use 2 to 13 million tokens. The flow
   page shows "None" with a hint when no ceiling applies.
+- The Pull Request Reviewer preset's own ceilings are 100,000,000 tokens and
+  1000 turns (were 2,000,000 and 300); USD stays at 50, which an expensive
+  model can reach first.
 - A run the gateway stopped at a run limit keeps `default_limit_reached` or
   `budget_exceeded` and the limit message, even when the agent then fails on
   a checkpoint or capture call refused because the execution was closed.

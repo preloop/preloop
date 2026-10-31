@@ -147,6 +147,11 @@ func codexRunnerResult(c codexCapture) (map[string]any, error) {
 		status = "failure"
 	}
 	result := map[string]any{"status": status, "harness": hostExecHarnessCodex}
+	// codex exec JSONL reports turns, not individual model requests; each
+	// turn makes at least one, so this is a lower bound for the
+	// control plane's gateway cross-check.
+	result["cli_model_calls"] = c.Results
+	result["cli_model_calls_kind"] = "lower_bound"
 	if c.SessionID != "" {
 		result["session_id"] = c.SessionID
 	}

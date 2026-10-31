@@ -282,3 +282,73 @@ def test_runner_and_gateway_result_keys_are_not_schema_validated():
         "required": ["usage"],
     }
     assert validate_result_document({"usage": {}}, declared)["valid"] is False
+
+
+def _claude_result(cli_calls):
+    return {
+        "status": "success",
+        "harness": "claude_code",
+        "usage": {"output_tokens": 50},
+        "cli_model_calls": cli_calls,
+        "cli_model_calls_kind": "exact",
+    }
+
+
+def test_full_bypass_with_a_cli_count_fails(monkeypatch):
+    _count(monkeypatch, 0)
+    status, error, result = _apply(
+        result=_claude_result(12), job=_lease(harness="claude_code")
+    )
+    assert status == "FAILED" and error.startswith("gateway_bypassed:")
+    assert result["gateway_call_check"] == "cli_call_count"
+
+
+def test_partial_bypass_fails_when_cli_calls_exceed_gateway_rows(monkeypatch):
+    _count(monkeypatch, 1)
+    status, error, result = _apply(
+        result=_claude_result(40), job=_lease(harness="claude_code")
+    )
+    assert status == "FAILED"
+    assert "reported 40 model calls but only 1 went through" in error
+    assert result["failure_category"] == "gateway_bypassed"
+    assert result["gateway_metered"] is True
+
+
+def test_partial_bypass_respects_the_opt_out_but_not_in_read_only(monkeypatch):
+    _count(monkeypatch, 1)
+    config = {"allow_unmetered_host_model": True}
+    status, _e, result = _apply(
+        result=_claude_result(40), job=_lease(harness="claude_code"), config=config
+    )
+    assert status == "SUCCEEDED" and result["gateway_bypass_allowed"] is True
+    ro = {**_lease(harness="claude_code", read_only=True)}
+    status, _e, _r = _apply(result=_claude_result(40), job=ro, config=config)
+    assert status == "FAILED"
+
+
+@pytest.mark.parametrize(
+    ("cli_calls", "rows"), [(10, 8), (3, 1), (50, 41), (20, 25), (2, 1)]
+)
+def test_noisy_but_honest_runs_pass(monkeypatch, cli_calls, rows):
+    _count(monkeypatch, rows)
+    status, error, result = _apply(
+        result=_claude_result(cli_calls), job=_lease(harness="claude_code")
+    )
+    assert (status, error) == ("SUCCEEDED", None)
+    assert result["gateway_call_check"] == "cli_call_count"
+
+
+def test_tolerance_is_two_calls_or_twenty_percent():
+    from preloop.services.host_exec_gateway import bypass_tolerance
+
+    assert bypass_tolerance(1) == 2
+    assert bypass_tolerance(10) == 2
+    assert bypass_tolerance(50) == 10
+    assert bypass_tolerance(51) == 11
+
+
+def test_without_a_cli_count_the_at_least_one_rule_applies(monkeypatch):
+    _count(monkeypatch, 1)
+    status, _e, result = _apply()
+    assert status == "SUCCEEDED"
+    assert result["gateway_call_check"] == "at_least_one"

@@ -769,7 +769,11 @@ the Preloop gateway with the agent's own key. For each run the runner adds the
 execution marker header to that provider with a command-line override (your
 `config.toml` is not edited), so the gateway attributes the run's requests to
 the flow execution as well as the agent, enforces the flow's run limits, and
-the result records `gateway_metered: true` and `gateway_request_count`. Do not
+the result records `gateway_metered: true` and `gateway_request_count`. The
+runner also reports the CLI's own model call count (`cli_model_calls`); a run
+whose CLI calls exceed its gateway rows by more than 2 calls and more than 20%
+fails with `gateway_bypassed` too, so a run that sends only part of its
+traffic through Preloop is caught. Do not
 point the runner at a separate `CODEX_HOME` without the Preloop provider: the
 run would call the model service directly and end `FAILED` with
 `gateway_bypassed`. Claude Code profiles work the same way when Claude Code is

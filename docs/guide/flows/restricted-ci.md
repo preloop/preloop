@@ -312,7 +312,13 @@ a ceiling is crossed is refused and the run ends `FAILED` with
 `budget_exceeded` or `default_limit_reached`. The completed result records
 `gateway_metered: true` and `gateway_request_count`. A run whose result shows
 model output but no gateway request bypassed Preloop and ends `FAILED` with
-`gateway_bypassed`; read-only review has no opt-out from this.
+`gateway_bypassed`. When the runner reports how many model calls the CLI made
+(`cli_model_calls`: exact for Claude Code, a per-turn lower bound for Codex),
+a run whose CLI calls exceed its gateway rows by more than 2 calls and more
+than 20% partly bypassed Preloop and fails the same way; the result names the
+check that applied in `gateway_call_check` (`cli_call_count`, or
+`at_least_one` when the CLI exposes no count). Read-only review has no opt-out
+from this.
 
 Rules that require approval pause this run. A command that matches one does
 not run: the review pauses, an approval request appears in **Approvals**, and

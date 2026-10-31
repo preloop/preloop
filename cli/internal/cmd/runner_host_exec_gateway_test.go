@@ -271,3 +271,26 @@ func TestClaudeGatewayRoutingFollowsSettingsPrecedence(t *testing.T) {
 		t.Fatalf("managed plan = %v %v %v %v %v %v", env, args, files, ok, managedHeaders, err)
 	}
 }
+
+func TestClaudeResultReportsDistinctModelCalls(t *testing.T) {
+	var c claudeCapture
+	for _, line := range []string{
+		`{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"a"}]}}`,
+		`{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use"}]}}`,
+		`{"type":"assistant","message":{"id":"msg_2","content":[{"type":"text","text":"b"}]}}`,
+		`{"type":"result","subtype":"success","num_turns":2}`,
+	} {
+		applyClaudeLine(&c, line)
+	}
+	result, err := claudeRunnerResult(c)
+	if err != nil || result["cli_model_calls"] != 2 || result["cli_model_calls_kind"] != "exact" {
+		t.Fatalf("result = %v, %v", result, err)
+	}
+}
+
+func TestCodexResultReportsTurnsAsALowerBound(t *testing.T) {
+	result, err := codexRunnerResult(codexCapture{Results: 1, SessionID: "11111111-1111-4111-8111-111111111111"})
+	if err != nil || result["cli_model_calls"] != 1 || result["cli_model_calls_kind"] != "lower_bound" {
+		t.Fatalf("result = %v, %v", result, err)
+	}
+}

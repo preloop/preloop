@@ -24,7 +24,12 @@ The fix keeps the agent key and adds an *execution marker*:
   attribution, per-execution ceiling and cost rollup code paths apply.
 
 At completion :func:`apply_host_gateway_metering` counts the gateway rows the
-run produced and records the real ``gateway_metered`` value. A run that
+run produced and records the real ``gateway_metered`` value. When the runner
+reports how many model calls the CLI made (``cli_model_calls``: exact for
+Claude Code, a per-turn lower bound for Codex), a run whose CLI calls exceed
+its gateway rows by more than :func:`bypass_tolerance` partly bypassed
+Preloop. Without a count, at least one row is required
+(``gateway_call_check: at_least_one``). A run that
 produced model output with no gateway row bypassed Preloop and fails with
 ``gateway_bypassed`` unless the flow set the documented break-glass
 ``agent_config.allow_unmetered_host_model``; read-only review never allows
@@ -36,6 +41,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Mapping, Optional, Tuple
 from uuid import UUID
@@ -290,6 +296,22 @@ def host_gateway_delivery(execution: Any, flow: Any) -> Dict[str, str]:
     }
 
 
+def bypass_tolerance(cli_calls: int) -> int:
+    """How many CLI-reported model calls may lack a gateway row.
+
+    Retries and stream reconnects make the two counts differ in both
+    directions on honest runs, so a partial bypass needs more than 2
+    missing calls and more than 20% of the CLI's count.
+
+    Args:
+        cli_calls: Model calls the CLI reported.
+
+    Returns:
+        The largest gap that is still treated as honest.
+    """
+    return max(2, math.ceil(cli_calls * 0.2))
+
+
 def _produced_model_output(status: str, result: Mapping[str, Any]) -> bool:
     usage = result.get("usage")
     if isinstance(usage, Mapping):
@@ -345,8 +367,33 @@ def apply_host_gateway_metering(
     }
     lease = job.get(HOST_EXEC_LEASE_KEY)
     harness = lease.get("harness") if isinstance(lease, Mapping) else None
-    if count > 0 or harness not in GATEWAY_ROUTABLE_HARNESSES:
+    if harness not in GATEWAY_ROUTABLE_HARNESSES:
         return status, error, result
+    cli_calls = result.get("cli_model_calls")
+    if type(cli_calls) is not int or cli_calls < 0:
+        cli_calls = None
+    result["gateway_call_check"] = (
+        "at_least_one" if cli_calls is None else "cli_call_count"
+    )
+    if count > 0:
+        missing = (cli_calls or 0) - count
+        if cli_calls is None or missing <= bypass_tolerance(cli_calls):
+            return status, error, result
+        if status not in {"SUCCEEDED", "FAILED"}:
+            return status, error, result
+        config = agent_config if isinstance(agent_config, Mapping) else {}
+        if config.get(ALLOW_UNMETERED_KEY) is True and not job.get(
+            HOST_READ_ONLY_LEASE_KEY
+        ):
+            result["gateway_bypass_allowed"] = True
+            return status, error, result
+        message = (
+            f"{GATEWAY_BYPASSED}: the host CLI reported {cli_calls} model calls "
+            f"but only {count} went through the Preloop gateway, so part of "
+            "this run was not governed or metered. Keep the onboarded CLI "
+            "configuration for the whole run."
+        )
+        return "FAILED", message, {**result, "failure_category": GATEWAY_BYPASSED}
     if status not in {"SUCCEEDED", "FAILED"} or not _produced_model_output(
         status, result
     ):
