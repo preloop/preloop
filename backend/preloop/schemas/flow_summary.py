@@ -39,16 +39,19 @@ class FlowSummaryResponse(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def derive_ci_only(cls, data: Any) -> Any:
-        """Derive ``ci_only`` from the row's clone config without exposing it."""
-        from preloop.services.read_only_review import read_only_review
+        """Derive ``ci_only`` from the row's SQL-derived publication mode.
 
+        The lightweight list query selects ``publication_mode`` (one JSON key
+        extracted in SQL) instead of the clone config itself.
+        """
         if isinstance(data, dict):
             if "ci_only" not in data:
-                config = data.get("git_clone_config")
-                return {**data, "ci_only": read_only_review(config)}
+                return {
+                    **data,
+                    "ci_only": data.get("publication_mode") == "read_only",
+                }
             return data
-        config = getattr(data, "git_clone_config", None)
-        if not read_only_review(config):
+        if getattr(data, "publication_mode", None) != "read_only":
             return data
         fields = {
             name: getattr(data, name)

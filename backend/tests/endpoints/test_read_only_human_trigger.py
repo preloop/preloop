@@ -159,4 +159,11 @@ def test_flow_summary_marks_read_only_flows_ci_only(
     by_id = {row["id"]: row for row in response.json()}
     assert by_id[str(ro.id)]["ci_only"] is True
     assert by_id[str(plain.id)]["ci_only"] is False
+    # Derived from the SQL-extracted publication_mode, not the clone config.
     assert "git_clone_config" not in by_id[str(ro.id)]
+    from preloop.schemas.flow_summary import FlowSummaryResponse
+
+    derived = {k: v for k, v in by_id[str(ro.id)].items() if k != "ci_only"}
+    assert FlowSummaryResponse.model_validate(
+        {**derived, "publication_mode": "read_only"}
+    ).ci_only
