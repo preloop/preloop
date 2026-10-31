@@ -253,3 +253,32 @@ async def test_settled_count_does_not_wait_without_model_output(monkeypatch):
         delay_seconds=0,
     )
     assert len(calls) == 1
+
+
+def test_runner_and_gateway_result_keys_are_not_schema_validated():
+    from preloop.services.flow_result_schema import validate_result_document
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["status"],
+        "properties": {"status": {"type": "string"}},
+    }
+    host_result = {
+        "status": "success",
+        "harness": "codex_cli",
+        "session_id": "s",
+        "usage": {"input_tokens": 1},
+        "model": "m",
+        "num_turns": 2,
+        "requested_model": "r",
+        "gateway_metered": True,
+        "gateway_request_count": 1,
+    }
+    assert validate_result_document(host_result, schema)["valid"] is True
+    declared = {
+        "type": "object",
+        "properties": {"usage": {"type": "string"}},
+        "required": ["usage"],
+    }
+    assert validate_result_document({"usage": {}}, declared)["valid"] is False

@@ -429,35 +429,6 @@ def link_unlinked_flows_by_content(db: Session, dry_run: bool = False) -> int:
     return linked_count
 
 
-def _adopt_preset_result_schema(flow: Flow, preset: Flow) -> bool:
-    """Give an unmodified derived flow the preset's result schema.
-
-    Only a flow whose prompt and tools still follow the preset and that has
-    no result schema of its own adopts the preset's ``result_schema`` and
-    ``validate_result``. A customized flow, or one with its own schema, is
-    left alone: its prompt may promise a different result document.
-
-    Args:
-        flow: A flow derived from ``preset``.
-        preset: The global preset.
-
-    Returns:
-        True when the flow was changed.
-    """
-    schema = getattr(preset, "result_schema", None)
-    if (
-        not schema
-        or flow.prompt_customized
-        or flow.tools_customized
-        or getattr(flow, "result_schema", None)
-    ):
-        return False
-    flow.result_schema = schema
-    flow.validate_result = getattr(preset, "validate_result", True) is not False
-    logger.debug(f"Adopted preset result schema for flow {flow.id}")
-    return True
-
-
 def sync_preset_to_derived_flows(db: Session, preset_id: UUID) -> PresetSyncResult:
     """
     Sync a preset's changes to all flows derived from it.
@@ -501,13 +472,9 @@ def sync_preset_to_derived_flows(db: Session, preset_id: UUID) -> PresetSyncResu
             prompt_up_to_date = flow.source_prompt_hash == current_prompt_hash
             tools_up_to_date = flow.source_tools_hash == current_tools_hash
 
-            schema_updated = _adopt_preset_result_schema(flow, preset)
             if prompt_up_to_date and tools_up_to_date:
                 # Flow is already synced with preset
-                if schema_updated:
-                    result.auto_updated += 1
-                else:
-                    result.skipped += 1
+                result.skipped += 1
                 continue
 
             # Determine what needs updating
@@ -539,7 +506,7 @@ def sync_preset_to_derived_flows(db: Session, preset_id: UUID) -> PresetSyncResu
                 flow.source_tools_hash = current_tools_hash
                 logger.debug(f"Auto-updated tools for flow {flow.id}")
 
-            if needs_prompt_update or needs_tools_update or schema_updated:
+            if needs_prompt_update or needs_tools_update:
                 result.auto_updated += 1
                 logger.info(
                     f"Auto-updated flow {flow.id} ({flow.name}) from preset {preset.name}"
@@ -679,10 +646,6 @@ def apply_preset_update_to_flow(db: Session, flow_id: UUID) -> Flow:
     # Update flow with preset content
     flow.prompt_template = preset.prompt_template
     flow.allowed_mcp_tools = preset.allowed_mcp_tools
-    # The prompt now promises the preset's result document again.
-    if getattr(preset, "result_schema", None):
-        flow.result_schema = preset.result_schema
-        flow.validate_result = getattr(preset, "validate_result", True) is not False
 
     # Update hashes
     flow.source_prompt_hash = compute_content_hash(preset.prompt_template)

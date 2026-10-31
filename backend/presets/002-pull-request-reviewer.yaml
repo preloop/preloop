@@ -1119,23 +1119,10 @@ prompt_template: |
 
   {
     "status": "success",
-    "reason": null,
     "review_posted": true | false,
-    "review_action": "approve" | "request_changes" | "comment" | null,
-    "recommendation": "approve" | "request_changes" | "comment",
     "risk_level": "low" | "medium" | "high",
     "findings_count": <total issues reported in this review>,
-    "findings": [
-      {
-        "severity": "critical" | "high" | "medium" | "low" | "info",
-        "category": "<bug, security, performance, tests, style, docs, ...>",
-        "file": "<repository-relative path>" | null,
-        "line": <line number> | null,
-        "title": "<one line>",
-        "detail": "<what is wrong and how to fix it>"
-      }
-    ],
-    "what_looks_good": ["<short strength you actually observed>"],
+    "review_action": "approve" | "request_changes" | "comment" | null,
     "issue_coverage": [
       {
         "issue": "<issue key or URL you read>",
@@ -1147,14 +1134,6 @@ prompt_template: |
     ]
   }
 
-  Every key is required (the flow validates the document against its
-  result schema). "recommendation" is your verdict even when you did not
-  post a review; "review_action" is what you actually submitted, or null.
-  "findings" lists the issues you reported, one entry each, so
-  "findings_count" equals its length. Use null for "file" and "line" when a
-  finding is not tied to one place, and [] for "what_looks_good" when
-  nothing stood out. "reason" is null unless "status" is "error".
-
   Set "issue_coverage" to [] when the PR references no issue. Its counts must
   match the checkboxes you published; never report coverage you did not judge.
 
@@ -1162,7 +1141,7 @@ prompt_template: |
   submitted (review_posted: true, Step 4.4) or you deliberately decided not
   to post one (review_posted: false, review_action: null). If you hit an
   unrecoverable error and could not complete the review, write
-  "status": "error" instead and put the cause in "reason". Be honest: never
+  "status": "error" instead and add a "reason" field. Be honest: never
   report success for work you did not do.
 
   ═══════════════════════════════════════════════════════════
@@ -1269,15 +1248,15 @@ agent_type: codex
 agent_config:
   sandbox_type: exec
   enable_auto_lint: true
-  # A safety net for a run that loops or over-reads, not a budget. Large PR
-  # reviews legitimately use 2M-13M tokens, so 20M tokens clears the worst
-  # legitimate case; the USD and turn ceilings catch a run
+  # A safety net for a run that loops or over-reads, not a budget. Observed
+  # PR reviews sit at 167k-645k tokens with a 1.64M maximum, so 2M tokens
+  # clears the worst legitimate case; the USD and turn ceilings catch a run
   # that keeps going on an expensive model long after it should have stopped.
   # The request that crosses a ceiling is allowed to finish so the reviewer
   # can still post its verdict; the next one is refused and the run fails with
   # the budget_exceeded category.
   limits:
-    max_total_tokens: 20000000
+    max_total_tokens: 2000000
     max_usd: 50
     max_turns: 300
 allowed_mcp_servers: []
@@ -1310,88 +1289,4 @@ webhook_config:
 # half an hour it is stuck on a tool or a loop, not still thinking, and the
 # author is waiting: fail it early rather than hold the slot for an hour.
 timeout_seconds: 1800
-# The completion document above, as a schema. With validation on, a review
-# succeeds only when its result matches, and Codex review flows default to
-# native structured results (agent_config.native_result) so the CLI itself
-# returns this shape. Strict structured outputs need every property listed
-# in "required" and additionalProperties false on every object. Compatible
-# with the result contract style of preset 003: a closed "status" enum plus
-# named fields.
-result_schema:
-  type: object
-  additionalProperties: false
-  required:
-    - status
-    - reason
-    - review_posted
-    - review_action
-    - recommendation
-    - risk_level
-    - findings_count
-    - findings
-    - what_looks_good
-    - issue_coverage
-  properties:
-    status:
-      type: string
-      enum: [success, error]
-    reason:
-      type: [string, "null"]
-    review_posted:
-      type: boolean
-    review_action:
-      type: [string, "null"]
-      enum: [approve, request_changes, comment, null]
-    recommendation:
-      type: string
-      enum: [approve, request_changes, comment]
-    risk_level:
-      type: string
-      enum: [low, medium, high]
-    findings_count:
-      type: integer
-      minimum: 0
-    findings:
-      type: array
-      items:
-        type: object
-        additionalProperties: false
-        required: [severity, category, file, line, title, detail]
-        properties:
-          severity:
-            type: string
-            enum: [critical, high, medium, low, info]
-          category:
-            type: string
-          file:
-            type: [string, "null"]
-          line:
-            type: [integer, "null"]
-          title:
-            type: string
-          detail:
-            type: string
-    what_looks_good:
-      type: array
-      items:
-        type: string
-    issue_coverage:
-      type: array
-      items:
-        type: object
-        additionalProperties: false
-        required: [issue, verdict, criteria_total, criteria_met, gaps]
-        properties:
-          issue:
-            type: string
-          verdict:
-            type: string
-            enum: [full, partial, not_addressed, unclear]
-          criteria_total:
-            type: integer
-          criteria_met:
-            type: integer
-          gaps:
-            type: integer
-validate_result: true
 is_preset: true

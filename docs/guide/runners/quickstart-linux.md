@@ -779,11 +779,6 @@ host CLI unmetered can set `agent_config.allow_unmetered_host_model: true`
 (break-glass, recorded on the result as `gateway_bypass_allowed`); read-only
 review never allows it.
 
-When a Codex review flow uses native structured results (the default for
-Codex review flows with a validated result schema), the runner passes the
-schema to `codex exec --output-schema` and returns Codex's final answer as
-the result document, so the run ends with a validated verdict.
-
 For example, add these profiles to the local `runner-host-profiles.json`
 file (use provider and model names configured in your local CLI):
 

@@ -28,12 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with `approval_unavailable`; that category now means the hook could
   not be installed, or the hosted harness has none. The universal Codex image
   ships the CLI at `/opt/preloop/bin/preloop`.
-- The Pull Request Reviewer preset has a default review result schema
-  (`status`, `findings[]`, `recommendation`, `what_looks_good`, ...) with
-  validation on, so the native-result default engages and reviews end with a
-  validated verdict. Codex host runs with native results pass the schema to
-  `codex exec --output-schema` and return Codex's final answer as the result.
-  Preset sync applies the schema to unmodified derived flows only.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
@@ -64,8 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
   `PRELOOP_DEFAULT_MAX_USD`, which become the instance default (a run they
   stop fails `default_limit_reached`). The 2,000,000-token built-in default
-  stopped legitimate PR reviews, which use 2 to 13 million tokens. The Pull
-  Request Reviewer preset sets its own 20,000,000-token ceiling. The flow
+  stopped legitimate PR reviews, which use 2 to 13 million tokens. The flow
   page shows "None" with a hint when no ceiling applies.
 - A run the gateway stopped at a run limit keeps `default_limit_reached` or
   `budget_exceeded` and the limit message, even when the agent then fails on

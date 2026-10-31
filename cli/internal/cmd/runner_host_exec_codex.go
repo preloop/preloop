@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,77 +160,4 @@ func codexRunnerResult(c codexCapture) (map[string]any, error) {
 		result["usage"] = usage
 	}
 	return result, nil
-}
-
-const (
-	hostExecResultSchemaKey      = "host_exec_result_schema"
-	hostExecResultSchemaMaxBytes = 64 * 1024
-	codexNativeResultMaxBytes    = 1024 * 1024
-)
-
-// jobHostExecResultSchema returns the delivered native-result schema as
-// JSON, or nil when the run does not use native structured results.
-func jobHostExecResultSchema(job map[string]any) ([]byte, error) {
-	raw, ok := job[hostExecResultSchemaKey]
-	if !ok || raw == nil {
-		return nil, nil
-	}
-	if _, isObject := raw.(map[string]any); !isObject {
-		return nil, fmt.Errorf("%s must be a JSON object", hostExecResultSchemaKey)
-	}
-	encoded, err := json.Marshal(raw)
-	if err != nil || len(encoded) > hostExecResultSchemaMaxBytes {
-		return nil, fmt.Errorf("%s is invalid", hostExecResultSchemaKey)
-	}
-	return encoded, nil
-}
-
-// codexNativeResultArgs writes the schema into the execution directory and
-// returns the Codex flags that constrain the final answer to it and capture
-// that answer. The files are runner-owned and removed after the run.
-func codexNativeResultArgs(scratch string, schema []byte) (args, files []string, resultPath string, err error) {
-	schemaPath := filepath.Join(scratch, ".preloop-native-result-schema.json")
-	if err := os.WriteFile(schemaPath, schema, 0o600); err != nil {
-		return nil, nil, "", err
-	}
-	resultPath = filepath.Join(scratch, ".preloop-native-result.json")
-	_ = os.Remove(resultPath)
-	return []string{"--output-schema", schemaPath, "--output-last-message", resultPath}, []string{schemaPath, resultPath}, resultPath, nil
-}
-
-// mergeCodexNativeResult returns Codex's schema-constrained final answer as
-// the result document. Runner-observed facts win: harness, session and
-// usage come from the JSONL stream, and a failed turn stays a failure
-// whatever the answer says. An answer that is not a JSON object leaves the
-// runner result, which then fails the flow's schema check.
-func mergeCodexNativeResult(result map[string]any, path string) map[string]any {
-	file, err := os.Open(path)
-	if err != nil {
-		return result
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, codexNativeResultMaxBytes+1))
-	if err != nil || len(data) > codexNativeResultMaxBytes {
-		return result
-	}
-	var answer map[string]any
-	if json.Unmarshal(data, &answer) != nil || answer == nil {
-		return result
-	}
-	merged := make(map[string]any, len(answer)+len(result))
-	for key, value := range answer {
-		merged[key] = value
-	}
-	for _, key := range []string{"harness", "session_id", "usage"} {
-		delete(merged, key)
-		if value, ok := result[key]; ok {
-			merged[key] = value
-		}
-	}
-	if result["status"] != "success" {
-		merged["status"] = result["status"]
-	} else if _, ok := merged["status"].(string); !ok {
-		merged["status"] = result["status"]
-	}
-	return merged
 }

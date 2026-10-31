@@ -350,11 +350,7 @@ func nativeRunnerResult(b *runnerLogBuffer, waitErr error) (map[string]any, erro
 		return claudeRunnerResult(b.claudeCapture)
 	}
 	if b.harness == hostExecHarnessCodex {
-		result, err := codexRunnerResult(b.codexCapture)
-		if err == nil && b.resultPath != "" {
-			result = mergeCodexNativeResult(result, b.resultPath)
-		}
-		return result, err
+		return codexRunnerResult(b.codexCapture)
 	}
 	if b.harness == hostExecHarnessOpenCode {
 		return openCodeRunnerResult(b.openCodeCapture)
