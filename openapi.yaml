@@ -30405,6 +30405,12 @@ components:
           - type: string
           - type: 'null'
           title: Failure Category
+        startup_receipt:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Startup Receipt
       additionalProperties: false
       type: object
       required:

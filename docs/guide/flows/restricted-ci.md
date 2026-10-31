@@ -131,7 +131,7 @@ request event server-side and starts one production execution
 diffs, base revisions or challenges through the flow's own configured review
 inputs and your own validator instead.
 
-`GET /api/v1/flows/executions/{id}/status` and `/result` include
+`GET /api/v1/flows/executions/{id}` (the status projection) and `GET /api/v1/flows/executions/{id}/result` include
 `startup_receipt`, written by the controller, never by the model:
 
 ```json
@@ -159,7 +159,7 @@ runner receipt in the same shape with `executor: "private_runner"` and its
 `sandbox`. The receipt describes the controller's observation of the
 container's own output; setup commands run repository code inside that same
 container, so treat it as the platform's assertion, not an independent
-attestation. The completion callback body is unchanged; fetch `/status` or
+attestation. The completion callback body is unchanged; fetch `GET /api/v1/flows/executions/{id}` or
 `/result` for the receipt.
 
 The restricted `/result` returns `result`, the captured `result.json`
