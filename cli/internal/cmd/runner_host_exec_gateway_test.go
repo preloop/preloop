@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,5 +261,30 @@ func TestClaudeGatewayEnvReadsTheProcessBaseURL(t *testing.T) {
 	}
 	if _, ok := claudeHostGatewayEnv(hostGatewayTestMarker, []string{"ANTHROPIC_BASE_URL=https://api.anthropic.com"}); ok {
 		t.Fatal("marker sent to a non-Preloop base URL")
+	}
+}
+
+func TestClaudeGatewayPlanMergesSettingsLevelCustomHeaders(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	settings := `{"env":{"ANTHROPIC_BASE_URL":"https://preloop.example.com/anthropic","ANTHROPIC_CUSTOM_HEADERS":"X-Team: blue"}}`
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	env, args, files, ok, err := claudeHostGatewayPlan(hostGatewayTestMarker, nil, scratch)
+	if err != nil || !ok || len(env) != 0 || len(args) != 2 || args[0] != "--settings" || len(files) != 1 {
+		t.Fatalf("plan = %v %v %v %v %v", env, args, files, ok, err)
+	}
+	if strings.Contains(strings.Join(args, " "), hostGatewayTestMarker) {
+		t.Fatal("marker reached argv")
+	}
+	raw, _ := os.ReadFile(args[1])
+	var doc map[string]map[string]string
+	if json.Unmarshal(raw, &doc) != nil || doc["env"]["ANTHROPIC_CUSTOM_HEADERS"] != "X-Team: blue\nX-Preloop-Execution: "+hostGatewayTestMarker {
+		t.Fatalf("settings file = %s", raw)
+	}
+	if info, _ := os.Stat(args[1]); info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", info.Mode())
 	}
 }

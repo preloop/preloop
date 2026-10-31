@@ -46,6 +46,8 @@ PLATFORM_RESULT_KEYS = frozenset(
         "premium_requests",
         "model",
         "num_turns",
+        "requested_model",
+        "publication_recovery",
         "gateway_metered",
         "gateway_request_count",
         "gateway_bypass_allowed",

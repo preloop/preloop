@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,17 +114,33 @@ func claudeSettingsEnv() []map[string]interface{} {
 }
 
 // claudeHostGatewayEnv returns ANTHROPIC_CUSTOM_HEADERS carrying the marker
-// when Claude Code is routed to the Preloop gateway. Settings env wins over
-// the process env in Claude Code, so a settings-level custom header list
-// would drop ours; that case is reported as not routed.
+// when Claude Code is routed to the Preloop gateway (settings env, else the
+// process env). It reports not routed when the settings declare their own
+// custom headers, because settings env wins over the process env; use
+// claudeHostGatewayPlan, which handles that case with a per-run settings file.
 func claudeHostGatewayEnv(marker string, base []string) (env []string, ok bool) {
-	if marker == "" {
+	env, settingsHeaders, ok := claudeHostGatewayRoute(marker, base)
+	if !ok || settingsHeaders != "" {
 		return nil, false
+	}
+	return env, true
+}
+
+// claudeHostGatewayRoute decides how the marker reaches Claude Code.
+// settingsHeaders is non-empty when the user's settings declare custom
+// headers; the marker must then be merged into them at settings level.
+func claudeHostGatewayRoute(marker string, base []string) (env []string, settingsHeaders string, ok bool) {
+	if marker == "" {
+		return nil, "", false
 	}
 	routed := false
 	for _, settings := range claudeSettingsEnv() {
-		if _, set := settings["ANTHROPIC_CUSTOM_HEADERS"]; set {
-			return nil, false
+		if value, set := settings["ANTHROPIC_CUSTOM_HEADERS"]; set {
+			headers, _ := value.(string)
+			if strings.TrimSpace(headers) == "" {
+				headers = " "
+			}
+			settingsHeaders = headers
 		}
 		if url, _ := settings["ANTHROPIC_BASE_URL"].(string); strings.HasSuffix(strings.TrimRight(url, "/"), "/anthropic") {
 			routed = true
@@ -139,15 +156,45 @@ func claudeHostGatewayEnv(marker string, base []string) (env []string, ok bool) 
 		}
 	}
 	if !routed {
-		return nil, false
+		return nil, "", false
 	}
-	value := hostExecGatewayHeader + ": " + marker
+	line := hostExecGatewayHeader + ": " + marker
+	if settingsHeaders != "" {
+		return nil, settingsHeaders, true
+	}
+	value := line
 	for _, entry := range base {
 		if existing, found := strings.CutPrefix(entry, "ANTHROPIC_CUSTOM_HEADERS="); found && strings.TrimSpace(existing) != "" {
-			value = existing + "\n" + value
+			value = existing + "\n" + line
 		}
 	}
-	return []string{"ANTHROPIC_CUSTOM_HEADERS=" + value}, true
+	return []string{"ANTHROPIC_CUSTOM_HEADERS=" + value}, "", true
+}
+
+// claudeHostGatewayPlan returns the child env, extra argv and runner-owned
+// files that attach the marker. When the user's settings declare custom
+// headers, a per-run settings file (0600, in the execution directory)
+// carries their headers plus the marker via --settings, which Claude Code
+// layers above the user settings; the marker never enters argv.
+func claudeHostGatewayPlan(marker string, base []string, scratch string) (env, args, files []string, ok bool, err error) {
+	env, settingsHeaders, ok := claudeHostGatewayRoute(marker, base)
+	if !ok || settingsHeaders == "" {
+		return env, nil, nil, ok, nil
+	}
+	headers := strings.TrimSpace(settingsHeaders)
+	line := hostExecGatewayHeader + ": " + marker
+	if headers != "" {
+		line = headers + "\n" + line
+	}
+	raw, err := json.Marshal(map[string]any{"env": map[string]any{"ANTHROPIC_CUSTOM_HEADERS": line}})
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	path := filepath.Join(scratch, ".preloop-claude-gateway-settings.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return nil, nil, nil, false, err
+	}
+	return nil, []string{"--settings", path}, []string{path}, true, nil
 }
 
 // hostExecGatewayNotice is the run-log line saying whether the marker went out.

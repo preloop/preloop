@@ -886,9 +886,12 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 				stdin, err = claudeHostExecPrompt(job)
 			}
 			if err == nil && gatewayMarker != "" {
-				gatewayEnv, ok := claudeHostGatewayEnv(gatewayMarker, env)
+				gatewayEnv, gatewayArgs, gatewayFiles, ok, planErr := claudeHostGatewayPlan(gatewayMarker, env, scratch)
+				err = planErr
+				files = append(files, gatewayFiles...)
 				gatewayNotice = hostExecGatewayNotice(wantHarness, ok)
 				env = mergeHostExecManagedEnv(env, gatewayEnv)
+				args = append(args, gatewayArgs...)
 			}
 		}
 	} else if wantHarness == hostExecHarnessDevin {

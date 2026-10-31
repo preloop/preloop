@@ -254,5 +254,10 @@ async def test_codex_host_delivery_carries_the_native_result_schema(
 
 
 def test_claude_host_envelope_keys_are_not_validated():
-    host_result = {**VALID_RESULT, "model": "claude-x", "num_turns": 3}
+    host_result = {
+        **VALID_RESULT,
+        "model": "claude-x",
+        "num_turns": 3,
+        "requested_model": "review-model",
+    }
     assert validate_result_document(host_result, PRR["result_schema"])["valid"]
