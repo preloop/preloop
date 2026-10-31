@@ -36109,7 +36109,6 @@ components:
           - type: string
           - type: 'null'
           title: Agent Type
-          default: openhands
         agent_config:
           anyOf:
           - additionalProperties: true
