@@ -137,6 +137,60 @@ credential refresh. Operator-supplied images, setup commands and workspace input
 must not inject independent provider secrets; this mode narrows the credentials
 Preloop supplies, not credentials supplied separately by an administrator.
 
+### Trigger, startup receipt and result
+
+Start a review with `POST /api/v1/flows/{flow_id}/trigger` and the CI
+credential. The body is exactly `{"pr_number": 7, "head_sha": "<sha>"}`
+(`head_sha` is the full lowercase 40 or 64 character SHA). Any other field,
+such as a diff, base SHA, challenge or template data, is rejected with 422; it
+is never silently ignored. Preloop reads the open pull request from the
+provider, requires its current head to equal `head_sha`, builds the pull
+request event server-side and starts one production execution
+(`test_mode: false`). The flow webhook does not accept CI credentials. Bind
+diffs, base revisions or challenges through the flow's own configured review
+inputs and your own validator instead.
+
+`GET /api/v1/flows/executions/{id}` (the status projection) and `GET /api/v1/flows/executions/{id}/result` include
+`startup_receipt`, written by the controller, never by the model:
+
+```json
+{
+  "version": 1,
+  "executor": "hosted",
+  "commit": "<admitted head SHA>",
+  "checkout_verified": true,
+  "setup_completed": true,
+  "agent_started_at": "2030-01-01T00:00:00+00:00",
+  "lease_revoked": true
+}
+```
+
+On the hosted executor the container's startup chain fetches the admitted
+commit, checks out exactly that commit, verifies `HEAD` equals it and runs
+setup commands. Any failure exits before the agent starts. Its last step
+prints a startup line naming the admitted commit; the controller records the
+receipt only when that line is seen before the agent start marker, and
+withdraws it (`checkout_verified` and `setup_completed` false) when a setup
+failure is reported. `lease_revoked` is null until terminal cleanup, then
+records whether GitHub confirmed revocation of every read lease. The receipt
+is null when startup did not complete. A private runner review reports its
+runner receipt in the same shape with `executor: "private_runner"` and its
+`sandbox`. The receipt describes the controller's observation of the
+container's own output; setup commands run repository code inside that same
+container, so treat it as the platform's assertion, not an independent
+attestation. The completion callback body is unchanged; fetch `GET /api/v1/flows/executions/{id}` or
+`/result` for the receipt.
+
+The restricted `/result` returns `result`, the captured `result.json`
+(at most 256 KiB at capture) without controller-private members: keys that
+start with `_` or name credentials, headers, prompts, logs, environment or
+runtime configuration, at any depth. `result_withheld_paths` lists the JSON
+Pointers of withheld members; an empty list means `result` is the complete
+captured document. `schema_validation` has `valid`, `error_count` and up to
+20 `errors` with their `path`; error messages are included only when nothing
+was withheld, since a message can quote a value. It is null when the flow
+sets no result schema. Name your result fields so that none is withheld.
+
 Human-owned historical executions retain their human ownership. These CI
 permissions do not authorize reading or publishing another execution. Historic
 result recovery/publication needs separate human authorization and revision checks. GitLab, PAT and alternate-tracker bindings are not
