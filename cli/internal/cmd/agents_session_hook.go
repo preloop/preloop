@@ -266,6 +266,12 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	if !sessionFileIDPattern.MatchString(externalID) {
 		return nil
 	}
+	// The local subscription login may have rotated while no session ran.
+	// Reconcile before the first model call so the gateway holds the live
+	// token. Best effort: never touches stdout or the hook result.
+	if !sessionHookRegisterOnly(cmd) {
+		maybeSyncSubscriptionOAuthFromHook(source)
+	}
 	isPrompt := strings.EqualFold(event.HookEventName, "UserPromptSubmit") || strings.EqualFold(event.HookEventName, "beforeSubmitPrompt")
 	existing, haveFile := readSessionHandoff(externalID)
 	// Only the first UserPromptSubmit carries the title; later prompts cost

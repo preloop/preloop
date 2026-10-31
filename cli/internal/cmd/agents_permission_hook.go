@@ -238,12 +238,10 @@ func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
 	if hookEvent != "" && (source != permissionSourceCodexCLI || (hookEvent != "PreToolUse" && hookEvent != "PermissionRequest")) {
 		return fmt.Errorf("--hook-event is only supported for Codex PreToolUse or PermissionRequest")
 	}
-	// Codex refreshes its ChatGPT login on its own. Push a newer local
-	// bundle before deciding. A push error is logged once and does not
-	// change this decision or the sync stamp.
-	if source == permissionSourceCodexCLI && os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") != "1" {
-		maybeSyncCodexOAuthFromPermissionHook()
-	}
+	// Codex and Claude Code refresh their subscription logins on their own.
+	// Reconcile the local bundle with Preloop's copy before deciding. A sync
+	// error is logged once and does not change this decision or the stamp.
+	maybeSyncSubscriptionOAuthFromHook(source)
 	// The event is needed to route an operator note: Cursor serves all three
 	// of its hooks from one command, so only the payload names the event.
 	var eventRaw []byte
