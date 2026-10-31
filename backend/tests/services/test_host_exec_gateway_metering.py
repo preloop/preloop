@@ -300,7 +300,7 @@ def test_full_bypass_with_a_cli_count_fails(monkeypatch):
         result=_claude_result(12), job=_lease(harness="claude_code")
     )
     assert status == "FAILED" and error.startswith("gateway_bypassed:")
-    assert result["gateway_call_check"] == "cli_call_count"
+    assert result["gateway_call_check"] == "no_gateway_rows"
 
 
 def test_partial_bypass_fails_when_cli_calls_exceed_gateway_rows(monkeypatch):
@@ -352,3 +352,11 @@ def test_without_a_cli_count_the_at_least_one_rule_applies(monkeypatch):
     status, _e, result = _apply()
     assert status == "SUCCEEDED"
     assert result["gateway_call_check"] == "at_least_one"
+
+
+def test_a_non_exact_cli_count_is_not_compared(monkeypatch):
+    _count(monkeypatch, 1)
+    result = {**_claude_result(40), "cli_model_calls_kind": "lower_bound"}
+    status, _e, out = _apply(result=result, job=_lease(harness="claude_code"))
+    assert status == "SUCCEEDED"
+    assert out["gateway_call_check"] == "at_least_one"

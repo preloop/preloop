@@ -25,8 +25,8 @@ The fix keeps the agent key and adds an *execution marker*:
 
 At completion :func:`apply_host_gateway_metering` counts the gateway rows the
 run produced and records the real ``gateway_metered`` value. When the runner
-reports how many model calls the CLI made (``cli_model_calls``: exact for
-Claude Code, a per-turn lower bound for Codex), a run whose CLI calls exceed
+reports an exact count of the CLI's model calls (``cli_model_calls``, Claude
+Code today; Codex exposes none), a run whose CLI calls exceed
 its gateway rows by more than :func:`bypass_tolerance` partly bypassed
 Preloop. Without a count, at least one row is required
 (``gateway_call_check: at_least_one``). A run that
@@ -361,6 +361,7 @@ def apply_host_gateway_metering(
         else request_count
     )
     result = {
+        "gateway_call_check": "no_gateway_rows",
         **result,
         "gateway_metered": count > 0,
         "gateway_request_count": count,
@@ -370,12 +371,18 @@ def apply_host_gateway_metering(
     if harness not in GATEWAY_ROUTABLE_HARNESSES:
         return status, error, result
     cli_calls = result.get("cli_model_calls")
-    if type(cli_calls) is not int or cli_calls < 0:
+    if (
+        type(cli_calls) is not int
+        or cli_calls < 0
+        or result.get("cli_model_calls_kind") != "exact"
+    ):
+        # Only an exact CLI count is compared; anything else falls back to
+        # the at-least-one rule.
         cli_calls = None
-    result["gateway_call_check"] = (
-        "at_least_one" if cli_calls is None else "cli_call_count"
-    )
     if count > 0:
+        result["gateway_call_check"] = (
+            "at_least_one" if cli_calls is None else "cli_call_count"
+        )
         missing = (cli_calls or 0) - count
         if cli_calls is None or missing <= bypass_tolerance(cli_calls):
             return status, error, result

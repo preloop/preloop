@@ -288,9 +288,14 @@ func TestClaudeResultReportsDistinctModelCalls(t *testing.T) {
 	}
 }
 
-func TestCodexResultReportsTurnsAsALowerBound(t *testing.T) {
+func TestCodexResultReportsNoModelCallCount(t *testing.T) {
+	// Codex exposes no per-request count, so its runs get the at-least-one
+	// rule; a turn count would always be 1 and make the cross-check dead.
 	result, err := codexRunnerResult(codexCapture{Results: 1, SessionID: "11111111-1111-4111-8111-111111111111"})
-	if err != nil || result["cli_model_calls"] != 1 || result["cli_model_calls_kind"] != "lower_bound" {
-		t.Fatalf("result = %v, %v", result, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result["cli_model_calls"]; ok {
+		t.Fatalf("Codex result claims a model call count: %v", result)
 	}
 }
