@@ -212,6 +212,40 @@ describe('session-chat-view', () => {
     expect(details[0].textContent).to.contain('tool result');
   });
 
+  it('flags a tool result the server cut in the middle', async () => {
+    const cut = 'auth.ts head\n[... truncated 40000 chars ...]\nauth.ts tail';
+    const events = [
+      previewEvent(
+        'e1',
+        '2026-10-29T10:00:00Z',
+        [
+          { role: 'user', text: 'Fix the login bug' },
+          { role: 'user', text: cut },
+          { role: 'assistant', text: 'Fixed', source: 'response' },
+        ],
+        {
+          request: {
+            messages: [
+              { role: 'user', content: 'Fix the login bug' },
+              {
+                role: 'user',
+                content: [{ type: 'tool_result', content: cut }],
+              },
+            ],
+          },
+        }
+      ),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view .events=${events}></session-chat-view>`
+    );
+    const badge = el.shadowRoot!.querySelector(
+      '[data-testid="step-truncated"]'
+    );
+    expect(badge).to.exist;
+    expect(badge!.textContent).to.contain('Truncated');
+  });
+
   it('discloses partial structure coverage instead of guessing', async () => {
     const events = [
       previewEvent('e1', '2026-08-06T10:00:00Z', [
