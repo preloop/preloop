@@ -35357,9 +35357,10 @@ components:
             the flow result schema), setup_failed, verification_failed, verification_blocked,
             tool_error, agent_error, model_stream_idle (timed out while the model
             stream was silent), approval_denied, approval_timeout, approval_unavailable
-            (an approval-required rule could not pause the run), timeout, cancelled,
-            unknown. Null for successful or still-running executions, and for executions
-            that predate this field.'
+            (an approval-required rule could not pause the run), gateway_bypassed
+            (a private-runner host CLI made no request through the Preloop gateway),
+            timeout, cancelled, unknown. Null for successful or still-running executions,
+            and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true

@@ -95,8 +95,15 @@ it*, not about severity:
     The same park, but nobody decided within the flow's approval window.
 ``approval_unavailable``
     The run needed a per-command approval the executor cannot ask for (a
-    hosted container has no native command hook yet), so it was refused
-    before launch rather than run ungated.
+    hosted Codex container whose Preloop command hook could not be
+    installed, or another hosted harness without one), so it was refused
+    rather than run ungated.
+``gateway_bypassed``
+    A private-runner Codex or Claude Code host CLI produced model output
+    without a single request through the Preloop gateway, so the run was
+    neither governed nor metered. Fixed by keeping the onboarded CLI
+    configuration; ``agent_config.allow_unmetered_host_model`` is the
+    break-glass (never in read-only review).
 ``timeout``
     The execution exceeded its wall-clock budget.
 ``cancelled``
@@ -151,6 +158,9 @@ FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
 FAILURE_CATEGORY_APPROVAL_DENIED = "approval_denied"
 FAILURE_CATEGORY_APPROVAL_TIMEOUT = "approval_timeout"
 FAILURE_CATEGORY_APPROVAL_UNAVAILABLE = "approval_unavailable"
+#: A private-runner host CLI produced model output without any request
+#: through the Preloop gateway (and the flow did not opt out).
+FAILURE_CATEGORY_GATEWAY_BYPASSED = "gateway_bypassed"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
@@ -178,6 +188,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_APPROVAL_DENIED,
     FAILURE_CATEGORY_APPROVAL_TIMEOUT,
     FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+    FAILURE_CATEGORY_GATEWAY_BYPASSED,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_CANCELLED,
     FAILURE_CATEGORY_UNKNOWN,
@@ -425,7 +436,17 @@ _RESULT_SCHEMA_INVALID_RE = re.compile(
     r"^Result document does not match the flow result schema\b"
 )
 
+# The completion handler's bypass refusal (host_exec_gateway) and the
+# hosted Codex hook setup refusal both lead with their category.
+_GATEWAY_BYPASSED_RE = re.compile(r"^gateway_bypassed:", re.IGNORECASE)
+_APPROVAL_UNAVAILABLE_RE = re.compile(
+    r"PRELOOP_SETUP_FAILED approval_unavailable|^approval_unavailable:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 _STRUCTURAL_MESSAGE_RULES = (
+    (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
+    (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),

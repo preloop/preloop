@@ -10,6 +10,10 @@ delivery time the control plane adds, in memory only:
 * ``host_exec_checkout``: the flow's ``git_clone_config`` resolved to clone
   URLs, refs, relative checkout paths and per-repository credentials. The
   runner clones only when its local profile opts in with ``allow_checkout``.
+* ``host_exec_gateway``: for Codex and Claude Code, a signed execution
+  marker the runner sends as ``X-Preloop-Execution`` on the CLI's gateway
+  requests (``preloop.services.host_exec_gateway``). It names the
+  execution and authenticates nothing on its own.
 * ``host_exec_publication``: for a managed legacy publishing lease (#1069),
   the checkout path, managed branch and commit message. The push reuses the
   checkout credential of that single repository, which the runner sends as a
@@ -323,6 +327,17 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
         )
 
     hydrated = dict(job)
+    from preloop.services.host_exec import host_exec_harness
+    from preloop.services.host_exec_gateway import (
+        GATEWAY_ROUTABLE_HARNESSES,
+        HOST_EXEC_GATEWAY_LEASE_KEY,
+        host_gateway_delivery,
+    )
+
+    if host_exec_harness(job.get("agent_type")) in GATEWAY_ROUTABLE_HARNESSES:
+        # Identifiers only, signed: the runner sends it next to the agent's
+        # own gateway key so the traffic is attributed to this execution.
+        hydrated[HOST_EXEC_GATEWAY_LEASE_KEY] = host_gateway_delivery(execution, flow)
     if flow_uses_mcp(flow):
         runtime_session = crud_runtime_session.get_by_source(
             db,

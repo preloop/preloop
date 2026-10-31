@@ -121,7 +121,12 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
   approval_unavailable: {
     label: 'approval unavailable',
     tooltip:
-      'A rule requires approval for native commands, and hosted containers cannot pause for one yet. Use a private runner host profile or change the rule.',
+      'A rule requires approval for native commands, and this run could not install the Preloop command hook that pauses for one. Check the run log for the setup line, or change the rule.',
+  },
+  gateway_bypassed: {
+    label: 'gateway bypassed',
+    tooltip:
+      'The private runner CLI produced model output without going through the Preloop gateway, so the run was not governed or metered. Keep the CLI configuration Preloop onboarding wrote.',
   },
   timeout: {
     label: 'timeout',

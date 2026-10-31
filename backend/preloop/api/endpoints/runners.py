@@ -1384,6 +1384,21 @@ async def runner_ws(
                     )
                     if flow is not None:
                         prompt = flow.prompt_template
+                    from preloop.services.host_exec_gateway import (
+                        apply_host_gateway_metering,
+                    )
+
+                    # Server truth: count this run's gateway rows, and fail a
+                    # host run that bypassed the gateway (gateway_bypassed).
+                    status, completion_error, result = apply_host_gateway_metering(
+                        db,
+                        status=status,
+                        error=completion_error,
+                        result=result if isinstance(result, dict) else None,
+                        pending_job=leased_job,
+                        agent_config=getattr(flow, "agent_config", None),
+                        execution_id=execution_id,
+                    )
                 result_artifact = result if isinstance(result, dict) else None
                 approvals, authority = resolve_persist_authority(
                     result_artifact, db, execution_id, prompt=prompt

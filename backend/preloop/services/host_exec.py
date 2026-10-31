@@ -911,11 +911,13 @@ def _apply_read_only_completion(
 def _mark_not_gateway_metered(
     result: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Record that a host run bypassed the gateway, overriding agent JSON.
+    """Default the server-set metering marker, overriding agent JSON.
 
-    Host profiles use the runner user's own CLI login, so no gateway row
-    exists for the model spend. The UI reads this server-set marker instead
-    of implying a cost estimate.
+    Agent JSON cannot claim gateway metering. The completion handler then
+    replaces this default with the real answer from the execution's gateway
+    rows (``preloop.services.host_exec_gateway.apply_host_gateway_metering``):
+    an onboarded Codex or Claude Code CLI sends the execution marker and is
+    metered; a CLI using its own login is not.
     """
     if result is None:
         return None
