@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The built-in default per-execution token ceiling is 20,000,000 tokens
+  (was 2,000,000; 100 turns and 10 USD are unchanged), and the Pull Request
+  Reviewer preset's own ceiling is 20,000,000 tokens. Large PR reviews
+  legitimately use 2 to 13 million tokens.
+- A run the gateway stopped at a run limit keeps `default_limit_reached` or
+  `budget_exceeded` and the limit message, even when the agent then fails on
+  a checkpoint or capture call refused because the execution was closed.
 - Docs: private-runner Codex review keeps the Preloop-onboarded Codex
   configuration; a separate `CODEX_HOME` without the Preloop model provider
   is no longer described, because it bypasses the gateway.

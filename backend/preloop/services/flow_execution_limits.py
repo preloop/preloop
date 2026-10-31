@@ -12,7 +12,7 @@ migration), with three optional keys::
 
     {
         "limits": {
-            "max_total_tokens": 2000000,
+            "max_total_tokens": 20000000,
             "max_usd": 25,
             "max_turns": 100
         }
@@ -39,7 +39,7 @@ runtime in this tree exposes a usable max-turns flag today, so the gateway
 count is the enforcement; if a harness grows one, it can read the same value
 from ``agent_config.limits`` and pass it through as an early stop.
 
-Default ceilings. A flow that sets no ceiling still gets one: 2,000,000
+Default ceilings. A flow that sets no ceiling still gets one: 20,000,000
 tokens, 100 turns and 10 USD per execution
 (:data:`DEFAULT_MAX_TOTAL_TOKENS`, :data:`DEFAULT_MAX_TURNS`,
 :data:`DEFAULT_MAX_USD`). A value on the flow wins per key. A self-hosted
@@ -78,7 +78,7 @@ MAX_USD_KEY = "max_usd"
 MAX_TURNS_KEY = "max_turns"
 
 #: Built-in ceilings for a flow that sets none (founder decision, #2140).
-DEFAULT_MAX_TOTAL_TOKENS = 2_000_000
+DEFAULT_MAX_TOTAL_TOKENS = 20_000_000
 DEFAULT_MAX_TURNS = 100
 DEFAULT_MAX_USD = 10.0
 

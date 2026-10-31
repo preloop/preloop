@@ -166,7 +166,7 @@ failure category and a message naming the ceiling. `max_turns` is counted at
 the gateway as one turn per model request, since no bundled runtime exposes a
 usable max-turns flag.
 
-A ceiling the flow does not set falls back to a default: 2,000,000 tokens,
+A ceiling the flow does not set falls back to a default: 20,000,000 tokens,
 100 turns and 10 USD per execution. The flow's own value wins per key. A
 self-hosted instance replaces a built-in default with
 `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or

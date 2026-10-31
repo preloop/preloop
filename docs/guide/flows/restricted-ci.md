@@ -97,7 +97,7 @@ set `agent_config.native_result: false` to opt out.
 
 Each review execution runs under the per-execution ceilings shown as **Run
 limits** on the flow page: the flow's own `agent_config.limits`, otherwise
-2,000,000 tokens, 100 turns and 10 USD (`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
+20,000,000 tokens, 100 turns and 10 USD (`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
 `PRELOOP_DEFAULT_MAX_TURNS` and `PRELOOP_DEFAULT_MAX_USD` change these on a
 self-hosted instance; `0` turns one off). A run stopped by a default fails
 with `default_limit_reached`.

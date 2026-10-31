@@ -180,12 +180,12 @@ def test_flow_without_limits_runs_under_the_defaults(
     db_session: Session, test_user, monkeypatch
 ):
     # Before the defaults a flow without ``limits`` was never refused; now
-    # 10M tokens is past the built-in 2M token ceiling.
+    # 30M tokens is past the built-in 20M token ceiling.
     for name in DEFAULT_LIMIT_ENV_VARS.values():
         monkeypatch.delenv(name, raising=False)
     flow = _create_flow(db_session, test_user)
     execution = _create_execution(db_session, flow)
-    _log_usage(db_session, test_user, flow, execution, total_tokens=10_000_000)
+    _log_usage(db_session, test_user, flow, execution, total_tokens=30_000_000)
     db_session.commit()
 
     with pytest.raises(ExecutionBudgetExceededError):
@@ -287,7 +287,7 @@ def test_describe_execution_limits_reports_ceilings_and_usage(
     # The flow's own USD ceiling, plus the defaults for the two it left unset.
     assert limits.as_dict() == {
         "max_usd": 5.0,
-        "max_total_tokens": 2_000_000,
+        "max_total_tokens": 20_000_000,
         "max_turns": 100,
     }
     assert limits.sources == {
@@ -452,3 +452,43 @@ def test_gateway_endpoint_refuses_over_ceiling_execution(
     db_session.refresh(execution)
     assert execution.status == "FAILED"
     assert execution.failure_category == FAILURE_CATEGORY_BUDGET_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_agent_error_after_a_default_ceiling_keeps_the_limit_outcome(
+    db_session: Session, test_user, monkeypatch
+):
+    """The gateway stops the run at a default ceiling; the agent's later
+    checkpoint call gets 409 (execution closed). The final write keeps
+    default_limit_reached and the limit message."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.delenv(name, raising=False)
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    _log_usage(db_session, test_user, flow, execution, total_tokens=20_000_001)
+    db_session.commit()
+    with pytest.raises(ExecutionBudgetExceededError):
+        enforce_execution_limits_for_id(db_session, execution_id=execution.id)
+    db_session.commit()
+    db_session.refresh(execution)
+    assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
+    limit_message = execution.error_message
+
+    orch = FlowExecutionOrchestrator(db_session, str(flow.id), {}, AsyncMock())
+    orch.execution_log = execution
+    orch._guard_status_write = lambda status, _kwargs: status
+    await orch._update_execution_log(
+        status="FAILED",
+        error_message=(
+            "PRELOOP_CHECKPOINT failed HTTPError status=409 "
+            "detail=artifact_execution_closed op=capture"
+        ),
+    )
+    db_session.refresh(execution)
+    assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
+    assert execution.error_message == limit_message
+    assert "default execution token ceiling reached" in execution.error_message
