@@ -9,14 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Private-runner Codex and Claude Code host runs are metered per execution.
+  The control plane delivers a signed execution marker with each host job and
+  the runner sends it as `X-Preloop-Execution` on the onboarded CLI's gateway
+  requests (Codex: a per-run override on its Preloop model provider, with the
+  value hidden from shell commands; Claude Code: `ANTHROPIC_CUSTOM_HEADERS`).
+  The gateway attributes those requests to the flow execution as well as the
+  agent and enforces the flow's run limits on them; results record the real
+  `gateway_metered` and `gateway_request_count`. A run that produced model
+  output with no gateway request fails with the new `gateway_bypassed`
+  category, unless the flow sets the break-glass
+  `agent_config.allow_unmetered_host_model: true` (never in read-only review).
+- Hosted Codex containers install the Preloop `PreToolUse` hook (from the
+  image CLI, or a pinned checksum-verified release) and trust it through
+  Codex's own `hooks/list` hash, so deny rules block native commands and
+  approval-required rules park the run with the execution's runtime
+  credential. Hosted Codex runs with approval-required rules are no longer
+  refused with `approval_unavailable`; that category now means the hook could
+  not be installed, or the hosted harness has none. The universal Codex image
+  ships the CLI at `/opt/preloop/bin/preloop`.
+- The Pull Request Reviewer preset has a default review result schema
+  (`status`, `findings[]`, `recommendation`, `what_looks_good`, ...) with
+  validation on, so the native-result default engages and reviews end with a
+  validated verdict. Codex host runs with native results pass the schema to
+  `codex exec --output-schema` and return Codex's final answer as the result.
+  Preset sync applies the schema to unmodified derived flows only.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
   but cannot use MCP, account/runtime administration, push, or publish. Publication
   requires a separate trusted publisher.
 - Read-only native review also runs on a private runner pool with a Codex
-  `host_exec_profile`, so the host's own Codex login (for example a ChatGPT
-  subscription) serves the review. The runner clones the admitted SHA with the
+  `host_exec_profile`, so the runner user's Preloop-onboarded Codex (for
+  example with a ChatGPT subscription) serves the review through the gateway. The runner clones the admitted SHA with the
   delivered read lease only (host git config and credential helpers disabled),
   revokes the lease before starting `codex exec --sandbox read-only`, and
   reports a receipt the control plane requires for success. Runners advertise
@@ -31,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other agents stay refused, and the onboarded agent's bindings and sign-in are
   untouched. Usage is attributed to the execution with
   `meta_data.subscription_use: "owner_flow"`.
+
+### Changed
+
+- Docs: private-runner Codex review keeps the Preloop-onboarded Codex
+  configuration; a separate `CODEX_HOME` without the Preloop model provider
+  is no longer described, because it bypasses the gateway.
 
 ### Telemetry
 

@@ -180,3 +180,23 @@ async def test_delivery_skips_harnesses_without_a_gateway_route(monkeypatch):
     _flow, _execution, job = _patch_rows(monkeypatch, "copilot")
     hydrated = await hydrate_host_exec_job(MagicMock(), job)
     assert HOST_EXEC_GATEWAY_LEASE_KEY not in hydrated
+
+
+def test_host_sessions_report_gateway_metering_from_gateway_rows(monkeypatch):
+    from preloop.services import host_exec_usage
+
+    monkeypatch.setattr(
+        host_exec_usage.crud_api_usage,
+        "list_imported_rows_for_flow_execution",
+        MagicMock(return_value=[]),
+    )
+    _count(monkeypatch, 2)
+    summary = host_exec_usage.summarize_host_exec_usage(
+        MagicMock(), account_id=uuid4(), execution_id=uuid4()
+    )
+    assert summary["gateway_metered"] is True
+    _count(monkeypatch, 0)
+    summary = host_exec_usage.summarize_host_exec_usage(
+        MagicMock(), account_id=uuid4(), execution_id=uuid4()
+    )
+    assert summary["gateway_metered"] is False

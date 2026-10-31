@@ -440,8 +440,8 @@ _RESULT_SCHEMA_INVALID_RE = re.compile(
 # hosted Codex hook setup refusal both lead with their category.
 _GATEWAY_BYPASSED_RE = re.compile(r"^gateway_bypassed:", re.IGNORECASE)
 _APPROVAL_UNAVAILABLE_RE = re.compile(
-    r"PRELOOP_SETUP_FAILED approval_unavailable|^approval_unavailable:",
-    re.IGNORECASE | re.MULTILINE,
+    r"PRELOOP_SETUP_FAILED approval_unavailable|\bapproval_unavailable:",
+    re.IGNORECASE,
 )
 
 _STRUCTURAL_MESSAGE_RULES = (

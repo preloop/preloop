@@ -74,6 +74,13 @@ Offboard removes `~/.codex/preloop-control.json` and the sidecar service.
 `~/.codex/config.toml` is restored from the onboarding backup and is not
 rewritten by Agent Control.
 
+Flows on a private runner host profile run this onboarded Codex. Keep the
+onboarded `config.toml`: its Preloop model provider is how the run's model
+calls reach the gateway, and the runner marks them with the flow execution
+(see [native profiles](runners/quickstart-linux.md#codex-opencode-and-deepseek-native-profiles)).
+A separate `CODEX_HOME` without that provider bypasses Preloop and the run
+fails with `gateway_bypassed`.
+
 Codex refreshes its ChatGPT login on its own, even when model traffic goes
 through Preloop, and the Preloop gateway refreshes the copy it stores. That
 login uses a single-use refresh token, so two holders of one grant revoke

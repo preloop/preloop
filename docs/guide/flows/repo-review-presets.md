@@ -393,6 +393,25 @@ ensure completion within a token/time budget, or execute an arbitrary trusted
 helper. Consumers requiring a helper-bound diff/challenge must still verify those
 requirements independently; a valid JSON shape is insufficient.
 
+Preset **002 Pull Request Reviewer** ships a default review result schema
+with `validate_result: true`, so the native default above engages for it
+(hosted, and on a private Codex host profile, where the runner passes the
+schema to `codex exec --output-schema`). The document has `status`
+(`success` or `error`), `reason`, `review_posted`, `review_action`,
+`recommendation`, `risk_level`, `findings_count`, `findings[]` (`severity`,
+`category`, `file`, `line`, `title`, `detail`), `what_looks_good[]` and
+`issue_coverage[]`. Every object lists all its properties as required and
+sets `additionalProperties: false`, because Codex asks the model for strict
+structured output; optional values are nullable instead. Runner and gateway
+keys the platform adds to a result (`harness`, `session_id`, `usage`,
+`gateway_metered`, ...) are not validated against a flow schema that does not
+declare them. Preset sync gives the schema to derived flows whose prompt and
+tools are unmodified and that have no schema of their own; customized flows
+keep theirs (applying the preset update adopts it). The four full-repo lenses
+and Portfolio Review keep their own versioned `result.json` contracts and no
+default schema yet: a strict native schema would replace their richer
+documents with its own fields.
+
 Preset **003 Observe / Eval** now includes the documented
 `preloop.eval.result/v1` schema. It requires schema, status, summary, numeric
 metrics, named boolean checks with details, and string artifact references.
