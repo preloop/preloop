@@ -633,6 +633,18 @@ fi
         # Native CLI session persistence blocks (mostly empty on cold start).
         session_blocks = self._build_cli_session_blocks(execution_context)
 
+        # Native shell commands go through the Preloop PreToolUse hook, as on
+        # a private-runner host profile. The read-only sandbox has no shell.
+        from .codex_native_hook import codex_native_hook_block
+
+        native_hook_block = (
+            ""
+            if shell_locked
+            else codex_native_hook_block(
+                required=bool(execution_context.get("native_hook_required"))
+            )
+        )
+
         # Create the full script
         stream_recovery_block = build_stream_recovery_block(
             agent_label="codex",
@@ -737,6 +749,7 @@ if [ -f "${HOME}/.codex/preloop-browser-mcp.toml" ]; then
   cat "${HOME}/.codex/preloop-browser-mcp.toml" >> ~/.codex/config.toml
 fi
 """
+            + native_hook_block
             + f"""
 # Debug: Show config files (with API key masked)
 echo "=== Codex Configuration ==="

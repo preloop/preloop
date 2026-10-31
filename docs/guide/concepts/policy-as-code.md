@@ -150,8 +150,13 @@ does not look stricter than it is.
 runner host profile pauses on a command that needs approval and resumes or
 fails closed (`approval_denied`, `approval_timeout`) on the decision; see the
 [runner guide](../runners/quickstart-linux.md#codex-opencode-and-deepseek-native-profiles).
-Hosted containers have no native command hook yet, so a hosted run is refused
-before launch (`approval_unavailable`) rather than run without the rule when
+Hosted Codex installs the same Preloop `PreToolUse` hook in its container,
+so its native commands are checked against these rules too: deny rules block
+and approval-required rules pause the run. A hosted Codex run that has such a
+rule but cannot install the hook fails before Codex starts with
+`approval_unavailable`. Other hosted harnesses have no native command hook, so
+such a run is refused before launch (`approval_unavailable`) rather than run
+without the rule when
 any enabled native tool configuration (including agent-pinned ones) has a rule
 requiring approval, or when such a rule is scoped to the flow or to an employee
 flow's target agent.

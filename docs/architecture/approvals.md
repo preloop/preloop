@@ -166,8 +166,17 @@ cancelled or expired native parks do not resume: `resume_parked_executions`
 fails the parked row with `approval_denied` or `approval_timeout`. Lifecycle
 audit rows (`parked`, `native_grant_consumed`, `expired`,
 `execution_failed_closed`, plus the existing created/approved/denied) carry the
-execution id. Hosted containers have no native hook: the orchestrator refuses a
-hosted launch with `approval_unavailable` when any enabled native tool
+execution id. Hosted Codex containers install the Preloop `PreToolUse` hook
+before Codex starts (`agents/codex_native_hook.py`): the CLI comes from the
+image (`/opt/preloop/bin/preloop`) or a pinned, checksum-verified release, the
+hook runs in `--require-flow-credential` mode with the execution's runtime
+token (so approval-required calls park exactly as above), and the hook is
+trusted by recording the `currentHash` Codex reports from `app-server`
+`hooks/list` in the container's own `config.toml`. When an approval rule
+applies, the orchestrator marks the launch `native_hook_required` and a hook
+that cannot be installed fails the run before Codex starts with
+`approval_unavailable`. Other hosted harnesses have no native hook: the
+orchestrator refuses such a hosted launch with `approval_unavailable` when any enabled native tool
 configuration (including agent-pinned ones) has a `require_approval` rule, or
 a rule scoped to the flow or to an employee flow's target agent does (Codex in
 the read-only sandbox, whose shell is disabled, excepted).

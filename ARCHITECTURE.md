@@ -1134,7 +1134,7 @@ fields remain unknown. This in-memory view is not a durable tracker event journa
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
-### Host-profile gateway attribution
+### Host-profile gateway attribution and hosted Codex hook
 
 A private-runner Codex or Claude Code host profile runs the runner user's
 Preloop-onboarded CLI, whose model calls reach the gateway with the agent's
@@ -1148,7 +1148,9 @@ their existing paths. At completion the server counts the execution's gateway
 rows for `gateway_metered`; a Codex or Claude Code run with model output and
 no row fails `gateway_bypassed` unless the flow opts out
 (`allow_unmetered_host_model`, never in read-only review). See
-`services/host_exec_gateway.py`.
+`services/host_exec_gateway.py`. Hosted Codex containers install the Preloop
+`PreToolUse` hook before Codex starts (`agents/codex_native_hook.py`), so
+native commands follow the same deny and approval-park rules.
 
 ### Restricted external runtime authority
 
