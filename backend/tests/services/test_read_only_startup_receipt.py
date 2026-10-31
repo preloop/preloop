@@ -76,8 +76,8 @@ def test_startup_line_requires_the_admitted_commit() -> None:
 
 
 def _orchestrator() -> tuple[FlowExecutionOrchestrator, MagicMock]:
-    orch = FlowExecutionOrchestrator(MagicMock(), str(uuid4()), {}, AsyncMock())
-    orch.execution_log = SimpleNamespace(id=uuid4())
+    orch = FlowExecutionOrchestrator(MagicMock(), uuid4(), {}, AsyncMock())
+    orch.execution_log = SimpleNamespace(id=uuid4())  # type: ignore[assignment]
     orch.execution_logger = MagicMock()
     orch._read_only_admitted_commit = SHA
     return orch, MagicMock()
@@ -170,8 +170,8 @@ async def test_non_review_execution_records_nothing() -> None:
 async def test_terminal_revocation_is_added_to_receipt() -> None:
     orch, _ = _orchestrator()
     orch._read_only_review_leases = [MagicMock(), MagicMock()]
-    orch._execution_reached_terminal_state = MagicMock(return_value=True)
     with (
+        patch.object(orch, "_execution_reached_terminal_state", return_value=True),
         patch(
             "preloop.services.flow_orchestrator.crud_flow_execution."
             "record_startup_receipt"
