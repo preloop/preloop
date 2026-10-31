@@ -596,3 +596,29 @@ func TestSessionSubscriptionSyncHonoursDeadline(t *testing.T) {
 		t.Fatal("an exhausted budget still ran the sync")
 	}
 }
+
+func TestClaudeOAuthSyncRecoversAfterSplitIsMerged(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	f.stampSynced(claudeSyncLocalExpires)
+	f.splitSecrets = true
+	state := f.state()
+	state.ClaudeOAuthSyncModelIDs = []string{"model-sonnet", "model-opus"}
+	_ = saveLocalEnrollmentState(state)
+	if _, err := syncClaudeOAuthCredentials(f.agent, f.state(), false); err == nil {
+		t.Fatal("expected a split refusal")
+	}
+	// Reconnect merged the rows onto one secret; the back-off has expired.
+	f.splitSecrets = false
+	state = f.state()
+	state.ClaudeOAuthSyncLastAttempt = ""
+	state.ClaudeOAuthServerCheckedAt = ""
+	_ = saveLocalEnrollmentState(state)
+	outcome, err := syncClaudeOAuthCredentials(f.agent, f.state(), false)
+	if err != nil || !outcome.Unchanged {
+		t.Fatalf("merged enrollment still refused: %+v, %v", outcome, err)
+	}
+	after := f.state()
+	if len(after.ClaudeOAuthSyncModelIDs) != 1 || after.ClaudeOAuthServerCheckedAt == "" {
+		t.Fatalf("cached ids not refreshed: %+v", after.ClaudeOAuthSyncModelIDs)
+	}
+}

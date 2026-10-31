@@ -96,7 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool hooks; `preloop agents sync-credentials "Claude Code"` is accepted; the
   gateway refreshes subscription OAuth 10 minutes before expiry (was 60 s) so
   it rotates ahead of the clients; and the refresh-failure message names
-  `preloop agents sync-credentials` as the first recovery step. Follow-up (not
+  `preloop agents sync-credentials` as the first recovery step. An upstream
+  401 on a Claude Code subscription model now returns that recovery message
+  instead of the raw "OAuth access token has been revoked" text. Follow-up (not
   in this release): a server-side background refresh for idle bundles.
 
 - **Paging stored gateway payloads no longer serialises every row to measure

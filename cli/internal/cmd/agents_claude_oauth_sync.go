@@ -317,6 +317,17 @@ func reconcileClaudeOAuthBundle(
 	// enrollment is repaired by reconnect, which uploads once and attaches
 	// the other rows; syncing into several secrets would recreate the
 	// two-holder race.
+	if len(ids) > 1 && groups == nil {
+		// The cached ids may predate a reconnect that merged the rows.
+		// Confirm against a fresh list before refusing.
+		listed, err := listSubscriptionOAuthGroups(client, agent, anthropicClaudeCodeOAuthCredentialType)
+		if err != nil {
+			return recordClaudeOAuthSyncFailure(state, err)
+		}
+		groups = listed
+		ids = codexOAuthGroupTargetIDs(groups)
+		markers, _, markerErr = readCodexOAuthMarkers(client, ids)
+	}
 	if len(ids) > 1 {
 		return recordClaudeOAuthSyncFailure(state, errClaudeOAuthSplitSecrets)
 	}
