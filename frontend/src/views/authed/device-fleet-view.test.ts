@@ -141,6 +141,15 @@ describe('Device fleet', () => {
         },
         { path: '/api/v1/fleet/settings', body: settings },
         {
+          path: '/api/v1/fleet/roster',
+          body: { schema_version: 1, total: 2, items: [] },
+        },
+        {
+          path: '/api/v1/fleet/roster/csv',
+          method: 'PUT',
+          body: { schema_version: 1, total: 1, items: [] },
+        },
+        {
           path: '/api/v1/fleet/settings',
           method: 'PUT',
           body: (call) => call.body,
@@ -156,6 +165,296 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  async function chooseRoster(
+    view: any,
+    file = new File(
+      ['device_ref,platform\nexample-device,linux\n'],
+      'roster.csv'
+    )
+  ) {
+    const input = view.shadowRoot.querySelector(
+      '#roster-file'
+    ) as HTMLInputElement;
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await view.updateComplete;
+    return file;
+  }
+  it('combines governance and roster filters and clears both', async () => {
+    setup();
+    const view = await mount();
+    const root = view.shadowRoot;
+    const change = async (id: string, value: string) => {
+      const select = root.querySelector(id);
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+      await view.updateComplete;
+    };
+    await change('#governance-filter', 'ungoverned');
+    expect(root.querySelectorAll('tbody tr')).to.have.length(1);
+    await change('#roster-filter', 'expected_missing');
+    expect(root.textContent).to.include('No devices match');
+    root.querySelector('.empty-state sl-button').click();
+    await view.updateComplete;
+    expect(root.querySelector('#governance-filter').value).to.equal('');
+    expect(root.querySelector('#roster-filter').value).to.equal('');
+    expect(root.querySelectorAll('tbody tr')).to.have.length(1);
+    await change('#governance-filter', 'none');
+    expect(root.querySelectorAll('tbody tr')).to.have.length(0);
+  });
+  it('gives detail copy controls slotted accessible names', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies.length).to.be.greaterThan(0);
+    for (const copy of copies) {
+      await copy.updateComplete;
+      expect(
+        copy.querySelector('[slot="copy-icon"] .sr-only')?.textContent.trim()
+      ).to.match(/^Copy /);
+    }
+  });
+  it('normalizes an unknown tab to the device table', async () => {
+    history.replaceState({}, '', '?tab=obsolete');
+    setup();
+    const view = await mount();
+    expect(view.tab).to.equal('devices');
+    expect(view.shadowRoot.querySelectorAll('tbody tr')).to.have.length(1);
+    expect(api.callsTo('/api/v1/fleet/device-fleet')).to.have.length(1);
+  });
+  it('returns positive matches for both roster wire states', async () => {
+    setup();
+    const view = await mount();
+    view.page = {
+      ...view.page,
+      items: [
+        {
+          ...device,
+          device_key: 'fp:' + 'b'.repeat(64),
+          hostname: 'expected-missing',
+          roster_state: 'expected_missing',
+        },
+        {
+          ...device,
+          device_key: 'fp:' + 'c'.repeat(64),
+          hostname: 'expected-seen',
+          roster_state: 'expected',
+        },
+      ],
+      total: 2,
+    };
+    await view.updateComplete;
+    for (const [state, name] of [
+      ['expected_missing', 'expected-missing'],
+      ['expected', 'expected-seen'],
+    ]) {
+      const filter = view.shadowRoot.querySelector('#roster-filter');
+      filter.value = state;
+      filter.dispatchEvent(new Event('change'));
+      await view.updateComplete;
+      const rows = view.shadowRoot.querySelectorAll('tbody tr');
+      expect(rows).to.have.length(1);
+      expect(rows[0].textContent).to.include(name);
+    }
+  });
+  it('keeps copy controls named in copy, success and error states', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies).to.have.length(2);
+    for (const copy of copies) {
+      await copy.updateComplete;
+      for (const status of ['copy', 'success', 'error']) {
+        copy.copyIcon.hidden = status !== 'copy';
+        copy.successIcon.hidden = status !== 'success';
+        copy.errorIcon.hidden = status !== 'error';
+        await expect(copy).to.be.accessible();
+      }
+    }
+    expect(
+      view.shadowRoot.querySelector('sl-copy-button.onboard').successLabel
+    ).to.equal('Onboard command copied');
+  });
+  it('names copy controls for unassigned agents in the list', async () => {
+    setup();
+    const view = await mount();
+    view.page = { ...view.page, unassigned_agents: [device.agents[0]] };
+    await view.updateComplete;
+    const copies = view.shadowRoot.querySelectorAll('sl-copy-button');
+    expect(copies).to.have.length(1);
+    for (const slot of ['copy-icon', 'success-icon', 'error-icon'])
+      expect(
+        copies[0].querySelector(`[slot="${slot}"] .sr-only`).textContent
+      ).to.include('Copy onboard command');
+  });
+  it('provides a native expandable limits disclosure', async () => {
+    setup();
+    const view = await mount();
+    const details = view.shadowRoot.querySelector(
+      '[data-testid="fleet-limits"] details'
+    );
+    expect(details.open).to.equal(false);
+    expect(details.querySelector('summary').textContent).to.include(
+      'What this page can and cannot prove'
+    );
+    details.querySelector('summary').click();
+    expect(details.open).to.equal(true);
+  });
+  it('confirms roster replacement and sends multipart with private defaults', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup();
+    const view = await mount();
+    expect(api.callsTo('/api/v1/fleet/device-fleet')).to.have.length(0);
+    expect(view.shadowRoot.textContent.replace(/\s+/g, ' ')).to.include(
+      '2 devices'
+    );
+    const file = await chooseRoster(view);
+    expect(view.shadowRoot.querySelector('#replace-roster').disabled).to.equal(
+      true
+    );
+    expect(view.shadowRoot.textContent).to.include('roster.csv');
+    expect(view.shadowRoot.textContent).to.include('omitted');
+    expect(api.callsTo('/api/v1/fleet/roster/csv', 'PUT')).to.have.length(0);
+    const confirm = view.shadowRoot.querySelector('#roster-confirm');
+    confirm.checked = true;
+    confirm.dispatchEvent(new Event('change'));
+    await view.updateComplete;
+    view.shadowRoot.querySelector('#replace-roster').click();
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/roster/csv', 'PUT').length === 1
+    );
+    await waitUntil(() => !view.rosterSaving);
+    const call = api.stub
+      .getCalls()
+      .find((call: any) => String(call.args[0]).includes('/roster/csv'))!;
+    expect(call.args[0]).to.include('retain_display_names=false');
+    const init = call.args[1];
+    expect(init.body).to.be.instanceOf(FormData);
+    expect(init.body.get('file')).to.equal(file);
+    expect(new Headers(init.headers).has('Content-Type')).to.equal(false);
+    expect(view.shadowRoot.textContent).to.include('Roster replaced: 1 device');
+    expect(view.shadowRoot.querySelector('#roster-file').value).to.equal('');
+  });
+  async function confirmRoster(view: any) {
+    const confirm = view.shadowRoot.querySelector('#roster-confirm');
+    confirm.checked = true;
+    confirm.dispatchEvent(new Event('change'));
+    await view.updateComplete;
+  }
+  it('requires renewed consent after changing the file or display-name privacy', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup();
+    const view = await mount();
+    await chooseRoster(view);
+    await confirmRoster(view);
+    await chooseRoster(view, new File(['device_ref,platform\n'], 'clear.csv'));
+    expect(view.shadowRoot.querySelector('#replace-roster').disabled).to.equal(
+      true
+    );
+    await confirmRoster(view);
+    const privacy = view.shadowRoot.querySelector('#retain-roster-names');
+    privacy.checked = true;
+    privacy.dispatchEvent(new Event('change'));
+    await view.updateComplete;
+    expect(view.shadowRoot.querySelector('#replace-roster').disabled).to.equal(
+      true
+    );
+    await confirmRoster(view);
+    view.shadowRoot.querySelector('#replace-roster').click();
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/roster/csv', 'PUT').length === 1
+    );
+    expect(api.callsTo('/api/v1/fleet/roster/csv', 'PUT')[0].search).to.include(
+      'retain_display_names=true'
+    );
+  });
+  it('keeps the current roster on validation failure without reflecting private inputs', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup();
+    const view = await mount();
+    api.stub.callsFake(
+      async () =>
+        new Response(
+          JSON.stringify({ detail: [{ input: 'private-person@example.com' }] }),
+          { status: 422 }
+        )
+    );
+    await chooseRoster(view);
+    await confirmRoster(view);
+    view.shadowRoot.querySelector('#replace-roster').click();
+    await waitUntil(() => Boolean(view.rosterError));
+    await view.updateComplete;
+    expect(view.shadowRoot.textContent).to.include('Roster was not replaced');
+    expect(view.shadowRoot.textContent).not.to.include(
+      'private-person@example.com'
+    );
+    expect(view.roster.total).to.equal(2);
+    expect(view.rosterFile.name).to.equal('roster.csv');
+    expect(view.shadowRoot.querySelector('#replace-roster').disabled).to.equal(
+      true
+    );
+  });
+  it('ignores a roster response after navigating away and prevents duplicate replacement', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup();
+    const view = await mount();
+    let finish!: (response: Response) => void;
+    api.stub.callsFake(
+      async () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+    );
+    await chooseRoster(view);
+    await confirmRoster(view);
+    const event = new Event('submit', { cancelable: true });
+    const first = view.replaceRoster(event);
+    await waitUntil(() => Boolean(finish));
+    await view.replaceRoster(event);
+    expect(api.stub.callCount).to.equal(4); // features, profile, roster, one PUT
+    view.onBeforeEnter({ search: '' });
+    finish(
+      new Response(JSON.stringify({ schema_version: 1, items: [], total: 99 }))
+    );
+    await first;
+    expect(view.notice).to.equal('');
+    expect(view.rosterFile).to.equal(null);
+    expect(view.roster?.total).not.to.equal(99);
+  });
+  it('rejects oversized CSV files before upload', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup();
+    const view = await mount();
+    await chooseRoster(
+      view,
+      new File([new Uint8Array(1048577)], 'too-large.csv')
+    );
+    expect(view.shadowRoot.textContent).to.include('1 MiB');
+    expect(view.shadowRoot.querySelector('#replace-roster').disabled).to.equal(
+      true
+    );
+    expect(api.callsTo('/api/v1/fleet/roster/csv', 'PUT')).to.have.length(0);
+  });
+  it('does not read or show roster administration without manage permission', async () => {
+    history.replaceState({}, '', '?tab=roster');
+    setup(true, ['view_device_fleet']);
+    const view = await mount();
+    expect(view.shadowRoot.querySelector('#roster-file')).not.to.exist;
+    expect(api.callsTo('/api/v1/fleet/roster')).to.have.length(0);
+    expect(view.shadowRoot.querySelector('a[href$="tab=roster"]')).not.to.exist;
+  });
   it('defers observer layout writes and cancels them on disconnect', async () => {
     setup();
     let notify!: ResizeObserverCallback;
@@ -239,7 +538,8 @@ describe('Device fleet', () => {
     expect(text).to.include('1 governed');
     expect(text).to.include('1 not onboarded');
     expect(text).to.include('1 open');
-    expect(text).not.to.include('Expected, never seen');
+    expect(view.shadowRoot.querySelector('[data-testid="stat-missing"]')).not.to
+      .exist;
     expect(text).to.include('not attestation');
     const stat = (id: string) =>
       view.shadowRoot
@@ -282,6 +582,11 @@ describe('Device fleet', () => {
     const view = await mount();
     const empty = view.shadowRoot.querySelector('[data-testid="fleet-empty"]');
     expect(empty.textContent).to.include('preloop runner fg');
+    const copy = empty.querySelector('sl-copy-button');
+    expect(copy).to.exist;
+    expect(
+      copy.querySelector('[slot="copy-icon"] .sr-only').textContent
+    ).to.include('Copy runner command');
   });
 
   it('gives first-device guidance, not a filter miss, when only unassigned agents exist', async () => {

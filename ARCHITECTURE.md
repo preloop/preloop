@@ -966,7 +966,13 @@ are hidden and direct navigation redirects. Device identity is an exact tenant-s
 fingerprint match; legacy runners remain separate and hostnames are hints only.
 Fleet findings and audited alert settings persist in core; device projections are
 computed by the plugin. None of this enables or advertises a fleet feature in the
-open-source edition.
+open-source edition. The device table combines runner, governed/ungoverned agent
+and roster-state filters over the bounded projection. Its limits disclosure
+explains observation freshness and identity hints. Roster administration requires
+`manage_device_fleet`: the console reviews a selected CSV and obtains explicit
+consent before complete replacement through the optional service's multipart
+endpoint. Person/group display-name retention is opt-in; backend validation
+rejects an invalid snapshot atomically.
 
 Agent detail obtains device links from the optional fleet service, using the same
 projection and fleet read permission as the device page. Standalone instances and
@@ -1615,3 +1621,24 @@ codes retain the original session assurance and recheck policy when redeemed;
 their purpose restriction prevents use as general person sessions. Recovery owner
 selection requires the global system owner role, and verified domain comparisons
 normalize both stored claims and email domains to IDNA.
+
+### Optional enterprise single sign-on settings
+
+Account settings includes a Single sign-on tab. The Lit console checks the
+`enterprise_sso` feature and the caller's account administration permission
+before loading account-scoped provider, domain, policy, mapping or SCIM-token
+configuration. Without the feature it offers the existing upgrade action.
+Submitted client secrets and signing keys are cleared immediately and never
+repopulated from configuration reads; SCIM tokens appear once until dismissed.
+
+Email-first login is enabled only when the feature is advertised. Discovery
+can offer a local SSO start URL or return the user to existing sign-in methods.
+Provider callback/metadata URLs and test-sign-in availability come from the
+server. Enforcement controls require a current configuration test completed by the signed-in administrator within 24 hours, a verified
+domain and an enabled connection; missing support is explained in the UI.
+The API remains responsible for the recent administrator test requirement and
+authentication enforcement.
+
+Test sign-in obtains a one-use start URL through an authenticated POST. SAML metadata imports are previewed before applying them to the unsaved editor; only public SP certificates are displayed. A refused account switch can request fresh password/passkey authentication bound to that account, preserving the existing session until credential proof succeeds. All owners retain emergency access, which the enterprise plugin audits and notifies.
+
+Public SSO starts require the configured console/backend Origin or Referer before minting state. The validated local login link explicitly preserves the browser referrer rather than inheriting Shoelace's `noreferrer` default; originless shared URLs remain refused.

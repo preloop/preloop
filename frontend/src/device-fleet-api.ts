@@ -149,6 +149,41 @@ export async function getFleetDevice(
 export const getFleetFindings = (
   signal?: AbortSignal
 ): Promise<{ items: FleetFinding[] }> => request('/findings', signal);
+export interface FleetRoster {
+  schema_version: 1;
+  total: number;
+  items: { id: string; device_ref_hash: string; platform: string }[];
+}
+export const getFleetRoster = (signal?: AbortSignal): Promise<FleetRoster> =>
+  request('/roster', signal);
+
+/** A complete replacement; the server validates every row before storing any. */
+export async function replaceFleetRosterCsv(
+  file: File,
+  retainDisplayNames: boolean,
+  signal?: AbortSignal
+): Promise<FleetRoster> {
+  const body = new FormData();
+  body.append('file', file);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/fleet/roster/csv?retain_display_names=${retainDisplayNames}`,
+    { method: 'PUT', body, signal }
+  );
+  if (!response.ok) {
+    // Never reflect validation inputs containing device or person identifiers.
+    const messages: Record<number, string> = {
+      403: 'You do not have permission to replace the roster.',
+      413: 'Roster CSV must be at most 1 MiB.',
+      422: 'Roster was not replaced. Check CSV columns, platforms, duplicate references and the 5,000-device limit.',
+    };
+    throw new Error(
+      messages[response.status] ||
+        'Roster replacement could not be confirmed. Refresh the roster before retrying.'
+    );
+  }
+  return response.json();
+}
+
 interface RuleSettings {
   enabled: boolean;
   channels: Record<string, boolean>;

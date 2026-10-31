@@ -1,3 +1,5 @@
+import { answerConfirmDialog } from './utils/test-confirm-dialog';
+import { resetConfirmDialogForTests } from './components/confirm-dialog';
 import { expect } from '@open-wc/testing';
 import { getUserProfile } from './api';
 import { isCapabilityOff } from './capabilities';
@@ -24,6 +26,7 @@ describe('hierarchy-api', () => {
   });
 
   afterEach(() => {
+    resetConfirmDialogForTests();
     api?.restore();
     api = undefined;
     localStorage.clear();
@@ -150,6 +153,40 @@ describe('hierarchy-api', () => {
       // The page's model exists in the new account, so the page stays.
       expect(navigatedTo).to.equal('/console/ai-models/m-1?tab=x');
       expect(lastUsedAccounts()[0]).to.equal('acc-2');
+    });
+
+    it('offers fresh credential sign-in for the refused target without replacing current tokens', async () => {
+      api = mockApi({
+        routes: [
+          {
+            method: 'POST',
+            path: '/api/v1/auth/switch-account',
+            status: 403,
+            body: {
+              detail: {
+                code: 'sso_required',
+                message: 'Sign in with your organization SSO provider',
+              },
+            },
+          },
+        ],
+      });
+      let target = '';
+      const pending = switchAccount(
+        '11111111-1111-4111-8111-111111111111',
+        (url) => {
+          target = url;
+        }
+      );
+      const text = await answerConfirmDialog(true);
+      await pending;
+      expect(text).to.contain('fresh password or passkey');
+      expect(target).to.equal(
+        '/login?account_id=11111111-1111-4111-8111-111111111111'
+      );
+      expect(localStorage.getItem('accessToken')).to.equal('old-access');
+      expect(localStorage.getItem('refreshToken')).to.equal('old-refresh');
+      expect(lastUsedAccounts()).to.deep.equal([]);
     });
 
     it('goes to the dashboard when the page resource is not in the new account', async () => {
