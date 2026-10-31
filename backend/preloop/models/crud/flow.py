@@ -121,6 +121,9 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     self.model.tools_customized,
                     self.model.preset_update_available,
                     self.model.schedule_config,
+                    # A short SQL-derived string, not the clone config JSON:
+                    # the summary's ci_only flag needs only this key.
+                    self.model.publication_mode,
                     raiseload=True,
                 ),
                 joinedload(self.model.ai_model).load_only(

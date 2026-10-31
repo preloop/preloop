@@ -131,6 +131,8 @@ FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
 FAILURE_CATEGORY_BUDGET_EXCEEDED = "budget_exceeded"
+#: A run stopped by a default per-execution ceiling the flow did not set.
+FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED = "default_limit_reached"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
@@ -160,6 +162,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_AUTH,
     FAILURE_CATEGORY_PROVIDER_BILLING,
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
+    FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
@@ -294,6 +297,14 @@ _HOSTED_TARIFF_RE = re.compile(
 # per-execution ceiling (agent_config.limits). Matched structurally, before
 # the provider rules: the agent may also log an upstream 429/5xx it produced
 # while retrying the same refused request, and the money rule is the cause.
+# "Execution budget exceeded: default execution token ceiling reached: ...
+# (built-in default max_total_tokens=2000000; ...)". The same refusal as
+# below, but for a ceiling the flow never set; matched first so it keeps its
+# own category.
+_DEFAULT_LIMIT_RE = re.compile(
+    r"default execution [_a-z]+ ceiling reached",
+    re.IGNORECASE,
+)
 _EXECUTION_BUDGET_RE = re.compile(
     r"execution budget exceeded|execution [_a-z]+ ceiling reached"
     # The gateway's own budget denial (account, flow, user, key, subject or
@@ -418,6 +429,7 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_DEFAULT_LIMIT_RE, FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED),
     (_EXECUTION_BUDGET_RE, FAILURE_CATEGORY_BUDGET_EXCEEDED),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),

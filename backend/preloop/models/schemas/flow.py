@@ -1902,12 +1902,24 @@ class FlowResponse(FlowBase):
     # client edits and displays the same numbers the gateway checks.
     max_budget: Optional[float] = None
     max_iterations: Optional[int] = None
+    # The ceilings an execution of this flow runs under right now: the flow's
+    # own agent_config.limits per key, otherwise the instance or built-in
+    # default. {kind: {"value": number, "source": "flow"|"environment"|
+    # "default"}}; a ceiling the instance disabled is absent.
+    effective_limits: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="after")
     def read_limit_fields_from_agent_config(self):
-        """Fill max_budget / max_iterations from agent_config.limits."""
+        """Fill max_budget / max_iterations / effective_limits from limits."""
+        from preloop.services.flow_execution_limits import (
+            resolve_execution_limits,
+        )
+
+        self.effective_limits = resolve_execution_limits(
+            self.agent_config if isinstance(self.agent_config, dict) else None
+        ).describe()
         limits = (
             (self.agent_config or {}).get("limits")
             if isinstance(self.agent_config, dict)

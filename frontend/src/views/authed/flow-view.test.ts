@@ -485,6 +485,44 @@ describe('FlowView detail page language', () => {
     }
   });
 
+  it('shows the effective run limits and marks the defaults', async () => {
+    const element = await renderDetail({
+      effective_limits: {
+        max_total_tokens: { value: 2000000, source: 'default' },
+        max_turns: { value: 250, source: 'environment' },
+        max_usd: { value: 4, source: 'flow' },
+      },
+    });
+    try {
+      const cell = element.shadowRoot.querySelector('[data-run-limits]');
+      const text = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+      expect(text).to.contain('2M tokens (default)');
+      expect(text).to.contain('250 turns (instance default)');
+      expect(text).to.contain('$4.00 est.');
+      expect(text).to.not.contain('$4.00 est. (');
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('disables Run now on a read-only review flow and says why', async () => {
+    const element = await renderDetail({
+      git_clone_config: { enabled: true, publication_mode: 'read_only' },
+    });
+    try {
+      const run = element
+        .getFlowActions()
+        .find((action: any) => action.id === 'run-now');
+      expect(run.disabled).to.equal(true);
+      expect(run.tooltip).to.contain('CI identity');
+      expect(run.tooltip).to.contain('POST /api/v1/flows/flow-1/trigger');
+      expect(run.tooltip).to.contain('pr_number');
+      expect(run.tooltip).to.contain('head_sha');
+    } finally {
+      element.remove();
+    }
+  });
+
   it('uses the list verbs in the header actions', async () => {
     // The header said "Edit Flow / Disable / Test Run" for the three commands
     // the list kebab calls Edit, Pause and Run now, and "Test Run" implied a

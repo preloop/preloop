@@ -57,6 +57,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The run reached a token, USD or turn ceiling configured for it, so the gateway refused further model calls.',
   },
+  default_limit_reached: {
+    label: 'default limit reached',
+    tooltip:
+      'The run reached a default token, USD or turn ceiling the flow did not set. Set agent_config.limits on the flow to raise it.',
+  },
   /**
    * Superseded by `provider_billing`, which the server writes now. Kept so
    * runs classified before it still read as something.
