@@ -98,6 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   budget; normal calls are stored whole. `body_compaction` records every step, and the session views
   show a Truncated badge on cut text. Rows already stored under the old cap
   keep what they lost. Applies to flow execution logs too.
+- Subscription logins no longer break when the local client and the Preloop
+  gateway both hold one single-use refresh lineage (`refresh_token_reused` from
+  OpenAI, `invalid_grant` from Anthropic). The CLI now reconciles Claude Code's
+  login (macOS Keychain or `~/.claude/.credentials.json`) with Preloop's copy in
+  both directions, like Codex; the reconcile also runs from the session hook
+  (`SessionStart`, `UserPromptSubmit`) before the first model call, not only on
+  tool hooks; `preloop agents sync-credentials "Claude Code"` is accepted; the
+  gateway refreshes subscription OAuth 10 minutes before expiry (was 60 s) so
+  it rotates ahead of the clients; and the refresh-failure message names
+  `preloop agents sync-credentials` as the first recovery step. An upstream
+  401 on a Claude Code subscription model now returns that recovery message
+  instead of the raw "OAuth access token has been revoked" text. Follow-up (not
+  in this release): a server-side background refresh for idle bundles.
 
 - **Paging stored gateway payloads no longer serialises every row to measure
   it.** The byte-budgeted payload reader computed

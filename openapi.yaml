@@ -17250,7 +17250,22 @@ paths:
 
         no decrypt. Availability is not integrity proof; download
 
-        ``GET .../evidence`` to verify digest.'
+        ``GET .../evidence`` to verify digest.
+
+
+        A restricted CI credential (``execution:result:read``) reads only its own
+
+        execution and gets the correlation fields of the status projection,
+
+        including ``startup_receipt``, plus ``result`` (the captured document
+
+        without controller-private members), ``result_withheld_paths`` (JSON
+
+        Pointers of any withheld members; empty means ``result`` is the complete
+
+        captured document) and ``schema_validation`` (``valid``, ``error_count``
+
+        and ``errors``; messages are omitted when a member was withheld).'
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -17943,17 +17958,29 @@ paths:
     post:
       tags:
       - Flows
-      summary: Trigger Flow Execution
-      description: "Trigger a test execution for a flow.\n\nThe body is free-form\
-        \ trigger event data, except for the reserved key\n``matrix``: when present\
-        \ it must be a list of up to 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects\
-        \ and the trigger fans out to\none execution per entry, all sharing a ``batch_id``\
-        \ (an empty object runs\nthe flow defaults). Without ``matrix`` the behaviour\
-        \ is unchanged.\n\nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data:\
-        \ Optional custom trigger event data for testing\n        template variables,\
-        \ plus the optional reserved ``matrix`` key\n\nReturns:\n    Execution details,\
-        \ or batch details (``batch_id`` + per-cell\n    ``execution_id``) when a\
-        \ matrix was given"
+      summary: Trigger a restricted CI review or a test execution
+      description: "Trigger a flow execution: a restricted CI review, or a human test\
+        \ run.\n\n**Restricted CI credential** (``ci_`` token with ``flow:trigger``):\
+        \ this\nis the supported route for starting a review. The body must be exactly\n\
+        ``{\"pr_number\": <int>, \"head_sha\": \"<40 or 64 lowercase hex>\"}``; any\n\
+        other field (diff, base SHA, challenge, ``matrix`` or template data) is\n\
+        rejected with 422, never ignored. The flow must be the principal's bound\n\
+        flow. Preloop reads the open pull request from the provider, requires its\n\
+        current head to equal ``head_sha``, builds the pull request event\nserver-side\
+        \ and starts one production execution (``test_mode`` false).\nThe response\
+        \ is the status projection of the new execution. The flow\nwebhook does not\
+        \ accept CI credentials.\n\n**Human credential**: starts a test execution\
+        \ (``test_mode`` true). The\nbody is free-form trigger event data, except\
+        \ for the reserved key\n``matrix``: when present it must be a list of up to\
+        \ 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects and the trigger fans\
+        \ out to\none execution per entry, all sharing a ``batch_id`` (an empty object\
+        \ runs\nthe flow defaults). Without ``matrix`` the behaviour is unchanged.\n\
+        \nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data: ``pr_number``\
+        \ and ``head_sha`` for a restricted\n        CI credential; otherwise optional\
+        \ custom trigger event data for\n        testing template variables, plus\
+        \ the optional reserved ``matrix``\n        key\n\nReturns:\n    The CI status\
+        \ projection, execution details, or batch details\n    (``batch_id`` + per-cell\
+        \ ``execution_id``) when a matrix was given"
       operationId: trigger_flow_execution_api_v1_flows__flow_id__trigger_post
       security:
       - bearerAuth: []
@@ -30378,6 +30405,12 @@ components:
           - type: string
           - type: 'null'
           title: Failure Category
+        startup_receipt:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Startup Receipt
       additionalProperties: false
       type: object
       required:

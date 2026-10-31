@@ -404,3 +404,100 @@ def host_read_only_receipt_error(
     if clean["sandbox"] != "read-only":
         return "Runner did not run Codex in the read-only sandbox", clean
     return None, clean
+
+
+#: Line the hosted read-only container prints, with the admitted commit, as
+#: the last step of its startup chain: after the pinned checkout is verified
+#: and setup commands completed, before the agent starts. Any earlier failure
+#: exits the container first, so the line is never printed for it.
+READ_ONLY_STARTUP_MARKER = "PRELOOP_READ_ONLY_STARTUP"
+#: Version of the startup receipt shape.
+STARTUP_RECEIPT_VERSION = 1
+
+
+def read_only_startup_line(commit: str) -> str:
+    """The exact startup line for an admitted commit.
+
+    Args:
+        commit: Admitted full-length lowercase head SHA.
+
+    Returns:
+        The line the container prints once startup completed.
+
+    Raises:
+        ValueError: When ``commit`` is not a full-length lowercase SHA.
+    """
+    if not isinstance(commit, str) or not _SHA_RE.fullmatch(commit):
+        raise ValueError("Read-only review requires a full admitted commit SHA")
+    return f"{READ_ONLY_STARTUP_MARKER} {commit}"
+
+
+def hosted_startup_receipt(
+    commit: str, *, setup_completed: bool, agent_started_at: str | None
+) -> dict[str, Any]:
+    """Build the controller-observed startup receipt for a hosted review.
+
+    Args:
+        commit: Admitted head SHA the pinned checkout was verified against.
+        setup_completed: Whether the startup chain finished without a setup
+            failure being reported.
+        agent_started_at: ISO-8601 UTC time the agent start was observed.
+
+    Returns:
+        The receipt stored on ``flow_execution.startup_receipt``.
+    """
+    return {
+        "version": STARTUP_RECEIPT_VERSION,
+        "executor": "hosted",
+        "commit": commit,
+        "checkout_verified": setup_completed,
+        "setup_completed": setup_completed,
+        "agent_started_at": agent_started_at,
+        "lease_revoked": None,
+    }
+
+
+def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
+    """Project the startup receipt for a restricted CI caller.
+
+    The hosted receipt comes from ``flow_execution.startup_receipt``. A
+    private-runner review reports the runner receipt it stored on the result
+    under ``host_read_only_review``, mapped to the same shape.
+
+    Args:
+        execution: Flow execution row.
+
+    Returns:
+        The receipt, or None when the execution has none (yet).
+    """
+    stored = getattr(execution, "startup_receipt", None)
+    if isinstance(stored, Mapping):
+        return {
+            "version": STARTUP_RECEIPT_VERSION,
+            "executor": "hosted",
+            "commit": stored.get("commit"),
+            "checkout_verified": stored.get("checkout_verified") is True,
+            "setup_completed": stored.get("setup_completed") is True,
+            "agent_started_at": stored.get("agent_started_at"),
+            "lease_revoked": stored.get("lease_revoked"),
+        }
+    result = getattr(execution, "result", None)
+    runner = (
+        result.get(HOST_READ_ONLY_RESULT_KEY) if isinstance(result, Mapping) else None
+    )
+    if not isinstance(runner, Mapping):
+        return None
+    binding = getattr(execution, "ci_review_binding", None)
+    admitted = binding.get("head_sha") if isinstance(binding, Mapping) else None
+    commit = runner.get("commit")
+    verified = isinstance(commit, str) and commit == admitted
+    return {
+        "version": STARTUP_RECEIPT_VERSION,
+        "executor": "private_runner",
+        "commit": commit if isinstance(commit, str) else None,
+        "checkout_verified": verified,
+        "setup_completed": verified and runner.get("sandbox") == "read-only",
+        "agent_started_at": None,
+        "lease_revoked": runner.get("lease_revoked") is True,
+        "sandbox": runner.get("sandbox"),
+    }

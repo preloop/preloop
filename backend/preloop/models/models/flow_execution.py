@@ -225,6 +225,11 @@ class FlowExecution(Base):
     # Capture-time result schema outcome (#868): {"valid", "errors",
     # "error_count"}; null when the flow sets no schema or it was exempt.
     result_schema_validation = Column(JSONB, nullable=True)
+    # Controller-written startup receipt for a hosted read-only review:
+    # admitted commit, pinned checkout verified, setup completed, agent
+    # started, and later whether the read lease was revoked. Never derived
+    # from agent output; null for every other execution.
+    startup_receipt = Column(JSONB, nullable=True)
     # Derived legal-hold enforcement flag. The account-visible record (actor,
     # reason, release) is a legal_hold row; this column is what the retention
     # purge tests, in the same transaction, so a batch DELETE stays a single

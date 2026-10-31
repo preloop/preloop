@@ -257,6 +257,7 @@ from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
     CredentialRefreshError,
     OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+    PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
     ResolvedModelCredentials,
     get_secret_service,
 )
@@ -7173,6 +7174,17 @@ class OpenAIGatewayService:
         except (TypeError, ValueError):
             # Body is not JSON; fall back to the generic upstream message.
             pass
+        # A local client renewal revokes the gateway's copy at once. The raw
+        # upstream text makes the client ask for /login although the local
+        # login is fine; name the sync that recovers the shared lineage.
+        if (
+            status_code == 401
+            and getattr(ai_model, "credential_type", None)
+            in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+        ):
+            message = CredentialRefreshError(
+                message, provider="anthropic", status_code=401, code="invalid_grant"
+            ).recovery_message()
 
         class _PassthroughUpstreamError(Exception):
             """Carrier so classify_upstream_error sees status/type/message."""

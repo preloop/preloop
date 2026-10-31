@@ -514,4 +514,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert pull_request_details.down_revision == "20261112_enterprise_sso"
     owner_flow_subscription = script.get_revision("20261114_owner_flow_subscription")
     assert owner_flow_subscription.down_revision == "20261113_pull_request_details"
-    assert script.get_heads() == ["20261114_owner_flow_subscription"]
+    startup_receipt = script.get_revision("20261115_startup_receipt")
+    assert startup_receipt.down_revision == "20261114_owner_flow_subscription"
+    assert script.get_heads() == ["20261115_startup_receipt"]
