@@ -664,7 +664,10 @@ type hostExecRun struct {
 	stdinPrompt     string
 	preflight       func(context.Context) error
 	governanceNonce string
-	cleanup         func()
+	// gatewayNotice says whether the execution marker rides on the CLI's
+	// Preloop gateway requests; empty when the job carried no marker.
+	gatewayNotice string
+	cleanup       func()
 }
 
 func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, error) {
@@ -709,6 +712,10 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		return nil, err
 	}
 	mcpToken, err := jobHostExecMCPToken(job)
+	if err != nil {
+		return nil, err
+	}
+	gatewayMarker, err := jobHostExecGatewayMarker(job)
 	if err != nil {
 		return nil, err
 	}
@@ -815,6 +822,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	var args []string
 	var resultPath string
 	var stdin string
+	gatewayNotice := ""
 	env := hostExecFlowEnv(
 		hostExecChildEnv(runtime.GOOS, wantHarness, profile, os.Environ()), job,
 	)
@@ -824,6 +832,15 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		switch wantHarness {
 		case hostExecHarnessCodex:
 			args, stdin, extraEnv, extraFiles, err = prepareCodexHostExecSandbox(profile, job, workspace, scratch, mcpToken, readOnly != nil)
+			if err == nil && gatewayMarker != "" {
+				gatewayArgs, gatewayEnv, ok := codexHostGatewayArgs(gatewayMarker)
+				gatewayNotice = hostExecGatewayNotice(wantHarness, ok)
+				if ok {
+					// Overrides go before the trailing "-" (prompt on stdin).
+					args = append(append(append([]string{}, args[:len(args)-1]...), gatewayArgs...), args[len(args)-1])
+					extraEnv = append(extraEnv, gatewayEnv...)
+				}
+			}
 		case hostExecHarnessOpenCode:
 			args, stdin, extraEnv, extraFiles, err = prepareOpenCodeHostExec(profile, job, workspace, scratch, mcpToken)
 		case hostExecHarnessDeepSeek:
@@ -852,6 +869,17 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 			args, err = buildClaudeHostExecArgs(profile, job, mcpConfig, "")
 			if err == nil {
 				stdin, err = claudeHostExecPrompt(job)
+			}
+			if err == nil && gatewayMarker != "" {
+				gatewayEnv, gatewayArgs, gatewayFiles, ok, managed, planErr := claudeHostGatewayPlan(gatewayMarker, env, scratch, workspace)
+				err = planErr
+				files = append(files, gatewayFiles...)
+				gatewayNotice = hostExecGatewayNotice(wantHarness, ok)
+				if managed {
+					gatewayNotice = hostExecGatewayNotice("claude_code_managed_headers", false)
+				}
+				env = mergeHostExecManagedEnv(env, gatewayEnv)
+				args = append(args, gatewayArgs...)
 			}
 		}
 	} else if wantHarness == hostExecHarnessDevin {
@@ -913,6 +941,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		publication:     publication,
 		resume:          resume,
 		readOnly:        readOnly,
+		gatewayNotice:   gatewayNotice,
 		cleanup:         cleanup,
 	}, nil
 }
@@ -1039,7 +1068,8 @@ func beginHostExecJob(
 	cmd, timeout := run.cmd, run.timeout
 	agentType, _ := job["agent_type"].(string)
 	mcpToken, _ := jobHostExecMCPToken(job)
-	secrets := []string{mcpToken}
+	gatewayMarker, _ := jobHostExecGatewayMarker(job)
+	secrets := []string{mcpToken, gatewayMarker}
 	if run.checkout != nil {
 		for _, repo := range run.checkout.Repositories {
 			secrets = append(secrets, repo.Token)
@@ -1076,6 +1106,9 @@ func beginHostExecJob(
 
 		if run.workspaceLabel != "" {
 			buffer.note("preloop runner: working in authorized directory " + run.workspaceLabel)
+		}
+		if run.gatewayNotice != "" {
+			buffer.note("preloop runner: " + run.gatewayNotice)
 		}
 		if run.dirtyCheckDir != "" {
 			ctx, cancel := context.WithCancel(context.Background())

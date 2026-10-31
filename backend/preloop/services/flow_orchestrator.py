@@ -8471,6 +8471,72 @@ class FlowExecutionOrchestrator:
 
         logger.info(f"Execution log created with ID: {self.execution_log.id}")
 
+    def _keep_gateway_ceiling_outcome(
+        self, status: str, kwargs: Dict[str, Any]
+    ) -> None:
+        """Keep a run-limit stop the gateway already recorded on the row.
+
+        The gateway marks the execution FAILED with ``budget_exceeded`` or
+        ``default_limit_reached`` and the limit message when it refuses a
+        request over a ceiling. The agent then fails in its own way (a
+        checkpoint or capture call answered 409 because the execution is
+        closed), and that later error must not replace the reason the run
+        stopped.
+
+        Args:
+            status: Status about to be written.
+            kwargs: Update fields; rewritten in place.
+        """
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_BUDGET_EXCEEDED,
+            FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+        )
+
+        execution = getattr(self, "execution_log", None)
+        if execution is None or str(status).upper() != "FAILED":
+            return
+        try:
+            self.db.refresh(execution)
+        except Exception:  # noqa: BLE001 - a stale row only loses this guard
+            logger.debug("Could not refresh execution before final write")
+            return
+        stored = getattr(execution, "failure_category", None)
+        if stored in (
+            FAILURE_CATEGORY_BUDGET_EXCEEDED,
+            FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+        ):
+            kwargs["failure_category"] = stored
+            message = getattr(execution, "error_message", None)
+            if message:
+                kwargs["error_message"] = message
+            return
+        if kwargs.get("failure_category") is not None:
+            return
+        derived = derive_failure_category(
+            status=status, error_message=kwargs.get("error_message")
+        )
+        if derived != FAILURE_CATEGORY_UNKNOWN:
+            return
+        # An unclassifiable failure (often the agent's last prose) on a run
+        # that has spent a ceiling: the ceiling is why it stopped.
+        from preloop.services.flow_execution_limits import (
+            describe_execution_limits,
+            evaluate_execution_limits,
+        )
+
+        try:
+            limits, usage = describe_execution_limits(self.db, execution)
+            violation = (
+                None if limits.is_empty else evaluate_execution_limits(limits, usage)
+            )
+        except Exception:  # noqa: BLE001 - classification never fails a write
+            logger.debug("Could not evaluate limits for the final write")
+            return
+        if violation is None:
+            return
+        kwargs["failure_category"] = violation.category
+        kwargs["error_message"] = f"Execution budget exceeded: {violation.message}"
+
     async def _update_execution_log(
         self, status: Optional[str] = None, **kwargs
     ) -> Optional[str]:
@@ -8495,6 +8561,8 @@ class FlowExecutionOrchestrator:
         # Park finalize omits status so confirm_park's conditional UPDATE
         # is the only writer; deriving a category from a missing status
         # would invent one for a still-live run.
+        if status is not None:
+            self._keep_gateway_ceiling_outcome(status, kwargs)
         if status is not None and kwargs.get("failure_category") is None:
             derived = derive_failure_category(
                 status=status,

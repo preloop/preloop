@@ -96,11 +96,14 @@ has a result schema (see
 set `agent_config.native_result: false` to opt out.
 
 Each review execution runs under the per-execution ceilings shown as **Run
-limits** on the flow page: the flow's own `agent_config.limits`, otherwise
-2,000,000 tokens, 100 turns and 10 USD (`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
-`PRELOOP_DEFAULT_MAX_TURNS` and `PRELOOP_DEFAULT_MAX_USD` change these on a
-self-hosted instance; `0` turns one off). A run stopped by a default fails
-with `default_limit_reached`.
+limits** on the flow page: the flow's own `agent_config.limits`, otherwise an
+instance default when the operator set `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
+`PRELOOP_DEFAULT_MAX_TURNS` or `PRELOOP_DEFAULT_MAX_USD`, otherwise none.
+There is no built-in default, so set explicit limits on review flows, for
+example `{"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd":
+25}}` for a PR review (large reviews use several million tokens). A run
+stopped by the flow's own ceiling fails with `budget_exceeded`, one stopped by
+an instance default with `default_limit_reached`.
 
 This mode requires an App installation and the control plane's configured App
 signing key. At execution startup, Preloop rechecks the principal and repository
@@ -229,14 +232,18 @@ this work; the run waits in the queue for a capable runner.
 ### Step by step
 
 1. **On the runner host**, install a Preloop CLI release that includes
-   this capability and the Codex CLI. Log Codex in as the
-   user that will run the runner: `codex login`, then check with
-   `codex login status`.
-2. Install the Preloop approval hook for Codex and trust it, as for any Codex
-   host profile:
-   `preloop agents onboard "Codex CLI" --approvals`, then open `codex`, run
-   `/hooks` and trust the Preloop `PreToolUse` hook. The runner checks the hook
-   is enabled and trusted before every run.
+   this capability and the Codex CLI, as the OS user that will run the runner.
+2. Onboard Codex through Preloop as that user, with the approval hook:
+   `preloop agents onboard "Codex CLI" --approvals`. Onboarding writes
+   `model_provider = "preloop"` to Codex's `config.toml`, so every model call
+   goes through the Preloop gateway with the agent's own key. Then open
+   `codex`, run `/hooks` and trust the Preloop `PreToolUse` hook. The runner
+   checks the hook is enabled and trusted before every run.
+
+    Keep this onboarded configuration. Do not run the runner with a separate
+    `CODEX_HOME` that lacks the Preloop model provider: Codex would then call
+    its model service directly, the run would not be governed or metered, and
+    it ends `FAILED` with `gateway_bypassed`.
 3. Add a Codex profile with checkout enabled to
    `~/.preloop/runner-host-profiles.json`:
 
@@ -255,8 +262,9 @@ this work; the run waits in the queue for a capable runner.
     ```
 
     `model_map` maps the model the flow selects (its `model_identifier`) to the
-    model name your Codex login accepts. If the flow selects no model, omit
-    `model_map` and Codex uses its own default model.
+    Preloop model alias your onboarded Codex uses (`preloop models list`). If
+    the flow selects no model, omit `model_map` and Codex uses the model
+    onboarding configured.
 
 4. Start the runner in a named pool, for example
    `preloop runner fg --labels review-hosts` (or install it as a service). Run
@@ -284,20 +292,34 @@ this work; the run waits in the queue for a capable runner.
     ```
 
     The model may be any registration, including an agent-bound subscription
-    model: on a host profile it only names the alias the runner maps, and no
-    gateway credential is issued for it. Give the flow a prompt that asks for a
-    review of the checked-out change and does not ask Codex to edit files
-    (the sandbox would refuse).
+    model: on a host profile it only names the alias the runner maps. Codex
+    calls the gateway with the onboarded agent's own key, so that agent must be
+    allowed to use the model. Give the flow a prompt that asks for a review of
+    the checked-out change and does not ask Codex to edit files (the sandbox
+    would refuse).
 6. Provision the CI identity as below (**Settings → CI identities** lists the
    flow; the preview shows your private pool), add the completion subscription,
    and trigger reviews exactly as for the hosted executor.
 
-Run limits: the flow page shows the token, turn and USD ceilings this flow
-runs under. On a host profile the model is served by the host's own login and
-is not metered by the gateway, so those ceilings are not enforced on the
-host run; bound it with the profile's `timeout_seconds` and the flow's
-`timeout_seconds`. The flow page still shows the effective values so a later
-move to the hosted executor carries no surprise.
+Usage and run limits: the runner sends each run's gateway requests with an
+execution marker (`X-Preloop-Execution`, signed by the control plane at
+delivery and added to Codex's Preloop provider for that run only; your
+`config.toml` is not edited). The gateway attributes those requests to the
+flow execution as well as the agent, so the execution page shows the run's
+requests, tokens and cost, and the token, turn and USD ceilings on the flow
+page (including the defaults) are enforced on the host run: the request after
+a ceiling is crossed is refused and the run ends `FAILED` with
+`budget_exceeded` or `default_limit_reached`. The completed result records
+`gateway_metered: true` and `gateway_request_count`. A run whose result shows
+model output but no gateway request bypassed Preloop and ends `FAILED` with
+`gateway_bypassed` (`gateway_call_check: no_gateway_rows`). Codex exposes no
+per-request count, so a Codex run with at least one gateway row passes
+(`gateway_call_check: at_least_one`). For Claude Code host profiles the runner
+reports the exact model call count (`cli_model_calls`), and a run whose CLI
+calls exceed its gateway rows by more than 2 calls and more than 20% partly
+bypassed Preloop and fails the same way (`gateway_call_check:
+cli_call_count`). Read-only review has no opt-out
+from this.
 
 Rules that require approval pause this run. A command that matches one does
 not run: the review pauses, an approval request appears in **Approvals**, and
@@ -315,8 +337,9 @@ the approval hook are the only boundaries between the review and the runner
 user's account. Codex's read-only sandbox blocks writes and network access for
 the commands it runs, but the process still runs as your OS user and can read
 whatever that user can read. Use a dedicated OS user or VM for repositories you
-do not trust. Usage is not metered by the gateway (the run uses your own
-login), so results are marked `gateway_metered: false`.
+do not trust. Model traffic goes through the Preloop gateway with the
+onboarded agent's key, so usage is metered per execution and results are
+marked `gateway_metered: true`.
 
 ## Shared read-only review flows
 

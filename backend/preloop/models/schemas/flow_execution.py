@@ -280,7 +280,8 @@ class FlowExecutionBase(BaseModel):
             "agent_error, model_stream_idle (timed out while the model "
             "stream was silent), approval_denied, approval_timeout, "
             "approval_unavailable (an approval-required rule could not pause "
-            "the run), timeout, cancelled, "
+            "the run), gateway_bypassed (a private-runner host CLI made no "
+            "request through the Preloop gateway), timeout, cancelled, "
             "unknown. Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),

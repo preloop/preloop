@@ -1903,9 +1903,9 @@ class FlowResponse(FlowBase):
     max_budget: Optional[float] = None
     max_iterations: Optional[int] = None
     # The ceilings an execution of this flow runs under right now: the flow's
-    # own agent_config.limits per key, otherwise the instance or built-in
-    # default. {kind: {"value": number, "source": "flow"|"environment"|
-    # "default"}}; a ceiling the instance disabled is absent.
+    # own agent_config.limits per key, otherwise the instance default
+    # (PRELOOP_DEFAULT_*). There is no built-in default. {kind: {"value":
+    # number, "source": "flow"|"environment"}}; an unset ceiling is absent.
     effective_limits: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)

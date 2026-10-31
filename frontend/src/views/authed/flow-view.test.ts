@@ -485,10 +485,22 @@ describe('FlowView detail page language', () => {
     }
   });
 
+  it('shows no run limits with a hint to set one', async () => {
+    const element = await renderDetail({ effective_limits: {} });
+    try {
+      const cell = element.shadowRoot.querySelector('[data-run-limits]');
+      const text = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+      expect(text).to.contain('None.');
+      expect(cell.querySelector('[data-run-limits-hint]')).to.exist;
+    } finally {
+      element.remove();
+    }
+  });
+
   it('shows the effective run limits and marks the defaults', async () => {
     const element = await renderDetail({
       effective_limits: {
-        max_total_tokens: { value: 2000000, source: 'default' },
+        max_total_tokens: { value: 5000000, source: 'flow' },
         max_turns: { value: 250, source: 'environment' },
         max_usd: { value: 4, source: 'flow' },
       },
@@ -496,7 +508,7 @@ describe('FlowView detail page language', () => {
     try {
       const cell = element.shadowRoot.querySelector('[data-run-limits]');
       const text = (cell.textContent || '').replace(/\s+/g, ' ').trim();
-      expect(text).to.contain('2M tokens (default)');
+      expect(text).to.contain('5M tokens');
       expect(text).to.contain('250 turns (instance default)');
       expect(text).to.contain('$4.00 est.');
       expect(text).to.not.contain('$4.00 est. (');

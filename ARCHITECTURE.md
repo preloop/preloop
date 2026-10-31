@@ -1134,6 +1134,22 @@ fields remain unknown. This in-memory view is not a durable tracker event journa
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
+### Host-profile gateway attribution
+
+A private-runner Codex or Claude Code host profile runs the runner user's
+Preloop-onboarded CLI, whose model calls reach the gateway with the agent's
+own key. Host delivery adds `host_exec_gateway`: a signed, identifiers-only
+execution marker the runner sends as `X-Preloop-Execution` (Codex through a
+per-run provider override, Claude Code through `ANTHROPIC_CUSTOM_HEADERS`).
+The gateway auth dependency verifies it against the key's account and a live
+execution and folds `flow_execution_id`/`flow_id` into the detached key
+snapshot, so usage attribution, per-execution ceilings and cost rollups use
+their existing paths. At completion the server counts the execution's gateway
+rows for `gateway_metered`; a Codex or Claude Code run with model output and
+no row fails `gateway_bypassed` unless the flow opts out
+(`allow_unmetered_host_model`, never in read-only review). See
+`services/host_exec_gateway.py`.
+
 ### Restricted external runtime authority
 
 The default-disabled restricted runtime primitive reuses SecretReference policy

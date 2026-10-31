@@ -146,6 +146,9 @@ func codexRunnerResult(c codexCapture) (map[string]any, error) {
 	if c.Failed {
 		status = "failure"
 	}
+	// codex exec JSONL reports one terminal turn, not the model requests
+	// inside it, so no model call count is reported: the control plane
+	// applies its at-least-one gateway row rule to Codex runs.
 	result := map[string]any{"status": status, "harness": hostExecHarnessCodex}
 	if c.SessionID != "" {
 		result["session_id"] = c.SessionID

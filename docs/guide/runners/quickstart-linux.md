@@ -757,10 +757,31 @@ compliance and member warnings.
 
 Private runners can execute installed Codex (`codex`), OpenCode (`opencode`)
 and DeepSeek CLI (`dsh`) directly on Windows, macOS and Linux without Docker.
-This path uses the runner user's existing authenticated CLI credentials.
-It requires an explicit local host profile and a private runner pool; it does
-not silently switch to hosted compute or a gateway-funded model. Existing
-Docker flows keep their existing behavior when no host profile is selected.
+This path uses the runner user's existing CLI configuration. It requires an
+explicit local host profile and a private runner pool; it does not silently
+switch to hosted compute. Existing Docker flows keep their existing behavior
+when no host profile is selected.
+
+Onboard Codex through Preloop as the runner user
+(`preloop agents onboard "Codex CLI" --approvals`) and keep that
+configuration: its `model_provider = "preloop"` sends every model call through
+the Preloop gateway with the agent's own key. For each run the runner adds the
+execution marker header to that provider with a command-line override (your
+`config.toml` is not edited), so the gateway attributes the run's requests to
+the flow execution as well as the agent, enforces the flow's run limits, and
+the result records `gateway_metered: true` and `gateway_request_count`. Codex
+exposes no per-request count, so a Codex run passes this check with at least
+one gateway row. For Claude Code the runner reports the exact model call count
+(`cli_model_calls`), and a run whose CLI calls exceed its gateway rows by more
+than 2 calls and more than 20% fails with `gateway_bypassed` too. Do not
+point the runner at a separate `CODEX_HOME` without the Preloop provider: the
+run would call the model service directly and end `FAILED` with
+`gateway_bypassed`. Claude Code profiles work the same way when Claude Code is
+onboarded to the gateway (`ANTHROPIC_BASE_URL` on Preloop); the marker is sent
+with `ANTHROPIC_CUSTOM_HEADERS`. A flow that must run a Codex or Claude Code
+host CLI unmetered can set `agent_config.allow_unmetered_host_model: true`
+(break-glass, recorded on the result as `gateway_bypass_allowed`); read-only
+review never allows it.
 
 For example, add these profiles to the local `runner-host-profiles.json`
 file (use provider and model names configured in your local CLI):

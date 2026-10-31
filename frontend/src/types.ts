@@ -175,7 +175,7 @@ export interface Flow {
   max_budget?: number | null;
   /**
    * The ceilings a run of this flow is held to right now: the flow's own
-   * agent_config.limits per key, else the instance or built-in default.
+   * agent_config.limits per key, else the instance default (no built-in default).
    * A ceiling the instance turned off is absent.
    */
   effective_limits?: Partial<

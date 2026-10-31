@@ -12,7 +12,7 @@ migration), with three optional keys::
 
     {
         "limits": {
-            "max_total_tokens": 2000000,
+            "max_total_tokens": 20000000,
             "max_usd": 25,
             "max_turns": 100
         }
@@ -39,13 +39,11 @@ runtime in this tree exposes a usable max-turns flag today, so the gateway
 count is the enforcement; if a harness grows one, it can read the same value
 from ``agent_config.limits`` and pass it through as an early stop.
 
-Default ceilings. A flow that sets no ceiling still gets one: 2,000,000
-tokens, 100 turns and 10 USD per execution
-(:data:`DEFAULT_MAX_TOTAL_TOKENS`, :data:`DEFAULT_MAX_TURNS`,
-:data:`DEFAULT_MAX_USD`). A value on the flow wins per key. A self-hosted
-instance replaces a built-in default with ``PRELOOP_DEFAULT_MAX_TOTAL_TOKENS``,
-``PRELOOP_DEFAULT_MAX_TURNS`` or ``PRELOOP_DEFAULT_MAX_USD``; ``0`` there
-removes that default. A run stopped by a default (built-in or instance) fails
+Default ceilings. There is no built-in default: a flow that sets no ceiling
+runs without one, unless the operator sets ``PRELOOP_DEFAULT_MAX_TOTAL_TOKENS``,
+``PRELOOP_DEFAULT_MAX_TURNS`` or ``PRELOOP_DEFAULT_MAX_USD``, which then apply
+to every flow that does not set that ceiling itself (``0`` or unset means no
+default). A value on the flow wins per key. A run stopped by such a default fails
 with ``default_limit_reached`` rather than ``budget_exceeded``, and its message
 names the knob that changes it, so a review that ran out of a ceiling nobody
 chose reads differently from one that hit the flow's own.
@@ -77,27 +75,19 @@ MAX_TOTAL_TOKENS_KEY = "max_total_tokens"
 MAX_USD_KEY = "max_usd"
 MAX_TURNS_KEY = "max_turns"
 
-#: Built-in ceilings for a flow that sets none (founder decision, #2140).
-DEFAULT_MAX_TOTAL_TOKENS = 2_000_000
-DEFAULT_MAX_TURNS = 100
-DEFAULT_MAX_USD = 10.0
-
-#: Environment overrides of the built-in defaults, per ceiling. ``0`` disables
-#: that default; unset, blank or unparsable keeps the built-in value.
+#: Environment-provided default ceilings, per ceiling. There is no built-in
+#: default: a flow without ``agent_config.limits`` runs unbounded unless the
+#: operator sets one of these. Unset, blank, ``0`` or unparsable means no
+#: default for that ceiling.
 DEFAULT_LIMIT_ENV_VARS: dict[str, str] = {
     MAX_TOTAL_TOKENS_KEY: "PRELOOP_DEFAULT_MAX_TOTAL_TOKENS",
     MAX_TURNS_KEY: "PRELOOP_DEFAULT_MAX_TURNS",
     MAX_USD_KEY: "PRELOOP_DEFAULT_MAX_USD",
 }
-_BUILTIN_DEFAULTS: dict[str, Any] = {
-    MAX_TOTAL_TOKENS_KEY: DEFAULT_MAX_TOTAL_TOKENS,
-    MAX_TURNS_KEY: DEFAULT_MAX_TURNS,
-    MAX_USD_KEY: DEFAULT_MAX_USD,
-}
-
 #: Where an effective ceiling came from.
 LIMIT_SOURCE_FLOW = "flow"
 LIMIT_SOURCE_ENVIRONMENT = "environment"
+#: Legacy source of the removed built-in defaults; never produced now.
 LIMIT_SOURCE_DEFAULT = "default"
 
 #: Statuses at which an execution can spend nothing more. Mirrors the
@@ -146,7 +136,8 @@ class ExecutionLimits:
 
     ``sources`` names where each set ceiling came from: ``flow`` (the flow's
     own ``agent_config.limits``), ``environment`` (a ``PRELOOP_DEFAULT_*``
-    override) or ``default`` (the built-in value). A reader of explicit flow
+    default). ``default`` is kept for compatibility and no longer produced:
+    there is no built-in value. A reader of explicit flow
     limits (:func:`parse_execution_limits`) leaves it empty.
     """
 
@@ -293,17 +284,16 @@ def _env_default(kind: str) -> tuple[Optional[Any], str]:
     """
     name = DEFAULT_LIMIT_ENV_VARS[kind]
     raw = os.environ.get(name)
-    builtin = _BUILTIN_DEFAULTS[kind]
     if raw is None or not raw.strip():
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     try:
         number = float(raw.strip())
     except ValueError:
         logger.warning("Ignoring %s=%r: not a number", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     if not math.isfinite(number):
         logger.warning("Ignoring %s=%r: not a finite ceiling", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     if number == 0:
         return None, LIMIT_SOURCE_ENVIRONMENT
     parsed = (
@@ -313,7 +303,7 @@ def _env_default(kind: str) -> tuple[Optional[Any], str]:
     )
     if parsed is None:
         logger.warning("Ignoring %s=%r: not a positive ceiling", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     return parsed, LIMIT_SOURCE_ENVIRONMENT
 
 
@@ -323,8 +313,8 @@ def resolve_execution_limits(
     """The ceilings that actually bound an execution of this flow.
 
     Per ceiling: the flow's own value wins; otherwise the instance default
-    (``PRELOOP_DEFAULT_*``, where ``0`` means none); otherwise the built-in
-    default. Subscription runs priced at $0 are still bounded by tokens and
+    (``PRELOOP_DEFAULT_*``, where ``0`` means none); otherwise no ceiling.
+    Subscription runs priced at $0 are still bounded by tokens and
     turns, because those are compared independently of cost.
 
     Args:
@@ -482,24 +472,17 @@ def _violation(
 ) -> LimitViolation:
     """Build one violation, naming the knob when a default fired.
 
-    A flow's own ceiling reads as before. A default names the flow key that
-    overrides it and, for the built-in value, the environment variable a
-    self-hosted operator can set instead.
+    A flow's own ceiling reads as before. An instance default names its
+    environment variable and the flow key that overrides it.
     """
     source = limits.source_of(kind)
     if source == LIMIT_SOURCE_FLOW:
         message = f"execution {noun} ceiling reached: {used}"
     else:
+        # The only non-flow source: there is no built-in default any more.
         env_name = DEFAULT_LIMIT_ENV_VARS[kind]
-        if source == LIMIT_SOURCE_ENVIRONMENT:
-            origin = f"instance default {env_name}={_format_limit(limit)}"
-            change = f"set agent_config.limits.{kind} on the flow to override it"
-        else:
-            origin = f"built-in default {kind}={_format_limit(limit)}"
-            change = (
-                f"set agent_config.limits.{kind} on the flow, or {env_name} "
-                "on the server, to change it"
-            )
+        origin = f"instance default {env_name}={_format_limit(limit)}"
+        change = f"set agent_config.limits.{kind} on the flow to override it"
         message = (
             f"default execution {noun} ceiling reached: {used} ({origin}; {change})"
         )

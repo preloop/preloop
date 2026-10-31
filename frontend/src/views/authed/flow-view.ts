@@ -739,8 +739,9 @@ export class FlowView extends LitElement {
    * numbers that will stop a run before one does.
    */
   private renderRunLimits() {
-    const limits = this.flow?.effective_limits;
-    if (!limits) return nothing;
+    if (!this.flow) return nothing;
+    // No ceilings is a real state now (no built-in defaults): say so.
+    const limits = this.flow.effective_limits || {};
     const parts: Array<{ text: string; title: string; source: string }> = [];
     const tokens = limits.max_total_tokens;
     if (tokens) {
@@ -787,7 +788,11 @@ export class FlowView extends LitElement {
                         : ''
                     }`
               )
-            : 'None'
+            : html`None.
+                <span class="meta" data-run-limits-hint
+                  >Set agent_config.limits (tokens, turns, USD) to bound each
+                  run.</span
+                >`
         }
       </span>
     `;
