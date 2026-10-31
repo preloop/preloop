@@ -159,9 +159,10 @@ import json, sys
 print(json.dumps({{"hooks": {{"PreToolUse": [{{"matcher": "*", "hooks": [
     {{"type": "command", "command": sys.argv[1], "timeout": 330}}]}}]}}}}))
 PL_HOOKS
-    # Commands the agent runs must not see the runtime credential the
-    # hook uses; Codex hands its own environment to hooks, not this table.
-    printf '\\n[shell_environment_policy.set]\\nPRELOOP_FLOW_TOKEN = ""\\n' >> "$CODEX_HOME/config.toml"
+    # Commands the agent runs must not see the runtime credential (under
+    # either name); Codex hands its own environment to hooks and MCP
+    # servers, not this table.
+    printf '\\n[shell_environment_policy.set]\\nPRELOOP_FLOW_TOKEN = ""\\nPRELOOP_API_TOKEN = ""\\n' >> "$CODEX_HOME/config.toml"
     if _pl_trust_out="$(python3 -c {trust} "$_pl_hook_cmd" 2>&1)"; then
         echo "{HOOK_READY_LINE}"
     else

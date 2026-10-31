@@ -378,6 +378,8 @@ async def count_gateway_requests_settled(
     *,
     execution_id: Any,
     pending_job: Optional[Mapping[str, Any]],
+    status: str = "SUCCEEDED",
+    result: Optional[Mapping[str, Any]] = None,
     attempts: int = 5,
     delay_seconds: float = 1.0,
 ) -> Optional[int]:
@@ -393,6 +395,8 @@ async def count_gateway_requests_settled(
         db: Database session (each read is a new statement).
         execution_id: The execution.
         pending_job: The persisted lease.
+        status: Completion status; only a run with model output waits.
+        result: Completion result.
         attempts: Reads before giving up.
         delay_seconds: Pause between reads.
 
@@ -409,7 +413,11 @@ async def count_gateway_requests_settled(
     lease = job.get(HOST_EXEC_LEASE_KEY)
     harness = lease.get("harness") if isinstance(lease, Mapping) else None
     count = _gateway_request_count(db, execution_id)
-    if harness not in GATEWAY_ROUTABLE_HARNESSES:
+    if (
+        count
+        or harness not in GATEWAY_ROUTABLE_HARNESSES
+        or not _produced_model_output(status, result or {})
+    ):
         return count
     for _ in range(max(attempts - 1, 0)):
         if count:

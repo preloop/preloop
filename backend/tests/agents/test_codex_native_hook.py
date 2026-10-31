@@ -114,6 +114,7 @@ def test_hook_is_installed_trusted_and_fail_closed(tmp_path):
     assert 'trusted_hash = "sha256:fixture"' in config
     # The agent's own commands do not see the runtime credential.
     assert 'PRELOOP_FLOW_TOKEN = ""' in config
+    assert 'PRELOOP_API_TOKEN = ""' in config
 
 
 def test_missing_cli_refuses_a_run_with_approval_rules(tmp_path):

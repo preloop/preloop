@@ -233,3 +233,23 @@ async def test_settled_count_does_not_wait_for_unroutable_harnesses(monkeypatch)
         delay_seconds=0,
     )
     assert count == 0 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_settled_count_does_not_wait_without_model_output(monkeypatch):
+    from preloop.services.host_exec_gateway import count_gateway_requests_settled
+
+    calls = []
+    monkeypatch.setattr(
+        "preloop.services.host_exec_gateway._gateway_request_count",
+        lambda _db, _id: calls.append(1) or 0,
+    )
+    await count_gateway_requests_settled(
+        MagicMock(),
+        execution_id=uuid4(),
+        pending_job=_lease(),
+        status="FAILED",
+        result={"status": "failure"},
+        delay_seconds=0,
+    )
+    assert len(calls) == 1

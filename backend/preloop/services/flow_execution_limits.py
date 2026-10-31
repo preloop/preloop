@@ -84,15 +84,10 @@ DEFAULT_LIMIT_ENV_VARS: dict[str, str] = {
     MAX_TURNS_KEY: "PRELOOP_DEFAULT_MAX_TURNS",
     MAX_USD_KEY: "PRELOOP_DEFAULT_MAX_USD",
 }
-_BUILTIN_DEFAULTS: dict[str, Any] = {
-    MAX_TOTAL_TOKENS_KEY: None,
-    MAX_TURNS_KEY: None,
-    MAX_USD_KEY: None,
-}
-
 #: Where an effective ceiling came from.
 LIMIT_SOURCE_FLOW = "flow"
 LIMIT_SOURCE_ENVIRONMENT = "environment"
+#: Legacy source of the removed built-in defaults; never produced now.
 LIMIT_SOURCE_DEFAULT = "default"
 
 #: Statuses at which an execution can spend nothing more. Mirrors the
@@ -289,17 +284,16 @@ def _env_default(kind: str) -> tuple[Optional[Any], str]:
     """
     name = DEFAULT_LIMIT_ENV_VARS[kind]
     raw = os.environ.get(name)
-    builtin = _BUILTIN_DEFAULTS[kind]
     if raw is None or not raw.strip():
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     try:
         number = float(raw.strip())
     except ValueError:
         logger.warning("Ignoring %s=%r: not a number", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     if not math.isfinite(number):
         logger.warning("Ignoring %s=%r: not a finite ceiling", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     if number == 0:
         return None, LIMIT_SOURCE_ENVIRONMENT
     parsed = (
@@ -309,7 +303,7 @@ def _env_default(kind: str) -> tuple[Optional[Any], str]:
     )
     if parsed is None:
         logger.warning("Ignoring %s=%r: not a positive ceiling", name, raw)
-        return builtin, LIMIT_SOURCE_DEFAULT
+        return None, LIMIT_SOURCE_ENVIRONMENT
     return parsed, LIMIT_SOURCE_ENVIRONMENT
 
 
@@ -478,24 +472,17 @@ def _violation(
 ) -> LimitViolation:
     """Build one violation, naming the knob when a default fired.
 
-    A flow's own ceiling reads as before. A default names the flow key that
-    overrides it and, for the built-in value, the environment variable a
-    self-hosted operator can set instead.
+    A flow's own ceiling reads as before. An instance default names its
+    environment variable and the flow key that overrides it.
     """
     source = limits.source_of(kind)
     if source == LIMIT_SOURCE_FLOW:
         message = f"execution {noun} ceiling reached: {used}"
     else:
+        # The only non-flow source: there is no built-in default any more.
         env_name = DEFAULT_LIMIT_ENV_VARS[kind]
-        if source == LIMIT_SOURCE_ENVIRONMENT:
-            origin = f"instance default {env_name}={_format_limit(limit)}"
-            change = f"set agent_config.limits.{kind} on the flow to override it"
-        else:
-            origin = f"built-in default {kind}={_format_limit(limit)}"
-            change = (
-                f"set agent_config.limits.{kind} on the flow, or {env_name} "
-                "on the server, to change it"
-            )
+        origin = f"instance default {env_name}={_format_limit(limit)}"
+        change = f"set agent_config.limits.{kind} on the flow to override it"
         message = (
             f"default execution {noun} ceiling reached: {used} ({origin}; {change})"
         )

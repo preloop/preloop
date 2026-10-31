@@ -1390,7 +1390,11 @@ async def runner_ws(
                     )
 
                     gateway_requests = await count_gateway_requests_settled(
-                        db, execution_id=execution_id, pending_job=leased_job
+                        db,
+                        execution_id=execution_id,
+                        pending_job=leased_job,
+                        status=status,
+                        result=result if isinstance(result, dict) else None,
                     )
 
                     # Server truth: count this run's gateway rows, and fail a

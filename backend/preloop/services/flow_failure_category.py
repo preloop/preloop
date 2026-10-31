@@ -309,7 +309,9 @@ _HOSTED_TARIFF_RE = re.compile(
 # the provider rules: the agent may also log an upstream 429/5xx it produced
 # while retrying the same refused request, and the money rule is the cause.
 # "Execution budget exceeded: default execution token ceiling reached: ...
-# (built-in default max_total_tokens=2000000; ...)". The same refusal as
+# (instance default PRELOOP_DEFAULT_MAX_TOTAL_TOKENS=...; ...)", or the older
+# "built-in default ..." wording of rows written before built-in defaults were
+# removed. The same refusal as
 # below, but for a ceiling the flow never set; matched first so it keeps its
 # own category.
 _DEFAULT_LIMIT_RE = re.compile(

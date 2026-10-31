@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -284,7 +285,7 @@ func TestClaudeGatewayPlanMergesSettingsLevelCustomHeaders(t *testing.T) {
 	if json.Unmarshal(raw, &doc) != nil || doc["env"]["ANTHROPIC_CUSTOM_HEADERS"] != "X-Team: blue\nX-Preloop-Execution: "+hostGatewayTestMarker {
 		t.Fatalf("settings file = %s", raw)
 	}
-	if info, _ := os.Stat(args[1]); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(args[1]); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", info.Mode())
 	}
 }
