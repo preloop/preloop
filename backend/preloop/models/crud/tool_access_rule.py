@@ -199,10 +199,10 @@ class CRUDToolAccessRule(CRUDBase[ToolAccessRule]):
 def list_native_require_approval_tool_names(
     db: Session, *, account_id: Any, tool_source: str = "agent"
 ) -> List[str]:
-    """Native tools with an enabled require-approval rule for every agent.
+    """Native tools with an enabled require-approval rule.
 
-    Covers account-wide native tool configurations (no managed agent pin):
-    the ones a flow run's native commands are evaluated against. Conditions
+    Includes agent-pinned configurations: the permission path resolves a
+    native config by name and source without an agent filter. Conditions
     are not evaluated: the caller uses this to refuse an executor that cannot
     evaluate any of them.
 
@@ -226,7 +226,6 @@ def list_native_require_approval_tool_names(
             ToolConfiguration.account_id == account_id,
             ToolConfiguration.tool_source == tool_source,
             ToolConfiguration.is_enabled.is_(True),
-            ToolConfiguration.managed_agent_id.is_(None),
             ToolAccessRule.account_id == account_id,
             ToolAccessRule.is_enabled.is_(True),
             ToolAccessRule.action == "require_approval",

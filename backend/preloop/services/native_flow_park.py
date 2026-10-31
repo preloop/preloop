@@ -344,8 +344,11 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
     """Why a hosted container run cannot honour this flow's approval rules.
 
     Hosted containers have no native command hook yet, so a native
-    ``require_approval`` rule that applies to this flow (an account-wide
-    native rule, or a rule scoped to the flow itself) would be skipped.
+    ``require_approval`` rule that could apply to this flow (any enabled
+    native tool configuration, including agent-pinned ones, or a rule scoped
+    to the flow or its managed agent) would be skipped. Conservative on
+    purpose: the permission path resolves native configs without an agent
+    filter.
     Rather than run ungated, the caller refuses the launch.
 
     Args:
@@ -361,6 +364,7 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
     )
     from preloop.services.subject_governance import (
         SUBJECT_TYPE_FLOWS,
+        SUBJECT_TYPE_MANAGED_AGENTS,
         get_subject_governance,
     )
 
@@ -369,12 +373,23 @@ def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
         return None
     names = set(list_native_require_approval_tool_names(db, account_id=account_id))
     account = crud_account.get(db, id=str(account_id))
-    scoped = get_subject_governance(
-        getattr(account, "meta_data", None) if account is not None else None,
-        subject_type=SUBJECT_TYPE_FLOWS,
-        subject_id=str(flow.id),
-    ).get("tool_rules")
-    if isinstance(scoped, dict):
+    meta = getattr(account, "meta_data", None) if account is not None else None
+    scopes = [(SUBJECT_TYPE_FLOWS, str(flow.id))]
+    # Employee-bound flows run with the target agent's native policy (see
+    # flow_runtime_token), so that agent's scoped rules apply too.
+    agent_id = None
+    if isinstance((getattr(flow, "trigger_config", None) or {}).get(
+        "employee_events"
+    ), dict):
+        agent_id = (getattr(flow, "agent_config", None) or {}).get("target_agent_id")
+    if agent_id:
+        scopes.append((SUBJECT_TYPE_MANAGED_AGENTS, str(agent_id)))
+    for subject_type, subject_id in scopes:
+        scoped = get_subject_governance(
+            meta, subject_type=subject_type, subject_id=subject_id
+        ).get("tool_rules")
+        if not isinstance(scoped, dict):
+            continue
         for tool_name, rules in scoped.items():
             for rule in rules if isinstance(rules, list) else []:
                 if (

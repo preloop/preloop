@@ -588,3 +588,68 @@ def test_orchestrator_refuses_hosted_launch_with_approval_gap(monkeypatch) -> No
     FlowExecutionOrchestrator._refuse_hosted_approval_gap(
         fake, {"agent_config": {"sandbox_type": "read-only"}}
     )
+
+
+def test_hosted_gap_includes_agent_pinned_native_rules(db_session, test_user) -> None:
+    """The permission path resolves configs without an agent filter."""
+    from preloop.models.crud import crud_managed_agent
+
+    flow, _ = _flow_and_execution(db_session, test_user.account_id)
+    agent = crud_managed_agent.create_custom_agent(
+        db_session, account_id=test_user.account_id, display_name="Pinned"
+    )
+    config = _native_rule(
+        db_session,
+        test_user.account_id,
+        action="require_approval",
+        managed_agent_id=agent.id,
+    )
+    reason = native_flow_park.hosted_approval_gap(db_session, flow)
+    assert reason is not None and config.tool_name in reason
+
+
+def test_hosted_gap_includes_employee_agent_scoped_rules(db_session, test_user) -> None:
+    from preloop.models.crud import crud_account
+
+    agent_id = str(uuid.uuid4())
+    flow, _ = _flow_and_execution(db_session, test_user.account_id)
+    flow.trigger_config = {"employee_events": {}}
+    flow.agent_config = {"target_agent_id": agent_id}
+    db_session.add(flow)
+    account = crud_account.get(db_session, id=str(test_user.account_id))
+    account.meta_data = {
+        **(account.meta_data or {}),
+        "subject_governance": {
+            "managed_agents": {
+                agent_id: {"tool_rules": {"Bash": [{"action": "require_approval"}]}}
+            }
+        },
+    }
+    db_session.add(account)
+    db_session.flush()
+    reason = native_flow_park.hosted_approval_gap(db_session, flow)
+    assert reason is not None and "Bash" in reason
+
+
+@pytest.mark.asyncio
+async def test_park_marker_survives_reference_only_redaction(monkeypatch) -> None:
+    from preloop.services.approval_service import ApprovalService
+
+    service = ApprovalService(MagicMock(), "http://localhost")
+    seen: dict = {}
+
+    async def reference_only(_account_id, *, tool_name, tool_args, **_kw):
+        seen["args"] = tool_args
+        return {"_reference": "ref-1"}
+
+    monkeypatch.setattr(service, "_storage_redacted_user_args", reference_only)
+    marker = {"execution_id": "e", "fingerprint": "f"}
+    stored = await service._storage_redacted_tool_args(
+        uuid.uuid4(),
+        tool_name="Bash",
+        tool_args={"command": "make", native_flow_park.NATIVE_PARK_MARKER: marker},
+        managed_agent_id=None,
+    )
+    assert stored == {"_reference": "ref-1", native_flow_park.NATIVE_PARK_MARKER: marker}
+    assert native_flow_park.NATIVE_PARK_MARKER not in seen["args"]
+    assert native_flow_park.is_native_park(SimpleNamespace(tool_args=stored))
