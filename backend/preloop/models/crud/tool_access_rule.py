@@ -196,6 +196,46 @@ class CRUDToolAccessRule(CRUDBase[ToolAccessRule]):
         return count
 
 
+def list_native_require_approval_tool_names(
+    db: Session, *, account_id: Any, tool_source: str = "agent"
+) -> List[str]:
+    """Native tools with an enabled require-approval rule.
+
+    Includes agent-pinned configurations: the permission path resolves a
+    native config by name and source without an agent filter. Conditions
+    are not evaluated: the caller uses this to refuse an executor that cannot
+    evaluate any of them.
+
+    Args:
+        db: Database session.
+        account_id: Account id.
+        tool_source: Native tool source (``agent``).
+
+    Returns:
+        Sorted distinct tool names.
+    """
+    from ..models.tool_configuration import ToolConfiguration
+
+    rows = (
+        db.query(ToolConfiguration.tool_name)
+        .join(
+            ToolAccessRule,
+            ToolAccessRule.tool_configuration_id == ToolConfiguration.id,
+        )
+        .filter(
+            ToolConfiguration.account_id == account_id,
+            ToolConfiguration.tool_source == tool_source,
+            ToolConfiguration.is_enabled.is_(True),
+            ToolAccessRule.account_id == account_id,
+            ToolAccessRule.is_enabled.is_(True),
+            ToolAccessRule.action == "require_approval",
+        )
+        .distinct()
+        .all()
+    )
+    return sorted(str(row[0]) for row in rows)
+
+
 async def get_multi_by_config_async(
     db: Session,
     *,

@@ -130,6 +130,9 @@ type permissionCheckResponse struct {
 	// DecidedBy names who decided a held approval (username, "AI review" or
 	// "policy"); empty when no approval was involved.
 	DecidedBy string `json:"decided_by,omitempty"`
+	// Parked marks an unattended flow run paused on approval RequestID. It is
+	// always a deny: the command must not run until the run resumes.
+	Parked bool `json:"parked,omitempty"`
 }
 
 // hookDecision is the normalized outcome the adapter maps into each agent's
@@ -463,6 +466,9 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 // approvalDecidedMessage tells the terminal who decided a held approval.
 func approvalDecidedMessage(behavior string, resp permissionCheckResponse) string {
+	if resp.Parked {
+		return "Paused in Preloop: waiting for approval " + strings.TrimSpace(resp.RequestID)
+	}
 	by := strings.TrimSpace(resp.DecidedBy)
 	if by == "" || resp.TimedOut {
 		return ""
@@ -1010,7 +1016,7 @@ func callPermissionCheck(
 	destinations := map[string]interface{}{
 		"decision": &decoded.Decision, "reason": &decoded.Reason, "timed_out": &decoded.TimedOut,
 		"request_id": &decoded.RequestID, "operator_note": &decoded.OperatorNote,
-		"decided_by": &decoded.DecidedBy,
+		"decided_by": &decoded.DecidedBy, "parked": &decoded.Parked,
 	}
 	for name, destination := range destinations {
 		raw, present := fields[name]
@@ -1029,6 +1035,9 @@ func callPermissionCheck(
 	}
 	if decoded.TimedOut && decoded.Decision == "allow" {
 		return permissionCheckResponse{}, fmt.Errorf("invalid permission response: expired approval cannot allow")
+	}
+	if decoded.Parked && decoded.Decision == "allow" {
+		return permissionCheckResponse{}, fmt.Errorf("invalid permission response: parked run cannot allow")
 	}
 	return decoded, nil
 }

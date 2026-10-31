@@ -108,6 +108,21 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The run reached its time limit while the model stream was sending nothing. Lower agent_config.stream_idle_timeout_seconds or use another model; a longer limit rarely helps.',
   },
+  approval_denied: {
+    label: 'approval denied',
+    tooltip:
+      'A command needed approval, the run paused, and the request was refused. The run stopped instead of going on without it.',
+  },
+  approval_timeout: {
+    label: 'approval timeout',
+    tooltip:
+      'A command needed approval and nobody decided within the approval window, so the run stopped.',
+  },
+  approval_unavailable: {
+    label: 'approval unavailable',
+    tooltip:
+      'A rule requires approval for native commands, and hosted containers cannot pause for one yet. Use a private runner host profile or change the rule.',
+  },
   timeout: {
     label: 'timeout',
     tooltip: 'The run reached its time limit and was stopped.',

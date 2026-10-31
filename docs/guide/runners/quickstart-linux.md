@@ -789,7 +789,19 @@ models fail closed instead of silently selecting another model.
 
 Onboard the CLI's Preloop governance hooks or plugin before enabling the
 profile. Native permissions and Preloop approval policy both apply; installing
-a profile does not grant blanket approval. If OpenCode or DeepSeek reports
+a profile does not grant blanket approval.
+
+A command that matches a rule requiring approval does not run and does not
+hold the hook open. The execution pauses (`WAITING_FOR_HUMAN`), the runner job
+is stopped and its credential released, and a normal approval request naming
+the flow, the execution, the command and the rule appears in **Approvals** and
+on your notification channels. The window is the flow's
+`approval_window_seconds` (or the workflow and account defaults). If it is
+approved, the run resumes and that exact command may run once. If it is
+refused, cancelled or the window closes, the run ends `FAILED` with
+`approval_denied` or `approval_timeout`. While a run is paused, any other
+command it tries is denied without a second request. The runner does not need
+to stay online while the run is paused. If OpenCode or DeepSeek reports
 `host_governance_not_ready`, reinstall or check the Preloop plugin: the runner
 withholds the task until plugin activation is acknowledged and terminates the
 process if readiness times out. Per-job MCP configuration carries
