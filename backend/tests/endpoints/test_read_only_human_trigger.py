@@ -105,3 +105,58 @@ def test_ordinary_flow_trigger_is_not_refused(
     response = client.post(f"/api/v1/flows/{flow.id}/trigger", json={})
     assert response.status_code != 409, response.text
     assert calls, "the read-only guard must run on every human trigger"
+
+
+@pytest.mark.asyncio
+async def test_pr_preset_run_maps_read_only_refusal_to_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from preloop.services import preset_runner
+    from preloop.services.read_only_review import read_only_trigger_message
+
+    flow = SimpleNamespace(id="flow-1", name="Pull Request Reviewer")
+    monkeypatch.setattr(
+        preset_runner, "_load_visible_project", lambda *a, **k: (None, None, None)
+    )
+    monkeypatch.setattr(
+        preset_runner, "resolve_or_create_flow", lambda *a, **k: (flow, False)
+    )
+    monkeypatch.setattr(
+        preset_runner, "_fetch_pull_request_detail", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        preset_runner, "build_pull_request_trigger_payload", lambda *a: {}
+    )
+    monkeypatch.setattr(preset_runner, "_active_run_for_target", lambda *a, **k: None)
+
+    async def refuse(self: Any, **kwargs: Any) -> Any:
+        raise ReadOnlyHumanTriggerError(read_only_trigger_message("flow-1"))
+
+    monkeypatch.setattr(FlowTriggerService, "trigger_flow", refuse)
+    with pytest.raises(preset_runner.PresetRunnerError) as raised:
+        await preset_runner._run_preset_on_pull_request(
+            MagicMock(),
+            current_user=SimpleNamespace(account_id="acct"),
+            preset_slug="pull-request-reviewer",
+            target={"project_id": "p", "number": 7},
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    assert raised.value.status_code == 409
+    assert "head_sha" in str(raised.value.detail)
+
+
+def test_flow_summary_marks_read_only_flows_ci_only(
+    client: TestClient, db_session: Session, test_user: Any
+) -> None:
+    ro = _flow(db_session, test_user, read_only=True)
+    plain = _flow(db_session, test_user, read_only=False)
+    response = client.get("/api/v1/flows/summary")
+    assert response.status_code == 200, response.text
+    by_id = {row["id"]: row for row in response.json()}
+    assert by_id[str(ro.id)]["ci_only"] is True
+    assert by_id[str(plain.id)]["ci_only"] is False
+    assert "git_clone_config" not in by_id[str(ro.id)]

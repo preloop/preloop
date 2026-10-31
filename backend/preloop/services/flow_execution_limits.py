@@ -301,6 +301,9 @@ def _env_default(kind: str) -> tuple[Optional[Any], str]:
     except ValueError:
         logger.warning("Ignoring %s=%r: not a number", name, raw)
         return builtin, LIMIT_SOURCE_DEFAULT
+    if not math.isfinite(number):
+        logger.warning("Ignoring %s=%r: not a finite ceiling", name, raw)
+        return builtin, LIMIT_SOURCE_DEFAULT
     if number == 0:
         return None, LIMIT_SOURCE_ENVIRONMENT
     parsed = (

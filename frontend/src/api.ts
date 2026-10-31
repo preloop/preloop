@@ -4886,6 +4886,8 @@ export interface FlowSummary {
     cron?: string;
   } | null;
   execution_stats: Record<string, any> | null;
+  /** Read-only review flow: only its CI identity may start it. */
+  ci_only?: boolean;
 }
 
 /** List presentation metadata; statistics are opt-in, configurations omitted. */

@@ -36052,6 +36052,10 @@ components:
             type: object
           - type: 'null'
           title: Execution Stats
+        ci_only:
+          type: boolean
+          title: Ci Only
+          default: false
       type: object
       required:
       - id

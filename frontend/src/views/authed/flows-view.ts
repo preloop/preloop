@@ -231,7 +231,9 @@ function flowActionResource(row: FlowListRow): FlowActionResource {
     id: row.id,
     name: row.name,
     is_enabled: row.status !== 'paused',
-    ci_only: row.source?.git_clone_config?.publication_mode === 'read_only',
+    ci_only:
+      row.source?.ci_only === true ||
+      row.source?.git_clone_config?.publication_mode === 'read_only',
   };
 }
 

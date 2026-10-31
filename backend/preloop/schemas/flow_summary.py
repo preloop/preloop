@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class FlowSummaryResponse(BaseModel):
@@ -32,3 +32,27 @@ class FlowSummaryResponse(BaseModel):
     preset_update_available: bool
     schedule_state: dict[str, Any] | None = None
     execution_stats: dict[str, Any] | None = None
+    #: True for a read-only review flow, which only its restricted CI
+    #: identity may start; a person's trigger is refused with 409.
+    ci_only: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_ci_only(cls, data: Any) -> Any:
+        """Derive ``ci_only`` from the row's clone config without exposing it."""
+        from preloop.services.read_only_review import read_only_review
+
+        if isinstance(data, dict):
+            if "ci_only" not in data:
+                config = data.get("git_clone_config")
+                return {**data, "ci_only": read_only_review(config)}
+            return data
+        config = getattr(data, "git_clone_config", None)
+        if not read_only_review(config):
+            return data
+        fields = {
+            name: getattr(data, name)
+            for name in cls.model_fields
+            if name != "ci_only" and hasattr(data, name)
+        }
+        return {**fields, "ci_only": True}

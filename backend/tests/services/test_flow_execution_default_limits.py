@@ -209,3 +209,53 @@ def test_gateway_refusal_marks_default_limit_reached(
     assert execution.status == "FAILED"
     assert execution.failure_category == FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED
     assert "max_turns=100" in execution.error_message
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+def test_non_finite_environment_value_keeps_the_builtin_default(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    for name in DEFAULT_LIMIT_ENV_VARS.values():
+        monkeypatch.setenv(name, raw)
+    limits = resolve_execution_limits({})
+    assert limits.as_dict() == {
+        "max_total_tokens": 2_000_000,
+        "max_usd": 10.0,
+        "max_turns": 100,
+    }
+
+
+@pytest.mark.parametrize(
+    ("agent_config", "expected_tokens"),
+    [
+        ({}, {"value": 2_000_000, "source": "default"}),
+        (
+            {"limits": {"max_total_tokens": 900}},
+            {"value": 900, "source": "flow"},
+        ),
+    ],
+)
+def test_flow_response_fills_effective_limits(
+    agent_config: dict, expected_tokens: dict
+) -> None:
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        id=uuid4(),
+        name="Review",
+        prompt_template="Review.",
+        agent_type="codex",
+        agent_config=agent_config,
+        created_at=now,
+        updated_at=now,
+    )
+    response = FlowResponse.model_validate(row)
+    body = response.model_dump(mode="json")
+    assert response.effective_limits["max_total_tokens"] == expected_tokens
+    assert body["effective_limits"]["max_turns"] == {
+        "value": 100,
+        "source": "default",
+    }
