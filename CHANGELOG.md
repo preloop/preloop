@@ -59,10 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The built-in default per-execution token ceiling is 20,000,000 tokens
-  (was 2,000,000; 100 turns and 10 USD are unchanged), and the Pull Request
-  Reviewer preset's own ceiling is 20,000,000 tokens. Large PR reviews
-  legitimately use 2 to 13 million tokens.
+- No built-in default run ceilings. A flow runs without a token, turn or
+  cost ceiling unless it sets `agent_config.limits`, or the operator sets
+  `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
+  `PRELOOP_DEFAULT_MAX_USD`, which become the instance default (a run they
+  stop fails `default_limit_reached`). The 2,000,000-token built-in default
+  stopped legitimate PR reviews, which use 2 to 13 million tokens. The Pull
+  Request Reviewer preset sets its own 20,000,000-token ceiling. The flow
+  page shows "None" with a hint when no ceiling applies.
 - A run the gateway stopped at a run limit keeps `default_limit_reached` or
   `budget_exceeded` and the limit message, even when the agent then fails on
   a checkpoint or capture call refused because the execution was closed.

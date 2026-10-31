@@ -96,11 +96,14 @@ has a result schema (see
 set `agent_config.native_result: false` to opt out.
 
 Each review execution runs under the per-execution ceilings shown as **Run
-limits** on the flow page: the flow's own `agent_config.limits`, otherwise
-20,000,000 tokens, 100 turns and 10 USD (`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
-`PRELOOP_DEFAULT_MAX_TURNS` and `PRELOOP_DEFAULT_MAX_USD` change these on a
-self-hosted instance; `0` turns one off). A run stopped by a default fails
-with `default_limit_reached`.
+limits** on the flow page: the flow's own `agent_config.limits`, otherwise an
+instance default when the operator set `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
+`PRELOOP_DEFAULT_MAX_TURNS` or `PRELOOP_DEFAULT_MAX_USD`, otherwise none.
+There is no built-in default, so set explicit limits on review flows, for
+example `{"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd":
+25}}` for a PR review (large reviews use several million tokens). A run
+stopped by the flow's own ceiling fails with `budget_exceeded`, one stopped by
+an instance default with `default_limit_reached`.
 
 This mode requires an App installation and the control plane's configured App
 signing key. At execution startup, Preloop rechecks the principal and repository

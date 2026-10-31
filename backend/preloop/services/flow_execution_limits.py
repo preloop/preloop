@@ -39,13 +39,11 @@ runtime in this tree exposes a usable max-turns flag today, so the gateway
 count is the enforcement; if a harness grows one, it can read the same value
 from ``agent_config.limits`` and pass it through as an early stop.
 
-Default ceilings. A flow that sets no ceiling still gets one: 20,000,000
-tokens, 100 turns and 10 USD per execution
-(:data:`DEFAULT_MAX_TOTAL_TOKENS`, :data:`DEFAULT_MAX_TURNS`,
-:data:`DEFAULT_MAX_USD`). A value on the flow wins per key. A self-hosted
-instance replaces a built-in default with ``PRELOOP_DEFAULT_MAX_TOTAL_TOKENS``,
-``PRELOOP_DEFAULT_MAX_TURNS`` or ``PRELOOP_DEFAULT_MAX_USD``; ``0`` there
-removes that default. A run stopped by a default (built-in or instance) fails
+Default ceilings. There is no built-in default: a flow that sets no ceiling
+runs without one, unless the operator sets ``PRELOOP_DEFAULT_MAX_TOTAL_TOKENS``,
+``PRELOOP_DEFAULT_MAX_TURNS`` or ``PRELOOP_DEFAULT_MAX_USD``, which then apply
+to every flow that does not set that ceiling itself (``0`` or unset means no
+default). A value on the flow wins per key. A run stopped by such a default fails
 with ``default_limit_reached`` rather than ``budget_exceeded``, and its message
 names the knob that changes it, so a review that ran out of a ceiling nobody
 chose reads differently from one that hit the flow's own.
@@ -77,22 +75,19 @@ MAX_TOTAL_TOKENS_KEY = "max_total_tokens"
 MAX_USD_KEY = "max_usd"
 MAX_TURNS_KEY = "max_turns"
 
-#: Built-in ceilings for a flow that sets none (founder decision, #2140).
-DEFAULT_MAX_TOTAL_TOKENS = 20_000_000
-DEFAULT_MAX_TURNS = 100
-DEFAULT_MAX_USD = 10.0
-
-#: Environment overrides of the built-in defaults, per ceiling. ``0`` disables
-#: that default; unset, blank or unparsable keeps the built-in value.
+#: Environment-provided default ceilings, per ceiling. There is no built-in
+#: default: a flow without ``agent_config.limits`` runs unbounded unless the
+#: operator sets one of these. Unset, blank, ``0`` or unparsable means no
+#: default for that ceiling.
 DEFAULT_LIMIT_ENV_VARS: dict[str, str] = {
     MAX_TOTAL_TOKENS_KEY: "PRELOOP_DEFAULT_MAX_TOTAL_TOKENS",
     MAX_TURNS_KEY: "PRELOOP_DEFAULT_MAX_TURNS",
     MAX_USD_KEY: "PRELOOP_DEFAULT_MAX_USD",
 }
 _BUILTIN_DEFAULTS: dict[str, Any] = {
-    MAX_TOTAL_TOKENS_KEY: DEFAULT_MAX_TOTAL_TOKENS,
-    MAX_TURNS_KEY: DEFAULT_MAX_TURNS,
-    MAX_USD_KEY: DEFAULT_MAX_USD,
+    MAX_TOTAL_TOKENS_KEY: None,
+    MAX_TURNS_KEY: None,
+    MAX_USD_KEY: None,
 }
 
 #: Where an effective ceiling came from.
@@ -146,7 +141,8 @@ class ExecutionLimits:
 
     ``sources`` names where each set ceiling came from: ``flow`` (the flow's
     own ``agent_config.limits``), ``environment`` (a ``PRELOOP_DEFAULT_*``
-    override) or ``default`` (the built-in value). A reader of explicit flow
+    default). ``default`` is kept for compatibility and no longer produced:
+    there is no built-in value. A reader of explicit flow
     limits (:func:`parse_execution_limits`) leaves it empty.
     """
 
@@ -323,8 +319,8 @@ def resolve_execution_limits(
     """The ceilings that actually bound an execution of this flow.
 
     Per ceiling: the flow's own value wins; otherwise the instance default
-    (``PRELOOP_DEFAULT_*``, where ``0`` means none); otherwise the built-in
-    default. Subscription runs priced at $0 are still bounded by tokens and
+    (``PRELOOP_DEFAULT_*``, where ``0`` means none); otherwise no ceiling.
+    Subscription runs priced at $0 are still bounded by tokens and
     turns, because those are compared independently of cost.
 
     Args:

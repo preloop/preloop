@@ -166,18 +166,17 @@ failure category and a message naming the ceiling. `max_turns` is counted at
 the gateway as one turn per model request, since no bundled runtime exposes a
 usable max-turns flag.
 
-A ceiling the flow does not set falls back to a default: 20,000,000 tokens,
-100 turns and 10 USD per execution. The flow's own value wins per key. A
-self-hosted instance replaces a built-in default with
-`PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
-`PRELOOP_DEFAULT_MAX_USD`; `0` removes that default. A run stopped by a
-default ceiling fails with the `default_limit_reached` category instead of
+There is no built-in default ceiling: a ceiling the flow does not set is
+unbounded unless the operator sets `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`,
+`PRELOOP_DEFAULT_MAX_TURNS` or `PRELOOP_DEFAULT_MAX_USD`, which then apply to
+every flow that does not set that ceiling (`0` or unset means none). The
+flow's own value wins per key. A run stopped by such a default ceiling fails with the `default_limit_reached` category instead of
 `budget_exceeded`, and its message names the key, the value and the setting
 that changes it. A subscription run priced at $0 never reaches the USD
 ceiling but is still stopped by tokens and turns. Flow reads return the
 effective ceilings as `effective_limits` (`{kind: {value, source}}`, where
-`source` is `flow`, `environment` or `default`), and the console shows them
-on the flow page as **Run limits**.
+`source` is `flow` or `environment`), and the console shows them on the
+flow page as **Run limits** ("None" with a hint when nothing is set).
 
 The flow API also accepts `max_budget` (USD) and `max_iterations` as top-level
 fields, which is what the console's flow form edits ("Spend limit per run" and
