@@ -34,6 +34,24 @@ class ResultSchemaError(ValueError):
     """A flow's result schema is too large or not a valid JSON Schema."""
 
 
+#: Keys the runner and control plane add to a result next to the agent's
+#: document (host-exec harness envelope, gateway metering, container
+#: termination). They are not validated against the flow's schema.
+PLATFORM_RESULT_KEYS = frozenset(
+    {
+        "container_termination",
+        "harness",
+        "session_id",
+        "usage",
+        "premium_requests",
+        "gateway_metered",
+        "gateway_request_count",
+        "gateway_bypass_allowed",
+        "host_read_only_review",
+    }
+)
+
+
 def check_result_schema(schema: Any) -> Optional[dict[str, Any]]:
     """Validate a flow's ``result_schema`` at save time.
 
@@ -125,7 +143,12 @@ def validate_result_document(
         }
     instance = dict(document)
     # Platform-owned runtime metadata is not part of the authored document.
-    instance.pop("container_termination", None)
+    # A schema that declares one of these keys still sees it.
+    declared = schema.get("properties") if isinstance(schema, Mapping) else None
+    declared = declared if isinstance(declared, Mapping) else {}
+    for key in PLATFORM_RESULT_KEYS:
+        if key not in declared:
+            instance.pop(key, None)
     try:
         validator = Draft202012Validator(dict(schema))
         found = sorted(

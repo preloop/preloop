@@ -719,6 +719,13 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	if err != nil {
 		return nil, err
 	}
+	resultSchema, err := jobHostExecResultSchema(job)
+	if err != nil {
+		return nil, err
+	}
+	if resultSchema != nil && wantHarness != hostExecHarnessCodex {
+		return nil, fmt.Errorf("native structured results are supported for Codex host profiles only")
+	}
 	checkout, err := jobHostExecCheckout(job)
 	if err != nil {
 		return nil, err
@@ -832,6 +839,14 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		switch wantHarness {
 		case hostExecHarnessCodex:
 			args, stdin, extraEnv, extraFiles, err = prepareCodexHostExecSandbox(profile, job, workspace, scratch, mcpToken, readOnly != nil)
+			if err == nil && resultSchema != nil {
+				var nativeArgs, nativeFiles []string
+				nativeArgs, nativeFiles, resultPath, err = codexNativeResultArgs(scratch, resultSchema)
+				files = append(files, nativeFiles...)
+				if err == nil {
+					args = append(append(append([]string{}, args[:len(args)-1]...), nativeArgs...), args[len(args)-1])
+				}
+			}
 			if err == nil && gatewayMarker != "" {
 				gatewayArgs, gatewayEnv, ok := codexHostGatewayArgs(gatewayMarker)
 				gatewayNotice = hostExecGatewayNotice(wantHarness, ok)

@@ -180,3 +180,74 @@ func TestClaudeGatewayEnvKeepsExistingCustomHeaders(t *testing.T) {
 		t.Fatal("settings-level custom headers would drop the marker; must report not routed")
 	}
 }
+
+func TestCodexHostJobAsksForTheNativeResultSchema(t *testing.T) {
+	setupCodexReadOnlyHost(t, hostExecProfile{AllowCheckout: true})
+	schema := map[string]any{"type": "object", "additionalProperties": false, "required": []any{"status"}, "properties": map[string]any{"status": map[string]any{"type": "string"}}}
+	run, err := newHostExecJob(codexReadOnlyJob(map[string]any{hostExecResultSchemaKey: schema}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.cleanup()
+	args := run.cmd.Args
+	schemaPath := cursorArgValue(args, "--output-schema")
+	if schemaPath == "" || cursorArgValue(args, "--output-last-message") != run.resultPath || run.resultPath == "" {
+		t.Fatalf("native result flags missing: %v", args)
+	}
+	if args[len(args)-1] != "-" {
+		t.Fatalf("prompt marker must stay last: %v", args)
+	}
+	written, err := os.ReadFile(schemaPath)
+	if err != nil || !strings.Contains(string(written), `"additionalProperties":false`) {
+		t.Fatalf("schema file = %q, %v", written, err)
+	}
+}
+
+func TestNativeResultSchemaIsCodexOnly(t *testing.T) {
+	setupClaudeHost(t, true, `cat >/dev/null`)
+	if _, err := newHostExecJob(claudeJob(map[string]any{hostExecResultSchemaKey: map[string]any{"type": "object"}})); err == nil {
+		t.Fatal("schema accepted for a harness without native results")
+	}
+	if _, err := jobHostExecResultSchema(map[string]any{hostExecResultSchemaKey: "not-an-object"}); err == nil {
+		t.Fatal("non-object schema accepted")
+	}
+}
+
+func TestCodexNativeResultBecomesTheResultDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "answer.json")
+	answer := `{"status":"success","recommendation":"request_changes","findings":[],"harness":"spoofed","session_id":"spoofed"}`
+	if err := os.WriteFile(path, []byte(answer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &runnerLogBuffer{native: true, harness: hostExecHarnessCodex, resultPath: path}
+	_, _ = b.Write([]byte(`{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":4}}` + "\n"))
+	b.finish()
+	result, err := nativeRunnerResult(b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["recommendation"] != "request_changes" || result["status"] != "success" {
+		t.Fatalf("answer not used: %v", result)
+	}
+	if result["harness"] != hostExecHarnessCodex || result["session_id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("runner facts overwritten: %v", result)
+	}
+	if _, ok := result["usage"].(map[string]any); !ok {
+		t.Fatalf("usage lost: %v", result)
+	}
+}
+
+func TestCodexNativeResultCannotTurnAFailedTurnIntoSuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "answer.json")
+	if err := os.WriteFile(path, []byte(`{"status":"success"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	merged := mergeCodexNativeResult(map[string]any{"status": "failure", "harness": hostExecHarnessCodex}, path)
+	if merged["status"] != "failure" {
+		t.Fatalf("failed turn reported as %v", merged["status"])
+	}
+	if got := mergeCodexNativeResult(map[string]any{"status": "success"}, filepath.Join(t.TempDir(), "missing.json")); got["status"] != "success" || len(got) != 1 {
+		t.Fatalf("missing answer changed the result: %v", got)
+	}
+}

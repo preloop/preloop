@@ -14,6 +14,9 @@ delivery time the control plane adds, in memory only:
   marker the runner sends as ``X-Preloop-Execution`` on the CLI's gateway
   requests (``preloop.services.host_exec_gateway``). It names the
   execution and authenticates nothing on its own.
+* ``host_exec_result_schema``: for a Codex run with native structured
+  results on, the flow's result schema. The runner passes it to Codex
+  ``--output-schema`` and returns the CLI's final answer as the result.
 * ``host_exec_publication``: for a managed legacy publishing lease (#1069),
   the checkout path, managed branch and commit message. The push reuses the
   checkout credential of that single repository, which the runner sends as a
@@ -37,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 #: Upper bound the runner also enforces.
 HOST_EXEC_MAX_CHECKOUT_REPOSITORIES = 8
+
+#: Delivery key carrying a native-result schema to a Codex host runner.
+HOST_EXEC_RESULT_SCHEMA_KEY = "host_exec_result_schema"
 
 
 class HostExecDeliveryError(ValueError):
@@ -338,6 +344,11 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
         # Identifiers only, signed: the runner sends it next to the agent's
         # own gateway key so the traffic is attributed to this execution.
         hydrated[HOST_EXEC_GATEWAY_LEASE_KEY] = host_gateway_delivery(execution, flow)
+    result_schema = _host_native_result_schema(job, execution, flow)
+    if result_schema is not None:
+        # Data only: the runner asks Codex for this shape (--output-schema)
+        # and returns the CLI's final answer as the result document.
+        hydrated[HOST_EXEC_RESULT_SCHEMA_KEY] = result_schema
     if flow_uses_mcp(flow):
         runtime_session = crud_runtime_session.get_by_source(
             db,
@@ -395,6 +406,40 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
             "its repository"
         )
     return hydrated
+
+
+def _host_native_result_schema(
+    job: Dict[str, Any], execution: Any, flow: Any
+) -> Optional[Dict[str, Any]]:
+    """The schema a Codex host run should return natively, if any.
+
+    Uses the native-result decision the orchestrator recorded on the
+    execution (``_native_result``), so a host run follows the same default
+    as a hosted one: on for Codex review flows with a validated schema.
+
+    Args:
+        job: The persisted host lease.
+        execution: The execution being delivered.
+        flow: Its flow.
+
+    Returns:
+        The validated schema, or None when native results are off.
+    """
+    from preloop.services.flow_result_schema import check_result_schema
+    from preloop.services.native_result import NATIVE_RESULT_RECORD_KEY
+
+    if str(job.get("agent_type") or "").lower() != "codex":
+        return None
+    details = getattr(execution, "trigger_event_details", None) or {}
+    record = (
+        details.get(NATIVE_RESULT_RECORD_KEY) if isinstance(details, dict) else None
+    )
+    if not isinstance(record, dict) or record.get("value") is not True:
+        return None
+    schema = getattr(flow, "result_schema", None)
+    if not schema or getattr(flow, "validate_result", True) is False:
+        return None
+    return check_result_schema(schema)
 
 
 def _read_only_delivery(
