@@ -340,14 +340,10 @@ def refused_or_expired(request: Any) -> bool:
     return status in _REFUSED_STATUSES or status == "expired"
 
 
-def hosted_approval_gap(
-    db: Any, flow: Any, *, actions: tuple[str, ...] = ("require_approval",)
-) -> Optional[str]:
+def hosted_approval_gap(db: Any, flow: Any) -> Optional[str]:
     """Why a hosted container run cannot honour this flow's approval rules.
 
-    Hosted Codex installs the Preloop command hook in its container and
-    parks instead (the orchestrator only marks the launch as requiring the
-    hook). Other hosted harnesses have no native command hook, so a native
+    Hosted containers have no native command hook yet, so a native
     ``require_approval`` rule that could apply to this flow (any enabled
     native tool configuration, including agent-pinned ones, or a rule scoped
     to the flow or its managed agent) would be skipped. Conservative on
@@ -375,11 +371,7 @@ def hosted_approval_gap(
     account_id = getattr(flow, "account_id", None)
     if account_id is None:
         return None
-    names = set(
-        list_native_require_approval_tool_names(
-            db, account_id=account_id, actions=actions
-        )
-    )
+    names = set(list_native_require_approval_tool_names(db, account_id=account_id))
     account = crud_account.get(db, id=str(account_id))
     meta = getattr(account, "meta_data", None) if account is not None else None
     scopes = [(SUBJECT_TYPE_FLOWS, str(flow.id))]
@@ -403,7 +395,7 @@ def hosted_approval_gap(
                 if (
                     isinstance(rule, dict)
                     and rule.get("is_enabled", True)
-                    and rule.get("action") in actions
+                    and rule.get("action") == "require_approval"
                     and rule.get("source") in (None, "", "agent")
                 ):
                     names.add(str(tool_name))
@@ -412,10 +404,10 @@ def hosted_approval_gap(
     listed = ", ".join(sorted(names)[:5])
     return (
         "Approval-required rules apply to native commands in this flow "
-        f"({listed}), and this hosted harness has no Preloop command hook "
-        "to pause the run for approval. The run was refused instead of running "
-        "those commands ungated. Use Codex (hosted or on a private runner host "
-        "profile), where the run pauses for approval, or change the rule."
+        f"({listed}), and hosted containers cannot pause a run for approval "
+        "yet. The run was refused instead of running those commands ungated. "
+        "Run the flow on a private runner host profile, where the run pauses "
+        "for approval, or change the rule."
     )
 
 

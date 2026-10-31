@@ -572,7 +572,7 @@ def test_orchestrator_refuses_hosted_launch_with_approval_gap(monkeypatch) -> No
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
     monkeypatch.setattr(
-        native_flow_park, "hosted_approval_gap", lambda _db, _flow, **_kw: "refused"
+        native_flow_park, "hosted_approval_gap", lambda _db, _flow: "refused"
     )
     fake = SimpleNamespace(
         db=None, agent_type=None, flow=SimpleNamespace(agent_type="claude_code")

@@ -320,12 +320,10 @@ the run resumes on approval (the command may then run once) or ends `FAILED`
 with `approval_denied` or `approval_timeout`. The read-only mode is not special:
 if reviewers should never pause, write the rules so review commands do not
 need approval. In the hosted container, Codex in the read-only sandbox runs
-with its shell disabled, so there are no native commands to gate. Other hosted
-Codex runs install the same Preloop `PreToolUse` hook in the container and
-pause the same way; a hosted Codex run that has such a rule but cannot
-install the hook is refused before Codex starts with `approval_unavailable`.
-Other hosted harnesses have no native hook and are refused before launch with
-`approval_unavailable` when such a rule applies.
+with its shell disabled, so there are no native commands to gate; any other
+hosted run to which a native rule requiring approval applies is refused before
+launch with `approval_unavailable`, because hosted containers cannot pause on a
+native command yet.
 
 Limits of a host run compared with the hosted container: the Codex sandbox and
 the approval hook are the only boundaries between the review and the runner

@@ -449,20 +449,3 @@ def test_both_architectures_require_preflight_during_build() -> None:
     copy = "COPY environments/universal/bin/preloop-preflight /usr/local/bin/preloop-preflight"
     guard = "RUN --network=none preloop-preflight --help >/dev/null"
     assert text.index(copy) < text.index(guard)
-
-
-def test_image_ships_the_pinned_preloop_cli_for_the_native_hook() -> None:
-    """The hosted Codex hook prefers the image CLI; pins must agree."""
-    from preloop.agents.codex_native_hook import (
-        HOOK_CLI_SHA256,
-        HOOK_CLI_VERSION,
-        IMAGE_CLI_PATH,
-    )
-
-    text = DOCKERFILE.read_text()
-    assert f"ARG PRELOOP_CLI_VERSION={HOOK_CLI_VERSION}" in text
-    assert f"ARG PRELOOP_CLI_SHA256_AMD64={HOOK_CLI_SHA256['amd64']}" in text
-    assert f"ARG PRELOOP_CLI_SHA256_ARM64={HOOK_CLI_SHA256['arm64']}" in text
-    assert "sha256sum -c -" in text
-    assert IMAGE_CLI_PATH == "/opt/preloop/bin/preloop"
-    assert f"{IMAGE_CLI_PATH} agents permission-hook --help" in text

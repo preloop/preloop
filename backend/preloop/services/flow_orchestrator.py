@@ -7622,20 +7622,16 @@ class FlowExecutionOrchestrator:
         return park_request
 
     def _refuse_hosted_approval_gap(self, execution_context: Dict[str, Any]) -> None:
-        """Gate or refuse a hosted launch that has native approval rules.
+        """Refuse a hosted launch whose native approval rules would be skipped.
 
-        Hosted Codex installs the Preloop PreToolUse hook in its container
-        (``preloop.agents.codex_native_hook``), so an approval-required
-        native rule parks the run exactly as on a private-runner host
-        profile. Such a launch is marked ``native_hook_required``: the
-        container refuses to start Codex with ``approval_unavailable`` if the
-        hook cannot be installed. Other hosted harnesses have no native hook
-        and are still refused before launch. Codex in the read-only sandbox
-        runs with its shell tool disabled and has no native commands to gate.
+        A hosted container has no native command hook, so an approval-required
+        native rule cannot pause it. Failing before launch keeps the rule
+        meaningful (the private-runner host profile parks instead). Codex in
+        the read-only sandbox runs with its shell tool disabled and has no
+        native commands to gate, so it is not refused.
 
         Raises:
-            AgentStartError: With ``approval_unavailable`` when a rule applies
-                to a hosted harness without the hook.
+            AgentStartError: With ``approval_unavailable`` when a rule applies.
         """
         from preloop.agents.errors import AgentStartError
         from preloop.services.flow_failure_category import (
@@ -7653,12 +7649,6 @@ class FlowExecutionOrchestrator:
             and isinstance(config, dict)
             and config.get("sandbox_type") == "read-only"
         ):
-            return
-        if agent_type == "codex":
-            # Deny rules are enforced by the same hook, so they make it
-            # required too: a run must not fall open when it cannot install.
-            if hosted_approval_gap(self.db, flow, actions=("require_approval", "deny")):
-                execution_context["native_hook_required"] = True
             return
         reason = hosted_approval_gap(self.db, flow)
         if reason:

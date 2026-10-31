@@ -197,11 +197,7 @@ class CRUDToolAccessRule(CRUDBase[ToolAccessRule]):
 
 
 def list_native_require_approval_tool_names(
-    db: Session,
-    *,
-    account_id: Any,
-    tool_source: str = "agent",
-    actions: tuple[str, ...] = ("require_approval",),
+    db: Session, *, account_id: Any, tool_source: str = "agent"
 ) -> List[str]:
     """Native tools with an enabled require-approval rule.
 
@@ -214,8 +210,6 @@ def list_native_require_approval_tool_names(
         db: Database session.
         account_id: Account id.
         tool_source: Native tool source (``agent``).
-        actions: Rule actions to look for; ``deny`` too when the caller needs
-            every rule a native hook enforces.
 
     Returns:
         Sorted distinct tool names.
@@ -234,7 +228,7 @@ def list_native_require_approval_tool_names(
             ToolConfiguration.is_enabled.is_(True),
             ToolAccessRule.account_id == account_id,
             ToolAccessRule.is_enabled.is_(True),
-            ToolAccessRule.action.in_(actions),
+            ToolAccessRule.action == "require_approval",
         )
         .distinct()
         .all()

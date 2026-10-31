@@ -95,9 +95,8 @@ it*, not about severity:
     The same park, but nobody decided within the flow's approval window.
 ``approval_unavailable``
     The run needed a per-command approval the executor cannot ask for (a
-    hosted Codex container whose Preloop command hook could not be
-    installed, or another hosted harness without one), so it was refused
-    rather than run ungated.
+    hosted container has no native command hook yet), so it was refused
+    before launch rather than run ungated.
 ``gateway_bypassed``
     A private-runner Codex or Claude Code host CLI produced model output
     without a single request through the Preloop gateway, so the run was
@@ -438,17 +437,12 @@ _RESULT_SCHEMA_INVALID_RE = re.compile(
     r"^Result document does not match the flow result schema\b"
 )
 
-# The completion handler's bypass refusal (host_exec_gateway) and the
-# hosted Codex hook setup refusal both lead with their category.
+# The completion handler's bypass refusal (host_exec_gateway) leads with
+# its category.
 _GATEWAY_BYPASSED_RE = re.compile(r"^gateway_bypassed:", re.IGNORECASE)
-_APPROVAL_UNAVAILABLE_RE = re.compile(
-    r"PRELOOP_SETUP_FAILED approval_unavailable|\bapproval_unavailable:",
-    re.IGNORECASE,
-)
 
 _STRUCTURAL_MESSAGE_RULES = (
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
-    (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
