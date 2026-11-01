@@ -29,6 +29,22 @@ def oss_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(account_hooks, "get_authorizer", lambda: None)
 
 
+@pytest.fixture
+def person_session(client: Any, test_user: models.User) -> None:
+    """Send the verified browser session the MCP authorize token derives from."""
+    from preloop.api.auth.jwt import create_access_token, user_auth_generation
+
+    client.headers["Authorization"] = "Bearer " + create_access_token(
+        {"sub": str(test_user.id)},
+        auth_generation=user_auth_generation(test_user),
+        auth_context={
+            "amr": ["password"],
+            "auth_account_id": str(test_user.account_id),
+            "nsg": 0,
+        },
+    )
+
+
 def _identity_plugin(permission_name: str) -> Callable:
     """Stand in for the RBAC plugin decorator without enforcing anything."""
 
@@ -133,6 +149,7 @@ def test_account_details_allow_account_managers(
 )
 def test_mcp_oauth_token_requires_edit_permission(
     client,
+    person_session: None,
     db_session: Session,
     test_user: models.User,
     monkeypatch: pytest.MonkeyPatch,
@@ -412,6 +429,7 @@ def test_mcp_oauth_continuation_requires_permission_claim(
 
 def test_mcp_oauth_continuation_preserves_state_and_pkce(
     client,
+    person_session: None,
     db_session: Session,
     test_user: models.User,
     monkeypatch: pytest.MonkeyPatch,
