@@ -130,15 +130,19 @@ def test_orphan_output_with_unknown_call_id():
     assert "does not match any earlier tool call" in message
 
 
-def test_duplicate_output_for_an_answered_call():
+def test_duplicate_output_for_a_call_answered_in_an_earlier_turn():
+    # A repeat in the same tool turn is a Codex notification and merges
+    # (#2173); once a new call is staged, a late output is an orphan.
     message = _rejection(
         [
             {"type": "function_call", "call_id": "c1", "name": "read"},
             {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+            {"type": "function_call", "call_id": "c2", "name": "read"},
+            {"type": "function_call_output", "call_id": "c2", "output": "ok"},
             {"type": "function_call_output", "call_id": "c1", "output": SECRET},
         ]
     )
-    assert "index=2" in message
+    assert "index=4" in message
 
 
 def test_output_for_a_call_dropped_for_missing_name():

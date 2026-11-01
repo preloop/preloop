@@ -9397,6 +9397,13 @@ class OpenAIGatewayService:
         messages: List[Dict[str, Any]] = []
         staged_tool_calls: List[Dict[str, Any]] = []
         pending_tool_call_ids: set[str] = set()
+        # Calls answered in the current tool turn, mapped to the index of
+        # their tool message. Codex code-mode ``exec`` cells that yield and
+        # later ``notify()`` record more than one output for one call id
+        # (#2173); chat-completions allows one tool message per id, so later
+        # outputs are appended to that message. Reset when a new tool turn
+        # starts, so outputs for earlier turns stay orphans.
+        answered_tool_messages: Dict[str, int] = {}
         # Messages Codex records between a tool call and its result (#1557):
         # held until the pending calls are answered, because chat-completions
         # requires the tool messages to directly follow the assistant
@@ -9457,6 +9464,12 @@ class OpenAIGatewayService:
             pending_tool_call_ids = {tool_call["id"] for tool_call in staged_tool_calls}
             staged_tool_calls = []
 
+        def merge_tool_output(call_id: str, item: Dict[str, Any]) -> None:
+            """Append a further output for an answered call (Codex notify)."""
+            message = messages[answered_tool_messages[call_id]]
+            addition = self._content_to_text(item.get("output", ""))
+            message["content"] = f"{message['content']}\n{addition}"
+
         def release_deferred_messages() -> None:
             nonlocal deferred_messages
             if staged_tool_calls or pending_tool_call_ids or not deferred_messages:
@@ -9503,13 +9516,18 @@ class OpenAIGatewayService:
                     )
                 if normalized_tool_call:
                     staged_tool_calls.append(normalized_tool_call)
+                answered_tool_messages.clear()
                 continue
 
             if item_type == "custom_tool_call_output":
                 flush_staged_tool_calls()
                 call_id = custom_tool_call_output(item)
+                if call_id and call_id in answered_tool_messages:
+                    merge_tool_output(call_id, item)
+                    continue
                 if not call_id or call_id not in pending_tool_call_ids:
                     raise tool_response_error(index, output_reason(call_id))
+                answered_tool_messages[call_id] = len(messages)
                 messages.append(
                     {
                         "role": "tool",
@@ -9537,8 +9555,12 @@ class OpenAIGatewayService:
             if item_type == "function_call_output":
                 flush_staged_tool_calls()
                 call_id = item.get("call_id")
+                if call_id and call_id in answered_tool_messages:
+                    merge_tool_output(call_id, item)
+                    continue
                 if not call_id or call_id not in pending_tool_call_ids:
                     raise tool_response_error(index, output_reason(call_id))
+                answered_tool_messages[call_id] = len(messages)
                 messages.append(
                     {
                         "role": "tool",
