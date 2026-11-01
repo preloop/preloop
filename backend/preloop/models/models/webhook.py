@@ -7,6 +7,8 @@ from sqlalchemy import ForeignKey, String, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from preloop.models.db.encrypted_types import EncryptedText
+
 from .base import Base
 
 if TYPE_CHECKING:
@@ -22,7 +24,8 @@ class Webhook(Base):
     # Webhook details
     external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     url: Mapped[str] = mapped_column(String(1024), nullable=False)
-    secret: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Sealed at rest (EncryptedText); ORM reads return plaintext.
+    secret: Mapped[str] = mapped_column(EncryptedText(), nullable=False)
     events: Mapped[List[str]] = mapped_column(JSON, nullable=False)
 
     # Verified namespace retained when the callback's original grant disconnects.

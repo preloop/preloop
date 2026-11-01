@@ -4,8 +4,10 @@ import uuid
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from sqlalchemy import ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from preloop.models.db.encrypted_types import SecretFieldsJSON
 
 from .base import Base
 
@@ -47,9 +49,11 @@ class MCPServer(Base):
     auth_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="none"
     )  # "none", "bearer", "api_key"
+    # Secret fields are sealed at rest (SecretFieldsJSON); ORM reads return
+    # plaintext.
     auth_config: Mapped[Optional[Dict]] = mapped_column(
-        JSONB, nullable=True
-    )  # Encrypted credentials
+        SecretFieldsJSON("mcp_auth_config", jsonb=True), nullable=True
+    )
 
     # Status tracking
     status: Mapped[str] = mapped_column(

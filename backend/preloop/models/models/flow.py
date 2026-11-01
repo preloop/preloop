@@ -13,6 +13,8 @@ from sqlalchemy import (  # Added JSON
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import column_property, relationship
 
+from preloop.models.db.encrypted_types import SecretFieldsJSON
+
 from .base import Base
 
 
@@ -36,7 +38,9 @@ class Flow(Base):
     # Structure: {
     #     "webhook_secret": str - secret token for authenticating webhook requests
     # }
-    webhook_config = Column(JSON, nullable=True, default=None)
+    webhook_config = Column(
+        SecretFieldsJSON("webhook_secret"), nullable=True, default=None
+    )
     # Schedule-specific configuration (for trigger_event_source == 'schedule')
     # Discriminated on "type" (see schemas.flow.ScheduleConfig):
     #   {"type": "cron", "expr": "0 6 * * 1-5", "timezone": "Europe/Athens"}
