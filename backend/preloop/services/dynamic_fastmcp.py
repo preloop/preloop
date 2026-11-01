@@ -26,7 +26,14 @@ import httpx2
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.tools import ToolResult
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import (
+    AudioContent,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    ToolAnnotations,
+)
 
 from preloop.api.auth.key_scopes import mcp_scope_allowed
 from preloop.services.audit.async_writer import outbox_enabled
@@ -427,10 +434,17 @@ def _upstream_error_detail(
     return (_short_reason(code) or "tool_error"), _short_reason(reason)
 
 
+_TYPED_CONTENT_BLOCKS = (AudioContent, EmbeddedResource, ImageContent, ResourceLink)
+
+
 def _has_typed_content(content: Any) -> bool:
-    """True when a proxied result list holds any non-text block (#1151)."""
+    """True when a proxied result list holds an MCP non-text block (#1151).
+
+    Only the known MCP block types count, so anything else keeps the
+    historical text conversion.
+    """
     return isinstance(content, list) and any(
-        not isinstance(item, TextContent) for item in content
+        isinstance(item, _TYPED_CONTENT_BLOCKS) for item in content
     )
 
 
