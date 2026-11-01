@@ -1598,3 +1598,15 @@ coverage/redaction flags. STOPPED writes queue the existing principal-filtered
 completion outbox transactionally. Codex's opt-in native result schema uses CLI
 structured output plus the existing capture-time validation gate; protocol
 translation preserves the requested schema or fails explicitly.
+
+### Enterprise authentication persistence boundary
+
+`preloop.models.crud.sso_login` supplies account-scoped identity lookup, serialized
+provider-subject enrollment, membership persistence and expiring administrator
+proof lookup for enterprise protocols. Verified IdP email only resolves an existing
+destination-account member whose canonical address is already verified; matching another account's email cannot establish
+identity. Known provider subjects can identify a person independently of email.
+The caller owns seat admission and authorization; these core helpers assign no
+roles and create no accounts. Connection updates advance their revision even
+when a write-only secret retains the same secret-reference id. Protocol handling,
+role policy and token issuance remain in the enterprise SSO plugin.
