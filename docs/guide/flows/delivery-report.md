@@ -74,6 +74,16 @@ The report does not pay twice for a judgement that already exists.
   model risk pass unless a deterministic flag fires.
 - **Metadata only.** Dependabot PRs and PRs that only touch docs or the
   README are reported from metadata with no model call (source `metadata`).
+  The platform derives the label from the author and the listed files when
+  the run leaves it out; a file list the forge reports as incomplete is not
+  enough to call a change docs-only.
+- **Reopen, not follow-up.** When a closed issue's criterion is shown not
+  met (for example its last comment, after the last criteria edit,
+  measures it), the issue was closed too early. A follow-up the run
+  proposed for that issue becomes a reopen request pinned to the closing
+  merge SHA, with the follow-up's and the criterion's evidence. Without a
+  known closing merge SHA the follow-up stays. An evidence gap (`met: null`)
+  never becomes a reopen request.
 
 Only closed issues with no audit and no unchanged previous assessment, and
 PRs with neither a brief nor a summary, go to the model (source `report`).

@@ -33,7 +33,17 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -1974,6 +1984,92 @@ def normalize_reopen_requests(raw: Any) -> List[Dict[str, Any]]:
     return kept
 
 
+def follow_ups_to_reopens(
+    follow_ups: Sequence[Mapping[str, Any]],
+    closed_issues: Sequence[Mapping[str, Any]],
+    reopen_requests: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Turn follow-ups on a closed issue with a shown miss into reopen requests.
+
+    When the evidence shows a criterion of a closed issue not met (for
+    example the issue's last comment measures it), the issue was closed too
+    early: the right proposal is to reopen it, not to open a new issue. The
+    request is pinned to the closing revision, so it goes stale after new
+    commits or an issue edit. Without a known closing revision the
+    follow-up stays as it is.
+
+    Args:
+        follow_ups: The report's follow-up proposals.
+        closed_issues: Finalized closed issues (verdicts applied).
+        reopen_requests: Reopen requests already in the report.
+
+    Returns:
+        The remaining follow-ups and the reopen requests, existing ones first.
+    """
+    by_ref = {str(i.get("ref") or ""): i for i in closed_issues if i.get("ref")}
+    requests = [dict(r) for r in reopen_requests]
+    requested = {str(r.get("ref") or "") for r in requests}
+    kept: List[Dict[str, Any]] = []
+    for item in follow_ups:
+        follow = dict(item)
+        issue = by_ref.get(str(follow.get("ref") or ""))
+        revision = (issue or {}).get("closing_sha")
+        unmet = [
+            c
+            for c in normalize_purpose((issue or {}).get("purpose"))["criteria"]
+            if c["met"] is False
+        ]
+        if issue is None or not revision or not unmet:
+            kept.append(follow)
+            continue
+        ref = str(issue["ref"])
+        if ref in requested:
+            continue
+        evidence = list(
+            dict.fromkeys(
+                [*_evidence(follow.get("evidence"))]
+                + [e for c in unmet for e in c["evidence"]]
+            )
+        )
+        if not evidence:
+            kept.append(follow)
+            continue
+        requests.append(
+            {
+                "ref": ref,
+                "title": issue.get("title"),
+                "url": issue.get("url"),
+                "revision": str(revision),
+                "reason": "Not met: " + "; ".join(c["text"] for c in unmet),
+                "evidence": evidence,
+                "applied": False,
+            }
+        )
+        requested.add(ref)
+    return kept, requests
+
+
+def shipped_metadata_only(change: Mapping[str, Any]) -> Optional[str]:
+    """The metadata-only reason of a shipped row, from its own metadata.
+
+    The run may omit ``metadata_only``; the platform derives it from the
+    author and the listed files, so a dependency bump or a docs-only change
+    never counts as assessed. A file list the forge reports as incomplete
+    is not enough to call a change docs-only.
+    """
+    raw = change.get("files")
+    files = [str(f) for f in raw if isinstance(f, str)] if isinstance(raw, list) else []
+    stated = change.get("files_changed")
+    if isinstance(stated, int) and not isinstance(stated, bool) and stated > len(files):
+        files = []
+    return metadata_only_reason(
+        {
+            "author": change.get("author"),
+            "changes": {"changed_files": [{"filename": f} for f in files]},
+        }
+    )
+
+
 def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
     """The summary strip, computed from the structured sections only.
 
@@ -2102,7 +2198,8 @@ def finalize_delivery_report(
             if len(linked) == 1
             else None
         )
-        metadata_only = change.get("metadata_only")
+        metadata_only = change.get("metadata_only") or shipped_metadata_only(change)
+        change["metadata_only"] = metadata_only or None
         if audit is not None:
             change["purpose"] = normalize_purpose(_audited_purpose(audit))
         else:
@@ -2144,6 +2241,11 @@ def finalize_delivery_report(
             issue["purpose"] = purpose
         closed.append(issue)
     out["closed_issues"] = closed
+    out["follow_ups"], out["reopen_requests"] = follow_ups_to_reopens(
+        [f for f in out["follow_ups"] if isinstance(f, Mapping)],
+        closed,
+        out["reopen_requests"],
+    )
 
     out["needs_you"] = _needs_you(out)
     out["delta"] = build_delta(out, previous)

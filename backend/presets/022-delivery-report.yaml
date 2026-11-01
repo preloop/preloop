@@ -185,7 +185,10 @@ prompt_template: |
   - If the most recent comment on the issue measures a criterion as not
     met, and the closing PR adds no newer measurement, that criterion is
     met false, not an evidence gap. Propose a reopen in reopen_requests,
-    naming the revision you assessed and citing the comment.
+    naming the revision you assessed and citing the comment. That issue
+    gets a reopen request, never a follow-up; the platform turns a
+    follow-up on a closed issue with an unmet criterion into a reopen
+    request at its closing merge SHA.
   - Before marking "update X accordingly" as not met because X was not
     touched, run
     python3 tools/delivery_report_checks.py parent-check --repo <clone>
