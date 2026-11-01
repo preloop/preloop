@@ -35,6 +35,7 @@ export const CAPABILITIES = [
   'anthropic_inference_hooks',
   'governance_review',
   'weekly_work_value',
+  'runner_sharing',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

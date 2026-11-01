@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension points for runner sharing. The runner session API passes the
+  requested harness, workspace and operation to the account authorizer; a
+  caller admitted through a grant sees only the harnesses and directories
+  the grant covers and only their own sessions. A start consent waiver hook
+  can lift the per-start owner approval. Flow pinning and harness options
+  ask a `runner:flow_use` action, and the lease passes the pinned runner,
+  harness and directory with `runner:accept`. Each runner heartbeat
+  re-checks live sessions started by someone other than the owner and stops
+  those no longer allowed. New `runner_share_grant` and
+  `runner_sharing_policy` tables hold grants and the owner consent policy.
+  The console shows a runner sharing panel when the server reports the
+  `runner_sharing` capability. Without a plugin, runners stay owner or
+  account admin only.
 - The console's SCIM token form asks which single sign-on connection the
   token provisions for. The choice is required when the account has more
   than one connection and preselected when it has one; the form is disabled

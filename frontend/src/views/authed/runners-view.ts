@@ -1168,6 +1168,18 @@ export class RunnersView extends LitElement {
         name="runner-pools"
         .context=${{ pools: this.poolNames().join(',') }}
       ></capability-extension>
+      <capability-extension
+        name="runner-sharing"
+        .context=${{
+          runners: this.runners
+            .filter((row) => Boolean(row.registered_by_user_id))
+            .map((row) => ({
+              id: row.id,
+              name: row.name,
+              owner_user_id: row.registered_by_user_id,
+            })),
+        }}
+      ></capability-extension>
     `;
   }
 
