@@ -93,7 +93,18 @@ async def get_anthropic_gateway_auth_context(
             status_code=401,
             message="Invalid authentication credentials",
         )
-    return await apply_trusted_upstream(auth_context, request.headers, db)
+    auth_context = await apply_trusted_upstream(auth_context, request.headers, db)
+    from preloop.services.host_exec_gateway import (
+        EXECUTION_MARKER_HEADER,
+        attach_execution_marker,
+    )
+
+    return await attach_execution_marker(
+        auth_context,
+        request.headers.get(EXECUTION_MARKER_HEADER),
+        db,
+        provider="anthropic",
+    )
 
 
 def _extra_anthropic_headers(request: Request) -> Dict[str, str]:

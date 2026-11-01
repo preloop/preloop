@@ -10,6 +10,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
+from preloop.models.db.encrypted_types import EncryptedText
+
 from .base import Base
 from .tracker import Tracker
 
@@ -48,9 +50,10 @@ class Organization(Base):
     meta_data: Mapped[Dict] = mapped_column(JSON, nullable=True, default=dict)
 
     # Secret for verifying incoming webhooks (e.g., HMAC signature)
+    # Sealed at rest (EncryptedText); ORM reads return plaintext.
     webhook_secret: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True
-    )  # Assuming String is imported
+        EncryptedText(), nullable=True
+    )
 
     # Timestamps for sync updates
     last_webhook_update: Mapped[Optional[datetime]] = mapped_column(

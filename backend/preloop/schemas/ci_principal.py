@@ -13,6 +13,8 @@ class CiAction(str, Enum):
     TRIGGER = "flow:trigger"
     READ_EXECUTION = "execution:read"
     READ_RESULT = "execution:result:read"
+    READ_EVIDENCE = "execution:evidence:read"
+    READ_RESULT_EXPORT = "execution:result-export:read"
     STOP_EXECUTION = "execution:stop"
     CREATE_SUBSCRIPTION = "subscription:create"
     READ_SUBSCRIPTION = "subscription:read"

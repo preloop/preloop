@@ -3,6 +3,7 @@
 import logging
 import re
 import uuid
+from tests.cross_account_keys import legacy_cross_account_runtime_key
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ def _other_account(db_session):
 
 
 def _key_in(db_session, test_user, account_id):
-    return crud_api_key.create_runtime_key(
+    return legacy_cross_account_runtime_key(
         db_session,
         name="Gateway key",
         account_id=account_id,

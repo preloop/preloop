@@ -67,6 +67,7 @@ from preloop.services.harness_inventory import (
     viewer_is_account_admin,
 )
 from preloop.services.runner_presence import derive_presence, parse_idle_seconds
+from preloop.sync.services.realtime_publisher import PERSISTED_FLAG
 from preloop.services.runner_service import (
     derive_execution_runner,
     emit_runner_deleted,
@@ -720,6 +721,11 @@ async def _publish_flow_update(execution_id: str, payload: Dict[str, Any]) -> No
     try:
         from preloop.sync.services.event_bus import get_nats_client
 
+        from preloop.services.execution_realtime import stamp_execution_event_async
+
+        payload = await stamp_execution_event_async(
+            {**payload, "execution_id": execution_id}
+        )
         nats_client = await get_nats_client()
         await nats_client.publish(
             f"flow-updates.{execution_id}", json.dumps(payload).encode("utf-8")
@@ -771,13 +777,16 @@ async def persist_runner_logs(
     await run_in_threadpool(crud_flow_execution_log.append_logs, db, entries)
 
     async def broadcast() -> None:
-        for line in lines:
+        for _, entry in entries:
             await _publish_flow_update(
                 str(execution_id),
                 {
                     "execution_id": str(execution_id),
                     "type": "agent_log_line",
-                    "payload": {"line": line},
+                    "log_id": entry["_persistence_id"],
+                    "payload": entry["payload"],
+                    # Committed above; the log persister must not store it again.
+                    PERSISTED_FLAG: True,
                 },
             )
 
@@ -1381,6 +1390,31 @@ async def runner_ws(
                     )
                     if flow is not None:
                         prompt = flow.prompt_template
+                    from preloop.services.host_exec_gateway import (
+                        apply_host_gateway_metering,
+                        count_gateway_requests_settled,
+                    )
+
+                    gateway_requests = await count_gateway_requests_settled(
+                        db,
+                        execution_id=execution_id,
+                        pending_job=leased_job,
+                        status=status,
+                        result=result if isinstance(result, dict) else None,
+                    )
+
+                    # Server truth: count this run's gateway rows, and fail a
+                    # host run that bypassed the gateway (gateway_bypassed).
+                    status, completion_error, result = apply_host_gateway_metering(
+                        db,
+                        status=status,
+                        error=completion_error,
+                        result=result if isinstance(result, dict) else None,
+                        pending_job=leased_job,
+                        agent_config=getattr(flow, "agent_config", None),
+                        execution_id=execution_id,
+                        request_count=gateway_requests,
+                    )
                 result_artifact = result if isinstance(result, dict) else None
                 approvals, authority = resolve_persist_authority(
                     result_artifact, db, execution_id, prompt=prompt
@@ -1466,6 +1500,12 @@ async def runner_ws(
                     commit=False,
                 )
                 db.commit()
+                if (leased_job or {}).get("host_exec_read_only"):
+                    from preloop.services.read_only_review import (
+                        revoke_delivered_read_leases,
+                    )
+
+                    await revoke_delivered_read_leases(execution_id)
                 fresh_runner = crud_flow_runner.get_fresh(db, runner_id=runner_id)
                 if fresh_runner is not None:
                     emit_runner_updated(fresh_runner, db)

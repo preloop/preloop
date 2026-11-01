@@ -697,6 +697,7 @@ export class FlowView extends LitElement {
         id: this.flowId || '',
         name: this.flow?.name,
         is_enabled: !!this.flow?.is_enabled,
+        ci_only: this.flow?.git_clone_config?.publication_mode === 'read_only',
       },
       {
         onRun: () => void this.testRun(),
@@ -730,6 +731,71 @@ export class FlowView extends LitElement {
         'danger'
       );
     }
+  }
+
+  /**
+   * The token, turn and USD ceilings a run of this flow is held to, with the
+   * ones the flow did not set marked as defaults, so an operator can see the
+   * numbers that will stop a run before one does.
+   */
+  private renderRunLimits() {
+    if (!this.flow) return nothing;
+    // No ceilings is a real state now (no built-in defaults): say so.
+    const limits = this.flow.effective_limits || {};
+    const parts: Array<{ text: string; title: string; source: string }> = [];
+    const tokens = limits.max_total_tokens;
+    if (tokens) {
+      parts.push({
+        text: `${formatCount(tokens.value)} tokens`,
+        title: `${formatCountExact(tokens.value)} tokens`,
+        source: tokens.source,
+      });
+    }
+    const turns = limits.max_turns;
+    if (turns) {
+      parts.push({
+        text: `${formatCount(turns.value)} turns`,
+        title: `${formatCountExact(turns.value)} turns`,
+        source: turns.source,
+      });
+    }
+    const usd = limits.max_usd;
+    if (usd) {
+      parts.push({
+        text: `${formatUsd(usd.value)} est.`,
+        title: formatUsdExact(usd.value),
+        source: usd.source,
+      });
+    }
+    const sourceLabel: Record<string, string> = {
+      default: 'default',
+      environment: 'instance default',
+    };
+    return html`
+      <span class="detail-label">Run limits</span>
+      <span data-run-limits>
+        ${
+          parts.length
+            ? parts.map(
+                (part, index) =>
+                  html`${index ? ' · ' : ''}<span title=${part.title}
+                      >${part.text}</span
+                    >${
+                      sourceLabel[part.source]
+                        ? html` <span class="meta"
+                            >(${sourceLabel[part.source]})</span
+                          >`
+                        : ''
+                    }`
+              )
+            : html`None.
+                <span class="meta" data-run-limits-hint
+                  >Set agent_config.limits (tokens, turns, USD) to bound each
+                  run.</span
+                >`
+        }
+      </span>
+    `;
   }
 
   private renderPublicationPolicy() {
@@ -1187,6 +1253,7 @@ export class FlowView extends LitElement {
                     `
                   : ''
               }
+              ${this.renderRunLimits()}
 
               <span class="detail-label">Status</span>
               <span
@@ -1772,7 +1839,13 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       window.location.href = `/console/flows/executions/${execution.id}`;
     } catch (error) {
       console.error('Failed to trigger flow execution:', error);
-      alert('Failed to trigger flow execution');
+      // The server says why (a read-only review flow names its CI route).
+      showToast(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not start the run. Try again.',
+        'danger'
+      );
     }
   }
 

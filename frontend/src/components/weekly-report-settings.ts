@@ -10,7 +10,10 @@ import {
 import { showToast } from './confirm-dialog';
 import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 
-type Field = Exclude<keyof WeeklyReportPreferences, 'user_enabled'>;
+type Field = Exclude<
+  keyof WeeklyReportPreferences,
+  'user_enabled' | 'synthesis_model_id'
+>;
 
 const SWITCHES: {
   field: Field;
@@ -31,7 +34,7 @@ const SWITCHES: {
   {
     field: 'account_enabled',
     label: 'Report for owners and admins',
-    on: 'The full account report: usage, spend, approvals, policy findings and the change from last week. Sent each Monday.',
+    on: 'Actionable changes in recorded gateway failures and approval requests. Checked each Monday; quiet weeks send no email.',
     off: 'Owners and admins do not get the weekly report.',
     toastOn: 'Owners and admins get the weekly report.',
     toastOff: 'Owners and admins no longer get the weekly report.',
@@ -39,18 +42,18 @@ const SWITCHES: {
   {
     field: 'members_enabled',
     label: 'Personal reports for members',
-    on: "Each member gets their own agents, flows, sessions, spend and approvals, with the team median beside them. Never anyone else's name or numbers.",
+    on: 'Each member gets actionable changes from their own gateway requests and approvals. Quiet weeks send no email.',
     off: 'Members get no weekly report. Owners and admins are not affected.',
     toastOn: 'Members get a personal weekly report.',
     toastOff: 'Members no longer get a weekly report.',
   },
   {
-    field: 'member_policy_findings_enabled',
-    label: 'Include policy findings in member reports',
-    on: 'A member sees the AI usage policy findings about their own sessions, and only those.',
-    off: 'Member reports leave out policy findings.',
-    toastOn: 'Member reports include their own policy findings.',
-    toastOff: 'Member reports leave out policy findings.',
+    field: 'synthesis_enabled',
+    label: 'Optional summary of selected facts',
+    on: 'Compose a short summary from the selected facts when a priced model is available. If its limits are reached, the factual digest still sends.',
+    off: 'Send the selected facts and suggested investigations without a model call.',
+    toastOn: 'Optional factual summaries are enabled.',
+    toastOff: 'Factual digests use no model synthesis.',
   },
 ];
 
@@ -164,27 +167,23 @@ export class WeeklyReportSettings extends LitElement {
     return html`<section aria-labelledby="weekly-report-title">
       <h2 id="weekly-report-title">Weekly report</h2>
       <p>
-        Built from usage the account already records, so sending it costs no AI.
-        Anyone can stop their own copy from the link in the email.
+        Built from recorded gateway requests and approval states. Optional
+        summaries use a bounded model call. Anyone can stop their own copy from
+        the link in the email.
         ${this.canManage ? '' : 'Owners and admins can change these.'}
       </p>
       ${shown.map((spec) => {
         const on = !!prefs[spec.field];
-        const blocked =
-          spec.field === 'member_policy_findings_enabled' &&
-          !prefs.members_enabled;
         return html`<div class="row">
           <sl-switch
             data-field=${spec.field}
             ?checked=${on}
-            ?disabled=${!this.canManage || blocked || !!this.switching}
+            ?disabled=${!this.canManage || !!this.switching}
             @sl-change=${(event: Event) =>
               void this.toggle(spec.field, event.target as HTMLInputElement)}
             >${spec.label}</sl-switch
           >
-          <div class="meta">
-            ${blocked ? 'Turn on personal reports for members first.' : on ? spec.on : spec.off}
-          </div>
+          <div class="meta">${on ? spec.on : spec.off}</div>
         </div>`;
       })}
     </section>`;

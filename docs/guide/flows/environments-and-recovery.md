@@ -93,7 +93,7 @@ the recipe publish. Tags are `sha-<12 hex chars of the commit>` and
 `ghcr.io/preloop/preloop-codex-universal@sha256:<digest>`, and the workflow
 attests that digest. The hosted default is that published digest, pinned in
 `backend/preloop/agents/images.py` as
-`ghcr.io/preloop/preloop-codex-universal@sha256:c6f75840defd44b6a6b187302acf165e245b378844098c8b57442bceee5f5b96`.
+`ghcr.io/preloop/preloop-codex-universal@sha256:d60ffe7dcdc054d8186f40c0740c0e567a533d8222eca12ed9ca267999e56d8d`.
 Helm `agents.codexImage` sets `CODEX_IMAGE` on the API and worker pods when
 an operator overrides it. Leave it empty to use the core default. A
 tag-valued `CODEX_IMAGE` logs one warning at startup. Private runners can

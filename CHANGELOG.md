@@ -9,11 +9,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
+  Codex configuration, the `PreToolUse` hook and its trust state first; the
+  agent cannot overwrite or remove the hook CLI, `hooks.json` or
+  `config.toml`, so the hook checks every command in the run. Workspaces,
+  the agent's home and caches stay writable. The runtime credential stays
+  out of shell commands' reach: Codex and the hook run from execute-only
+  binaries whose environment the agent user cannot read, and root's own
+  credentials are removed from Codex's environment. Before its post-run git
+  steps, root takes the workspace back, restores the git config and removes
+  hooks, so nothing the agent planted runs as root. The universal
+  image adds the user and checks the language smoke as that user; hosted
+  runs use it once the hosted image pin moves to an image built with it.
+  See `docs/security/agent-isolation.md`.
+- Upstream MCP requests identify Preloop. Every request to an upstream MCP
+  server carries `User-Agent: Preloop/<version>`, and the session that serves
+  a proxied tool call carries `X-Preloop-Correlation-Id` with the same
+  `correlation_id` as the audit rows for that call. A server can opt in to
+  `X-Preloop-Instance` (a stable, non-secret per-installation id, overridable
+  with `PRELOOP_INSTANCE_ID`) with `auth_config.send_instance_id: true`, or
+  remove all three headers with `auth_config.send_identity_headers: false`.
+- Helm values for enterprise single sign-on on the API: `sso.enabled`
+  (`ENTERPRISE_SSO_ENABLED`), `sso.publicUrl` (`SSO_PUBLIC_URL`, origin of the
+  OIDC redirect URI and SAML SP URLs) and `sso.allowPrivateIssuers`
+  (`GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`, the core setting shared with gateway
+  identity providers). The open-source image ignores the first two.
+- Private-runner Codex and Claude Code host runs are metered per execution.
+  The control plane delivers a signed execution marker with each host job and
+  the runner sends it as `X-Preloop-Execution` on the onboarded CLI's gateway
+  requests (Codex: a per-run override on its Preloop model provider, with the
+  value hidden from shell commands; Claude Code: `ANTHROPIC_CUSTOM_HEADERS`).
+  The gateway attributes those requests to the flow execution as well as the
+  agent and enforces the flow's run limits on them; results record the real
+  `gateway_metered` and `gateway_request_count`. A run that produced model
+  output with no gateway request fails with the new `gateway_bypassed`
+  category, unless the flow sets the break-glass
+  `agent_config.allow_unmetered_host_model: true` (never in read-only review).
+  For Claude Code the runner also reports the exact model call count
+  (`cli_model_calls`); CLI calls that exceed the gateway rows by more than 2
+  calls and more than 20% fail the run as a partial bypass. Codex exposes no
+  per-request count and keeps the at-least-one rule. `gateway_call_check`
+  names the rule that applied.
+- Hosted Codex containers install the Preloop `PreToolUse` hook (from the
+  image CLI, or a pinned checksum-verified release) and trust it through
+  Codex's own `hooks/list` hash, so deny rules block native commands and
+  approval-required rules park the run with the execution's runtime
+  credential. Hosted Codex runs with approval-required rules are no longer
+  refused with `approval_unavailable`; that category now means the hook could
+  not be installed, or the hosted harness has none. The universal Codex image
+  ships the CLI at `/opt/preloop/bin/preloop`.
+- Removing or deactivating a member now revokes that member's access to the
+  account in one transaction: sessions and tokens, CLI sessions, MCP OAuth
+  tokens, team memberships, personal API and runtime keys, and runners they
+  registered. An `access.revoked` audit event records the counts. The same
+  person's other account memberships are unaffected. Account-owned CI and
+  managed-agent credentials keep working; `GET /api/v1/users/{id}/machine-credentials`
+  lists the ones the member created. Reactivation re-enables the membership
+  only and writes `access.restored`.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
   but cannot use MCP, account/runtime administration, push, or publish. Publication
   requires a separate trusted publisher.
+- Read-only native review also runs on a private runner pool with a Codex
+  `host_exec_profile`, so the runner user's Preloop-onboarded Codex (for
+  example with a ChatGPT subscription) serves the review through the gateway. The runner clones the admitted SHA with the
+  delivered read lease only (host git config and credential helpers disabled),
+  revokes the lease before starting `codex exec --sandbox read-only`, and
+  reports a receipt the control plane requires for success. Runners advertise
+  the `host_read_only_review` profile capability; older runners are not assigned
+  this work.
+- **Use from my flows.** The owner of a Codex or Claude subscription model can
+  let flows they own use it from hosted executions (console switch on the
+  model page, `preloop models flow-use <id> on`, or
+  `PUT /api/v1/ai-models/{id}/owner-flow-use`). Admission and the gateway
+  accept the selection only when the flow's owner (`created_by_user_id`, now
+  recorded on new flows) is the subscription's owner; other users' flows and
+  other agents stay refused, and the onboarded agent's bindings and sign-in are
+  untouched. Usage is attributed to the execution with
+  `meta_data.subscription_use: "owner_flow"`.
+
+### Changed
+
+- No built-in default run ceilings. A flow runs without a token, turn or
+  cost ceiling unless it sets `agent_config.limits`, or the operator sets
+  `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
+  `PRELOOP_DEFAULT_MAX_USD`, which become the instance default (a run they
+  stop fails `default_limit_reached`). The 2,000,000-token built-in default
+  stopped legitimate PR reviews, which use 2 to 13 million tokens. The flow
+  page shows "None" with a hint when no ceiling applies.
+- The Pull Request Reviewer preset's own ceilings are 100,000,000 tokens and
+  1000 turns (were 2,000,000 and 300); USD stays at 50, which an expensive
+  model can reach first.
+- A run the gateway stopped at a run limit keeps `default_limit_reached` or
+  `budget_exceeded` and the limit message, even when the agent then fails on
+  a checkpoint or capture call refused because the execution was closed.
+- Docs: private-runner Codex review keeps the Preloop-onboarded Codex
+  configuration; a separate `CODEX_HOME` without the Preloop model provider
+  is no longer described, because it bypasses the gateway.
 
 ### Telemetry
 
@@ -51,8 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_gateway_call` row in `runtime_session_activity` used to store the
   whole conversation the call replayed, so storage grew with the square of
   session length. It now stores the messages new to that call, with their
-  original positions, plus the response, capped at
-  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 32768). The console
+  original positions, plus the response, bounded by
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608). The console
   stitches the conversation back together across a session's rows. An hourly
   maintenance task, `maintain_gateway_activity`, compacts rows written by
   older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,
@@ -69,6 +162,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#1426).
 
 ### Fixed
+
+- **Rules that require approval now pause unattended flow runs.** On a private
+  runner host profile, a native command matching a `require_approval` rule used
+  to hold the hook for the workflow timeout and, when refused or expired, only
+  denied that command while the run carried on. The command now does not run;
+  the execution parks on a normal approval request linked to it (flow window,
+  console, notifications, audit), resumes on approval with that exact command
+  allowed once, and fails closed with the new `approval_denied` or
+  `approval_timeout` category otherwise. Hosted container runs, which have no
+  native command hook yet, are refused before launch with
+  `approval_unavailable` when such a rule applies, instead of running ungated.
+
+- Stored model gateway call rows no longer lose the call's own content when
+  they exceed `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`. The response, the
+  messages the call added and the last user message are always kept, and the
+  `request` and `response` keys are never removed. Long text is cut in the
+  middle with a `[... truncated N chars ...]` marker (head and tail kept,
+  `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS`, default 2048), largest tool
+  outputs first and the response last. The default cap rises from 32768 bytes to
+  8 MB (8388608), a guard against runaway payloads rather than a size
+  budget; normal calls are stored whole. `body_compaction` records every step, and the session views
+  show a Truncated badge on cut text. Rows already stored under the old cap
+  keep what they lost. Applies to flow execution logs too.
+- Subscription logins no longer break when the local client and the Preloop
+  gateway both hold one single-use refresh lineage (`refresh_token_reused` from
+  OpenAI, `invalid_grant` from Anthropic). The CLI now reconciles Claude Code's
+  login (macOS Keychain or `~/.claude/.credentials.json`) with Preloop's copy in
+  both directions, like Codex; the reconcile also runs from the session hook
+  (`SessionStart`, `UserPromptSubmit`) before the first model call, not only on
+  tool hooks; `preloop agents sync-credentials "Claude Code"` is accepted; the
+  gateway refreshes subscription OAuth 10 minutes before expiry (was 60 s) so
+  it rotates ahead of the clients; and the refresh-failure message names
+  `preloop agents sync-credentials` as the first recovery step. An upstream
+  401 on a Claude Code subscription model now returns that recovery message
+  instead of the raw "OAuth access token has been revoked" text. Follow-up (not
+  in this release): a server-side background refresh for idle bundles.
 
 - **Paging stored gateway payloads no longer serialises every row to measure
   it.** The byte-budgeted payload reader computed

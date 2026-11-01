@@ -179,6 +179,9 @@ type claudeCapture struct {
 	InputTokens  *int64
 	OutputTokens *int64
 	ErrorLine    string
+	// MessageIDs are the distinct assistant message ids seen: one per model
+	// response, so their count is the CLI-observed model call count.
+	MessageIDs map[string]struct{}
 }
 
 type claudeStreamEvent struct {
@@ -188,7 +191,10 @@ type claudeStreamEvent struct {
 	Model     string `json:"model"`
 	IsError   bool   `json:"is_error"`
 	NumTurns  *int   `json:"num_turns"`
-	Usage     *struct {
+	Message   *struct {
+		ID string `json:"id"`
+	} `json:"message"`
+	Usage *struct {
 		InputTokens  *int64 `json:"input_tokens"`
 		OutputTokens *int64 `json:"output_tokens"`
 	} `json:"usage"`
@@ -218,6 +224,13 @@ func applyClaudeLine(capture *claudeCapture, line string) {
 	case "system":
 		if event.Subtype == "init" && hostExecModelRe.MatchString(event.Model) {
 			capture.Model = event.Model
+		}
+	case "assistant":
+		if event.Message != nil && event.Message.ID != "" {
+			if capture.MessageIDs == nil {
+				capture.MessageIDs = map[string]struct{}{}
+			}
+			capture.MessageIDs[event.Message.ID] = struct{}{}
 		}
 	case "result":
 		capture.Results++
@@ -250,6 +263,12 @@ func claudeRunnerResult(capture claudeCapture) (map[string]any, error) {
 	}
 	if capture.NumTurns != nil && *capture.NumTurns >= 0 {
 		result["num_turns"] = *capture.NumTurns
+	}
+	if len(capture.MessageIDs) > 0 {
+		// Distinct model responses the CLI received; the control plane
+		// compares this with the execution's gateway rows.
+		result["cli_model_calls"] = len(capture.MessageIDs)
+		result["cli_model_calls_kind"] = "exact"
 	}
 	usage := map[string]any{}
 	if capture.InputTokens != nil && *capture.InputTokens >= 0 {

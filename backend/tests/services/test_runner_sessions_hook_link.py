@@ -484,6 +484,37 @@ def test_session_event_requires_runner_actor_or_owner(
     assert [event["type"] for event in events] == ["runtime_session_hook_ended"]
 
 
+def test_machine_identity_cannot_join_another_members_runner_session(
+    endpoint_db: Session,
+    runner: models.FlowRunner,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed-agent credential has no user, so the ownership guard refuses it."""
+    import dataclasses
+
+    from preloop.api.endpoints import agent_permission
+    from preloop.services import session_hook_events
+
+    db = endpoint_db
+    owner = _user(db, test_user.account_id, "machine-owner")
+    runner.registered_by_user_id = owner.id
+    row = _start(db, runner, owner)
+    hs = str(uuid.uuid4())
+    _go_idle(db, runner, row, hs)
+    monkeypatch.setattr(session_hook_events, "emit_account_event", lambda _: None)
+    machine = dataclasses.replace(
+        _identity(db, owner), user_id=None, managed_agent_id=uuid.uuid4()
+    )
+    payload = agent_permission.AgentSessionEventRequest(
+        session_id=hs, hook_event_name="SessionEnd"
+    )
+    assert not agent_permission._record_session_event(machine, payload)
+    runtime = db.get(models.RuntimeSession, row.runtime_session_id)
+    db.refresh(runtime)
+    assert runtime.ended_at is None
+
+
 def _row_fields(db: Session, row: models.RunnerRemoteSession) -> tuple:
     runtime = db.get(models.RuntimeSession, row.runtime_session_id)
     db.refresh(runtime)

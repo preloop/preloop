@@ -3944,3 +3944,26 @@ class TestSweepProgress:
                 assert len(batch) == len(set(batch))
                 seen.extend(batch)
         assert set(seen) == {row.id for row in executions}
+
+
+@pytest.mark.asyncio
+async def test_subscription_model_rejected_before_baseline_reservation(
+    world: tuple, test_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.services.test_model_routing import _usable_model
+
+    service, _project, _workflow, _implementer, audit, *_ = world
+    release = await _release(world, test_user)
+    model = _usable_model(service.db, test_user.account_id)
+    model.credentials_secret.secret_kind = "ai_model_credentials"
+    model.credentials_secret.meta_data = {"credential_type": "oauth_openai_codex"}
+    audit.ai_model_id = model.id
+    service.db.flush()
+    create = MagicMock()
+    monkeypatch.setattr(crud_security_maintenance, "create_execution", create)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(service, "_dispatch_baseline", dispatch)
+    with pytest.raises(InvalidTransitionError, match="agent-bound subscription"):
+        await service.schedule_baseline_audit(release["id"], SBOM_B64)
+    create.assert_not_called()
+    dispatch.assert_not_awaited()

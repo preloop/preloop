@@ -114,7 +114,10 @@ def test_candidates_are_bounded_account_scoped_and_keyset_stable(
 def test_candidate_index_matches_frozen_migration_predicate() -> None:
     import importlib.util
     from pathlib import Path
-    from preloop.models.gateway_usage import AGENT_GATEWAY_PREDICATE
+    from preloop.models.gateway_usage import (
+        AGENT_GATEWAY_INDEX_PREDICATE,
+        AGENT_GATEWAY_PREDICATE,
+    )
 
     path = (
         Path(__file__).resolve().parents[2]
@@ -123,7 +126,10 @@ def test_candidate_index_matches_frozen_migration_predicate() -> None:
     spec = importlib.util.spec_from_file_location("candidate_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.PREDICATE == AGENT_GATEWAY_PREDICATE
+    assert module.PREDICATE == AGENT_GATEWAY_INDEX_PREDICATE
+    assert AGENT_GATEWAY_PREDICATE == module.PREDICATE.replace(
+        "NOT IN (", "NOT IN ('governance_exception_synthesis', "
+    )
     index = next(i for i in models.ApiUsage.__table__.indexes if i.name == module.INDEX)
     assert [column.name for column in index.columns] == [
         "account_id",

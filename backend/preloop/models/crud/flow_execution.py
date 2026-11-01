@@ -396,6 +396,33 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """Initialize with the FlowExecution model."""
         super().__init__(model=FlowExecution)
 
+    def get_flow_for_execution(
+        self, db: Session, *, execution_id: str, flow_id: str
+    ) -> Optional[Flow]:
+        """Return the flow when ``execution_id`` belongs to ``flow_id``.
+
+        One joined lookup for the gateway hot path.
+
+        Args:
+            db: Active database session.
+            execution_id: Flow execution id.
+            flow_id: Flow the caller claims the execution belongs to.
+
+        Returns:
+            The flow, or ``None`` when the pair does not match.
+        """
+        try:
+            execution_uuid = uuid.UUID(str(execution_id))
+            flow_uuid = uuid.UUID(str(flow_id))
+        except ValueError:
+            return None
+        return (
+            db.query(Flow)
+            .join(FlowExecution, FlowExecution.flow_id == Flow.id)
+            .filter(FlowExecution.id == execution_uuid, Flow.id == flow_uuid)
+            .first()
+        )
+
     def get(
         self,
         db: Session,
@@ -1010,6 +1037,22 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db_obj.cli_session = cli_session  # type: ignore[assignment]
         db.flush()
         return db_obj
+
+    def record_startup_receipt(
+        self, db: Session, *, execution_id: uuid.UUID, receipt: dict[str, Any]
+    ) -> None:
+        """Persist the controller-observed startup receipt and commit.
+
+        Args:
+            db: Database session.
+            execution_id: Execution the receipt describes.
+            receipt: Bounded receipt fields; never agent output or credentials.
+        """
+        execution = self.get(db, id=execution_id)
+        if execution is None:
+            return
+        execution.startup_receipt = dict(receipt)  # type: ignore[assignment]
+        db.commit()
 
     def record_native_resume(
         self, db: Session, *, execution_id: uuid.UUID, outcome: dict
@@ -1877,6 +1920,30 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             )
             .update(values, synchronize_session=False)
         )
+        if count:
+            # Persist the authenticated callback outbox alongside the status.
+            # A missing/crashed orchestrator cannot be the only delivery owner.
+            # The execution/status natural key deduplicates its later emit.
+            execution = (
+                db.query(models.FlowExecution)
+                .populate_existing()
+                .filter(models.FlowExecution.id == execution_id)
+                .one()
+            )
+            flow = (
+                db.query(models.Flow).filter(models.Flow.id == execution.flow_id).one()
+            )
+            from preloop.services.event_webhooks.emitters import (
+                emit_flow_execution_finished,
+            )
+
+            emit_flow_execution_finished(
+                db,
+                execution,
+                flow,
+                status="STOPPED",
+                failure_category=execution.failure_category,
+            )
         if commit:
             db.commit()
         return bool(count)
@@ -2548,6 +2615,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         metadata = payload or log_data.get("metadata") or log_data.get("data")
 
+        if log_data.get("type") == "agent_log_line":
+            from preloop.models.crud.execution_tool_evidence import (
+                persist_native_command_evidence,
+            )
+
+            persist_native_command_evidence(db, execution_id=execution_id, line=message)
+
         # Last gate before persistence: redact known credential formats so a
         # secret cannot be stored even if its producer skipped scrubbing
         # (issue #173), and drop NUL bytes PostgreSQL rejects (#1196).
@@ -2882,6 +2956,60 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             )
         )
         db.commit()
+        return bool(count)
+
+    def fail_parked_for_request(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        approval_request_id: Any,
+        failure_category: str,
+        error_message: str,
+        commit: bool = True,
+    ) -> bool:
+        """End a run parked on a refused or expired approval, failed closed.
+
+        Used for native command parks, where a refusal must not continue the
+        run: the command was the reason for the park, and an unattended agent
+        that is told "no" has no human to agree a different plan with. The
+        same conditional shape as :meth:`claim_parked_for_resume`, so a
+        decision that arrives twice fails the row once and never fails a
+        row that a resume already claimed.
+
+        Args:
+            db: Database session.
+            execution_id: Parked execution.
+            approval_request_id: Approval the row is parked on.
+            failure_category: Stored ``failure_category``.
+            error_message: Operator-visible reason.
+            commit: Commit the update.
+
+        Returns:
+            True when this call failed the row.
+        """
+        now = datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.park_request_id == approval_request_id,
+                models.FlowExecution.resume_execution_id.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "FAILED",
+                    models.FlowExecution.failure_category: failure_category,
+                    models.FlowExecution.error_message: error_message,
+                    models.FlowExecution.end_time: now,
+                    models.FlowExecution.park_expires_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
         return bool(count)
 
     def claim_parked_children_for_resume(
@@ -3357,7 +3485,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return 0
         if resume_execution_id is None:
             return 0
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_CANCELLED,
+            FAILURE_CATEGORY_RESUME_FAILED,
+        )
+
         closed_at = end_time or datetime.now(timezone.utc)
+        values: dict[Any, Any] = {
+            models.FlowExecution.status: status,
+            models.FlowExecution.end_time: closed_at,
+        }
+        # The parked row ends with its continuation. A failed continuation
+        # must not leave the parked row as an uncategorised failure.
+        if status == "FAILED":
+            values[models.FlowExecution.failure_category] = (
+                FAILURE_CATEGORY_RESUME_FAILED
+            )
+        elif status in {"STOPPED", "CANCELLED"}:
+            values[models.FlowExecution.failure_category] = FAILURE_CATEGORY_CANCELLED
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -3365,13 +3510,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.status == self.RESUMING_STATUS,
                 models.FlowExecution.resume_execution_id.isnot(None),
             )
-            .update(
-                {
-                    models.FlowExecution.status: status,
-                    models.FlowExecution.end_time: closed_at,
-                },
-                synchronize_session=False,
-            )
+            .update(values, synchronize_session=False)
         )
         if commit:
             db.commit()

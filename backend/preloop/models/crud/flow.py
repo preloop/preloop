@@ -121,6 +121,9 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     self.model.tools_customized,
                     self.model.preset_update_available,
                     self.model.schedule_config,
+                    # A short SQL-derived string, not the clone config JSON:
+                    # the summary's ci_only flag needs only this key.
+                    self.model.publication_mode,
                     raiseload=True,
                 ),
                 joinedload(self.model.ai_model).load_only(
@@ -373,6 +376,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         flow_in: schemas.FlowCreate,
         account_id: Optional[Union[str, UUID]] = None,
         commit: bool = True,
+        created_by_user_id: Optional[Union[str, UUID]] = None,
     ) -> models.Flow:
         """
         Create a new flow.
@@ -382,11 +386,14 @@ class CRUDFlow(CRUDBase[models.Flow]):
             flow_in: The data for the new flow.
             account_id: Account ID (string or UUID).
             commit: Commit the new flow, or only flush it in a caller's transaction.
+            created_by_user_id: User creating the flow, recorded as its owner.
 
         Returns:
             The created flow object.
         """
         db_flow = self.model(**flow_in.model_dump())
+        if created_by_user_id is not None:
+            db_flow.created_by_user_id = UUID(str(created_by_user_id))
         if account_id:
             db_flow.account_id = (
                 str(account_id) if isinstance(account_id, UUID) else account_id
@@ -463,6 +470,23 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .first()
         )
         if db_flow:
+            # Executions of one flow point at each other through two
+            # foreign keys without ON DELETE (a parked run at its resume, a
+            # retry at the run it retried). The cascade deletes them in no
+            # particular order, so clear the links first.
+            db.query(models.FlowExecution).filter(
+                models.FlowExecution.flow_id == db_flow.id,
+                or_(
+                    models.FlowExecution.resume_execution_id.isnot(None),
+                    models.FlowExecution.retry_of_execution_id.isnot(None),
+                ),
+            ).update(
+                {
+                    models.FlowExecution.resume_execution_id: None,
+                    models.FlowExecution.retry_of_execution_id: None,
+                },
+                synchronize_session=False,
+            )
             db.delete(db_flow)
             db.commit()
         return db_flow

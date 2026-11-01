@@ -31,11 +31,84 @@ Rows are now stored slim:
 - Tool calls and results that belong to this call.
 - Usage, tokens, cost, model, outcome and timing, unchanged.
 
-If a call is still larger than `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`
-(default 32768), Preloop reduces tool definitions to their names, then drops
-the raw request messages (the readable preview stays), then shortens long
-text until the row fits. The row records what was removed under
-`body_compaction`.
+### When a call is larger than the cap
+
+`MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608, 8 MB) is a guard
+against runaway payloads, not a size budget. A row already holds only what
+the call added, so a normal call is stored whole, untruncated. Only a call
+whose stored form would exceed the cap is shortened. Short of the final
+fallback described below, Preloop never removes:
+
+- the model response: its text, the tool calls it made, the finish reason
+  and usage,
+- the messages this call added (usually tool results and file contents),
+- the last user message.
+
+It shortens in this order and stops as soon as the row fits:
+
+1. Tool definitions are reduced to their names.
+2. `tool_activity` is dropped. It is derived from the request and response,
+   which stay.
+3. The `tools` entries are dropped (also derived), and long text in the
+   request outside its new messages, such as the system prompt, is cut in
+   the middle.
+4. Long text in the new messages is cut in the middle, longest first, so
+   the largest tool outputs go first. The first and last
+   `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS` characters (default 2048)
+   are kept, with a marker in between: `[... truncated 12345 chars ...]`.
+5. Only then is long response text cut, middle out, keeping four times as
+   much at the start (8192 characters by default).
+
+Tool-call arguments and tool-call inputs are never cut, because a cut
+argument is no longer valid JSON.
+
+A cap far below the size of the call can need more: text is cut harder (down
+to 64 characters at each end), then only the newest new message and the last
+user message are kept, then the response text is cut harder. If even that
+does not fit (a cap smaller than the bare structure of the call), the
+contents of `request` and `response` are replaced with
+`{"omitted_for_size": true}`, the preview is removed and the marker records
+`content_omitted_for_size`. The keys stay so a reader can tell the content
+was removed, not absent. With the default cap this only happens for a
+single call larger than 8 MB whose tool arguments alone exceed the cap.
+
+The session views show a **Truncated** badge on every message or tool
+result that was cut.
+
+`body_compaction` on the row records exactly what happened:
+
+| Field | Meaning |
+| --- | --- |
+| `original_bytes`, `stored_bytes` | Size of the call before and after |
+| `request_history_start` | Index of the first new message; earlier ones were replayed history |
+| `tool_definitions_omitted` | Tool definitions were reduced to names |
+| `keys_omitted` | Derived keys that were dropped (`tool_activity`, `tools`) |
+| `request_context_shortened`, `messages_shortened`, `response_shortened` | `strings` cut, `chars_removed`, and the characters kept (`keep_chars` or `head_chars`) |
+| `messages_shortened_further`, `delta_messages_elided`, `response_shortened_further` | The last-resort steps above, when they ran |
+| `content_omitted_for_size` | The final fallback ran: request and response contents replaced with `{"omitted_for_size": true}` |
+
+### Why the cap is large
+
+Because a row keeps only the call's own new messages and response, its size
+no longer grows with the length of the session. On a synthetic workload of
+2,000 long-session calls (a median of 148 replayed messages, up to 1,200,
+original calls averaging about 700 KB), the stored row is 107 KB at the
+median and 171 KB at p95 before any cap. The 8 MB default therefore leaves
+normal calls alone and only stops a single runaway turn, such as a tool
+that returns a whole build log or a binary file.
+
+Rows live in Postgres, so there is still a limit. Storing arbitrarily large
+single turns with no limit at all would need an object storage backend for
+call bodies, which Preloop does not have today.
+
+### Rows stored by earlier releases
+
+Rows written while the default cap was 32768 can be missing content: their
+`body_compaction` shows `keys_omitted` containing `request` and `response`,
+or `strings_capped_at` (text cut to that many characters from the start).
+That content was never written, and the maintenance pass does not touch rows
+that already carry `body_compaction`, so it cannot be restored. Token counts,
+cost and timing on those rows are complete.
 
 The live view of a running session is not affected: live events still carry
 the full call.
@@ -123,7 +196,8 @@ manual run with `--no-size-backfill`.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | `32768` | Byte cap for one stored gateway call row; `0` disables the cap |
+| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | `8388608` | Guard against runaway gateway call rows (bytes); `0` disables the cap |
+| `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS` | `2048` | Characters kept at each end of text cut to fit the cap |
 | `GATEWAY_ACTIVITY_COMPACTION_ENABLED` | `true` | Hourly compaction of rows from older releases |
 | `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` | `false` | Hourly compaction of flow log model call rows from older releases |
 | `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` | `false` | Hourly removal of content older than the plan history window |

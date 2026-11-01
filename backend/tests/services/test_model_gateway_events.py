@@ -1,5 +1,6 @@
 """Tests for model gateway event capture and redaction behavior."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 
@@ -7,7 +8,7 @@ from preloop.services.gateway_activity_body import payload_bytes
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from uuid import uuid4
 
-from preloop.config import settings
+from preloop.config import Settings, settings
 from preloop.models.models.api_usage import ApiUsage
 
 
@@ -456,6 +457,10 @@ def test_emit_for_usage_does_not_require_running_event_loop():
             "preloop.services.model_gateway_events.crud_flow_execution.append_log"
         ) as mock_append_log,
         patch("preloop.services.model_gateway_events.publish_realtime") as publish,
+        patch(
+            "preloop.services.execution_realtime.stamp_execution_event",
+            side_effect=lambda e: {**e, "seq": 1},
+        ),
     ):
         emitter.emit_for_usage(
             usage=usage,
@@ -480,7 +485,13 @@ def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_large()
             "already_minimal_but_huge": "x" * 1_000_001,
         },
     }
-    with patch("preloop.services.model_gateway_events.publish_realtime") as publish:
+    with (
+        patch("preloop.services.model_gateway_events.publish_realtime") as publish,
+        patch(
+            "preloop.services.execution_realtime.stamp_execution_event",
+            side_effect=lambda e: {**e, "seq": 1},
+        ),
+    ):
         emitter._publish_to_nats(event)
 
     publish.assert_not_called()
@@ -737,7 +748,7 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     stored = mock_append_log.call_args.args[2]
     assert stored["type"] == "model_gateway_call"
     payload = stored["payload"]
-    assert payload["body_compaction"]["version"] == 1
+    assert payload["body_compaction"]["version"] == 2
     assert payload_bytes(payload) <= 32768
     stored_texts = [m.get("content") for m in payload["request"]["messages"]]
     assert stored_texts == ["latest question"]
@@ -746,6 +757,66 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     # The live event still carries the whole replayed conversation.
     assert len(published) == 1
     assert len(published[0]["payload"]["request"]["messages"]) == len(history)
+
+
+def test_flow_log_row_keeps_response_and_new_tool_results_under_cap():
+    """The flow path shares the slimming: a tight cap cuts text, not keys."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    messages: list[dict] = [{"role": "user", "content": "refactor the parser"}]
+    for turn in range(100):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{turn}",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {"role": "tool", "tool_call_id": f"c{turn}", "content": "x" * 6000}
+        )
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "All tests pass."},
+            }
+        ]
+    }
+
+    with (
+        patch(
+            "preloop.services.model_gateway_events.crud_flow_execution.append_log"
+        ) as mock_append_log,
+        patch.object(emitter, "_publish_to_nats"),
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_activity_max_stored_bytes", 8192),
+    ):
+        emitter.emit_for_usage(
+            usage=usage,
+            request_payload={"model": "m", "messages": messages},
+            response_payload=response,
+        )
+
+    payload = mock_append_log.call_args.args[2]["payload"]
+    assert payload_bytes(payload) <= 8192
+    assert "request" not in payload["body_compaction"].get("keys_omitted", [])
+    assert payload["response"]["choices"][0]["message"]["content"] == (
+        "All tests pass."
+    )
+    [tool_result] = payload["request"]["messages"]
+    assert tool_result["tool_call_id"] == "c99"
+    assert "[... truncated " in tool_result["content"]
+
+
+def test_flow_log_compaction_of_old_rows_stays_off_by_default():
+    assert Settings.model_fields["flow_log_gateway_compaction_enabled"].default is False
 
 
 def test_event_keeps_safe_upstream_diagnostics_when_content_capture_is_disabled() -> (
@@ -767,3 +838,57 @@ def test_event_keeps_safe_upstream_diagnostics_when_content_capture_is_disabled(
         "reasoning_effort": "low",
     }
     assert payload["usage_warnings"] == ["reasoning_tokens_exceed_output_tokens"]
+
+
+def test_tool_evidence_capture_survives_execution_sequence_stamping() -> None:
+    """Raw tool evidence and the sequenced live copy keep their distinct limits."""
+    db = MagicMock()
+    db.get.return_value = None
+    emitter = ModelGatewayEventEmitter(db)
+    usage = _build_usage()
+    arguments = json.dumps({"command": "echo " + "é" * 50000}, ensure_ascii=False)
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "integration-call",
+                "name": "exec_command",
+                "arguments": arguments,
+            }
+        ]
+    }
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch(
+            "preloop.models.crud.execution_tool_evidence.persist_tool_evidence"
+        ) as save,
+        patch("preloop.services.model_gateway_events.crud_flow_execution.append_log"),
+        patch("preloop.services.model_gateway_events.emit_account_event"),
+        patch("preloop.services.model_gateway_events.publish_realtime") as publish,
+        patch("preloop.services.execution_realtime.run_db_sync", return_value=(17, 3)),
+    ):
+        emitter.emit_for_usage(
+            usage=usage, request_payload={}, response_payload=response
+        )
+    document = save.call_args.kwargs["document"]
+    assert document["capture_complete"] is True
+    assert document["observations"][0]["value"] == arguments
+    published = json.loads(publish.call_args.args[1])
+    assert published["seq"] == 17
+    assert published["lifecycle_seq"] == 3
+    assert published["sequence_domain"] == "execution"
+    assert published["execution_id"] == str(usage.flow_execution_id)
+
+
+def test_published_gateway_event_is_flagged_as_already_stored():
+    """The stored model-call row must not be stored again by the log persister."""
+    import json as _json
+
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    event = {"execution_id": "execution-1", "type": "model_gateway_call"}
+    with patch("preloop.services.model_gateway_events.publish_realtime") as publish:
+        emitter._publish_to_nats(event)
+
+    sent = _json.loads(publish.call_args.args[1])
+    assert sent["persisted"] is True
+    assert "persisted" not in event

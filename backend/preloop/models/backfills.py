@@ -23,10 +23,12 @@ import argparse
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Union
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from preloop.models.credential_encryption import REGISTERED_STEPS
 
 logger = logging.getLogger("preloop.models.backfills")
 
@@ -59,9 +61,17 @@ WHERE name='agents' AND (SELECT count(*) FROM applied)>=0
 RETURNING ready
 """
 
-#: Registered backfills: registry row name -> one-batch statement. The
-#: statement must advance the row's cursor and return the new ``ready`` value.
-BACKFILLS: dict[str, str] = {"agents": AGENT_USAGE_TOTALS_BATCH}
+#: One batch of a backfill: a SQL statement, or a callable for batches that
+#: need Python (such as encryption). Either advances the registry row's cursor
+#: and returns the new ``ready`` value; the runner commits.
+BackfillStep = Union[str, Callable[[Session], bool]]
+
+#: Registered backfills: registry row name -> one-batch step. The credential
+#: steps come from revision ``20261119_credentials_at_rest``.
+BACKFILLS: dict[str, BackfillStep] = {
+    "agents": AGENT_USAGE_TOTALS_BATCH,
+    **REGISTERED_STEPS,
+}
 
 
 @dataclass
@@ -127,7 +137,11 @@ def run_pending_backfills(
             if clock() >= deadline:
                 break
             try:
-                ready = db.execute(text(BACKFILLS[name])).scalar_one()
+                step = BACKFILLS[name]
+                if callable(step):
+                    ready = step(db)
+                else:
+                    ready = db.execute(text(step)).scalar_one()
                 db.commit()
             except Exception as exc:  # one failing backfill must not block others
                 db.rollback()

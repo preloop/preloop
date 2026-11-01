@@ -676,7 +676,125 @@ def test_read_only_unsupported_executor_cannot_provision(
     flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
     flow.agent_type = agent_type
     db_session.commit()
-    with pytest.raises(ValueError, match="supported hosted native executor"):
+    with pytest.raises(ValueError, match="supported native executor"):
         crud.crud_ci_principal.provision(
             db_session, actor=owner, name="Rejected review", grant=grant
         )
+
+
+def test_read_only_review_on_private_host_profile_can_provision(
+    db_session: Session, ci_resources: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import publication_credentials
+
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    owner, _, flow, grant = ci_resources
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    flow.agent_type = "codex"
+    flow.runner_pool = "review-hosts"
+    flow.agent_config = {"host_exec_profile": "codex-review"}
+    db_session.commit()
+    preview = crud.crud_ci_administration.preview(db_session, actor=owner, grant=grant)
+    assert preview["runner_pool"] == "review-hosts"
+    principal, _, _ = provision(db_session, ci_resources)
+    assert principal.repository_binding["publication_mode"] == "read_only"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"git_clone_config": "legacy"},
+        {"agent_config": {}},
+        {"runner_pool": "auto"},
+    ],
+)
+def test_private_pool_ci_flow_requires_read_only_host_profile(
+    db_session: Session,
+    ci_resources: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, Any],
+) -> None:
+    from preloop.services import publication_credentials
+
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    owner, _, flow, grant = ci_resources
+    mode = "legacy" if changes.get("git_clone_config") == "legacy" else "read_only"
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": mode}
+    flow.agent_type = "codex"
+    flow.runner_pool = changes.get("runner_pool", "review-hosts")
+    flow.agent_config = changes.get(
+        "agent_config", {"host_exec_profile": "codex-review"}
+    )
+    db_session.commit()
+    with pytest.raises(ValueError):
+        crud.crud_ci_principal.provision(
+            db_session, actor=owner, name="Rejected review", grant=grant
+        )
+
+
+def test_shared_read_only_flow_keeps_principals_project_bound(
+    db_session: Session, ci_resources: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import publication_credentials
+
+    owner, project, flow, grant = ci_resources
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    # An administrator can list another project without granting it to this
+    # principal. Exact current project/tracker identity remains authoritative.
+    other_project_id = str(uuid4())
+    flow.agent_type = "codex"
+    flow.trigger_project_ids = [str(project.id), other_project_id]
+    flow.git_clone_config = {
+        **flow.git_clone_config,
+        "publication_mode": "read_only",
+        "ci_project_selection": True,
+        "repositories": [
+            {"project_id": other_project_id, "tracker_id": str(uuid4())},
+            *flow.git_clone_config["repositories"],
+        ],
+    }
+    db_session.commit()
+    principal, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    assert context.project_id == project.id
+    assert principal.repository_binding["ci_project_selection"] is True
+    flow.git_clone_config = {
+        **flow.git_clone_config,
+        "repositories": flow.git_clone_config["repositories"][:1],
+    }
+    db_session.commit()
+    assert crud.crud_ci_principal.authenticate(db_session, token=token) is None
+
+
+def test_ci_authority_survives_creator_offboarding_and_hard_delete(
+    db_session: Session,
+    ci_resources: tuple[models.User, models.Project, models.Flow, CiGrant],
+) -> None:
+    from preloop.services.membership_lifecycle import offboard_membership
+
+    owner, _, _, _ = ci_resources
+    principal, key, token = provision(db_session, ci_resources)
+    account_id = owner.account_id
+    offboard_membership(
+        db_session,
+        account_id=account_id,
+        user_id=owner.id,
+        actor=None,
+        reason="Synthetic CI creator removal",
+    )
+    inspection = crud.crud_ci_principal.inspect_tokens(db_session, tokens=(token,))
+    assert inspection.context is not None
+    assert inspection.context.principal_id == principal.id
+    crud.crud_user.hard_delete(db_session, user_id=owner.id)
+    db_session.expire_all()
+    assert crud.crud_api_key.get(db_session, id=key.id).user_id is None
+    inspection = crud.crud_ci_principal.inspect_tokens(db_session, tokens=(token,))
+    assert (
+        inspection.context is not None and inspection.context.account_id == account_id
+    )

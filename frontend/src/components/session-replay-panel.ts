@@ -84,7 +84,7 @@ import {
   isSessionContextMessage,
   stripWrapperTags,
 } from '../utils/session-turns';
-import { matchInjectedSegment } from '../utils/transcript';
+import { hasTruncationMarker, matchInjectedSegment } from '../utils/transcript';
 
 // The bundled example has no runtime session behind it and nothing can be
 // applied from it, so `session` and `applyingSuggestionId` are left at their
@@ -3040,7 +3040,7 @@ export class SessionReplayPanel extends LitElement {
         <div class="message-role">
           ${role}
           ${
-            message.truncated
+            message.truncated || hasTruncationMarker(fullText)
               ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
               : nothing
           }
@@ -5194,7 +5194,7 @@ export class SessionReplayPanel extends LitElement {
         <div class="message-role">
           ${role}
           ${
-            message.truncated
+            message.truncated || hasTruncationMarker(fullText)
               ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
               : nothing
           }

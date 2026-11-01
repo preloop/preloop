@@ -47,9 +47,9 @@ lead and per-person opt-outs use the plugin recipient API and policy permissions
 independently of budget editing. Budget saves retain the current recipient
 settings; each person retains the shared self-subscription control.
 
-[Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's ten-operation route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
+[Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's explicit route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
 
-Dedicated restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. Legacy and isolated publication retain their existing contracts.
+Restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. The executor is either hosted Codex on the server pool or a Codex `host_exec_profile` on a named private runner pool: the lease travels only in the transient delivered checkout plan, the runner clones with host git config and credential helpers disabled, verifies the admitted SHA, revokes the lease before starting `codex exec --sandbox read-only`, and returns a receipt the control plane requires for success; the control plane revokes delivered leases again at completion. Legacy and isolated publication retain their existing contracts.
 
 
 Credential checks use a dedicated synchronous auth pool alongside the sync and
@@ -219,6 +219,20 @@ header. The header wraps the complete FastAPI middleware stack so early
 rejections and unhandled errors retain it. CLI and console REST URL builders
 share a prefix within each client; they do not negotiate versions by header.
 
+Flow routing admission rejects agent-bound subscription models for ordinary
+ephemeral execution credentials before creating executions, unless the
+subscription's owner opted in ("Use from my flows",
+`ai_model.owner_flow_use_user_id`) and also owns the flow
+(`flow.created_by_user_id`). The gateway applies the same rule to the
+execution's runtime credential (`services/subscription_flow_use.py`) without
+touching agent bindings; refreshes stay serialized on the credential row, so
+the onboarded agent and hosted runs share one token lineage. Matrix admission
+validates all cells before writing the batch. Authoritative orchestrator startup
+rechecks legacy queued rows before runtime launch and records incompatible
+subscription selections as terminal `model_config` failures. Persistent agents, private host
+profiles and persistent employee identities keep their existing admission
+and gateway ownership checks. See [model routing](docs/guide/flows/model-routing.md#subscription-credentials-and-execution-identity).
+
 ## High-Level Architecture
 
 ```mermaid
@@ -281,7 +295,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
-| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
+| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, restricted CI machine identities, owned review execution admission, principal-bound completion callbacks and default-deny HTTP boundary, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
@@ -1215,6 +1229,24 @@ fields remain unknown. This in-memory view is not a durable tracker event journa
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
+### Host-profile gateway attribution and hosted Codex hook
+
+A private-runner Codex or Claude Code host profile runs the runner user's
+Preloop-onboarded CLI, whose model calls reach the gateway with the agent's
+own key. Host delivery adds `host_exec_gateway`: a signed, identifiers-only
+execution marker the runner sends as `X-Preloop-Execution` (Codex through a
+per-run provider override, Claude Code through `ANTHROPIC_CUSTOM_HEADERS`).
+The gateway auth dependency verifies it against the key's account and a live
+execution and folds `flow_execution_id`/`flow_id` into the detached key
+snapshot, so usage attribution, per-execution ceilings and cost rollups use
+their existing paths. At completion the server counts the execution's gateway
+rows for `gateway_metered`; a Codex or Claude Code run with model output and
+no row fails `gateway_bypassed` unless the flow opts out
+(`allow_unmetered_host_model`, never in read-only review). See
+`services/host_exec_gateway.py`. Hosted Codex containers install the Preloop
+`PreToolUse` hook before Codex starts (`agents/codex_native_hook.py`), so
+native commands follow the same deny and approval-park rules.
+
 ### Restricted external runtime authority
 
 The default-disabled restricted runtime primitive reuses SecretReference policy
@@ -1392,6 +1424,17 @@ sessions, and per-tool schema costs with unknown tariffs represented as null.
 email delivery, defaults on, and audits changes in the same transaction. Account
 changes require account administration; members can unsubscribe themselves without
 changing approval notifications. The Enterprise digest enforces both switches.
+The Enterprise automatic sender is a factual exception digest: it sends only
+newly actionable or changed gateway failure and approval facts and sends
+nothing in a quiet or unchanged week. Its ledger lives in
+`models.crud.exception_digest` (migration `20261121_exception_digest`): one
+claim per recipient and week, a committed dispatch claim before SMTP,
+per-member material history, and an account-week synthesis reservation capped
+at $0.02, two calls, 12,000 tokens and 20 seconds. `POST
+/api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}`
+acknowledges a fact only for the member it was sent to and only while its
+material state is current. Implicit governance analysis is off on every
+edition until an account opts in explicitly.
 
 
 The `governance_review` capability registers lazy `/console/governance` and
@@ -1446,7 +1489,10 @@ server does not advertise or call them.
 Weekly report settings live in core Account fields and the audited
 `models.crud.weekly_report` transaction. `/api/v1/weekly-report/preferences`
 keeps individual unsubscribe separate from independent account controls for
-owner/admin delivery, member delivery, and member policy findings. An unset
+owner/admin delivery, member delivery, member policy findings and the optional
+admin-only synthesis switch and model (account models only). The console no
+longer shows the member policy findings switch because the factual digest
+carries no policy findings; the API field remains for explicit previews. An unset
 member-delivery field uses an optional edition service for its effective plan
 default. The capability-gated Lit settings card lives in OSS. Report queries in
 `models.crud.weekly_report_data` apply account and user attribution before
@@ -1563,6 +1609,26 @@ extension failures are isolated from core imports with a sanitized warning.
 
 [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.
 
+Every upstream MCP session built by `MCPClient` (`services/mcp_client_pool.py`) carries the identity headers defined in `services/upstream_identity.py`: `User-Agent: Preloop/<version>` (shared with the model path), `X-Preloop-Correlation-Id` equal to the audit `correlation_id` on proxied tool calls, and an opt-in `X-Preloop-Instance`. Per-server `auth_config` flags remove them or add the instance id; client headers are never forwarded.
+
+Restricted CI's optional shared-flow selector resolves exactly one repository from
+the principal's immutable project binding before minting a read lease. Tool audit
+observations are stored as bounded canonical chunks in `flow_execution_log`,
+separate from clipped console rows and never broadcast on realtime channels. A
+new evidence action reads only an owned execution, with hashes and explicit
+coverage/redaction flags. STOPPED writes queue the existing principal-filtered
+completion outbox transactionally. Codex's opt-in native result schema uses CLI
+structured output plus the existing capture-time validation gate; protocol
+translation preserves the requested schema or fails explicitly.
+
+Completed human-owned reviews can be exported through an explicit, expiring
+`execution_result_grant`, without adopting their execution into a CI principal.
+The CRUD layer binds current owner consent to original provider revisions and
+result/event digests; immutable grant fields and monotonic revocation are guarded
+in PostgreSQL. Export checks authority before and after a bounded provider read.
+The separate publisher verifies the public receipt, exact head/base and stable
+publication marker, then requires independent provider read-back. It neither
+launches a model nor receives publication authority from the export grant.
 
 ### Enterprise authentication persistence boundary
 
@@ -1642,3 +1708,28 @@ authentication enforcement.
 Test sign-in obtains a one-use start URL through an authenticated POST. SAML metadata imports are previewed before applying them to the unsaved editor; only public SP certificates are displayed. A refused account switch can request fresh password/passkey authentication bound to that account, preserving the existing session until credential proof succeeds. All owners retain emergency access, which the enterprise plugin audits and notifies.
 
 Public SSO starts require the configured console/backend Origin or Referer before minting state. The validated local login link explicitly preserves the browser referrer rather than inheriting Shoelace's `noreferrer` default; originless shared URLs remain refused.
+
+### Membership offboarding and machine credential ownership
+
+Console removal and SCIM provisioning share `services.membership_lifecycle`.
+Offboarding locks the account, Person and target membership, marks only that
+membership inactive and increments only its token generation. In the same
+transaction it revokes personal API/runtime keys, CLI and MCP OAuth grants,
+ends their runtime sessions, removes team memberships and registered runners,
+and records `access.revoked` with actual affected-row counts. Repeated removal
+is a no-op. Reactivation checks canonical identity and seat availability without
+restoring credentials. Credential issuance serializes with the same lifecycle
+boundary and refuses an inactive membership. SCIM uses `commit=False` so its
+provisioning record and revocation commit or roll back together.
+
+Account-owned CI principals and durable managed-agent credentials retain their
+keys. `ApiKey.user_id` is nullable creator attribution with `ON DELETE SET NULL`;
+account deletion still cascades its credentials. A durable credential requires
+an active account, agent, key and matching persisted credential binding. Its
+runtime principal contains the agent ID separately from creator attribution
+and has no human membership ID. Gateway, native permissions, control, desktop
+and MCP adapters use that machine identity; ordinary human/admin REST
+authentication rejects it. App configuration acknowledgment is a dedicated
+self-credential endpoint. Runtime policy checks never inherit the creator's
+human permissions. Migration `20261117_membership_offboarding` refuses downgrade
+while credentials with deleted creators remain, preserving those credentials.

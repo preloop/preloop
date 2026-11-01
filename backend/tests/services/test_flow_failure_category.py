@@ -479,3 +479,22 @@ def test_unsupported_wire_api_is_model_configuration() -> None:
         )
         == "model_config"
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "checkpoint_resume_not_authorized",
+        "workspace_checkpoint_missing",
+        "resume_failed: checkpoint binding mismatch",
+    ],
+)
+def test_refused_resume_checkpoint_is_resume_failed(message: str) -> None:
+    assert (
+        derive_failure_category(status="FAILED", error_message=message)
+        == "resume_failed"
+    )
+    assert (
+        derive_failure_category(status="FAILED", exception=ValueError(message))
+        == "resume_failed"
+    )

@@ -579,3 +579,26 @@ curl -X POST 'https://<your-preloop-host>/api/v1/flows/executions/{execution_id}
 There is no automatic retry, you decide when a failure is worth re-running.
 
 ---
+
+## Recovering lifecycle updates
+
+To observe startup without missing an event between trigger and subscription,
+connect to `/api/v1/ws/flows/{flow_id}/lifecycle` using Bearer authentication, wait
+for `connected`, and then trigger the flow. This account-authorized route sends
+only that flow's lifecycle events, each bounded to 8 KiB. It excludes logs,
+results and tool arguments. Send text `ping` every 30 seconds to keep it open.
+
+Track the largest `seq` for each execution. The flow stream uses
+`sequence_domain: lifecycle`; a jump greater than one or `resync_required` means
+re-read `/api/v1/flow-executions/{execution_id}/lifecycle?sequence_domain=lifecycle`.
+Suppress older or duplicate events. Refresh after reconnect and at a bounded
+idle deadline as well, because a missing last event has no successor to reveal
+the gap. Read the normal execution/result and paginated logs endpoints for
+retained details. Sequence cursors detect transport gaps; they do not establish
+successful completion or publication.
+
+For an already known execution, `/api/v1/ws/flow-executions/{execution_id}` sends
+its database snapshot after subscription, before live events. Its `seq` uses the
+full `execution` domain, so use the recovery endpoint without the lifecycle query
+parameter. See [realtime architecture](../../architecture/realtime.md) for cursor
+ordering, authorization, rollout and retention limits.

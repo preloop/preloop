@@ -17,6 +17,20 @@ tag, `vX.Y.Z`. The job summary prints
 not automatically update the hosted default. The container package must be
 public in GitHub package settings; after pushing and attesting the index,
 the workflow verifies anonymous digest access and fails if access is unavailable.
+The image also installs the Preloop CLI at `/opt/preloop/bin/preloop`
+(pinned release, SHA-256 checked, with an offline `permission-hook --help`
+gate). Hosted Codex uses it for the native command policy hook; on an image
+without it, the run downloads the same pinned release at start and verifies
+the checksum.
+The image creates the unprivileged `preloop-agent` user (uid 10001) that
+hosted Codex runs as. The CLI and `/opt/preloop` are root-owned, the CLI is
+execute-only (0711), and `/root` is traverse-only so the base toolchains stay
+usable but not writable. `check-agent-user.sh` runs at build time and from
+`run-smoke.sh`: it fails if the agent user can write the CLI or its
+directories, cannot run it, or cannot pass the language smoke (including the
+Maven and Perl fixtures). The image `USER` stays root because the Codex
+entrypoint sets up runtimes as root; the hosted launch drops to the agent user
+before Codex starts.
 `environments/universal/bin/preloop-preflight`
 is installed at `/usr/local/bin/preloop-preflight`. It writes
 `/tmp/preloop-preflight.json`. The schema is

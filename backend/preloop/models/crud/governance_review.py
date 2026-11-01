@@ -86,16 +86,13 @@ def deployment_mode() -> Literal["cloud", "self-hosted"]:
 def default_review_mode() -> str:
     """Mode for an account that has no settings row.
 
-    Cloud defaults to ``on_platform``. A self-hosted deployment defaults to
-    ``off`` until ``PRELOOP_GOVERNANCE_ANALYSIS_MODEL`` is set, because there
-    is no platform to fund the review. A configured self-hosted model
-    defaults to ``on_own_model``.
+    Implicit review is off on every edition. An explicitly configured
+    governance analysis model is an independent operator opt-in; account
+    provider keys and weekly email preferences do not enable analysis.
 
     Returns:
         One of the ``REVIEW_MODES`` values.
     """
-    if deployment_mode() == "cloud":
-        return gov.REVIEW_MODE_ON_PLATFORM
     if os.getenv(GOVERNANCE_ANALYSIS_MODEL_ENV, "").strip():
         return gov.REVIEW_MODE_ON_OWN_MODEL
     return gov.REVIEW_MODE_OFF
@@ -455,8 +452,9 @@ class CRUDGovernanceReviewSettings(CRUDBase[GovernanceReviewSettings]):
     ) -> GovernanceReviewSettings:
         """The stored row, or an unsaved row carrying the deployment default.
 
-        A missing row is not inserted. Cloud gets ``on_platform``. A
-        self-hosted deployment with no analysis model configured gets ``off``.
+        A missing row is not inserted. Every edition defaults to ``off``
+        unless a governance analysis model is explicitly configured. Legacy
+        rows without positive analysis consent receive a transient off view.
 
         Args:
             db: Database session.
@@ -467,11 +465,55 @@ class CRUDGovernanceReviewSettings(CRUDBase[GovernanceReviewSettings]):
         """
         row = self.get_for_account(db, account_id=account_id)
         if row is not None:
+            if row.mode != gov.REVIEW_MODE_OFF and not self.explicitly_enabled(
+                db, row=row
+            ):
+                # Do not rewrite a stored customer choice. This transient view
+                # fails closed for legacy automatically materialized settings.
+                effective = GovernanceReviewSettings(
+                    **{
+                        column.name: getattr(row, column.name)
+                        for column in GovernanceReviewSettings.__table__.columns
+                    }
+                )
+                effective.mode = gov.REVIEW_MODE_OFF
+                effective.stored_mode = row.mode
+                effective.effective_reason = "explicit_analysis_opt_in_required"
+                return effective
             return row
         return GovernanceReviewSettings(
             account_id=account_id,
             mode=default_review_mode(),
         )
+
+    def explicitly_enabled(self, db: Session, *, row: GovernanceReviewSettings) -> bool:
+        """Require positive governance-specific consent, never generic BYOK.
+
+        Budget pauses can clear the last mode actor. The latest authenticated
+        settings audit preserves the user's choice through these transitions.
+        Missing/ambiguous legacy attribution is deliberately not consent.
+        """
+        if row.mode_changed_by_id is not None:
+            return True
+        if row.analysis_model_id is not None:
+            return True
+        if os.getenv(GOVERNANCE_ANALYSIS_MODEL_ENV, "").strip():
+            return True
+        latest = (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.account_id == row.account_id,
+                models.AuditLog.action == "governance_review.settings_updated",
+                models.AuditLog.status == "success",
+                models.AuditLog.user_id.is_not(None),
+            )
+            .order_by(models.AuditLog.timestamp.desc(), models.AuditLog.id.desc())
+            .first()
+        )
+        return latest is not None and (latest.details or {}).get("mode") in {
+            gov.REVIEW_MODE_ON_PLATFORM,
+            gov.REVIEW_MODE_ON_OWN_MODEL,
+        }
 
     def set_mode(
         self,

@@ -208,7 +208,10 @@ def summarize_host_exec_usage(
 
     Returns:
         A dict with ``sessions``, ``event_count``, ``premium_requests`` and
-        ``gateway_metered`` (always False for these rows).
+        ``gateway_metered``: whether the execution has gateway rows (an
+        onboarded Codex or Claude Code host run sends its model calls
+        through the gateway with the execution marker; imported hook rows
+        are never gateway rows).
     """
     rows = crud_api_usage.list_imported_rows_for_flow_execution(
         db, account_id=account_id, flow_execution_id=execution_id
@@ -253,5 +256,11 @@ def summarize_host_exec_usage(
         "sessions": ordered,
         "event_count": event_count,
         "premium_requests": premium,
-        "gateway_metered": False,
+        "gateway_metered": int(
+            crud_api_usage.get_gateway_usage_for_execution(db, str(execution_id)).get(
+                "api_requests"
+            )
+            or 0
+        )
+        > 0,
     }

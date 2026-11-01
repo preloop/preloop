@@ -44,10 +44,18 @@ CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType(
             "POST",
             "/api/v1/event-webhooks/endpoints/{endpoint_id}/secret/rotate",
         ): CiAction.ROTATE_SUBSCRIPTION_SECRET,
+        (
+            "GET",
+            "/api/v1/flows/executions/{execution_id}/result-export/{grant_id}",
+        ): CiAction.READ_RESULT_EXPORT,
         ("POST", "/api/v1/flows/{flow_id}/trigger"): CiAction.TRIGGER,
         ("GET", "/api/v1/flows/executions"): CiAction.READ_EXECUTION,
         ("GET", "/api/v1/flows/executions/{execution_id}"): CiAction.READ_EXECUTION,
         ("GET", "/api/v1/flows/executions/{execution_id}/result"): CiAction.READ_RESULT,
+        (
+            "GET",
+            "/api/v1/flows/executions/{execution_id}/tool-evidence",
+        ): CiAction.READ_EVIDENCE,
         (
             "POST",
             "/api/v1/flows/executions/{execution_id}/command",

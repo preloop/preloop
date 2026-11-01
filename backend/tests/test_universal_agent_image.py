@@ -266,6 +266,7 @@ def test_run_smoke_uses_the_entrypoint_and_names_a_missing_tool() -> None:
         CODEX_ENV,
         UNIVERSAL / "remove-tool.sh",
         UNIVERSAL / "check-preflight.sh",
+        UNIVERSAL / "check-agent-user.sh",
     ],
 )
 def test_scripts_pass_bash_n(script: Path) -> None:
@@ -449,3 +450,47 @@ def test_both_architectures_require_preflight_during_build() -> None:
     copy = "COPY environments/universal/bin/preloop-preflight /usr/local/bin/preloop-preflight"
     guard = "RUN --network=none preloop-preflight --help >/dev/null"
     assert text.index(copy) < text.index(guard)
+
+
+def test_image_ships_the_pinned_preloop_cli_for_the_native_hook() -> None:
+    """The hosted Codex hook prefers the image CLI; pins must agree."""
+    from preloop.agents.codex_native_hook import (
+        HOOK_CLI_SHA256,
+        HOOK_CLI_VERSION,
+        IMAGE_CLI_PATH,
+    )
+
+    text = DOCKERFILE.read_text()
+    assert f"ARG PRELOOP_CLI_VERSION={HOOK_CLI_VERSION}" in text
+    assert f"ARG PRELOOP_CLI_SHA256_AMD64={HOOK_CLI_SHA256['amd64']}" in text
+    assert f"ARG PRELOOP_CLI_SHA256_ARM64={HOOK_CLI_SHA256['arm64']}" in text
+    assert "sha256sum -c -" in text
+    assert IMAGE_CLI_PATH == "/opt/preloop/bin/preloop"
+    assert f"{IMAGE_CLI_PATH} agents permission-hook --help" in text
+
+
+def test_image_adds_the_agent_user_with_a_root_owned_cli() -> None:
+    """Hosted Codex drops to this user; it must not be able to write the hook."""
+    from preloop.agents.codex_native_hook import AGENT_USER
+
+    text = DOCKERFILE.read_text()
+    assert f"--shell /bin/bash {AGENT_USER}" in text
+    assert "chmod 0711 /opt/preloop/bin/preloop" in text
+    assert "chown -R root:root /opt/preloop" in text
+    assert "chmod 0711 /root" in text
+    # The user check runs after the CLI and preflight are in place.
+    check = "exec /opt/entrypoint.sh /opt/preloop-universal/check-agent-user.sh"
+    assert text.index("preloop-preflight --help") < text.index(check)
+    script = (UNIVERSAL / "check-agent-user.sh").read_text()
+    assert f"user={AGENT_USER}" in script
+    assert "--no-new-privs" in script
+    # Fed over stdin by run-smoke.sh: agent commands must not read the script.
+    assert '-- "$@" </dev/null' in script
+    for lang in PASS_LANGUAGES:
+        assert lang in script
+
+
+def test_run_smoke_requires_the_agent_user_check() -> None:
+    text = RUN_SMOKE.read_text()
+    assert '-s < "$dir/check-agent-user.sh"' in text
+    assert "agent-user-check: OK" in text

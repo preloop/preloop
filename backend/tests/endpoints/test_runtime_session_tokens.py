@@ -690,7 +690,12 @@ async def test_durable_managed_agent_credential_respects_agent_lifecycle(
         "preloop.api.auth.jwt.get_db_session",
         side_effect=lambda: iter([db_session]),
     ):
-        assert await get_user_from_token_if_valid(durable_token, db_session) is not None
+        assert (
+            await get_user_from_token_if_valid(
+                durable_token, db_session, allow_managed_agent=True
+            )
+            is not None
+        )
         assert await authenticate_bearer_token(durable_token, db_session) is not None
 
     suspend_response = client.patch(
@@ -703,7 +708,12 @@ async def test_durable_managed_agent_credential_respects_agent_lifecycle(
         "preloop.api.auth.jwt.get_db_session",
         side_effect=lambda: iter([db_session]),
     ):
-        assert await get_user_from_token_if_valid(durable_token, db_session) is None
+        assert (
+            await get_user_from_token_if_valid(
+                durable_token, db_session, allow_managed_agent=True
+            )
+            is None
+        )
         assert await authenticate_bearer_token(durable_token, db_session) is None
 
 

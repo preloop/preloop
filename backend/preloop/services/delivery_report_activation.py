@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 PRESET_SLUG = "delivery-report"
 
 
-def ensure_default_report_flow(db: Session, *, account_id: UUID) -> Any | None:
+def ensure_default_report_flow(
+    db: Session, *, account_id: UUID, created_by_user_id: UUID | None = None
+) -> Any | None:
     """Create one enabled report flow with the account's effective defaults.
 
     Args:
         db: The transaction that connects a tracker.
         account_id: The connected tracker's account.
+        created_by_user_id: User connecting the tracker, recorded as the
+            report flow's owner.
 
     Returns:
         The existing or new flow, or None when the preset is unavailable.
@@ -95,5 +99,9 @@ def ensure_default_report_flow(db: Session, *, account_id: UUID) -> Any | None:
         )
     # The tracker and flow commit together, including managed OAuth binds.
     return crud_flow.create(
-        db, flow_in=FlowCreate(**config), account_id=account_id, commit=False
+        db,
+        flow_in=FlowCreate(**config),
+        account_id=account_id,
+        commit=False,
+        created_by_user_id=created_by_user_id,
     )

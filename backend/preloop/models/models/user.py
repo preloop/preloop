@@ -117,6 +117,10 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, comment="Whether the user account is active"
     )
+    offboarded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_superuser: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -241,7 +245,7 @@ class User(Base):
         "Person", back_populates="memberships", foreign_keys="[User.person_id]"
     )
     api_keys: Mapped[List["ApiKey"]] = relationship(
-        "ApiKey", back_populates="creator", cascade="all, delete-orphan"
+        "ApiKey", back_populates="creator", passive_deletes="all"
     )
     # No delete cascade: usage rows must survive user deletion so account
     # cost history stays intact (the DB FK is ON DELETE SET NULL); the ORM

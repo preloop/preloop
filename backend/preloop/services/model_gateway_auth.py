@@ -15,6 +15,7 @@ from preloop.api.auth.jwt import (
     _managed_agent_for_api_key,
 )
 from preloop.api.auth.key_scopes import is_single_purpose_api_key
+from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 from preloop.models import models
 from preloop.models.db.gateway_session import release_gateway_session
 from preloop.models.crud import (
@@ -46,7 +47,7 @@ class ModelGatewayAuthContext:
     """Authenticated model gateway request context."""
 
     token: str
-    user: models.User | GatewayUserSnapshot
+    user: models.User | GatewayUserSnapshot | ManagedAgentPrincipal
     api_key: models.ApiKey | GatewayApiKeySnapshot | None = None
     oauth_access_token: models.OAuthMCPAccessToken | GatewayOAuthSnapshot | None = None
     # Set only for a trusted upstream key (``model_gateway:trusted_upstream``)
@@ -107,7 +108,16 @@ class ModelGatewayAuthContext:
         return ModelGatewayAuthContext(
             # Authentication is complete. No later phase needs the bearer.
             token=NO_BEARER_TOKEN,
-            user=GatewayUserSnapshot(id=self.user.id, account_id=self.user.account_id),
+            user=GatewayUserSnapshot(
+                id=self.user.id,
+                account_id=self.user.account_id,
+                principal_id=self.user.principal_id
+                if isinstance(self.user, ManagedAgentPrincipal)
+                else None,
+                created_by_user_id=self.user.created_by_user_id
+                if isinstance(self.user, ManagedAgentPrincipal)
+                else None,
+            ),
             api_key=GatewayApiKeySnapshot(
                 id=key.id,
                 account_id=key.account_id,
@@ -158,6 +168,7 @@ async def authenticate_bearer_token(
             session,
             allow_ended_runtime_session=allow_ended_runtime_session,
             allow_read_only_review=allow_read_only_review,
+            allow_managed_agent=True,
         )
         if user is not None:
             # A last-use commit may expire the user. Hydrate while this worker
@@ -214,6 +225,8 @@ def _key_owner_account_differs(db: Session, api_key: Any) -> bool:
 
     Used only to name the rejection reason in the gateway diagnostic log.
     """
+    if api_key.user_id is None:
+        return False
     owner = crud_user.get(db, id=str(api_key.user_id))
     return owner is not None and str(owner.account_id) != str(api_key.account_id)
 
@@ -362,7 +375,22 @@ def build_runtime_key_auth_context(
     ):
         return None
 
-    user = crud_user.get(db, id=str(api_key.user_id))
+    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    if context.get("credential_kind") == "managed_agent_durable":
+        from preloop.models.crud.managed_agent_auth import authenticate
+
+        user = authenticate(
+            db,
+            account_id=api_key.account_id,
+            key_id=api_key.id,
+            agent_id=context.get("managed_agent_id"),
+        )
+    else:
+        user = (
+            crud_user.get(db, id=str(api_key.user_id))
+            if api_key.user_id is not None
+            else None
+        )
     if user is None or not user.is_active:
         return None
     if not _key_matches_user_account(api_key, user):
@@ -538,10 +566,14 @@ def _principal_authorized_model_ids(
     - Credentials that resolve to a managed agent with no bindings (custom
       runtimes enrolled through a runtime session token, MCP-only
       enrollments) keep every BYOK / API-key / ambient model, as before.
-    - Fail closed: credentials that resolve to no managed agent — legacy
-      gateway keys without ``managed_agent_id`` and OAuth MCP client tokens —
-      are never authorized for principal-bound models, and bound models with
-      no binding row are authorized for nobody but user tokens.
+    - A flow-execution runtime credential (no managed agent) is authorized
+      for a subscription-OAuth model only through the owner opt-in: the
+      subscription's owner enabled it and owns the flow
+      (``subscription_flow_use``). No binding is created or changed.
+    - Fail closed: other credentials that resolve to no managed agent —
+      legacy gateway keys without ``managed_agent_id`` and OAuth MCP client
+      tokens — are never authorized for principal-bound models, and bound
+      models with no binding row are authorized for nobody but user tokens.
 
     Args:
         db: Active database session.
@@ -567,6 +599,22 @@ def _principal_authorized_model_ids(
     authorized = set(all_ids - bound_ids)
     managed_agent_id = resolve_managed_agent_id_for_context(db, auth_context)
     if managed_agent_id is None:
+        if bound_ids and auth_context.api_key is not None:
+            from preloop.services.subscription_flow_use import (
+                owner_flow_authorized_model_ids,
+            )
+
+            context_data = auth_context.api_key.context_data
+            authorized |= owner_flow_authorized_model_ids(
+                db,
+                account_id=auth_context.account_id,
+                context_data=context_data if isinstance(context_data, dict) else {},
+                bound_models=[
+                    ai_model
+                    for ai_model in account_models
+                    if str(ai_model.id) in bound_ids
+                ],
+            )
         return frozenset(authorized)
 
     bindings = crud_managed_agent_ai_model_binding.list_for_agent(

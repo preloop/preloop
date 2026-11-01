@@ -103,7 +103,9 @@ def test_codex_generated_pipeline_preserves_nonzero_cli_exit(tmp_path) -> None:
     from preloop.utils.execve_limits import PROMPT_FILE_PATH
 
     script = CodexAgent({})._build_codex_script({"prompt": "synthetic check"})
-    start = script.index('cat "' + PROMPT_FILE_PATH + '" | codex exec')
+    start = script.index(
+        'cat "' + PROMPT_FILE_PATH + '" | $PRELOOP_AS_AGENT codex exec'
+    )
     end = script.index("set -e", start)
     prompt = tmp_path / "prompt"
     prompt.write_text("synthetic check")

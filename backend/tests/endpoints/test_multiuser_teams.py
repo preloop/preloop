@@ -41,6 +41,45 @@ def test_create_team_minimal(client: TestClient, test_user: User, db_session: Se
     assert data["description"] is None
 
 
+def test_create_team_with_taken_name_returns_conflict(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """A duplicate team name in the account is a 409, not a database error."""
+    assert client.post("/api/v1/teams", json={"name": "Platform"}).status_code == 201
+
+    response = client.post("/api/v1/teams", json={"name": "Platform"})
+
+    assert response.status_code == 409
+
+
+def test_rename_team_to_taken_name_returns_conflict(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """Renaming onto another team's name is a 409; keeping its own name is fine."""
+    assert client.post("/api/v1/teams", json={"name": "Platform"}).status_code == 201
+    other = client.post("/api/v1/teams", json={"name": "Security"}).json()
+
+    response = client.patch(f"/api/v1/teams/{other['id']}", json={"name": "Platform"})
+    assert response.status_code == 409
+
+    same = client.patch(
+        f"/api/v1/teams/{other['id']}",
+        json={"name": "Security", "description": "unchanged name"},
+    )
+    assert same.status_code == 200
+
+
+def test_rename_team_to_null_is_rejected(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """An explicit null name is a 422, not a NOT NULL database error."""
+    team = client.post("/api/v1/teams", json={"name": "Nullable"}).json()
+
+    response = client.patch(f"/api/v1/teams/{team['id']}", json={"name": None})
+
+    assert response.status_code == 422
+
+
 def test_list_teams(client: TestClient, test_user: User, db_session: Session):
     """Test listing teams in account."""
     # Create multiple teams

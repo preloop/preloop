@@ -11,6 +11,9 @@ import { sessionName, type GovernanceView } from './governance-view';
 import './governance-view';
 
 const BASE = '/api/v1/governance-review';
+const deliveryId = '12345678-1234-1234-1234-123456789abc';
+const exceptionKey = 'a'.repeat(64);
+const acknowledgePath = `/api/v1/weekly-report/deliveries/${deliveryId}/acknowledge/${exceptionKey}`;
 const run: GovernanceRun = {
   id: 'run-1',
   window_start: '2026-10-10T09:00:00Z',
@@ -160,6 +163,11 @@ describe('Weekly review deep links and report evidence', () => {
           },
         },
         {
+          path: acknowledgePath,
+          method: 'POST',
+          body: () => ({ acknowledged: true }),
+        },
+        {
           path: '/api/v1/weekly-report/preferences',
           method: 'PUT',
           body: () => ({ account_enabled: true, user_enabled: false }),
@@ -194,6 +202,21 @@ describe('Weekly review deep links and report evidence', () => {
     expect(params.get('category')).to.equal('tool_hygiene');
     expect(el.shadowRoot!.querySelector('a[href*="tool-1"]')).to.exist;
     expect(el.shadowRoot!.querySelector('a[href*="spend-1"]')).not.to.exist;
+  });
+
+  it('confirms an emailed exception before acknowledging it', async () => {
+    const el = await mount(
+      `?digest_delivery=${deliveryId}&ack_exception=${exceptionKey}`
+    );
+    expect(api.callsTo(acknowledgePath, 'POST')).to.have.length(0);
+    expect(el.shadowRoot!.querySelector('[data-acknowledge]')).to.exist;
+    (
+      el.shadowRoot!.querySelector(
+        '[data-acknowledge] sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => el.shadowRoot!.querySelector('[data-acknowledged]'));
+    expect(api.callsTo(acknowledgePath, 'POST')).to.have.length(1);
   });
 
   it('asks before stopping the weekly email, then stops it for this user', async () => {

@@ -1,7 +1,7 @@
 """User management schemas for request and response validation."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import (
@@ -134,3 +134,19 @@ class UserListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class MemberMachineCredential(BaseModel):
+    """Account-owned machine credential created by a member.
+
+    Offboarding a member leaves these working; admins review or rotate them.
+    """
+
+    api_key_id: UUID
+    name: str
+    kind: Literal["ci_principal", "managed_agent"]
+    principal_id: UUID
+    principal_name: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None

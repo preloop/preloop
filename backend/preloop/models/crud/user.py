@@ -60,7 +60,12 @@ class CRUDUser(CRUDBase[models.User]):
         return user
 
     def update(
-        self, db: Session, *, db_obj: models.User, obj_in: dict[str, Any]
+        self,
+        db: Session,
+        *,
+        db_obj: models.User,
+        obj_in: dict[str, Any],
+        commit: bool = True,
     ) -> models.User:
         """A reactivation claims the same capacity as a new active member."""
         from .capacity import authorize_capacity, record_capacity_change
@@ -127,7 +132,7 @@ class CRUDUser(CRUDBase[models.User]):
                 raise ValueError(
                     "Unverifying identity requires an explicit address change"
                 )
-        return super().update(db, db_obj=db_obj, obj_in=obj_in)
+        return super().update(db, db_obj=db_obj, obj_in=obj_in, commit=commit)
 
     def delete(self, db: Session, *, id: Any) -> Optional[models.User]:
         """Deleting an active seat queues the same durable billing repair."""
@@ -359,6 +364,15 @@ class CRUDUser(CRUDBase[models.User]):
         user = db.query(models.User).filter(models.User.id == user_id).first()
         if not user:
             return None
+
+        from preloop.models.crud.membership_lifecycle import offboard_record
+
+        offboard_record(
+            db,
+            account_id=user.account_id,
+            user_id=user.id,
+            reason="Membership deletion",
+        )
 
         # Explicit SSO artifact cleanup (also covered by DB FK cascades).
         # ORM-level deletes (not bulk .delete()) so the session stays

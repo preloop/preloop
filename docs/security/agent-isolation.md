@@ -290,6 +290,58 @@ primary user's is the remaining backend change.
   usual path to it, and the agent manager Role
   (`helm/preloop/templates/agent-rbac.yaml`) is bound to the Preloop
   service account, not to the agents.
+- **The hosted Codex command hook is enforced, within limits.** Hosted
+  Codex checks native shell commands against tool rules through the Preloop
+  `PreToolUse` hook (`backend/preloop/agents/codex_native_hook.py`). Root
+  writes `config.toml`, `hooks.json`, `auth.json` and the hook trust state,
+  then Codex runs as the unprivileged `preloop-agent` user through a
+  root-owned launcher (`setpriv`, no new privileges, no capabilities).
+  The hook CLI and `/opt/preloop` are root-owned and not writable by that
+  user. `$CODEX_HOME` is root-owned and sticky: the agent can add sessions
+  and logs but cannot change, remove or rename the configuration files root
+  wrote. A command that tries fails with `Permission denied` or `Operation
+  not permitted`, and the same hook checks every later command. The
+  workspace, the agent's home and its caches stay writable, so builds and
+  package installs work; `/root`, where the base image keeps its
+  toolchains, is traverse-only. An image without the user (published before
+  this change) keeps the old behaviour and the run log says so in its
+  `PRELOOP_AGENT_USER` line.
+
+  The execution's runtime credential stays in Codex's environment, because
+  Codex uses it for the Preloop MCP connection and passes it to the hook.
+  Shell commands do not inherit it (`shell_environment_policy`), and the
+  `node` binary, every executable the Codex package ships (the `codex`
+  binary and its code-mode host) and the hook CLI are execute-only (0711),
+  so the kernel marks those processes as not dumpable and the agent user
+  cannot read their `/proc/<pid>/environ`. The credentials root uses for
+  its own steps (clone and publication tokens, the publication capability,
+  checkpoint, evidence and session upload tokens, the MCP configuration)
+  are removed from Codex's environment, so commands Codex runs never see
+  them.
+
+  After the last Codex round, root takes the workspace back before its own
+  git steps (session upload, push, pull request): it stops every agent
+  process, makes the workspace root-owned again, restores each repository's
+  git config from before the run, removes git hooks and the files that can
+  redirect the configuration (`commondir`, `config.worktree`,
+  `info/attributes`), and runs its git with `core.hooksPath=/dev/null` and
+  `core.fsmonitor=false`. Hooks or configuration the agent planted do not
+  run as root. Git remotes or upstreams the agent configured are dropped
+  with its config changes; the publication steps set their own.
+
+  Remaining gaps:
+
+  - The model key in `$CODEX_HOME/auth.json` is readable by the agent user,
+    because Codex reads it as that user.
+  - The git credential store is handed to the agent user, so its own
+    fetches and pushes keep working as before.
+  - Root's git still reads the agent's work tree: a `.gitattributes` file
+    can name a filter or diff driver, but only the restored config could
+    define one, so nothing the agent wrote is run.
+  - The hook judges the command it is shown. An allowed command that starts
+    an interpreter can do whatever that interpreter can.
+  - Kernel or container escapes are out of scope. The pod and its
+    credential, above, remain the outer boundary.
 
 ## Related
 

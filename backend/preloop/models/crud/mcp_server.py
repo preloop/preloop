@@ -6,6 +6,8 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from .. import models
+from preloop.services.upstream_identity import without_identity_flags
+
 from .base import CRUDBase
 
 
@@ -85,7 +87,8 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             or old_type != server.auth_type
             or old_transport != server.transport
             or old_disabled != (server.status == "disabled")
-            or next_config != config
+            # Header preferences are not part of the credential binding.
+            or without_identity_flags(next_config) != without_identity_flags(config)
         )
         if changed:
             crud_upstream_mcp_oauth.invalidate(db, server.id)

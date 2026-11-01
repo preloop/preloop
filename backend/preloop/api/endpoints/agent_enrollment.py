@@ -5,10 +5,14 @@ from datetime import UTC
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.jwt import get_current_active_user
+from preloop.api.auth.jwt import (
+    get_current_active_user,
+    oauth2_scheme,
+    _authenticate_with_api_key,
+)
 from preloop.api.auth.key_scopes import is_single_purpose_api_key
 from preloop.models import models
-from preloop.models.crud import crud_account_discovery_salt
+from preloop.models.crud import crud_account_discovery_salt, crud_api_key
 from preloop.models.db.session import get_db_session
 from preloop.schemas.agent_enrollment import (
     EnrollmentApplyResponse,
@@ -88,15 +92,27 @@ def exchange(
     return result
 
 
+def _app_credential(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db_session),
+) -> models.ApiKey:
+    """Authenticate the app itself for its sole configuration acknowledgment."""
+    key = crud_api_key.get_by_key(db, key=token)
+    _authenticate_with_api_key(db, key, allow_managed_agent=True)
+    if (
+        key is None
+        or (key.context_data or {}).get("credential_kind") != "managed_agent_durable"
+    ):
+        raise HTTPException(403, "App credential required")
+    return key
+
+
 @router.post("/applied", response_model=EnrollmentApplyResponse)
 def applied(
-    current_user: models.User = Depends(get_current_active_user),
+    key: models.ApiKey = Depends(_app_credential),
     db: Session = Depends(get_db_session),
 ) -> EnrollmentApplyResponse:
     """Acknowledge local config using the app's own active credential only."""
-    key = getattr(current_user, "_auth_api_key", None)
-    if key is None:
-        raise HTTPException(403, "App credential required")
     try:
         acknowledge_apply(db, authenticated_key=key)
         db.commit()

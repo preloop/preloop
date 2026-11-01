@@ -163,3 +163,18 @@ if [ "$status" -ne 0 ]; then
     exit "$status"
 fi
 expect_pass_lines "$(cat "$log")"
+
+# The guard comes from this checkout, like check-preflight.sh. It runs as
+# root and checks the unprivileged agent user hosted Codex runs as.
+if [ "${#user_args[@]}" -eq 0 ]; then
+    agent_out="$(docker run --rm -i --network none \
+        --entrypoint /opt/entrypoint.sh \
+        ${env_args[@]+"${env_args[@]}"} \
+        "$image" \
+        -s < "$dir/check-agent-user.sh")"
+    grep -v '^PASS ' <<<"$agent_out"
+    if ! grep -q '^agent-user-check: OK' <<<"$agent_out"; then
+        echo "FAIL: the agent user check did not finish" >&2
+        exit 1
+    fi
+fi

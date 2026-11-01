@@ -2,10 +2,18 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from preloop.api.auth import get_current_active_user
+from preloop.models.crud import execution_realtime as crud_realtime
+from preloop.services.execution_realtime import (
+    lifecycle_event,
+    MAX_LIFECYCLE_BYTES,
+    LIFECYCLE_TYPES,
+)
 from sqlalchemy.orm import Session
+from nats.aio.msg import Msg
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
 from preloop.api.auth.key_scopes import api_key_allowed_on_channel
@@ -389,15 +397,29 @@ async def flow_execution_websocket(
         # Subscribe to NATS updates for this execution
         update_subject = f"flow-updates.{execution_id}"
 
+        send_lock = asyncio.Lock()
+        await send_lock.acquire()
+        snapshot_seq = 0
+        snapshot_sent = False
+
         async def nats_message_handler(msg):
             """Forward NATS messages to WebSocket client."""
             try:
                 data = json.loads(msg.data.decode())
-                await websocket.send_json(data)
+                async with send_lock:
+                    seq = data.get("seq")
+                    if (
+                        data.get("type") in LIFECYCLE_TYPES
+                        and type(seq) is int
+                        and seq <= snapshot_seq
+                    ):
+                        return
+                    await websocket.send_json(data)
             except Exception as e:
                 logger.error(f"Error forwarding NATS message to WebSocket: {e}")
 
         nats_sub = await event_bus.nc.subscribe(update_subject, cb=nats_message_handler)
+        await event_bus.nc.flush()
         logger.info(f"Subscribed to NATS subject: {update_subject}")
 
         # Send initial connection confirmation
@@ -408,6 +430,19 @@ async def flow_execution_websocket(
                 "message": "Connected to flow execution stream",
             }
         )
+
+        snapshot = await run_db_async(
+            lambda db: crud_realtime.lifecycle_snapshot(
+                db, execution_id, user.account_id
+            )
+        )
+        if snapshot is None:
+            await websocket.close(code=1008)
+            return
+        snapshot_seq = snapshot["seq"]
+        await websocket.send_json(snapshot)
+        snapshot_sent = True
+        send_lock.release()
 
         # Listen for commands from WebSocket client
         while True:
@@ -468,6 +503,8 @@ async def flow_execution_websocket(
         await websocket.send_json({"error": f"Connection error: {e}"})
 
     finally:
+        if "send_lock" in locals() and not snapshot_sent and send_lock.locked():
+            send_lock.release()
         # Cleanup
         if nats_sub:
             try:
@@ -486,6 +523,153 @@ async def flow_execution_websocket(
             pass  # Already closed
 
         logger.info(f"WebSocket connection closed for execution {execution_id}")
+
+
+@router.get("/flow-executions/{execution_id}/lifecycle")
+@require_permission("view_flows")
+def get_execution_lifecycle(
+    execution_id: uuid.UUID,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    sequence_domain: Literal["execution", "lifecycle"] = "execution",
+) -> dict:
+    """Authoritative, small snapshot for realtime gap recovery (no log replay)."""
+
+    ensure_permission_in_oss(db, current_user, "view_flows")
+    snapshot = crud_realtime.lifecycle_snapshot(
+        db, execution_id, current_user.account_id
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if sequence_domain == "lifecycle":
+        snapshot["seq"] = snapshot["lifecycle_seq"]
+        snapshot["sequence_domain"] = sequence_domain
+    return snapshot
+
+
+@router.websocket("/ws/flows/{flow_id}/lifecycle")
+async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> None:
+    """Subscribe before triggering one flow, with lifecycle-only bounded frames.
+
+    This socket never registers for account broadcasts. No unfiltered frame can
+    race the handshake, and missing account/flow identity is rejected.
+    """
+    await websocket.accept()
+    user = websocket.scope.get("state", {}).get("user")
+    if not user:
+        token = websocket.query_params.get("token")
+        user = await _resolve_token_user(token) if token else None
+    if user is None:
+        await websocket.close(code=1008)
+        return
+
+    @require_permission("view_flows")
+    def authorize(*, db: Session, current_user: models.User) -> bool:
+        ensure_permission_in_oss(db, current_user, "view_flows")
+        return (
+            crud_flow.get(db, id=flow_id, account_id=current_user.account_id)
+            is not None
+        )
+
+    try:
+        allowed = await run_db_async(lambda db: authorize(db=db, current_user=user))
+    except HTTPException:
+        allowed = False
+    if not allowed:
+        await websocket.close(code=1008)
+        return
+    bus = EventBus()
+    subscription = None
+    ready = asyncio.Event()
+    stopped = asyncio.Event()
+    send_lock = asyncio.Lock()
+
+    async def forward(msg: Msg) -> None:
+        if stopped.is_set():
+            return
+        try:
+            data = json.loads(msg.data.decode())
+            if data.get("flow_id") != str(flow_id) or data.get("account_id") != str(
+                user.account_id
+            ):
+                return
+            event = lifecycle_event(data)
+            if event is None:
+                return
+            # Authorization can change while a long-lived socket is open.
+            try:
+                still_allowed = await run_db_async(
+                    lambda db: authorize(db=db, current_user=user)
+                )
+            except HTTPException:
+                still_allowed = False
+            if not still_allowed:
+                stopped.set()
+                return
+            encoded = json.dumps(event)
+            if len(encoded.encode("utf-8")) > MAX_LIFECYCLE_BYTES:
+                # An explicit invalidation preserves recovery without leaking
+                # arbitrary oversized fields or silently dropping the transition.
+                event["payload"] = {}
+                event["resync_required"] = True
+                encoded = json.dumps(event)
+            await ready.wait()
+            async with send_lock:
+                if not stopped.is_set():
+                    await websocket.send_text(encoded)
+        except (ValueError, TypeError):
+            logger.warning("Invalid lifecycle update dropped")
+
+    try:
+        await bus.connect()
+        subscription = await bus.nc.subscribe(
+            "flow-updates.*",
+            cb=forward,
+            pending_msgs_limit=256,
+            pending_bytes_limit=1024 * 1024,
+        )
+        await bus.nc.flush()
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "flow_id": str(flow_id),
+                "stream": "lifecycle",
+                "sequence_domain": "lifecycle",
+                "max_message_bytes": MAX_LIFECYCLE_BYTES,
+            }
+        )
+        ready.set()
+        while not stopped.is_set():
+            receive_task = asyncio.create_task(websocket.receive_text())
+            stop_task = asyncio.create_task(stopped.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {receive_task, stop_task},
+                    timeout=60,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done or stopped.is_set():
+                    break
+                text = receive_task.result()
+                if text == "ping":
+                    async with send_lock:
+                        await websocket.send_json({"type": "pong"})
+            finally:
+                for task in (receive_task, stop_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(receive_task, stop_task, return_exceptions=True)
+    except (WebSocketDisconnect, asyncio.TimeoutError):
+        pass
+    finally:
+        ready.set()
+        if subscription is not None:
+            await subscription.unsubscribe()
+        await bus.close()
+        try:
+            await websocket.close(code=1008 if stopped.is_set() else 1000)
+        except RuntimeError:
+            pass
 
 
 @router.websocket("/ws/unified")

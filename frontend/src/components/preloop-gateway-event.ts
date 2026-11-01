@@ -16,6 +16,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './json-tree.js';
+import { hasTruncationMarker } from '../utils/transcript';
 
 @customElement('preloop-gateway-event')
 export class PreloopGatewayEvent extends LitElement {
@@ -409,7 +410,7 @@ export class PreloopGatewayEvent extends LitElement {
                 : ''
             }
             ${
-              message.truncated
+              message.truncated || hasTruncationMarker(message.text)
                 ? html`<sl-badge pill variant="warning">Truncated</sl-badge>`
                 : ''
             }

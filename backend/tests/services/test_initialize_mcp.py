@@ -830,3 +830,63 @@ async def test_note_approval_precedes_delivery_and_keeps_target(mcp_server, outc
     else:
         assert result == response
         assert service.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_replay_carries_the_original_call_correlation_id(
+    mcp_server: DynamicFastMCP,
+) -> None:
+    """The replayed upstream call reuses the paused call's correlation id."""
+    from preloop.services.dynamic_fastmcp import _correlation_id_var
+
+    tool = await mcp_server.get_tool("get_approval_status")
+    request_id = uuid4()
+    account_id = uuid4()
+    approval = models.ApprovalRequest(
+        id=request_id,
+        account_id=account_id,
+        status="approved",
+        tool_name="get_issue",
+        tool_args={"issue": "ABC-1"},
+        responses=[],
+    )
+    approval_result = MagicMock()
+    approval_result.scalar_one_or_none.return_value = approval
+    events_result = MagicMock()
+    events_result.scalars.return_value = []
+    db = AsyncMock()
+    db.execute.side_effect = [approval_result, events_result, approval_result]
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[AsyncMock]:
+        yield db
+
+    seen: list = []
+
+    async def replay(*args, **kwargs):
+        seen.append(_correlation_id_var.get())
+        return "Replay completed"
+
+    lookup = AsyncMock(return_value="original-call")
+    token = _correlation_id_var.set("polling-call")
+    try:
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(account_id=str(account_id)),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch(
+                "preloop.services.initialize_mcp._approval_correlation_id", new=lookup
+            ),
+            patch.object(mcp_server, "call_registered_tool_without_policy", new=replay),
+            patch(
+                "preloop.services.approval_service._log_approval_tool_executed_async"
+            ),
+        ):
+            await tool.fn(request_id=str(request_id))
+        assert seen == ["original-call"]
+        assert _correlation_id_var.get() == "polling-call"
+        lookup.assert_awaited_once_with(account_id, request_id)
+    finally:
+        _correlation_id_var.reset(token)

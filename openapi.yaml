@@ -4714,6 +4714,53 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}:
+    post:
+      tags:
+      - Account
+      summary: Acknowledge Weekly Exception
+      description: Suppress a delivered fact's unchanged material state for this recipient.
+      operationId: acknowledge_weekly_exception_api_v1_weekly_report_deliveries__delivery_id__acknowledge__exception_key__post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: delivery_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Delivery Id
+      - name: exception_key
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Exception Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                title: Response Acknowledge Weekly Exception Api V1 Weekly Report
+                  Deliveries  Delivery Id  Acknowledge  Exception Key  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -13509,6 +13556,95 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ai-models/{model_id}/owner-flow-use:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Owner Flow Subscription Use
+      description: Whether hosted flows owned by the subscription's owner may use
+        it.
+      operationId: get_ai_model_owner_flow_use_api_v1_ai_models__model_id__owner_flow_use_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelOwnerFlowUseRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Set Owner Flow Subscription Use
+      description: 'Let (or stop) the subscription owner''s own flows use this model.
+
+
+        Only the user who owns the subscription (the owner of the managed agent
+
+        bound to it) may change this. Account admins cannot set it for another
+
+        user: a flow may spend a subscription only with its owner''s consent.'
+      operationId: set_ai_model_owner_flow_use_api_v1_ai_models__model_id__owner_flow_use_put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIModelOwnerFlowUseUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelOwnerFlowUseRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/pricing:
     get:
       tags:
@@ -17092,6 +17228,204 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/result-export:
+    post:
+      tags:
+      - Flows
+      summary: Grant Execution Result Export
+      description: Current human owner consents to one reviewed, expiring result export.
+      operationId: grant_execution_result_export_api_v1_flows_executions__execution_id__result_export_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiResultExportCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Grant Execution Result Export Api V1 Flows Executions  Execution
+                  Id  Result Export Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/result-export/{grant_id}:
+    delete:
+      tags:
+      - Flows
+      summary: Revoke Execution Result Export
+      description: Revoke explicit consent without changing historical execution ownership.
+      operationId: revoke_execution_result_export_api_v1_flows_executions__execution_id__result_export__grant_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Grant Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Result Export
+      description: Export only under the exact explicit grant, current identity and
+        revisions.
+      operationId: get_execution_result_export_api_v1_flows_executions__execution_id__result_export__grant_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Grant Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Result Export Api V1 Flows Executions  Execution
+                  Id  Result Export  Grant Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: execution:result-export:read
+  /api/v1/flows/executions/{execution_id}/tool-evidence:
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Tool Evidence
+      description: 'Read bounded tool-only evidence; never grant general execution-log
+        access.
+
+
+        A page holds at most 10 records and at most 8 MiB of encoded records; the
+
+        first record is always returned. When the byte budget cuts a page short,
+
+        ``has_more`` is true and ``next_skip`` gives the offset of the next page.'
+      operationId: get_execution_tool_evidence_api_v1_flows_executions__execution_id__tool_evidence_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 10
+          minimum: 1
+          default: 10
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Tool Evidence Api V1 Flows Executions  Execution
+                  Id  Tool Evidence Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: execution:evidence:read
   /api/v1/flows/executions/{execution_id}/result:
     get:
       tags:
@@ -17111,7 +17445,22 @@ paths:
 
         no decrypt. Availability is not integrity proof; download
 
-        ``GET .../evidence`` to verify digest.'
+        ``GET .../evidence`` to verify digest.
+
+
+        A restricted CI credential (``execution:result:read``) reads only its own
+
+        execution and gets the correlation fields of the status projection,
+
+        including ``startup_receipt``, plus ``result`` (the captured document
+
+        without controller-private members), ``result_withheld_paths`` (JSON
+
+        Pointers of any withheld members; empty means ``result`` is the complete
+
+        captured document) and ``schema_validation`` (``valid``, ``error_count``
+
+        and ``errors``; messages are omitted when a member was withheld).'
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -17641,9 +17990,11 @@ paths:
         \ Whether any request could be priced\n    - cost_is_partial: Whether estimated_cost\
         \ excludes unpriced requests\n    - unpriced_requests: Requests that could\
         \ not be priced\n    - unpriced_tokens: Token volume behind the unpriced requests\n\
-        \    - limits: Configured per-execution ceilings (only keys that are set)\n\
-        \    - limit_status: Current usage against those ceilings\n      (``total_tokens``,\
-        \ ``estimated_cost_usd``, ``turns``)"
+        \    - limits: Effective per-execution ceilings (only keys that are set),\n\
+        \      defaults included\n    - limit_sources: Where each ceiling came from\
+        \ (``flow``,\n      ``environment`` or ``default``)\n    - limit_status: Current\
+        \ usage against those ceilings\n      (``total_tokens``, ``estimated_cost_usd``,\
+        \ ``turns``)"
       operationId: get_flow_execution_metrics_api_v1_flows_executions__execution_id__metrics_get
       security:
       - bearerAuth: []
@@ -17804,17 +18155,29 @@ paths:
     post:
       tags:
       - Flows
-      summary: Trigger Flow Execution
-      description: "Trigger a test execution for a flow.\n\nThe body is free-form\
-        \ trigger event data, except for the reserved key\n``matrix``: when present\
-        \ it must be a list of up to 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects\
-        \ and the trigger fans out to\none execution per entry, all sharing a ``batch_id``\
-        \ (an empty object runs\nthe flow defaults). Without ``matrix`` the behaviour\
-        \ is unchanged.\n\nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data:\
-        \ Optional custom trigger event data for testing\n        template variables,\
-        \ plus the optional reserved ``matrix`` key\n\nReturns:\n    Execution details,\
-        \ or batch details (``batch_id`` + per-cell\n    ``execution_id``) when a\
-        \ matrix was given"
+      summary: Trigger a restricted CI review or a test execution
+      description: "Trigger a flow execution: a restricted CI review, or a human test\
+        \ run.\n\n**Restricted CI credential** (``ci_`` token with ``flow:trigger``):\
+        \ this\nis the supported route for starting a review. The body must be exactly\n\
+        ``{\"pr_number\": <int>, \"head_sha\": \"<40 or 64 lowercase hex>\"}``; any\n\
+        other field (diff, base SHA, challenge, ``matrix`` or template data) is\n\
+        rejected with 422, never ignored. The flow must be the principal's bound\n\
+        flow. Preloop reads the open pull request from the provider, requires its\n\
+        current head to equal ``head_sha``, builds the pull request event\nserver-side\
+        \ and starts one production execution (``test_mode`` false).\nThe response\
+        \ is the status projection of the new execution. The flow\nwebhook does not\
+        \ accept CI credentials.\n\n**Human credential**: starts a test execution\
+        \ (``test_mode`` true). The\nbody is free-form trigger event data, except\
+        \ for the reserved key\n``matrix``: when present it must be a list of up to\
+        \ 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects and the trigger fans\
+        \ out to\none execution per entry, all sharing a ``batch_id`` (an empty object\
+        \ runs\nthe flow defaults). Without ``matrix`` the behaviour is unchanged.\n\
+        \nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data: ``pr_number``\
+        \ and ``head_sha`` for a restricted\n        CI credential; otherwise optional\
+        \ custom trigger event data for\n        testing template variables, plus\
+        \ the optional reserved ``matrix``\n        key\n\nReturns:\n    The CI status\
+        \ projection, execution details, or batch details\n    (``batch_id`` + per-cell\
+        \ ``execution_id``) when a matrix was given"
       operationId: trigger_flow_execution_api_v1_flows__flow_id__trigger_post
       security:
       - bearerAuth: []
@@ -19868,6 +20231,57 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/flow-executions/{execution_id}/lifecycle:
+    get:
+      tags:
+      - WebSockets
+      summary: Get Execution Lifecycle
+      description: Authoritative, small snapshot for realtime gap recovery (no log
+        replay).
+      operationId: get_execution_lifecycle_api_v1_flow_executions__execution_id__lifecycle_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: sequence_domain
+        in: query
+        required: false
+        schema:
+          enum:
+          - execution
+          - lifecycle
+          type: string
+          default: execution
+          title: Sequence Domain
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Lifecycle Api V1 Flow Executions  Execution
+                  Id  Lifecycle Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/commands:
     post:
@@ -23463,6 +23877,53 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/users/{user_id}/machine-credentials:
+    get:
+      tags:
+      - Users
+      summary: List User Machine Credentials
+      description: "List account-owned machine credentials a member created.\n\nRemoving\
+        \ the member leaves these credentials working, because the account\nowns them.\
+        \ Admins use this list to review or rotate them.\n\nArgs:\n    user_id: Membership\
+        \ whose machine credentials to list.\n    current_user: Current authenticated\
+        \ user.\n    db: Database session.\n\nReturns:\n    CI identity and managed-agent\
+        \ credentials created by the member.\n\nRaises:\n    HTTPException: 404 if\
+        \ the member is not in the caller's account."
+      operationId: list_user_machine_credentials_api_v1_users__user_id__machine_credentials_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemberMachineCredential'
+                title: Response List User Machine Credentials Api V1 Users  User Id  Machine
+                  Credentials Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/users/bulk-delete:
     post:
       tags:
@@ -24798,6 +25259,65 @@ components:
       - model_identifier
       title: AIModelOverviewItem
       description: 'One row of the Models page: what this model did in the window.'
+    AIModelOwnerFlowUsage:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        execution_count:
+          type: integer
+          title: Execution Count
+          default: 0
+        api_equivalent_cost:
+          type: number
+          title: Api Equivalent Cost
+          description: Estimated pay-per-use price; the subscription paid it.
+          default: 0.0
+      type: object
+      title: AIModelOwnerFlowUsage
+      description: Last-30-day usage of a subscription model by its owner's flows.
+    AIModelOwnerFlowUseRead:
+      properties:
+        applicable:
+          type: boolean
+          title: Applicable
+          description: The model uses subscription (OAuth) credentials.
+        enabled:
+          type: boolean
+          title: Enabled
+          description: The subscription's current owner allows flows they own to use
+            it.
+        can_manage:
+          type: boolean
+          title: Can Manage
+          description: The current user owns the subscription and may toggle it.
+        usage:
+          anyOf:
+          - $ref: '#/components/schemas/AIModelOwnerFlowUsage'
+          - type: 'null'
+          description: Owner-flow usage, shown to the owner only.
+      type: object
+      required:
+      - applicable
+      - enabled
+      - can_manage
+      title: AIModelOwnerFlowUseRead
+      description: Owner opt-in state for using a subscription model from own flows.
+    AIModelOwnerFlowUseUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: AIModelOwnerFlowUseUpdate
+      description: Turn the owner-flow subscription opt-in on or off.
     AIModelPrice:
       properties:
         input_per_1m:
@@ -26647,6 +27167,14 @@ components:
           description: True when the deny is only the expiry of an unanswered approval
             request, not a human decision. It remains a denial; adapters must not
             replace required central approval with a local prompt.
+          default: false
+        parked:
+          type: boolean
+          title: Parked
+          description: 'True when the call needed a human and the unattended flow
+            execution behind this credential is being paused on approval request_id.
+            The decision is ''deny'': the command must not run. The run resumes on
+            approval and fails closed on refusal or expiry.'
           default: false
       type: object
       required:
@@ -31174,6 +31702,8 @@ components:
       - flow:trigger
       - execution:read
       - execution:result:read
+      - execution:evidence:read
+      - execution:result-export:read
       - execution:stop
       - subscription:create
       - subscription:read
@@ -31504,6 +32034,12 @@ components:
           - type: string
           - type: 'null'
           title: Failure Category
+        startup_receipt:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Startup Receipt
       additionalProperties: false
       type: object
       required:
@@ -31549,6 +32085,43 @@ components:
       - actions
       title: CiGrant
       description: Exactly one account-local project and its dedicated flow.
+    CiResultExportCreate:
+      properties:
+        pr_number:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Pr Number
+        head_sha:
+          type: string
+          pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+          title: Head Sha
+        base_sha:
+          type: string
+          pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+          title: Base Sha
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        result_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Result Sha256
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      additionalProperties: false
+      type: object
+      required:
+      - pr_number
+      - head_sha
+      - base_sha
+      - principal_id
+      - result_sha256
+      - expires_at
+      title: CiResultExportCreate
+      description: Expected digest and revisions protect the human's reviewed decision.
     CliSessionResponse:
       properties:
         id:
@@ -36434,12 +37007,17 @@ components:
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
-            budget_exceeded, model_config, no_confirmation, agent_no_progress, publication_missing,
-            result_schema_invalid (result.json does not match the flow result schema),
-            setup_failed, verification_failed, verification_blocked, tool_error, agent_error,
-            model_stream_idle (timed out while the model stream was silent), timeout,
-            cancelled, unknown. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            budget_exceeded, default_limit_reached (a default per-execution ceiling
+            the flow did not set), model_config, no_confirmation, agent_no_progress,
+            publication_missing, result_schema_invalid (result.json does not match
+            the flow result schema), setup_failed, verification_failed, verification_blocked,
+            tool_error, agent_error, model_stream_idle (timed out while the model
+            stream was silent), approval_denied, approval_timeout, approval_unavailable
+            (an approval-required rule could not pause the run), resume_failed (a
+            parked run could not be continued), gateway_bypassed (a private-runner
+            host CLI made no request through the Preloop gateway), timeout, cancelled,
+            unknown. Null for successful or still-running executions, and for executions
+            that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -36574,6 +37152,14 @@ components:
           - type: 'null'
           description: Present while the execution is parked on a human decision (status
             WAITING_FOR_HUMAN).
+        resume_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Execution Id
+          description: The execution that continued this one after it parked (on an
+            approval or on its child runs). Null when it never resumed.
         runner:
           $ref: '#/components/schemas/ExecutionRunner'
           description: Where this execution ran. Hosted when the built-in executor
@@ -36972,6 +37558,12 @@ components:
           - type: string
           - type: 'null'
           title: Id
+        created_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Created By User Id
         created_at:
           type: string
           format: date-time
@@ -37006,6 +37598,12 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        effective_limits:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          type: object
+          title: Effective Limits
         effective_publication_policy:
           $ref: '#/components/schemas/EffectivePublicationPolicy'
           description: Read-only description derived from this saved flow's configuration.
@@ -37120,6 +37718,10 @@ components:
             type: object
           - type: 'null'
           title: Execution Stats
+        ci_only:
+          type: boolean
+          title: Ci Only
+          default: false
       type: object
       required:
       - id
@@ -37229,7 +37831,6 @@ components:
           - type: string
           - type: 'null'
           title: Agent Type
-          default: openhands
         agent_config:
           anyOf:
           - additionalProperties: true
@@ -38722,6 +39323,12 @@ components:
             Read_only is a dedicated restricted CI review with a scoped read-only
             GitHub App clone and no provider publication or MCP authority.
           default: legacy
+        ci_project_selection:
+          type: boolean
+          title: Ci Project Selection
+          description: For read_only restricted CI, select only the principal's repository
+            from the administrator-approved project list.
+          default: false
         publication_approval:
           anyOf:
           - type: boolean
@@ -38859,6 +39466,12 @@ components:
             Read_only is a dedicated restricted CI review with a scoped read-only
             GitHub App clone and no provider publication or MCP authority.
           default: legacy
+        ci_project_selection:
+          type: boolean
+          title: Ci Project Selection
+          description: For read_only restricted CI, select only the principal's repository
+            from the administrator-approved project list.
+          default: false
         publication_approval:
           anyOf:
           - type: boolean
@@ -39418,7 +40031,9 @@ components:
         gateway_metered:
           type: boolean
           title: Gateway Metered
-          description: 'Always false: these rows never pass the model gateway.'
+          description: Whether the execution has model gateway rows. The hook rows
+            listed here never pass the gateway; an onboarded Codex or Claude Code
+            host run sends its model calls through it.
           default: false
       type: object
       required:
@@ -39630,6 +40245,7 @@ components:
               type: string
               format: uuid
             type: array
+            maxItems: 13
           - type: 'null'
           title: Role Ids
         team_ids:
@@ -39638,6 +40254,7 @@ components:
               type: string
               format: uuid
             type: array
+            maxItems: 13
           - type: 'null'
           title: Team Ids
       type: object
@@ -42753,6 +43370,56 @@ components:
       - clock
       title: MediaTiming
       description: Wall clock at media t=0, optionally supplemented by exact offsets.
+    MemberMachineCredential:
+      properties:
+        api_key_id:
+          type: string
+          format: uuid
+          title: Api Key Id
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          enum:
+          - ci_principal
+          - managed_agent
+          title: Kind
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        principal_name:
+          type: string
+          title: Principal Name
+        is_active:
+          type: boolean
+          title: Is Active
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+      type: object
+      required:
+      - api_key_id
+      - name
+      - kind
+      - principal_id
+      - principal_name
+      - is_active
+      title: MemberMachineCredential
+      description: 'Account-owned machine credential created by a member.
+
+
+        Offboarding a member leaves these working; admins review or rotate them.'
     MobileDeviceRegistration:
       properties:
         platform:
@@ -54070,6 +54737,16 @@ components:
         member_policy_findings_enabled:
           type: boolean
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          type: boolean
+          title: Synthesis Enabled
+          default: false
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       type: object
       required:
       - account_enabled
@@ -54106,6 +54783,17 @@ components:
           - type: boolean
           - type: 'null'
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Synthesis Enabled
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       additionalProperties: false
       type: object
       title: WeeklyReportPreferencesUpdate

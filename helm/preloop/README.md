@@ -451,6 +451,18 @@ deployments only when set. See `https://docs.preloop.ai/guide/governance-review/
 | `governanceReview.enabled` | `GOVERNANCE_REVIEW_ENABLED`: schedule the hourly digest sweep and the Monday review. Unset keeps the application default, `true` | `null` |
 | `governanceReview.analysisModel` | `PRELOOP_GOVERNANCE_ANALYSIS_MODEL`: gateway alias of the self-hosted analysis model | `""` |
 
+### Single sign-on parameters
+
+Rendered on the API deployment. `sso.enabled` and `sso.publicUrl` are read
+only by the Preloop Cloud and Preloop Enterprise images. Connections, verified domains, enforcement and SAML SP signing keys
+are per account (console or API). Setup guides: `https://docs.preloop.ai/guide/sso/`.
+
+| Name | Description | Value |
+| ---- | ----------- | ----- |
+| `sso.enabled` | `ENTERPRISE_SSO_ENABLED`: mount the SSO sign-in and administration routes. `false` renders the variable as `false` | `false` |
+| `sso.publicUrl` | `SSO_PUBLIC_URL`: https origin for the OIDC redirect URI, SAML SP entity id and ACS; empty uses `environment.preloopUrl`. No path or userinfo | `""` |
+| `sso.allowPrivateIssuers` | `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`: accept private-address issuer and metadata URLs when saving a connection. Core setting shared with gateway identity providers, which it also relaxes. Single-tenant installs only | `false` |
+
 ### Resource management parameters
 
 Resources are configured per-component to allow fine-grained control:

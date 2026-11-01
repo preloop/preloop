@@ -1,6 +1,6 @@
 """Short, ownership-guarded control transactions.
 
-Lock order is managed agent, credential, user, then runtime/command rows.
+Lock order is account, managed agent, credential, user, then runtime/command rows.
 Callers finish the transaction before socket or broker I/O. A generation is a
 fence for database effects; network delivery remains at least once.
 """
@@ -26,7 +26,7 @@ class AgentControlConnectionContext:
     managed_agent_session_source_type: str
     managed_agent_session_source_id: str
     api_key_id: str = ""
-    user_id: str = ""
+    user_id: str | None = None
     agent_kind: str = ""
     session_reference: str | None = None
     runtime_principal_id: str | None = None
@@ -50,6 +50,21 @@ def authorize(
     db: Session, connection: AgentControlConnectionContext, *, claim: bool = False
 ) -> models.ManagedAgent | None:
     """Lock and revalidate the current owner until the caller commits."""
+    # Share the lifecycle boundary before taking agent/key/user locks. Without
+    # this order, membership deletion can hold the user while a control unit
+    # holds its key, and each waits for the other's row. Concurrent control
+    # units share this lock; offboarding and account lifecycle writers exclude it.
+    active_account = (
+        db.query(models.Account.id)
+        .filter(
+            models.Account.id == connection.account_id,
+            models.Account.is_active.is_(True),
+        )
+        .with_for_update(read=True)
+        .first()
+    )
+    if active_account is None:
+        return None
     agent = (
         db.query(models.ManagedAgent)
         .filter(
@@ -69,7 +84,6 @@ def authorize(
         .filter(
             models.ApiKey.id == connection.api_key_id,
             models.ApiKey.account_id == connection.account_id,
-            models.ApiKey.user_id == connection.user_id,
         )
         .populate_existing()
         .with_for_update(read=True)
@@ -80,32 +94,35 @@ def authorize(
     context = key.context_data if isinstance(key.context_data, dict) else {}
     if str(context.get("managed_agent_id")) != connection.managed_agent_id:
         return None
-    # Account suspension was historically not checked by runtime auth. Read
-    # it here without a row lock: account lifecycle writers do not share this
-    # lock order. A concurrent suspension may finish after this read, but the
-    # next control unit rejects it (as with the post-authorization I/O window).
-    active_account = (
-        db.query(models.Account.id)
-        .filter(
-            models.Account.id == connection.account_id,
-            models.Account.is_active.is_(True),
+    if context.get("credential_kind") == "managed_agent_durable":
+        from preloop.models.crud.managed_agent_auth import authenticate
+
+        if (
+            authenticate(
+                db,
+                account_id=agent.account_id,
+                key_id=key.id,
+                agent_id=agent.id,
+                touch=False,
+            )
+            is None
+        ):
+            return None
+    else:
+        if str(key.user_id) != str(connection.user_id):
+            return None
+        user = (
+            db.query(models.User)
+            .filter(
+                models.User.id == connection.user_id,
+                models.User.account_id == connection.account_id,
+            )
+            .populate_existing()
+            .with_for_update(read=True)
+            .first()
         )
-        .first()
-    )
-    if active_account is None:
-        return None
-    user = (
-        db.query(models.User)
-        .filter(
-            models.User.id == connection.user_id,
-            models.User.account_id == connection.account_id,
-        )
-        .populate_existing()
-        .with_for_update(read=True)
-        .first()
-    )
-    if user is None or not user.is_active:
-        return None
+        if user is None or not user.is_active:
+            return None
     if claim:
         agent.control_connection_id = uuid.UUID(connection.connection_id)
         agent.runtime_session_id = uuid.UUID(connection.runtime_session_id)

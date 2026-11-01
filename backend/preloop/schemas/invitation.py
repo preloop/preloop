@@ -7,12 +7,21 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer
 
 
+# role_ids/team_ids are stored comma-separated in String(500) columns:
+# 13 UUIDs (13 * 36 + 12 commas = 480 chars) fit, 14 do not.
+MAX_INVITATION_IDS = 13
+
+
 class InvitationCreate(BaseModel):
     """Schema for creating a user invitation."""
 
     email: EmailStr
-    role_ids: Optional[List[UUID]] = Field(default_factory=list)
-    team_ids: Optional[List[UUID]] = Field(default_factory=list)
+    role_ids: Optional[List[UUID]] = Field(
+        default_factory=list, max_length=MAX_INVITATION_IDS
+    )
+    team_ids: Optional[List[UUID]] = Field(
+        default_factory=list, max_length=MAX_INVITATION_IDS
+    )
 
 
 class InvitationAccept(BaseModel):

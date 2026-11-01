@@ -556,7 +556,9 @@ class CRUDManagedOAuth:
                 ensure_default_report_flow,
             )
 
-            ensure_default_report_flow(db, account_id=account_id)
+            ensure_default_report_flow(
+                db, account_id=account_id, created_by_user_id=user_id
+            )
             return tracker.id
 
     def grant_statuses(

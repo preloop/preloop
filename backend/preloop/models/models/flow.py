@@ -11,7 +11,9 @@ from sqlalchemy import (  # Added JSON
 )
 
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import column_property, relationship
+
+from preloop.models.db.encrypted_types import SecretFieldsJSON
 
 from .base import Base
 
@@ -36,7 +38,9 @@ class Flow(Base):
     # Structure: {
     #     "webhook_secret": str - secret token for authenticating webhook requests
     # }
-    webhook_config = Column(JSON, nullable=True, default=None)
+    webhook_config = Column(
+        SecretFieldsJSON("webhook_secret"), nullable=True, default=None
+    )
     # Schedule-specific configuration (for trigger_event_source == 'schedule')
     # Discriminated on "type" (see schemas.flow.ScheduleConfig):
     #   {"type": "cron", "expr": "0 6 * * 1-5", "timezone": "Europe/Athens"}
@@ -107,6 +111,12 @@ class Flow(Base):
     #     "pull_request_description": str (optional - description for PR/MR)
     # }
     git_clone_config = Column(JSON, nullable=True, default=None)
+    # Just the publication mode, computed in SQL, so list reads can tell a
+    # read-only review flow apart without loading the whole clone config.
+    # Deferred: only queries that name it (the flow summaries) select it.
+    publication_mode = column_property(
+        git_clone_config.op("->>")("publication_mode"), deferred=True
+    )
 
     # Custom commands to run before agent starts (admin-only feature)
     # Security: Only users with is_superuser=True can configure this
@@ -121,6 +131,15 @@ class Flow(Base):
     account_id = Column(
         UUID(as_uuid=True),
         ForeignKey("account.id"),
+        nullable=True,
+        index=True,
+    )
+    # User who created the flow. Hosted executions of this flow may use a
+    # subscription-OAuth model only when this user owns the subscription and
+    # opted in (``AIModel.owner_flow_use_user_id``). NULL: no recorded owner.
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

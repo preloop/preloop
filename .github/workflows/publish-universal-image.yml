@@ -174,6 +174,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build amd64 image
+        id: smoke_build
         if: matrix.arch == 'amd64'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -211,6 +212,23 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The agent user cannot change the hook CLI, hooks.json or config.toml,
+      # and root's post-run git runs nothing the agent planted.
+      - name: Set up Python
+        if: matrix.arch == 'amd64'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+
+      - name: Agent user container test
+        if: matrix.arch == 'amd64'
+        env:
+          PRELOOP_UNIVERSAL_TEST_IMAGE: preloop-codex-universal:smoke
+        run: |
+          set -euo pipefail
+          pip install --require-hashes -r .github/requirements/runtime-test.txt
+          python backend/tests/agents/test_codex_agent_user_container.py
+
       - name: Log in to Container Registry
         if: needs.gate.outputs.publish == 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -223,12 +241,14 @@ jobs:
         if: needs.gate.outputs.publish == 'true' && matrix.arch == 'amd64'
         env:
           SHORT: ${{ needs.gate.outputs.short }}
+          SMOKED_MANIFEST: ${{ steps.smoke_build.outputs.digest }}
         run: |
           set -euo pipefail
           printf '%s' "$SHORT" | grep -Eq '^[0-9a-f]{12}$'
+          printf '%s' "$SMOKED_MANIFEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
           dest="${IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-amd64"
           # Docker's classic local store drops attestations on --load. Export
-          # the cached build with its SBOM, then prove its config matches the
+          # the cached build with its SBOM, then prove its manifest matches the
           # image that passed the smoke. No recipe/dependency re-resolution.
           docker buildx build --platform linux/amd64 --provenance=false \
             --sbom=generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9 \
@@ -236,8 +256,23 @@ jobs:
           platform_digest="$(docker buildx imagetools inspect "$dest" --raw \
             | jq -er '.manifests[] | select(.platform.architecture == "amd64") | .digest')"
           published_config="$(docker buildx imagetools inspect "$IMAGE@$platform_digest" --raw | jq -er '.config.digest')"
-          smoked_config="$(docker image inspect preloop-codex-universal:smoke --format '{{.Id}}')"
-          test "$published_config" = "$smoked_config"
+          # The local image ID is the config digest on the classic store and
+          # the manifest digest on the containerd image store; accept either,
+          # but only if it names the image BuildKit reported for the smoke.
+          smoked_id="$(docker image inspect preloop-codex-universal:smoke --format '{{.Id}}')"
+          echo "smoked manifest:    ${SMOKED_MANIFEST}"
+          echo "smoked image id:    ${smoked_id}"
+          echo "published manifest: ${platform_digest}"
+          echo "published config:   ${published_config}"
+          if [ "$smoked_id" != "$SMOKED_MANIFEST" ] && [ "$smoked_id" != "$published_config" ]; then
+            echo "smoked image id matches neither the smoke manifest nor the published config" >&2
+            exit 1
+          fi
+          # Same manifest digest means same config and same layers.
+          if [ "$platform_digest" != "$SMOKED_MANIFEST" ]; then
+            echo "published amd64 manifest differs from the smoked image" >&2
+            exit 1
+          fi
 
       - name: Drop published amd64 builder cache
         if: matrix.arch == 'amd64' && needs.gate.outputs.publish == 'true'
