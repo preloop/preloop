@@ -163,7 +163,14 @@ denied without a new request. On approval the normal resume runs and is told
 the command has not run; the next call with the same fingerprint spends the
 approval once (conditional update on `tool_result IS NULL`). Refused,
 cancelled or expired native parks do not resume: `resume_parked_executions`
-fails the parked row with `approval_denied` or `approval_timeout`. Lifecycle
+fails the parked row with `approval_denied` or `approval_timeout`. An approved
+park resumes as a new execution linked by the parked row's
+`resume_execution_id` (exposed on the execution detail). With direct artifact
+upload on, the orchestrator treats a `_resume` without a feedback `thread_id`
+as an authorized checkpoint resume only when that link names the execution
+being prepared; any other `_resume` payload is still refused with
+`checkpoint_resume_not_authorized`. If the resume fails, the parked row ends
+`FAILED` with `resume_failed`. Lifecycle
 audit rows (`parked`, `native_grant_consumed`, `expired`,
 `execution_failed_closed`, plus the existing created/approved/denied) carry the
 execution id. Hosted Codex containers install the Preloop `PreToolUse` hook

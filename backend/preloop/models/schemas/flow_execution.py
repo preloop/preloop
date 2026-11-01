@@ -280,7 +280,8 @@ class FlowExecutionBase(BaseModel):
             "agent_error, model_stream_idle (timed out while the model "
             "stream was silent), approval_denied, approval_timeout, "
             "approval_unavailable (an approval-required rule could not pause "
-            "the run), gateway_bypassed (a private-runner host CLI made no "
+            "the run), resume_failed (a parked run could not be continued), "
+            "gateway_bypassed (a private-runner host CLI made no "
             "request through the Preloop gateway), timeout, cancelled, "
             "unknown. Null for successful or still-running executions, and "
             "for executions that predate this field."
@@ -429,6 +430,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
         description=(
             "Present while the execution is parked on a human decision "
             "(status WAITING_FOR_HUMAN)."
+        ),
+    )
+    resume_execution_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "The execution that continued this one after it parked (on an "
+            "approval or on its child runs). Null when it never resumed."
         ),
     )
     runner: ExecutionRunner = Field(

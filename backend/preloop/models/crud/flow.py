@@ -470,6 +470,23 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .first()
         )
         if db_flow:
+            # Executions of one flow point at each other through two
+            # foreign keys without ON DELETE (a parked run at its resume, a
+            # retry at the run it retried). The cascade deletes them in no
+            # particular order, so clear the links first.
+            db.query(models.FlowExecution).filter(
+                models.FlowExecution.flow_id == db_flow.id,
+                or_(
+                    models.FlowExecution.resume_execution_id.isnot(None),
+                    models.FlowExecution.retry_of_execution_id.isnot(None),
+                ),
+            ).update(
+                {
+                    models.FlowExecution.resume_execution_id: None,
+                    models.FlowExecution.retry_of_execution_id: None,
+                },
+                synchronize_session=False,
+            )
             db.delete(db_flow)
             db.commit()
         return db_flow

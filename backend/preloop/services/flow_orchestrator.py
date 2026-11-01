@@ -197,6 +197,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Retries of a failed park resume that still count as that resume.
+_MAX_PARK_RESUME_RETRY_HOPS = 5
+
 # Log lines the post-execution block prints once it has started publishing.
 # ``PRELOOP_EVIDENCE committed`` is deliberately absent: the evidence upload
 # runs from an EXIT trap, so it also prints on a pre-push transient failure.
@@ -3923,6 +3926,11 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
+        elif self._is_platform_park_resume(resume):
+            # Approval-park and child-wait resumes are created by the
+            # platform from a recorded decision. The parked row names this
+            # execution as its resume, which a trigger payload cannot forge.
+            execution_context["checkpoint_resume_authorized"] = True
         cold_handoff = bool(native and native.get("cold_handoff_authorized"))
         if cold_handoff:
             execution_context["published_branch_handoff_authorized"] = True
@@ -7665,6 +7673,62 @@ class FlowExecutionOrchestrator:
             raise AgentStartError(
                 reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
             )
+
+    def _is_platform_park_resume(self, resume: Dict[str, Any]) -> bool:
+        """Whether ``_resume`` continues a parked run the platform resumed.
+
+        True only when the execution named by ``resume["execution_id"]``
+        belongs to this flow and its ``resume_execution_id`` is this
+        execution, or an execution this one retries (directly or through
+        a short retry chain). That link is written by the park resume path when it
+        creates this row, so a ``_resume`` copied into a trigger payload by
+        a caller does not satisfy it.
+
+        Args:
+            resume: The ``_resume`` binding from the trigger event data.
+
+        Returns:
+            True when the parked row links to this execution.
+        """
+        parked_id = resume.get("execution_id")
+        if not parked_id:
+            return False
+        from preloop.models.crud import crud_flow_execution
+
+        try:
+            parked = crud_flow_execution.get(
+                self.db, id=str(parked_id), account_id=str(self.flow.account_id)
+            )
+        except Exception:
+            logger.warning(
+                "Could not verify the park link of resume %s", parked_id, exc_info=True
+            )
+            return False
+        if parked is None or str(getattr(parked, "flow_id", "")) != str(self.flow.id):
+            return False
+        linked = str(getattr(parked, "resume_execution_id", "") or "")
+        if not linked:
+            return False
+        # A retry of a failed resume is a new row whose retry chain leads
+        # back to the execution the parked row names.
+        current: Any = self.execution_log
+        for _ in range(_MAX_PARK_RESUME_RETRY_HOPS + 1):
+            if str(current.id) == linked:
+                return True
+            retry_of = getattr(current, "retry_of_execution_id", None)
+            if not retry_of:
+                return False
+            try:
+                current = crud_flow_execution.get(
+                    self.db, id=str(retry_of), account_id=str(self.flow.account_id)
+                )
+            except Exception:
+                return False
+            if current is None or str(getattr(current, "flow_id", "")) != str(
+                self.flow.id
+            ):
+                return False
+        return False
 
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float

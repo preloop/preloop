@@ -3485,7 +3485,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return 0
         if resume_execution_id is None:
             return 0
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_CANCELLED,
+            FAILURE_CATEGORY_RESUME_FAILED,
+        )
+
         closed_at = end_time or datetime.now(timezone.utc)
+        values: dict[Any, Any] = {
+            models.FlowExecution.status: status,
+            models.FlowExecution.end_time: closed_at,
+        }
+        # The parked row ends with its continuation. A failed continuation
+        # must not leave the parked row as an uncategorised failure.
+        if status == "FAILED":
+            values[models.FlowExecution.failure_category] = (
+                FAILURE_CATEGORY_RESUME_FAILED
+            )
+        elif status in {"STOPPED", "CANCELLED"}:
+            values[models.FlowExecution.failure_category] = FAILURE_CATEGORY_CANCELLED
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -3493,13 +3510,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.status == self.RESUMING_STATUS,
                 models.FlowExecution.resume_execution_id.isnot(None),
             )
-            .update(
-                {
-                    models.FlowExecution.status: status,
-                    models.FlowExecution.end_time: closed_at,
-                },
-                synchronize_session=False,
-            )
+            .update(values, synchronize_session=False)
         )
         if commit:
             db.commit()
