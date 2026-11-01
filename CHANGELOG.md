@@ -178,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Delivery Report turns a follow-up proposed for a closed issue whose
+  criterion is shown not met into a reopen request at the issue's closing
+  merge SHA, so a measured miss is reported as a reopen, not as new work. The
+  platform also labels dependency bumps and docs-only changes as
+  metadata-only when the run leaves the label out. A test on the first
+  measured week checks that the summary and the rendered report state the
+  same counts, computed from the structured output.
+
 - **Rules that require approval now pause unattended flow runs.** On a private
   runner host profile, a native command matching a `require_approval` rule used
   to hold the hook for the workflow timeout and, when refused or expired, only
