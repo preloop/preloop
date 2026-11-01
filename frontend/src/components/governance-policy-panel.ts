@@ -572,7 +572,10 @@ export class GovernancePolicyPanel extends LitElement {
                     ? 'On. Each hour new sessions are summarised and each Monday last week is checked against this policy.'
                     : settings.mode === 'off_over_budget'
                       ? 'Off: the last review used up its analysis allowance.'
-                      : 'Off. No sessions are read, no review runs and nothing is spent.'
+                      : settings.effective_reason ===
+                          'explicit_analysis_opt_in_required'
+                        ? 'Off. Automatic analysis now requires an explicit opt-in. Turn this switch on to enable policy review; factual exception emails work without it.'
+                        : 'Off. No sessions are read, no review runs and nothing is spent.'
                 }
               </div>
             </div>`
@@ -593,7 +596,7 @@ export class GovernancePolicyPanel extends LitElement {
                   >Weekly report for owners and admins</sl-switch
                 >
                 <div class="meta">
-                  ${this._email.account_enabled ? 'Owners and admins receive the report each Monday unless they opt out.' : 'Owners and admins do not receive the weekly report.'}
+                  ${this._email.account_enabled ? 'Owners and admins receive factual exceptions on Mondays when actionable observations change. Quiet weeks send no email.' : 'Owners and admins do not receive the weekly report.'}
                   Manage personal reports for members in
                   <a href="/console/settings/account">Account settings</a>.
                   ${this.canManageAccount ? '' : ' Owners and admins can change this.'}

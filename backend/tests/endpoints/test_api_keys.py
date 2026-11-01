@@ -30,11 +30,18 @@ def mock_current_user():
 
 
 @pytest.fixture
-def db_session_mock():
+def db_session_mock(monkeypatch):
     """Create a mock database session."""
     from preloop.models.db.session import get_db_session
 
     db_session = MagicMock(spec=Session)
+    # This module tests endpoint serialization with a mocked persistence layer.
+    # Real lock/revocation behavior lives in test_membership_offboarding.
+    from preloop.models.crud import membership_lifecycle
+
+    monkeypatch.setattr(
+        membership_lifecycle, "require_active_membership", lambda *args, **kwargs: None
+    )
 
     # Mock commit, rollback, close
     db_session.commit = MagicMock()

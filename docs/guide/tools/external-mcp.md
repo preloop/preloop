@@ -278,6 +278,34 @@ Server receives:
 Authorization: Bearer your_oauth_access_token
 ```
 
+### Preloop identity headers
+
+Every request Preloop sends to an upstream MCP server (discovery,
+initialize, `tools/list`, `tools/call`, and the connection test) identifies
+Preloop, so a server owner can tell that a request arrived through a Preloop
+gate and join their own access record with the Preloop audit row:
+
+| Header | Sent | Value |
+|--------|------|-------|
+| `User-Agent` | Always | `Preloop/<version>`, the same value Preloop sends to model providers |
+| `X-Preloop-Correlation-Id` | On the session that serves a proxied tool call | The `correlation_id` written to the `policy_allow`, `policy_deny` and `tool_call` audit rows for that call. A call replayed after approval carries the id of the call that paused (from its `approval_created` row), or none if that row is missing. Scans and connection tests carry none. |
+| `X-Preloop-Instance` | Only when the server sets `send_instance_id: true` | A stable, non-secret id for this installation: a one-way hash of the installation id created at first start, or the value of `PRELOOP_INSTANCE_ID` when set. Never the account id. |
+
+Preloop never forwards headers from the calling agent to the upstream; only
+the headers above and the configured authentication are sent. Authentication
+headers are unchanged and win if a name collides.
+
+Per-server settings in `auth_config` (booleans). They are header preferences,
+not credentials: changing them keeps an OAuth connection.
+
+```yaml
+send_identity_headers: false  # remove all three headers for this server
+send_instance_id: true        # add X-Preloop-Instance (off by default)
+```
+
+The headers are self-asserted. They are not an attestation: any client can
+send them, so use them to correlate records, not to authenticate the caller.
+
 ---
 
 ## Prelooping External Tools

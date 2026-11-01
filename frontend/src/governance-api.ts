@@ -151,6 +151,8 @@ export const restoreGovernanceFinding = (
 
 /** Weekly report email switches: the account's and the signed-in user's. */
 export interface WeeklyReportPreferences {
+  synthesis_enabled?: boolean;
+  synthesis_model_id?: string | null;
   /** Account email analytics, shown only with the enterprise capability. */
   tracking_enabled?: boolean;
   /** The full report for owners and admins. */
@@ -192,3 +194,17 @@ export const updateWeeklyReportPreferences = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+export async function acknowledgeWeeklyException(
+  deliveryId: string,
+  exceptionKey: string
+): Promise<void> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/weekly-report/deliveries/${encodeURIComponent(deliveryId)}/acknowledge/${encodeURIComponent(exceptionKey)}`,
+    { method: 'POST' }
+  );
+  if (!response.ok)
+    throw new Error(
+      'This exception is unavailable, has changed, or belongs to another account.'
+    );
+}

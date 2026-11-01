@@ -43,6 +43,7 @@ CONNECTION_UPDATABLE_FIELDS = frozenset(
         "saml_idp_metadata_url",
         "saml_idp_certs",
         "saml_sp_signing_key_ref_id",
+        "saml_sp_certificate",
         "saml_want_assertions_signed",
         "default_role",
         "jit_enabled",
@@ -145,6 +146,25 @@ def _check_secret_refs(db: Session, account_id: Any, fields: dict[str, Any]) -> 
 class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
     """Account-scoped connection reads and writes."""
 
+    def delete(  # type: ignore[override]
+        self, db: Session, *, id: Any, account_id: Any = None, commit: bool = True
+    ) -> Optional[AccountSsoConnection]:
+        """Revoke this connection's managed access before deleting it."""
+        from .sso_group_grants import revoke_connection_grants
+
+        if account_id is None:
+            raise TypeError("CRUDAccountSsoConnection.delete requires account_id")
+        row = self.get_in_account(db, connection_id=id, account_id=account_id)
+        if row is not None:
+            revoke_connection_grants(
+                db, connection_id=row.id, account_id=row.account_id
+            )
+            db.delete(row)
+            db.flush()
+            if commit:
+                db.commit()
+        return row
+
     def list_for_account(
         self, db: Session, *, account_id: Any
     ) -> list[AccountSsoConnection]:
@@ -213,6 +233,9 @@ class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
             if key in CONNECTION_UPDATABLE_FIELDS:
                 setattr(connection, key, value)
         connection.updated_by_user_id = user_id
+        # Secret rotation may retain the same reference id. Invalidate protocol
+        # flows and admin test proofs even when all other fields are unchanged.
+        connection.updated_at = utc_now()
         db.flush()
         return connection
 
@@ -419,6 +442,10 @@ class CRUDSsoGroupMapping(_ThroughConnection, _AccountScopedCRUD[SsoGroupMapping
             team = db.get(Team, team_id)
             if team is None or str(team.account_id) != str(account_id):
                 raise CrossAccountReferenceError("team_id")
+        if team_id is not None:
+            from .sso_group_grants import validate_team
+
+            validate_team(db, account_id=connection.account_id, team_id=team.id)
         row = SsoGroupMapping(
             connection_id=connection_id, idp_group=idp_group, team_id=team_id, role=role
         )
@@ -459,10 +486,21 @@ class CRUDScimToken(_AccountScopedCRUD[ScimToken]):
         token: str,
         prefix: str,
         user_id: Any = None,
+        connection_id: Any = None,
     ) -> ScimToken:
         """Store the hash of ``token``; the caller commits."""
+        if connection_id is not None:
+            connection = db.scalar(
+                select(AccountSsoConnection).where(
+                    AccountSsoConnection.id == connection_id,
+                    AccountSsoConnection.account_id == account_id,
+                )
+            )
+            if connection is None:
+                raise CrossAccountReferenceError("connection_id")
         row = ScimToken(
             account_id=account_id,
+            connection_id=connection_id,
             name=name,
             token_hash=hash_scim_token(token),
             prefix=prefix,
@@ -513,6 +551,28 @@ class CRUDSsoReplayGuard(_ThroughConnection, _AccountScopedCRUD[SsoReplayGuard])
                 expires_at=expires_at,
             )
             .on_conflict_do_nothing(constraint="uq_sso_replay_guard_connection_id")
+            .returning(SsoReplayGuard.id)
+        )
+        return result.first() is not None
+
+    def consume_pending(
+        self,
+        db: Session,
+        *,
+        connection_id: Any,
+        guard_id: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically remove one unexpired, server-stored pending request."""
+        if not guard_id.startswith("pending:saml:"):
+            raise ValueError("Only pending SAML requests may be consumed")
+        result = db.execute(
+            delete(SsoReplayGuard)
+            .where(
+                SsoReplayGuard.connection_id == connection_id,
+                SsoReplayGuard.guard_id == guard_id,
+                SsoReplayGuard.expires_at > (now or utc_now()),
+            )
             .returning(SsoReplayGuard.id)
         )
         return result.first() is not None

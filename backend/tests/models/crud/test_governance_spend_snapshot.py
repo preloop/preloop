@@ -259,10 +259,13 @@ def test_spend_predicates_match_frozen_migration_and_purpose_vocabulary(
     )
     assert str(index.dialect_options["postgresql"]["where"]) == migration.PREDICATE
     purposes = set(re.findall(r"'(governance_[^']+)'", migration.PREDICATE))
+    # Exception synthesis is bounded by its own account-week reservation
+    # ledger, so it stays outside the frozen governance analysis spend index.
     assert purposes == {
         purpose
         for purpose in GATEWAY_USAGE_PURPOSES
         if purpose.startswith("governance_")
+        and purpose != "governance_exception_synthesis"
     }
     query = crud_api_usage._governance_spend_query(
         db_session,

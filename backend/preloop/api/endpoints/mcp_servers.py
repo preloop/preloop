@@ -710,6 +710,7 @@ async def list_mcp_server_tools(
 @require_permission("edit_mcp_servers")
 async def create_mcp_oauth_authorize_token(
     server_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> dict:
@@ -741,6 +742,9 @@ async def create_mcp_oauth_authorize_token(
 
     from preloop.api.auth.jwt import create_access_token, user_auth_generation
 
+    from preloop.services.authentication_policy import request_authentication_context
+
+    auth_context = request_authentication_context(request, current_user)
     authorize_token = create_access_token(
         {
             "sub": str(current_user.id),
@@ -750,6 +754,7 @@ async def create_mcp_oauth_authorize_token(
         },
         expires_delta=timedelta(seconds=MCP_OAUTH_AUTHORIZE_TTL_SECONDS),
         auth_generation=user_auth_generation(current_user),
+        auth_context=auth_context,
     )
     return {"authorize_token": authorize_token}
 
@@ -822,6 +827,11 @@ async def mcp_server_oauth_authorize(
 
     if payload.get("gen", 0) != user_auth_generation(current_user):
         raise HTTPException(401, "Authorization session is no longer valid")
+    from preloop.api.auth.identity import require_active_identity
+    from preloop.services.authentication_policy import authorize_authentication
+
+    require_active_identity(db, current_user)
+    authorize_authentication(db, current_user, claims=payload, purpose="exchange")
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "edit_mcp_servers")
     )

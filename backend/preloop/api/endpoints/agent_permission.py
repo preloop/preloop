@@ -54,7 +54,7 @@ class PermissionIdentity:
     """Authenticated scalars safe to retain while awaiting a human decision."""
 
     account_id: str
-    user_id: UUID
+    user_id: Optional[UUID]
     api_key_id: UUID
     managed_agent_id: Optional[UUID]
     runtime_session_id: Optional[UUID]
@@ -65,6 +65,16 @@ class PermissionIdentity:
     #: Set only for an execution-scoped flow credential, i.e. an unattended
     #: run. Approval-required calls park this execution.
     flow_execution_id: Optional[UUID] = None
+
+    @property
+    def runner_join_actor(self) -> UUID:
+        """Identity checked before a hook may join a runner-hosted session.
+
+        A managed-agent credential has no human membership. Its agent id never
+        matches a runner session's user, so the ownership guard refuses it
+        instead of being skipped.
+        """
+        return self.user_id or self.managed_agent_id or self.api_key_id
 
 
 def _flow_execution_id_from_context(context: dict) -> Optional[UUID]:
@@ -91,7 +101,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
     """Authenticate in one worker-owned session, closed before approval waits."""
     with get_session_factory()() as db:
         api_key = crud_api_key.get_by_key(db, key=token)
-        user = _authenticate_with_api_key(db, api_key)
+        user = _authenticate_with_api_key(db, api_key, allow_managed_agent=True)
         enforce_runtime_api_key_scope(api_key)
         managed_agent = _managed_agent_for_api_key(db, api_key)
         runtime_session = None
@@ -187,7 +197,7 @@ def _origin_runtime_session_id(
             db,
             account_id=identity.account_id,
             external_session_id=session_id,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if hosted is not None:
             return OriginSession(str(hosted.id), hosted_runner=True)
@@ -1114,7 +1124,7 @@ def _register_session_start(
             parent_session_id=payload.parent_session_id,
             first_prompt=payload.first_prompt,
             alias=payload.alias,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if result is not None and is_prompt_event(payload.hook_event_name):
             try:
@@ -1243,7 +1253,7 @@ def _record_session_event(
             db,
             account_id=identity.account_id,
             external_session_id=external,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if session is None:
             qualified = session_source_id_for(principal_id, external)

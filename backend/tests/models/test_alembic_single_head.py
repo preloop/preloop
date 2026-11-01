@@ -516,4 +516,22 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert owner_flow_subscription.down_revision == "20261113_pull_request_details"
     startup_receipt = script.get_revision("20261115_startup_receipt")
     assert startup_receipt.down_revision == "20261114_owner_flow_subscription"
-    assert script.get_heads() == ["20261115_startup_receipt"]
+    group_grants = script.get_revision("20261114_sso_group_grants")
+    assert group_grants.down_revision == "20261115_startup_receipt"
+    enforcement = script.get_revision("20261115_sso_enforcement")
+    assert enforcement.down_revision == "20261114_sso_group_grants"
+    saml_certificate = script.get_revision("20261116_saml_sp_certificate")
+    assert saml_certificate.down_revision == "20261115_sso_enforcement"
+    realtime = script.get_revision("20261120_execution_realtime_seq")
+    assert realtime.down_revision == "20261116_saml_sp_certificate"
+    result_export = script.get_revision("20261122_execution_result_grant")
+    assert result_export.down_revision == "20261120_execution_realtime_seq"
+    offboarding = script.get_revision("20261117_membership_offboarding")
+    assert offboarding.down_revision == "20261122_execution_result_grant"
+    scim = script.get_revision("20261118_scim_provisioning")
+    assert scim.down_revision == "20261117_membership_offboarding"
+    at_rest = script.get_revision("20261119_credentials_at_rest")
+    assert at_rest.down_revision == "20261118_scim_provisioning"
+    exception_digest = script.get_revision("20261121_exception_digest")
+    assert exception_digest.down_revision == "20261119_credentials_at_rest"
+    assert script.get_heads() == ["20261121_exception_digest"]

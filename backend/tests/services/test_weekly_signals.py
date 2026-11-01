@@ -1096,3 +1096,29 @@ def test_first_seen_tool_usage_counts_calls_instead_of_schema_exposures(
     )
     tool = next(item for item in signals.first_seen if item.kind == "mcp_tool")
     assert tool.usage_count == 2
+
+
+def test_exception_pending_backlog_keeps_old_requests_and_detects_replacements(
+    db_session: Session, test_user: User
+) -> None:
+    from preloop.models.crud.weekly_signals import approval_signals
+
+    old = _approval_request(db_session, test_user, "old-pending-exception")
+    old.requested_at = _naive(START - timedelta(days=10))
+    db_session.flush()
+    args = dict(account_id=test_user.account_id, start=START, end=END)
+    assert approval_signals(db_session, **args).pending == 0
+    before = approval_signals(db_session, **args, pending_backlog=True)
+    assert before.pending == 1
+    old.status = "approved"
+    old.resolved_at = _naive(START)
+    _approval_request(db_session, test_user, "replacement-pending-exception")
+    db_session.flush()
+    after = approval_signals(db_session, **args, pending_backlog=True)
+    assert after.pending == before.pending
+    assert after.pending_fingerprint != before.pending_fingerprint
+    # Unknown member cannot inherit account-wide requests.
+    scoped = approval_signals(
+        db_session, **args, user_id=uuid.uuid4(), pending_backlog=True
+    )
+    assert scoped.pending == 0

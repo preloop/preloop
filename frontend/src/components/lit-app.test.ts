@@ -82,6 +82,24 @@ describe('LitApp routing', () => {
     fetchStub.restore();
   });
 
+  it('routes a failed SSO fragment to a generic sign-in error without accepting token fragments', async () => {
+    localStorage.clear();
+    window.history.replaceState(
+      {},
+      '',
+      '/console#sso_error=sign_in_failed&access_token=untrusted'
+    );
+    const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+    await waitUntil(() => window.location.pathname === '/login');
+    await waitUntil(() => !!el.shadowRoot!.querySelector('login-view'));
+    const login = el.shadowRoot!.querySelector('login-view')!;
+    await waitUntil(() =>
+      login.shadowRoot!.textContent!.includes('Single sign-on failed')
+    );
+    expect(location.hash).to.equal('');
+    expect(localStorage.getItem('accessToken')).to.equal(null);
+  });
+
   it('keeps console pages out of the initial public page registration', () => {
     expect(
       definedElements([

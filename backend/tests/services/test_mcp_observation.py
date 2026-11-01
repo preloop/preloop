@@ -218,7 +218,7 @@ async def test_wrapper_preserves_completed_result_when_observation_raises(
     finally:
         dispatch._grant_dispatch_var.reset(token)
     assert result == "synthetic-ok"
-    client.call_tool.assert_awaited_once_with("read", {})
+    client.call_tool.assert_awaited_once_with("read", {}, correlation_id=None)
     assert error_type.__name__ in caplog.text
     assert "synthetic-sensitive-detail" not in caplog.text
 

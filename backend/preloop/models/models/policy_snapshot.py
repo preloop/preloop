@@ -11,8 +11,10 @@ import uuid
 from typing import TYPE_CHECKING, Dict, Optional
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from preloop.models.db.encrypted_types import SecretFieldsJSON
 
 from .base import Base
 
@@ -41,7 +43,10 @@ class PolicySnapshot(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Snapshot data - complete policy document as JSON
-    snapshot_data: Mapped[Dict] = mapped_column(JSONB, nullable=False)
+    # MCP credentials and webhook secrets kept for rollback are sealed at rest.
+    snapshot_data: Mapped[Dict] = mapped_column(
+        SecretFieldsJSON("policy_snapshot", jsonb=True), nullable=False
+    )
 
     # Metadata
     created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(

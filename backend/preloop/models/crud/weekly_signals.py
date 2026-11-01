@@ -44,6 +44,8 @@ class ApprovalProjection(NamedTuple):
     pending: int = 0
     auto_approved: int = 0
     auto_approved_reasons: tuple[dict[str, Any], ...] = ()
+    pending_fingerprint: str = ""
+    expired_fingerprint: str = ""
 
 
 class FirstSeenProjection(NamedTuple):
@@ -149,12 +151,15 @@ def approval_signals(
     start: datetime,
     end: datetime,
     user_id: UUID | None = None,
+    pending_backlog: bool = False,
 ) -> ApprovalProjection:
     """Count real requests, separating policy/AI decisions from human work.
 
     Requests/pending use the requested-in-window cohort. Completed decisions
     use resolved-in-window rows, including requests from the prior window.
-    Automated decisions never enter the human decision latency.
+    Automated decisions never enter the human decision latency. Exception
+    digests may include the still-pending backlog created before the cutoff;
+    identity hashes distinguish replacement requests at the same count.
     """
     rows = (
         db.execute(
@@ -184,7 +189,16 @@ def approval_signals(
                     AND COALESCE(resolved_at, expires_at) >= :start
                     AND COALESCE(resolved_at, expires_at) < :end)::int AS expired,
                 COUNT(*) FILTER (WHERE automatic_reason IS NULL AND status = 'pending'
-                    AND requested_at >= :start AND requested_at < :end)::int AS pending,
+                    AND (:pending_backlog OR requested_at >= :start)
+                    AND requested_at < :end)::int AS pending,
+                md5(COALESCE(string_agg(id::text, ',' ORDER BY id) FILTER (
+                    WHERE automatic_reason IS NULL AND status = 'pending'
+                    AND (:pending_backlog OR requested_at >= :start)
+                    AND requested_at < :end), '')) AS pending_fingerprint,
+                md5(COALESCE(string_agg(id::text, ',' ORDER BY id) FILTER (
+                    WHERE automatic_reason IS NULL AND status = 'expired'
+                    AND COALESCE(resolved_at, expires_at) >= :start
+                    AND COALESCE(resolved_at, expires_at) < :end), '')) AS expired_fingerprint,
                 COALESCE(percentile_cont(0.5) WITHIN GROUP (
                     ORDER BY EXTRACT(EPOCH FROM resolved_at - requested_at)
                 ) FILTER (WHERE automatic_reason IS NULL
@@ -213,6 +227,7 @@ def approval_signals(
                     end.astimezone(timezone.utc).replace(tzinfo=None),
                 ),
                 "user_id": str(user_id) if user_id else None,
+                "pending_backlog": pending_backlog,
                 "response": json.dumps([{"user_id": str(user_id)}]),
             },
         )
@@ -228,6 +243,8 @@ def approval_signals(
         pending=_int(rows["pending"]),
         auto_approved=_int(rows["auto_approved"]),
         auto_approved_reasons=tuple(rows["auto_approved_reasons"]),
+        pending_fingerprint=rows["pending_fingerprint"],
+        expired_fingerprint=rows["expired_fingerprint"],
     )
 
 
@@ -365,7 +382,12 @@ def first_seen_signals(
 
 
 def gateway_latency_signals(
-    db: Session, *, account_id: UUID, start: datetime, end: datetime
+    db: Session,
+    *,
+    account_id: UUID,
+    start: datetime,
+    end: datetime,
+    user_id: UUID | None = None,
 ) -> list[LatencyProjection]:
     """Error rate and duration percentiles, overall, per model, and per user.
 
@@ -400,6 +422,7 @@ def gateway_latency_signals(
                     FROM api_usage
                     WHERE account_id = CAST(:account_id AS uuid)
                       AND action_type = 'model_gateway'
+                      AND (CAST(:user_id AS uuid) IS NULL OR user_id = CAST(:user_id AS uuid))
                       AND (timestamp AT TIME ZONE 'UTC') >= :start
                       AND (timestamp AT TIME ZONE 'UTC') < :end
                       {_CUSTOMER_USAGE_FILTER}
@@ -503,7 +526,10 @@ def gateway_latency_signals(
                 SELECT * FROM by_user
                 """
             ),
-            _params(account_id, start, end),
+            {
+                **_params(account_id, start, end),
+                "user_id": str(user_id) if user_id else None,
+            },
         )
         .mappings()
         .all()

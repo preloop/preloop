@@ -2772,4 +2772,180 @@ describe('FlowExecutionView', () => {
       );
     }
   });
+  it('coalesces gaps, ignores reordered events and recovers retained logs with a snapshot', async () => {
+    const element = await load('exec-running');
+    const state = element as any;
+    const live = {
+      type: 'agent_log_line',
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { line: 'live' },
+    };
+    state.logs = [live];
+    state.realtimeSequence.value = 10;
+    fetchStub.resetHistory();
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes('/lifecycle'))
+        return new Response(
+          JSON.stringify({
+            type: 'snapshot',
+            execution_id: 'exec-running',
+            seq: 14,
+            status: 'STOPPED',
+            agent_session_reference: 'run-1',
+            stop_confirmed_at: '2026-10-28T10:00:03Z',
+          }),
+          { status: 200 }
+        );
+      if (url.includes('/gateway-events'))
+        return new Response(
+          JSON.stringify({
+            logs: [
+              {
+                type: 'model_gateway_call',
+                execution_id: 'exec-running',
+                timestamp: '2026-10-28T10:00:01Z',
+                payload: { api_usage_id: 'recovered-call', total_tokens: 1 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      if (url.includes('/logs'))
+        return new Response(
+          JSON.stringify({
+            logs: [
+              {
+                type: 'agent_log_line',
+                timestamp: '2026-10-28T10:00:01Z',
+                payload: { line: 'recovered' },
+              },
+              live,
+            ],
+          }),
+          { status: 200 }
+        );
+      return new Response('{}', { status: 503 });
+    });
+    for (const seq of [12, 14])
+      state.handleWebSocketMessage({
+        type: 'agent_log_line',
+        execution_id: 'exec-running',
+        seq,
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'new' },
+      });
+    state.handleWebSocketMessage({
+      type: 'status_update',
+      execution_id: 'exec-running',
+      seq: 13,
+      payload: { status: 'FAILED' },
+    });
+    expect(state.execution.status).to.equal('RUNNING');
+    await waitUntil(() => state.execution.status === 'STOPPED');
+    expect(state.execution.agent_session_reference).to.equal('run-1');
+    expect(
+      state.gatewayEvents.some(
+        (event: any) => event.payload.api_usage_id === 'recovered-call'
+      )
+    ).to.equal(true);
+    const lateGateway = {
+      type: 'model_gateway_call',
+      execution_id: 'exec-running',
+      seq: 13,
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { api_usage_id: 'late-call', total_tokens: 2 },
+    };
+    state.handleWebSocketMessage(lateGateway);
+    state.handleWebSocketMessage(lateGateway);
+    expect(
+      state.gatewayEvents.filter(
+        (event: any) => event.payload.api_usage_id === 'late-call'
+      )
+    ).to.have.length(1);
+    const lateTool = {
+      type: 'tool_call',
+      execution_id: 'exec-running',
+      seq: 11,
+      timestamp: '2026-10-28T10:00:02Z',
+      payload: { tool_name: 'retained-tool' },
+    };
+    state.handleWebSocketMessage(lateTool);
+    state.handleWebSocketMessage(lateTool);
+    expect(
+      state.liveToolActivityEvents.filter((event: any) => event.seq === 11)
+    ).to.have.length(1);
+    expect(
+      state.logs.filter((log: any) => log.payload?.line === 'live')
+    ).to.have.length(1);
+    expect(
+      state.logs.some((log: any) => log.payload?.line === 'recovered')
+    ).to.equal(true);
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString().includes('/lifecycle'))
+    ).to.have.length(1);
+    state.applyLifecycleSnapshot({
+      type: 'snapshot',
+      execution_id: 'exec-running',
+      seq: 9,
+      status: 'RUNNING',
+    });
+    expect(state.execution.status).to.equal('STOPPED');
+    state.hasMoreLogs = true;
+    state.logsSkip = 2;
+    state.execution.mcp_usage_logs = [
+      {
+        timestamp: '2026-10-28T10:00:01Z',
+        tool_name: 'stored-tool',
+        server_name: 'fixture',
+      },
+    ];
+    await element.loadPreviousLogs();
+    expect(
+      state.logs.filter((log: any) => log.payload?.line === 'recovered')
+    ).to.have.length(1);
+    expect(
+      state.logs.some(
+        (log: any) =>
+          log.type === 'mcp_call' && log.payload?.tool_name === 'stored-tool'
+      )
+    ).to.equal(true);
+    expect(state.logsSkip).to.equal(4);
+  });
+  for (const flush of ['flushLogBuffer', 'stopBufferFlush'] as const) {
+    it(`deduplicates live and persisted row identities during ${flush}`, async () => {
+      const element = await load('exec-running');
+      const state = element as any;
+      const retained = {
+        log_id: 'row-a',
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:01Z',
+        payload: { message: 'retained' },
+      };
+      const late = {
+        log_id: 'row-a',
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'retained' },
+        seq: 9,
+      };
+      const fresh = {
+        log_id: 'row-b',
+        type: 'agent_log_line',
+        timestamp: '2026-10-28T10:00:02Z',
+        payload: { line: 'same text' },
+      };
+      state.logs = [retained];
+      state.logBuffer = [late, fresh, fresh, { ...fresh, log_id: 'row-c' }];
+      element[flush]();
+      expect(state.logs.map((log: any) => log.log_id)).to.deep.equal([
+        'row-a',
+        'row-b',
+        'row-c',
+      ]);
+      expect(state.logBuffer).to.have.length(0);
+    });
+  }
 });

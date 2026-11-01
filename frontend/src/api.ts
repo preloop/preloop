@@ -5301,6 +5301,17 @@ export async function getFlowExecution(executionId: string): Promise<any> {
   return response.json();
 }
 
+/** Small authoritative state and cursor, for realtime gap recovery. */
+export async function getFlowExecutionLifecycle(
+  executionId: string
+): Promise<any> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flow-executions/${executionId}/lifecycle`
+  );
+  if (!response.ok) throw new Error('Failed to recover execution lifecycle');
+  return response.json();
+}
+
 export type ContinuationRecoveryMode =
   'native_resume' | 'published_branch_handoff';
 
@@ -9347,6 +9358,10 @@ export interface GovernancePolicyDocument extends GovernancePolicyVersion {
 
 export interface GovernanceReviewSettings {
   mode: GovernanceReviewMode;
+  stored_mode?: GovernanceReviewMode;
+  effective_reason?: string | null;
+  analysis_opt_in_required?: boolean;
+  analysis_opt_in_help?: string;
   analysis_model_id?: string | null;
   analysis_model_alias?: string | null;
   platform_analysis_model?: string | null;

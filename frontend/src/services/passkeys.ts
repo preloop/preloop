@@ -156,13 +156,21 @@ export async function registerPasskey(name?: string): Promise<PasskeySummary> {
  * Sign in with a passkey (login page, unauthenticated). Returns the token
  * payload; the caller stores tokens and navigates.
  */
-export async function signInWithPasskey(): Promise<{
+export async function signInWithPasskey(accountId?: string): Promise<{
   access_token: string;
   refresh_token: string;
 }> {
   const optionsResponse = await fetch(
     REST_API_PREFIX + '/auth/webauthn/authenticate/options',
-    { method: 'POST' }
+    {
+      method: 'POST',
+      ...(accountId
+        ? {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: accountId }),
+          }
+        : {}),
+    }
   );
   if (!optionsResponse.ok) {
     throw new Error('Failed to start passkey sign-in');
@@ -184,6 +192,7 @@ export async function signInWithPasskey(): Promise<{
       body: JSON.stringify({
         credential: serializeAssertion(credential),
         challenge_token,
+        ...(accountId ? { account_id: accountId } : {}),
       }),
     }
   );

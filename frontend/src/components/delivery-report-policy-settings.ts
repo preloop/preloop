@@ -1,7 +1,21 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { live } from 'lit/directives/live.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import { getFeatures, getUserProfile, hasPermission } from '../api';
+import {
+  getFeatures,
+  getUserProfile,
+  hasPermission,
+  onApiCachesInvalidated,
+  type UserProfile,
+  type FeaturesResponse,
+} from '../api';
+import {
+  getReportRecipients,
+  saveReportRecipients,
+  type ReportRecipients,
+  type ReportRecipientsChanges,
+  type ReportRole,
+} from '../delivery-report-recipients-api';
 import {
   clearDeliveryReportPolicy,
   getDeliveryReportPolicy,
@@ -19,6 +33,23 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+
+const RECIPIENT_POLICY_FIELDS = [
+  'recipients',
+  'sponsoring_lead_user_id',
+  'per_member_updates',
+] as const;
+const ROLE_LABELS = {
+  owner: 'Owner',
+  lead: 'Lead',
+  member: 'Member',
+  viewer: 'Viewer',
+};
+const DELIVERY_LABELS = {
+  full_report: 'Full report',
+  short_update: 'Short update',
+  none: 'No email',
+};
 
 const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const WEEKDAY_LABELS: Record<string, string> = {
@@ -39,6 +70,17 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** A membership hint for preserving local drafts, never an authorization check. */
+function tokenSubject(token: string): string | null {
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const subject = JSON.parse(atob(payload)).sub;
+    return typeof subject === 'string' ? subject : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The Delivery Report policy card (#2020).
  *
@@ -55,6 +97,16 @@ export class DeliveryReportPolicySettings extends LitElement {
   @state() private draft: DeliveryReportPolicy | null = null;
   @state() private canManage = false;
   @state() private memberUpdatesAvailable = false;
+  @state() private recipientsVisible = false;
+  @state() private recipientsAvailable = false;
+  @state() private canManageRecipients = false;
+  @state() private recipients: ReportRecipients | null = null;
+  @state() private recipientDraft: ReportRecipients | null = null;
+  @state() private roleChanges: Record<string, ReportRole | null> = {};
+  @state() private recipientError = '';
+  @state() private recipientsLoading = false;
+  private identity?: { userId: string; accountId: string; token: string };
+  private stopInvalidation?: () => void;
   @state() private saving = false;
   @state() private error = '';
   @state() private subscription: DeliveryReportSubscription | null = null;
@@ -94,6 +146,10 @@ export class DeliveryReportPolicySettings extends LitElement {
     .fields sl-input,
     .fields sl-select {
       width: 12rem;
+      max-width: 100%;
+    }
+    .fields sl-select[data-field='recipients'] {
+      width: 18rem;
     }
     p,
     .meta {
@@ -107,6 +163,31 @@ export class DeliveryReportPolicySettings extends LitElement {
       gap: var(--sl-spacing-small);
       padding-top: 0.75rem;
     }
+    .roster {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--console-text-body, 14px);
+    }
+    th,
+    td {
+      padding: 0.65rem 0.75rem 0.65rem 0;
+      text-align: left;
+      border-bottom: 1px solid
+        var(--console-hairline, var(--sl-color-neutral-200));
+    }
+    th {
+      font-size: var(--console-text-meta, 13px);
+      font-weight: 600;
+    }
+    td sl-select {
+      min-width: 10rem;
+    }
+    .identity {
+      display: block;
+    }
     .error {
       color: var(--sl-color-neutral-700);
       font-size: var(--console-text-meta, 13px);
@@ -115,11 +196,29 @@ export class DeliveryReportPolicySettings extends LitElement {
 
   disconnectedCallback(): void {
     ++this.generation;
+    this.stopInvalidation?.();
     super.disconnectedCallback();
   }
 
   connectedCallback(): void {
     super.connectedCallback();
+    this.stopInvalidation = onApiCachesInvalidated(() => {
+      const token = localStorage.getItem('accessToken');
+      if (
+        token &&
+        this.identity &&
+        (token === this.identity.token ||
+          (tokenSubject(token) === this.identity.userId &&
+            tokenSubject(this.identity.token) === this.identity.userId))
+      ) {
+        // Refresh must not cancel a save or replace an unsaved draft.
+        this.identity.token = token;
+        const generation = this.generation;
+        queueMicrotask(() => void this.refreshAccess(generation));
+      } else {
+        this.clearContext();
+      }
+    });
     // A card moved in the DOM reads its layer again; the first read comes
     // from updated(), once project-id is known.
     if (this.hasUpdated) void this.load();
@@ -133,9 +232,93 @@ export class DeliveryReportPolicySettings extends LitElement {
     return !!this.projectId;
   }
 
+  private get memberUpdatesThroughPolicy(): boolean {
+    return this.memberUpdatesAvailable && !this.recipientsAvailable;
+  }
+
+  private clearContext(): void {
+    const generation = ++this.generation;
+    this.identity = undefined;
+    this.layer = null;
+    this.draft = null;
+    this.recipients = null;
+    this.recipientDraft = null;
+    this.subscription = null;
+    this.roleChanges = {};
+    this.recipientsLoading = false;
+    this.saving = false;
+    queueMicrotask(() => {
+      if (
+        this.isConnected &&
+        generation === this.generation &&
+        localStorage.getItem('accessToken')
+      )
+        void this.load();
+    });
+  }
+
+  private applyAccess(
+    profile: UserProfile,
+    features: FeaturesResponse | null
+  ): void {
+    this.canManage = hasPermission(
+      profile.permissions,
+      this.isProject ? 'edit_projects' : 'manage_budgets'
+    );
+    this.memberUpdatesAvailable =
+      features?.features.delivery_report_member_updates === true &&
+      !this.isProject;
+    this.recipientsAvailable =
+      !this.isProject && features?.features.delivery_report_recipients === true;
+    this.recipientsVisible =
+      this.recipientsAvailable &&
+      hasPermission(profile.permissions, 'view_policies');
+    this.canManageRecipients = hasPermission(
+      profile.permissions,
+      'manage_policies'
+    );
+  }
+
+  private async refreshAccess(generation: number): Promise<void> {
+    if (!this.isConnected || generation !== this.generation) return;
+    try {
+      const [profile, features] = await Promise.all([
+        getUserProfile(),
+        getFeatures(),
+      ]);
+      if (generation !== this.generation) return;
+      if (
+        profile.id !== this.identity?.userId ||
+        profile.account_id !== this.identity?.accountId
+      ) {
+        this.clearContext();
+        return;
+      }
+      this.applyAccess(profile, features);
+      if (!this.recipientsVisible) {
+        this.recipients = null;
+        this.recipientDraft = null;
+        this.roleChanges = {};
+      } else if (!this.recipientDraft && !this.recipientsLoading) {
+        void this.loadRecipients(generation);
+      }
+    } catch {
+      if (generation === this.generation)
+        this.error =
+          'Could not refresh access. Reload the page to try again; your edits are retained.';
+    }
+  }
+
   private async load(): Promise<void> {
     const generation = ++this.generation;
     this.error = '';
+    this.recipients = null;
+    this.recipientDraft = null;
+    this.roleChanges = {};
+    this.recipientsVisible = false;
+    this.recipientError = '';
+    this.subscription = null;
+    this.saving = false;
     try {
       const [profile, layer, features] = await Promise.all([
         getUserProfile(),
@@ -143,19 +326,20 @@ export class DeliveryReportPolicySettings extends LitElement {
         getFeatures().catch(() => null),
       ]);
       if (generation !== this.generation) return;
-      this.canManage = hasPermission(
-        profile?.permissions,
-        this.isProject ? 'edit_projects' : 'manage_budgets'
-      );
-      this.memberUpdatesAvailable =
-        features?.features.delivery_report_member_updates === true &&
-        !this.isProject;
+      this.identity = {
+        userId: profile.id,
+        accountId: profile.account_id,
+        token: localStorage.getItem('accessToken') ?? '',
+      };
+      this.applyAccess(profile, features);
       this.adopt(layer);
+      if (this.recipientsVisible) void this.loadRecipients(generation);
       if (!this.isProject) {
         // Each person's own copy; any member may change it.
-        this.subscription = await getDeliveryReportSubscription().catch(
+        const subscription = await getDeliveryReportSubscription().catch(
           () => null
         );
+        if (generation === this.generation) this.subscription = subscription;
       }
     } catch {
       // A server without the report policy, or a member who cannot read
@@ -206,8 +390,22 @@ export class DeliveryReportPolicySettings extends LitElement {
     const defaults = layer.defaults;
     for (const key of Object.keys(draft) as (keyof DeliveryReportPolicy)[]) {
       // Opt-outs belong to each person (the email link, the switch below).
-      if (key === 'tracker_writes' || key === 'opted_out_user_ids') continue;
+      if (
+        key === 'tracker_writes' ||
+        key === 'opted_out_user_ids' ||
+        RECIPIENT_POLICY_FIELDS.includes(
+          key as (typeof RECIPIENT_POLICY_FIELDS)[number]
+        )
+      )
+        continue;
       if (!same(draft[key], defaults[key])) out[key] = draft[key];
+    }
+    // The EE recipients API owns these controls. Preserve stored values,
+    // including hidden feature settings, rather than reconstructing defaults.
+    for (const key of RECIPIENT_POLICY_FIELDS) {
+      if (key === 'per_member_updates' && this.memberUpdatesThroughPolicy) {
+        if (!same(draft[key], defaults[key])) out[key] = draft[key];
+      } else if (key in layer.overrides) out[key] = layer.overrides[key];
     }
     const writes: Record<string, unknown> = {};
     for (const key of ['create_follow_up', 'reopen'] as const) {
@@ -225,28 +423,56 @@ export class DeliveryReportPolicySettings extends LitElement {
   }
 
   private async save(): Promise<void> {
-    if (this.saving) return;
+    if (this.saving || !this.canManage) return;
+    const generation = this.generation;
     this.saving = true;
     this.error = '';
     try {
+      const overrides = this.overrides();
+      if (!this.isProject) {
+        // Recipient saves use a separate permission and endpoint. A later
+        // budget save must retain the current recipient policy, not its
+        // initial snapshot from when this card opened.
+        const current = await getDeliveryReportPolicy();
+        if (generation !== this.generation) return;
+        for (const key of RECIPIENT_POLICY_FIELDS) {
+          if (
+            key === 'per_member_updates' &&
+            this.memberUpdatesThroughPolicy &&
+            !same(
+              this.draft?.per_member_updates,
+              this.layer?.effective.per_member_updates
+            )
+          )
+            continue;
+          delete overrides[key];
+          if (key in current.overrides)
+            Object.assign(overrides, { [key]: current.overrides[key] });
+        }
+      }
       const layer = await saveDeliveryReportPolicy(
-        this.overrides(),
+        overrides,
         this.projectId || undefined
       );
+      if (generation !== this.generation) return;
       this.adopt(layer);
       showToast('Report policy saved.', 'success');
     } catch (error) {
+      if (generation !== this.generation) return;
       this.error =
         error instanceof Error ? error.message : 'Could not save the policy.';
     } finally {
-      this.saving = false;
+      if (generation === this.generation) this.saving = false;
     }
   }
 
   private async setSubscribed(subscribed: boolean): Promise<void> {
     this.error = '';
+    const generation = this.generation;
     try {
-      this.subscription = await saveDeliveryReportSubscription(!subscribed);
+      const subscription = await saveDeliveryReportSubscription(!subscribed);
+      if (generation !== this.generation) return;
+      this.subscription = subscription;
       showToast(
         subscribed
           ? 'You will receive the report email.'
@@ -254,23 +480,28 @@ export class DeliveryReportPolicySettings extends LitElement {
         'success'
       );
     } catch (error) {
+      if (generation !== this.generation) return;
       this.error =
         error instanceof Error ? error.message : 'Could not save the setting.';
     }
   }
 
   private async reset(): Promise<void> {
-    if (this.saving || !this.projectId) return;
+    if (this.saving || !this.projectId || !this.canManage) return;
+    const generation = this.generation;
     this.saving = true;
     this.error = '';
     try {
-      this.adopt(await clearDeliveryReportPolicy(this.projectId));
+      const layer = await clearDeliveryReportPolicy(this.projectId);
+      if (generation !== this.generation) return;
+      this.adopt(layer);
       showToast('This repository follows the account policy again.', 'success');
     } catch (error) {
+      if (generation !== this.generation) return;
       this.error =
         error instanceof Error ? error.message : 'Could not reset the policy.';
     } finally {
-      this.saving = false;
+      if (generation === this.generation) this.saving = false;
     }
   }
 
@@ -476,77 +707,305 @@ export class DeliveryReportPolicySettings extends LitElement {
           an issue.
         </p>
       </div>
-      <div class="group">
-        <h3>Recipients</h3>
-        ${
-          this.memberUpdatesAvailable
-            ? html`<sl-switch
-                  data-field="per_member_updates"
-                  .checked=${live(draft.per_member_updates)}
-                  ?disabled=${!this.canManage}
-                  @sl-change=${(event: Event) =>
-                    this.set(
-                      'per_member_updates',
-                      (event.target as HTMLInputElement).checked
-                    )}
-                  >Send short updates to account members</sl-switch
-                >
-                <p class="meta">
-                  Off by default. Each person receives one update per report
-                  period, based on the work they reviewed or discussed.
-                </p>`
-            : nothing
-        }
-        <div class="fields">
-          <sl-select
-            label="Send to"
-            data-field="recipients"
-            .value=${draft.recipients}
-            ?disabled=${!this.canManage}
-            @sl-change=${(event: Event) =>
-              this.set(
-                'recipients',
-                (event.target as HTMLSelectElement)
-                  .value as DeliveryReportPolicy['recipients']
-              )}
-          >
-            <sl-option value="account_owner">Account owner</sl-option>
-            <sl-option value="sponsoring_lead">Sponsoring lead</sl-option>
-          </sl-select>
-          ${
-            draft.recipients === 'sponsoring_lead'
-              ? html`<sl-input
-                  label="Lead user id"
-                  data-field="sponsoring_lead_user_id"
-                  .value=${draft.sponsoring_lead_user_id ?? ''}
-                  ?disabled=${!this.canManage}
-                  @sl-input=${(event: Event) =>
-                    this.set(
-                      'sponsoring_lead_user_id',
-                      (event.target as HTMLInputElement).value || null
-                    )}
-                ></sl-input>`
-              : nothing
-          }
-        </div>
-        ${
-          this.subscription?.is_recipient
-            ? html`<sl-switch
+      ${
+        this.memberUpdatesThroughPolicy
+          ? html`<div class="group">
+              <sl-switch
+                data-field="per_member_updates"
+                .checked=${live(draft.per_member_updates)}
+                ?disabled=${!this.canManage || this.saving}
+                @sl-change=${(event: Event) => this.set('per_member_updates', (event.target as HTMLInputElement).checked)}
+                >Send short updates to account members</sl-switch
+              >
+              <p class="meta">
+                Off by default. Each person receives one update per report
+                period, based on the work they reviewed or discussed.
+              </p>
+            </div>`
+          : nothing
+      }
+      ${this.renderRecipients()}
+      ${
+        this.subscription?.is_recipient
+          ? html`<div class="group">
+              <h3>Your email</h3>
+              <sl-switch
                 data-field="subscribed"
                 .checked=${live(!this.subscription.opted_out)}
-                @sl-change=${(event: Event) =>
-                  void this.setSubscribed(
-                    (event.target as HTMLInputElement).checked
-                  )}
+                @sl-change=${(event: Event) => void this.setSubscribed((event.target as HTMLInputElement).checked)}
                 >Email me this report</sl-switch
-              >`
-            : nothing
-        }
-        <p class="meta">
-          Anyone can stop their own copy from the link in the email.
-        </p>
-      </div>
+              >
+              <p class="meta">
+                You can also stop your copy from the link in the email.
+              </p>
+            </div>`
+          : nothing
+      }
     `;
+  }
+
+  private async loadRecipients(generation = this.generation): Promise<void> {
+    this.recipientError = '';
+    this.recipientsLoading = true;
+    try {
+      const data = await getReportRecipients();
+      if (generation !== this.generation) return;
+      this.recipients = data;
+      this.recipientDraft = structuredClone(data);
+      this.roleChanges = {};
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.recipientError =
+        error instanceof Error ? error.message : 'Could not load recipients.';
+    } finally {
+      if (generation === this.generation) this.recipientsLoading = false;
+    }
+  }
+
+  private recipientChanges(): ReportRecipientsChanges {
+    if (!this.recipients || !this.recipientDraft) return {};
+    const changes: ReportRecipientsChanges = {};
+    const draft = this.recipientDraft;
+    for (const key of [
+      'recipients',
+      'sponsoring_lead_user_id',
+      'opted_out_user_ids',
+    ] as const) {
+      if (!same(draft[key], this.recipients[key]))
+        Object.assign(changes, { [key]: draft[key] });
+    }
+    if (
+      this.memberUpdatesAvailable &&
+      draft.per_member !== this.recipients.per_member
+    )
+      changes.per_member = draft.per_member;
+    if (Object.keys(this.roleChanges).length) changes.roles = this.roleChanges;
+    return changes;
+  }
+
+  private async saveRecipients(): Promise<void> {
+    if (!this.canManageRecipients || this.saving || !this.recipientDraft)
+      return;
+    if (
+      this.recipientDraft.recipients === 'sponsoring_lead' &&
+      !this.recipientDraft.sponsoring_lead_user_id
+    ) {
+      this.recipientError =
+        'Choose the sponsoring lead who receives the report.';
+      return;
+    }
+    const changes = this.recipientChanges();
+    if (!Object.keys(changes).length) return;
+    const generation = this.generation;
+    this.saving = true;
+    this.recipientError = '';
+    try {
+      const data = await saveReportRecipients(changes);
+      if (generation !== this.generation) return;
+      this.recipients = data;
+      this.recipientDraft = structuredClone(data);
+      this.roleChanges = {};
+      // A recipient may have opted themselves out in this save.
+      const subscription = await getDeliveryReportSubscription().catch(
+        () => null
+      );
+      if (generation !== this.generation) return;
+      this.subscription = subscription;
+      showToast('Report recipients saved.', 'success');
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.recipientError =
+        error instanceof Error ? error.message : 'Could not save recipients.';
+    } finally {
+      if (generation === this.generation) this.saving = false;
+    }
+  }
+
+  private renderRecipients() {
+    if (!this.recipientsVisible || this.isProject) return nothing;
+    const draft = this.recipientDraft;
+    const disabled = !this.canManageRecipients || this.saving;
+    return html`<div class="group" data-section="recipients">
+      <h3>Recipients</h3>
+      <p class="meta">
+        The account owner receives the full report. You can also send it to a
+        sponsoring lead. When member updates are enabled, other owners and leads
+        receive the full report, members receive a short update, and viewers
+        receive no email. Report roles follow account roles unless overridden.
+      </p>
+      ${this.canManageRecipients ? nothing : html`<p class="meta">People who can manage policies can change recipients.</p>`}
+      ${this.recipientError ? html`<p class="error" role="alert">${this.recipientError}</p>` : nothing}
+      ${
+        !draft
+          ? this.recipientsLoading
+            ? html`<p role="status">Loading recipients…</p>`
+            : html`<sl-button
+                size="small"
+                data-action="retry-recipients"
+                @click=${() => void this.loadRecipients()}
+                >Reload recipients</sl-button
+              >`
+          : html`
+              ${
+                this.memberUpdatesAvailable
+                  ? html`<sl-switch
+                        data-field="per_member_updates"
+                        .checked=${live(draft.per_member)}
+                        ?disabled=${disabled}
+                        @sl-change=${(event: Event) => {
+                          this.recipientDraft = {
+                            ...draft,
+                            per_member: (event.target as HTMLInputElement)
+                              .checked,
+                          };
+                        }}
+                        >Send short updates to account members</sl-switch
+                      >
+                      <p class="meta">
+                        Off by default. Each person receives one update per
+                        report period, based on the work they reviewed or
+                        discussed.
+                      </p>`
+                  : nothing
+              }
+              <div class="fields">
+                <sl-select
+                  label="Send full report to"
+                  data-field="recipients"
+                  .value=${draft.recipients}
+                  ?disabled=${disabled}
+                  @sl-change=${(event: Event) => {
+                    this.recipientDraft = {
+                      ...this.recipientDraft!,
+                      recipients: (event.target as HTMLSelectElement)
+                        .value as ReportRecipients['recipients'],
+                    };
+                  }}
+                  ><sl-option value="account_owner">Account owner</sl-option
+                  ><sl-option value="sponsoring_lead"
+                    >Owner and sponsoring lead</sl-option
+                  ></sl-select
+                >
+                ${
+                  draft.recipients === 'sponsoring_lead'
+                    ? html`<sl-select
+                        label="Sponsoring lead"
+                        data-field="sponsoring_lead_user_id"
+                        .value=${draft.sponsoring_lead_user_id ?? ''}
+                        ?disabled=${disabled}
+                        @sl-change=${(event: Event) => {
+                          this.recipientDraft = {
+                            ...this.recipientDraft!,
+                            sponsoring_lead_user_id:
+                              (event.target as HTMLSelectElement).value || null,
+                          };
+                        }}
+                        >${draft.members.map((member) => html`<sl-option value=${member.user_id}>${member.name || member.email || member.user_id}</sl-option>`)}</sl-select
+                      >`
+                    : nothing
+                }
+              </div>
+              <p class="meta">
+                The account owner always keeps the owner report role. A saved
+                opt-out stops delivery for every role, including the owner.
+              </p>
+              <div class="roster">
+                <table aria-label="Report recipients">
+                  <thead>
+                    <tr>
+                      <th scope="col">Person</th>
+                      <th scope="col">Report role</th>
+                      <th scope="col">Current delivery</th>
+                      <th scope="col">Opt out</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${draft.members.map((member) => {
+                      const role =
+                        member.user_id in this.roleChanges
+                          ? (this.roleChanges[member.user_id] ?? 'default')
+                          : member.role_source === 'override'
+                            ? member.report_role
+                            : 'default';
+                      const source =
+                        member.role_source === 'rbac'
+                          ? 'RBAC'
+                          : member.role_source === 'owner'
+                            ? 'Account owner'
+                            : member.role_source === 'sponsoring_lead'
+                              ? 'Sponsoring lead'
+                              : 'Override';
+                      return html`<tr data-recipient=${member.user_id}>
+                        <td>
+                          <span class="identity"
+                            >${member.name || member.email}</span
+                          ><span class="meta identity">${member.email}</span
+                          ><span class="meta identity"
+                            >${member.rbac_roles.join(', ') || 'No account role'}</span
+                          >
+                        </td>
+                        <td>
+                          <sl-select
+                            aria-label=${`Report role for ${member.name || member.email}`}
+                            data-role-user=${member.user_id}
+                            .value=${role}
+                            ?disabled=${disabled || member.role_source === 'owner'}
+                            @sl-change=${(event: Event) => {
+                              const value = (event.target as HTMLSelectElement)
+                                .value;
+                              this.roleChanges = {
+                                ...this.roleChanges,
+                                [member.user_id]:
+                                  value === 'default'
+                                    ? null
+                                    : (value as ReportRole),
+                              };
+                            }}
+                            ><sl-option value="default"
+                              >Follow account role</sl-option
+                            >${Object.entries(ROLE_LABELS).map(([value, label]) => html`<sl-option value=${value}>${label}</sl-option>`)}</sl-select
+                          >
+                          <span class="meta identity"
+                            >${ROLE_LABELS[member.report_role]} ·
+                            ${source}</span
+                          >
+                        </td>
+                        <td>
+                          ${DELIVERY_LABELS[member.delivery]}${member.opted_out ? html`<span class="meta identity">Opted out</span>` : nothing}
+                        </td>
+                        <td>
+                          <sl-switch
+                            aria-label=${`Opt out ${member.name || member.email}`}
+                            data-opt-out-user=${member.user_id}
+                            .checked=${live(draft.opted_out_user_ids.includes(member.user_id))}
+                            ?disabled=${disabled}
+                            @sl-change=${(event: Event) => {
+                              const ids =
+                                this.recipientDraft!.opted_out_user_ids.filter(
+                                  (id) => id !== member.user_id
+                                );
+                              if ((event.target as HTMLInputElement).checked)
+                                ids.push(member.user_id);
+                              this.recipientDraft = {
+                                ...this.recipientDraft!,
+                                opted_out_user_ids: ids,
+                              };
+                            }}
+                          ></sl-switch>
+                        </td>
+                      </tr>`;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p class="meta">
+                Current delivery shows the saved policy. Save recipient changes
+                to update it.
+              </p>
+              ${this.canManageRecipients ? html`<div class="actions"><sl-button size="small" data-action="save-recipients" ?loading=${this.saving} @click=${() => void this.saveRecipients()}>Save recipients</sl-button></div>` : nothing}
+            `
+      }
+    </div>`;
   }
 
   render() {

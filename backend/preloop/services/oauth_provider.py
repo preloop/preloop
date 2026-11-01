@@ -10,7 +10,7 @@ backward compatibility.
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from mcp.server.auth.provider import (
@@ -24,6 +24,11 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from fastmcp.server.auth.auth import AccessToken, OAuthProvider
 
 from preloop.api.auth.identity import require_session_membership
+from preloop.services.authentication_policy import (
+    authorize_session_record,
+    authorize_authentication,
+)
+from preloop.api.auth.jwt import user_auth_generation
 from fastapi import HTTPException
 
 from preloop.models.crud.oauth_mcp_client import crud_oauth_mcp_client
@@ -279,7 +284,10 @@ class PreloopOAuthProvider(OAuthProvider):
                 )
 
             try:
-                require_session_membership(db, db_code.user_id, lock=True)
+                user = require_session_membership(db, db_code.user_id, lock=True)
+                auth_context = authorize_session_record(
+                    db, user, db_code, purpose="exchange"
+                )
             except HTTPException as exc:
                 raise TokenError(
                     error="invalid_grant", error_description=str(exc.detail)
@@ -310,6 +318,8 @@ class PreloopOAuthProvider(OAuthProvider):
                 user_id=db_code.user_id,
                 account_id=db_code.account_id,
                 scopes=db_code.scopes or [],
+                auth_context=auth_context,
+                auth_generation=user_auth_generation(user),
                 expires_at=now + self._access_token_expiry,
                 resource=db_code.resource,
                 commit=False,
@@ -323,6 +333,8 @@ class PreloopOAuthProvider(OAuthProvider):
                 user_id=db_code.user_id,
                 account_id=db_code.account_id,
                 scopes=db_code.scopes or [],
+                auth_context=auth_context,
+                auth_generation=user_auth_generation(user),
                 expires_at=now + self._refresh_token_expiry,
             )
 
@@ -394,7 +406,10 @@ class PreloopOAuthProvider(OAuthProvider):
                 )
 
             try:
-                require_session_membership(db, db_old_refresh.user_id, lock=True)
+                user = require_session_membership(db, db_old_refresh.user_id, lock=True)
+                auth_context = authorize_session_record(
+                    db, user, db_old_refresh, purpose="refresh"
+                )
             except HTTPException as exc:
                 raise TokenError(
                     error="invalid_grant", error_description=str(exc.detail)
@@ -438,6 +453,8 @@ class PreloopOAuthProvider(OAuthProvider):
                 user_id=user_id,
                 account_id=account_id,
                 scopes=effective_scopes,
+                auth_context=auth_context,
+                auth_generation=user_auth_generation(user),
                 expires_at=now + self._access_token_expiry,
                 commit=False,
             )
@@ -450,6 +467,8 @@ class PreloopOAuthProvider(OAuthProvider):
                 user_id=user_id,
                 account_id=account_id,
                 scopes=effective_scopes,
+                auth_context=auth_context,
+                auth_generation=user_auth_generation(user),
                 expires_at=now + self._refresh_token_expiry,
             )
 
@@ -483,6 +502,7 @@ class PreloopOAuthProvider(OAuthProvider):
 
                 try:
                     user = require_session_membership(db, str(db_token.user_id))
+                    authorize_session_record(db, user, db_token, purpose="access")
                 except HTTPException:
                     return None
 
@@ -499,8 +519,11 @@ class PreloopOAuthProvider(OAuthProvider):
 
             # 2. Fall back to legacy Bearer token (API key / JWT)
             from preloop.api.auth.jwt import get_user_from_token_if_valid
+            from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 
-            user = await get_user_from_token_if_valid(token, db)
+            user = await get_user_from_token_if_valid(
+                token, db, allow_managed_agent=True
+            )
             if user:
                 from preloop.api.auth.key_scopes import is_single_purpose_api_key
 
@@ -515,7 +538,11 @@ class PreloopOAuthProvider(OAuthProvider):
                     return None
                 access_token = AccessToken(
                     token=token,
-                    client_id=str(user.id),
+                    client_id=str(
+                        user.principal_id
+                        if isinstance(user, ManagedAgentPrincipal)
+                        else user.id
+                    ),
                     scopes=[
                         scope
                         for scope in (api_key_obj.scopes or [])
@@ -583,6 +610,7 @@ class PreloopOAuthProvider(OAuthProvider):
         code_challenge: str,
         scopes: list[str],
         resource: Optional[str] = None,
+        auth_context: dict[str, Any] | None = None,
     ) -> str:
         """Create and store an authorization code for a user who has consented.
 
@@ -593,6 +621,12 @@ class PreloopOAuthProvider(OAuthProvider):
         """
         db = _get_db()
         try:
+            user = require_session_membership(db, user_id, lock=True)
+            if str(user.account_id) != str(account_id):
+                raise HTTPException(status_code=401, detail="Invalid account")
+            auth_context = authorize_authentication(
+                db, user, claims=auth_context, purpose="exchange"
+            )
             code = generate_authorization_code()
             crud_oauth_mcp_auth_code.create(
                 db,
@@ -604,6 +638,8 @@ class PreloopOAuthProvider(OAuthProvider):
                 redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
                 code_challenge=code_challenge,
                 scopes=scopes,
+                auth_context=auth_context,
+                auth_generation=user_auth_generation(user),
                 expires_at=time.time() + AUTH_CODE_EXPIRY,
                 resource=resource,
             )

@@ -3,7 +3,7 @@
 import hashlib
 import secrets
 import time
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -53,6 +53,8 @@ class CRUDOAuthMCPAuthorizationCode:
         redirect_uri_provided_explicitly: bool,
         code_challenge: str,
         scopes: list[str],
+        auth_context: dict[str, Any] | None = None,
+        auth_generation: int = 0,
         expires_at: float,
         resource: Optional[str] = None,
     ) -> OAuthMCPAuthorizationCode:
@@ -66,6 +68,8 @@ class CRUDOAuthMCPAuthorizationCode:
             redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
             code_challenge=code_challenge,
             scopes=scopes,
+            auth_context=dict(auth_context or {}),
+            auth_generation=auth_generation,
             expires_at=expires_at,
             resource=resource,
             is_used=False,
@@ -146,6 +150,8 @@ class CRUDOAuthMCPAccessToken:
         user_id: UUID,
         account_id: UUID,
         scopes: list[str],
+        auth_context: dict[str, Any] | None = None,
+        auth_generation: int = 0,
         expires_at: Optional[int] = None,
         resource: Optional[str] = None,
         commit: bool = True,
@@ -157,6 +163,8 @@ class CRUDOAuthMCPAccessToken:
             user_id=user_id,
             account_id=account_id,
             scopes=scopes,
+            auth_context=dict(auth_context or {}),
+            auth_generation=auth_generation,
             expires_at=expires_at,
             resource=resource,
             is_revoked=False,
@@ -239,6 +247,8 @@ class CRUDOAuthMCPRefreshToken:
         user_id: UUID,
         account_id: UUID,
         scopes: list[str],
+        auth_context: dict[str, Any] | None = None,
+        auth_generation: int = 0,
         expires_at: Optional[int] = None,
         commit: bool = True,
     ) -> OAuthMCPRefreshToken:
@@ -249,6 +259,8 @@ class CRUDOAuthMCPRefreshToken:
             user_id=user_id,
             account_id=account_id,
             scopes=scopes,
+            auth_context=dict(auth_context or {}),
+            auth_generation=auth_generation,
             expires_at=expires_at,
             is_revoked=False,
         )

@@ -56,6 +56,11 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         commit: bool = True,
     ) -> tuple[ApiKey, str]:
         """Persist a fingerprint and return the token once, separately from the row."""
+        from .membership_lifecycle import require_active_membership
+
+        require_active_membership(
+            db, account_id=obj_in["account_id"], user_id=obj_in["user_id"]
+        )
         token = key_value or secrets.token_urlsafe(32)
         data = dict(obj_in)
         data.pop("key", None)
@@ -97,6 +102,9 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         if not user:
             raise ValueError(f"User with username {owner_username} not found")
 
+        from .membership_lifecycle import require_active_membership
+
+        require_active_membership(db, account_id=user.account_id, user_id=user.id)
         obj_in_data = dict(obj_in)
         key_value = key_value or secrets.token_urlsafe(32)
 
@@ -178,6 +186,9 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         restricted_runtime: bool = False,
     ) -> tuple[ApiKey, str]:
         """Create a runtime-scoped API key stored without plaintext value."""
+        from .membership_lifecycle import require_active_membership
+
+        require_active_membership(db, account_id=account_id, user_id=user_id)
         token_value = key_value or f"flow_{secrets.token_urlsafe(32)}"
         runtime_key_name = name[:100]
         if (

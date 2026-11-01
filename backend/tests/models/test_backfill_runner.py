@@ -82,7 +82,29 @@ def test_every_registered_backfill_reports_readiness() -> None:
     """A batch statement must return the registry row's new ``ready`` flag."""
     for name, statement in backfills.BACKFILLS.items():
         assert len(name) <= 32, "registry name column is varchar(32)"
+        if callable(statement):
+            continue
         assert "RETURNING ready" in statement
+
+
+def test_callable_step_runs_with_the_session_and_commits() -> None:
+    calls: list[object] = []
+
+    def step(db: object) -> bool:
+        calls.append(db)
+        return len(calls) == 2
+
+    db = _session(["cred_test"], iter([]))
+    original = dict(backfills.BACKFILLS)
+    backfills.BACKFILLS["cred_test"] = step
+    try:
+        (result,) = run_pending_backfills(db)
+    finally:
+        backfills.BACKFILLS.clear()
+        backfills.BACKFILLS.update(original)
+    assert (result.batches, result.ready) == (2, True)
+    assert calls == [db, db]
+    assert db.commit.call_count == 3
 
 
 @pytest.mark.parametrize("errors,code", [([], 0), (["boom"], 1)])
