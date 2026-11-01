@@ -8,7 +8,7 @@ from preloop.services.gateway_activity_body import payload_bytes
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from uuid import uuid4
 
-from preloop.config import settings
+from preloop.config import Settings, settings
 from preloop.models.models.api_usage import ApiUsage
 
 
@@ -748,7 +748,7 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     stored = mock_append_log.call_args.args[2]
     assert stored["type"] == "model_gateway_call"
     payload = stored["payload"]
-    assert payload["body_compaction"]["version"] == 1
+    assert payload["body_compaction"]["version"] == 2
     assert payload_bytes(payload) <= 32768
     stored_texts = [m.get("content") for m in payload["request"]["messages"]]
     assert stored_texts == ["latest question"]
@@ -757,6 +757,66 @@ def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
     # The live event still carries the whole replayed conversation.
     assert len(published) == 1
     assert len(published[0]["payload"]["request"]["messages"]) == len(history)
+
+
+def test_flow_log_row_keeps_response_and_new_tool_results_under_cap():
+    """The flow path shares the slimming: a tight cap cuts text, not keys."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    messages: list[dict] = [{"role": "user", "content": "refactor the parser"}]
+    for turn in range(100):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{turn}",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {"role": "tool", "tool_call_id": f"c{turn}", "content": "x" * 6000}
+        )
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "All tests pass."},
+            }
+        ]
+    }
+
+    with (
+        patch(
+            "preloop.services.model_gateway_events.crud_flow_execution.append_log"
+        ) as mock_append_log,
+        patch.object(emitter, "_publish_to_nats"),
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_activity_max_stored_bytes", 8192),
+    ):
+        emitter.emit_for_usage(
+            usage=usage,
+            request_payload={"model": "m", "messages": messages},
+            response_payload=response,
+        )
+
+    payload = mock_append_log.call_args.args[2]["payload"]
+    assert payload_bytes(payload) <= 8192
+    assert "request" not in payload["body_compaction"].get("keys_omitted", [])
+    assert payload["response"]["choices"][0]["message"]["content"] == (
+        "All tests pass."
+    )
+    [tool_result] = payload["request"]["messages"]
+    assert tool_result["tool_call_id"] == "c99"
+    assert "[... truncated " in tool_result["content"]
+
+
+def test_flow_log_compaction_of_old_rows_stays_off_by_default():
+    assert Settings.model_fields["flow_log_gateway_compaction_enabled"].default is False
 
 
 def test_event_keeps_safe_upstream_diagnostics_when_content_capture_is_disabled() -> (

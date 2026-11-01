@@ -48,7 +48,7 @@ import type {
   TranscriptStep,
   TranscriptStepGroupItem,
 } from '../utils/transcript';
-import { buildConversation } from '../utils/transcript';
+import { buildConversation, hasTruncationMarker } from '../utils/transcript';
 import { noteAuthorLabel } from '../utils/note-author';
 import {
   buildSessionTurns,
@@ -1220,6 +1220,17 @@ export class SessionChatView extends LitElement {
           ${
             step.kind === 'injected'
               ? html`<sl-badge variant="warning" pill>Injected</sl-badge>`
+              : nothing
+          }
+          ${
+            step.truncated || hasTruncationMarker(step.text)
+              ? html`<sl-badge
+                  variant="warning"
+                  pill
+                  data-testid="step-truncated"
+                  title="Stored shortened: the middle of this text was removed"
+                  >Truncated</sl-badge
+                >`
               : nothing
           }
           ${

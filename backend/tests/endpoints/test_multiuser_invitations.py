@@ -770,3 +770,16 @@ def test_viewer_can_cancel_invitation_in_core(
         assert response.status_code == 204, response.text
     finally:
         _restore_rbac_env(client)
+
+
+def test_create_invitation_rejects_more_ids_than_the_column_holds(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """Too many team or role ids is a 422 before any database write."""
+    too_many = [str(uuid4()) for _ in range(14)]
+    for field in ("team_ids", "role_ids"):
+        response = client.post(
+            "/api/v1/invitations",
+            json={"email": "new.person@example.com", field: too_many},
+        )
+        assert response.status_code == 422, field

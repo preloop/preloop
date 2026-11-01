@@ -144,8 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_gateway_call` row in `runtime_session_activity` used to store the
   whole conversation the call replayed, so storage grew with the square of
   session length. It now stores the messages new to that call, with their
-  original positions, plus the response, capped at
-  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 32768). The console
+  original positions, plus the response, bounded by
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608). The console
   stitches the conversation back together across a session's rows. An hourly
   maintenance task, `maintain_gateway_activity`, compacts rows written by
   older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,
@@ -173,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `approval_timeout` category otherwise. Hosted container runs, which have no
   native command hook yet, are refused before launch with
   `approval_unavailable` when such a rule applies, instead of running ungated.
+
+- Stored model gateway call rows no longer lose the call's own content when
+  they exceed `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`. The response, the
+  messages the call added and the last user message are always kept, and the
+  `request` and `response` keys are never removed. Long text is cut in the
+  middle with a `[... truncated N chars ...]` marker (head and tail kept,
+  `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS`, default 2048), largest tool
+  outputs first and the response last. The default cap rises from 32768 bytes to
+  8 MB (8388608), a guard against runaway payloads rather than a size
+  budget; normal calls are stored whole. `body_compaction` records every step, and the session views
+  show a Truncated badge on cut text. Rows already stored under the old cap
+  keep what they lost. Applies to flow execution logs too.
 - Subscription logins no longer break when the local client and the Preloop
   gateway both hold one single-use refresh lineage (`refresh_token_reused` from
   OpenAI, `invalid_grant` from Anthropic). The CLI now reconciles Claude Code's
