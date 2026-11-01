@@ -130,6 +130,8 @@ tracked as follow-up work.
 | `desktop_endpoint.created_by_api_key_id` | Not a secret: foreign key | `20261011_desktop_views` |
 | `desktop_view.view_token_hash` | One-way hash | `20261011_desktop_views` |
 | `desktop_view.token_expires_at` | Not a secret: count, type or timestamp | `20261011_desktop_views` |
+| `exception_digest_state.exception_key` | Not a secret: identifier, dedupe or lookup key | `20261121_exception_digest` |
+| `exception_digest_week.synthesis_tokens` | Not a secret: count, type or timestamp | `20261121_exception_digest` |
 | `fleet_finding.subject_key` | Not a secret: identifier, dedupe or lookup key | `20261021_device_fleet` |
 | `fleet_finding.device_key` | Not a secret: identifier, dedupe or lookup key | `20261021_device_fleet` |
 | `flow_execution.initiating_ci_key_id` | Not a secret: foreign key | `20261004_ci_principal` |

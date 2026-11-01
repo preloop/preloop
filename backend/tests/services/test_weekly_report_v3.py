@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -19,16 +19,24 @@ END = START + timedelta(days=7)
 
 
 @pytest.mark.parametrize(
-    "field", ["members_enabled", "member_policy_findings_enabled", "tracking_enabled"]
+    ("field", "value"),
+    [
+        ("members_enabled", True),
+        ("member_policy_findings_enabled", True),
+        ("tracking_enabled", True),
+        ("synthesis_enabled", True),
+        ("synthesis_model_id", uuid4()),
+        ("synthesis_model_id", None),
+    ],
 )
 def test_member_cannot_change_account_report_controls(
-    db_session: Session, test_user: models.User, field: str
+    db_session: Session, test_user: models.User, field: str, value: object
 ) -> None:
     account = db_session.get(models.Account, test_user.account_id)
     with patch("preloop.utils.permissions.user_permission_names", return_value=[]):
         with pytest.raises(HTTPException) as error:
             put_weekly_report_preferences(
-                WeeklyReportPreferencesUpdate(**{field: True}),
+                WeeklyReportPreferencesUpdate(**{field: value}),
                 account,
                 test_user,
                 db_session,
@@ -401,3 +409,78 @@ def test_approval_credentials_require_member_and_account_ownership(
     )
     assert result["requested"] == 1
     assert result["granted"] == 1
+
+
+def _admin_put(
+    db: Session, user: models.User, payload: WeeklyReportPreferencesUpdate
+) -> object:
+    account = db.get(models.Account, user.account_id)
+    with patch(
+        "preloop.utils.permissions.user_permission_names",
+        return_value=["manage_account"],
+    ):
+        return put_weekly_report_preferences(payload, account, user, db)
+
+
+def _model(db: Session, account_id: UUID) -> models.AIModel:
+    model = models.AIModel(
+        account_id=account_id,
+        name="Summary model",
+        provider_name="openai",
+        model_identifier="example-model",
+    )
+    db.add(model)
+    db.flush()
+    return model
+
+
+def test_synthesis_model_from_another_account_is_not_found(
+    db_session: Session, test_user: models.User
+) -> None:
+    other = models.Account(organization_name="Other", is_active=True)
+    db_session.add(other)
+    db_session.flush()
+    foreign = _model(db_session, other.id)
+    with pytest.raises(HTTPException) as error:
+        _admin_put(
+            db_session,
+            test_user,
+            WeeklyReportPreferencesUpdate(synthesis_model_id=foreign.id),
+        )
+    assert error.value.status_code == 404
+
+
+def test_synthesis_preferences_round_trip_and_are_audited(
+    db_session: Session, test_user: models.User
+) -> None:
+    model = _model(db_session, test_user.account_id)
+    stored = _admin_put(
+        db_session,
+        test_user,
+        WeeklyReportPreferencesUpdate(
+            synthesis_enabled=True, synthesis_model_id=model.id
+        ),
+    )
+    assert stored.synthesis_enabled is True
+    assert stored.synthesis_model_id == model.id
+    kept = _admin_put(
+        db_session, test_user, WeeklyReportPreferencesUpdate(synthesis_enabled=True)
+    )
+    assert kept.synthesis_model_id == model.id
+    cleared = _admin_put(
+        db_session, test_user, WeeklyReportPreferencesUpdate(synthesis_model_id=None)
+    )
+    assert cleared.synthesis_model_id is None
+    assert cleared.synthesis_enabled is True
+    account = db_session.get(models.Account, test_user.account_id)
+    assert (
+        preferences(db_session, account=account, user=test_user)["synthesis_model_id"]
+        is None
+    )
+    fields = {
+        log.details["field"]
+        for log in db_session.query(models.AuditLog).filter_by(
+            account_id=account.id, action="weekly_report_preferences_updated"
+        )
+    }
+    assert {"synthesis_enabled", "synthesis_model_id"} <= fields

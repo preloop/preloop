@@ -1418,6 +1418,17 @@ sessions, and per-tool schema costs with unknown tariffs represented as null.
 email delivery, defaults on, and audits changes in the same transaction. Account
 changes require account administration; members can unsubscribe themselves without
 changing approval notifications. The Enterprise digest enforces both switches.
+The Enterprise automatic sender is a factual exception digest: it sends only
+newly actionable or changed gateway failure and approval facts and sends
+nothing in a quiet or unchanged week. Its ledger lives in
+`models.crud.exception_digest` (migration `20261121_exception_digest`): one
+claim per recipient and week, a committed dispatch claim before SMTP,
+per-member material history, and an account-week synthesis reservation capped
+at $0.02, two calls, 12,000 tokens and 20 seconds. `POST
+/api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}`
+acknowledges a fact only for the member it was sent to and only while its
+material state is current. Implicit governance analysis is off on every
+edition until an account opts in explicitly.
 
 
 The `governance_review` capability registers lazy `/console/governance` and
@@ -1472,7 +1483,10 @@ server does not advertise or call them.
 Weekly report settings live in core Account fields and the audited
 `models.crud.weekly_report` transaction. `/api/v1/weekly-report/preferences`
 keeps individual unsubscribe separate from independent account controls for
-owner/admin delivery, member delivery, and member policy findings. An unset
+owner/admin delivery, member delivery, member policy findings and the optional
+admin-only synthesis switch and model (account models only). The console no
+longer shows the member policy findings switch because the factual digest
+carries no policy findings; the API field remains for explicit previews. An unset
 member-delivery field uses an optional edition service for its effective plan
 default. The capability-gated Lit settings card lives in OSS. Report queries in
 `models.crud.weekly_report_data` apply account and user attribution before

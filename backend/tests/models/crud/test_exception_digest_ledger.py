@@ -236,3 +236,71 @@ def test_synthesis_reservation_refuses_unknown_prices(
 ) -> None:
     account_id = test_user.account_id
     assert _reserve(db_session, account_id, usd) is None
+
+
+def _claim_next_week(
+    db: Session, user: models.User, scopes: set[str]
+) -> models.ExceptionDigestDelivery | None:
+    return ledger.claim_delivery(
+        db,
+        account_id=user.account_id,
+        user_id=user.id,
+        window_end=END + timedelta(days=7),
+        candidates=[],
+        sections=["cost"],
+        active_keys=set(),
+        observed_scopes=scopes,
+    )
+
+
+def test_complete_observation_resolves_so_the_fact_can_recur(
+    db_session: Session, test_user: models.User
+) -> None:
+    _sent(db_session, test_user, _card(), END)
+    resolved = _claim_next_week(db_session, test_user, {"account:model"})
+    assert resolved is not None and resolved.status == "suppressed"
+    again = ledger.claim_delivery(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        window_end=END + timedelta(days=14),
+        candidates=[_card()],
+        sections=["cost"],
+    )
+    assert again is not None and again.status == "preparing"
+
+
+def test_unobserved_scope_does_not_resolve_history(
+    db_session: Session, test_user: models.User
+) -> None:
+    _sent(db_session, test_user, _card(), END)
+    _claim_next_week(db_session, test_user, {"account:approval"})
+    still = ledger.claim_delivery(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        window_end=END + timedelta(days=14),
+        candidates=[_card()],
+        sections=["cost"],
+    )
+    assert still is not None and still.status == "suppressed"
+
+
+def test_a_delivery_is_handed_to_smtp_once(
+    db_session: Session, test_user: models.User
+) -> None:
+    row = ledger.claim_delivery(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        window_end=END,
+        candidates=[_card()],
+        sections=["cost"],
+    )
+    assert row is not None
+    args: dict[str, Any] = dict(
+        account_id=test_user.account_id, delivery_id=row.id, snapshot=row.snapshot
+    )
+    assert ledger.begin_dispatch(db_session, **args)
+    assert not ledger.begin_dispatch(db_session, **args)
+    assert not ledger.begin_dispatch(db_session, **{**args, "account_id": uuid4()})
