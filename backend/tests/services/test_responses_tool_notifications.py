@@ -9,6 +9,8 @@ and mismatched ids still 400.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from preloop.services import codex_upstream_ws as cw
@@ -86,6 +88,21 @@ def test_multiple_notifications_for_one_call_keep_arrival_order():
     tools = _tool_messages(messages)
     assert len(tools) == 1
     assert tools[0]["content"] == "ack\nfirst\nsecond"
+
+
+def test_many_notifications_merge_in_linear_time():
+    """Repeats are joined once, not re-copied per output (review on #2174)."""
+    count, chunk = 16000, "x" * 2048  # ~32 MB, the default body cap
+    started = time.perf_counter()
+    messages = _normalize(
+        [_user("go"), _custom_call()]
+        + [_custom_output(output=chunk) for _ in range(count)]
+    )
+    elapsed = time.perf_counter() - started
+    tools = _tool_messages(messages)
+    assert len(tools) == 1
+    assert tools[0]["content"] == "\n".join([chunk] * count)
+    assert elapsed < 2.0
 
 
 def test_function_call_output_repeat_merges_too():
