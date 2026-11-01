@@ -525,8 +525,18 @@ export class LoginView extends LitElement {
                 this.showOtherMethods = false;
                 this.error = '';
                 this.ssoUrl = null;
+                // After a miss, ask for a different address instead of
+                // offering the one that just had no provider.
+                if (this.prefillUsername) {
+                  this.ssoEmail = '';
+                  this.prefillUsername = '';
+                }
               }}
-              >Use single sign-on</sl-button
+              >${
+                this.prefillUsername
+                  ? 'Try a different email for single sign-on'
+                  : 'Use single sign-on'
+              }</sl-button
             >`
           : nothing
       }

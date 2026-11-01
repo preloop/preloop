@@ -223,15 +223,16 @@ describe('Email-first SSO sign-in', () => {
         .filter((call) => String(call.args[0]).endsWith('/sso/discover'))
         .length;
     expect(discoverCalls()).to.equal(1);
-    // The SSO link returns to the email step, which keeps the email and
-    // leads to SSO for a configured domain rather than a dead end.
+    // After a miss the link asks for a different address and returns to an
+    // empty email step, which leads to SSO for a configured domain.
+    expect(root.textContent).not.to.contain('Use single sign-on');
     const back = Array.from(root.querySelectorAll('sl-button')).find((b) =>
-      b.textContent?.includes('Use single sign-on')
+      b.textContent?.includes('Try a different email for single sign-on')
     ) as HTMLElement;
     back.click();
     await element.updateComplete;
     const email = root.querySelector<HTMLInputElement>('[name=email]')!;
-    expect(email.value).to.equal('user@other.com');
+    expect(email.value).to.equal('');
     discovery = { sso_url: '/api/v1/auth/sso/connection-a/start' };
     await discover('user@example.com');
     expect(root.querySelector('#continue-sso')).to.exist;
