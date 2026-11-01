@@ -193,6 +193,30 @@ async def _hosted_kubernetes_image(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.mark.asyncio
+async def test_hosted_codex_kubernetes_root_pod_can_drop_to_preloop_agent(
+    monkeypatch,
+) -> None:
+    """The launcher needs SETUID/SETGID to setpriv down to preloop-agent."""
+    from preloop.agents.container import ContainerAgentExecutor
+
+    monkeypatch.setenv("USE_KUBERNETES", "true")
+    monkeypatch.setenv("AGENT_RUN_AS_NON_ROOT", "false")
+    agent = CodexAgent({})
+    agent.agent_namespace = "preloop-agents"
+    agent._k8s_batch_api = AsyncMock()
+    agent._k8s_core_api = AsyncMock()
+    with patch.object(ContainerAgentExecutor, "_init_kubernetes_clients", AsyncMock()):
+        await agent._start_kubernetes_pod(_launch_context())
+    job = agent._k8s_batch_api.create_namespaced_job.call_args.kwargs["body"]
+    (container,) = job.spec.template.spec.containers
+    ctx = container.security_context
+    assert ctx.run_as_non_root is not True
+    assert ctx.allow_privilege_escalation is False
+    assert ctx.capabilities.drop == ["ALL"]
+    assert {"SETUID", "SETGID"} <= set(ctx.capabilities.add)
+
+
+@pytest.mark.asyncio
 async def test_codex_image_reaches_hosted_docker_container(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_IMAGE", PERL_IMAGE)
     assert await _hosted_docker_image(monkeypatch) == PERL_IMAGE

@@ -1937,7 +1937,9 @@ class ContainerAgentExecutor(AgentExecutor):
                     drop=["ALL"],
                     # Root needs DAC_OVERRIDE to write to image files that lack
                     # the owner-write bit (e.g. /root/.nvm/ in codex-universal).
-                    add=["DAC_OVERRIDE", "CHOWN", "FOWNER"]
+                    # SETUID/SETGID let the launcher setpriv down to the image's
+                    # unprivileged preloop-agent user before the agent starts.
+                    add=["DAC_OVERRIDE", "CHOWN", "FOWNER", "SETUID", "SETGID"]
                     if not run_as_non_root
                     else None,
                 ),
