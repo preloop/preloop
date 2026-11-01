@@ -154,7 +154,8 @@ def create_user(
     """Enroll only a same-account member or a new credentialless Person.
 
     A global email match never grants membership. Profile updates after this
-    enrollment only touch ScimResource, never the shared canonical identity.
+    enrollment only touch ScimResource; the one exception is the email of a
+    member who has not signed in yet (see ``update_profile``).
 
     Args:
         db: Session; the caller owns the transaction.
@@ -289,7 +290,18 @@ def update_profile(
     """
     if resource.kind == "Users" and email is not None:
         user = db.get(models.User, resource.user_id)
-        person = crud_person.get(db, id=user.person_id) if user else None
+        # Lock the person before the pending check so a concurrent first
+        # login cannot verify it between the check and the email write.
+        person = (
+            db.scalar(
+                select(models.Person)
+                .where(models.Person.id == user.person_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if user
+            else None
+        )
         if (
             user is not None
             and person is not None
@@ -313,7 +325,7 @@ def update_profile(
 
 
 def members(db: Session, *, group: models.ScimResource) -> list[models.ScimResource]:
-    """List only undeleted users in this group's connection."""
+    """List the users in this group's connection."""
     return list(
         db.scalars(
             select(models.ScimResource)

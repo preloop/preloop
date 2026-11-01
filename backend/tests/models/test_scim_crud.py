@@ -312,3 +312,28 @@ def test_groups_need_one_team_mapping_and_scope_members(
     scim.replace_members(db_session, group=group, member_ids={second.id})
     scim.delete_resource(db_session, resource=group)
     assert scim.group_snapshot(db_session, resource=second) == []
+
+
+def test_email_sync_rechecks_pending_state_under_the_person_lock(
+    db_session: Session, test_user: models.User
+) -> None:
+    connection = _connection(db_session, test_user.account_id)
+    member = _pending(db_session, connection, "locked@example.com")
+    row = db_session.scalars(
+        select(models.ScimResource).where(models.ScimResource.user_id == member.id)
+    ).one()
+    person = db_session.get(models.Person, member.person_id)
+    # A stale in-session copy says pending; the database says verified.
+    db_session.execute(
+        models.Person.__table__.update()
+        .where(models.Person.id == person.id)
+        .values(email_verified_at=utc_now())
+    )
+    scim.update_profile(
+        db_session,
+        resource=row,
+        profile={"userName": "moved@example.com", "active": True},
+        email="moved@example.com",
+    )
+    db_session.refresh(person)
+    assert person.email_normalized == "locked@example.com"
