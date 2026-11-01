@@ -282,3 +282,29 @@ analysis model (review off) until governanceReview.analysisModel is set.
   value: {{ $gr.analysisModel | quote }}
 {{- end }}
 {{- end }}
+
+{{/*
+Enterprise single sign-on settings, read only by the Preloop Cloud and Preloop
+Enterprise images (the open-source image has no SSO routes and ignores them).
+Rendered on the API, which serves discovery, start, callback, SAML metadata and
+ACS. Disabled renders ENTERPRISE_SSO_ENABLED=false so an Enterprise image does
+not mount the SSO routes.
+*/}}
+{{- define "preloop.ssoEnv" -}}
+{{- $sso := .Values.sso | default dict -}}
+- name: ENTERPRISE_SSO_ENABLED
+  value: {{ ternary "true" "false" (eq (toString $sso.enabled) "true") | quote }}
+{{- if eq (toString $sso.enabled) "true" }}
+{{- with $sso.publicUrl }}
+{{- if not (regexMatch "^https?://[^/?#]+$" (trimSuffix "/" .)) }}
+{{- fail "sso.publicUrl must be an origin such as https://preloop.example.com, without a path" }}
+{{- end }}
+- name: SSO_PUBLIC_URL
+  value: {{ trimSuffix "/" . | quote }}
+{{- end }}
+{{- if eq (toString $sso.allowPrivateIssuers) "true" }}
+- name: GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS
+  value: "true"
+{{- end }}
+{{- end }}
+{{- end }}

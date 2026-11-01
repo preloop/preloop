@@ -420,6 +420,28 @@ tolerations: []
 affinity: {}
 
 # Environment configuration
+# Enterprise single sign-on (OIDC and SAML). Read only by the Preloop Cloud and
+# Preloop Enterprise images; the open-source image ignores these settings.
+# Connections, verified domains, enforcement and SP signing keys are configured
+# per account in the console or the API, not here.
+sso:
+  # Mount the SSO sign-in and administration routes (ENTERPRISE_SSO_ENABLED).
+  # false keeps an Enterprise image's SSO routes off. Turning SSO off does not
+  # lift enforcement on an account; disable enforcement first.
+  enabled: false
+  # Public origin for the service-provider URLs (SSO_PUBLIC_URL). Empty uses
+  # environment.preloopUrl. Per connection the IdP sees:
+  #   OIDC redirect URI / SAML SP entity id: <origin>/api/v1/auth/sso/<id>/callback,
+  #   <origin>/api/v1/auth/sso/<id>/metadata; SAML ACS: .../<id>/acs
+  # Origin only, no path.
+  publicUrl: ""
+  # Accept OIDC issuer and SAML metadata URLs that resolve to private
+  # addresses when a connection is saved (GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS).
+  # Self-hosted single-tenant installs only; keep false on any multi-tenant
+  # instance. The OIDC sign-in flow still refuses private addresses for the
+  # discovery, token and JWKS requests it makes at sign-in time.
+  allowPrivateIssuers: false
+
 environment:
   preloopUrl: "https://preloop.ai"
   debug: false

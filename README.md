@@ -207,7 +207,8 @@ Governance itself is open source: every model provider, flows, private runners, 
 | Per-user devices, runners and agents; basic approvals and usage views | Yes | Yes |
 | Isolation between accounts | Yes | Yes |
 | Roles, owner protection, RBAC/ABAC, resource access rules and sharing | No | Yes |
-| Subaccounts, pooled billing, SSO/SAML/SCIM, fleet findings | No | Yes |
+| Subaccounts, pooled billing, fleet findings | No | Yes |
+| Single sign-on (OIDC, SAML), verified domains, IdP group mapping, SSO enforcement with owner break-glass | No | Yes |
 | Governance reviews, advanced reporting, audit export/retention | No | Yes |
 | Budgets scoped to a user or a team, budget notification routing | No | Yes |
 | Multi-approver routing, quorum, escalations | No | Yes |

@@ -61,6 +61,7 @@ spec:
             {{- include "preloop.governanceReviewEnv" . | nindent 12 }}
             - name: PRELOOP_URL
               value: {{ .Values.environment.preloopUrl | quote }}
+            {{- include "preloop.ssoEnv" . | nindent 12 }}
             - name: HOST
               value: "0.0.0.0"
             - name: PORT
