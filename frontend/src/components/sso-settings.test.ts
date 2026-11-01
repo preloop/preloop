@@ -54,6 +54,7 @@ const token = {
   id: 'token-a',
   name: 'Example SCIM',
   prefix: 'scim_example',
+  connection_id: 'connection-a' as string | null,
   created_at: '2026-10-28T12:00:00Z',
   revoked_at: null,
 };
@@ -352,13 +353,191 @@ describe('SSO account settings', () => {
     );
     expect(requests.createToken).to.have.been.calledWith(
       'account-a',
-      'Directory sync'
+      'Directory sync',
+      'connection-a'
     );
     click('I have saved the token');
     await element.updateComplete;
     expect(element.shadowRoot!.innerHTML).not.to.contain(
       'scim_one_time_synthetic'
     );
+  });
+
+  describe('SCIM token connection', () => {
+    const tokenSelect = () =>
+      element.shadowRoot!.querySelector<HTMLSelectElement>(
+        '#token-form select[name="connection_id"]'
+      )!;
+    const text = () => element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+
+    it('preselects the only connection and binds the token to it', async () => {
+      await mount();
+      expect(tokenSelect().value).to.equal('connection-a');
+      expect(tokenSelect().required).to.equal(true);
+      fill('name', 'Directory sync');
+      submit('#token-form');
+      await waitUntil(() => requests.createToken.calledOnce);
+      expect(requests.createToken).to.have.been.calledWith(
+        'account-a',
+        'Directory sync',
+        'connection-a'
+      );
+    });
+
+    it('requires a choice when more than one connection exists', async () => {
+      requests.connections.resolves([
+        connection(),
+        connection({
+          id: 'connection-b',
+          name: 'Second IdP',
+          protocol: 'saml',
+        }),
+      ]);
+      await mount();
+      const select = tokenSelect();
+      expect(select.value).to.equal('');
+      expect(select.required).to.equal(true);
+      fill('name', 'Directory sync');
+      submit('#token-form');
+      await element.updateComplete;
+      expect(requests.createToken).not.to.have.been.called;
+      select.value = 'connection-b';
+      select.dispatchEvent(new Event('change'));
+      submit('#token-form');
+      await waitUntil(() => requests.createToken.calledOnce);
+      expect(requests.createToken).to.have.been.calledWith(
+        'account-a',
+        'Directory sync',
+        'connection-b'
+      );
+    });
+
+    it('marks disabled connections in the selector', async () => {
+      requests.connections.resolves([
+        connection(),
+        connection({ id: 'connection-b', name: 'Paused IdP', enabled: false }),
+      ]);
+      await mount();
+      const labels = [...tokenSelect().options].map((o) =>
+        o.textContent!.trim()
+      );
+      expect(labels).to.include('Paused IdP (OIDC, disabled)');
+      expect(labels).to.include('Example IdP (OIDC)');
+    });
+
+    it('explains that a connection is needed before a token can be created', async () => {
+      requests.connections.resolves([]);
+      await mount();
+      expect(text()).to.contain(
+        'Add an OIDC or SAML connection before creating a SCIM token'
+      );
+      const submitButton = element.shadowRoot!.querySelector<HTMLElement>(
+        '#token-form sl-button[type="submit"]'
+      )!;
+      expect(submitButton.hasAttribute('disabled')).to.equal(true);
+      fill('name', 'Directory sync');
+      submit('#token-form');
+      await element.updateComplete;
+      expect(requests.createToken).not.to.have.been.called;
+    });
+
+    it('shows each token binding and the bound connection of a new token', async () => {
+      requests.tokens.resolves([
+        token,
+        { ...token, id: 'token-gone', name: 'Old', connection_id: 'deleted' },
+      ]);
+      await mount();
+      expect(text()).to.contain('Example SCIM · scim_example… · Example IdP');
+      expect(text()).to.contain('Old · scim_example… · Unavailable connection');
+      fill('name', 'Directory sync');
+      submit('#token-form');
+      await waitUntil(() => text().includes('scim_one_time_synthetic'));
+      expect(text()).to.contain(
+        'This token provisions members for Example IdP.'
+      );
+    });
+
+    it('explains that unbound legacy tokens must be replaced', async () => {
+      requests.tokens.resolves([
+        { ...token, id: 'legacy', name: 'Legacy', connection_id: null },
+        {
+          ...token,
+          id: 'legacy-revoked',
+          name: 'Revoked legacy',
+          connection_id: null,
+          revoked_at: '2026-10-29T12:00:00Z',
+        },
+      ]);
+      await mount();
+      expect(text()).to.contain('Legacy · scim_example… · Not bound');
+      const chips = [
+        ...element.shadowRoot!.querySelectorAll('sl-badge'),
+      ].filter((chip) => chip.textContent!.trim() === 'Replace');
+      expect(chips).to.have.length(1);
+      expect(chips[0].getAttribute('variant')).to.equal('warning');
+      expect(text()).to.contain(
+        'Tokens that are not bound to a connection, or whose connection was removed, cannot provision. Create a replacement bound to a connection, update your identity provider, then revoke the old token.'
+      );
+    });
+
+    it('flags tokens whose connection was removed or is disabled', async () => {
+      requests.connections.resolves([
+        connection(),
+        connection({ id: 'connection-b', name: 'Paused IdP', enabled: false }),
+      ]);
+      requests.tokens.resolves([
+        token,
+        { ...token, id: 'gone', name: 'Gone', connection_id: 'deleted' },
+        {
+          ...token,
+          id: 'paused',
+          name: 'Paused',
+          connection_id: 'connection-b',
+        },
+      ]);
+      await mount();
+      const chips = [
+        ...element.shadowRoot!.querySelectorAll(
+          'section[aria-labelledby="scim-title"] sl-badge'
+        ),
+      ].map((chip) => chip.textContent!.trim());
+      expect(chips).to.deep.equal(['Replace', 'Connection disabled']);
+      expect(text()).to.contain(
+        'Gone · scim_example… · Unavailable connection'
+      );
+      expect(text()).to.contain(
+        'Paused · scim_example… · Paused IdP (disabled)'
+      );
+      expect(text()).to.contain(
+        'or whose connection was removed, cannot provision'
+      );
+      expect(text()).to.contain(
+        'Tokens bound to a disabled connection cannot provision until that connection is enabled.'
+      );
+    });
+
+    it('omits the legacy explanation when every active token is bound', async () => {
+      await mount();
+      expect(text()).not.to.contain('not bound to a connection cannot');
+    });
+
+    it('labels the selector and keeps it keyboard reachable', async () => {
+      requests.connections.resolves([
+        connection(),
+        connection({ id: 'connection-b', name: 'Second IdP' }),
+      ]);
+      await mount();
+      const select = tokenSelect();
+      expect(select.labels![0].textContent!.trim()).to.match(/^Connection/);
+      expect(select.tabIndex).to.equal(0);
+      select.focus();
+      expect(element.shadowRoot!.activeElement).to.equal(select);
+      const describedBy = select.getAttribute('aria-describedby')!;
+      expect(
+        element.shadowRoot!.getElementById(describedBy)!.textContent
+      ).to.contain('Each token provisions members for one connection');
+      await expect(element).to.be.accessible();
+    });
   });
 
   it('keeps a one-time token visible when revocation is cancelled', async () => {
