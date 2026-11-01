@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls and more than 20% fail the run as a partial bypass. Codex exposes no
   per-request count and keeps the at-least-one rule. `gateway_call_check`
   names the rule that applied.
+- Hosted Codex containers install the Preloop `PreToolUse` hook (from the
+  image CLI, or a pinned checksum-verified release) and trust it through
+  Codex's own `hooks/list` hash, so deny rules block native commands and
+  approval-required rules park the run with the execution's runtime
+  credential. Hosted Codex runs with approval-required rules are no longer
+  refused with `approval_unavailable`; that category now means the hook could
+  not be installed, or the hosted harness has none. The universal Codex image
+  ships the CLI at `/opt/preloop/bin/preloop`.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
