@@ -1,5 +1,7 @@
 """Report email controls, independent from approval notifications."""
 
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -11,6 +13,8 @@ class WeeklyReportPreferences(BaseModel):
     user_enabled: bool
     members_enabled: bool
     member_policy_findings_enabled: bool
+    synthesis_enabled: bool = False
+    synthesis_model_id: UUID | None = None
 
 
 class WeeklyReportPreferencesUpdate(BaseModel):
@@ -22,3 +26,6 @@ class WeeklyReportPreferencesUpdate(BaseModel):
     user_enabled: bool | None = None
     members_enabled: bool | None = None
     member_policy_findings_enabled: bool | None = None
+
+    synthesis_enabled: bool | None = None
+    synthesis_model_id: UUID | None = None

@@ -1,6 +1,7 @@
 """Atomic audited weekly email preference updates."""
 
 from typing import Any
+from uuid import UUID
 from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_audit_log, notification_preferences
@@ -8,7 +9,7 @@ from preloop.models.crud import crud_audit_log, notification_preferences
 
 def preferences(
     db: Session, *, account: models.Account, user: models.User
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     """Read defaults without creating preference rows."""
     prefs = notification_preferences.get_by_user(db, user.id)
     member_setting = account.weekly_member_report_enabled
@@ -19,7 +20,10 @@ def preferences(
         member_setting = (
             bool(default(db, account_id=str(account.id))) if default else False
         )
+    synthesis = (account.meta_data or {}).get("weekly_exception_synthesis") or {}
     return {
+        "synthesis_enabled": synthesis.get("enabled") is True,
+        "synthesis_model_id": synthesis.get("model_id"),
         "members_enabled": member_setting,
         "member_policy_findings_enabled": account.weekly_member_policy_findings_enabled,
         "account_enabled": account.weekly_report_enabled,
@@ -41,7 +45,10 @@ def update_preferences(
     members_enabled: bool | None = None,
     member_policy_findings_enabled: bool | None = None,
     tracking_enabled: bool | None = None,
-) -> dict[str, bool]:
+    synthesis_enabled: bool | None = None,
+    synthesis_model_id: UUID | None = None,
+    synthesis_model_sent: bool = False,
+) -> dict[str, Any]:
     """Serialize account preference writes and commit the audit atomically."""
     account = (
         db.query(models.Account)
@@ -50,6 +57,31 @@ def update_preferences(
         .one()
     )
     before = preferences(db, account=account, user=user)
+    if synthesis_enabled is not None or synthesis_model_sent:
+        from . import crud_ai_model
+
+        if (
+            synthesis_model_sent
+            and synthesis_model_id is not None
+            and crud_ai_model.get_for_account(
+                db, id=synthesis_model_id, account_id=account.id
+            )
+            is None
+        ):
+            raise ValueError("Synthesis model not found in account")
+        synthesis = dict(
+            (account.meta_data or {}).get("weekly_exception_synthesis") or {}
+        )
+        if synthesis_enabled is not None:
+            synthesis["enabled"] = synthesis_enabled
+        if synthesis_model_sent:
+            synthesis["model_id"] = (
+                str(synthesis_model_id) if synthesis_model_id else None
+            )
+        account.meta_data = {
+            **(account.meta_data or {}),
+            "weekly_exception_synthesis": synthesis,
+        }
     if account_enabled is not None:
         account.weekly_report_enabled = account_enabled
     if members_enabled is not None:

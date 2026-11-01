@@ -4714,6 +4714,53 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}:
+    post:
+      tags:
+      - Account
+      summary: Acknowledge Weekly Exception
+      description: Suppress a delivered fact's unchanged material state for this recipient.
+      operationId: acknowledge_weekly_exception_api_v1_weekly_report_deliveries__delivery_id__acknowledge__exception_key__post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: delivery_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Delivery Id
+      - name: exception_key
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Exception Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                title: Response Acknowledge Weekly Exception Api V1 Weekly Report
+                  Deliveries  Delivery Id  Acknowledge  Exception Key  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -53770,7 +53817,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
@@ -54688,6 +54734,16 @@ components:
         member_policy_findings_enabled:
           type: boolean
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          type: boolean
+          title: Synthesis Enabled
+          default: false
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       type: object
       required:
       - account_enabled
@@ -54724,6 +54780,17 @@ components:
           - type: boolean
           - type: 'null'
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Synthesis Enabled
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       additionalProperties: false
       type: object
       title: WeeklyReportPreferencesUpdate

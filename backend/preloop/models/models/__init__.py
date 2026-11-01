@@ -219,6 +219,9 @@ __all__ = [
     "AgentUsageTotal",
     "AgentUsageCounted",
     "AgentUsageBackfill",
+    "ExceptionDigestWeek",
+    "ExceptionDigestDelivery",
+    "ExceptionDigestState",
     "ObservationVerification",
     "ChatSetupDraft",
     "ChatListener",
@@ -474,3 +477,9 @@ from .observation_verification import ObservationVerification
 
 from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill
 from .upstream_mcp_oauth import UpstreamMCPOAuthConnection, UpstreamMCPOAuthTransaction
+
+from .exception_digest import (
+    ExceptionDigestWeek,
+    ExceptionDigestDelivery,
+    ExceptionDigestState,
+)

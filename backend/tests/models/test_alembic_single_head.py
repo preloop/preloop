@@ -532,4 +532,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert scim.down_revision == "20261117_membership_offboarding"
     at_rest = script.get_revision("20261119_credentials_at_rest")
     assert at_rest.down_revision == "20261118_scim_provisioning"
-    assert script.get_heads() == ["20261119_credentials_at_rest"]
+    exception_digest = script.get_revision("20261121_exception_digest")
+    assert exception_digest.down_revision == "20261119_credentials_at_rest"
+    assert script.get_heads() == ["20261121_exception_digest"]

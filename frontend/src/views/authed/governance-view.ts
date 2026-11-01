@@ -30,6 +30,7 @@ import { formatUsdExact } from '../../utils/money';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
+  acknowledgeWeeklyException,
   dismissGovernanceFinding,
   getGovernanceFinding,
   getGovernanceFindings,
@@ -359,6 +360,9 @@ export class GovernanceView extends LitElement {
   /** The review mode, null when unreadable (no view_policies, old server). */
   @state() private reviewMode: string | null = null;
   @state() private unsubscribe: '' | 'ask' | 'done' = '';
+  @state() private acknowledge: '' | 'ask' | 'done' = '';
+  private digestDelivery = '';
+  private exceptionKey = '';
   private scrollToSection = false;
   @state() private weeklyValueEnabled = false;
   private valueStart = '';
@@ -384,6 +388,14 @@ export class GovernanceView extends LitElement {
     this.valueDeepLink =
       section === 'valuable_work' && !!this.valueStart && !!this.valueEnd;
     if (params.get('unsubscribe') === 'weekly-report') this.unsubscribe = 'ask';
+    this.digestDelivery = params.get('digest_delivery') ?? '';
+    this.exceptionKey = params.get('ack_exception') ?? '';
+    if (
+      /^[a-f0-9-]{36}$/i.test(this.digestDelivery) &&
+      /^[a-f0-9]{64}$/i.test(this.exceptionKey)
+    ) {
+      this.acknowledge = 'ask';
+    }
   }
   protected updated(): void {
     if (!this.scrollToSection || this.loading) return;
@@ -404,6 +416,22 @@ export class GovernanceView extends LitElement {
     } catch (error) {
       showToast(
         error instanceof Error ? error.message : 'Could not stop the emails.',
+        'danger'
+      );
+    } finally {
+      this.busy = false;
+    }
+  }
+  private async acknowledgeException(): Promise<void> {
+    this.busy = true;
+    try {
+      await acknowledgeWeeklyException(this.digestDelivery, this.exceptionKey);
+      this.acknowledge = 'done';
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : 'Could not mark the exception reviewed.',
         'danger'
       );
     } finally {
@@ -595,6 +623,28 @@ export class GovernanceView extends LitElement {
   }
   /** Unsubscribe confirmation and the review-off state, above everything. */
   private notices() {
+    const acknowledgment =
+      this.acknowledge === 'ask'
+        ? html`<div class="notice" data-acknowledge>
+            <p>
+              <strong>Mark the emailed exception reviewed?</strong> It stays
+              quiet unless the recorded condition changes materially or resolves
+              and recurs.
+            </p>
+            <sl-button
+              variant="primary"
+              ?loading=${this.busy}
+              @click=${() => void this.acknowledgeException()}
+              >Mark reviewed</sl-button
+            ><sl-button @click=${() => (this.acknowledge = '')}
+              >Cancel</sl-button
+            >
+          </div>`
+        : this.acknowledge === 'done'
+          ? html`<div class="notice" data-acknowledged role="status">
+              Exception marked reviewed.
+            </div>`
+          : nothing;
     const unsubscribe =
       this.unsubscribe === 'ask'
         ? html`<div class="notice" data-unsubscribe>
@@ -617,8 +667,8 @@ export class GovernanceView extends LitElement {
         : this.unsubscribe === 'done'
           ? html`<div class="notice" data-unsubscribed role="status">
               <p>
-                You will no longer get the weekly report email. The review
-                itself keeps running and stays here.
+                You will no longer get the weekly report email. This does not
+                change your independent AI review setting.
               </p>
             </div>`
           : nothing;
@@ -645,7 +695,7 @@ export class GovernanceView extends LitElement {
             }
           </div>`
         : nothing;
-    return html`${unsubscribe}${off}`;
+    return html`${acknowledgment}${unsubscribe}${off}`;
   }
   private coverage(run?: GovernanceRun) {
     if (!run)

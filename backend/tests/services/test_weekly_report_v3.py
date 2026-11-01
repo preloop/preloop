@@ -55,6 +55,8 @@ def test_account_controls_are_independent_and_audited(
         "user_enabled": True,
         "members_enabled": True,
         "member_policy_findings_enabled": True,
+        "synthesis_enabled": False,
+        "synthesis_model_id": None,
     }
     result = update_preferences(
         db_session,
