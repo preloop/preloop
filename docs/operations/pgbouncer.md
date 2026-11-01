@@ -68,7 +68,7 @@ session-scoped state in a few places:
 
 **Session** mode avoids the advisory-lock, LISTEN and prepared-statement
 problems, but the `options` startup parameter is rejected in every pool
-mode (handled below). Session mode it only caps concurrent
+mode (handled below). Session mode only caps concurrent
 server connections; it does not multiplex. To use it, set
 `poolMode: session` and supply a `DATABASE_URL` pointing at the pooler
 Service through `database.urlFromSecret`, then add `options` to
