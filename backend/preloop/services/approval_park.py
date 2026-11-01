@@ -177,6 +177,10 @@ def answer_from_request(request: Any) -> Dict[str, Any]:
     }
     if isinstance(structured, dict) and structured:
         answer["structured_answer"] = structured
+    from preloop.services.native_flow_park import command_text, is_native_park
+
+    if is_native_park(request):
+        answer["native_command"] = command_text(tool_args)
     return answer
 
 
@@ -203,6 +207,15 @@ def answers_prompt_block(answer: Dict[str, Any]) -> str:
         header += (
             " The request was refused. Do not perform the action you asked "
             "about; record the refusal and continue with the rest of the task."
+        )
+    elif status == "approved" and answer.get("native_command") is not None:
+        # A native command park: the hook denied the call so the run could
+        # pause. Preloop now lets exactly that command through once.
+        header += (
+            f" The approved {answer.get('tool_name')} command has NOT run yet: "
+            f"`{_bounded(answer.get('native_command'))}`. Run exactly that "
+            "command once more, unchanged; Preloop lets it through one time. "
+            "A different or repeated command goes through the rules again."
         )
     elif status == "approved" and answer.get("tool_name") not in _QUESTION_TOOLS:
         # The gated call itself never ran: the session was killed while it
@@ -252,8 +265,17 @@ def build_resume_details(
     ``_resume`` binding and the answer, in both the machine-readable payload
     slot and the prompt block.
     """
+    from preloop.services.flow_artifacts import artifact_thread_id
+
     details = deepcopy(parked.trigger_event_details or {})
-    resume: Dict[str, Any] = {"execution_id": str(parked.id)}
+    resume: Dict[str, Any] = {
+        "execution_id": str(parked.id),
+        # The parked run's checkpoints live under its own artifact thread,
+        # which for a run that already resumed once is the chain's root.
+        "checkpoint_thread_id": artifact_thread_id(
+            getattr(parked, "trigger_event_details", None), parked.id
+        ),
+    }
     cli_session = getattr(parked, "cli_session", None)
     if (
         allow_native_resume
@@ -376,6 +398,23 @@ async def resume_parked_executions(
         parked_rows = crud_flow_execution.list_parked_for_request(
             db, approval_request_id=request_id
         )
+        from preloop.services import native_flow_park
+
+        if native_flow_park.is_native_park(
+            request
+        ) and native_flow_park.refused_or_expired(request):
+            # An unattended run paused on a command a human refused, or that
+            # nobody decided in time, ends here. Continuing would run the
+            # rest of the task without the step the rule protected.
+            for parked in parked_rows:
+                try:
+                    native_flow_park.fail_closed(db, parked, request)
+                except Exception:
+                    logger.exception(
+                        "Could not fail closed parked execution %s", parked.id
+                    )
+                    db.rollback()
+            return started
         for parked in parked_rows:
             execution_id = parked.id
             flow = crud_flow.get(db, id=str(parked.flow_id))

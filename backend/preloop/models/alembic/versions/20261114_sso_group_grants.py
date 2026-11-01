@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "20261114_sso_group_grants"
-down_revision = "20261113_pull_request_details"
+down_revision = "20261115_startup_receipt"
 branch_labels = None
 depends_on = None
 

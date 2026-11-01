@@ -69,15 +69,20 @@ async def authenticate_request(
 
 async def get_model_gateway_auth_context(
     authorization: Optional[str] = Header(None),
+    x_preloop_execution: Optional[str] = Header(None),
     db: Session = Depends(get_db_session),
 ) -> ModelGatewayAuthContext:
     """Authenticate a bearer token for the model gateway.
 
     A key pinned to a session that has ended is rejected. Inference must
-    not continue on a finished session.
+    not continue on a finished session. A host-profile run adds the
+    ``X-Preloop-Execution`` marker next to the agent key; a verified marker
+    attributes the request to that flow execution as well as the agent
+    (``preloop.services.host_exec_gateway``).
 
     Args:
         authorization: ``Authorization`` header.
+        x_preloop_execution: Optional execution marker header.
         db: Database session.
 
     Returns:
@@ -86,11 +91,16 @@ async def get_model_gateway_auth_context(
     Raises:
         ModelGatewayAPIError: 401 when the bearer is missing or rejected.
     """
-    return await authenticate_request(
+    auth_context = await authenticate_request(
         authorization,
         db,
         allow_ended_runtime_session=False,
         allow_read_only_review=True,
+    )
+    from preloop.services.host_exec_gateway import attach_execution_marker
+
+    return await attach_execution_marker(
+        auth_context, x_preloop_execution, db, provider="openai"
     )
 
 

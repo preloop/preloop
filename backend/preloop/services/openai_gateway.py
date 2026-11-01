@@ -138,6 +138,7 @@ from preloop.services.model_gateway_auth import (
     compute_authorized_model_ids,
     resolve_managed_agent_id_for_context,
 )
+from preloop.services.subscription_flow_use import OWNER_FLOW_SUBSCRIPTION_USE
 from preloop.services.model_allowlist import (
     MODEL_NOT_ALLOWED_ERROR_CODE,
     format_model_not_allowed_detail,
@@ -256,6 +257,7 @@ from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
     CredentialRefreshError,
     OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+    PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
     ResolvedModelCredentials,
     get_secret_service,
 )
@@ -4617,10 +4619,18 @@ class OpenAIGatewayService:
             )
             or "none"
         )
-        if any(
+        bound_match = any(
             bool(getattr(ai_model, "is_principal_bound_oauth", False))
             for ai_model in unauthorized_matches
-        ):
+        )
+        if bound_match and self._is_flow_execution_credential():
+            message = (
+                f"Model '{requested_model}' uses subscription credentials. A "
+                "flow execution may use it only when the subscription's owner "
+                "turned on 'Use from my flows' for this model and owns the "
+                f"flow. Models available to this credential: {available}."
+            )
+        elif bound_match:
             message = (
                 f"Model '{requested_model}' is bound to another agent's "
                 "subscription credentials and can't serve this credential. "
@@ -4639,6 +4649,15 @@ class OpenAIGatewayService:
             message=message,
             code="model_not_authorized",
         )
+
+    def _is_flow_execution_credential(self) -> bool:
+        """Whether the bearer is a flow-execution runtime key with no agent."""
+        api_key = self.auth_context.api_key
+        context = getattr(api_key, "context_data", None) if api_key else None
+        if not isinstance(context, dict) or context.get("managed_agent_id"):
+            return False
+        principal = context.get("runtime_principal") or {}
+        return isinstance(principal, dict) and principal.get("type") == "flow_execution"
 
     def _maybe_rebind_same_lineage_sibling(
         self,
@@ -7155,6 +7174,17 @@ class OpenAIGatewayService:
         except (TypeError, ValueError):
             # Body is not JSON; fall back to the generic upstream message.
             pass
+        # A local client renewal revokes the gateway's copy at once. The raw
+        # upstream text makes the client ask for /login although the local
+        # login is fine; name the sync that recovers the shared lineage.
+        if (
+            status_code == 401
+            and getattr(ai_model, "credential_type", None)
+            in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+        ):
+            message = CredentialRefreshError(
+                message, provider="anthropic", status_code=401, code="invalid_grant"
+            ).recovery_message()
 
         class _PassthroughUpstreamError(Exception):
             """Carrier so classify_upstream_error sees status/type/message."""
@@ -8401,6 +8431,56 @@ class OpenAIGatewayService:
         # forwards client flags the provider rejects. Drop those instead of
         # failing the whole request.
         kwargs["drop_params"] = True
+        text_config = payload.get("text")
+        native_format = (
+            text_config.get("format") if isinstance(text_config, dict) else None
+        )
+        response_format = payload.get("response_format")
+        if isinstance(native_format, dict) and native_format.get("type") not in (
+            None,
+            "text",
+        ):
+            if native_format.get("type") == "json_schema":
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        key: value
+                        for key, value in native_format.items()
+                        if key != "type"
+                    },
+                }
+            elif native_format.get("type") == "json_object":
+                response_format = {"type": "json_object"}
+            else:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Unsupported structured response format",
+                )
+            if payload.get("response_format") not in (None, response_format):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Conflicting structured response formats",
+                )
+        if response_format is not None:
+            # drop_params stays True: it is request-global in LiteLLM, and
+            # turning it off would make unrelated unsupported options (such as
+            # parallel_tool_calls on some providers) hard-fail. The only thing
+            # that must never be dropped silently is the schema itself, so
+            # refuse explicitly when LiteLLM would drop response_format.
+            supported = litellm.get_supported_openai_params(model=kwargs["model"])
+            if not supported or "response_format" not in supported:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message=(
+                        "The selected provider/model does not support structured "
+                        "response_format; choose a model with structured output "
+                        "support or remove the response schema"
+                    ),
+                )
+            kwargs["response_format"] = response_format
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.
@@ -9043,10 +9123,27 @@ class OpenAIGatewayService:
             if error is not None
             else self._stream_error("openai", exc, ai_model=ai_model)
         )
+        code = gateway_error.code or gateway_error.error_type
+        if gateway_error.terminal:
+            # A Responses client reads a stream that ends without a terminal
+            # response event as a dropped connection and reconnects. A
+            # billing or credential refusal must end the turn instead.
+            return self._sse_event(
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "status": "failed",
+                        "error": {
+                            "code": code,
+                            "message": gateway_error.message,
+                        },
+                    },
+                }
+            )
         return self._sse_event(
             {
                 "type": "error",
-                "code": gateway_error.code or gateway_error.error_type,
+                "code": code,
                 "message": gateway_error.message,
                 "param": gateway_error.param,
             }
@@ -11020,6 +11117,15 @@ class OpenAIGatewayService:
             api_equivalent_cost = estimated_cost
             estimated_cost = 0.0
             cost_source = "subscription"
+        # A subscription-OAuth row can reach a flow-execution credential only
+        # through the owner opt-in, so tag those rows for "used by your flows".
+        subscription_use = (
+            OWNER_FLOW_SUBSCRIPTION_USE
+            if bool(getattr(ai_model, "is_principal_bound_oauth", False))
+            and runtime_context.get("flow_execution_id")
+            and self._is_flow_execution_credential()
+            else None
+        )
         from preloop.services.analytics_detail_policy import (
             should_degrade_gateway_analytics,
         )
@@ -11118,6 +11224,7 @@ class OpenAIGatewayService:
                 "upstream_retries": upstream_retries,
                 "usage_estimated": usage_estimated or None,
                 "api_equivalent_cost": api_equivalent_cost,
+                "subscription_use": subscription_use,
                 "context_optimization": (
                     self._last_context_optimization.to_meta()
                     if self._last_context_optimization

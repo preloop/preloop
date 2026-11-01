@@ -61,6 +61,7 @@ def artifact_thread_id(trigger: Any, execution_id: Any) -> str:
     return str(
         details.get("_session_thread_id")
         or resume.get("thread_id")
+        or resume.get("checkpoint_thread_id")
         or resume.get("execution_id")
         or execution_id
     )

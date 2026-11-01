@@ -28,6 +28,9 @@ from preloop.schemas.ai_model import (
     AIModelCredentialMarkerResponse,
     AIModelGatewayUsageSummaryResponse,
     AIModelOverviewItem,
+    AIModelOwnerFlowUsage,
+    AIModelOwnerFlowUseRead,
+    AIModelOwnerFlowUseUpdate,
     AIModelRead,
     AIModelsOverviewResponse,
     AIModelUpdate,
@@ -834,6 +837,114 @@ def update_ai_model(
             detail=str(exc),
         ) from exc
     return updated_model
+
+
+def _owner_flow_use_state(
+    db: Session, db_model: AIModel, current_user: User
+) -> AIModelOwnerFlowUseRead:
+    """Describe the owner-flow opt-in from the current user's point of view."""
+    from datetime import timedelta
+
+    from preloop.services.subscription_flow_use import (
+        owner_flow_use_enabled,
+        subscription_owner_user_id,
+    )
+
+    applicable = bool(getattr(db_model, "is_principal_bound_oauth", False))
+    if not applicable:
+        return AIModelOwnerFlowUseRead(
+            applicable=False, enabled=False, can_manage=False
+        )
+    owner = subscription_owner_user_id(db, db_model)
+    can_manage = owner is not None and owner == str(current_user.id)
+    usage = None
+    if can_manage:
+        end = datetime.now(timezone.utc)
+        usage = AIModelOwnerFlowUsage(
+            **crud_api_usage.owner_flow_subscription_usage(
+                db,
+                account_id=current_user.account_id,
+                ai_model_id=db_model.id,
+                start=end - timedelta(days=30),
+                end=end,
+            )
+        )
+    return AIModelOwnerFlowUseRead(
+        applicable=True,
+        enabled=owner_flow_use_enabled(db, db_model),
+        can_manage=can_manage,
+        usage=usage,
+    )
+
+
+@router.get(
+    "/ai-models/{model_id}/owner-flow-use",
+    response_model=AIModelOwnerFlowUseRead,
+    summary="Get Owner Flow Subscription Use",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def get_ai_model_owner_flow_use(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelOwnerFlowUseRead:
+    """Whether hosted flows owned by the subscription's owner may use it."""
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user, view=True
+    )
+    return _owner_flow_use_state(db, db_model, current_user)
+
+
+@router.put(
+    "/ai-models/{model_id}/owner-flow-use",
+    response_model=AIModelOwnerFlowUseRead,
+    summary="Set Owner Flow Subscription Use",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def set_ai_model_owner_flow_use(
+    model_id: uuid.UUID,
+    body: AIModelOwnerFlowUseUpdate,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelOwnerFlowUseRead:
+    """Let (or stop) the subscription owner's own flows use this model.
+
+    Only the user who owns the subscription (the owner of the managed agent
+    bound to it) may change this. Account admins cannot set it for another
+    user: a flow may spend a subscription only with its owner's consent.
+    """
+    from preloop.services.subscription_flow_use import subscription_owner_user_id
+
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user, view=True
+    )
+    if not bool(getattr(db_model, "is_principal_bound_oauth", False)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only subscription (OAuth) models have this setting",
+        )
+    if subscription_owner_user_id(db, db_model) != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the subscription's owner can change this setting",
+        )
+    from preloop.utils.audit import log_config_change
+
+    was_enabled = db_model.owner_flow_use_user_id is not None
+    crud_ai_model.set_owner_flow_use(
+        db, db_obj=db_model, user_id=current_user.id if body.enabled else None
+    )
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="ai_model_owner_flow_use",
+        action="updated",
+        old_value={"ai_model_id": str(db_model.id), "enabled": was_enabled},
+        new_value={"ai_model_id": str(db_model.id), "enabled": body.enabled},
+    )
+    return _owner_flow_use_state(db, db_model, current_user)
 
 
 @router.delete(

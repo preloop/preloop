@@ -266,3 +266,32 @@ async def test_missing_execution_lookup_does_not_clear_owner_lease(
         if call.args[0].get("type") == "error"
     ]
     assert errors == [{"type": "error", "error": "Runner execution no longer exists"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [True, False])
+async def test_completion_revokes_delivered_read_only_leases(
+    db_session: Session,
+    leased_execution,
+    monkeypatch: pytest.MonkeyPatch,
+    read_only: bool,
+) -> None:
+    from preloop.services import read_only_review
+
+    runner, execution = leased_execution
+    runner_id, execution_id = runner.id, execution.id
+    if read_only:
+        assignment = runner.current_assignment
+        assignment.pending_job = {
+            **assignment.pending_job,
+            "host_exec_read_only": {"mode": "read_only", "commit": "a" * 40},
+        }
+        db_session.commit()
+    revoke = AsyncMock(return_value=1)
+    monkeypatch.setattr(read_only_review, "revoke_delivered_read_leases", revoke)
+    websocket = websocket_for_completion(monkeypatch, runner, execution_id)
+    await runners.runner_ws(websocket, runner_id, db_session)
+    if read_only:
+        revoke.assert_awaited_once_with(execution_id)
+    else:
+        revoke.assert_not_awaited()

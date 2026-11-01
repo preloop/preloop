@@ -56,6 +56,7 @@ from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
 from preloop.services.ci_execution import (
     CiReviewUnavailableError,
+    ci_result_withheld_paths,
     execution_projection,
     public_ci_result,
     trigger_ci_review,
@@ -95,6 +96,7 @@ from preloop.services.host_exec_publication import (
 )
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.issue_triage_controller import TriageControllerError
+from preloop.services.read_only_review import ReadOnlyHumanTriggerError
 from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.model_routing import (
@@ -443,7 +445,12 @@ def create_flow(
     except CallableFlowsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    flow = crud_flow.create(db=db, flow_in=flow_in, account_id=current_user.account_id)
+    flow = crud_flow.create(
+        db=db,
+        flow_in=flow_in,
+        account_id=current_user.account_id,
+        created_by_user_id=getattr(current_user, "id", None),
+    )
 
     log_config_change(
         db,
@@ -831,6 +838,7 @@ def clone_preset(
         name=None,
         bound_ai_model_id=bound_ai_model_id,
         flow_crud=crud_flow,
+        created_by_user_id=getattr(current_user, "id", None),
     )
 
 
@@ -1568,6 +1576,58 @@ def adopt_execution_continuation(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@router.get("/flows/executions/{execution_id}/tool-evidence")
+@require_permission("view_flows", ci_action=CiAction.READ_EVIDENCE)
+def get_execution_tool_evidence(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=10),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+) -> Dict[str, Any]:
+    """Read bounded tool-only evidence; never grant general execution-log access.
+
+    A page holds at most 10 records and at most 8 MiB of encoded records; the
+    first record is always returned. When the byte budget cuts a page short,
+    ``has_more`` is true and ``next_skip`` gives the offset of the next page.
+    """
+    from preloop.models.crud.execution_tool_evidence import (
+        callback_diagnostics,
+        evidence_page,
+    )
+
+    if isinstance(current_user, CiAuthorizationContext):
+        execution = _owned_ci_execution(
+            db, current_user, execution_id, CiAction.READ_EVIDENCE
+        )
+    else:
+        execution = crud_flow_execution.get(
+            db=db, id=execution_id, account_id=current_user.account_id
+        )
+        if execution is None:
+            raise HTTPException(404, "Flow execution not found")
+    result = {
+        "execution_id": str(execution.id),
+        "status": execution.status,
+        "result_available": execution.result is not None,
+        **evidence_page(db, execution=execution, skip=skip, limit=limit),
+    }
+    from preloop.services.execution_tool_evidence import digest
+
+    result["captured_result_sha256"] = (
+        digest(public_ci_result(execution.result))
+        if execution.result is not None
+        else None
+    )
+    if isinstance(current_user, CiAuthorizationContext):
+        result["binding"] = execution_projection(execution)
+        result["terminal_deliveries"] = callback_diagnostics(
+            db, execution=execution, principal_id=current_user.principal_id
+        )
+    return result
+
+
 @router.get("/flows/executions/{execution_id}/result")
 @require_permission("view_flows", ci_action=CiAction.READ_RESULT)
 def get_flow_execution_result(
@@ -1585,6 +1645,14 @@ def get_flow_execution_result(
     ``evidence`` is the persisted receipt only: bounded, account-scoped,
     no decrypt. Availability is not integrity proof; download
     ``GET .../evidence`` to verify digest.
+
+    A restricted CI credential (``execution:result:read``) reads only its own
+    execution and gets the correlation fields of the status projection,
+    including ``startup_receipt``, plus ``result`` (the captured document
+    without controller-private members), ``result_withheld_paths`` (JSON
+    Pointers of any withheld members; empty means ``result`` is the complete
+    captured document) and ``schema_validation`` (``valid``, ``error_count``
+    and ``errors``; messages are omitted when a member was withheld).
     """
     if isinstance(current_user, CiAuthorizationContext):
         execution = _owned_ci_execution(
@@ -1592,10 +1660,17 @@ def get_flow_execution_result(
         )
         if execution.result is None:
             raise HTTPException(404, "Flow execution did not report a result artifact")
+        withheld = ci_result_withheld_paths(execution.result)
         return {
             "execution_id": str(execution.id),
             **execution_projection(execution),
             "result": public_ci_result(execution.result),
+            # Pointers of members withheld as controller-private; empty means
+            # the projected document is the complete captured document.
+            "result_withheld_paths": withheld,
+            "schema_validation": _ci_schema_validation(
+                execution, messages=not withheld
+            ),
         }
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -1615,6 +1690,35 @@ def get_flow_execution_result(
         # Capture-time check against the flow result schema (#868); null
         # when the flow sets none.
         "schema_validation": _public_schema_validation(execution),
+    }
+
+
+def _ci_schema_validation(
+    execution: Any, *, messages: bool
+) -> Optional[Dict[str, Any]]:
+    """Schema outcome for a restricted CI caller.
+
+    Validation messages can quote document values. They are returned only
+    when nothing was withheld from the projected result, so a message never
+    reveals a withheld member; error paths are always returned.
+
+    Args:
+        execution: Flow execution row.
+        messages: Whether error messages may be included.
+
+    Returns:
+        ``{valid, error_count, errors[]}`` or None when no schema was checked.
+    """
+    outcome = _public_schema_validation(execution)
+    if outcome is None or messages:
+        return outcome
+    return {
+        **outcome,
+        "errors": [
+            {"path": error.get("path")}
+            for error in outcome["errors"]
+            if isinstance(error, dict)
+        ],
     }
 
 
@@ -2277,7 +2381,10 @@ def get_flow_execution_metrics(
         - cost_is_partial: Whether estimated_cost excludes unpriced requests
         - unpriced_requests: Requests that could not be priced
         - unpriced_tokens: Token volume behind the unpriced requests
-        - limits: Configured per-execution ceilings (only keys that are set)
+        - limits: Effective per-execution ceilings (only keys that are set),
+          defaults included
+        - limit_sources: Where each ceiling came from (``flow``,
+          ``environment`` or ``default``)
         - limit_status: Current usage against those ceilings
           (``total_tokens``, ``estimated_cost_usd``, ``turns``)
     """
@@ -2303,6 +2410,7 @@ def get_flow_execution_metrics(
 
         limits, usage = describe_execution_limits(db, execution)
         metrics["limits"] = limits.as_dict()
+        metrics["limit_sources"] = dict(limits.sources)
         metrics["limit_status"] = {
             "total_tokens": usage.total_tokens,
             "estimated_cost_usd": usage.cost_usd,
@@ -2327,6 +2435,7 @@ def get_flow_execution_metrics(
             "unpriced_requests": 0,
             "unpriced_tokens": 0,
             "limits": {},
+            "limit_sources": {},
             "limit_status": {
                 "total_tokens": 0,
                 "estimated_cost_usd": None,
@@ -2572,6 +2681,7 @@ RESERVED_TRIGGER_KEYS = frozenset(
         "_workspace_file_paths",
         "_subject",
         "_agent_control",
+        "_native_result",
     }
 )
 
@@ -2686,7 +2796,10 @@ def _validate_matrix(
     return validated
 
 
-@router.post("/flows/{flow_id}/trigger")
+@router.post(
+    "/flows/{flow_id}/trigger",
+    summary="Trigger a restricted CI review or a test execution",
+)
 @require_permission("execute_flows", ci_action=CiAction.TRIGGER)
 async def trigger_flow_execution(
     *,
@@ -2696,9 +2809,21 @@ async def trigger_flow_execution(
     trigger_event_data: Optional[Dict[str, Any]] = None,
 ):
     """
-    Trigger a test execution for a flow.
+    Trigger a flow execution: a restricted CI review, or a human test run.
 
-    The body is free-form trigger event data, except for the reserved key
+    **Restricted CI credential** (``ci_`` token with ``flow:trigger``): this
+    is the supported route for starting a review. The body must be exactly
+    ``{"pr_number": <int>, "head_sha": "<40 or 64 lowercase hex>"}``; any
+    other field (diff, base SHA, challenge, ``matrix`` or template data) is
+    rejected with 422, never ignored. The flow must be the principal's bound
+    flow. Preloop reads the open pull request from the provider, requires its
+    current head to equal ``head_sha``, builds the pull request event
+    server-side and starts one production execution (``test_mode`` false).
+    The response is the status projection of the new execution. The flow
+    webhook does not accept CI credentials.
+
+    **Human credential**: starts a test execution (``test_mode`` true). The
+    body is free-form trigger event data, except for the reserved key
     ``matrix``: when present it must be a list of up to 25
     ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
     one execution per entry, all sharing a ``batch_id`` (an empty object runs
@@ -2706,12 +2831,14 @@ async def trigger_flow_execution(
 
     Args:
         flow_id: Flow to trigger
-        trigger_event_data: Optional custom trigger event data for testing
-            template variables, plus the optional reserved ``matrix`` key
+        trigger_event_data: ``pr_number`` and ``head_sha`` for a restricted
+            CI credential; otherwise optional custom trigger event data for
+            testing template variables, plus the optional reserved ``matrix``
+            key
 
     Returns:
-        Execution details, or batch details (``batch_id`` + per-cell
-        ``execution_id``) when a matrix was given
+        The CI status projection, execution details, or batch details
+        (``batch_id`` + per-cell ``execution_id``) when a matrix was given
     """
     if not isinstance(current_user, CiAuthorizationContext):
         await run_db_off_loop(
@@ -2796,7 +2923,7 @@ async def trigger_flow_execution(
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        except TriageControllerError as exc:
+        except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ModelRoutingError, RunnerCapabilityError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2815,7 +2942,7 @@ async def trigger_flow_execution(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except TriageControllerError as exc:
+    except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2906,7 +3033,7 @@ async def retry_flow_execution(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except TriageControllerError as exc:
+    except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3535,6 +3662,8 @@ async def trigger_flow_via_webhook(
             test_mode=False,
             trigger_event_data=event_data,
         )
+    except ReadOnlyHumanTriggerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:

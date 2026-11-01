@@ -468,6 +468,9 @@ type leasedJobOutcome struct {
 	// hostPublication is the runner-authored managed publication receipt
 	// ({status, branch, head_sha, reason}); never agent output.
 	hostPublication map[string]any
+	// hostReadOnly is the runner-authored read-only review receipt
+	// ({commit, sandbox, lease_revoked}); never agent output.
+	hostReadOnly map[string]any
 }
 
 func nextRunnerBackoff(current time.Duration) time.Duration {
@@ -553,6 +556,9 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 	}
 	if outcome.hostExec && outcome.hostPublication != nil {
 		message["host_publication"] = outcome.hostPublication
+	}
+	if outcome.hostExec && outcome.hostReadOnly != nil {
+		message[hostExecReadOnlyKey] = outcome.hostReadOnly
 	}
 	if err := writeRunnerJSON(conn, message); err != nil {
 		return err

@@ -295,10 +295,16 @@ def test_tracker_connection_creates_one_default_report_flow(
         "preloop.api.endpoints.flows._resolve_clone_model_binding",
         side_effect=HTTPException(status_code=422, detail="no model"),
     ):
-        flow = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+        flow = ensure_default_report_flow(
+            db_session,
+            account_id=test_user.account_id,
+            created_by_user_id=test_user.id,
+        )
         again = ensure_default_report_flow(db_session, account_id=test_user.account_id)
     assert flow is not None
     assert again.id == flow.id
+    # The connecting user owns the report flow (subscription opt-in rule).
+    assert flow.created_by_user_id == test_user.id
     assert flow.is_enabled is True
     assert flow.schedule_config["type"] == "weekly"
     assert flow.schedule_config["payload"] == {"previous_result_execution_id": "last"}

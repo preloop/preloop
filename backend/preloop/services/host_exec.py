@@ -110,6 +110,7 @@ HOST_EXEC_CAPABILITIES = frozenset(
         "cancel",
         "host_publication",
         "host_continuation",
+        "host_read_only_review",
     }
 )
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
@@ -517,6 +518,7 @@ def runner_has_host_exec_profile(
     agent_type: Any = HOST_EXEC_AGENT_TYPE,
     require_publication: bool = False,
     require_continuation: bool = False,
+    require_read_only_review: bool = False,
 ) -> bool:
     """True when the runner advertised this profile for the leased harness.
 
@@ -531,6 +533,9 @@ def runner_has_host_exec_profile(
             advertise ``host_publication``. Older runners never do.
         require_continuation: The lease resumes a Copilot session; the
             profile must advertise ``host_continuation``.
+        require_read_only_review: The lease is a read-only review; the
+            profile must advertise ``host_read_only_review``. Older runners
+            never do, so they cannot run it with a writable sandbox.
 
     Returns:
         True when the runner can run this lease.
@@ -556,6 +561,8 @@ def runner_has_host_exec_profile(
             if require_publication and "host_publication" not in caps:
                 return False
             if require_continuation and "host_continuation" not in caps:
+                return False
+            if require_read_only_review and "host_read_only_review" not in caps:
                 return False
             models = item.get("models") or []
             return not model_identifier or (
@@ -855,6 +862,9 @@ def finalize_runner_completion(
         status, error, result = apply_host_publication_completion(
             status, error, result, message, pending
         )
+        status, error, result = _apply_read_only_completion(
+            status, error, result, message, pending
+        )
         return status, error, _mark_not_gateway_metered(result)
     # Protocol selection comes only from persisted lease metadata. A message
     # cannot opt into a weaker/legacy validator by naming another protocol.
@@ -863,14 +873,51 @@ def finalize_runner_completion(
     return validate_runner_completion(dict(message), leased_job=dict(pending))
 
 
+def _apply_read_only_completion(
+    status: str,
+    error: Optional[str],
+    result: Optional[Dict[str, Any]],
+    message: Mapping[str, Any],
+    pending: Mapping[str, Any],
+) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    """Require the runner's read-only receipt and record it on the result.
+
+    A read-only review succeeds only when the runner reports that it checked
+    out the admitted commit and ran Codex in the read-only sandbox. Agent JSON
+    cannot author the control-plane result key.
+    """
+    from preloop.services.read_only_review import (
+        HOST_READ_ONLY_LEASE_KEY,
+        HOST_READ_ONLY_RESULT_KEY,
+        host_read_only_receipt_error,
+    )
+
+    if result is not None:
+        result = {
+            key: value
+            for key, value in result.items()
+            if key != HOST_READ_ONLY_RESULT_KEY
+        }
+    if not pending.get(HOST_READ_ONLY_LEASE_KEY):
+        return status, error, result
+    problem, receipt = host_read_only_receipt_error(message, pending)
+    if receipt is not None:
+        result = {**(result or {}), HOST_READ_ONLY_RESULT_KEY: receipt}
+    if status == "SUCCEEDED" and problem:
+        return "FAILED", problem, result
+    return status, error, result
+
+
 def _mark_not_gateway_metered(
     result: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Record that a host run bypassed the gateway, overriding agent JSON.
+    """Default the server-set metering marker, overriding agent JSON.
 
-    Host profiles use the runner user's own CLI login, so no gateway row
-    exists for the model spend. The UI reads this server-set marker instead
-    of implying a cost estimate.
+    Agent JSON cannot claim gateway metering. The completion handler then
+    replaces this default with the real answer from the execution's gateway
+    rows (``preloop.services.host_exec_gateway.apply_host_gateway_metering``):
+    an onboarded Codex or Claude Code CLI sends the execution marker and is
+    metered; a CLI using its own login is not.
     """
     if result is None:
         return None

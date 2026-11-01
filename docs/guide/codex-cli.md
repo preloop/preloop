@@ -74,11 +74,22 @@ Offboard removes `~/.codex/preloop-control.json` and the sidecar service.
 `~/.codex/config.toml` is restored from the onboarding backup and is not
 rewritten by Agent Control.
 
+Flows on a private runner host profile run this onboarded Codex. Keep the
+onboarded `config.toml`: its Preloop model provider is how the run's model
+calls reach the gateway, and the runner marks them with the flow execution
+(see [native profiles](runners/quickstart-linux.md#codex-opencode-and-deepseek-native-profiles)).
+A separate `CODEX_HOME` without that provider bypasses Preloop and the run
+fails with `gateway_bypassed`.
+
 Codex refreshes its ChatGPT login on its own, even when model traffic goes
 through Preloop, and the Preloop gateway refreshes the copy it stores. That
 login uses a single-use refresh token, so two holders of one grant revoke
 each other when either refreshes with a stale token. The Codex permission
-hook keeps both copies on the same lineage. It pushes the local bundle
+hook keeps both copies on the same lineage, and the session hook
+(`SessionStart`) runs the same reconcile before the first model call, so a
+login Codex rotated at startup reaches Preloop before the gateway would try
+the consumed token. The gateway refreshes 10 minutes before expiry, ahead of
+Codex's own 5-minute window. It pushes the local bundle
 (`~/.codex/auth.json`, or the macOS Keychain entry when Codex keeps its login
 there) when it is newer than the stamp in the local enrollment state. About
 every two minutes it also reads Preloop's rotation marker, which carries no
@@ -97,7 +108,9 @@ login into Preloop, delete the local `auth.json`, and keep
 `requires_openai_auth = false` (the default) on the Preloop model provider in
 `~/.codex/config.toml`, so only Preloop refreshes the grant.
 
-If the provider has already revoked the grant, synchronization cannot repair it.
+If the gateway reports that the credentials could not be refreshed, run
+`preloop agents sync-credentials "Codex CLI"` first. If the provider has
+already revoked the grant on both sides, synchronization cannot repair it.
 Run `preloop agents reconnect "Codex CLI"` to sign in and replace only the stored
 subscription credential, preserving the enrollment and configuration. After a
 separate `codex login`, use `preloop agents reconnect "Codex CLI" --from-local`.
