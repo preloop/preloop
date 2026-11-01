@@ -468,6 +468,9 @@ def _runner_may_accept(
     pool: str,
     execution_id: UUID,
     flow_id: Optional[str] = None,
+    pinned_runner_id: Optional[UUID] = None,
+    harness: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> bool:
     """Whether the account authorizer (hook H4) lets ``runner`` take the job.
 
@@ -498,6 +501,11 @@ def _runner_may_accept(
             "pool": pool,
             "execution_id": str(execution_id),
             "flow_id": flow_id,
+            "pinned_runner_id": (
+                str(pinned_runner_id) if pinned_runner_id is not None else None
+            ),
+            "harness": harness,
+            "workspace_id": workspace_id,
         },
     )
     return authorize(ctx, ACTION_RUNNER_ACCEPT, runner).allowed
@@ -847,6 +855,9 @@ def lease_job(
             pool=pool,
             execution_id=execution_id,
             flow_id=flow_id,
+            pinned_runner_id=pinned,
+            harness=workspace_harness,
+            workspace_id=workspace_id,
         ):
             continue
         if required_profile and not runner_has_host_exec_profile(

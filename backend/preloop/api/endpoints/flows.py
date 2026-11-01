@@ -229,13 +229,50 @@ def _reject_host_exec_flow(
             raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)
 
 
-def _caller_may_use_runner(db: Session, current_user: Any, runner: Any) -> bool:
-    """Wave 1: the runner's registrant or an account admin may route to it."""
+def _caller_may_use_runner(
+    db: Session,
+    current_user: Any,
+    runner: Any,
+    *,
+    operation: str = "pin",
+    harness: Optional[str] = None,
+) -> bool:
+    """The runner's registrant, an account admin, or a ``flows`` share grantee.
+
+    Sharing (EE #186) widens the default through ``runner:flow_use``; with
+    no authorizer registered the rule stays registrant-or-admin.
+    """
     from preloop.api.auth.router import _is_account_admin
+    from preloop.plugins.account_hooks import (
+        AuthorizationContext,
+        get_authorizer,
+        may_use_runner_for_flows,
+    )
 
     if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
         return True
-    return _is_account_admin(db, current_user)
+    is_admin = _is_account_admin(db, current_user)
+    if get_authorizer() is None:
+        return is_admin
+    return may_use_runner_for_flows(
+        AuthorizationContext(
+            account_id=current_user.account_id,
+            db=db,
+            user=current_user,
+            attributes={"operation": operation, "harness": harness},
+        ),
+        runner,
+        is_account_admin=is_admin,
+    ).allowed
+
+
+def _pinned_harness(agent_config: Any) -> Optional[str]:
+    """The harness a flow selects, when its agent config names one."""
+    from preloop.services.runner_service import unwrap_agent_config
+
+    config = unwrap_agent_config(agent_config)
+    harness = config.get("harness") if isinstance(config, dict) else None
+    return harness if isinstance(harness, str) else None
 
 
 def _reject_unusable_runner_pin(
@@ -249,7 +286,9 @@ def _reject_unusable_runner_pin(
     if (
         runner is None
         or str(runner.account_id) != str(current_user.account_id)
-        or not _caller_may_use_runner(db, current_user, runner)
+        or not _caller_may_use_runner(
+            db, current_user, runner, harness=_pinned_harness(agent_config)
+        )
     ):
         raise HTTPException(
             status_code=400,
@@ -681,11 +720,17 @@ def get_flow_harness_options(
     runners = crud_flow_runner.list_for_account(
         db, account_id=current_user.account_id, limit=500
     )
+    from preloop.plugins.account_hooks import get_authorizer
+
     admin: Dict[str, bool] = {}
+    shared = get_authorizer() is not None
 
     def usable(runner: Any) -> bool:
         if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
             return True
+        if shared:
+            # A share is per runner, so the answer cannot be cached.
+            return _caller_may_use_runner(db, current_user, runner, operation="options")
         if "value" not in admin:
             admin["value"] = _caller_may_use_runner(db, current_user, runner)
         return admin["value"]

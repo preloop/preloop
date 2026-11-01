@@ -54,6 +54,8 @@ from preloop.services import runner_workspace_credentials as workspace_credentia
 from preloop.plugins.account_hooks import (
     AuthorizationContext,
     may_start_runner_session,
+    runner_default_allowed,
+    start_consent_waiver,
 )
 from preloop.utils.permissions import (
     ensure_permission_in_oss,
@@ -602,10 +604,17 @@ class _AuditContext:
     model: Optional[str] = None
     workspace_kind: Optional[str] = None
     workspace_label: Optional[str] = None
+    workspace_id: Optional[str] = None
+    #: How the caller got access: ``owner``, ``admin`` or ``share``.
+    access: Optional[str] = None
+    access_rule_ids: tuple[str, ...] = ()
+    consent_decision: str = "approved"
 
     def details(self, **extra: Any) -> Dict[str, Any]:
+        owner_id = getattr(self.runner, "registered_by_user_id", None)
         details = {
             "actor_user_id": str(self.user.id),
+            "owner_user_id": str(owner_id) if owner_id else None,
             "runner_id": str(self.runner.id),
             "runner_name": self.runner.name,
             "host": self.runner.hostname,
@@ -614,6 +623,10 @@ class _AuditContext:
             "workspace_kind": self.workspace_kind,
             "workspace_label": self.workspace_label,
         }
+        if self.access is not None:
+            details["access"] = self.access
+        if self.access_rule_ids:
+            details["access_rule_ids"] = list(self.access_rule_ids)
         details.update(extra)
         return details
 
@@ -651,14 +664,39 @@ class _AuditContext:
         return _error(status_code, code, message)
 
 
-def _authorize(audit: _AuditContext) -> None:
+def _authorization(
+    audit: _AuditContext, operation: str, **attributes: Any
+) -> tuple[Any, bool]:
+    """Ask the runner session rule; return the decision and the admin flag."""
+    is_admin = _is_account_admin(audit.db, audit.user)
+    attrs: Dict[str, Any] = {
+        "operation": operation,
+        "harness": audit.harness,
+        "workspace_kind": audit.workspace_kind,
+        "workspace_id": audit.workspace_id,
+    }
+    attrs.update(attributes)
     decision = may_start_runner_session(
         AuthorizationContext(
-            account_id=audit.user.account_id, db=audit.db, user=audit.user
+            account_id=audit.user.account_id,
+            db=audit.db,
+            user=audit.user,
+            attributes=attrs,
         ),
         audit.runner,
-        is_account_admin=_is_account_admin(audit.db, audit.user),
+        is_account_admin=is_admin,
     )
+    return decision, is_admin
+
+
+def _authorize(audit: _AuditContext, operation: str) -> None:
+    """Refuse the caller unless the runner rule (and any share) allows it.
+
+    Records on ``audit`` how access was granted: a caller who is neither
+    the owner nor an admin got in through an authorizer grant (``share``)
+    and is limited to their own sessions.
+    """
+    decision, is_admin = _authorization(audit, operation)
     if not decision.allowed:
         raise audit.reject(
             403,
@@ -666,6 +704,20 @@ def _authorize(audit: _AuditContext) -> None:
             "Only the runner owner or an account admin can use sessions on "
             "this runner.",
         )
+    owner_id = getattr(audit.runner, "registered_by_user_id", None)
+    if owner_id is not None and str(owner_id) == str(audit.user.id):
+        audit.access = "owner"
+    elif runner_default_allowed(audit.user, audit.runner, is_account_admin=is_admin):
+        audit.access = "admin"
+    else:
+        audit.access = "share"
+        audit.access_rule_ids = tuple(decision.rule_ids)
+
+
+def _shared_option_allowed(audit: _AuditContext, **attributes: Any) -> bool:
+    """Whether a share-granted caller may start with these options."""
+    decision, _is_admin = _authorization(audit, "options", **attributes)
+    return decision.allowed
 
 
 def _require_service(audit: _AuditContext) -> RunnerSessionService:
@@ -694,7 +746,7 @@ def _record_to_item(record: RemoteSessionRecord) -> RunnerSessionListItem:
 
 
 def _session_audit(
-    db: Session, user: Any, session_id: str
+    db: Session, user: Any, session_id: str, operation: str
 ) -> tuple[RunnerSessionService, RemoteSessionRecord, _AuditContext]:
     service = _service
     if service is None:
@@ -720,8 +772,16 @@ def _session_audit(
         model=record.model,
         workspace_kind=workspace.get("kind"),
         workspace_label=workspace.get("label"),
+        workspace_id=workspace.get("id"),
     )
-    _authorize(audit)
+    _authorize(audit, operation)
+    if audit.access == "share" and str(record.actor_user_id) != str(user.id):
+        # A shared runner lets the grantee drive their own sessions only.
+        raise audit.reject(
+            403,
+            "not_session_actor",
+            "Only the user who started this session can use it.",
+        )
     return service, record, audit
 
 
@@ -729,7 +789,7 @@ def _prepare_turn(
     db: Session, user: Any, session_id: str
 ) -> tuple[RunnerSessionService, RemoteSessionRecord, _AuditContext]:
     """Authorize a turn and refuse it while the session cannot take one."""
-    service, record, audit = _session_audit(db, user, session_id)
+    service, record, audit = _session_audit(db, user, session_id, "turn")
     if record.state not in ACTIVE_STATES or record.state == "stopping":
         raise audit.reject(409, "session_ended", "The session has ended.")
     if record.turn_in_progress or record.state == "running":
@@ -755,14 +815,32 @@ def get_runner_session_options(
     runner = _get_runner(db, runner_id, current_user)
     # A denied read is audited like a denied start: probing someone else's
     # runner must leave a trace.
-    _authorize(_AuditContext(db=db, user=current_user, runner=runner))
+    audit = _AuditContext(db=db, user=current_user, runner=runner)
+    _authorize(audit, "options")
+    harnesses = _session_harnesses(runner)
+    directories = _authorized_directories(runner)
+    checkout_sources = _checkout_sources(db, current_user)
+    if audit.access == "share":
+        # A grantee sees only what the share lets them start.
+        harnesses = [
+            h for h in harnesses if _shared_option_allowed(audit, harness=h.harness)
+        ]
+        directories = [
+            d
+            for d in directories
+            if _shared_option_allowed(
+                audit, workspace_kind="authorized_directory", workspace_id=d.id
+            )
+        ]
+        if not _shared_option_allowed(audit, workspace_kind="tracker_checkout"):
+            checkout_sources = []
     return RunnerSessionOptions(
         runner_id=str(runner.id),
         online=_runner_online(runner),
         sessions_available=_service is not None,
-        harnesses=_session_harnesses(runner),
-        authorized_directories=_authorized_directories(runner),
-        checkout_sources=_checkout_sources(db, current_user),
+        harnesses=harnesses,
+        authorized_directories=directories,
+        checkout_sources=checkout_sources,
         limits=SessionOptionLimits(**_limits(db, runner)),
     )
 
@@ -791,10 +869,11 @@ def _prepare_start(
             None,
         )
         audit.workspace_label = directory.label if directory else workspace.id
+        audit.workspace_id = workspace.id
     else:
         audit.workspace_label = workspace.repository
 
-    _authorize(audit)
+    _authorize(audit, "start")
     if not _runner_online(runner):
         raise audit.reject(409, "runner_offline", "The runner is offline.")
     if getattr(runner, "paused", False) is True:
@@ -911,7 +990,7 @@ def _prepare_start(
         consent_decision=(
             "owner"
             if str(runner.registered_by_user_id) == str(current_user.id)
-            else "approved"
+            else audit.consent_decision
         ),
     )
     plan = SessionStartPlan(
@@ -944,6 +1023,11 @@ def _require_start_consent(
         raise audit.reject(
             403, "runner_owner_required", "A runner owner must approve new sessions."
         )
+    waiver = start_consent_waiver(db, current_user, runner)
+    if waiver:
+        audit.log("runner_session.consent", decision="waived", waiver=waiver)
+        audit.consent_decision = "waived"
+        return
     if body.consent_request_id is None:
         raise audit.reject(
             422,
@@ -1067,13 +1151,16 @@ def list_runner_sessions(
 ) -> List[RunnerSessionListItem]:
     """Recent remote sessions on one runner (owner and admins)."""
     runner = _get_runner(db, runner_id, current_user)
-    _authorize(_AuditContext(db=db, user=current_user, runner=runner))
+    audit = _AuditContext(db=db, user=current_user, runner=runner)
+    _authorize(audit, "list")
     service = _service
     if service is None:
         return []
     records = service.list_for_runner(
         db, runner_id=str(runner.id), limit=max(1, min(limit, 200))
     )
+    if audit.access == "share":
+        records = [r for r in records if str(r.actor_user_id) == str(current_user.id)]
     return [_record_to_item(record) for record in records]
 
 
@@ -1126,7 +1213,7 @@ def stop_runner_session(
 ) -> RunnerSessionStopResponse:
     """Ask the runner to end the session (``graceful``) or kill the harness."""
     ensure_permission_in_oss(db, current_user, "execute_flows")
-    service, record, audit = _session_audit(db, current_user, session_id)
+    service, record, audit = _session_audit(db, current_user, session_id, "stop")
     mode = (body or RunnerSessionStopRequest()).mode
     if record.state in ACTIVE_STATES:
         current = record
@@ -1144,3 +1231,62 @@ def stop_runner_session(
         mode=mode,
     )
     return RunnerSessionStopResponse(session_id=record.session_id, state=record.state)
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat re-authorization (EE #186)
+# ---------------------------------------------------------------------------
+
+
+def reauthorize_live_sessions(db: Session, runner: Any) -> List[str]:
+    """Stop live sessions whose actor may no longer use the runner.
+
+    Called on every runner heartbeat, before pending frames go out, so a
+    revoked share (or a lost admin role) stops the grantee's running
+    sessions within one heartbeat. Sessions the runner owner started are
+    never re-checked here.
+
+    Args:
+        db: Database session.
+        runner: The ``FlowRunner`` that sent the heartbeat.
+
+    Returns:
+        Remote session ids that were asked to stop.
+    """
+    from preloop.models.crud import crud_user
+    from preloop.models.crud.runner_remote_session import (
+        crud_runner_remote_session,
+    )
+    from preloop.services import runner_sessions as sessions
+
+    owner_id = getattr(runner, "registered_by_user_id", None)
+    stopped: List[str] = []
+    for row in crud_runner_remote_session.list_live_for_runner(db, runner_id=runner.id):
+        actor_id = row.actor_user_id
+        if actor_id is None or (owner_id is not None and actor_id == owner_id):
+            continue
+        if row.stop_mode is not None:
+            continue
+        actor = crud_user.get(db, id=actor_id)
+        allowed = False
+        if actor is not None and getattr(actor, "is_active", True):
+            workspace = row.workspace or {}
+            audit = _AuditContext(
+                db=db,
+                user=actor,
+                runner=runner,
+                harness=row.harness,
+                model=row.model,
+                workspace_kind=workspace.get("kind"),
+                workspace_label=workspace.get("label"),
+                workspace_id=workspace.get("id"),
+            )
+            decision, _is_admin = _authorization(audit, "heartbeat")
+            allowed = decision.allowed
+        if allowed:
+            continue
+        sessions.request_stop(
+            db, row, actor_user_id=None, mode="kill", reason="access_revoked"
+        )
+        stopped.append(str(row.id))
+    return stopped

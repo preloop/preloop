@@ -315,28 +315,24 @@ def authorize(ctx: AuthorizationContext, action: str, resource: Any = None) -> D
     return decision if decision is not None else ALLOW
 
 
-def may_start_runner_session(
-    ctx: AuthorizationContext, runner: Any, *, is_account_admin: bool
-) -> Decision:
-    """Decide :data:`ACTION_RUNNER_SESSION_START` for one runner.
+#: Route flow work to a runner the caller does not own (pin it in a flow,
+#: count it in harness options, or lease a pinned run to it). Same widening
+#: rule as :data:`ACTION_RUNNER_SESSION_START`; the EE runner sharing plugin
+#: answers it for runners shared with the ``flows`` scope (EE #186).
+ACTION_RUNNER_FLOW_USE = "runner:flow_use"
 
-    Default rule: the user who registered the runner, or an account admin,
-    in the runner's own account. The registered authorizer is then asked
-    with ``attributes["default_allowed"]`` set. It may always deny. It may
-    widen the default (team sharing of a runner) only with an explicit
-    ``allow`` that names the rules which granted it, so an authorizer that
-    simply has no opinion never opens someone's laptop to other members.
+
+def runner_default_allowed(user: Any, runner: Any, *, is_account_admin: bool) -> bool:
+    """The open source runner rule: its registrant or an account admin.
 
     Args:
-        ctx: Caller context; ``ctx.user`` is the acting user.
+        user: Acting user, or None.
         runner: The ``FlowRunner`` row.
-        is_account_admin: Whether the caller administers ``ctx.account_id``.
+        is_account_admin: Whether ``user`` administers the runner's account.
 
     Returns:
-        The decision; a denial carries ``reason="not_runner_owner"`` unless
-        the authorizer gave its own reason.
+        True when the default rule lets ``user`` use ``runner``.
     """
-    user = ctx.user
     same_account = user is not None and str(runner.account_id) == str(
         getattr(user, "account_id", None)
     )
@@ -345,7 +341,16 @@ def may_start_runner_session(
         and runner.registered_by_user_id is not None
         and str(runner.registered_by_user_id) == str(user.id)
     )
-    default_allowed = bool(same_account and (is_owner or is_account_admin))
+    return bool(same_account and (is_owner or is_account_admin))
+
+
+def _may_use_runner(
+    ctx: AuthorizationContext, runner: Any, action: str, *, is_account_admin: bool
+) -> Decision:
+    user = ctx.user
+    default_allowed = runner_default_allowed(
+        user, runner, is_account_admin=is_account_admin
+    )
     authorizer = _authorizer
     if authorizer is not None:
         attrs = dict(ctx.attributes)
@@ -358,7 +363,7 @@ def may_start_runner_session(
                 principal=ctx.principal,
                 attributes=attrs,
             ),
-            ACTION_RUNNER_SESSION_START,
+            action,
             runner,
         )
         if decision is not None:
@@ -373,6 +378,76 @@ def may_start_runner_session(
     if default_allowed:
         return ALLOW
     return Decision("deny", ("oss:runner_owner_or_admin",), "not_runner_owner")
+
+
+def may_start_runner_session(
+    ctx: AuthorizationContext, runner: Any, *, is_account_admin: bool
+) -> Decision:
+    """Decide :data:`ACTION_RUNNER_SESSION_START` for one runner.
+
+    Default rule: the user who registered the runner, or an account admin,
+    in the runner's own account. The registered authorizer is then asked
+    with ``attributes["default_allowed"]`` set. It may always deny. It may
+    widen the default (team sharing of a runner) only with an explicit
+    ``allow`` that names the rules which granted it, so an authorizer that
+    simply has no opinion never opens someone's laptop to other members.
+
+    Call sites set ``attributes["operation"]`` (``options``, ``start``,
+    ``list``, ``turn``, ``stop``, ``heartbeat``) and, when known,
+    ``harness``, ``workspace_kind`` and ``workspace_id``.
+
+    Args:
+        ctx: Caller context; ``ctx.user`` is the acting user.
+        runner: The ``FlowRunner`` row.
+        is_account_admin: Whether the caller administers ``ctx.account_id``.
+
+    Returns:
+        The decision; a denial carries ``reason="not_runner_owner"`` unless
+        the authorizer gave its own reason.
+    """
+    return _may_use_runner(
+        ctx, runner, ACTION_RUNNER_SESSION_START, is_account_admin=is_account_admin
+    )
+
+
+def may_use_runner_for_flows(
+    ctx: AuthorizationContext, runner: Any, *, is_account_admin: bool
+) -> Decision:
+    """Decide :data:`ACTION_RUNNER_FLOW_USE` for one runner.
+
+    Same rule and widening contract as :func:`may_start_runner_session`.
+    Call sites set ``attributes["operation"]`` (``pin``, ``options``) and,
+    when known, ``harness`` and ``workspace_id``.
+    """
+    return _may_use_runner(
+        ctx, runner, ACTION_RUNNER_FLOW_USE, is_account_admin=is_account_admin
+    )
+
+
+#: ``(db, user, runner) -> reason or None``. A reason waives the per-start
+#: runner owner approval for a non-owner start; None keeps it (EE #186).
+StartConsentWaiver = Callable[["Session", Any, Any], Optional[str]]
+
+_start_consent_waiver: Optional[StartConsentWaiver] = None
+
+
+def register_start_consent_waiver(waiver: Optional[StartConsentWaiver]) -> None:
+    """Register (or clear, with ``None``) the per-start consent waiver."""
+    global _start_consent_waiver
+    _start_consent_waiver = waiver
+
+
+def start_consent_waiver(db: "Session", user: Any, runner: Any) -> Optional[str]:
+    """Why the runner owner's per-start approval is not needed, or None.
+
+    With nothing registered the owner approves every non-owner start. The
+    waiver never authorizes a start: it is asked only after the caller has
+    passed :func:`may_start_runner_session` and every scope check.
+    """
+    waiver = _start_consent_waiver
+    if waiver is None:
+        return None
+    return waiver(db, user, runner)
 
 
 def filter_viewable(
