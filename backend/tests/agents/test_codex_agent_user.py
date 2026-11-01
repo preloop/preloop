@@ -212,7 +212,7 @@ def test_root_takes_the_workspace_back_before_its_own_git_steps():
     block = codex_reclaim_workspace_block()
     assert f"pkill -KILL -u {AGENT_USER}" in block
     assert "chown -R root:root /workspace" in block
-    assert 'rm -rf "$_pl_gitdir/hooks"' in block
+    assert 'rm -rf "$_pl_gitdir/config" "$_pl_gitdir/hooks"' in block
     assert "GIT_CONFIG_VALUE_0=/dev/null" in block
 
 
