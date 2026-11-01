@@ -1438,6 +1438,19 @@ describe('FlowsView', () => {
         .be.true;
     });
 
+    it('disables Run now on a read-only review row and says why', async () => {
+      const element = await renderFlows();
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id !== 'flow-nightly'
+      )!;
+      const ciRow = { ...row, source: { ...row.source, ci_only: true } };
+      const run = (element as any)
+        .getRowActions(ciRow)
+        .find((action: any) => action.id === 'run-now');
+      expect(run.disabled).to.be.true;
+      expect(run.tooltip).to.contain('CI identity');
+    });
+
     it('keeps the kebab button inside its own cell', async () => {
       await loadShoelaceTokens();
       const element = await renderFlows();

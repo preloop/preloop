@@ -484,6 +484,10 @@ class GitCloneConfig(BaseModel):
             "GitHub App clone and no provider publication or MCP authority."
         ),
     )
+    ci_project_selection: bool = Field(
+        default=False,
+        description="For read_only restricted CI, select only the principal's repository from the administrator-approved project list.",
+    )
     publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(
         default=None,
         description=(
@@ -1858,6 +1862,10 @@ class FlowCreate(FlowBase):
 
 
 class FlowUpdate(FlowBase):
+    # No default: an omitted harness means "keep the stored one". Inheriting
+    # FlowBase's "openhands" made partial updates validate as OpenHands.
+    agent_type: Optional[str] = None
+
     @field_validator("result_schema")
     @classmethod
     def validate_result_schema(
@@ -1870,6 +1878,9 @@ class FlowUpdate(FlowBase):
 class FlowResponse(FlowBase):
     id: UUID
     account_id: Optional[UUID] = None
+    # User who created the flow (its owner for subscription opt-in checks).
+    # Null when no owner was recorded.
+    created_by_user_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
     # Catalog identity for built-in presets. Null for account flows and for
@@ -1891,12 +1902,24 @@ class FlowResponse(FlowBase):
     # client edits and displays the same numbers the gateway checks.
     max_budget: Optional[float] = None
     max_iterations: Optional[int] = None
+    # The ceilings an execution of this flow runs under right now: the flow's
+    # own agent_config.limits per key, otherwise the instance default
+    # (PRELOOP_DEFAULT_*). There is no built-in default. {kind: {"value":
+    # number, "source": "flow"|"environment"}}; an unset ceiling is absent.
+    effective_limits: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="after")
     def read_limit_fields_from_agent_config(self):
-        """Fill max_budget / max_iterations from agent_config.limits."""
+        """Fill max_budget / max_iterations / effective_limits from limits."""
+        from preloop.services.flow_execution_limits import (
+            resolve_execution_limits,
+        )
+
+        self.effective_limits = resolve_execution_limits(
+            self.agent_config if isinstance(self.agent_config, dict) else None
+        ).describe()
         limits = (
             (self.agent_config or {}).get("limits")
             if isinstance(self.agent_config, dict)

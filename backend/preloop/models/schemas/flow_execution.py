@@ -270,13 +270,19 @@ class FlowExecutionBase(BaseModel):
             "Coarse machine-readable reason a terminal execution did not "
             "succeed: one of runner_conflict, runner_error, model_transient, "
             "model_auth, provider_billing, model_quota (legacy, superseded "
-            "by provider_billing), budget_exceeded, model_config, "
+            "by provider_billing), budget_exceeded, default_limit_reached "
+            "(a default per-execution ceiling the flow did not set), "
+            "model_config, "
             "no_confirmation, agent_no_progress, publication_missing, "
             "result_schema_invalid (result.json does not match the flow "
             "result schema), setup_failed, "
             "verification_failed, verification_blocked, tool_error, "
             "agent_error, model_stream_idle (timed out while the model "
-            "stream was silent), timeout, cancelled, "
+            "stream was silent), approval_denied, approval_timeout, "
+            "approval_unavailable (an approval-required rule could not pause "
+            "the run), resume_failed (a parked run could not be continued), "
+            "gateway_bypassed (a private-runner host CLI made no "
+            "request through the Preloop gateway), timeout, cancelled, "
             "unknown. Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),
@@ -424,6 +430,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
         description=(
             "Present while the execution is parked on a human decision "
             "(status WAITING_FOR_HUMAN)."
+        ),
+    )
+    resume_execution_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "The execution that continued this one after it parked (on an "
+            "approval or on its child runs). Null when it never resumed."
         ),
     )
     runner: ExecutionRunner = Field(

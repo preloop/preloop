@@ -293,3 +293,47 @@ def test_token_fingerprint_is_bound_to_instance_secret(
         module.settings.security, "secret_key", "synthetic-instance-two"
     )
     assert first != SecretService._refresh_token_fingerprint("synthetic-provider-token")
+
+
+@pytest.mark.parametrize(
+    "provider,agent",
+    [("anthropic", "Claude Code"), ("openai", "Codex CLI")],
+)
+def test_terminal_error_names_sync_credentials_first(provider: str, agent: str) -> None:
+    """A lineage rotated by the local login is recovered by a sync, not a login."""
+    error = CredentialRefreshError(
+        "synthetic", provider=provider, code="refresh_token_reused", status_code=401
+    )
+    message = error.recovery_message()
+    sync = f'preloop agents sync-credentials "{agent}"'
+    assert sync in message
+    assert message.index(sync) < message.index("--from-local")
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["_openai_codex_refresh_required", "_anthropic_claude_code_refresh_required"],
+)
+@pytest.mark.parametrize(
+    "seconds_left,expected",
+    [(9 * 60 + 59, True), (10 * 60 + 1, False)],
+)
+def test_gateway_refreshes_ten_minutes_ahead_of_expiry(
+    monkeypatch: pytest.MonkeyPatch, method: str, seconds_left: int, expected: bool
+) -> None:
+    """The gateway rotates before a client's own 5-minute window opens."""
+    from datetime import datetime, timezone
+
+    from preloop.services import secret_service as module
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> "FrozenDatetime":  # type: ignore[override]
+            return cls.fromtimestamp(now.timestamp(), tz)
+
+    monkeypatch.setattr(module, "datetime", FrozenDatetime)
+    expires = int(now.timestamp() * 1000) + seconds_left * 1000
+    service = SecretService()
+    assert getattr(service, method)({"expires": expires}) is expected

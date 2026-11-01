@@ -27,6 +27,7 @@ from preloop.models.crud import (
 from preloop.models.models.user import User
 from preloop.models.schemas.flow import TRIAGE_BATCH_MAX
 from preloop.services.flow_presets_service import clone_preset_for_account
+from preloop.services.read_only_review import ReadOnlyHumanTriggerError
 
 IMPLEMENTER_SLUG = "automated-issue-implementation"
 REVIEWER_SLUG = "pull-request-reviewer"
@@ -412,6 +413,7 @@ def resolve_or_create_flow(
             flow_crud=crud,
             clear_event_triggers=True,
             is_enabled=True,
+            created_by_user_id=getattr(current_user, "id", None),
         )
     except HTTPException as exc:
         raise _http(exc.status_code, exc.detail) from exc
@@ -945,6 +947,9 @@ async def run_preset_on_target(
             trigger_event_data=trigger_event_data,
             triggered_by=triggered_by,
         )
+    except ReadOnlyHumanTriggerError as exc:
+        # A read-only review runs only from its CI identity; nothing was created.
+        raise _http(409, str(exc)) from exc
     except FlowDispatchError as exc:
         # Dispatch may fail after the row is committed. Return its identity
         # so the console can open the existing run instead of creating another.
@@ -1264,6 +1269,9 @@ async def _run_preset_on_pull_request(
             trigger_event_data=trigger_event_data,
             triggered_by=triggered_by,
         )
+    except ReadOnlyHumanTriggerError as exc:
+        # A read-only review runs only from its CI identity; nothing was created.
+        raise _http(409, str(exc)) from exc
     except FlowDispatchError as exc:
         execution_id = str(exc.execution_id)
         url = f"/console/flows/executions/{execution_id}"

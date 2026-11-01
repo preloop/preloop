@@ -3063,6 +3063,12 @@ class FlowTriggerService:
 
         await self._authorize_flow_run(flow, authorization_context)
 
+        from preloop.services.read_only_review import reject_human_read_only_trigger
+
+        # Only the restricted CI route may start a read-only review; it never
+        # comes through here. Refuse before the row exists.
+        reject_human_read_only_trigger(flow)
+
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
                 f"Flow '{flow.name}' ({flow.id}) not started: the account "
@@ -3271,6 +3277,10 @@ class FlowTriggerService:
 
         await self._authorize_flow_run(flow, authorization_context)
 
+        from preloop.services.read_only_review import reject_human_read_only_trigger
+
+        reject_human_read_only_trigger(flow)
+
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
                 f"Flow '{flow.name}' ({flow.id}) not started: the account "
@@ -3289,6 +3299,7 @@ class FlowTriggerService:
         )
 
         executions = []
+        execution_inputs = []
         cells = []
         for index, entry in enumerate(matrix):
             trigger_details: Dict[str, Any] = {}
@@ -3327,6 +3338,11 @@ class FlowTriggerService:
                 trigger_event_details=trigger_details,
                 batch_id=batch_id,
             )
+            execution_inputs.append(execution_data)
+
+        # Validate every cell before CRUD.create (which may commit) so an
+        # incompatible later selection cannot leave a partially created batch.
+        for execution_data in execution_inputs:
             executions.append(
                 crud_flow_execution.create(self.db, obj_in=execution_data)
             )
