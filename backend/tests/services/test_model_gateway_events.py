@@ -819,6 +819,7 @@ def test_tool_evidence_capture_survives_execution_sequence_stamping() -> None:
     assert published["sequence_domain"] == "execution"
     assert published["execution_id"] == str(usage.flow_execution_id)
 
+
 def test_published_gateway_event_is_flagged_as_already_stored():
     """The stored model-call row must not be stored again by the log persister."""
     import json as _json
