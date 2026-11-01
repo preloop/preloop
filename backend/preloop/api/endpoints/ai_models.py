@@ -1144,6 +1144,14 @@ def rotate_ai_model_credential(
     ``PUT /ai-models/{model_id}``.
     """
     ensure_permission_in_oss(db, current_user, "edit_ai_models")
+    api_key = (body.api_key or "").strip() or None
+    external_ref = (body.external_ref or "").strip() or None
+    if (api_key is None) == (external_ref is None):
+        # Fixed message: never echo the submitted material back.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide exactly one non-blank api_key or external_ref",
+        )
     db_model = _get_account_ai_model(
         db=db, model_id=model_id, current_user=current_user
     )
@@ -1159,8 +1167,8 @@ def rotate_ai_model_credential(
             db,
             secret_id=secret_id,
             account_id=current_user.account_id,
-            secret_value=body.api_key,
-            external_ref=body.external_ref,
+            secret_value=api_key,
+            external_ref=external_ref,
         )
     except LookupError as exc:
         raise HTTPException(

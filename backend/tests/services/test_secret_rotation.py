@@ -222,17 +222,83 @@ def test_rotate_endpoint_audits_without_material(
 
 
 @pytest.mark.parametrize(
-    "body",
-    [{}, {"api_key": "a", "external_ref": "secret/x"}, {"api_key": "a", "x": 1}],
+    ("body", "status"),
+    [
+        ({}, 400),
+        ({"api_key": "sk-echo-me", "external_ref": "secret/x"}, 400),
+        ({"api_key": "   "}, 400),
+        ({"external_ref": " "}, 400),
+        ({"api_key": "sk-echo-me", "x": 1}, 422),
+    ],
 )
-def test_rotate_endpoint_rejects_bad_bodies(
-    db_session: Session, test_user, body: dict
+def test_rotate_endpoint_rejects_bad_bodies_without_echo(
+    db_session: Session, test_user, body: dict, status: int
 ) -> None:
     model = _model(db_session, test_user.account_id, api_key="sk-old")
     response = _client(db_session, test_user).post(
         f"/api/v1/ai-models/{model.id}/credentials/rotate", json=body
     )
-    assert response.status_code == 422
+    assert response.status_code == status
+    assert "sk-echo-me" not in response.text
+    db_session.refresh(model.credentials_secret)
+    assert model.credentials_secret.version == 1
+
+
+def test_rotate_refuses_external_structured_credentials(
+    db_session: Session, test_user
+) -> None:
+    service = _service(_FakeVault({"secret/a": "{}", "secret/b": "{}"}))
+    secret = service.create_external_secret_reference(
+        db_session,
+        account_id=test_user.account_id,
+        name="Vault bundle",
+        secret_kind="ai_model_credentials",
+        backend_type="vault_kv_v2",
+        external_ref="secret/a",
+    )
+    with pytest.raises(ValueError, match="Only API-key credentials"):
+        service.rotate_secret_reference(
+            db_session,
+            secret_id=secret.id,
+            account_id=test_user.account_id,
+            external_ref="secret/b",
+        )
+
+
+def test_external_update_is_account_scoped(db_session: Session, test_user) -> None:
+    service = _service(_FakeVault({"secret/a": "v"}))
+    secret = service.create_external_secret_reference(
+        db_session,
+        account_id=test_user.account_id,
+        name="Vault key",
+        secret_kind="ai_model_api_key",
+        backend_type="vault_kv_v2",
+        external_ref="secret/a",
+    )
+    other = crud_account.create(db_session, obj_in={"organization_name": "Other"})
+    created = service.create_external_secret_reference(
+        db_session,
+        account_id=other.id,
+        name="Hijack",
+        secret_kind="ai_model_api_key",
+        backend_type="vault_kv_v2",
+        external_ref="secret/evil",
+        existing_secret_id=secret.id,
+    )
+    assert created.id != secret.id
+    db_session.refresh(secret)
+    assert (secret.external_ref, secret.version) == ("secret/a", 1)
+
+    updated = service.create_external_secret_reference(
+        db_session,
+        account_id=test_user.account_id,
+        name="Vault key",
+        secret_kind="ai_model_api_key",
+        backend_type="vault_kv_v2",
+        external_ref="secret/b",
+        existing_secret_id=secret.id,
+    )
+    assert (updated.id, updated.version) == (secret.id, 2)
 
 
 def test_rotate_endpoint_hides_other_accounts_models(

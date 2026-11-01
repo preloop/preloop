@@ -25113,14 +25113,12 @@ components:
         api_key:
           anyOf:
           - type: string
-            minLength: 1
           - type: 'null'
           title: Api Key
           description: Replacement provider API key
         external_ref:
           anyOf:
           - type: string
-            minLength: 1
           - type: 'null'
           title: External Ref
           description: Replacement external secret path
@@ -25132,7 +25130,11 @@ components:
 
         Send ``api_key`` for a locally encrypted key, or ``external_ref`` for a
 
-        Vault/OpenBao reference. Exactly one is required.'
+        Vault/OpenBao reference. Exactly one non-blank value is required; the
+
+        endpoint checks this itself so a rejected body is never echoed back in a
+
+        validation error.'
     AIModelCredentialRotateResponse:
       properties:
         secret_id:
@@ -53947,6 +53949,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

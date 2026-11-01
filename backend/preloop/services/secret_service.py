@@ -507,7 +507,9 @@ class SecretService:
         now = datetime.now(timezone.utc)
 
         if existing_secret_id:
-            secret_ref = crud_secret_reference.get(db, id=existing_secret_id)
+            secret_ref = crud_secret_reference.get_for_update(
+                db, secret_id=existing_secret_id, account_id=account_id
+            )
             if secret_ref:
                 secret_ref.name = name
                 secret_ref.backend_type = backend_type
@@ -585,12 +587,12 @@ class SecretService:
         if secret_ref is None:
             raise LookupError("Credential secret not found")
         try:
+            if secret_ref.secret_kind != "ai_model_api_key":
+                raise ValueError(
+                    "Only API-key credentials can be rotated here; "
+                    "update structured or subscription credentials instead"
+                )
             if secret_ref.backend_type == LOCAL_ENCRYPTED_BACKEND:
-                if secret_ref.secret_kind != "ai_model_api_key":
-                    raise ValueError(
-                        "Only API-key credentials can be rotated here; "
-                        "update structured or subscription credentials instead"
-                    )
                 if external_ref or not secret_value:
                     raise ValueError("A new api_key is required for this credential")
                 encrypted_value = encrypt_value(secret_value)

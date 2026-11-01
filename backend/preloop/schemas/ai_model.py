@@ -472,23 +472,17 @@ class AIModelCredentialRotateRequest(BaseModel):
     """New credential material for an operator rotation.
 
     Send ``api_key`` for a locally encrypted key, or ``external_ref`` for a
-    Vault/OpenBao reference. Exactly one is required.
+    Vault/OpenBao reference. Exactly one non-blank value is required; the
+    endpoint checks this itself so a rejected body is never echoed back in a
+    validation error.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    api_key: Optional[str] = Field(
-        None, min_length=1, description="Replacement provider API key"
-    )
+    api_key: Optional[str] = Field(None, description="Replacement provider API key")
     external_ref: Optional[str] = Field(
-        None, min_length=1, description="Replacement external secret path"
+        None, description="Replacement external secret path"
     )
-
-    @model_validator(mode="after")
-    def _exactly_one(self) -> "AIModelCredentialRotateRequest":
-        if bool(self.api_key) == bool(self.external_ref):
-            raise ValueError("Provide exactly one of api_key or external_ref")
-        return self
 
     def __repr__(self) -> str:
         return "AIModelCredentialRotateRequest(<redacted>)"
