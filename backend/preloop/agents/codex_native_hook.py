@@ -434,11 +434,16 @@ if [ -n "${{PRELOOP_AS_AGENT:-}}" ]; then
             echo "PRELOOP_SETUP_FAILED agent_workspace_tampered"
             exit 1
         fi
+        # Remove, never write through: any entry may be a link the agent left.
+        rm -rf "$_pl_gitdir/config" "$_pl_gitdir/hooks"
         cp "{_GIT_CONFIG_SAVE_DIR}/$_pl_n" "$_pl_gitdir/config"
-        rm -rf "$_pl_gitdir/hooks"
         mkdir -p "$_pl_gitdir/hooks"
-        rm -f "$_pl_gitdir/commondir" "$_pl_gitdir/config.worktree" \
-            "$_pl_gitdir/info/attributes"
+        rm -f "$_pl_gitdir/commondir" "$_pl_gitdir/config.worktree"
+        if [ -L "$_pl_gitdir/info" ]; then
+            rm -f "$_pl_gitdir/info"
+        else
+            rm -f "$_pl_gitdir/info/attributes"
+        fi
     done < {_GIT_CONFIG_SAVE_DIR}/repos
     export GIT_CONFIG_COUNT=2
     export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null

@@ -244,9 +244,38 @@ echo "RESULT reclaim continued"
     assert proc.returncode != 0
 
 
+def test_reclaim_does_not_write_through_links_in_git():
+    script = f"""
+set -e
+id -u {AGENT_USER} >/dev/null 2>&1 \\
+    || useradd --uid 10001 --user-group --create-home {AGENT_USER}
+mkdir -p /workspace && cd /workspace && git init -q repo
+export CODEX_HOME=/root/.codex
+mkdir -p "$CODEX_HOME" && printf 'model = "m"\\n' > "$CODEX_HOME/config.toml"
+printf 'root-owned\\n' > /etc/preloop-target
+mkdir -p /etc/preloop-info && printf 'keep\\n' > /etc/preloop-info/attributes
+{codex_agent_user_block()}
+$PRELOOP_AS_AGENT bash -c '
+    cd /workspace/repo/.git
+    rm -f config && ln -s /etc/preloop-target config
+    rm -rf info && ln -s /etc/preloop-info info
+' </dev/null
+{codex_reclaim_workspace_block()}
+[ "$(cat /etc/preloop-target)" = root-owned ] && echo "RESULT target unchanged"
+[ -f /etc/preloop-info/attributes ] && echo "RESULT info target unchanged"
+[ ! -L /workspace/repo/.git/config ] && git -C /workspace/repo status >/dev/null \\
+    && echo "RESULT config restored"
+"""
+    proc = _docker_run(script)
+    assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
+    for line in ("target unchanged", "info target unchanged", "config restored"):
+        assert f"RESULT {line}" in proc.stdout
+
+
 if __name__ == "__main__":
     if not _image_available():
         sys.exit("needs docker and PRELOOP_UNIVERSAL_TEST_IMAGE present locally")
     test_agent_commands_cannot_change_the_hook()
     test_a_replaced_repository_stops_root_steps()
+    test_reclaim_does_not_write_through_links_in_git()
     print("agent user container test: OK")
