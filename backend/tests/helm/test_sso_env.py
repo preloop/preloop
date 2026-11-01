@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
 import yaml
 
 from tests.helm.chart_helpers import (
+    TEST_JWT_SECRET,
     helm_template,
     helm_template_all,
     load_values,
@@ -84,29 +86,55 @@ def test_on_with_all_settings() -> None:
     assert env["GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS"]["value"] == "true"
 
 
-def test_public_url_with_path_fails_the_render() -> None:
+def _render_fails(public_url: str) -> str:
+    helm = shutil.which("helm")
+    if helm is None:  # pragma: no cover - depends on the local toolchain
+        pytest.skip("helm binary not available")
     with offline_chart() as chart_dir:
         result = subprocess.run(
             [
-                "helm",
+                helm,
                 "template",
                 "preloop",
                 str(chart_dir),
                 "--show-only",
                 API,
                 "--set",
-                "environment.jwtSecret=helm-test-signing-key-not-a-real-secret",
+                f"environment.jwtSecret={TEST_JWT_SECRET}",
                 "--set",
                 "sso.enabled=true",
                 "--set",
-                "sso.publicUrl=https://sso.example.com/preloop",
+                f"sso.publicUrl={public_url}",
             ],
             capture_output=True,
             text=True,
             check=False,
         )
     assert result.returncode != 0
-    assert "sso.publicUrl must be an origin" in result.stderr
+    return result.stderr
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "https://sso.example.com/preloop",
+        "http://sso.example.com",
+        "https://user@sso.example.com",
+        "https://sso.example.com\\x",
+        "https://sso example.com",
+    ],
+)
+def test_non_https_origin_fails_the_render(public_url: str) -> None:
+    assert "sso.publicUrl must be an https origin" in _render_fails(public_url)
+
+
+def test_https_origin_with_port_renders() -> None:
+    env = _api_env(
+        helm_template(
+            API, ["sso.enabled=true", "sso.publicUrl=https://sso.example.com:8443"]
+        )
+    )
+    assert env["SSO_PUBLIC_URL"]["value"] == "https://sso.example.com:8443"
 
 
 @pytest.mark.parametrize("enabled", ["true", "false"])

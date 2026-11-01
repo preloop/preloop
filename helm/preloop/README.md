@@ -453,15 +453,15 @@ deployments only when set. See `https://docs.preloop.ai/guide/governance-review/
 
 ### Single sign-on parameters
 
-Read only by the Preloop Cloud and Preloop Enterprise images, on the API
-deployment. Connections, verified domains, enforcement and SAML SP signing keys
+Rendered on the API deployment. `sso.enabled` and `sso.publicUrl` are read
+only by the Preloop Cloud and Preloop Enterprise images. Connections, verified domains, enforcement and SAML SP signing keys
 are per account (console or API). Setup guides: `https://docs.preloop.ai/guide/sso/`.
 
 | Name | Description | Value |
 | ---- | ----------- | ----- |
 | `sso.enabled` | `ENTERPRISE_SSO_ENABLED`: mount the SSO sign-in and administration routes. `false` renders the variable as `false` | `false` |
-| `sso.publicUrl` | `SSO_PUBLIC_URL`: origin for the OIDC redirect URI, SAML SP entity id and ACS; empty uses `environment.preloopUrl`. Origin only | `""` |
-| `sso.allowPrivateIssuers` | `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`: accept private-address issuer and metadata URLs when saving a connection. Single-tenant installs only | `false` |
+| `sso.publicUrl` | `SSO_PUBLIC_URL`: https origin for the OIDC redirect URI, SAML SP entity id and ACS; empty uses `environment.preloopUrl`. No path or userinfo | `""` |
+| `sso.allowPrivateIssuers` | `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`: accept private-address issuer and metadata URLs when saving a connection. Core setting shared with gateway identity providers, which it also relaxes. Single-tenant installs only | `false` |
 
 ### Resource management parameters
 

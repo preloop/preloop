@@ -284,8 +284,10 @@ analysis model (review off) until governanceReview.analysisModel is set.
 {{- end }}
 
 {{/*
-Enterprise single sign-on settings, read only by the Preloop Cloud and Preloop
-Enterprise images (the open-source image has no SSO routes and ignores them).
+Enterprise single sign-on settings. ENTERPRISE_SSO_ENABLED and SSO_PUBLIC_URL
+are read only by the Preloop Cloud and Preloop Enterprise images.
+GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS is a core setting shared with gateway identity
+providers (see values.yaml).
 Rendered on the API, which serves discovery, start, callback, SAML metadata and
 ACS. Disabled renders ENTERPRISE_SSO_ENABLED=false so an Enterprise image does
 not mount the SSO routes.
@@ -296,8 +298,8 @@ not mount the SSO routes.
   value: {{ ternary "true" "false" (eq (toString $sso.enabled) "true") | quote }}
 {{- if eq (toString $sso.enabled) "true" }}
 {{- with $sso.publicUrl }}
-{{- if not (regexMatch "^https?://[^/?#]+$" (trimSuffix "/" .)) }}
-{{- fail "sso.publicUrl must be an origin such as https://preloop.example.com, without a path" }}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$" (trimSuffix "/" .)) }}
+{{- fail "sso.publicUrl must be an https origin such as https://preloop.example.com, without a path" }}
 {{- end }}
 - name: SSO_PUBLIC_URL
   value: {{ trimSuffix "/" . | quote }}
