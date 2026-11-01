@@ -729,6 +729,7 @@ class DynamicMCPServer:
                 from preloop.services.approval_attribution import (
                     attribution_from_user_context,
                 )
+                from preloop.services.approval_helper import agent_reasoning_for
 
                 caller = attribution_from_user_context(user_context)
 
@@ -743,7 +744,7 @@ class DynamicMCPServer:
                         for key, value in tool_args.items()
                         if key != "_preloop_origin"
                     },
-                    agent_reasoning=None,  # Could be extracted from context if available
+                    agent_reasoning=agent_reasoning_for(tool_args),
                     execution_id=caller.execution_id,
                     managed_agent_id=caller.managed_agent_id,
                     runtime_session_id=caller.runtime_session_id,

@@ -100,7 +100,7 @@ def test_prompt_states_every_rule_the_issue_requires(preset):
     assert "parent_artifact_id: the transcript id" in prompt
     assert artifact_deposit.ERROR_AUDIO_DISABLED in prompt
     assert "STEP 5. AUDIO (always attempt it" in prompt
-    assert "FLATTENED RESULTS" in prompt and "#1151" in prompt
+    assert "FLATTENED RESULTS" not in prompt
     assert "do not treat it as a failure" in " ".join(prompt.split())
     consent = prompt.index("STEP 0. CONSENT FIRST")
     assert consent < prompt.index("STEP 1. FETCH")
@@ -329,63 +329,22 @@ async def test_missing_consent_asks_the_user_and_deposits_nothing(
 
 # --- through the proxy (#1151) ------------------------------------------------
 
-_STR = r"""(?P<q>['"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)"""
 
-
-def _field(blob: str, name: str) -> str | None:
-    import ast
-
-    match = re.search(name + "=" + _STR, blob, re.S)
-    if not match:
-        return None
-    return ast.literal_eval(match.group("q") + match.group("body") + match.group("q"))
-
-
-def rebuild_audio(text: str) -> dict[str, Any]:
-    """The prompt's FLATTENED RESULTS step for an AudioContent block."""
-    return {
-        "type": "audio",
-        "data": _field(text, "data"),
-        "mimeType": _field(text, "mime_type") or _field(text, "mimeType"),
-    }
-
-
-def rebuild_resource(text: str) -> dict[str, Any]:
-    """The prompt's FLATTENED RESULTS step for an EmbeddedResource block."""
-    inner = text[text.index("resource=TextResourceContents(") :]
-    uri = _field(inner, "uri")
-    if uri is None:
-        uri = re.search(r"uri=AnyUrl\('([^']+)'\)", inner).group(1)
-    return {
-        "type": "resource",
-        "resource": {
-            "uri": uri,
-            "mimeType": _field(inner, "mime_type") or _field(inner, "mimeType"),
-            "text": _field(inner, "text"),
-        },
-    }
-
-
-async def _through_proxy(user_context, upstream) -> str:
+async def _through_proxy(user_context, upstream) -> list[dict[str, Any]]:
     """What the agent receives when the result passes the MCP proxy."""
     from tests.services.test_proxied_tool_error_audit import _setup
 
     with pytest.MonkeyPatch.context() as mp:
         mcp, _, _, _ = _setup(mp, user_context, upstream=upstream)
         result = await mcp.call_tool("safe_tool", {"ok": "yes"})
-    assert [block.type for block in result.content] == ["text"]
-    return result.content[0].text
+    return _sim_blocks(result.content)
 
 
 @pytest.mark.asyncio
-async def test_flattened_proxy_results_rebuild_to_the_original_blocks(
+async def test_proxy_results_keep_their_blocks_and_deposit_as_is(
     client, db_session, test_user
 ):
-    """Pins the shape #1151 tracks and proves the prompt's rebuild step works.
-
-    When #1151 returns blocks intact this test fails on the shape asserts;
-    the FLATTENED RESULTS step and this test then go away together.
-    """
+    """#1151: audio and VTT blocks cross the proxy intact and deposit unchanged."""
     from uuid import uuid4
 
     from preloop.services.dynamic_mcp_server import UserContext
@@ -400,24 +359,13 @@ async def test_flattened_proxy_results_rebuild_to_the_original_blocks(
     )
     audio_blocks = sim.get_audio("nord", "late")
     transcript_blocks = sim.transcribe_audio("nord/late")
-    audio_text = await _through_proxy(ctx, audio_blocks)
-    transcript_text = await _through_proxy(ctx, transcript_blocks)
+    received_audio = await _through_proxy(ctx, audio_blocks)
+    received_transcript = await _through_proxy(ctx, transcript_blocks)
 
-    # The flattened shape the prompt describes.
-    assert "type='audio'" in audio_text and "mime_type='audio/wav'" in audio_text
-    assert "resource=TextResourceContents(" in transcript_text
-    assert "mime_type='text/vtt'" in transcript_text
-
-    audio = rebuild_audio(audio_text)
-    vtt = rebuild_resource(transcript_text)
-    original_audio = _sim_blocks(audio_blocks)[0]
-    original_vtt = next(
-        b for b in _sim_blocks(transcript_blocks) if b["type"] == "resource"
-    )
-    assert audio == {k: original_audio[k] for k in ("type", "data", "mimeType")}
-    assert vtt["resource"] == {
-        k: original_vtt["resource"][k] for k in ("uri", "mimeType", "text")
-    }
+    assert received_audio == _sim_blocks(audio_blocks)
+    assert received_transcript == _sim_blocks(transcript_blocks)
+    audio = received_audio[0]
+    vtt = next(b for b in received_transcript if b["type"] == "resource")
 
     _set_audio(db_session, test_user.account_id, True)
     db_session.commit()

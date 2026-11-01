@@ -26,7 +26,14 @@ import httpx2
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.tools import ToolResult
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import (
+    AudioContent,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    ToolAnnotations,
+)
 
 from preloop.api.auth.key_scopes import mcp_scope_allowed
 from preloop.services.audit.async_writer import outbox_enabled
@@ -427,19 +434,37 @@ def _upstream_error_detail(
     return (_short_reason(code) or "tool_error"), _short_reason(reason)
 
 
-def _proxied_upstream_result(text: str, upstream: Any) -> Any:
+_TYPED_CONTENT_BLOCKS = (AudioContent, EmbeddedResource, ImageContent, ResourceLink)
+
+
+def _has_typed_content(content: Any) -> bool:
+    """True when a proxied result list holds an MCP non-text block (#1151).
+
+    Only the known MCP block types count, so anything else keeps the
+    historical text conversion.
+    """
+    return isinstance(content, list) and any(
+        isinstance(item, _TYPED_CONTENT_BLOCKS) for item in content
+    )
+
+
+def _proxied_upstream_result(
+    text: str, upstream: Any, content: list[Any] | None = None
+) -> Any:
     """Return what the agent receives for a proxied upstream result.
 
-    A plain success keeps the historical string. When the upstream set
+    A plain text success keeps the historical string. When the upstream set
     ``isError`` or ``structuredContent`` both are forwarded unchanged, so a
     refusal reaches the agent as an error, and the outcome is stamped for the
-    audit row.
+    audit row. Non-text blocks (image, audio, resource links, embedded
+    resources) in ``content`` are forwarded with their types intact (#1151).
     """
     is_error = getattr(upstream, "is_error", False) is True
     structured = getattr(upstream, "structured_content", None)
     if not isinstance(structured, dict):
         structured = None
-    if not is_error and structured is None:
+    typed = _has_typed_content(content)
+    if not is_error and structured is None and not typed:
         return text
     if is_error:
         _tool_outcome_var.set(_WRAPPER_OUTCOME_UPSTREAM_ERROR)
@@ -447,7 +472,7 @@ def _proxied_upstream_result(text: str, upstream: Any) -> Any:
             _upstream_error_detail(list(upstream or []), structured)
         )
     return ToolResult(
-        content=[TextContent(type="text", text=text)],
+        content=list(content) if typed else [TextContent(type="text", text=text)],
         structured_content=structured,
         is_error=is_error,
     )
@@ -1221,6 +1246,7 @@ _WRAPPER_NAMESPACE_KEYS = (
     "_rule_workflow_id_var",
     "_correlation_id_var",
     "_proxied_raw_result_var",
+    "_has_typed_content",
     "_wrapper_tool_error",
     "_proxied_upstream_result",
     "_proxied_exception_outcome",
@@ -2128,14 +2154,20 @@ async def {internal_name}({params_str}):
             )
 
         # Convert result to string; forward isError/structuredContent.
-        if isinstance(result, list):
+        # Typed results are forwarded as blocks, so skip str() on base64
+        # payloads that would be thrown away.
+        if _has_typed_content(result):
+            text = ""
+        elif isinstance(result, list):
             text = "\\n".join(
                 item.text if hasattr(item, "text") else str(item)
                 for item in result
             )
         else:
             text = str(result)
-        return _proxied_upstream_result(text, upstream)
+        return _proxied_upstream_result(
+            text, upstream, result if isinstance(result, list) else None
+        )
 
     except Exception as e:
         from preloop.services.mcp_client_pool import (
@@ -2196,6 +2228,7 @@ async def {internal_name}({params_str}):
             "Context": Context,
             "_rule_workflow_id_var": _rule_workflow_id_var,
             "_correlation_id_var": _correlation_id_var,
+            "_has_typed_content": _has_typed_content,
             "_proxied_raw_result_var": _proxied_raw_result_var,
             "_wrapper_tool_error": _wrapper_tool_error,
             "_proxied_upstream_result": _proxied_upstream_result,

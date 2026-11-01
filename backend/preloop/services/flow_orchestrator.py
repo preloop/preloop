@@ -414,6 +414,34 @@ def separate_agent_verification_claim(
     return artifact
 
 
+REVIEW_PUBLICATION_KEYS = ("review_posted", "review_posted_to_github")
+
+
+def _unposted_review_field(artifact: Dict[str, Any]) -> Optional[str]:
+    """Return the publication field that reports an undelivered review.
+
+    EE #202: a reviewer that could not post its review must not finish
+    green. ``review_posted`` (preset spelling) or ``review_posted_to_github``
+    (seen in production) set to false fails the run, unless it is the
+    preset's deliberate skip: ``review_action`` null and no ``blocker``.
+    A false alias next to a true one still fails.
+    """
+    unposted = [key for key in REVIEW_PUBLICATION_KEYS if artifact.get(key) is False]
+    if not unposted:
+        return None
+    contradictory = any(artifact.get(key) is True for key in REVIEW_PUBLICATION_KEYS)
+    # The skip must say review_action: null explicitly; a missing key is
+    # not a deliberate decision.
+    deliberate_skip = (
+        "review_action" in artifact
+        and artifact["review_action"] is None
+        and not artifact.get("blocker")
+    )
+    if deliberate_skip and not contradictory:
+        return None
+    return unposted[0]
+
+
 def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
     """Classify a result.json artifact as an explicit completion verdict.
 
@@ -426,9 +454,14 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     consulted as a fallback so audit runs that honour their result schema are
     recognized as completed (channel 2) instead of being overridden to FAILED
     for a missing success confirmation.
+
+    A review that reports it was not posted is a failure whatever ``status``
+    says (EE #202, see ``_unposted_review_field``).
     """
     if not isinstance(artifact, dict):
         return None
+    if _unposted_review_field(artifact) is not None:
+        return "failure"
     status = artifact.get("status")
     if isinstance(status, str):
         normalized = status.strip().lower()
@@ -458,6 +491,9 @@ def _artifact_failure_signal(artifact: Optional[Dict[str, Any]]) -> tuple[str, A
     """
     if not isinstance(artifact, dict):
         return "status", None
+    unposted = _unposted_review_field(artifact)
+    if unposted is not None:
+        return unposted, artifact.get(unposted)
     status = artifact.get("status")
     if (
         isinstance(status, str)
