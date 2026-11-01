@@ -593,7 +593,11 @@ func TestSessionSubscriptionSyncHonoursDeadline(t *testing.T) {
 	t.Cleanup(func() { syncClaudeOAuthFromHook = prev })
 	t.Cleanup(func() {
 		close(release)
-		<-exited
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Error("sync goroutine never reached syncClaudeOAuthFromHook")
+		}
 	})
 	begin := time.Now()
 	runSessionSubscriptionSync(permissionSourceClaudeCode, time.Now().Add(-(sessionSubscriptionSyncBudget - 1500*time.Millisecond)))

@@ -567,58 +567,61 @@ def test_mark_terminal_result_two_callers_keep_first_payload(db_engine) -> None:
     from preloop.models import models
     from preloop.models.crud import crud_account
 
-    with Session(db_engine) as setup:
-        account = crud_account.create(
-            setup,
-            obj_in={"organization_name": f"control-{uuid4()}", "is_active": True},
-        )
-        account_id = account.id
-        agent_id = _create_agent(setup, account_id).id
-        command_id = str(uuid4())
-        crud_agent_control_command.create_command(
-            setup,
-            account_id=account_id,
-            managed_agent_id=agent_id,
-            runtime_session_id=None,
-            command_id=command_id,
-            envelope=_envelope(
-                account_id=account_id,
-                managed_agent_id=agent_id,
-                command_id=command_id,
-            ),
-        )
-        crud_agent_control_command.mark_acked(
-            setup,
-            account_id=account_id,
-            command_id=command_id,
-            managed_agent_id=agent_id,
-            acked_at=datetime.now(UTC),
-        )
-        setup.commit()
-    barrier = threading.Barrier(2)
-    seen: list[dict] = []
-
-    def _write(*, failed: bool, payload: dict, error: str | None) -> None:
-        with Session(db_engine) as session:
-            barrier.wait(timeout=5)
-            crud_agent_control_command.mark_terminal_result(
-                session,
-                account_id=account_id,
-                managed_agent_id=agent_id,
-                command_id=command_id,
-                result_payload=payload,
-                failed=failed,
-                error=error,
-            )
-            record = crud_agent_control_command.get_by_command_id(
-                session,
-                account_id=account_id,
-                command_id=command_id,
-                managed_agent_id=agent_id,
-            )
-            seen.append(crud_agent_control_command.command_result_payload(record) or {})
-
+    account_id = None
     try:
+        with Session(db_engine) as setup:
+            account = crud_account.create(
+                setup,
+                obj_in={"organization_name": f"control-{uuid4()}", "is_active": True},
+            )
+            account_id = account.id
+            agent_id = _create_agent(setup, account_id).id
+            command_id = str(uuid4())
+            crud_agent_control_command.create_command(
+                setup,
+                account_id=account_id,
+                managed_agent_id=agent_id,
+                runtime_session_id=None,
+                command_id=command_id,
+                envelope=_envelope(
+                    account_id=account_id,
+                    managed_agent_id=agent_id,
+                    command_id=command_id,
+                ),
+            )
+            crud_agent_control_command.mark_acked(
+                setup,
+                account_id=account_id,
+                command_id=command_id,
+                managed_agent_id=agent_id,
+                acked_at=datetime.now(UTC),
+            )
+            setup.commit()
+        barrier = threading.Barrier(2)
+        seen: list[dict] = []
+
+        def _write(*, failed: bool, payload: dict, error: str | None) -> None:
+            with Session(db_engine) as session:
+                barrier.wait(timeout=5)
+                crud_agent_control_command.mark_terminal_result(
+                    session,
+                    account_id=account_id,
+                    managed_agent_id=agent_id,
+                    command_id=command_id,
+                    result_payload=payload,
+                    failed=failed,
+                    error=error,
+                )
+                record = crud_agent_control_command.get_by_command_id(
+                    session,
+                    account_id=account_id,
+                    command_id=command_id,
+                    managed_agent_id=agent_id,
+                )
+                seen.append(
+                    crud_agent_control_command.command_result_payload(record) or {}
+                )
+
         first = threading.Thread(
             target=_write,
             kwargs={
@@ -656,8 +659,9 @@ def test_mark_terminal_result_two_callers_keep_first_payload(db_engine) -> None:
         assert len(seen) == 2
         assert all(item == winner for item in seen)
     finally:
-        with Session(db_engine) as cleanup:
-            cleanup.execute(
-                delete(models.Account).where(models.Account.id == account_id)
-            )
-            cleanup.commit()
+        if account_id is not None:
+            with Session(db_engine) as cleanup:
+                cleanup.execute(
+                    delete(models.Account).where(models.Account.id == account_id)
+                )
+                cleanup.commit()
