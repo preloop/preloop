@@ -181,7 +181,9 @@ def test_pending_identity_activates_only_through_its_bound_connection(
         )
         is None
     )
-    assert _resolve(db_session, connection, "pending@example.com", source="saml") is None
+    assert (
+        _resolve(db_session, connection, "pending@example.com", source="saml") is None
+    )
     assert _resolve(db_session, connection, "other@example.com") is None
     person = _resolve(db_session, connection, "pending@example.com")
     assert person is not None and person.id == member.person_id
@@ -259,7 +261,9 @@ def test_groups_need_one_team_mapping_and_scope_members(
     connection = _connection(db_session, test_user.account_id)
     other = _connection(db_session, test_user.account_id)
     with pytest.raises(scim.ScimScopeError):
-        scim.create_group(db_session, connection=connection, profile={"displayName": "x"})
+        scim.create_group(
+            db_session, connection=connection, profile={"displayName": "x"}
+        )
     crud_sso_group_mapping.create_mapping(
         db_session,
         account_id=connection.account_id,
@@ -277,17 +281,20 @@ def test_groups_need_one_team_mapping_and_scope_members(
     )
     first = db_session.scalars(
         select(models.ScimResource).where(
-            models.ScimResource.user_id == _pending(db_session, connection, "a@example.com").id
+            models.ScimResource.user_id
+            == _pending(db_session, connection, "a@example.com").id
         )
     ).one()
     second = db_session.scalars(
         select(models.ScimResource).where(
-            models.ScimResource.user_id == _pending(db_session, connection, "b@example.com").id
+            models.ScimResource.user_id
+            == _pending(db_session, connection, "b@example.com").id
         )
     ).one()
     foreign = db_session.scalars(
         select(models.ScimResource).where(
-            models.ScimResource.user_id == _pending(db_session, other, "c@example.com").id
+            models.ScimResource.user_id
+            == _pending(db_session, other, "c@example.com").id
         )
     ).one()
     affected = scim.replace_members(db_session, group=group, member_ids={first.id})
