@@ -7,11 +7,13 @@ import type { LoginView } from './login-view';
 describe('Email-first SSO sign-in', () => {
   let fetchStub: sinon.SinonStub;
   let enabled: boolean;
+  let pluginOn: boolean;
   let discovery: Record<string, unknown>;
   let discoveryStatus: number;
   let element: LoginView;
   beforeEach(() => {
     enabled = true;
+    pluginOn = true;
     discovery = { sso_url: '/api/v1/auth/sso/connection-a/start' };
     discoveryStatus = 200;
     (window as any).BRAND_CONFIG = {
@@ -28,7 +30,8 @@ describe('Email-first SSO sign-in', () => {
       const body = path.endsWith('/features')
         ? {
             features: {
-              enterprise_sso: enabled,
+              enterprise_sso: pluginOn,
+              sso_login: enabled,
               passkeys: false,
               registration: true,
             },
@@ -195,5 +198,42 @@ describe('Email-first SSO sign-in', () => {
     await element.updateComplete;
     expect(root.querySelector('#continue-sso')).to.be.null;
     expect(localStorage.getItem('loginRedirect')).to.equal('/console/agents');
+  });
+  it('shows the password form directly when no SSO connection is configured', async () => {
+    // The founder's case: plugin loaded, no connection anywhere.
+    enabled = false;
+    pluginOn = true;
+    const root = await mount();
+    expect(root.querySelector('#sso-discovery-form')).to.be.null;
+    expect(root.querySelector('#username')).to.exist;
+    expect(root.querySelector('#password')).to.exist;
+    expect(root.textContent).not.to.contain('Use single sign-on');
+    expect(fetchStub.callCount).to.equal(1);
+  });
+  it('prefills the password form for a domain without SSO and does not loop', async () => {
+    discovery = { sso_url: null };
+    const root = await mount();
+    await discover('user@other.com');
+    const username = root.querySelector<HTMLInputElement>('#username')!;
+    expect(username.value).to.equal('user@other.com');
+    expect(root.querySelector('#sso-discovery-form')).to.be.null;
+    const discoverCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]).endsWith('/sso/discover'))
+        .length;
+    expect(discoverCalls()).to.equal(1);
+    // The SSO link returns to the email step, which keeps the email and
+    // leads to SSO for a configured domain rather than a dead end.
+    const back = Array.from(root.querySelectorAll('sl-button')).find((b) =>
+      b.textContent?.includes('Use single sign-on')
+    ) as HTMLElement;
+    back.click();
+    await element.updateComplete;
+    const email = root.querySelector<HTMLInputElement>('[name=email]')!;
+    expect(email.value).to.equal('user@other.com');
+    discovery = { sso_url: '/api/v1/auth/sso/connection-a/start' };
+    await discover('user@example.com');
+    expect(root.querySelector('#continue-sso')).to.exist;
   });
 });
