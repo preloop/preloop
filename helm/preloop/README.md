@@ -365,6 +365,10 @@ helm uninstall preloop
 |------------------------------------|-------------------------------------------------------|-------------|
 | `database.enabled`                 | Deploy PostgreSQL instance                            | `true`      |
 | `database.external`                | Use external PostgreSQL instance                      | `false`     |
+| `database.pgbouncer.enabled`       | Deploy a CNPG PgBouncer Pooler (not used by the app; see docs/operations/pgbouncer.md) | `false` |
+| `database.pgbouncer.instances`     | PgBouncer pods                                        | `2`         |
+| `database.pgbouncer.poolMode`      | `transaction` or `session`                            | `transaction` |
+| `database.pgbouncer.parameters`    | PgBouncer parameters (`default_pool_size`, `max_client_conn`, ...) | `{default_pool_size: "20", max_client_conn: "400"}` |
 | `database.externalDatabase.host`   | External PostgreSQL host                             | `""`        |
 | `database.externalDatabase.port`   | External PostgreSQL port                             | `5432`      |
 | `database.externalDatabase.user`   | External PostgreSQL user                             | `""`        |
