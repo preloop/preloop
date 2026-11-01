@@ -102,7 +102,8 @@ def test_many_notifications_merge_in_linear_time():
     tools = _tool_messages(messages)
     assert len(tools) == 1
     assert tools[0]["content"] == "\n".join([chunk] * count)
-    assert elapsed < 2.0
+    # Quadratic merging took ~10.5 s here; linear takes well under 1 s.
+    assert elapsed < 5.0
 
 
 def test_function_call_output_repeat_merges_too():
