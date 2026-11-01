@@ -212,9 +212,12 @@ native tools, which is a separate mechanism from MCP governance.
 `preToolUse` approval hook. That hook gates native tool calls; it is not
 MCP governance, and MCP governance is not native-tool approval.
 
-Model calls are not gateway metered. The server forces
-`gateway_metered: false`
-(`backend/preloop/services/host_exec.py`). The execution page shows
+Model calls are not gateway metered: Copilot has no route through the
+Preloop gateway for GitHub-hosted models. The server records
+`gateway_metered: false` from the execution's own gateway rows
+(`backend/preloop/services/host_exec_gateway.py`); agent JSON cannot claim
+otherwise. Copilot runs are not failed for it, unlike Codex and Claude Code
+host runs, which can and must route through Preloop. The execution page shows
 "Not gateway metered". The result can include the Copilot session id,
 the model Copilot reported, and `premium_requests`. That count is not
 a token ledger and not a dollar amount.

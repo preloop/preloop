@@ -17,6 +17,7 @@ export interface GitCloneConfig {
   create_pull_request?: boolean;
   pull_request_title?: string;
   pull_request_description?: string;
+  publication_mode?: 'legacy' | 'isolated' | 'read_only';
 }
 
 export interface FlowCustomCommands {
@@ -172,6 +173,17 @@ export interface Flow {
   timeout_seconds?: number | null;
   max_iterations?: number | null;
   max_budget?: number | null;
+  /**
+   * The ceilings a run of this flow is held to right now: the flow's own
+   * agent_config.limits per key, else the instance default (no built-in default).
+   * A ceiling the instance turned off is absent.
+   */
+  effective_limits?: Partial<
+    Record<
+      'max_total_tokens' | 'max_turns' | 'max_usd',
+      { value: number; source: 'flow' | 'environment' | 'default' }
+    >
+  >;
   is_preset?: boolean;
   is_enabled?: boolean;
   runner_pool?: string | null;

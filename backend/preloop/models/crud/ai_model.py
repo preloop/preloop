@@ -1035,5 +1035,29 @@ class CRUDAIModel(CRUDBase[AIModel]):
             is not None
         )
 
+    def set_owner_flow_use(
+        self, db: Session, *, db_obj: AIModel, user_id: Optional[uuid.UUID | str]
+    ) -> AIModel:
+        """Record (or clear) the owner-flow subscription opt-in.
+
+        Callers must have verified that ``user_id`` owns the subscription;
+        this method only persists the choice.
+
+        Args:
+            db: Active database session.
+            db_obj: Subscription-OAuth model row.
+            user_id: Opting-in user, or ``None`` to turn the opt-in off.
+
+        Returns:
+            The refreshed model row.
+        """
+        db_obj.owner_flow_use_user_id = (
+            uuid.UUID(str(user_id)) if user_id is not None else None
+        )
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
 
 ai_model = CRUDAIModel(AIModel)

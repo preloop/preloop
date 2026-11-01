@@ -620,3 +620,106 @@ async def test_private_launch_reports_effective_image(
         f"Agent image reference: {expected or default_agent_image(agent_type)}"
         in launch["script"]
     )
+
+
+_REVIEW_PROMPT = (
+    "Review the checked-out pull request. Do not edit files. "
+    "Report findings with file and line, severity and a suggested fix.\n"
+) * 1000  # ~118 KB, far above the 3-4 KB prompts that failed in the field
+
+
+def _review_context(agent_type: str, **extra):
+    context = {
+        "agent_type": agent_type,
+        "agent_config": {},
+        "model_identifier": "qwen2.5-coder",
+        "model_provider": "openai",
+        "model_endpoint": "http://192.0.2.10:11434/v1",
+        "account_api_token": "mcp-secret",
+        "prompt": _REVIEW_PROMPT,
+        "execution_id": str(uuid4()),
+        "flow_id": str(uuid4()),
+    }
+    context.update(extra)
+    return context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", ["codex", "opencode"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"allowed_mcp_servers": ["preloop-mcp"], "allowed_mcp_tools": []},
+        {
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {"repository_url": "https://github.com/example/repo.git"}
+                ],
+            }
+        },
+        {"custom_commands": {"enabled": True, "commands": ["echo ready"]}},
+    ],
+    ids=["no-optional-blocks", "mcp", "git-clone", "setup-commands"],
+)
+async def test_review_launch_fits_the_runner_cli_limits(agent_type, extra):
+    """A large prompt and each optional block alone stay inside the CLI caps.
+
+    The CLI rejects an empty script or one above 96 KiB, and any environment
+    value above 96 KiB. The prompt travels as chunked environment variables,
+    so its size must not move the script.
+    """
+    from preloop.agents.runner_launch import MAX_RUNNER_LAUNCH_STRING_BYTES
+
+    launch = await build_runner_launch(_review_context(agent_type, **extra))
+    script = launch["script"]
+    assert script.strip()
+    assert len(script.encode()) <= MAX_RUNNER_LAUNCH_STRING_BYTES
+    assert _REVIEW_PROMPT[:200] not in script
+    for value in launch["env"].values():
+        assert len(value.encode()) <= MAX_RUNNER_LAUNCH_STRING_BYTES
+    small = await build_runner_launch(
+        _review_context(agent_type, prompt="Review the PR.", **extra)
+    )
+    # Only the chunk reassembly lines grow with the prompt.
+    assert len(script) - len(small["script"]) < 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("script", "env", "match"),
+    [
+        ("   \n", {}, "empty bootstrap script"),
+        ("x" * (96 * 1024 + 1), {}, "bootstrap script is 98305 bytes"),
+        ("echo ok", {"BIG_VALUE": "y" * (96 * 1024 + 5)}, "BIG_VALUE is 98309"),
+    ],
+)
+async def test_launch_the_cli_would_refuse_is_a_named_launch_error(
+    monkeypatch, script, env, match
+):
+    """The control plane names the problem instead of the CLI's generic refusal."""
+    from preloop.agents.codex import CodexAgent
+    from preloop.agents.runner_launch import (
+        RunnerLaunchRejectedError,
+        prepare_runner_delivery,
+    )
+
+    original = CodexAgent._prepare_environment
+
+    async def with_env(self, context):
+        prepared = await original(self, context)
+        prepared.update(env)
+        return prepared
+
+    monkeypatch.setattr(CodexAgent, "_build_codex_script", lambda self, c: script)
+    monkeypatch.setattr(CodexAgent, "_prepare_environment", with_env)
+    with pytest.raises(RunnerLaunchRejectedError, match=match):
+        await build_runner_launch(_review_context("codex"))
+    delivered = await prepare_runner_delivery(
+        MagicMock(),
+        {"execution_id": str(uuid4()), "launch_version": 1},
+        _review_context("codex"),
+    )
+    assert "launch" not in delivered
+    assert match.split(" is ")[0] in delivered["launch_error"]

@@ -517,7 +517,7 @@ async def test_unsupported_executor_rejected_before_lease(
     with patch(
         "preloop.services.read_only_review.mint_repository_lease", AsyncMock()
     ) as mint:
-        with pytest.raises(ValueError, match="supported hosted native executor"):
+        with pytest.raises(ValueError, match="supported native executor"):
             await prepare_read_only_review(MagicMock(), flow, MagicMock(), {})
     mint.assert_not_awaited()
 
@@ -632,7 +632,7 @@ def test_factory_checks_both_effective_configuration_sources(
     from preloop.agents.factory import create_executor_for_execution
 
     _, flow = review
-    with pytest.raises(ValueError, match="supported hosted native executor"):
+    with pytest.raises(ValueError, match="supported native executor"):
         create_executor_for_execution(
             "codex",
             config,
@@ -641,4 +641,60 @@ def test_factory_checks_both_effective_configuration_sources(
                 "read_only_review": True,
                 "agent_config": context_config,
             },
+        )
+
+
+@pytest.mark.asyncio
+async def test_shared_flow_selects_only_principals_repository(
+    review: tuple[Any, Any],
+) -> None:
+    binding, flow = review
+    other = {"project_id": str(uuid4()), "tracker_id": str(uuid4())}
+    selected = flow.git_clone_config["repositories"][0]
+    flow.git_clone_config = {
+        **flow.git_clone_config,
+        "ci_project_selection": True,
+        "repositories": [other, selected],
+    }
+    context = {}
+    lease = PublicationLease(
+        "only-read",
+        "https://github.com/example/project.git",
+        datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    with (
+        patch(
+            "preloop.models.crud.crud_ci_execution.authorize_dispatch",
+            return_value=binding,
+        ),
+        patch(
+            "preloop.models.crud.crud_tracker.get_by_id_and_account",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "preloop.services.read_only_review.mint_repository_lease",
+            AsyncMock(return_value=lease),
+        ) as mint,
+    ):
+        await prepare_read_only_review(MagicMock(), flow, MagicMock(), context)
+    assert len(context["git_clone_config"]["repositories"]) == 1
+    assert context["git_clone_config"]["repositories"][0]["project_id"] == str(
+        binding.project_id
+    )
+    assert context["git_clone_config"]["repositories"][0]["commit"] == binding.head_sha
+    assert list(context["git_credentials_map"]) == [lease.repository_url]
+    assert mint.await_count == 1
+
+
+def test_shared_selector_cannot_enable_write_capability(
+    review: tuple[Any, Any],
+) -> None:
+    _, flow = review
+    with pytest.raises(ValueError):
+        GitCloneConfig.model_validate(
+            {
+                **flow.git_clone_config,
+                "ci_project_selection": True,
+                "publication_mode": "legacy",
+            }
         )

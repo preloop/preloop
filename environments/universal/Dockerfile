@@ -57,6 +57,25 @@ RUN --network=none set -a; \
     set +a; \
     export CODEX_BASE_IMAGE="${CODEX_BASE_IMAGE}"; \
     exec /opt/entrypoint.sh /opt/preloop-universal/smoke.sh
+# The Preloop CLI for the hosted Codex PreToolUse hook: native commands are
+# checked against Preloop tool rules (backend/preloop/agents/codex_native_hook.py).
+# Pinned release, verified by SHA-256; keep in step with HOOK_CLI_VERSION and
+# HOOK_CLI_SHA256 there.
+ARG PRELOOP_CLI_VERSION=0.17.1
+ARG PRELOOP_CLI_SHA256_AMD64=1d1317990a4111578f3f3a9064cee80ec2c79007abc186ca9db8be662829aac6
+ARG PRELOOP_CLI_SHA256_ARM64=a2abb797413260e9253484c99e4ca3d93d0cf433e949357f21e28134cd5361b0
+ARG TARGETARCH
+RUN case "${TARGETARCH:-amd64}" in \
+        amd64) sum="${PRELOOP_CLI_SHA256_AMD64}" ;; \
+        arm64) sum="${PRELOOP_CLI_SHA256_ARM64}" ;; \
+        *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && mkdir -p /opt/preloop/bin \
+    && curl -fsSL -o /opt/preloop/bin/preloop \
+        "https://github.com/preloop/preloop/releases/download/v${PRELOOP_CLI_VERSION}/preloop-linux-${TARGETARCH:-amd64}" \
+    && echo "${sum}  /opt/preloop/bin/preloop" | sha256sum -c - \
+    && chmod 755 /opt/preloop/bin/preloop
+RUN --network=none PRELOOP_DISABLE_TELEMETRY=true /opt/preloop/bin/preloop agents permission-hook --help >/dev/null
 # The preflight script is last so a change to it does not rebuild the smoke.
 COPY environments/universal/bin/preloop-preflight /usr/local/bin/preloop-preflight
 # Both architectures must contain a runnable preflight before publication.
