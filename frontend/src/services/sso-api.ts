@@ -65,7 +65,10 @@ export interface ScimToken {
   id: string;
   name: string;
   prefix: string;
+  /** Null for tokens created before tokens were bound to a connection; they cannot provision. */
+  connection_id?: string | null;
   created_at: string;
+  last_used_at?: string | null;
   revoked_at: string | null;
 }
 
@@ -232,9 +235,10 @@ export const ssoApi = {
       'DELETE'
     ),
   tokens: (account: string) => request<ScimToken[]>(account, '/scim-tokens'),
-  createToken: (account: string, name: string) =>
+  createToken: (account: string, name: string, connectionId: string) =>
     request<ScimToken & { token: string }>(account, '/scim-tokens', 'POST', {
       name,
+      connection_id: connectionId,
     }),
   revokeToken: (account: string, id: string) =>
     request<void>(account, `/scim-tokens/${encodeURIComponent(id)}`, 'DELETE'),

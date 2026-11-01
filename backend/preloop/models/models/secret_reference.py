@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,6 +33,15 @@ class SecretReference(Base):
     external_ref: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: Incremented each time the stored material (or external reference) is
+    #: replaced, so operators and audit rows can tell rotations apart.
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    #: When the material was last replaced; None means never rotated.
+    rotated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     meta_data: Mapped[Optional[Dict]] = mapped_column(
         JSONB, nullable=True, default=dict
     )

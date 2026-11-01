@@ -53,6 +53,12 @@ by moving an existing tag.
       not `SHA256SUMS`. See [release verification](docs/release-verification.md).
       If `Create Release` fails before the attest step, do not publish the
       assets without the bundle.
+- [ ] `Release audit` is green and its log ends with `Release SBOM audit passed`.
+      It verifies each image's SBOMs and its build provenance attestation,
+      which can be checked by hand with
+      `gh attestation verify oci://ghcr.io/preloop/preloop:<version> --repo preloop/preloop`.
+      Before tagging, rehearse it with a manual Release run (`rehearsal_tag`);
+      see [release SBOM audit](docs/release-sbom-audit.md).
 - [ ] PyPI prereleases are expected to use PEP 440 normalization, so `0.8.0-beta.1` is published as `0.8.0b1`.
 
 ### Catalog listings

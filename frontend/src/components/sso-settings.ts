@@ -40,6 +40,7 @@ export class SsoSettings extends LitElement {
   @state() private newToken = '';
   @state() private showSigningKey = false;
   private newTokenId = '';
+  private newTokenConnection = '';
   @state() private metadataPreview: SamlMetadataPreview | null = null;
   private accountId = '';
   private generation = 0;
@@ -164,6 +165,7 @@ export class SsoSettings extends LitElement {
   private clearNewToken(): void {
     this.newToken = '';
     this.newTokenId = '';
+    this.newTokenConnection = '';
   }
 
   private async revokeToken(token: ScimToken): Promise<void> {
@@ -914,7 +916,44 @@ export class SsoSettings extends LitElement {
     </section>`;
   }
 
+  private connectionLabel(row: SsoConnection): string {
+    const protocol = row.protocol === 'saml' ? 'SAML' : 'OIDC';
+    return `${row.name} (${protocol}${row.enabled ? '' : ', disabled'})`;
+  }
+
+  /** Whether a token can provision, from its binding as the server checks it. */
+  private tokenState(
+    token: ScimToken
+  ): 'unbound' | 'unavailable' | 'disabled' | 'ready' {
+    if (!token.connection_id) return 'unbound';
+    const row = this.connections.find((c) => c.id === token.connection_id);
+    if (!row) return 'unavailable';
+    return row.enabled ? 'ready' : 'disabled';
+  }
+
+  private tokenBinding(token: ScimToken): string {
+    const state = this.tokenState(token);
+    if (state === 'unbound') return 'Not bound';
+    if (state === 'unavailable') return 'Unavailable connection';
+    const name =
+      this.connections.find((row) => row.id === token.connection_id)?.name ??
+      '';
+    return state === 'disabled' ? `${name} (disabled)` : name;
+  }
+
   private renderTokens() {
+    const connections = this.connections;
+    const single = connections.length === 1 ? connections[0].id : '';
+    const newTokenConnection = this.connections.find(
+      (row) => row.id === this.newTokenConnection
+    );
+    const active = this.tokens.filter((token) => !token.revoked_at);
+    const replace = active.some((token) =>
+      ['unbound', 'unavailable'].includes(this.tokenState(token))
+    );
+    const paused = active.some(
+      (token) => this.tokenState(token) === 'disabled'
+    );
     return html`<section aria-labelledby="scim-title">
       <h2 id="scim-title">SCIM tokens</h2>
       <p>
@@ -926,23 +965,61 @@ export class SsoSettings extends LitElement {
         this.newToken
           ? html`<div role="status">
               <p>Save this token now. It cannot be shown again.</p>
+              ${
+                newTokenConnection
+                  ? html`<p>
+                      This token provisions members for
+                      ${newTokenConnection.name}.
+                    </p>`
+                  : nothing
+              }
               <div class="copy">
                 <code>${this.newToken}</code
                 >${this.copyButton('Copy new SCIM token', this.newToken)}
-                <sl-button @click=${() => (this.newToken = '')}
+                <sl-button @click=${() => this.clearNewToken()}
                   >I have saved the token</sl-button
                 >
               </div>
             </div>`
           : nothing
       }
+      ${
+        replace
+          ? html`<p id="scim-legacy-note">
+              Tokens that are not bound to a connection, or whose connection was
+              removed, cannot provision. Create a replacement bound to a
+              connection, update your identity provider, then revoke the old
+              token.
+            </p>`
+          : nothing
+      }
+      ${
+        paused
+          ? html`<p>
+              Tokens bound to a disabled connection cannot provision until that
+              connection is enabled.
+            </p>`
+          : nothing
+      }
       ${this.tokens.map(
         (token) =>
           html`<div class="row">
             <span class="identity"
-              >${token.name} · ${token.prefix}… ·
+              >${token.name} · ${token.prefix}… · ${this.tokenBinding(token)} ·
               ${token.revoked_at ? 'Revoked' : 'Active'}</span
-            ><sl-button
+            >${
+              token.revoked_at
+                ? nothing
+                : ['unbound', 'unavailable'].includes(this.tokenState(token))
+                  ? html`<sl-badge pill class="chip" variant="warning"
+                      >Replace</sl-badge
+                    >`
+                  : this.tokenState(token) === 'disabled'
+                    ? html`<sl-badge pill class="chip" variant="warning"
+                        >Connection disabled</sl-badge
+                      >`
+                    : nothing
+            }<sl-button
               class="danger"
               variant="danger"
               outline
@@ -952,18 +1029,33 @@ export class SsoSettings extends LitElement {
             >
           </div>`
       )}
+      ${
+        connections.length
+          ? nothing
+          : html`<p>
+              Add an OIDC or SAML connection before creating a SCIM token.
+            </p>`
+      }
       <form
         id="token-form"
         @submit=${(event: SubmitEvent) => {
           event.preventDefault();
           const form = event.currentTarget as HTMLFormElement;
-          if (!form.reportValidity()) return;
-          const name = String(new FormData(form).get('name')).trim();
+          if (!this.connections.length || !form.reportValidity()) return;
+          const data = new FormData(form);
+          const name = String(data.get('name')).trim();
+          const connectionId = String(data.get('connection_id') ?? '');
+          if (!connectionId) return;
           void this.run(async (generation) => {
             this.clearNewToken();
-            const created = await ssoApi.createToken(this.accountId, name);
+            const created = await ssoApi.createToken(
+              this.accountId,
+              name,
+              connectionId
+            );
             if (this.current(generation)) {
               this.newTokenId = created.id;
+              this.newTokenConnection = created.connection_id ?? connectionId;
               this.newToken = created.token;
               form.reset();
               await this.refresh(generation);
@@ -971,10 +1063,35 @@ export class SsoSettings extends LitElement {
           });
         }}
       >
-        ${this.field('name', 'Token name', '', 'text', true)}<sl-button
+        <div class="fields">
+          ${this.field('name', 'Token name', '', 'text', true)}<label
+            >Connection<select
+              name="connection_id"
+              required
+              aria-describedby="scim-connection-help"
+              ?disabled=${this.busy || !connections.length}
+            >
+              ${
+                single
+                  ? nothing
+                  : html`<option value="">Choose a connection</option>`
+              }
+              ${connections.map(
+                (row) =>
+                  html`<option value=${row.id} ?selected=${row.id === single}>
+                    ${this.connectionLabel(row)}
+                  </option>`
+              )}
+            </select></label
+          >
+        </div>
+        <small id="scim-connection-help"
+          >Each token provisions members for one connection. People it creates
+          sign in through that connection.</small
+        ><sl-button
           type="submit"
           ?loading=${this.busy}
-          ?disabled=${!!this.newToken}
+          ?disabled=${!!this.newToken || !connections.length}
           >Create SCIM token</sl-button
         >
       </form>

@@ -788,3 +788,122 @@ async def test_the_mcp_gate_forwards_the_callers_ids():
         )
 
     _assert_forwarded(captured, ids)
+
+
+# --- The gates forward the agent's justification (#1152) -------------------
+
+
+async def _decorator_gate_capture(captured: dict, **kwargs) -> None:
+    from preloop.services.approval_wrapper import with_approval
+
+    context, _ = _caller_context()
+    workflow_id = uuid.uuid4()
+    db = AsyncMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+
+    async def tool_func(**kwargs):
+        return "tool_result"
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", return_value=db),
+        patch(
+            "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+            return_value=context,
+        ),
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            AsyncMock(
+                return_value=MagicMock(
+                    id=uuid.uuid4(), approval_workflow_id=workflow_id
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("require_approval", workflow_id, "Needs a human")),
+        ),
+        patch(
+            "preloop.models.crud.approval_workflow.get_approval_workflow_async",
+            AsyncMock(return_value=MagicMock(id=workflow_id, timeout_seconds=300)),
+        ),
+        patch(
+            "preloop.services.approval_service.ApprovalService",
+            _capturing_approval_service(captured),
+        ),
+    ):
+        await with_approval(tool_func)(**kwargs)
+
+
+async def _mcp_gate_capture(captured: dict, tool_args: dict) -> None:
+    from preloop.services.dynamic_mcp_server import DynamicMCPServer
+
+    context, _ = _caller_context()
+    config = MagicMock(id=uuid.uuid4(), approval_workflow_id=uuid.uuid4())
+    workflow = MagicMock(id=config.approval_workflow_id, timeout_seconds=300)
+    db = AsyncMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.execute = AsyncMock(
+        side_effect=[
+            MagicMock(scalar_one_or_none=MagicMock(return_value=config)),
+            MagicMock(scalar_one_or_none=MagicMock(return_value=workflow)),
+        ]
+    )
+    with (
+        patch("preloop.models.db.session.get_async_db_session", return_value=db),
+        patch(
+            "preloop.services.approval_service.ApprovalService",
+            _capturing_approval_service(captured),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await DynamicMCPServer()._request_and_wait_for_approval(
+            context, "Bash", tool_args
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_decorator_gate_forwards_the_justification():
+    from preloop.services.dynamic_fastmcp import _justification_var
+
+    captured: dict = {}
+    token = _justification_var.set("clean the stale build output")
+    try:
+        await _decorator_gate_capture(captured, arg="value")
+    finally:
+        _justification_var.reset(token)
+
+    assert captured["agent_reasoning"] == "clean the stale build output"
+
+
+@pytest.mark.asyncio
+async def test_the_mcp_gate_forwards_the_justification():
+    from preloop.services.dynamic_fastmcp import _justification_var
+
+    captured: dict = {}
+    token = _justification_var.set("clean the stale build output")
+    try:
+        await _mcp_gate_capture(captured, {"command": "rm -rf build"})
+    finally:
+        _justification_var.reset(token)
+
+    assert captured["agent_reasoning"] == "clean the stale build output"
+
+
+@pytest.mark.asyncio
+async def test_the_mcp_gate_reads_a_justification_argument():
+    captured: dict = {}
+    await _mcp_gate_capture(
+        captured, {"command": "rm -rf build", "justification": "stale output"}
+    )
+
+    assert captured["agent_reasoning"] == "stale output"
+
+
+@pytest.mark.asyncio
+async def test_the_gates_send_no_reasoning_without_a_justification():
+    captured: dict = {}
+    await _mcp_gate_capture(captured, {"command": "rm -rf build"})
+
+    assert captured["agent_reasoning"] is None

@@ -13787,6 +13787,67 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/ai-models/{model_id}/credentials/rotate:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Rotate AI Model Credential
+      description: 'Replace a model''s credential in place and record the rotation.
+
+
+        The secret is replaced where it is stored, so every model sharing it
+
+        resolves the new key on its next request. Locally encrypted API keys take
+
+        ``api_key``; Vault/OpenBao references take ``external_ref``, which must
+
+        resolve before it is saved. The secret''s ``version`` increments and
+
+        ``rotated_at`` is set. An audit event records the secret id, backend and
+
+        versions, never the material. Subscription OAuth and structured
+
+        credentials are refused with 400: they rotate through refresh or
+
+        ``PUT /ai-models/{model_id}``.'
+      operationId: rotate_ai_model_credential_api_v1_ai_models__model_id__credentials_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIModelCredentialRotateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialRotateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/credentials/marker:
     get:
       tags:
@@ -25047,6 +25108,62 @@ components:
         to decide whether Preloop''s copy is newer than the local login before it
 
         downloads the bundle through the export endpoint.'
+    AIModelCredentialRotateRequest:
+      properties:
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+          description: Replacement provider API key
+        external_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Ref
+          description: Replacement external secret path
+      additionalProperties: false
+      type: object
+      title: AIModelCredentialRotateRequest
+      description: 'New credential material for an operator rotation.
+
+
+        Send ``api_key`` for a locally encrypted key, or ``external_ref`` for a
+
+        Vault/OpenBao reference. Exactly one non-blank value is required; the
+
+        endpoint checks this itself so a rejected body is never echoed back in a
+
+        validation error.'
+    AIModelCredentialRotateResponse:
+      properties:
+        secret_id:
+          type: string
+          format: uuid
+          title: Secret Id
+        backend_type:
+          type: string
+          title: Backend Type
+        version:
+          type: integer
+          title: Version
+        rotated_at:
+          type: string
+          format: date-time
+          title: Rotated At
+        shared_model_count:
+          type: integer
+          title: Shared Model Count
+          description: Models of this account that resolve the rotated secret
+      type: object
+      required:
+      - secret_id
+      - backend_type
+      - version
+      - rotated_at
+      - shared_model_count
+      title: AIModelCredentialRotateResponse
+      description: Rotation metadata; never carries credential material.
     AIModelFlowLink:
       properties:
         id:
@@ -25611,6 +25728,19 @@ components:
           - type: 'null'
           title: Credentials Last Verified At
           description: Timestamp when credentials were last verified or refreshed
+        credentials_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credentials Version
+          description: Rotation counter of the credential secret (1 = never rotated)
+        credentials_rotated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Credentials Rotated At
+          description: When the credential material was last replaced
         has_api_key:
           type: boolean
           title: Has Api Key

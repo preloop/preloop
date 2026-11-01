@@ -1,26 +1,34 @@
-"""Keep upstream OAuth browser codes and state out of application access logs."""
+"""Keep upstream OAuth codes and flow webhook secrets out of access logs."""
 
 import logging
 import re
 
-from preloop.utils.sentry_filters import register_private_callback_prefix
+from preloop.utils.sentry_filters import (
+    redact_flow_webhook_secret,
+    register_private_callback_prefix,
+)
 
 _QUERY = re.compile(
     r"(/api/v1/mcp-servers/(?:[^/?\s]+/oauth/authorize|oauth/callback))\?[^\s\"']*"
 )
 
 
+def _scrub(value: str) -> str:
+    """Redact OAuth query strings and flow webhook secrets in one string."""
+    return redact_flow_webhook_secret(_QUERY.sub(r"\1?[redacted]", value))
+
+
 class MCPOAuthLogFilter(logging.Filter):
-    """Scrub callback/authorize query strings while preserving Uvicorn fields."""
+    """Scrub OAuth query strings and webhook secrets, keeping Uvicorn fields."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
             record.args = tuple(
-                _QUERY.sub(r"\1?[redacted]", value) if isinstance(value, str) else value
+                _scrub(value) if isinstance(value, str) else value
                 for value in record.args
             )
         if isinstance(record.msg, str):
-            record.msg = _QUERY.sub(r"\1?[redacted]", record.msg)
+            record.msg = _scrub(record.msg)
         return True
 
 

@@ -33,10 +33,10 @@ way. "Recording from a device" means a server whose `get_audio` captures the
 audio; none ships with Preloop. The warehouse-sim fixture
 (`scripts/fixtures/warehouse_sim`) implements this contract for tests.
 
-Known limitation: tool results that pass through the Preloop gateway reach
-the agent as one text block that spells out the original `AudioContent` or
-`EmbeddedResource` fields (#1151). The prompt tells the agent to rebuild the
-block from those fields, unchanged, before depositing it.
+Tool results that pass through the Preloop gateway keep their content
+block types: `AudioContent`, `EmbeddedResource` and `ResourceLink` blocks
+reach the agent as they left the server (#1151), so the agent deposits them
+unchanged.
 
 ## Running it
 

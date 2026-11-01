@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Operators can rotate an AI model credential with
+  `POST /api/v1/ai-models/{model_id}/credentials/rotate`, sending a new
+  `api_key` or a new Vault/OpenBao `external_ref`. The secret is replaced in
+  place for every model that shares it, verified before it is saved, and
+  recorded in the audit log without the key. Credential secrets now carry a
+  `version` and `rotated_at`, shown on models as `credentials_version` and
+  `credentials_rotated_at`.
+- The console's SCIM token form asks which single sign-on connection the
+  token provisions for. The choice is required when the account has more
+  than one connection and preselected when it has one; the form is disabled
+  until a connection exists. The token list shows each token's connection,
+  the one-time token message names it, and tokens that are not bound to a
+  connection are marked for replacement with a note that they cannot
+  provision. Token creation from the console previously omitted the
+  connection and was rejected by the server.
 - Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
   Codex configuration, the `PreToolUse` hook and its trust state first; the
   agent cannot overwrite or remove the hook CLI, `hooks.json` or
@@ -162,6 +177,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#1426).
 
 ### Fixed
+
+- The Responses gateway accepts more than one output for the same tool call
+  within a tool turn, as Codex records when an `exec` cell yields and later
+  calls `notify()`. Later outputs are appended to that call's tool result in
+  order, so both the running acknowledgement and the final result reach the
+  model. Outputs for unknown calls, or for a call answered in an earlier tool
+  turn, are still rejected. Fixes #2173.
+
+- The Delivery Report turns a follow-up proposed for a closed issue whose
+  criterion is shown not met into a reopen request at the issue's closing
+  merge SHA, so a measured miss is reported as a reopen, not as new work. The
+  platform also labels dependency bumps and docs-only changes as
+  metadata-only when the run leaves the label out. A test on the first
+  measured week checks that the summary and the rendered report state the
+  same counts, computed from the structured output.
 
 - **Rules that require approval now pause unattended flow runs.** On a private
   runner host profile, a native command matching a `require_approval` rule used
