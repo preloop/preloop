@@ -99,8 +99,8 @@ def codex_native_hook_block(*, required: bool) -> str:
     Must run after ``config.toml`` is written and before ``codex exec``.
 
     Args:
-        required: The flow has approval-required native rules, so a missing
-            hook fails the run with ``approval_unavailable``.
+        required: A native deny or approval-required rule applies to the
+            flow, so a missing hook fails the run with ``approval_unavailable``.
 
     Returns:
         A bash fragment.
@@ -171,7 +171,7 @@ PL_HOOKS
 fi
 if [ -n "$_pl_hook_error" ]; then
     if [ "$_pl_hook_required" = "1" ]; then
-        echo "approval_unavailable: approval-required rules apply to native commands in this flow and the Preloop command hook could not be installed: $_pl_hook_error. The run was refused instead of running those commands ungated."
+        echo "approval_unavailable: native command rules (deny or require approval) apply to this flow and the Preloop command hook could not be installed: $_pl_hook_error. The run was refused instead of running those commands ungated."
         echo "PRELOOP_SETUP_FAILED approval_unavailable"
         exit 78
     fi

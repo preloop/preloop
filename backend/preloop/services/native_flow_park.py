@@ -343,7 +343,7 @@ def refused_or_expired(request: Any) -> bool:
 def hosted_approval_gap(
     db: Any, flow: Any, *, actions: tuple[str, ...] = ("require_approval",)
 ) -> Optional[str]:
-    """Why a hosted container run cannot honour this flow's approval rules.
+    """Why a hosted container run cannot honour this flow's native rules.
 
     Hosted Codex installs the Preloop command hook in its container and
     parks instead (the orchestrator only marks the launch as requiring the
@@ -358,6 +358,9 @@ def hosted_approval_gap(
     Args:
         db: Sync session.
         flow: The flow about to launch in a hosted container.
+        actions: Rule actions that count. The refusal text is written for
+            the default (approval rules, other hosted harnesses); hosted
+            Codex passes ``deny`` too and only tests the result for truth.
 
     Returns:
         The operator-facing refusal, or None when no such rule applies.

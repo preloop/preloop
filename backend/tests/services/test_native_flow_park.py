@@ -567,6 +567,59 @@ def test_hosted_gap_reports_flow_scoped_rule(db_session, test_user) -> None:
     assert reason is not None and "shell" in reason
 
 
+def test_hosted_gap_counts_deny_rules_only_when_asked(db_session, test_user) -> None:
+    """Hosted Codex makes the hook required for deny-only rules too."""
+    both = ("require_approval", "deny")
+    flow, _ = _flow_and_execution(db_session, test_user.account_id)
+    assert native_flow_park.hosted_approval_gap(db_session, flow, actions=both) is None
+    config = _native_rule(db_session, test_user.account_id, action="deny")
+    assert native_flow_park.hosted_approval_gap(db_session, flow) is None
+    reason = native_flow_park.hosted_approval_gap(db_session, flow, actions=both)
+    assert reason is not None and config.tool_name in reason
+
+
+def test_hosted_gap_counts_scoped_deny_rules_only_when_asked(
+    db_session, test_user
+) -> None:
+    from preloop.models.crud import crud_account
+
+    both = ("require_approval", "deny")
+    flow, _ = _flow_and_execution(db_session, test_user.account_id)
+    account = crud_account.get(db_session, id=str(test_user.account_id))
+    account.meta_data = {
+        **(account.meta_data or {}),
+        "subject_governance": {
+            "flows": {
+                str(flow.id): {
+                    "tool_rules": {"shell": [{"action": "deny", "source": "agent"}]}
+                }
+            }
+        },
+    }
+    db_session.add(account)
+    db_session.flush()
+    assert native_flow_park.hosted_approval_gap(db_session, flow) is None
+    reason = native_flow_park.hosted_approval_gap(db_session, flow, actions=both)
+    assert reason is not None and "shell" in reason
+
+
+def test_orchestrator_requires_hosted_hook_for_a_real_deny_rule(
+    db_session, test_user
+) -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    flow, _ = _flow_and_execution(db_session, test_user.account_id)
+    flow.agent_type = "codex"
+    fake = SimpleNamespace(db=db_session, agent_type="codex", flow=flow)
+    context: dict = {"agent_config": {}}
+    FlowExecutionOrchestrator._refuse_hosted_approval_gap(fake, context)
+    assert "native_hook_required" not in context
+
+    _native_rule(db_session, test_user.account_id, action="deny")
+    FlowExecutionOrchestrator._refuse_hosted_approval_gap(fake, context)
+    assert context["native_hook_required"] is True
+
+
 def test_orchestrator_refuses_hosted_launch_with_approval_gap(monkeypatch) -> None:
     from preloop.agents.errors import AgentStartError
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
