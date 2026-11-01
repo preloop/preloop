@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The console's SCIM token form asks which single sign-on connection the
+  token provisions for. The choice is required when the account has more
+  than one connection and preselected when it has one; the form is disabled
+  until a connection exists. The token list shows each token's connection,
+  the one-time token message names it, and tokens that are not bound to a
+  connection are marked for replacement with a note that they cannot
+  provision. Token creation from the console previously omitted the
+  connection and was rejected by the server.
 - Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
   Codex configuration, the `PreToolUse` hook and its trust state first; the
   agent cannot overwrite or remove the hook CLI, `hooks.json` or
