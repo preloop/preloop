@@ -55,8 +55,47 @@ reuses a working server credential even when the local access token has not yet
 expired: access-token expiry does not prove a rotating refresh token is usable.
 The server also rejects re-imports of refresh tokens it has recently consumed.
 
-If Anthropic rejects the grant with `invalid_grant`, obtain a fresh subscription
-authorization without rebuilding the enrollment:
+### One refresh lineage, two holders
+
+Onboarding with `--from-local` copies the Claude Code login (the macOS Keychain
+entry `Claude Code-credentials`, or `~/.claude/.credentials.json` on Linux) into
+Preloop and leaves the local login signed in. Both copies sit on one
+single-use refresh lineage: a long-running Claude Code process can renew its
+login on its own, and the Preloop gateway renews its stored copy. Whichever
+holder refreshes second with the already-consumed token gets `invalid_grant`.
+
+The Preloop hooks keep both copies aligned. At `SessionStart`, on each
+`UserPromptSubmit`, and before tool calls (`PreToolUse`/`PermissionRequest`),
+the hook pushes the local login when its `expiresAt` is newer than the stamp in
+the local enrollment state, so the gateway holds the live token before the
+first model call. About every two minutes it also reads Preloop's rotation
+marker (no token material) and, when Preloop's copy is newer and a local login
+exists, writes it back into the same store, preserving fields Preloop does not
+hold. When both changed, the copy that expires later wins. Each attempt is
+bounded to 3 seconds and backs off for a minute after a failure; a failure is
+logged once and never changes a hook decision. Flow runs with an
+execution-scoped credential are skipped. The gateway refreshes 10 minutes
+before expiry, ahead of the client's own refresh window, so a pulled bundle
+normally reaches the local login before Claude Code would refresh it.
+
+To reconcile by hand (no hooks installed, or after a gateway refresh error):
+
+```bash
+preloop agents sync-credentials "Claude Code"
+```
+
+It prints which direction ran and never prints tokens. If the enrollment's
+Claude Code models point at more than one stored credential, the sync refuses
+(one rotating token must live in one place) and asks you to run
+`preloop agents reconnect "Claude Code" --from-local`, which merges them. Sync cannot revive a
+lineage that the provider has already revoked on both sides: if the local login
+is also signed out, sign in again and reconnect as below.
+
+### Reconnect after revocation
+
+If Anthropic rejects the grant with `invalid_grant` and `sync-credentials` does
+not recover it, obtain a fresh subscription authorization without rebuilding
+the enrollment:
 
 ```bash
 preloop agents reconnect "Claude Code"

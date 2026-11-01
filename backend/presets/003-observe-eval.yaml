@@ -76,3 +76,37 @@ allowed_mcp_tools: []
 git_clone_config: null
 trigger_config: null
 is_preset: true
+result_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [schema, status, summary, metrics, checks, artifacts]
+  properties:
+    schema:
+      const: preloop.eval.result/v1
+    status:
+      enum: [pass, fail, error]
+    summary:
+      type: string
+      minLength: 1
+    metrics:
+      type: object
+      additionalProperties:
+        type: number
+    checks:
+      type: array
+      items:
+        type: object
+        required: [name, passed, details]
+        properties:
+          name:
+            type: string
+            minLength: 1
+          passed:
+            type: boolean
+          details:
+            type: string
+    artifacts:
+      type: object
+      additionalProperties:
+        type: string
+validate_result: true

@@ -17,6 +17,11 @@ tag, `vX.Y.Z`. The job summary prints
 not automatically update the hosted default. The container package must be
 public in GitHub package settings; after pushing and attesting the index,
 the workflow verifies anonymous digest access and fails if access is unavailable.
+The image also installs the Preloop CLI at `/opt/preloop/bin/preloop`
+(pinned release, SHA-256 checked, with an offline `permission-hook --help`
+gate). Hosted Codex uses it for the native command policy hook; on an image
+without it, the run downloads the same pinned release at start and verifies
+the checksum.
 `environments/universal/bin/preloop-preflight`
 is installed at `/usr/local/bin/preloop-preflight`. It writes
 `/tmp/preloop-preflight.json`. The schema is

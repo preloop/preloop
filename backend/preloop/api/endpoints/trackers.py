@@ -921,7 +921,11 @@ async def register_tracker(
             ensure_default_report_flow,
         )
 
-        ensure_default_report_flow(db, account_id=account.id)
+        ensure_default_report_flow(
+            db,
+            account_id=account.id,
+            created_by_user_id=getattr(current_user, "id", None),
+        )
         db.commit()
 
         log_config_change(

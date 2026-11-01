@@ -4282,6 +4282,65 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "api_equivalent_cost": float(row.api_equivalent_cost or 0.0),
         }
 
+    def owner_flow_subscription_usage(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        ai_model_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+    ) -> Dict[str, Any]:
+        """Sum one subscription model's usage by its owner's flows.
+
+        Rows are those the gateway tagged ``meta_data.subscription_use =
+        "owner_flow"``: a hosted flow execution served through the owner
+        opt-in. Spend is $0 by the subscription cost model; the
+        API-equivalent figure is an estimate.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            ai_model_id: Subscription model row.
+            start: Inclusive window start.
+            end: Exclusive window end.
+
+        Returns:
+            Dict with ``request_count``, ``total_tokens``, ``execution_count``
+            and ``api_equivalent_cost``.
+        """
+        equivalent = ApiUsage.meta_data["api_equivalent_cost"]
+        is_covered = func.jsonb_typeof(equivalent) == "number"
+        row = (
+            db.query(
+                func.count(ApiUsage.id).label("request_count"),
+                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+                func.count(func.distinct(ApiUsage.flow_execution_id)).label(
+                    "execution_count"
+                ),
+                func.coalesce(
+                    func.sum(
+                        case((is_covered, cast(equivalent.astext, Float)), else_=None)
+                    ),
+                    0.0,
+                ).label("api_equivalent_cost"),
+            )
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.ai_model_id == ai_model_id,
+                ApiUsage.meta_data["subscription_use"].astext == "owner_flow",
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .one()
+        )
+        return {
+            "request_count": int(row.request_count or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "execution_count": int(row.execution_count or 0),
+            "api_equivalent_cost": float(row.api_equivalent_cost or 0.0),
+        }
+
     def list_token_detail_rows(
         self,
         db: Session,

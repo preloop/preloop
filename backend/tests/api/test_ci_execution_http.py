@@ -79,7 +79,27 @@ def test_projection_result_and_rotation(
         "start_time",
         "end_time",
         "failure_category",
+        "startup_receipt",
     }
+    assert detail.json()["startup_receipt"] is None
+    crud.crud_flow_execution.record_startup_receipt(
+        db_session,
+        execution_id=execution.id,
+        receipt={
+            "commit": "a" * 40,
+            "checkout_verified": True,
+            "setup_completed": True,
+            "agent_started_at": "2030-01-01T00:00:00+00:00",
+            "lease_revoked": None,
+        },
+    )
+    detail = client.get(f"/api/v1/flows/executions/{execution_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["startup_receipt"]["checkout_verified"] is True
+    assert detail.json()["startup_receipt"]["commit"] == "a" * 40
+    listing = client.get("/api/v1/flows/executions", headers=headers)
+    assert listing.status_code == 200, listing.text
+    assert "startup_receipt" in listing.text
     result = client.get(
         f"/api/v1/flows/executions/{execution_id}/result", headers=headers
     )

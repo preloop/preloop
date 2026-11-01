@@ -28,10 +28,10 @@ from preloop.schemas.ci_subscription import CiSubscriptionCreate
 
 logger = logging.getLogger(__name__)
 
-# The v1 machine ceiling is deliberately exactly ten routes over nine actions.
+# The machine ceiling includes the explicitly granted own-execution evidence route.
 # Changing enforcement coverage requires explicit contract/rollout review before
 # issuance resumes; extra routes must not silently broaden a deployed ceiling.
-_EXPECTED_V1_MACHINE_ROUTE_COUNT = 10
+_EXPECTED_V1_MACHINE_ROUTE_COUNT = 11
 
 
 class CRUDCiAdministration:
@@ -174,8 +174,18 @@ class CRUDCiAdministration:
             "repository_identifier": identifier,
             "repository_slug": repository["slug"],
             "tracker_type": repository["tracker_type"],
-            "runner_pool": "server",
+            # ``server``, or the named private pool of a read-only review that
+            # runs on a Codex host profile (checked by ``_binding``).
+            "runner_pool": self._flow_runner_pool(db, actor=actor, grant=grant),
         }
+
+    @staticmethod
+    def _flow_runner_pool(db: Session, *, actor: models.User, grant: CiGrant) -> str:
+        from preloop.models.crud import crud_flow
+
+        flow = crud_flow.get(db, id=grant.flow_id, account_id=str(actor.account_id))
+        pool = getattr(flow, "runner_pool", None)
+        return pool if isinstance(pool, str) and pool else "server"
 
     def _principal(
         self,

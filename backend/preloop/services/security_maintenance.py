@@ -33,6 +33,7 @@ from preloop.schemas.security_maintenance import (
     SupportedReleaseCreate,
     SupportedReleaseUpdate,
 )
+from preloop.services.model_routing import ModelRoutingError, prepare_execution_routing
 from preloop.services.approval_service import ApprovalService
 from preloop.services.flow_trigger_service import FlowDispatchError
 from preloop.services.security_maintenance_refs import (
@@ -255,6 +256,15 @@ class SecurityMaintenanceService:
         if flow is None or not flow.is_enabled:
             raise InvalidTransitionError(f"{kind}_flow_unavailable")
         return flow
+
+    def _prepare_execution_event(
+        self, flow: models.Flow, event: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Admit the model before reservation using the API's domain error."""
+        try:
+            return prepare_execution_routing(self.db, flow, event)
+        except ModelRoutingError as exc:
+            raise InvalidTransitionError(str(exc)) from exc
 
     def _repo_ids(self, flow: models.Flow) -> set[str]:
         repos = (flow.git_clone_config or {}).get("repositories") or []
@@ -681,7 +691,7 @@ class SecurityMaintenanceService:
         if mapping is not None:
             event["payload"]["product_provenance"] = mapping
         execution = crud_security_maintenance.create_execution(
-            self.db, flow_id=flow.id, event=event
+            self.db, flow_id=flow.id, event=self._prepare_execution_event(flow, event)
         )
         data["baseline_audit"] = {
             "execution_id": str(execution.id),
@@ -1410,7 +1420,7 @@ class SecurityMaintenanceService:
             flow=flow,
         )
         execution = crud_security_maintenance.create_execution(
-            self.db, flow_id=flow.id, event=event
+            self.db, flow_id=flow.id, event=self._prepare_execution_event(flow, event)
         )
         data = dict(item.data or {})
         data["dispatch_state"] = "pending"
@@ -1454,7 +1464,7 @@ class SecurityMaintenanceService:
             release, item, kind="recheck", sha=published, flow=flow
         )
         execution = crud_security_maintenance.create_execution(
-            self.db, flow_id=flow.id, event=event
+            self.db, flow_id=flow.id, event=self._prepare_execution_event(flow, event)
         )
         data = dict(item.data or {})
         data["dispatch_state"] = "pending"
