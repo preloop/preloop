@@ -80,7 +80,7 @@ assessment, not a certification, and not legal advice.
 | `MODEL_GATEWAY_CAPTURE_CONTENT=false` | Gateway events keep usage, cost and metadata but no message content |
 | `MODEL_GATEWAY_MAX_PREVIEW_CHARS` | Shorter per-message previews (default 32768) |
 | `MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS` | Shorter stored request and response bodies (default 8192) |
-| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | Smaller cap for one stored model call (default 32768) |
+| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | Smaller cap for one stored model call (default 8388608) |
 | `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED=true` | Conversation content older than the plan history window is removed |
 | `MODEL_GATEWAY_AUTO_INDEX_INTERACTIONS=false` | Gateway interactions are not indexed for session search |
 | Shorter retention under **Settings > Records** | Records are purged sooner |

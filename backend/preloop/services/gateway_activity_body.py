@@ -24,9 +24,14 @@ session already carried.
 * Tool entries (``tools`` and ``tool_activity``) recovered from replayed
   history are dropped when their call id is not in the stored window; the
   older row that first carried them still has them.
-* If the result is still larger than ``max_bytes``, tool definitions are
-  reduced to their names, then the raw message arrays are dropped (the
-  preview keeps the text), then long strings are cut until it fits.
+* If the result is still larger than ``max_bytes``, it is shrunk without
+  ever dropping the response, the messages this call added or the last user
+  message, and without removing the ``request`` or ``response`` keys: tool
+  definitions go to names, ``tool_activity`` and ``tools`` entries are
+  dropped, then long strings are cut in the middle (head and tail kept,
+  with a ``[... truncated N chars ...]`` marker), request context first,
+  then the new messages longest first, and only then the response. See
+  :func:`_fit` for the full order. ``body_compaction`` records every step.
 
 The function is pure and idempotent: a payload that already carries the
 ``body_compaction`` marker is returned unchanged. Live events published to the
@@ -35,12 +40,13 @@ console are not touched; only the stored row is slimmed.
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any, Optional
 
-from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
+from preloop.config import settings
 
-COMPACTION_VERSION = 1
+COMPACTION_VERSION = 2
 COMPACTION_KEY = "body_compaction"
 
 # Keys of a stored gateway call that carry message content. Retention strips
@@ -54,9 +60,17 @@ BODY_KEYS: tuple[str, ...] = (
     "messages",
 )
 
-_MIN_STRING_CHARS = 256
 # Bytes kept free for the ``body_compaction`` marker itself.
-_MARKER_RESERVE = 512
+_MARKER_RESERVE = 1024
+# Middle truncation marker. Readers detect it (``TRUNCATION_MARKER_RE`` in the
+# console) and show a "Truncated" indicator next to the text.
+_MIDDLE_MARKER = "\n[... truncated {dropped} chars ...]\n"
+DEFAULT_KEEP_CHARS = 2048
+# The response keeps a larger head than any other string: it is the one part
+# of a call no earlier or later row repeats.
+_RESPONSE_HEAD_FACTOR = 4
+_MIN_KEEP_CHARS = 64
+_DELTA_KEYS = ("messages", "input")
 
 
 def payload_bytes(payload: Any) -> int:
@@ -97,7 +111,20 @@ def _last_user_index(messages: list[Any]) -> Optional[int]:
     return None
 
 
-def _slim_preview(preview: Any) -> Any:
+def _slim_preview(preview: Any, *, new_raw_items: Optional[int] = None) -> Any:
+    """Keep the preview messages new to this call, plus the last user one.
+
+    Args:
+        preview: The ``conversation_preview`` dict.
+        new_raw_items: How many raw request items (``messages`` plus
+            ``input``) follow the raw request's last assistant item, or None
+            when the raw request was not cut. The preview skips assistant
+            turns without text (tool-call-only turns), so its own assistant
+            boundary can miss replayed history; each raw item yields at most
+            one preview message and system or instructions previews come
+            first, so the last ``new_raw_items`` request previews always
+            cover the new messages and bound the window.
+    """
     if not isinstance(preview, dict):
         return preview
     messages = preview.get("messages")
@@ -121,6 +148,21 @@ def _slim_preview(preview: Any) -> Any:
             ),
             len(messages),
         )
+    if new_raw_items is not None and len(request_indexes) > new_raw_items:
+        bounded = request_indexes[len(request_indexes) - new_raw_items :]
+        raw_start = (
+            bounded[0]
+            if bounded
+            else next(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if isinstance(message, dict) and message.get("source") == "response"
+                ),
+                len(messages),
+            )
+        )
+        window_start = max(window_start, raw_start)
     keep_user = _last_user_index(messages)
     kept: list[Any] = []
     elided = 0
@@ -202,7 +244,9 @@ def is_slim(payload: Any) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get(COMPACTION_KEY), dict)
 
 
-def slim_gateway_payload(payload: Any, *, max_bytes: int) -> Any:
+def slim_gateway_payload(
+    payload: Any, *, max_bytes: int, keep_chars: Optional[int] = None
+) -> Any:
     """Return the stored form of one model gateway call payload.
 
     Args:
@@ -210,6 +254,9 @@ def slim_gateway_payload(payload: Any, *, max_bytes: int) -> Any:
             metadata). Not mutated.
         max_bytes: Upper bound for the serialized result. ``0`` or less keeps
             the history slimming but applies no byte cap.
+        keep_chars: Characters kept at each end of a string cut in the
+            middle to fit the cap. Defaults to
+            ``MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS``.
 
     Returns:
         The slim payload, carrying a ``body_compaction`` marker that records
@@ -228,7 +275,16 @@ def slim_gateway_payload(payload: Any, *, max_bytes: int) -> Any:
     if starts:
         marker["request_history_start"] = starts
     if "conversation_preview" in payload:
-        result["conversation_preview"] = _slim_preview(payload["conversation_preview"])
+        new_raw_items: Optional[int] = None
+        if isinstance(request, dict) and any(starts.values()):
+            new_raw_items = sum(
+                len(request[key])
+                for key in starts
+                if isinstance(request.get(key), list)
+            )
+        result["conversation_preview"] = _slim_preview(
+            payload["conversation_preview"], new_raw_items=new_raw_items
+        )
 
     live_ids = _call_ids(request.get("messages") if isinstance(request, dict) else None)
     live_ids |= _call_ids(request.get("input") if isinstance(request, dict) else None)
@@ -252,74 +308,407 @@ def slim_gateway_payload(payload: Any, *, max_bytes: int) -> Any:
         }
 
     if max_bytes > 0:
-        result = _fit(result, marker, max_bytes=max(1, max_bytes - _MARKER_RESERVE))
+        result = _fit(
+            result,
+            marker,
+            max_bytes=max(1, max_bytes - _MARKER_RESERVE),
+            keep_chars=(
+                settings.model_gateway_activity_truncate_keep_chars
+                if keep_chars is None
+                else keep_chars
+            ),
+        )
     marker["original_bytes"] = original_bytes
     marker["stored_bytes"] = 0
     result[COMPACTION_KEY] = marker
-    marker["stored_bytes"] = payload_bytes(result)
+    # The size includes its own digits; settle it (two rounds at most).
+    for _ in range(3):
+        stored = payload_bytes(result)
+        if marker["stored_bytes"] == stored:
+            break
+        marker["stored_bytes"] = stored
     return result
 
 
-def _fit(result: dict[str, Any], marker: dict[str, Any], *, max_bytes: int) -> Any:
+def truncate_middle(value: str, *, head: int, tail: int) -> str:
+    """Return ``value`` with its middle replaced by a truncation marker.
+
+    Args:
+        value: The string to shorten.
+        head: Characters kept from the start.
+        tail: Characters kept from the end.
+
+    Returns:
+        ``value`` unchanged when the marker would not make it shorter,
+        otherwise head, marker and tail.
+    """
+    dropped = len(value) - head - tail
+    marker = _MIDDLE_MARKER.format(dropped=dropped)
+    if dropped <= len(marker):
+        return value
+    return value[:head] + marker + (value[len(value) - tail :] if tail else "")
+
+
+class _Slot:
+    """One string leaf inside a payload, addressable for in-place rewrite."""
+
+    __slots__ = ("container", "key", "preview_message")
+
+    def __init__(
+        self,
+        container: Any,
+        key: Any,
+        preview_message: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self.container = container
+        self.key = key
+        self.preview_message = preview_message
+
+    @property
+    def value(self) -> str:
+        return self.container[self.key]
+
+
+# Strings never cut in the middle: a cut tool-call argument is invalid JSON.
+_UNCUT_KEYS = frozenset({"arguments", "id", "call_id", "tool_call_id", "name"})
+# Tool calls in Anthropic and Responses API shapes; their input stays whole.
+_TOOL_CALL_TYPES = frozenset({"tool_use", "server_tool_use", "function_call"})
+
+
+def _string_slots(
+    value: Any, *, preview_message: Optional[dict[str, Any]] = None
+) -> list[_Slot]:
+    slots: list[_Slot] = []
+    stack: list[Any] = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("type") in _TOOL_CALL_TYPES:
+                continue
+            items: Any = node.items()
+        elif isinstance(node, list):
+            items = enumerate(node)
+        else:
+            continue
+        for key, item in items:
+            if isinstance(item, str):
+                if key not in _UNCUT_KEYS:
+                    slots.append(_Slot(node, key, preview_message))
+            elif isinstance(item, (dict, list)):
+                stack.append(item)
+    return slots
+
+
+def _preview_slots(result: dict[str, Any], *, response: bool) -> list[_Slot]:
+    preview = result.get("conversation_preview")
+    if not isinstance(preview, dict) or not isinstance(preview.get("messages"), list):
+        return []
+    slots: list[_Slot] = []
+    for message in preview["messages"]:
+        if not isinstance(message, dict):
+            continue
+        if (message.get("source") == "response") != response:
+            continue
+        if isinstance(message.get("text"), str):
+            slots.append(_Slot(message, "text", message))
+    return slots
+
+
+def _json_len(value: str) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _shorten(
+    slots: list[_Slot],
+    *,
+    size: int,
+    max_bytes: int,
+    head: int,
+    tail: int,
+    stats: dict[str, int],
+) -> int:
+    """Middle-truncate ``slots``, longest first, until ``size`` fits.
+
+    Returns the new estimated size. Each rewrite updates the estimate by the
+    exact change in that string's JSON encoding, so no full re-serialization
+    is needed per string.
+    """
+    floor = head + tail + len(_MIDDLE_MARKER) + 8
+    candidates = [slot for slot in slots if len(slot.value) > floor]
+    candidates.sort(key=lambda slot: len(slot.value), reverse=True)
+    for slot in candidates:
+        if size <= max_bytes:
+            break
+        before = slot.value
+        after = truncate_middle(before, head=head, tail=tail)
+        if after == before:
+            continue
+        slot.container[slot.key] = after
+        size += _json_len(after) - _json_len(before)
+        stats["strings"] = stats.get("strings", 0) + 1
+        stats["chars_removed"] = stats.get("chars_removed", 0) + (
+            len(before) - len(after)
+        )
+        if slot.preview_message is not None:
+            message = slot.preview_message
+            message["truncated"] = True
+            message.setdefault("original_length", len(before))
+    return size
+
+
+def _record(
+    marker: dict[str, Any], key: str, stats: dict[str, int], **extra: Any
+) -> None:
+    if stats.get("strings"):
+        marker[key] = {**stats, **extra}
+
+
+def _delta_slots(result: dict[str, Any]) -> list[_Slot]:
+    slots = _preview_slots(result, response=False)
+    request = result.get("request")
+    if isinstance(request, dict):
+        for key in _DELTA_KEYS:
+            if isinstance(request.get(key), list):
+                slots.extend(_string_slots(request[key]))
+    return slots
+
+
+def _response_slots(result: dict[str, Any]) -> list[_Slot]:
+    slots = _preview_slots(result, response=True)
+    slots.extend(_string_slots(result.get("response")))
+    return slots
+
+
+def _request_context_slots(result: dict[str, Any]) -> list[_Slot]:
+    """Strings of the request outside its new messages (system prompt etc.)."""
+    request = result.get("request")
+    if not isinstance(request, dict):
+        return []
+    slots: list[_Slot] = []
+    for key, value in request.items():
+        if key in _DELTA_KEYS:
+            continue
+        if isinstance(value, str):
+            slots.append(_Slot(request, key))
+        else:
+            slots.extend(_string_slots(value))
+    return slots
+
+
+def _other_slots(result: dict[str, Any]) -> list[_Slot]:
+    """Strings outside request, response and preview (accounting excluded)."""
+    slots: list[_Slot] = []
+    for key, value in result.items():
+        if key in ("request", "response", "conversation_preview", COMPACTION_KEY):
+            continue
+        if isinstance(value, (dict, list)):
+            slots.extend(_string_slots(value))
+    return slots
+
+
+def _elide_delta_messages(result: dict[str, Any], marker: dict[str, Any]) -> None:
+    """Keep only the newest delta message and the last user message.
+
+    Reached only when the delta has so many messages that their shortest
+    form still exceeds the cap. The request and response keys stay.
+    """
+    elided = 0
+    request = result.get("request")
+    if isinstance(request, dict):
+        for key in _DELTA_KEYS:
+            items = request.get(key)
+            if isinstance(items, list) and len(items) > 1:
+                elided += len(items) - 1
+                request[key] = items[-1:]
+    preview = result.get("conversation_preview")
+    if isinstance(preview, dict) and isinstance(preview.get("messages"), list):
+        messages = preview["messages"]
+        keep_user = _last_user_index(messages)
+        kept = []
+        last_request = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if not isinstance(message, dict) or message.get("source") != "response"
+            ),
+            default=None,
+        )
+        for index, message in enumerate(messages):
+            is_response = (
+                isinstance(message, dict) and message.get("source") == "response"
+            )
+            if is_response or index in (keep_user, last_request):
+                kept.append(message)
+            else:
+                elided += 1
+        preview["messages"] = kept
+    marker["delta_messages_elided"] = elided
+
+
+def _cut_harder(
+    result: dict[str, Any],
+    slots: Any,
+    *,
+    max_bytes: int,
+    keep: int,
+    stats: dict[str, int],
+) -> int:
+    """Halve the kept ends of ``slots()`` strings until the result fits.
+
+    Returns the last ``keep`` used (64 at the least).
+    """
+    size = payload_bytes(result)
+    while size > max_bytes and keep > _MIN_KEEP_CHARS:
+        keep = max(_MIN_KEEP_CHARS, keep // 2)
+        _shorten(
+            slots(),
+            size=size,
+            max_bytes=max_bytes,
+            head=keep,
+            tail=keep,
+            stats=stats,
+        )
+        size = payload_bytes(result)
+    return keep
+
+
+def _fit(
+    result: dict[str, Any],
+    marker: dict[str, Any],
+    *,
+    max_bytes: int,
+    keep_chars: int = DEFAULT_KEEP_CHARS,
+) -> Any:
     """Shrink ``result`` until it serializes to at most ``max_bytes``.
 
-    Steps, cheapest loss first: tool definitions to names, drop the raw
-    message arrays, cut long strings, then drop whole content keys. The last
-    step always fits, because what is left is accounting fields.
+    The model response, the messages this call added and the last user
+    message are never dropped, and the ``request`` and ``response`` keys are
+    never removed. Steps, cheapest loss first:
+
+    1. Tool definitions are reduced to their names.
+    2. ``tool_activity`` is dropped (it is derived from request and response).
+    3. The ``tools`` entries are dropped (also derived), and long strings of
+       the request outside its new messages (system prompt, instructions) are
+       cut in the middle.
+    4. Long strings of the new messages are cut in the middle, longest first
+       (large tool outputs and file contents), keeping ``keep_chars`` at
+       each end.
+    5. Long strings of the response are cut in the middle, keeping a head of
+       ``4 * keep_chars``.
+    6. Only if all of that is not enough (a cap far below the call's own
+       size): the strings of step 3 and 4 are cut harder, halving the kept
+       ends down to 64 characters; then the new messages are reduced to the
+       newest one plus the last user message; then the response is cut
+       harder. A cap smaller than the bare structure replaces the request
+       and response contents with ``{"omitted_for_size": true}``.
+
+    ``body_compaction`` records each step that changed something.
     """
-    if payload_bytes(result) <= max_bytes:
+    size = payload_bytes(result)
+    if size <= max_bytes:
         return result
+    result = copy.deepcopy(result)
+    keep = max(_MIN_KEEP_CHARS, keep_chars)
+
     request = result.get("request")
     if isinstance(request, dict) and isinstance(request.get("tools"), list):
-        result["request"] = {**request, "tools": _tool_names(request["tools"])}
+        request["tools"] = _tool_names(request["tools"])
         marker["tool_definitions_omitted"] = True
-        if payload_bytes(result) <= max_bytes:
+        size = payload_bytes(result)
+        if size <= max_bytes:
             return result
-    request = result.get("request")
-    if isinstance(request, dict) and any(k in request for k in ("messages", "input")):
-        result["request"] = {
-            key: value
-            for key, value in request.items()
-            if key not in ("messages", "input")
-        }
-        marker["request_messages_omitted"] = True
-        if payload_bytes(result) <= max_bytes:
-            return result
-    limit = max(_MIN_STRING_CHARS, max_bytes // 4)
-    while True:
-        candidate = sanitize_for_jsonb(result, max_string_chars=limit)
-        if payload_bytes(candidate) <= max_bytes or limit <= _MIN_STRING_CHARS:
-            marker["strings_capped_at"] = limit
-            break
-        limit = max(_MIN_STRING_CHARS, limit // 2)
-    if payload_bytes(candidate) <= max_bytes:
-        return candidate
-    # Still over at the shortest strings: too many entries. Drop whole
-    # content keys, least useful to a reader first, until it fits.
+
     omitted: list[str] = []
-    for key in ("tool_activity", "tools", "request", "response"):
-        if key in candidate:
-            candidate = {k: v for k, v in candidate.items() if k != key}
+    for key in ("tool_activity", "tools"):
+        if key in result and size > max_bytes:
+            del result[key]
             omitted.append(key)
-            if payload_bytes(candidate) <= max_bytes:
-                marker["keys_omitted"] = omitted
-                return candidate
-    preview = candidate.get("conversation_preview")
-    if isinstance(preview, dict) and isinstance(preview.get("messages"), list):
-        messages = list(preview["messages"])
-        while messages and payload_bytes(candidate) > max_bytes:
-            messages.pop(0)
-            candidate = {
-                **candidate,
-                "conversation_preview": {**preview, "messages": messages},
-            }
-        marker["preview_messages_dropped"] = len(preview["messages"]) - len(messages)
-    if payload_bytes(candidate) > max_bytes:
-        candidate = {k: v for k, v in candidate.items() if k not in BODY_KEYS}
-        omitted.append("conversation_preview")
-    if omitted:
-        marker["keys_omitted"] = omitted
-    return candidate
+            marker["keys_omitted"] = omitted
+            size = payload_bytes(result)
+    if size <= max_bytes:
+        return result
+
+    stats: dict[str, int] = {}
+    size = _shorten(
+        _request_context_slots(result) + _other_slots(result),
+        size=size,
+        max_bytes=max_bytes,
+        head=keep,
+        tail=keep,
+        stats=stats,
+    )
+    _record(marker, "request_context_shortened", stats, keep_chars=keep)
+    size = payload_bytes(result)
+    if size <= max_bytes:
+        return result
+
+    stats = {}
+    size = _shorten(
+        _delta_slots(result),
+        size=size,
+        max_bytes=max_bytes,
+        head=keep,
+        tail=keep,
+        stats=stats,
+    )
+    _record(marker, "messages_shortened", stats, keep_chars=keep)
+    size = payload_bytes(result)
+    if size <= max_bytes:
+        return result
+
+    stats = {}
+    response_head = keep * _RESPONSE_HEAD_FACTOR
+    size = _shorten(
+        _response_slots(result),
+        size=size,
+        max_bytes=max_bytes,
+        head=response_head,
+        tail=keep // 2,
+        stats=stats,
+    )
+    _record(marker, "response_shortened", stats, head_chars=response_head)
+    size = payload_bytes(result)
+    if size <= max_bytes:
+        return result
+
+    # Last resorts for pathological rows. The response is touched last.
+    stats = {}
+    keep = _cut_harder(
+        result,
+        lambda: _request_context_slots(result)
+        + _other_slots(result)
+        + _delta_slots(result),
+        max_bytes=max_bytes,
+        keep=keep,
+        stats=stats,
+    )
+    _record(marker, "messages_shortened_further", stats, keep_chars=keep)
+    if payload_bytes(result) <= max_bytes:
+        return result
+
+    _elide_delta_messages(result, marker)
+    if payload_bytes(result) <= max_bytes:
+        return result
+
+    stats = {}
+    keep = _cut_harder(
+        result,
+        lambda: _response_slots(result),
+        max_bytes=max_bytes,
+        keep=response_head,
+        stats=stats,
+    )
+    _record(marker, "response_shortened_further", stats, head_chars=keep)
+    if payload_bytes(result) <= max_bytes:
+        return result
+    # Only a cap smaller than the structure itself gets here. Keep the keys
+    # so readers can tell the content was removed, not absent.
+    for key in ("request", "response"):
+        if key in result:
+            result[key] = {"omitted_for_size": True}
+    result.pop("conversation_preview", None)
+    marker["content_omitted_for_size"] = True
+    return result
 
 
 def strip_gateway_bodies(payload: Any) -> Any:

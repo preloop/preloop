@@ -114,7 +114,7 @@ tell what was kept.
 | `MODEL_GATEWAY_CAPTURE_CONTENT=false` | Message content in gateway events is replaced with `***REDACTED***`; usage, cost and metadata are still recorded. Session search then has no gateway content to index. |
 | `MODEL_GATEWAY_MAX_PREVIEW_CHARS` | Lower it to keep shorter previews. |
 | `MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS` | Lower it to keep shorter request and response bodies. |
-| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | Lower it to cap each stored model call row harder (default 32768). Each row keeps only the messages new to that call. |
+| `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | Lower it to cap each stored model call row harder (default 8388608, a guard against runaway payloads). The response and the messages new to the call are kept; long text is cut in the middle. Each row keeps only the messages new to that call. |
 | `MODEL_GATEWAY_AUTO_INDEX_INTERACTIONS=false` | Completed gateway interactions are not indexed into the semantic search corpus. |
 
 Related: [Security and privacy](security-privacy.md),
