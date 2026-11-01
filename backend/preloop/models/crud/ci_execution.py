@@ -17,7 +17,10 @@ from preloop.schemas.ci_principal import CiAction
 
 # Only existing controller-generated records may accompany canonical provenance.
 # This is not an external trigger schema: the API accepts PR number/head only.
-_TRUSTED_EVENT_EXTRAS = frozenset({"_model_routing", "_subject", "test_mode"})
+# Server-written records the orchestrator adds before dispatch is rechecked.
+_TRUSTED_EVENT_EXTRAS = frozenset(
+    {"_model_routing", "_native_result", "_subject", "test_mode"}
+)
 
 
 def _valid_event(binding: CiReviewBinding, event: Any) -> bool:
