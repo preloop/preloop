@@ -855,19 +855,32 @@ def test_an_event_outside_the_chain_does_not_vouch(db_session, account_id):
     _tool_rows(db_session, account_id, 2)
     _seal(db_session, account_id)
     report = _run(db_session, account_id, dry_run=False)
-    event = db_session.get(models.AuditLog, report.events[0])
+    real = db_session.get(models.AuditLog, report.events[0])
     assert _verify(db_session, account_id)["status"] == "ok"
 
-    # Same content, self-consistent hash, but a position outside the chain.
-    event.chain_seq = 0
-    event.prev_hash = audit_chain.GENESIS_HASH
-    event.row_hash = audit_chain.hash_row(
-        audit_chain.canonical_row(event, seq=0, prev_hash=audit_chain.GENESIS_HASH)
+    # A second, fake event with the same listing at a position outside the
+    # chain, sealed and self-consistent; the rewritten row points at it.
+    fake = models.AuditLog(
+        account_id=account_id,
+        action=audit_chain.ACTION_REDACTION_APPLIED,
+        status="success",
+        details=dict(real.details),
+        timestamp=real.timestamp,
+        chain_seq=0,
+        prev_hash=audit_chain.GENESIS_HASH,
     )
+    db_session.add(fake)
+    db_session.flush()
+    fake.row_hash = audit_chain.hash_row(
+        audit_chain.canonical_row(fake, seq=0, prev_hash=audit_chain.GENESIS_HASH)
+    )
+    target = _first_redacted(db_session, account_id)
+    target.redaction_event_id = fake.id
     db_session.flush()
 
     verdict = _verify(db_session, account_id)
     assert verdict["status"] == "broken"
+    assert verdict["first_break"]["kind"] == audit_chain.BREAK_REDACTION_UNANCHORED
 
 
 def test_a_summary_with_text_in_its_fields_is_redacted(db_session, account_id):
