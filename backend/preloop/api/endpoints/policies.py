@@ -9,6 +9,7 @@ This module provides API endpoints for declarative policy-as-code management:
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Literal, Optional
 from uuid import UUID
 
@@ -285,6 +286,61 @@ class SensitiveDataHashCheckResponse(BaseModel):
 
     match: bool
     salt_id: Optional[str] = None
+
+
+class StoredRowRedactionRequest(BaseModel):
+    """Apply the current sensitive-data rules to rows already stored (#2133)."""
+
+    dry_run: bool = Field(
+        True, description="Count only. Set false to rewrite rows; it cannot be undone."
+    )
+    since: Optional[datetime] = Field(None, description="Rows at or after this time")
+    until: Optional[datetime] = Field(None, description="Rows before this time")
+    stores: Optional[List[str]] = Field(
+        None,
+        description=(
+            "audit_log, approval_requests, runtime_session_activity, "
+            "session_search_documents. All when omitted."
+        ),
+    )
+    batch_size: int = Field(200, ge=1, le=1000, description="Rows per transaction")
+    max_batches: int = Field(
+        50, ge=1, le=500, description="Batches in this request; continue with cursors"
+    )
+    cursors: Optional[Dict[str, List[str]]] = Field(
+        None, description="Per-store cursors from an earlier response, to resume"
+    )
+
+
+class StoredRowRedactionStore(BaseModel):
+    """Counts for one store. Never content."""
+
+    scanned: int
+    changed: int
+    skipped_legal_hold: int
+    skipped_pending: int
+    references: int
+    counts_by_type: Dict[str, int]
+    cursor: Optional[List[str]] = None
+    done: bool
+
+
+class StoredRowRedactionResponse(BaseModel):
+    """Outcome of one request. Call again with ``cursors`` until complete."""
+
+    account_id: str
+    dry_run: bool
+    since: Optional[str] = None
+    until: Optional[str] = None
+    complete: bool
+    batches: int
+    rule_ids: List[str]
+    redaction_events: List[str] = Field(
+        ..., description="ids of the redaction_applied audit rows written"
+    )
+    chained_rows_rewritten: int
+    error: Optional[str] = None
+    stores: Dict[str, StoredRowRedactionStore]
 
 
 class SensitiveDataMatch(BaseModel):
@@ -791,6 +847,61 @@ def sensitive_data_hash_check(
         account.id, request.payload, request.args_hmac, salt_id=request.salt_id, db=db
     )
     return SensitiveDataHashCheckResponse(match=matched, salt_id=salt_id)
+
+
+@router.post(
+    "/policies/sensitive-data/apply-to-stored",
+    response_model=StoredRowRedactionResponse,
+    summary="Apply the current redaction and reference-only rules to stored rows",
+)
+@require_permission("manage_policies")
+def sensitive_data_apply_to_stored(
+    request: StoredRowRedactionRequest,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> StoredRowRedactionResponse:
+    """Rewrite stored rows under the account's current rules, or count them.
+
+    Account admins only: the rewrite is irreversible. Dry run by default.
+    Every batch that changes rows appends a ``redaction_applied`` audit row
+    (rule ids, counts, actor; never content), and the audit chain keeps
+    verifying. Bounded per request; pass the returned ``cursors`` back until
+    ``complete`` is true. Rows under legal hold and pending approvals are
+    skipped and counted.
+    """
+    from preloop.api.auth.router import _is_account_admin
+    from preloop.services.sensitive_data.policy_store import SensitiveDataPolicyError
+    from preloop.services.sensitive_data.stored_rows import apply_to_stored_rows
+
+    if not _is_account_admin(db, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only account admins can apply rules to stored rows",
+        )
+    try:
+        report = apply_to_stored_rows(
+            db,
+            account_id=account.id,
+            actor_user_id=current_user.id,
+            dry_run=request.dry_run,
+            since=request.since,
+            until=request.until,
+            stores=request.stores,
+            batch_size=request.batch_size,
+            max_batches=request.max_batches,
+            cursors=request.cursors,
+        )
+    except SensitiveDataPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The stored sensitive_data policy is invalid; fix it first",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    return StoredRowRedactionResponse(**report.as_dict())
 
 
 def _reject_unknown_pii_types(db: Session, account: Account, rule: ModelIORule) -> None:

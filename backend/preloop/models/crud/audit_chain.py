@@ -61,3 +61,46 @@ def get_state(
         # when requested; never reset the head or pruning floor to genesis.
         state = db.execute(stmt.execution_options(populate_existing=True)).scalar_one()
     return state
+
+
+def get_redaction_event(
+    db: Session, *, account_id: Any, event_id: Any, action: str
+) -> models.AuditLog | None:
+    """The redaction event row ``event_id`` in ``account_id``, or None.
+
+    Scoped to the account and the action so a row from another account, or
+    an ordinary row with a look-alike ``details["rows"]``, cannot vouch for a
+    rewrite.
+    """
+    return db.execute(
+        select(models.AuditLog).where(
+            models.AuditLog.id == event_id,
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.action == action,
+        )
+    ).scalar_one_or_none()
+
+
+def ids_at_seq(db: Session, *, account_id: Any, seq: int) -> list[Any]:
+    """Ids of the account's audit rows at chain sequence ``seq``."""
+    return list(
+        db.execute(
+            select(models.AuditLog.id).where(
+                models.AuditLog.account_id == account_id,
+                models.AuditLog.chain_seq == seq,
+            )
+        ).scalars()
+    )
+
+
+def row_hash_at_seq(db: Session, *, account_id: Any, seq: int) -> str | None:
+    """The stored row_hash at chain sequence ``seq``, or None."""
+    value = db.execute(
+        select(models.AuditLog.row_hash)
+        .where(
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.chain_seq == seq,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return str(value) if value else None

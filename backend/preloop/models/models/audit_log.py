@@ -147,6 +147,25 @@ class AuditLog(Base):
         "timestamp by up to one sealer interval",
     )
 
+    # Retroactive redaction (#2133). ``row_hash`` stays what the chain
+    # committed to; these record the hash of the rewritten content and the
+    # ``redaction_applied`` row that lists the rewrite. Deliberately outside
+    # ``canonical_row``: they change after sealing by design, and the
+    # verifier checks them against the tombstone instead.
+    redacted_row_hash: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="row hash over the redacted content, same seq and prev_hash",
+    )
+    redaction_event_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="The redaction_applied audit row that lists this rewrite",
+    )
+    redacted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     account: Mapped["Account"] = relationship("Account", back_populates="audit_logs")
     user: Mapped[Optional["User"]] = relationship("User", back_populates="audit_logs")

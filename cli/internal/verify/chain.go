@@ -24,15 +24,27 @@ const (
 	BreakPrevHash     = "prev_hash_mismatch"
 	BreakRowHash      = "row_hash_mismatch"
 	BreakDuplicateSeq = "duplicate_seq"
+	// BreakRedactionUnanchored is a row rewritten after sealing whose
+	// redaction_applied event does not list it with the hash it has now.
+	BreakRedactionUnanchored = "redaction_unanchored"
 )
+
+// ActionRedactionApplied is the audit action of the row that vouches for
+// rows rewritten by a stored-row redaction.
+const ActionRedactionApplied = "redaction_applied"
 
 // SegmentEntry is one row's chain material as the segment endpoint serves it.
 type SegmentEntry struct {
-	Seq      int64                  `json:"seq"`
-	RowID    string                 `json:"row_id"`
-	PrevHash string                 `json:"prev_hash"`
-	RowHash  string                 `json:"row_hash"`
-	Payload  map[string]interface{} `json:"payload"`
+	Seq      int64  `json:"seq"`
+	RowID    string `json:"row_id"`
+	PrevHash string `json:"prev_hash"`
+	RowHash  string `json:"row_hash"`
+	// RedactedRowHash is set when a redaction rewrote the row after it was
+	// sealed: the hash of the payload as served. RowHash stays the value the
+	// next row links to.
+	RedactedRowHash  string                 `json:"redacted_row_hash,omitempty"`
+	RedactionEventID string                 `json:"redaction_event_id,omitempty"`
+	Payload          map[string]interface{} `json:"payload"`
 }
 
 // Segment is one page of the chain.
@@ -92,6 +104,26 @@ type ChainWalk struct {
 	watch map[int64]bool
 	// Observed holds the recomputed row hash at each watched sequence.
 	Observed map[int64]string
+
+	// Redacted counts rows accepted against their redacted hash.
+	Redacted int64
+	// pendingRedactions maps a rewritten row to its event id and hash until
+	// the event's own row is fed.
+	pendingRedactions map[string]pendingRedaction
+	// redactionEvents maps an event row id to the rows and hashes it lists.
+	redactionEvents map[string]map[string]listedRedaction
+}
+
+type pendingRedaction struct {
+	seq     int64
+	eventID string
+	hash    string
+	rowHash string
+}
+
+type listedRedaction struct {
+	redacted string
+	sealed   string
 }
 
 // NewChainWalk starts a walk that expects the row after afterSeq next.
@@ -170,7 +202,21 @@ func (w *ChainWalk) Feed(entries []SegmentEntry) bool {
 			}
 			return false
 		}
-		if computed != entry.RowHash {
+		redacted := false
+		if computed != entry.RowHash && entry.RedactedRowHash != "" &&
+			computed == entry.RedactedRowHash && entry.RedactionEventID != "" {
+			// Accepted for now; Finish checks it against the event row.
+			redacted = true
+			if w.pendingRedactions == nil {
+				w.pendingRedactions = map[string]pendingRedaction{}
+			}
+			w.pendingRedactions[entry.RowID] = pendingRedaction{
+				seq: entry.Seq, eventID: entry.RedactionEventID, hash: computed,
+				rowHash: entry.RowHash,
+			}
+			w.Redacted++
+		}
+		if computed != entry.RowHash && !redacted {
 			w.Break = &Break{
 				Kind:     BreakRowHash,
 				Seq:      entry.Seq,
@@ -187,8 +233,11 @@ func (w *ChainWalk) Feed(entries []SegmentEntry) bool {
 		}
 		w.LastSeq = entry.Seq
 		w.Checked++
+		w.noteRedactionEvent(entry)
 		if w.watch[entry.Seq] {
-			w.Observed[entry.Seq] = computed
+			// The chain links to RowHash; for a rewritten row that is not
+			// the hash of today's payload, and the checkpoint anchored it.
+			w.Observed[entry.Seq] = entry.RowHash
 		}
 		w.expectedPrev = entry.RowHash
 		w.expectedSeq = entry.Seq + 1
@@ -230,4 +279,61 @@ func (w *ChainWalk) SetRowDomain(domain string) {
 	if domain != "" {
 		w.rowDomain = domain
 	}
+}
+
+// noteRedactionEvent records the rows a redaction_applied entry lists.
+func (w *ChainWalk) noteRedactionEvent(entry SegmentEntry) {
+	if entry.Payload["action"] != ActionRedactionApplied {
+		return
+	}
+	details, _ := entry.Payload["details"].(map[string]interface{})
+	rows, _ := details["rows"].([]interface{})
+	listing := map[string]listedRedaction{}
+	for _, item := range rows {
+		row, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := row["id"].(string)
+		hash, _ := row["redacted_row_hash"].(string)
+		sealed, _ := row["row_hash"].(string)
+		if id != "" && hash != "" {
+			listing[id] = listedRedaction{redacted: hash, sealed: sealed}
+		}
+	}
+	if w.redactionEvents == nil {
+		w.redactionEvents = map[string]map[string]listedRedaction{}
+	}
+	w.redactionEvents[entry.RowID] = listing
+}
+
+// Finish checks every rewritten row against the redaction event it names.
+// A row whose event was walked but does not list it with its current hash is
+// a break. A row whose event was not in the walked range cannot be decided
+// here and is returned as unresolved; widen the range to include it.
+func (w *ChainWalk) Finish() (unresolved int64) {
+	var first *Break
+	for rowID, pending := range w.pendingRedactions {
+		listing, seen := w.redactionEvents[pending.eventID]
+		if !seen {
+			unresolved++
+			continue
+		}
+		listed := listing[rowID]
+		matches := listed.redacted == pending.hash && listed.sealed == pending.rowHash
+		if !matches && (first == nil || pending.seq < first.Seq) {
+			first = &Break{
+				Kind:     BreakRedactionUnanchored,
+				Seq:      pending.seq,
+				RowID:    rowID,
+				Expected: listed.redacted,
+				Found:    pending.hash,
+				Detail:   "the row was rewritten after sealing, but its redaction event does not list it with this hash",
+			}
+		}
+	}
+	if first != nil && (w.Break == nil || first.Seq < w.Break.Seq) {
+		w.Break = first
+	}
+	return unresolved
 }
