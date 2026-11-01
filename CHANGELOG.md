@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Operators can rotate an AI model credential with
+  `POST /api/v1/ai-models/{model_id}/credentials/rotate`, sending a new
+  `api_key` or a new Vault/OpenBao `external_ref`. The secret is replaced in
+  place for every model that shares it, verified before it is saved, and
+  recorded in the audit log without the key. Credential secrets now carry a
+  `version` and `rotated_at`, shown on models as `credentials_version` and
+  `credentials_rotated_at`.
 - The console's SCIM token form asks which single sign-on connection the
   token provisions for. The choice is required when the account has more
   than one connection and preselected when it has one; the form is disabled

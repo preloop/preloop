@@ -354,6 +354,7 @@
   "POST /api/v1/ai-models/providers/{provider}/available-models": "deny",
   "POST /api/v1/ai-models/sync": "deny",
   "POST /api/v1/ai-models/{model_id}/credentials/export": "deny",
+  "POST /api/v1/ai-models/{model_id}/credentials/rotate": "deny",
   "POST /api/v1/ai-models/{model_id}/pricing/fetch": "deny",
   "POST /api/v1/anthropic-usage/connection/test": "deny",
   "POST /api/v1/anthropic-usage/sync": "deny",

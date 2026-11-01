@@ -347,6 +347,7 @@ class SecretService:
                 secret_ref.encrypted_value = encrypted_value
                 secret_ref.status = "active"
                 secret_ref.last_verified_at = now
+                self._mark_rotated(secret_ref, now)
                 secret_ref.meta_data = meta_data or {}
                 if history:
                     secret_ref.meta_data = {
@@ -515,6 +516,7 @@ class SecretService:
                 secret_ref.external_ref = external_ref
                 secret_ref.status = "active"
                 secret_ref.last_verified_at = now
+                self._mark_rotated(secret_ref, now)
                 secret_ref.meta_data = meta_data or {}
                 db.add(secret_ref)
                 db.commit()
@@ -537,6 +539,99 @@ class SecretService:
                 "updated_at": now,
             },
         )
+
+    @staticmethod
+    def _mark_rotated(secret_ref: SecretReference, now: datetime) -> None:
+        """Record that the stored material or reference was replaced."""
+        secret_ref.version = (secret_ref.version or 1) + 1
+        secret_ref.rotated_at = now
+
+    def rotate_secret_reference(
+        self,
+        db: Session,
+        *,
+        secret_id: UUID,
+        account_id: Optional[UUID],
+        secret_value: Optional[str] = None,
+        external_ref: Optional[str] = None,
+    ) -> SecretReference:
+        """Replace a secret's material in place and bump its rotation metadata.
+
+        Every model that shares the reference picks up the new material on its
+        next just-in-time resolution. The new material is verified before the
+        write: a local value must round-trip through the configured encryption
+        key, and an external reference must validate and resolve through its
+        backend. On any failure nothing is written, so the previous material
+        and version stay in force.
+
+        Args:
+            db: Database session; committed on success.
+            secret_id: The secret reference to rotate.
+            account_id: Owning account; other accounts' secrets are not found.
+            secret_value: New plaintext for a ``local_encrypted`` API key.
+            external_ref: New path for an external (Vault/OpenBao) reference.
+
+        Returns:
+            The rotated secret reference.
+
+        Raises:
+            LookupError: If the secret does not exist for this account.
+            ValueError: If the input does not fit the secret's backend or kind,
+                or verification of the new material fails.
+        """
+        secret_ref = crud_secret_reference.get_for_update(
+            db, secret_id=secret_id, account_id=account_id
+        )
+        if secret_ref is None:
+            raise LookupError("Credential secret not found")
+        try:
+            if secret_ref.backend_type == LOCAL_ENCRYPTED_BACKEND:
+                if secret_ref.secret_kind != "ai_model_api_key":
+                    raise ValueError(
+                        "Only API-key credentials can be rotated here; "
+                        "update structured or subscription credentials instead"
+                    )
+                if external_ref or not secret_value:
+                    raise ValueError("A new api_key is required for this credential")
+                encrypted_value = encrypt_value(secret_value)
+                if decrypt_value(encrypted_value) != secret_value:
+                    raise ValueError("Credential encryption verification failed")
+                secret_ref.encrypted_value = encrypted_value
+            else:
+                backend = self._backends.get(secret_ref.backend_type)
+                if backend is None:
+                    raise ValueError(
+                        f"Unsupported secret backend: {secret_ref.backend_type}"
+                    )
+                if secret_value or not external_ref:
+                    raise ValueError(
+                        "A new external_ref is required for an external credential"
+                    )
+                meta_data = dict(secret_ref.meta_data or {})
+                backend.validate_reference(
+                    external_ref=external_ref, meta_data=meta_data
+                )
+                previous_ref = secret_ref.external_ref
+                secret_ref.external_ref = external_ref
+                try:
+                    if not backend.resolve(secret_ref):
+                        raise ValueError("External credential resolved empty")
+                except Exception as exc:
+                    secret_ref.external_ref = previous_ref
+                    raise ValueError(
+                        "External credential reference could not be resolved"
+                    ) from exc
+        except Exception:
+            db.rollback()
+            raise
+        now = datetime.now(timezone.utc)
+        secret_ref.status = "active"
+        secret_ref.last_verified_at = now
+        self._mark_rotated(secret_ref, now)
+        db.add(secret_ref)
+        db.commit()
+        db.refresh(secret_ref)
+        return secret_ref
 
     def resolve_secret_reference(self, secret_ref: SecretReference) -> ResolvedSecret:
         """Resolve a secret from its backend."""
