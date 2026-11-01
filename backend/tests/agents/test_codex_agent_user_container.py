@@ -153,7 +153,19 @@ $PRELOOP_AS_AGENT bash -c '
     git config core.hooksPath /tmp/evil
     nohup sleep 300 >/dev/null 2>&1 &
 ' </dev/null
+# ... and a link for root's session pack to write through.
+$PRELOOP_AS_AGENT bash -c '
+    rm -rf /workspace/.preloop-agent-session
+    mkdir -p /workspace/.preloop-agent-session
+    ln -s /usr/local/bin /workspace/.preloop-agent-session/codex
+    printf "#!/bin/sh\\ntouch /tmp/pwned-pack\\n" > "$CODEX_HOME/sessions/git"
+' </dev/null
 {codex_reclaim_workspace_block()}
+_pl_pack_src="$CODEX_HOME/sessions"
+_pl_pack_dst={_hook.SESSION_PACK_ROOT}/codex
+mkdir -p "$_pl_pack_dst"
+(cd "$_pl_pack_src" && tar cf - .) | (cd "$_pl_pack_dst" && tar xf -)
+[ -e /usr/local/bin/git ] || echo "RESULT session pack stayed in place"
 pgrep -u {AGENT_USER} >/dev/null || echo "RESULT agent processes stopped"
 git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m root
 [ -e /tmp/pwned-hook ] || [ -e /tmp/pwned-config ] \\
@@ -166,8 +178,8 @@ def _sq(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def test_agent_commands_cannot_change_the_hook():
-    proc = subprocess.run(
+def _docker_run(script: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
             "docker",
             "run",
@@ -182,11 +194,15 @@ def test_agent_commands_cannot_change_the_hook():
             IMAGE,
             "-s",
         ],
-        input=_script(),
+        input=script,
         capture_output=True,
         text=True,
         timeout=600,
     )
+
+
+def test_agent_commands_cannot_change_the_hook():
+    proc = _docker_run(_script())
     results = [
         line.removeprefix("RESULT ")
         for line in proc.stdout.splitlines()
@@ -203,10 +219,34 @@ def test_agent_commands_cannot_change_the_hook():
     assert "agent processes stopped" in results
     assert "root git ran no agent hook" in results
     assert "workspace root-owned" in results
+    assert "session pack stayed in place" in results
+
+
+def test_a_replaced_repository_stops_root_steps():
+    script = f"""
+set -e
+id -u {AGENT_USER} >/dev/null 2>&1 \\
+    || useradd --uid 10001 --user-group --create-home {AGENT_USER}
+mkdir -p /workspace/repo && cd /workspace && git init -q repo
+export CODEX_HOME=/root/.codex
+mkdir -p "$CODEX_HOME" && printf 'model = "m"\\n' > "$CODEX_HOME/config.toml"
+{codex_agent_user_block()}
+$PRELOOP_AS_AGENT bash -c '
+    mkdir -p /tmp/elsewhere && mv /workspace/repo/.git /tmp/elsewhere/.git
+    ln -s /tmp/elsewhere/.git /workspace/repo/.git
+' </dev/null
+{codex_reclaim_workspace_block()}
+echo "RESULT reclaim continued"
+"""
+    proc = _docker_run(script)
+    assert "PRELOOP_SETUP_FAILED agent_workspace_tampered" in proc.stdout
+    assert "RESULT reclaim continued" not in proc.stdout
+    assert proc.returncode != 0
 
 
 if __name__ == "__main__":
     if not _image_available():
         sys.exit("needs docker and PRELOOP_UNIVERSAL_TEST_IMAGE present locally")
     test_agent_commands_cannot_change_the_hook()
+    test_a_replaced_repository_stops_root_steps()
     print("agent user container test: OK")

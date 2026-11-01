@@ -205,7 +205,7 @@ def test_root_takes_the_workspace_back_before_its_own_git_steps():
     script = CodexAgent({})._build_codex_script(
         {**_context(), "native_hook_required": True}
     )
-    reclaim_at = script.index("Take the workspace back from the agent user")
+    reclaim_at = script.rindex("Take the workspace back from the agent user")
     last_round = script.rindex("$PRELOOP_AS_AGENT codex exec")
     assert last_round < reclaim_at
     assert reclaim_at < script.index("# Exit with codex's exit code")
@@ -222,3 +222,29 @@ def test_every_executable_codex_ships_is_execute_only():
     block = codex_agent_user_block()
     assert "-type f -perm -u+x -print0" in block
     assert "-name codex" not in block
+
+
+def test_session_pack_root_matches_the_session_module():
+    from preloop.agents.cli_session import SESSION_PACK_ROOT
+    from preloop.agents.codex_native_hook import SESSION_PACK_ROOT as repeated
+
+    assert repeated == SESSION_PACK_ROOT
+    block = codex_reclaim_workspace_block()
+    assert f"rm -rf {SESSION_PACK_ROOT}" in block
+    assert f"install -d -m 0700 {SESSION_PACK_ROOT}" in block
+    assert "PRELOOP_SETUP_FAILED agent_workspace_tampered" in block
+
+
+def test_every_root_session_pack_follows_the_reclaim():
+    script = CodexAgent({})._build_codex_script(
+        {**_context(), "native_hook_required": True}
+    )
+    marker = "Take the workspace back from the agent user"
+    packs = [m.start() for m in re.finditer(r"^\s*_pl_pack_cli_session$", script, re.M)]
+    assert packs, "expected session pack calls"
+    for at in packs:
+        assert marker in script[:at]
+        # The nearest preceding reclaim comes after the last Codex round
+        # before this pack.
+        reclaim_at = script.rindex(marker, 0, at)
+        assert "$PRELOOP_AS_AGENT codex exec" not in script[reclaim_at:at]

@@ -805,6 +805,7 @@ set -e
 {stream_recovery_block}
 if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     echo 'PRELOOP_NATIVE_RESUME {{"mode":"resume_failed","reason":"native_cli_exit"}}'
+    {reclaim_block}
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi

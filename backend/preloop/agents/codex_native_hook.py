@@ -242,6 +242,10 @@ exec setpriv --reuid=<USER> --regid=<USER> --init-groups --no-new-privs \
     --inh-caps=-all --bounding-set=-all -- /usr/bin/env -- "$@"
 """.replace("<DROPPED>", "|".join(LAUNCHER_DROPPED_ENV))
 
+#: ``preloop.agents.cli_session.SESSION_PACK_ROOT``; repeated here so this
+#: module loads on its own (the image workflow's container test).
+SESSION_PACK_ROOT = "/workspace/.preloop-agent-session"
+
 #: Root-only directory holding each repository's git config from before the
 #: agent ran, restored by :func:`codex_reclaim_workspace_block`.
 _GIT_CONFIG_SAVE_DIR = "/run/preloop-git-config"
@@ -310,6 +314,7 @@ if [ -z "$_pl_agent_error" ]; then
     _pl_n=0
     while IFS= read -r -d '' _pl_gitdir; do
         if [ -f "$_pl_gitdir/config" ]; then
+            _pl_gitdir="$(readlink -f "$_pl_gitdir")"
             _pl_n=$((_pl_n + 1))
             cp "$_pl_gitdir/config" "{_GIT_CONFIG_SAVE_DIR}/$_pl_n"
             printf '%s\t%s\n' "$_pl_n" "$_pl_gitdir" >> {_GIT_CONFIG_SAVE_DIR}/repos
@@ -388,14 +393,18 @@ def codex_reclaim_workspace_block() -> str:
     workspace, including ``.git``, so it could have planted git hooks or
     configuration (``core.hooksPath``, ``core.fsmonitor``, filter drivers,
     credential helpers, a ``commondir`` redirect) that root's git would run.
-    This block stops every agent process, gives the workspace back to root,
-    restores each repository's git config saved before the agent ran,
-    removes hooks and the files that can redirect or extend the
+    The agent could also have left links for root's session pack to write
+    through. This block stops every agent process, gives the workspace and
+    ``$CODEX_HOME`` back to root, removes links at the top of
+    ``$CODEX_HOME``, recreates :data:`SESSION_PACK_ROOT` as a root-only
+    directory, restores each repository's git config saved before the agent
+    ran, removes hooks and the files that can redirect or extend the
     configuration, and exports ``core.hooksPath=/dev/null`` and
-    ``core.fsmonitor=false`` for root's later git commands. A repository
-    whose ``.git`` was replaced by a file or a link loses it, so the
-    publication steps fail for that repository instead of following it.
-    Does nothing when Codex did not run as the agent user.
+    ``core.fsmonitor=false`` for root's later git commands. If a repository
+    path or its ``.git`` no longer resolves to itself (the agent replaced it
+    with a link or a file), the run stops with ``PRELOOP_SETUP_FAILED
+    agent_workspace_tampered`` before root's steps run. Idempotent; does
+    nothing when Codex did not run as the agent user.
 
     Returns:
         A bash fragment.
@@ -409,16 +418,21 @@ if [ -n "${{PRELOOP_AS_AGENT:-}}" ]; then
     sleep 1
     pkill -KILL -u {AGENT_USER} 2>/dev/null || true
     if [ -d /workspace ]; then chown -R root:root /workspace; fi
+    find "$CODEX_HOME" -mindepth 1 -maxdepth 1 -type l -exec rm -f {{}} +
+    chown -R root:root "$CODEX_HOME"
+    rm -rf {SESSION_PACK_ROOT}
+    install -d -m 0700 {SESSION_PACK_ROOT}
     case "$PWD" in
         /|/workspace|/workspace/*|/root|/root/*|/opt|/opt/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib*|/var|/var/*|/proc*|/sys*|/dev*|/boot*) ;;
         *) chown -R root:root "$PWD" ;;
     esac
     while IFS=$'\t' read -r _pl_n _pl_gitdir; do
         [ -n "$_pl_gitdir" ] || continue
-        if [ -L "$_pl_gitdir" ] || [ ! -d "$_pl_gitdir" ]; then
-            echo "WARNING: $_pl_gitdir was replaced during the run; removed it"
-            rm -f "$_pl_gitdir"
-            continue
+        if [ ! -d "$_pl_gitdir" ] \
+            || [ "$(readlink -f "$_pl_gitdir")" != "$_pl_gitdir" ]; then
+            echo "agent_workspace_tampered: $_pl_gitdir was replaced during the run"
+            echo "PRELOOP_SETUP_FAILED agent_workspace_tampered"
+            exit 1
         fi
         cp "{_GIT_CONFIG_SAVE_DIR}/$_pl_n" "$_pl_gitdir/config"
         rm -rf "$_pl_gitdir/hooks"
