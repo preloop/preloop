@@ -169,7 +169,7 @@ class TestCodexBuildScript:
         }
         script = agent._build_codex_script(context)
         assert "Fix the bug in main.py" not in script
-        assert f'cat "{PROMPT_FILE_PATH}" | codex exec' in script
+        assert f'cat "{PROMPT_FILE_PATH}" | $PRELOOP_AS_AGENT codex exec' in script
 
     def test_shell_metacharacters_never_reach_the_script(self):
         """A prompt full of shell syntax leaves no trace in the script.
@@ -551,7 +551,9 @@ class TestCodexStreamIdleBound:
 
         export = 'export RUST_LOG="${RUST_LOG:-error},codex_core::responses_retry=warn"'
         assert export in script
-        assert script.index(export) < script.index("| codex exec $CODEX_RESUME_ARGS")
+        assert script.index(export) < script.index(
+            "| $PRELOOP_AS_AGENT codex exec $CODEX_RESUME_ARGS"
+        )
 
     def test_script_is_valid_bash(self, tmp_path):
         import shutil

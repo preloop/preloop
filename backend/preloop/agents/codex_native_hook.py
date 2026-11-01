@@ -178,3 +178,169 @@ if [ -n "$_pl_hook_error" ]; then
     echo "WARNING: Preloop native command hook not installed: $_pl_hook_error; tool rules are not applied to native commands in this run"
 fi
 """
+
+
+#: The unprivileged user hosted Codex runs as (environments/universal/Dockerfile).
+AGENT_USER = "preloop-agent"
+#: Root-owned launcher the run writes once the agent user is set up.
+AGENT_LAUNCHER_PATH = "/usr/local/libexec/preloop-as-agent"
+#: Log line naming the user Codex runs as.
+AGENT_USER_LINE = "PRELOOP_AGENT_USER"
+
+#: Files in ``$CODEX_HOME`` that stay root-owned and read-only to the agent:
+#: everything Codex reads its configuration, hooks, trust state and
+#: credentials from. Codex's own runtime state (sessions, logs, sqlite
+#: databases) is handed to the agent user.
+LOCKED_CODEX_FILES = (
+    "config.toml",
+    "hooks.json",
+    "auth.json",
+    "managed_config.toml",
+    "requirements.toml",
+    "preloop-models.json",
+    "preloop-browser-mcp.toml",
+    "AGENTS.md",
+    "AGENTS.override.md",
+)
+_LOCKED_CODEX_FILES = " ".join(LOCKED_CODEX_FILES)
+
+# Written to AGENT_LAUNCHER_PATH. The values in angle brackets are filled in
+# by the block below. Variables Codex does not need and that carry
+# credentials are dropped; Codex itself keeps its model key and the runtime
+# credential (the MCP bearer and the hook's flow credential).
+_LAUNCHER = r"""#!/bin/bash
+# Runs a command as the unprivileged Codex agent user (written per run).
+unset MCP_CONFIG_JSON PRELOOP_GIT_CREDENTIALS
+for _pl_v in $(compgen -e); do
+    case "$_pl_v" in PRELOOP_GIT_TOKEN_*) unset "$_pl_v" ;; esac
+done
+unset _pl_v
+export HOME=<HOME> USER=<USER> LOGNAME=<USER> CODEX_HOME=<CODEX_HOME>
+export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
+export CARGO_HOME="$HOME/.cargo" GOPATH="$HOME/go" GOBIN="$HOME/go/bin"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$PATH"
+# Through env: a binary that setpriv itself executes stays dumpable even when
+# it is unreadable; one executed after the drop is not (checked in
+# test_codex_agent_user_container.py).
+exec setpriv --reuid=<USER> --regid=<USER> --init-groups --no-new-privs \
+    --inh-caps=-all --bounding-set=-all -- /usr/bin/env -- "$@"
+"""
+
+
+def codex_agent_user_block() -> str:
+    """Shell that drops Codex to the unprivileged agent user.
+
+    Runs as root after ``config.toml``, ``hooks.json`` and the hook trust
+    state are written (:func:`codex_native_hook_block`) and before
+    ``codex exec``. It leaves those files and the hook CLI root-owned and
+    read-only to the agent user, makes ``$CODEX_HOME`` a sticky directory
+    so the agent can add sessions and logs but cannot replace or remove the
+    files root wrote, hands the workspace and the agent's home to the agent
+    user, and writes :data:`AGENT_LAUNCHER_PATH`. Every ``codex`` launch
+    is prefixed with ``$PRELOOP_AS_AGENT``.
+
+    The ``node`` binary and the native ``codex`` binary are made
+    execute-only (0711). The kernel marks a process that runs an
+    unreadable binary as not dumpable, so ``/proc/<pid>/environ`` of Codex
+    and of the hook CLI is not readable by commands the agent runs as the
+    same user. That keeps the runtime credential, which Codex holds for its
+    MCP connection and passes to the hook, out of reach of shell commands;
+    Codex already removes it from the environment it gives them.
+
+    An image without the agent user, a container that is not root, or a
+    missing ``setpriv`` keeps the earlier behaviour (Codex runs as the
+    container user) and logs why.
+
+    Returns:
+        A bash fragment that sets ``PRELOOP_AS_AGENT``.
+    """
+    launcher = shlex.quote(_LAUNCHER)
+    return f"""
+# ============================================================
+# Run Codex as the unprivileged agent user
+# ============================================================
+PRELOOP_AS_AGENT=""
+_pl_agent_error=""
+rm -f {AGENT_LAUNCHER_PATH} 2>/dev/null || true
+if [ "$(id -u)" != "0" ]; then
+    _pl_agent_error="the container does not run as root"
+elif ! id -u {AGENT_USER} >/dev/null 2>&1; then
+    _pl_agent_error="the image has no {AGENT_USER} user"
+elif ! command -v setpriv >/dev/null 2>&1; then
+    _pl_agent_error="setpriv is not available"
+fi
+_pl_codex_parent="$(dirname "$CODEX_HOME")"
+if [ -z "$_pl_agent_error" ] && {{ [ "$(stat -c %u "$_pl_codex_parent")" != "0" ] \\
+    || [ -n "$(find "$_pl_codex_parent" -maxdepth 0 -perm /022)" ]; }}; then
+    _pl_agent_error="$_pl_codex_parent is writable by other users"
+fi
+if [ -z "$_pl_agent_error" ]; then
+    _pl_agent_home="$(getent passwd {AGENT_USER} | cut -d: -f6)"
+    _pl_agent_home="${{_pl_agent_home:-/home/{AGENT_USER}}}"
+    mkdir -p "$_pl_agent_home"
+    if [ -f /root/.gitconfig ]; then cp /root/.gitconfig "$_pl_agent_home/.gitconfig"; fi
+    chown -R {AGENT_USER}:{AGENT_USER} "$_pl_agent_home"
+    # The base image keeps its toolchains under /root: traverse, not list.
+    chmod 0711 /root
+    # The workspace (and a working directory outside it) belongs to the agent.
+    if [ -d /workspace ]; then chown -R {AGENT_USER}:{AGENT_USER} /workspace; fi
+    case "$PWD" in
+        /|/workspace|/workspace/*|/root|/root/*|/opt|/opt/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib*|/var|/var/*|/proc*|/sys*|/dev*|/boot*) ;;
+        *) chown -R {AGENT_USER}:{AGENT_USER} "$PWD" ;;
+    esac
+    # Same git access as before: the agent's own fetches use the clone store.
+    if [ -f /tmp/.preloop-git-credentials ]; then
+        chown {AGENT_USER} /tmp/.preloop-git-credentials
+    fi
+    # $CODEX_HOME: root-owned and sticky. The agent may add files and owns
+    # the subdirectories (sessions, logs); config.toml, hooks.json and the
+    # rest of what root wrote stay root-owned, read-only to the agent, and
+    # cannot be removed or renamed by it.
+    # Empty managed layers stop the agent from adding its own.
+    mkdir -p "$CODEX_HOME/sessions"
+    for _pl_f in managed_config.toml requirements.toml; do
+        [ -e "$CODEX_HOME/$_pl_f" ] || : > "$CODEX_HOME/$_pl_f"
+    done
+    chown -R {AGENT_USER}:{AGENT_USER} "$CODEX_HOME"
+    for _pl_f in {_LOCKED_CODEX_FILES}; do
+        if [ -e "$CODEX_HOME/$_pl_f" ] || [ -L "$CODEX_HOME/$_pl_f" ]; then
+            chown -h root:{AGENT_USER} "$CODEX_HOME/$_pl_f"
+            [ -L "$CODEX_HOME/$_pl_f" ] || chmod 0640 "$CODEX_HOME/$_pl_f"
+        fi
+    done
+    chown root:{AGENT_USER} "$CODEX_HOME"
+    chmod 1770 "$CODEX_HOME"
+    # The hook CLI and the binaries that hold the runtime credential are
+    # root-owned and execute-only: not writable, and not dumpable when run.
+    for _pl_bin in "${{_pl_cli:-}}" "$(command -v node 2>/dev/null || true)"; do
+        [ -n "$_pl_bin" ] || continue
+        _pl_bin="$(readlink -f "$_pl_bin")"
+        if [ -f "$_pl_bin" ]; then chown root:root "$_pl_bin"; chmod 0711 "$_pl_bin"; fi
+    done
+    _pl_npm_root="$(npm root -g 2>/dev/null || true)"
+    if [ -n "$_pl_npm_root" ] && [ -d "$_pl_npm_root/@openai" ]; then
+        while IFS= read -r -d '' _pl_bin; do
+            if [ "$(head -c 4 "$_pl_bin" | od -An -c | tr -d ' ')" = "177ELF" ]; then
+                chmod 0711 "$_pl_bin"
+            fi
+        done < <(find -L "$_pl_npm_root/@openai" -type f -name codex -print0 2>/dev/null)
+    fi
+    mkdir -p "$(dirname {AGENT_LAUNCHER_PATH})"
+    printf '%s' {launcher} \\
+        | sed -e "s|<HOME>|$_pl_agent_home|g" -e "s|<USER>|{AGENT_USER}|g" \\
+            -e "s|<CODEX_HOME>|$CODEX_HOME|g" > {AGENT_LAUNCHER_PATH}
+    chown root:root {AGENT_LAUNCHER_PATH}
+    chmod 0755 {AGENT_LAUNCHER_PATH}
+    if {AGENT_LAUNCHER_PATH} true; then
+        PRELOOP_AS_AGENT={AGENT_LAUNCHER_PATH}
+    else
+        rm -f {AGENT_LAUNCHER_PATH}
+        _pl_agent_error="dropping to {AGENT_USER} failed"
+    fi
+fi
+if [ -n "$PRELOOP_AS_AGENT" ]; then
+    echo "{AGENT_USER_LINE} {AGENT_USER}"
+else
+    echo "{AGENT_USER_LINE} $(id -un 2>/dev/null || id -u) ($_pl_agent_error; Codex can change its own hook configuration in this run)"
+fi
+"""

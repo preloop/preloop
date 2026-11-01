@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
+  Codex configuration, the `PreToolUse` hook and its trust state first; the
+  agent cannot overwrite or remove the hook CLI, `hooks.json` or
+  `config.toml`, so the hook checks every command in the run. Workspaces,
+  the agent's home and caches stay writable. The runtime credential stays
+  out of shell commands' reach: Codex and the hook run from execute-only
+  binaries whose environment the agent user cannot read. The universal
+  image adds the user and checks the language smoke as that user; hosted
+  runs use it once the hosted image pin moves to an image built with it.
+  See `docs/security/agent-isolation.md`.
 - Upstream MCP requests identify Preloop. Every request to an upstream MCP
   server carries `User-Agent: Preloop/<version>`, and the session that serves
   a proxied tool call carries `X-Preloop-Correlation-Id` with the same
