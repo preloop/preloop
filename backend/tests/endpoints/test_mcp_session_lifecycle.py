@@ -190,7 +190,7 @@ async def test_external_mcp_waits_do_not_hold_database_connections(
             all_entered.set()
         await release.wait()
 
-    async def call_tool(*args: Any) -> list[Any]:
+    async def call_tool(*args: Any, **kwargs: Any) -> list[Any]:
         if wait_stage == "call":
             await wait_at_provider()
         return []

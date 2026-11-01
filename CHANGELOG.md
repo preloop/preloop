@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Upstream MCP requests identify Preloop. Every request to an upstream MCP
+  server carries `User-Agent: Preloop/<version>`, and the session that serves
+  a proxied tool call carries `X-Preloop-Correlation-Id` with the same
+  `correlation_id` as the audit rows for that call. A server can opt in to
+  `X-Preloop-Instance` (a stable, non-secret per-installation id, overridable
+  with `PRELOOP_INSTANCE_ID`) with `auth_config.send_instance_id: true`, or
+  remove all three headers with `auth_config.send_identity_headers: false`.
 - Helm values for enterprise single sign-on on the API: `sso.enabled`
   (`ENTERPRISE_SSO_ENABLED`), `sso.publicUrl` (`SSO_PUBLIC_URL`, origin of the
   OIDC redirect URI and SAML SP URLs) and `sso.allowPrivateIssuers`

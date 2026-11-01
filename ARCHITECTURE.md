@@ -1589,6 +1589,8 @@ extension failures are isolated from core imports with a sanitized warning.
 
 [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.
 
+Every upstream MCP session built by `MCPClient` (`services/mcp_client_pool.py`) carries the identity headers defined in `services/upstream_identity.py`: `User-Agent: Preloop/<version>` (shared with the model path), `X-Preloop-Correlation-Id` equal to the audit `correlation_id` on proxied tool calls, and an opt-in `X-Preloop-Instance`. Per-server `auth_config` flags remove them or add the instance id; client headers are never forwarded.
+
 Restricted CI's optional shared-flow selector resolves exactly one repository from
 the principal's immutable project binding before minting a read lease. Tool audit
 observations are stored as bounded canonical chunks in `flow_execution_log`,

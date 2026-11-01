@@ -196,6 +196,17 @@ class MCPServerBase(BaseModel):
             IntrospectionConfig.model_validate(value["introspection"])
         return value
 
+    @field_validator("auth_config")
+    @classmethod
+    def validate_identity_header_flags(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """``send_identity_headers``/``send_instance_id`` must be booleans."""
+        for key in ("send_identity_headers", "send_instance_id"):
+            if value and key in value and not isinstance(value[key], bool):
+                raise ValueError(f"auth_config.{key} must be true or false")
+        return value
+
     @model_validator(mode="after")
     def introspection_requires_delegated_auth(self) -> "MCPServerBase":
         """A grant check only applies to the bearer or OAuth token we forward."""

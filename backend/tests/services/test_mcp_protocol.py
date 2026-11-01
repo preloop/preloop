@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import httpx
 import pytest
@@ -404,7 +404,9 @@ async def test_wire_calls_preserve_policy_and_approval_gates(
         upstream.call_tool.assert_not_awaited()
     else:
         assert result.get("isError", False) is False
-        upstream.call_tool.assert_awaited_once_with("safe_tool", {"ok": "yes"})
+        upstream.call_tool.assert_awaited_once_with(
+            "safe_tool", {"ok": "yes"}, correlation_id=ANY
+        )
     policy.assert_awaited_once()
 
 
