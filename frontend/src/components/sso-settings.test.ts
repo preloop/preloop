@@ -476,7 +476,43 @@ describe('SSO account settings', () => {
       expect(chips).to.have.length(1);
       expect(chips[0].getAttribute('variant')).to.equal('warning');
       expect(text()).to.contain(
-        'Tokens that are not bound to a connection cannot provision. Create a replacement bound to a connection, update your identity provider, then revoke the old token.'
+        'Tokens that are not bound to a connection, or whose connection was removed, cannot provision. Create a replacement bound to a connection, update your identity provider, then revoke the old token.'
+      );
+    });
+
+    it('flags tokens whose connection was removed or is disabled', async () => {
+      requests.connections.resolves([
+        connection(),
+        connection({ id: 'connection-b', name: 'Paused IdP', enabled: false }),
+      ]);
+      requests.tokens.resolves([
+        token,
+        { ...token, id: 'gone', name: 'Gone', connection_id: 'deleted' },
+        {
+          ...token,
+          id: 'paused',
+          name: 'Paused',
+          connection_id: 'connection-b',
+        },
+      ]);
+      await mount();
+      const chips = [
+        ...element.shadowRoot!.querySelectorAll(
+          'section[aria-labelledby="scim-title"] sl-badge'
+        ),
+      ].map((chip) => chip.textContent!.trim());
+      expect(chips).to.deep.equal(['Replace', 'Connection disabled']);
+      expect(text()).to.contain(
+        'Gone · scim_example… · Unavailable connection'
+      );
+      expect(text()).to.contain(
+        'Paused · scim_example… · Paused IdP (disabled)'
+      );
+      expect(text()).to.contain(
+        'or whose connection was removed, cannot provision'
+      );
+      expect(text()).to.contain(
+        'Tokens bound to a disabled connection cannot provision until that connection is enabled.'
       );
     });
 

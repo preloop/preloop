@@ -65,7 +65,7 @@ export interface ScimToken {
   id: string;
   name: string;
   prefix: string;
-  /** Null for tokens created before SCIM shipped; they cannot provision. */
+  /** Null for tokens created before tokens were bound to a connection; they cannot provision. */
   connection_id?: string | null;
   created_at: string;
   last_used_at?: string | null;

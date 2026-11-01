@@ -921,12 +921,24 @@ export class SsoSettings extends LitElement {
     return `${row.name} (${protocol}${row.enabled ? '' : ', disabled'})`;
   }
 
+  /** Whether a token can provision, from its binding as the server checks it. */
+  private tokenState(
+    token: ScimToken
+  ): 'unbound' | 'unavailable' | 'disabled' | 'ready' {
+    if (!token.connection_id) return 'unbound';
+    const row = this.connections.find((c) => c.id === token.connection_id);
+    if (!row) return 'unavailable';
+    return row.enabled ? 'ready' : 'disabled';
+  }
+
   private tokenBinding(token: ScimToken): string {
-    if (!token.connection_id) return 'Not bound';
-    return (
+    const state = this.tokenState(token);
+    if (state === 'unbound') return 'Not bound';
+    if (state === 'unavailable') return 'Unavailable connection';
+    const name =
       this.connections.find((row) => row.id === token.connection_id)?.name ??
-      'Unavailable connection'
-    );
+      '';
+    return state === 'disabled' ? `${name} (disabled)` : name;
   }
 
   private renderTokens() {
@@ -935,8 +947,12 @@ export class SsoSettings extends LitElement {
     const newTokenConnection = this.connections.find(
       (row) => row.id === this.newTokenConnection
     );
-    const legacy = this.tokens.some(
-      (token) => !token.connection_id && !token.revoked_at
+    const active = this.tokens.filter((token) => !token.revoked_at);
+    const replace = active.some((token) =>
+      ['unbound', 'unavailable'].includes(this.tokenState(token))
+    );
+    const paused = active.some(
+      (token) => this.tokenState(token) === 'disabled'
     );
     return html`<section aria-labelledby="scim-title">
       <h2 id="scim-title">SCIM tokens</h2>
@@ -968,11 +984,20 @@ export class SsoSettings extends LitElement {
           : nothing
       }
       ${
-        legacy
+        replace
           ? html`<p id="scim-legacy-note">
-              Tokens that are not bound to a connection cannot provision. Create
-              a replacement bound to a connection, update your identity
-              provider, then revoke the old token.
+              Tokens that are not bound to a connection, or whose connection was
+              removed, cannot provision. Create a replacement bound to a
+              connection, update your identity provider, then revoke the old
+              token.
+            </p>`
+          : nothing
+      }
+      ${
+        paused
+          ? html`<p>
+              Tokens bound to a disabled connection cannot provision until that
+              connection is enabled.
             </p>`
           : nothing
       }
@@ -983,11 +1008,17 @@ export class SsoSettings extends LitElement {
               >${token.name} · ${token.prefix}… · ${this.tokenBinding(token)} ·
               ${token.revoked_at ? 'Revoked' : 'Active'}</span
             >${
-              !token.connection_id && !token.revoked_at
-                ? html`<sl-badge pill class="chip" variant="warning"
-                    >Replace</sl-badge
-                  >`
-                : nothing
+              token.revoked_at
+                ? nothing
+                : ['unbound', 'unavailable'].includes(this.tokenState(token))
+                  ? html`<sl-badge pill class="chip" variant="warning"
+                      >Replace</sl-badge
+                    >`
+                  : this.tokenState(token) === 'disabled'
+                    ? html`<sl-badge pill class="chip" variant="warning"
+                        >Connection disabled</sl-badge
+                      >`
+                    : nothing
             }<sl-button
               class="danger"
               variant="danger"
