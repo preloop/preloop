@@ -593,6 +593,24 @@ database:
     worker:
       size: 2
       maxOverflow: 4
+  # Optional PgBouncer in front of the chart's CNPG cluster (CNPG Pooler CR).
+  # Off by default. Enabling it deploys the pooler Service
+  # <cluster>-pooler-rw but does NOT route the application to it:
+  # DATABASE_URL still points at the cluster. The app is not yet safe behind
+  # transaction pooling (session advisory locks, LISTEN, asyncpg prepared
+  # statements, the psycopg "options" startup parameter). See
+  # docs/operations/pgbouncer.md before pointing anything at it.
+  # Requires the CNPG operator; not available with database.external.
+  pgbouncer:
+    enabled: false
+    instances: 2
+    # transaction or session. Session mode is the only mode the app can use
+    # today; transaction mode is the target once the app is made safe for it.
+    poolMode: transaction
+    # Free-form PgBouncer parameters passed to spec.pgbouncer.parameters.
+    parameters:
+      default_pool_size: "20"
+      max_client_conn: "400"
   # If true, deploys a PostgreSQL instance using CloudNativePG
   enabled: true
   # If external is true, uses an external PostgreSQL instance

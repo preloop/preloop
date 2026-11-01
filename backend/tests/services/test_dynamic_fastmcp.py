@@ -3593,13 +3593,6 @@ class TestPlaywrightBrowserStepDerivation:
             "row": row,
         }
 
-    @staticmethod
-    def _stringified(items) -> str:
-        """What the wrapper returned to the agent before this feature."""
-        return "\n".join(
-            item.text if hasattr(item, "text") else str(item) for item in items
-        )
-
     async def test_browser_navigate_records_a_tool_call_and_a_browser_step(
         self, dynamic_mcp, user_context, monkeypatch
     ):
@@ -3688,7 +3681,9 @@ class TestPlaywrightBrowserStepDerivation:
         )
 
         assert not result.is_error
-        assert result.content[0].text == self._stringified(upstream)
+        # #1151: the agent receives the image block, not its str() dump.
+        assert [block.type for block in result.content] == ["text", "image"]
+        assert result.content[1].data == self.PNG_B64
         step = mocks["log_browser_step"].call_args.kwargs["step"]
         assert step.action == "screenshot"
         mocks["attach_screenshot"].assert_called_once()

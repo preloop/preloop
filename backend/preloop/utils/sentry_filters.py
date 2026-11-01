@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import re
 from typing import Any, Iterator, Optional
 from urllib.parse import urlsplit
 
@@ -25,6 +26,43 @@ def gateway_upstream_call() -> Iterator[None]:
 
 
 _PRIVATE_CALLBACK_PREFIXES: set[str] = set()
+
+# Inbound flow webhooks carry their shared secret as the last path segment.
+_FLOW_WEBHOOK_SECRET = re.compile(r"(/api/v1/webhooks/flows/[^/?\s\"']+/)[^/?\s\"']+")
+
+
+def redact_flow_webhook_secret(value: str) -> str:
+    """Replace the secret segment of any flow webhook path in ``value``.
+
+    Args:
+        value: Text that may contain a flow webhook URL or path.
+
+    Returns:
+        The text with each webhook secret replaced by ``[redacted]``.
+    """
+    return _FLOW_WEBHOOK_SECRET.sub(r"\1[redacted]", value)
+
+
+def scrub_event_urls(event: dict[str, Any]) -> dict[str, Any]:
+    """Redact flow webhook secrets from the URL fields an event reports.
+
+    Args:
+        event: Sentry event or transaction payload, modified in place.
+
+    Returns:
+        The same event.
+    """
+    request = event.get("request")
+    if isinstance(request, dict) and isinstance(request.get("url"), str):
+        request["url"] = redact_flow_webhook_secret(request["url"])
+    if isinstance(event.get("transaction"), str):
+        event["transaction"] = redact_flow_webhook_secret(event["transaction"])
+    tags = event.get("tags")
+    if isinstance(tags, dict):
+        for key in ("url", "transaction"):
+            if isinstance(tags.get(key), str):
+                tags[key] = redact_flow_webhook_secret(tags[key])
+    return event
 
 
 def register_private_callback_prefix(prefix: str) -> None:
@@ -84,7 +122,7 @@ def sentry_before_send_transaction(
     event: dict[str, Any], hint: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
     """Drop callback performance traces as well as exception events."""
-    return None if is_private_callback_event(event) else event
+    return None if is_private_callback_event(event) else scrub_event_urls(event)
 
 
 _BENIGN_LOG_PHRASES = (
@@ -189,4 +227,4 @@ def sentry_before_send(
     """Drop benign events before they reach GlitchTip."""
     if should_drop_sentry_event(event, hint):
         return None
-    return event
+    return scrub_event_urls(event)

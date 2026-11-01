@@ -411,6 +411,13 @@ class AIModelInDBBase(BaseModel):
     credentials_last_verified_at: Optional[datetime] = Field(
         None, description="Timestamp when credentials were last verified or refreshed"
     )
+    credentials_version: Optional[int] = Field(
+        None,
+        description="Rotation counter of the credential secret (1 = never rotated)",
+    )
+    credentials_rotated_at: Optional[datetime] = Field(
+        None, description="When the credential material was last replaced"
+    )
     has_api_key: bool = Field(
         False, description="Whether this model has credentials configured"
     )
@@ -458,6 +465,40 @@ class AIModelCredentialExportResponse(BaseModel):
             "When Preloop last wrote this bundle (import, CLI push, or "
             "server-side refresh), in UTC"
         ),
+    )
+
+
+class AIModelCredentialRotateRequest(BaseModel):
+    """New credential material for an operator rotation.
+
+    Send ``api_key`` for a locally encrypted key, or ``external_ref`` for a
+    Vault/OpenBao reference. Exactly one non-blank value is required; the
+    endpoint checks this itself so a rejected body is never echoed back in a
+    validation error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: Optional[str] = Field(None, description="Replacement provider API key")
+    external_ref: Optional[str] = Field(
+        None, description="Replacement external secret path"
+    )
+
+    def __repr__(self) -> str:
+        return "AIModelCredentialRotateRequest(<redacted>)"
+
+    __str__ = __repr__
+
+
+class AIModelCredentialRotateResponse(BaseModel):
+    """Rotation metadata; never carries credential material."""
+
+    secret_id: uuid.UUID
+    backend_type: str
+    version: int
+    rotated_at: datetime
+    shared_model_count: int = Field(
+        description="Models of this account that resolve the rotated secret"
     )
 
 

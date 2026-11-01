@@ -944,6 +944,19 @@ class CRUDAIModel(CRUDBase[AIModel]):
             db.commit()
         return updated
 
+    def count_sharing_secret(
+        self, db: Session, *, secret_id: uuid.UUID, account_id: uuid.UUID
+    ) -> int:
+        """Count an account's models that resolve the given credential secret."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.credentials_secret_id == secret_id,
+                self.model.account_id == account_id,
+            )
+            .count()
+        )
+
     def _delete_unreferenced_credential_secret(
         self, db: Session, secret_id: uuid.UUID
     ) -> None:

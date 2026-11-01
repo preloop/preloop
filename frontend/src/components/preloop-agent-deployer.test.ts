@@ -321,6 +321,94 @@ describe('PreloopAgentDeployer', () => {
     expect((el as any).sshPassword).to.equal('');
   });
 
+  async function deployWith(
+    el: PreloopAgentDeployer,
+    response: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    Object.assign(el, {
+      sshHost: 'example.org',
+      sshUsername: 'ubuntu',
+      sshPassword: 'secret',
+      sshHostKey: 'ssh-ed25519 AAAA',
+      deployModel: 'm1',
+    });
+    fetchStub.callsFake((_url: string, options?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify(options?.method === 'POST' ? response : { gcp: true })
+        )
+      )
+    );
+    await (el as any).startSshDeployBootSequence();
+    await el.updateComplete;
+    const post = fetchStub
+      .getCalls()
+      .find((call) => call.args[1]?.method === 'POST')!;
+    return JSON.parse(post.args[1].body);
+  }
+
+  const DEPLOYED = {
+    status: 'succeeded',
+    agent: { id: 'a1', display_name: 'Hermes' },
+    logs: ['Installed'],
+  };
+
+  it('offers a desktop install, off by default, on both deploy forms (#1359)', async () => {
+    const el = await mount();
+    for (const step of ['ssh-config', 'fresh-vm-premium']) {
+      await goTo(el, step);
+      const box = el.shadowRoot!.querySelector(
+        'sl-checkbox.desktop-option'
+      ) as any;
+      expect(box, step).to.exist;
+      expect(box.checked).to.equal(false);
+      expect(box.disabled).to.equal(false);
+      expect(box.textContent).to.contain('Install a desktop');
+      expect(box.getAttribute('help-text')).to.contain('localhost only');
+    }
+  });
+
+  it('leaves the payload unchanged when the desktop box is unticked', async () => {
+    const el = await mount();
+    const body = await deployWith(el, DEPLOYED);
+    expect(Object.keys(body).sort()).to.deep.equal([
+      'compute_size',
+      'idempotency_key',
+      'model_id',
+      'runtime',
+      'ssh',
+      'target',
+    ]);
+  });
+
+  it('sends desktop: true and shows the installed desktop stage', async () => {
+    const el = await mount();
+    await goTo(el, 'ssh-config');
+    const box = el.shadowRoot!.querySelector(
+      'sl-checkbox.desktop-option'
+    ) as any;
+    box.checked = true;
+    box.dispatchEvent(new CustomEvent('sl-change'));
+    const body = await deployWith(el, { ...DEPLOYED, desktop: 'installed' });
+    expect(body.desktop).to.equal(true);
+    expect(el.shadowRoot!.textContent).to.contain('Desktop installed');
+    expect(el.shadowRoot!.querySelector('.boot-log-line.warning')).to.equal(
+      null
+    );
+  });
+
+  it('warns about a failed desktop stage without failing the deployment', async () => {
+    const el = await mount();
+    (el as any).deployDesktop = true;
+    const success = sinon.spy();
+    el.addEventListener('deploy-agent-success', success);
+    await deployWith(el, { ...DEPLOYED, desktop: 'failed' });
+    expect(success.calledOnce).to.equal(true);
+    const warning = el.shadowRoot!.querySelector('.boot-log-line.warning');
+    expect(warning?.textContent).to.contain('Desktop install failed');
+    expect(el.shadowRoot!.textContent).to.contain('Agent node provisioned');
+  });
+
   it('shows server failures without fabricated success or agent inventory', async () => {
     const el = await mount();
     const success = sinon.spy();
