@@ -279,7 +279,11 @@ async def test_policy_and_approval_share_exact_prefix_owner_and_token_snapshot(
     assert (
         pool.get_client.await_args.kwargs["auth_config"]["token"] == "synthetic-bearer"
     )
-    client.call_tool.assert_awaited_once_with("read", {})
+    client.call_tool.assert_awaited_once_with(
+        "read",
+        {},
+        correlation_id=audit.log_tool_call_async.call_args.kwargs["correlation_id"],
+    )
     assert audit.log_tool_call_async.call_args.kwargs["grant"] == BINDING
     assert gateway._grant_dispatch_var.get() is None
 

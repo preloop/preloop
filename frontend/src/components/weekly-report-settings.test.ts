@@ -24,6 +24,7 @@ function stubApi(options: {
     user_enabled: true,
     members_enabled: true,
     member_policy_findings_enabled: false,
+    synthesis_enabled: false,
     tracking_enabled: true,
   };
   const puts: Record<string, unknown>[] = [];
@@ -90,9 +91,21 @@ describe('weekly-report-settings', () => {
     await waitUntil(() => switchFor(el, 'account_enabled'));
     expect(switchFor(el, 'account_enabled')!.checked).to.be.true;
     expect(switchFor(el, 'members_enabled')!.checked).to.be.true;
-    expect(switchFor(el, 'member_policy_findings_enabled')!.checked).to.be
-      .false;
-    expect(el.shadowRoot!.textContent).to.contain('costs no');
+    expect(switchFor(el, 'synthesis_enabled')!.checked).to.be.false;
+    expect(switchFor(el, 'member_policy_findings_enabled')).to.equal(null);
+    expect(el.shadowRoot!.textContent).to.contain('bounded model call');
+  });
+
+  it('enables optional synthesis independently of report delivery', async () => {
+    const { puts } = stubApi({});
+    const el = await mount();
+    await waitUntil(() => switchFor(el, 'synthesis_enabled'));
+    const sw = switchFor(el, 'synthesis_enabled')!;
+    sw.checked = true;
+    sw.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0]).to.deep.equal({ synthesis_enabled: true });
+    expect(switchFor(el, 'account_enabled')!.checked).to.be.true;
   });
 
   it('hides tracking without its enterprise capability', async () => {
@@ -123,13 +136,7 @@ describe('weekly-report-settings', () => {
     sw.dispatchEvent(new Event('sl-change'));
     await waitUntil(() => puts.length === 1);
     expect(puts[0]).to.deep.equal({ members_enabled: false });
-    await waitUntil(() =>
-      el.shadowRoot!.textContent!.includes(
-        'Turn on personal reports for members first.'
-      )
-    );
-    expect(switchFor(el, 'member_policy_findings_enabled')!.disabled).to.be
-      .true;
+    await waitUntil(() => !switchFor(el, 'account_enabled')!.disabled);
     expect(switchFor(el, 'account_enabled')!.checked).to.be.true;
     expect(switchFor(el, 'account_enabled')!.disabled).to.be.false;
   });

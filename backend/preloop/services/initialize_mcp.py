@@ -129,6 +129,33 @@ def _mcp_caller_session_ids(
     )
 
 
+async def _approval_correlation_id(account_id: Any, approval_id: Any) -> Optional[str]:
+    """Correlation id of the tool call that created an approval, if recorded.
+
+    Args:
+        account_id: The approval's account.
+        approval_id: The approval request id.
+
+    Returns:
+        The id, or ``None`` when it cannot be read; the replay then sends no
+        correlation id rather than the polling call's.
+    """
+    from preloop.models.crud.audit_log import crud_audit_log
+    from preloop.models.db.session import get_async_db_session
+
+    try:
+        async with get_async_db_session() as db:
+            found = await db.run_sync(
+                lambda session: crud_audit_log.get_approval_correlation_id(
+                    session, account_id=account_id, approval_id=approval_id
+                )
+            )
+        return found if isinstance(found, str) else None
+    except Exception as exc:
+        logger.warning("Approval correlation id unavailable (%s)", type(exc).__name__)
+        return None
+
+
 def _artifact_block(block: dict):
     """Validate one shared-mapping block dict into an MCP ``ContentBlock``."""
     from mcp.types import ContentBlock
@@ -2375,6 +2402,13 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             )
 
                             replay_grant = None
+                            # The upstream sees the correlation id of the
+                            # call that paused, not of this polling call.
+                            replay_correlation = _correlation_id_var.set(
+                                await _approval_correlation_id(
+                                    approval_request.account_id, req_id
+                                )
+                            )
                             _bypass_approval_var.set(True)
                             _approved_comment_var.set(approver_comment)
                             _approved_answer_var.set(approver_answer)
@@ -2413,6 +2447,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                     else:
                                         raise
                             finally:
+                                _correlation_id_var.reset(replay_correlation)
                                 replay_grant = _grant_binding_var.get(None)
                                 _grant_binding_var.set(None)
                                 _bypass_approval_var.set(False)

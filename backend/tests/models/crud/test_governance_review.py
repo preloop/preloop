@@ -178,7 +178,7 @@ def test_concurrent_new_versions_leave_one_active_row(db_engine: Engine) -> None
             db.commit()
 
 
-def test_get_or_default_is_on_platform_for_cloud(
+def test_get_or_default_is_off_for_cloud_without_analysis_opt_in(
     db_session: Session, test_user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRELOOP_HOSTED", "true")
@@ -188,7 +188,7 @@ def test_get_or_default_is_on_platform_for_cloud(
         db_session, account_id=test_user.account_id
     )
 
-    assert row.mode == "on_platform"
+    assert row.mode == "off"
     assert (
         db_session.query(GovernanceReviewSettings)
         .filter(GovernanceReviewSettings.account_id == test_user.account_id)
@@ -293,7 +293,7 @@ def test_set_thresholds_keeps_mode_and_round_trips(
     assert row.detector_thresholds == {"retry_limit": {"count": 7}}
 
 
-def test_set_thresholds_inserts_the_default_mode_for_a_new_account(
+def test_set_thresholds_inserts_the_off_default_mode_for_a_new_account(
     db_session: Session, test_user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRELOOP_HOSTED", "true")
@@ -305,7 +305,8 @@ def test_set_thresholds_inserts_the_default_mode_for_a_new_account(
         commit=False,
     )
 
-    assert row.mode == "on_platform"
+    # Implicit analysis stays off until an account explicitly opts in.
+    assert row.mode == "off"
     assert row.detector_thresholds is None
 
 

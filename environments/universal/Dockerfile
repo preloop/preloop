@@ -74,12 +74,32 @@ RUN case "${TARGETARCH:-amd64}" in \
     && curl -fsSL -o /opt/preloop/bin/preloop \
         "https://github.com/preloop/preloop/releases/download/v${PRELOOP_CLI_VERSION}/preloop-linux-${TARGETARCH:-amd64}" \
     && echo "${sum}  /opt/preloop/bin/preloop" | sha256sum -c - \
-    && chmod 755 /opt/preloop/bin/preloop
+    && chmod 0711 /opt/preloop/bin/preloop
 RUN --network=none PRELOOP_DISABLE_TELEMETRY=true /opt/preloop/bin/preloop agents permission-hook --help >/dev/null
+# Hosted Codex runs as this unprivileged user; root writes its configuration
+# and hook first (backend/preloop/agents/codex_native_hook.py). The CLI and
+# /opt/preloop stay root-owned and not writable by it. The CLI is
+# execute-only (0711): a process running an unreadable binary is not
+# dumpable, so the agent user cannot read the hook's environment. /root is
+# traverse-only so the base image's toolchains stay usable but not writable.
+ARG PRELOOP_AGENT_UID=10001
+RUN useradd --uid "${PRELOOP_AGENT_UID}" --user-group --create-home \
+        --shell /bin/bash preloop-agent \
+    && chown -R root:root /opt/preloop \
+    && chmod 0755 /opt/preloop /opt/preloop/bin \
+    && chmod 0711 /root
 # The preflight script is last so a change to it does not rebuild the smoke.
 COPY environments/universal/bin/preloop-preflight /usr/local/bin/preloop-preflight
 # Both architectures must contain a runnable preflight before publication.
 RUN --network=none preloop-preflight --help >/dev/null
+# The language smoke, with the Maven and Perl fixtures, passes as the agent
+# user, and the agent user cannot write the CLI.
+COPY environments/universal/check-agent-user.sh /opt/preloop-universal/check-agent-user.sh
+RUN --network=none chmod 0755 /opt/preloop-universal/check-agent-user.sh; \
+    set -a; \
+    . /opt/preloop-universal/codex-env.sh; \
+    set +a; \
+    exec /opt/entrypoint.sh /opt/preloop-universal/check-agent-user.sh
 LABEL org.opencontainers.image.title="preloop-codex-universal" \
       org.opencontainers.image.description="Codex image with Perl linters, shellcheck, and a per-language smoke" \
       org.opencontainers.image.base.name="${CODEX_BASE_IMAGE}"

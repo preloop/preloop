@@ -183,6 +183,16 @@ def test_smoke_runs_on_amd64_before_any_push() -> None:
     smoke = steps[names.index("Smoke offline")]
     assert "run-smoke.sh" in str(smoke["run"])
     assert smoke["if"] == "matrix.arch == 'amd64'"
+    container = steps[names.index("Agent user container test")]
+    assert names.index("Smoke offline") < names.index("Agent user container test")
+    assert names.index("Agent user container test") < names.index(
+        "Push smoked amd64 image"
+    )
+    assert container["if"] == "matrix.arch == 'amd64'"
+    assert container["env"]["PRELOOP_UNIVERSAL_TEST_IMAGE"] == (
+        "preloop-codex-universal:smoke"
+    )
+    assert "test_codex_agent_user_container.py" in str(container["run"])
     free = steps[names.index("Free disk space")]
     assert "/usr/local/lib/android" in str(free["run"])
     assert "40 * 1024 * 1024" in str(free["run"])

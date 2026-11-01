@@ -486,10 +486,21 @@ class CRUDScimToken(_AccountScopedCRUD[ScimToken]):
         token: str,
         prefix: str,
         user_id: Any = None,
+        connection_id: Any = None,
     ) -> ScimToken:
         """Store the hash of ``token``; the caller commits."""
+        if connection_id is not None:
+            connection = db.scalar(
+                select(AccountSsoConnection).where(
+                    AccountSsoConnection.id == connection_id,
+                    AccountSsoConnection.account_id == account_id,
+                )
+            )
+            if connection is None:
+                raise CrossAccountReferenceError("connection_id")
         row = ScimToken(
             account_id=account_id,
+            connection_id=connection_id,
             name=name,
             token_hash=hash_scim_token(token),
             prefix=prefix,

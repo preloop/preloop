@@ -4700,14 +4700,18 @@ def put_weekly_report_preferences(
     from preloop.models.crud.weekly_report import update_preferences
     from preloop.utils.permissions import user_permission_names
 
-    if any(
-        value is not None
-        for value in (
-            payload.account_enabled,
-            payload.members_enabled,
-            payload.member_policy_findings_enabled,
-            payload.tracking_enabled,
+    if (
+        any(
+            value is not None
+            for value in (
+                payload.account_enabled,
+                payload.members_enabled,
+                payload.member_policy_findings_enabled,
+                payload.tracking_enabled,
+                payload.synthesis_enabled,
+            )
         )
+        or "synthesis_model_id" in payload.model_fields_set
     ) and not (
         current_user.is_superuser
         or account.primary_user_id == current_user.id
@@ -4716,8 +4720,8 @@ def put_weekly_report_preferences(
         raise HTTPException(
             status_code=403, detail="Account administrator access required"
         )
-    return WeeklyReportPreferences(
-        **update_preferences(
+    try:
+        result = update_preferences(
             db,
             account_id=account.id,
             user=current_user,
@@ -4726,5 +4730,34 @@ def put_weekly_report_preferences(
             members_enabled=payload.members_enabled,
             member_policy_findings_enabled=payload.member_policy_findings_enabled,
             tracking_enabled=payload.tracking_enabled,
+            synthesis_enabled=payload.synthesis_enabled,
+            synthesis_model_id=payload.synthesis_model_id,
+            synthesis_model_sent="synthesis_model_id" in payload.model_fields_set,
         )
-    )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404, detail="Synthesis model not found"
+        ) from error
+    return WeeklyReportPreferences(**result)
+
+
+@router.post("/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}")
+def acknowledge_weekly_exception(
+    delivery_id: UUID,
+    exception_key: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, bool]:
+    """Suppress a delivered fact's unchanged material state for this recipient."""
+    from preloop.models.crud.exception_digest import acknowledge
+
+    if len(exception_key) != 64 or not acknowledge(
+        db,
+        account_id=account.id,
+        user_id=current_user.id,
+        delivery_id=delivery_id,
+        exception_key=exception_key,
+    ):
+        raise HTTPException(status_code=404, detail="Delivered exception not found")
+    return {"acknowledged": True}

@@ -9358,6 +9358,10 @@ export interface GovernancePolicyDocument extends GovernancePolicyVersion {
 
 export interface GovernanceReviewSettings {
   mode: GovernanceReviewMode;
+  stored_mode?: GovernanceReviewMode;
+  effective_reason?: string | null;
+  analysis_opt_in_required?: boolean;
+  analysis_opt_in_help?: string;
   analysis_model_id?: string | null;
   analysis_model_alias?: string | null;
   platform_analysis_model?: string | null;

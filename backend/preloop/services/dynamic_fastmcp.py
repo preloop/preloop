@@ -2095,7 +2095,7 @@ async def {internal_name}({params_str}):
         if denial:
             return _wrapper_tool_error(denial, status="refused")
         # Call tool on external server
-        result = await client.call_tool(upstream_name, arguments)
+        result = await client.call_tool(upstream_name, arguments, correlation_id=corr_id)
         try:
             await self._observe_mcp_dispatch(snapshot, user_context)
         except Exception as observation_error:

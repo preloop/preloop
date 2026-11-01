@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
 
 from preloop.models.gateway_usage import (
-    AGENT_GATEWAY_PREDICATE,
+    AGENT_GATEWAY_INDEX_PREDICATE,
     CUSTOMER_GATEWAY_PREDICATE,
 )
 
@@ -238,7 +238,7 @@ class ApiUsage(Base):
             "account_id",
             "runtime_session_id",
             "timestamp",
-            postgresql_where=text(AGENT_GATEWAY_PREDICATE),
+            postgresql_where=text(AGENT_GATEWAY_INDEX_PREDICATE),
         ),
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "

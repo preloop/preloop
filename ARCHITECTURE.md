@@ -1418,6 +1418,17 @@ sessions, and per-tool schema costs with unknown tariffs represented as null.
 email delivery, defaults on, and audits changes in the same transaction. Account
 changes require account administration; members can unsubscribe themselves without
 changing approval notifications. The Enterprise digest enforces both switches.
+The Enterprise automatic sender is a factual exception digest: it sends only
+newly actionable or changed gateway failure and approval facts and sends
+nothing in a quiet or unchanged week. Its ledger lives in
+`models.crud.exception_digest` (migration `20261121_exception_digest`): one
+claim per recipient and week, a committed dispatch claim before SMTP,
+per-member material history, and an account-week synthesis reservation capped
+at $0.02, two calls, 12,000 tokens and 20 seconds. `POST
+/api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}`
+acknowledges a fact only for the member it was sent to and only while its
+material state is current. Implicit governance analysis is off on every
+edition until an account opts in explicitly.
 
 
 The `governance_review` capability registers lazy `/console/governance` and
@@ -1472,7 +1483,10 @@ server does not advertise or call them.
 Weekly report settings live in core Account fields and the audited
 `models.crud.weekly_report` transaction. `/api/v1/weekly-report/preferences`
 keeps individual unsubscribe separate from independent account controls for
-owner/admin delivery, member delivery, and member policy findings. An unset
+owner/admin delivery, member delivery, member policy findings and the optional
+admin-only synthesis switch and model (account models only). The console no
+longer shows the member policy findings switch because the factual digest
+carries no policy findings; the API field remains for explicit previews. An unset
 member-delivery field uses an optional edition service for its effective plan
 default. The capability-gated Lit settings card lives in OSS. Report queries in
 `models.crud.weekly_report_data` apply account and user attribution before
@@ -1588,6 +1602,8 @@ days replace stale spend and make incomplete range totals unknown. Optional
 extension failures are isolated from core imports with a sanitized warning.
 
 [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.
+
+Every upstream MCP session built by `MCPClient` (`services/mcp_client_pool.py`) carries the identity headers defined in `services/upstream_identity.py`: `User-Agent: Preloop/<version>` (shared with the model path), `X-Preloop-Correlation-Id` equal to the audit `correlation_id` on proxied tool calls, and an opt-in `X-Preloop-Instance`. Per-server `auth_config` flags remove them or add the instance id; client headers are never forwarded.
 
 Restricted CI's optional shared-flow selector resolves exactly one repository from
 the principal's immutable project binding before minting a read lease. Tool audit

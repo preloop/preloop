@@ -389,6 +389,40 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
 
         return query.order_by(AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
 
+    def get_approval_correlation_id(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        approval_id: Union[UUID, str],
+    ) -> Optional[str]:
+        """Return the correlation id of the call that created an approval.
+
+        The ``approval_created`` row carries the correlation id of the tool
+        call that paused for approval, the same id as that call's
+        ``tool_call`` row. A replay after approval reuses it.
+
+        Args:
+            db: Database session
+            account_id: The approval's account
+            approval_id: The approval request id
+
+        Returns:
+            The correlation id, or ``None`` when no such row exists.
+        """
+        row = (
+            db.query(AuditLog.details["correlation_id"].astext)
+            .filter(
+                AuditLog.account_id == str(account_id),
+                AuditLog.action == "approval_created",
+                AuditLog.details["approval_id"].astext == str(approval_id),
+                AuditLog.details["correlation_id"].astext.isnot(None),
+            )
+            .order_by(AuditLog.timestamp.asc())
+            .first()
+        )
+        return row[0] if row else None
+
     def get_by_user(
         self,
         db: Session,

@@ -24,6 +24,11 @@ from preloop.services.mcp_httpx_client import (
     MCPResponsePolicy,
     create_streamable_mcp_http_client,
 )
+from preloop.services.upstream_identity import (
+    instance_header_enabled,
+    instance_id,
+    upstream_mcp_identity_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,18 +289,38 @@ class MCPClient:
 
         return headers, auth
 
+    async def _identity_headers(self, correlation_id: Optional[str]) -> Dict[str, str]:
+        """Preloop identity headers for one session (see upstream_identity)."""
+        instance = None
+        if instance_header_enabled(self.auth_config):
+            instance = await asyncio.to_thread(instance_id)
+        return upstream_mcp_identity_headers(
+            self.auth_config, correlation_id=correlation_id, instance=instance
+        )
+
     @asynccontextmanager
     async def _raw_session_context(
-        self, *, sse_read_timeout: float = 60.0
+        self,
+        *,
+        sse_read_timeout: float = 60.0,
+        correlation_id: Optional[str] = None,
     ) -> AsyncIterator[tuple[ClientSession, Any]]:
-        """Create a short-lived MCP session in the current task."""
+        """Create a short-lived MCP session in the current task.
+
+        Every request of the session carries the Preloop identity headers;
+        ``correlation_id`` is added when the session serves an audited call.
+        Auth headers are applied after them and win on a name collision.
+        """
         if self.url != self._protocol_url:
             self._protocol_version = None
-        headers, auth = self._build_auth()
+        auth_headers, auth = self._build_auth()
+        headers = await self._identity_headers(correlation_id)
+        if not auth:  # Bearer auth goes through the httpx auth flow instead.
+            headers.update(auth_headers)
 
         response_policy = MCPResponsePolicy()
         async with create_streamable_mcp_http_client(
-            headers=headers if not auth else {},  # Use auth param if bearer
+            headers=headers,
             timeout=httpx.Timeout(30.0, read=sse_read_timeout),
             auth=auth,
             response_policy=response_policy,
@@ -355,7 +380,10 @@ class MCPClient:
 
     @asynccontextmanager
     async def _session_context(
-        self, *, sse_read_timeout: float = 60.0
+        self,
+        *,
+        sse_read_timeout: float = 60.0,
+        correlation_id: Optional[str] = None,
     ) -> AsyncIterator[tuple[ClientSession, Any]]:
         # A pool entry is only a handle: re-read the credential version before
         # EVERY session so another worker's rotation/disconnect takes effect.
@@ -365,7 +393,7 @@ class MCPClient:
             yielded = False
             try:
                 async with self._raw_session_context(
-                    sse_read_timeout=sse_read_timeout
+                    sse_read_timeout=sse_read_timeout, correlation_id=correlation_id
                 ) as session:
                     yielded = True
                     yield session
@@ -505,13 +533,19 @@ class MCPClient:
             raise e
 
     async def call_tool(
-        self, tool_name: str, arguments: Dict[str, Any]
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        *,
+        correlation_id: Optional[str] = None,
     ) -> UpstreamToolContent:
         """Call a tool on the MCP server.
 
         Args:
             tool_name: Name of the tool to call
             arguments: Tool arguments
+            correlation_id: Audit correlation id of this call; sent upstream
+                as ``X-Preloop-Correlation-Id`` on every request of the session
 
         Returns:
             Content blocks, carrying the upstream ``is_error`` and
@@ -525,7 +559,9 @@ class MCPClient:
 
         dispatched = False
         try:
-            async with self._session_context(sse_read_timeout=60.0) as (
+            async with self._session_context(
+                sse_read_timeout=60.0, correlation_id=correlation_id
+            ) as (
                 session,
                 _init_result,
             ):

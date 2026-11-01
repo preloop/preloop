@@ -475,8 +475,12 @@ fi
         )
         # The live reminder is delivered later on this same executor. A
         # read-only run must not resume under --yolo.
+        from .codex_native_hook import AGENT_LAUNCHER_PATH
+
         self.live_nudge_command = "bash -c " + shlex.quote(
-            "set -o pipefail; codex exec resume --last --json --skip-git-repo-check "
+            "set -o pipefail; _pl_as_agent=; "
+            f"if [ -x {AGENT_LAUNCHER_PATH} ]; then _pl_as_agent={AGENT_LAUNCHER_PATH}; fi; "
+            "$_pl_as_agent codex exec resume --last --json --skip-git-repo-check "
             f"{sandbox_flags} "
             f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" 2>&1 | '
             f"{codex_event_filter_command()} >> {LIVE_NUDGE_LOG_PATH}"
@@ -580,7 +584,7 @@ fi
                 exit_code_var="CODEX_EXIT_CODE",
                 resume_probe="codex exec --help 2>&1 | grep -qw resume",
                 resume_command=(
-                    '$PRELOOP_NUDGE_TIMEOUT codex exec resume "$_pl_codex_sid" '
+                    '$PRELOOP_NUDGE_TIMEOUT $PRELOOP_AS_AGENT codex exec resume "$_pl_codex_sid" '
                     "--json --skip-git-repo-check "
                     f'--model "{model}" {sandbox_flags} '
                     f'"$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
@@ -635,7 +639,13 @@ fi
 
         # Native shell commands go through the Preloop PreToolUse hook, as on
         # a private-runner host profile. The read-only sandbox has no shell.
-        from .codex_native_hook import codex_native_hook_block
+        from .codex_native_hook import (
+            codex_agent_user_block,
+            codex_native_hook_block,
+            codex_reclaim_workspace_block,
+        )
+
+        reclaim_block = codex_reclaim_workspace_block()
 
         native_hook_block = (
             ""
@@ -652,7 +662,7 @@ fi
             session_id_expr='"${_pl_codex_sid:-}"',
             resume_probe="codex exec --help 2>&1 | grep -qw resume",
             resume_command=(
-                '$PRELOOP_RECOVERY_TIMEOUT codex exec resume "$_pl_recovery_sid" '
+                '$PRELOOP_RECOVERY_TIMEOUT $PRELOOP_AS_AGENT codex exec resume "$_pl_recovery_sid" '
                 f'--json --skip-git-repo-check --model "{model}" {sandbox_flags} '
                 f'"$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
                 f'| {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
@@ -750,6 +760,9 @@ if [ -f "${HOME}/.codex/preloop-browser-mcp.toml" ]; then
 fi
 """
             + native_hook_block
+            # Root wrote the configuration and trusted the hook; Codex itself
+            # runs as the unprivileged agent user (#2142).
+            + codex_agent_user_block()
             + f"""
 # Debug: Show config files (with API key masked)
 echo "=== Codex Configuration ==="
@@ -781,7 +794,7 @@ set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
 {native_result_setup}
-cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS {native_result_args + " " if native_result_args else ""}--json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+cat "{PROMPT_FILE_PATH}" | $PRELOOP_AS_AGENT codex exec $CODEX_RESUME_ARGS {native_result_args + " " if native_result_args else ""}--json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-1}}
 if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
@@ -792,10 +805,11 @@ set -e
 {stream_recovery_block}
 if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     echo 'PRELOOP_NATIVE_RESUME {{"mode":"resume_failed","reason":"native_cli_exit"}}'
+    {reclaim_block}
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
+{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
