@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Overview Usage box no longer shows the paragraph on how budget usage
+  is counted. A small info icon next to the first budget number shows it in
+  a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere
+  closes it.
+
 ### Added
 
 - Extension points for runner sharing. The runner session API passes the
