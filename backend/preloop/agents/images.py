@@ -9,8 +9,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Index digest published by Publish Universal Image from main e6f6078ba543
-# (run 38827918917). The attestation subject is this same digest.
+# Index digest published by Publish Universal Image from main d46520143ca3
+# (run 41265780482). The attestation subject is this same digest.
 _HOSTED_CODEX_IMAGE = (
     "ghcr.io/preloop/preloop-codex-universal@sha256:"
     "d60ffe7dcdc054d8186f40c0740c0e567a533d8222eca12ed9ca267999e56d8d"
