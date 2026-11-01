@@ -72,6 +72,11 @@ if [ "$PRELOOP_HARNESS_EXIT" -ne 0 ]; then exit "$PRELOOP_HARNESS_EXIT"; fi
 exit "$PRELOOP_EXPORT_EXIT"
 `
 
+// runnerLaunchStringLimit caps the bootstrap script and each launch
+// environment value. The control plane checks the same limit
+// (MAX_RUNNER_LAUNCH_STRING_BYTES) and reports a launch_error first.
+const runnerLaunchStringLimit = 96 * 1024
+
 func runnerLaunchFromJob(job map[string]any) (map[string]any, error) {
 	if reason, ok := job["launch_error"].(string); ok && reason != "" {
 		if len(reason) > 512 {
@@ -87,9 +92,12 @@ func runnerLaunchFromJob(job map[string]any) (map[string]any, error) {
 	if agent != "codex" && agent != "opencode" && agent != "pi" && agent != "deepseek" {
 		return nil, fmt.Errorf("unsupported private runner harness")
 	}
-	script, _ := launch["script"].(string)
-	if strings.TrimSpace(script) == "" || len(script) > 96*1024 {
-		return nil, fmt.Errorf("invalid private runner bootstrap script")
+	script, isString := launch["script"].(string)
+	if !isString || strings.TrimSpace(script) == "" {
+		return nil, fmt.Errorf("invalid private runner bootstrap script: the control plane sent no script; retry the execution and report it if it repeats")
+	}
+	if len(script) > runnerLaunchStringLimit {
+		return nil, fmt.Errorf("invalid private runner bootstrap script: %d bytes, limit %d", len(script), runnerLaunchStringLimit)
 	}
 	env, ok := launch["env"].(map[string]any)
 	if !ok {
@@ -97,7 +105,10 @@ func runnerLaunchFromJob(job map[string]any) (map[string]any, error) {
 	}
 	for key, value := range env {
 		s, ok := value.(string)
-		if !ok || len(s) > 96*1024 || strings.ContainsRune(s, 0) || !runnerEnvKey.MatchString(key) {
+		if ok && len(s) > runnerLaunchStringLimit && runnerEnvKey.MatchString(key) {
+			return nil, fmt.Errorf("invalid private runner environment entry %s: %d bytes, limit %d", key, len(s), runnerLaunchStringLimit)
+		}
+		if !ok || strings.ContainsRune(s, 0) || !runnerEnvKey.MatchString(key) {
 			return nil, fmt.Errorf("invalid private runner environment entry")
 		}
 	}

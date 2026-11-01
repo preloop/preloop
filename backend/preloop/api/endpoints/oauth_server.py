@@ -25,6 +25,11 @@ from pydantic import BaseModel
 
 from preloop.schemas.auth import TokenData
 
+from preloop.services.authentication_policy import (
+    authorize_session_record,
+    authorize_authentication,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["OAuth Server"], include_in_schema=False)
@@ -355,6 +360,7 @@ def _cli_token_response(
     generation: int,
     session_id: uuid.UUID,
     refresh_jti: str,
+    auth_context: dict[str, Any] | None = None,
 ) -> JSONResponse:
     """Mint the CLI access/refresh JWT pair for one ``cli_session`` row.
 
@@ -371,6 +377,7 @@ def _cli_token_response(
         data={"sub": sub, "scopes": scopes, "sid": sid},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         auth_generation=generation,
+        auth_context=auth_context,
     )
     refresh_token = create_access_token(
         data={
@@ -382,6 +389,7 @@ def _cli_token_response(
         },
         expires_delta=timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         auth_generation=generation,
+        auth_context=auth_context,
     )
     return JSONResponse(
         {
@@ -418,6 +426,7 @@ async def _issue_jwt_tokens(
     try:
         require_active_identity(db, user)
         enforce_verified_email(user, db)
+        auth_context = authorize_session_record(db, user, db_code, purpose="exchange")
     except HTTPException as exc:
         return _oauth_error("invalid_grant", str(exc.detail))
 
@@ -435,6 +444,7 @@ async def _issue_jwt_tokens(
         generation=user_auth_generation(user),
         session_id=cli_session.id,
         refresh_jti=refresh_jti,
+        auth_context=auth_context,
     )
 
 
@@ -446,6 +456,14 @@ async def _issue_opaque_tokens(db, db_code):
         generate_token,
     )
 
+    from preloop.api.auth.identity import require_session_membership
+    from preloop.api.auth.jwt import user_auth_generation
+
+    try:
+        user = require_session_membership(db, db_code.user_id, lock=True)
+        auth_context = authorize_session_record(db, user, db_code, purpose="exchange")
+    except HTTPException as exc:
+        return _oauth_error("invalid_grant", str(exc.detail))
     now = int(time.time())
     access_token_str = generate_token(32)
     refresh_token_str = generate_token(32)
@@ -457,6 +475,8 @@ async def _issue_opaque_tokens(db, db_code):
         user_id=db_code.user_id,
         account_id=db_code.account_id,
         scopes=db_code.scopes or [],
+        auth_context=auth_context,
+        auth_generation=user_auth_generation(user),
         expires_at=now + 3600,
         resource=db_code.resource,
         commit=False,
@@ -469,6 +489,8 @@ async def _issue_opaque_tokens(db, db_code):
         user_id=db_code.user_id,
         account_id=db_code.account_id,
         scopes=db_code.scopes or [],
+        auth_context=auth_context,
+        auth_generation=user_auth_generation(user),
         expires_at=now + 2592000,  # 30 days
     )
 
@@ -524,6 +546,9 @@ async def _handle_refresh_token(
                 try:
                     require_active_identity(db, user, lock=True)
                     enforce_verified_email(user, db)
+                    auth_context = authorize_session_record(
+                        db, user, db_refresh, purpose="refresh"
+                    )
                 except HTTPException as exc:
                     return _oauth_error("invalid_grant", str(exc.detail))
                 db_refresh = crud_oauth_mcp_refresh_token.get_by_token(
@@ -551,6 +576,8 @@ async def _handle_refresh_token(
                     user_id=db_refresh.user_id,
                     account_id=db_refresh.account_id,
                     scopes=db_refresh.scopes or [],
+                    auth_context=auth_context,
+                    auth_generation=db_refresh.auth_generation,
                     expires_at=now + 3600,
                     commit=False,
                     resource=None,
@@ -563,6 +590,8 @@ async def _handle_refresh_token(
                     user_id=db_refresh.user_id,
                     account_id=db_refresh.account_id,
                     scopes=db_refresh.scopes or [],
+                    auth_context=auth_context,
+                    auth_generation=db_refresh.auth_generation,
                     expires_at=now + 2592000,  # 30 days
                 )
 
@@ -607,6 +636,9 @@ async def _handle_refresh_token(
                     require_active_identity(db, user)
                     enforce_verified_email(user, db)
                     reject_stale_token_generation(user, token_data)
+                    auth_context = authorize_authentication(
+                        db, user, claims=token_data.claims, purpose="refresh"
+                    )
                 except HTTPException as exc:
                     return _oauth_error("invalid_grant", str(exc.detail))
 
@@ -646,6 +678,7 @@ async def _handle_refresh_token(
                     generation=user_auth_generation(user),
                     session_id=session_id,
                     refresh_jti=new_jti,
+                    auth_context=auth_context,
                 )
             finally:
                 db.close()

@@ -41,5 +41,9 @@ class HostExecSessionsResponse(BaseModel):
     )
     gateway_metered: bool = Field(
         default=False,
-        description="Always false: these rows never pass the model gateway.",
+        description=(
+            "Whether the execution has model gateway rows. The hook rows "
+            "listed here never pass the gateway; an onboarded Codex or "
+            "Claude Code host run sends its model calls through it."
+        ),
     )

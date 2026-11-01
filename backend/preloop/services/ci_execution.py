@@ -29,6 +29,7 @@ from preloop.services.issue_triage_controller import is_triage_flow
 from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.services.model_routing import prepare_execution_routing
 from preloop.services.no_progress_guard import parse_retry_config
+from preloop.services.read_only_review import public_startup_receipt
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.exceptions import TrackerError, TrackerResponseError
 from preloop.sync.trackers.github import GitHubTracker
@@ -311,6 +312,7 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "start_time": execution.start_time,
         "end_time": execution.end_time,
         "failure_category": execution.failure_category,
+        "startup_receipt": public_startup_receipt(execution),
     }
 
 
@@ -481,16 +483,57 @@ _PRIVATE_RESULT_SUFFIXES = tuple(
 )
 
 
+def _private_result_key(key: Any) -> bool:
+    """Whether a result key is withheld from the restricted projection."""
+    if not isinstance(key, str):
+        return True
+    canonical = _canonical_result_key(key)
+    return (
+        key.startswith("_")
+        or canonical in _CANONICAL_PRIVATE_RESULT_FIELDS
+        or canonical.endswith(_PRIVATE_RESULT_SUFFIXES)
+    )
+
+
+def _pointer_token(key: Any) -> str:
+    """Escape one JSON Pointer (RFC 6901) reference token."""
+    return str(key).replace("~", "~0").replace("/", "~1")
+
+
+def ci_result_withheld_paths(value: Any, prefix: str = "") -> list[str]:
+    """JSON Pointers of the result members :func:`public_ci_result` drops.
+
+    Lets the owning principal tell a complete document from one with
+    withheld members without seeing their values.
+
+    Args:
+        value: Persisted result document.
+        prefix: Pointer of ``value`` itself (empty for the root).
+
+    Returns:
+        Pointers in document order; empty when nothing was withheld.
+    """
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            pointer = f"{prefix}/{_pointer_token(key)}"
+            if _private_result_key(key):
+                paths.append(pointer)
+            else:
+                paths.extend(ci_result_withheld_paths(item, pointer))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            paths.extend(ci_result_withheld_paths(item, f"{prefix}/{index}"))
+    return paths
+
+
 def public_ci_result(value: Any) -> Any:
     """Project persisted report data without private controller fields."""
     if isinstance(value, dict):
         return {
             key: public_ci_result(item)
             for key, item in value.items()
-            if isinstance(key, str)
-            and not key.startswith("_")
-            and _canonical_result_key(key) not in _CANONICAL_PRIVATE_RESULT_FIELDS
-            and not _canonical_result_key(key).endswith(_PRIVATE_RESULT_SUFFIXES)
+            if not _private_result_key(key)
         }
     if isinstance(value, list):
         return [public_ci_result(item) for item in value]

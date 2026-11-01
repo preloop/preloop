@@ -67,6 +67,7 @@ describe('Edit controls permission states', () => {
                     user_management: true,
                     billing: true,
                     model_price_overrides: true,
+                    rbac: true,
                   },
                 }
               : [];
@@ -300,6 +301,7 @@ describe('Endpoint permission regression guards', () => {
                   model_price_overrides: true,
                   user_management: true,
                   billing: true,
+                  rbac: true,
                 },
               }
             : [];

@@ -134,8 +134,8 @@ def test_unknown_scope_rejected(client):
     assert response.status_code == 422
 
 
-def test_toggle_requires_elevated_role_for_non_owner(db_session, test_viewer_user):
-    """A viewer cannot halt the account, even with RBAC disabled (OSS)."""
+def test_core_member_without_role_can_toggle(db_session, test_viewer_user):
+    """Core has no role checks: a viewer-role member can halt the account."""
     app: FastAPI = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
@@ -143,15 +143,13 @@ def test_toggle_requires_elevated_role_for_non_owner(db_session, test_viewer_use
         response = viewer_client.post(
             "/api/v1/account/kill-switch/activate", json={"reason": "oops"}
         )
-    assert response.status_code == 403
-    assert "manage_kill_switch" in response.json()["detail"]
-
-    # And the halt state is untouched.
+    assert response.status_code == 200, response.text
+    assert response.json()["active"] is True
     assert (
         crud_account_halt.active_scopes(
             db_session, account_id=test_viewer_user.account_id
         )
-        == set()
+        != set()
     )
 
 

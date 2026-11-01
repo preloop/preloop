@@ -118,9 +118,28 @@ def test_register_with_malformed_inventory_still_registers(
     assert response.json()["harness_inventory"] is None
 
 
-def test_member_view_redacts_version_and_account_host(
+def test_core_member_view_shows_version_and_account_host(
     db_session: Session, test_user: models.User, monkeypatch
 ) -> None:
+    """Core has no role checks: every member sees the full inventory."""
+    with _app(db_session, test_user, monkeypatch) as client:
+        runner_id = client.post(
+            "/api/v1/runners/register", json=_fixture("register_with_inventory.json")
+        ).json()["id"]
+    member = _member(db_session, test_user)
+    with _app(db_session, member, monkeypatch) as client:
+        detail = client.get(f"/api/v1/runners/{runner_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["harness_inventory"]["entries"][0]["version"] == "1.0.95"
+
+
+def test_member_view_redacts_version_and_account_host_with_rbac_plugin(
+    db_session: Session, test_user: models.User, monkeypatch
+) -> None:
+    from preloop.utils import permissions
+
+    # Owner-only access is an RBAC-plugin (EE) rule. Core admits every member.
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
     with _app(db_session, test_user, monkeypatch) as client:
         runner_id = client.post(
             "/api/v1/runners/register", json=_fixture("register_with_inventory.json")
@@ -324,6 +343,9 @@ def test_list_resolves_the_admin_check_once_per_request(
     member = _member(db_session, test_user)
     calls: List[str] = []
     from preloop.utils import permissions
+
+    # Owner-only access is an RBAC-plugin (EE) rule. Core admits every member.
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
 
     real = permissions.user_holds_permission
 

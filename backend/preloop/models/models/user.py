@@ -198,6 +198,11 @@ class User(Base):
         comment="Incremented to revoke all outstanding JWT sessions",
     )
 
+    # Selective SSO enforcement revokes only non-SSO sessions for this membership.
+    non_sso_auth_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # Account hierarchy (#986). One membership is one user row; a person
     # links the rows of one human. Rows created without a person get one in
     # the session hook (preloop.models.models.hierarchy), so no caller has to

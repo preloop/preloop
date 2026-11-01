@@ -309,6 +309,7 @@ class TestPasswordValidation:
 
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.hashed_password = get_password_hash("currentpassword")
         identity_crud.register_membership(mock_user)
         mock_user.is_active = True
@@ -904,6 +905,7 @@ class TestOnboardingFlows:
         )
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.account_id = self.ACCOUNT_ID
         mock_user.username = username
         mock_user.email = email
@@ -1344,6 +1346,7 @@ class TestEmailVerification:
         """Test successful email verification."""
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.email = "test@example.com"
         mock_user.email_verified = False
 
@@ -1419,6 +1422,7 @@ class TestPasswordReset:
         """Test forgot password with existing user."""
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.email = "test@example.com"
 
         with (
@@ -1476,6 +1480,7 @@ class TestPasswordReset:
         """Test successful password reset."""
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.email = "test@example.com"
 
         with (
@@ -1548,6 +1553,7 @@ class TestLoginFlows:
         """Test successful login with form data."""
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.username = "testuser"
 
         with patch("preloop.api.auth.router.authenticate_user") as mock_auth:
@@ -1581,6 +1587,7 @@ class TestLoginFlows:
         """Test successful login with JSON data."""
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.username = "testuser"
 
         with patch("preloop.api.auth.router.authenticate_user") as mock_auth:
@@ -1660,6 +1667,7 @@ class TestApiKeyEndpoints:
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
         mock_user.account_id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.is_active = True
 
         app.dependency_overrides[get_current_active_user] = lambda: mock_user
@@ -1695,6 +1703,7 @@ class TestApiKeyEndpoints:
 
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.account_id = uuid.uuid4()
         mock_user.is_active = True
 

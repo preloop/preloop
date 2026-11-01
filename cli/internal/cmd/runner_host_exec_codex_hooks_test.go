@@ -17,7 +17,7 @@ func codexHookTestResult(workspace string) map[string]any {
 
 func TestCodexHookMetadataRequiresEffectiveTrust(t *testing.T) {
 	workspace := t.TempDir()
-	for _, mode := range []string{"trusted", "managed", "disabled", "untrusted", "modified", "async", "matcher", "wrong_source", "wrong_event", "wrong_cwd", "errors", "feature_disabled"} {
+	for _, mode := range []string{"trusted", "managed", "camel_case_event", "quoted_executable", "disabled", "untrusted", "modified", "async", "matcher", "wrong_source", "wrong_event", "wrong_cwd", "errors", "feature_disabled"} {
 		t.Run(mode, func(t *testing.T) {
 			result := codexHookTestResult(workspace)
 			entry := result["data"].([]any)[0].(map[string]any)
@@ -33,6 +33,11 @@ func TestCodexHookMetadataRequiresEffectiveTrust(t *testing.T) {
 				hook["matcher"] = "Read"
 			case "wrong_source":
 				hook["command"] = "preloop agents permission-hook --source claude_code"
+			case "camel_case_event":
+				// Codex 0.164 hooks/list output.
+				hook["eventName"] = "preToolUse"
+			case "quoted_executable":
+				hook["command"] = "'/Users/jane/.local/bin/preloop' agents permission-hook --source codex_cli --hook-event PreToolUse"
 			case "wrong_event":
 				hook["eventName"] = "PostToolUse"
 			case "wrong_cwd":
@@ -43,7 +48,7 @@ func TestCodexHookMetadataRequiresEffectiveTrust(t *testing.T) {
 				entry["hooks"] = []any{}
 			}
 			raw, _ := json.Marshal(result)
-			want := mode == "trusted" || mode == "managed"
+			want := mode == "trusted" || mode == "managed" || mode == "camel_case_event" || mode == "quoted_executable"
 			if got := codexHookMetadataReady(raw, workspace); got != want {
 				t.Fatalf("ready=%v want=%v", got, want)
 			}

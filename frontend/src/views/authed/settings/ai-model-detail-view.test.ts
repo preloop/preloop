@@ -32,8 +32,17 @@ describe('AIModelDetailView', () => {
   let sessionsGate: Promise<void> | null = null;
   let summaryGate: Promise<void> | null = null;
   let sessionsFail = false;
+  let ownerFlowBody: any;
+  let ownerFlowWrites: any[];
 
   beforeEach(() => {
+    ownerFlowBody = {
+      applicable: false,
+      enabled: false,
+      can_manage: false,
+      usage: null,
+    };
+    ownerFlowWrites = [];
     sessionsGate = null;
     summaryGate = null;
     sessionsFail = false;
@@ -174,6 +183,23 @@ describe('AIModelDetailView', () => {
           });
         }
 
+        if (url.startsWith('/api/v1/ai-models/model-1/owner-flow-use')) {
+          if ((init?.method || 'GET') === 'PUT') {
+            const body = JSON.parse(String(init?.body));
+            ownerFlowWrites.push(body);
+            ownerFlowBody = {
+              ...ownerFlowBody,
+              enabled: body.enabled,
+              usage: {
+                request_count: 3,
+                total_tokens: 1200,
+                execution_count: 1,
+                api_equivalent_cost: 0.42,
+              },
+            };
+          }
+          return new Response(JSON.stringify(ownerFlowBody), { status: 200 });
+        }
         if (url.startsWith('/api/v1/ai-models/model-1/used-by')) {
           if (usedByFail) return new Response('{}', { status: 500 });
           return new Response(JSON.stringify(usedByBody), {
@@ -467,6 +493,71 @@ describe('AIModelDetailView', () => {
     connectStub.restore();
     subscribeStub.restore();
     localStorage.clear();
+  });
+
+  it('shows the flow opt-in only to the subscription owner and saves it', async () => {
+    modelPayload.provider_name = 'openai-codex';
+    ownerFlowBody = {
+      applicable: true,
+      enabled: false,
+      can_manage: true,
+      usage: {
+        request_count: 0,
+        total_tokens: 0,
+        execution_count: 0,
+        api_equivalent_cost: 0,
+      },
+    };
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    const root = element.shadowRoot!;
+    await waitUntil(
+      () => root.querySelector('[data-testid="owner-flow-use"]'),
+      'owner opt-in card did not render',
+      { timeout: 5000 }
+    );
+    const note = root.querySelector('[data-testid="owner-flow-use-note"]')!;
+    expect(note.textContent).to.contain("use this subscription's quota");
+    expect(note.textContent).to.contain('OpenAI recommends API keys');
+    expect(note.querySelector('a')!.getAttribute('href')).to.contain(
+      'model-routing'
+    );
+    const toggle = root.querySelector(
+      '[data-testid="owner-flow-use"] sl-switch'
+    ) as any;
+    expect(toggle.checked).to.equal(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await waitUntil(
+      () => root.querySelector('[data-testid="owner-flow-use-usage"]'),
+      'usage line did not render after enabling',
+      { timeout: 5000 }
+    );
+    expect(ownerFlowWrites).to.deep.equal([{ enabled: true }]);
+    expect(
+      root.querySelector('[data-testid="owner-flow-use-usage"]')!.textContent
+    ).to.contain('Used by your flows');
+  });
+
+  it('hides the flow opt-in from users who do not own the subscription', async () => {
+    ownerFlowBody = {
+      applicable: true,
+      enabled: true,
+      can_manage: false,
+      usage: null,
+    };
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    const root = element.shadowRoot!;
+    await waitUntil(
+      () => root.querySelector('[data-model-settings]'),
+      'settings did not render',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+    expect(root.querySelector('[data-testid="owner-flow-use"]')).to.not.exist;
   });
 
   it('keeps built-in details read-only even for account admins', async () => {

@@ -29,6 +29,47 @@ def oss_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(account_hooks, "get_authorizer", lambda: None)
 
 
+@pytest.fixture
+def person_session(client: Any, test_user: models.User) -> None:
+    """Send the verified browser session the MCP authorize token derives from."""
+    from preloop.api.auth.jwt import create_access_token, user_auth_generation
+
+    client.headers["Authorization"] = "Bearer " + create_access_token(
+        {"sub": str(test_user.id)},
+        auth_generation=user_auth_generation(test_user),
+        auth_context={
+            "amr": ["password"],
+            "auth_account_id": str(test_user.account_id),
+            "nsg": 0,
+        },
+    )
+
+
+def _identity_plugin(permission_name: str) -> Callable:
+    """Stand in for the RBAC plugin decorator without enforcing anything."""
+
+    def decorate(func: Callable) -> Callable:
+        return func
+
+    return decorate
+
+
+def use_edition(monkeypatch: pytest.MonkeyPatch, edition: str) -> None:
+    """Select the core edition or the role fallback behind an RBAC plugin.
+
+    Core (no plugin) admits every account member. ``ee_fallback`` installs a
+    plugin stand-in with its checks disabled, the only configuration in which
+    the role-matrix fallback still runs.
+    """
+    if edition != "ee_fallback":
+        return
+    from preloop.config import settings
+
+    monkeypatch.setenv("DISABLE_RBAC", "true")
+    monkeypatch.setattr(settings, "disable_rbac", True)
+    monkeypatch.setattr(permissions, "_plugin_require_permission", _identity_plugin)
+
+
 def set_role(db: Session, user: models.User, name: str) -> None:
     """Replace the fixture's roles with one seeded system role."""
     for role in crud.crud_user_role.get_user_roles(db, user_id=user.id):
@@ -38,10 +79,18 @@ def set_role(db: Session, user: models.User, name: str) -> None:
     crud.crud_user_role.assign_role(db, user_id=user.id, role_id=role.id)
 
 
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 @pytest.mark.parametrize("role", ["viewer", "editor"])
-def test_account_details_require_manage_account(
-    client, db_session: Session, test_user: models.User, role: str
+def test_account_details_require_manage_account_only_with_rbac(
+    client,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    edition: str,
 ) -> None:
+    """Core lets any member edit account details; the role fallback refuses."""
+    use_edition(monkeypatch, edition)
     set_role(db_session, test_user, role)
     account = crud.crud_account.get(db_session, id=test_user.account_id)
     before = (account.organization_name, account.default_runner_pool)
@@ -52,8 +101,12 @@ def test_account_details_require_manage_account(
             "default_runner_pool": "local",
         },
     )
-    assert response.status_code == 403
     db_session.refresh(account)
+    if edition == "core":
+        assert response.status_code == 200, response.text
+        assert account.organization_name == "Example Organization"
+        return
+    assert response.status_code == 403
     assert (account.organization_name, account.default_runner_pool) == before
 
 
@@ -84,11 +137,28 @@ def test_account_details_allow_account_managers(
 
 
 @pytest.mark.parametrize(
-    "role,expected", [("viewer", 403), ("editor", 200), ("owner", 200)]
+    "edition,role,expected",
+    [
+        ("core", "viewer", 200),
+        ("core", "editor", 200),
+        ("core", "owner", 200),
+        ("ee_fallback", "viewer", 403),
+        ("ee_fallback", "editor", 200),
+        ("ee_fallback", "owner", 200),
+    ],
 )
 def test_mcp_oauth_token_requires_edit_permission(
-    client, db_session: Session, test_user: models.User, role: str, expected: int
+    client,
+    person_session: None,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    edition: str,
+    role: str,
+    expected: int,
 ) -> None:
+    """The role fallback gates the token on edit_mcp_servers; core admits all."""
+    use_edition(monkeypatch, edition)
     set_role(db_session, test_user, role)
     server = crud.crud_mcp_server.create(
         db_session,
@@ -112,10 +182,26 @@ def test_mcp_oauth_token_requires_edit_permission(
         assert claims["permission"] == "edit_mcp_servers"
 
 
-@pytest.mark.parametrize("role,expected", [("editor", 403), ("owner", 201)])
+@pytest.mark.parametrize(
+    "edition,role,expected",
+    [
+        ("core", "editor", 201),
+        ("core", "owner", 201),
+        ("ee_fallback", "editor", 403),
+        ("ee_fallback", "owner", 201),
+    ],
+)
 def test_optimization_budget_requires_manage_budgets(
-    client, db_session: Session, test_user: models.User, role: str, expected: int
+    client,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    edition: str,
+    role: str,
+    expected: int,
 ) -> None:
+    """The role fallback gates budgets on manage_budgets; core admits all."""
+    use_edition(monkeypatch, edition)
     set_role(db_session, test_user, role)
     now = datetime.now(UTC)
     session = crud.crud_runtime_session.upsert_by_source(
@@ -167,7 +253,7 @@ def test_optimization_budget_requires_manage_budgets(
         ("set_budget", "manage_budgets"),
     ],
 )
-@pytest.mark.parametrize("edition", ["oss", "plugin"])
+@pytest.mark.parametrize("edition", ["core", "ee_fallback", "plugin"])
 def test_optimization_service_checks_action_before_dispatch(
     db_session: Session,
     test_user: models.User,
@@ -176,7 +262,9 @@ def test_optimization_service_checks_action_before_dispatch(
     permission: str,
     edition: str,
 ) -> None:
+    """Core dispatches for any member; RBAC refuses before dispatch."""
     set_role(db_session, test_user, "viewer")
+    use_edition(monkeypatch, edition)
     if edition == "plugin":
 
         def plugin_gate(name: str) -> Callable:
@@ -196,7 +284,9 @@ def test_optimization_service_checks_action_before_dispatch(
         action=RuntimeSessionOptimizationActionSpec(type=action),
     )
     with patch.object(
-        crud.crud_runtime_session, "get_account_session_summary"
+        crud.crud_runtime_session,
+        "get_account_session_summary",
+        side_effect=HTTPException(409, "Dispatch reached"),
     ) as summary:
         with pytest.raises(HTTPException) as exc:
             SessionOptimizationService(
@@ -207,6 +297,10 @@ def test_optimization_service_checks_action_before_dispatch(
                 request=request,
                 current_user=test_user,
             )
+        if edition == "core":
+            assert exc.value.status_code == 409
+            summary.assert_called_once()
+            return
         assert exc.value.status_code == 403
         assert permission in exc.value.detail
         summary.assert_not_called()
@@ -227,24 +321,43 @@ def test_optimization_rejects_unsupported_actions(
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 def test_replay_requires_model_edit_permission(
-    client, db_session: Session, test_user: models.User
+    client,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    edition: str,
 ) -> None:
+    """The role fallback refuses a viewer replay; core reaches the replay."""
+    use_edition(monkeypatch, edition)
     set_role(db_session, test_user, "viewer")
     with patch(
-        "preloop.api.endpoints.session_optimization.run_session_replay"
+        "preloop.api.endpoints.session_optimization.run_session_replay",
+        side_effect=HTTPException(409, "Replay reached"),
     ) as replay:
         response = client.post(
             "/api/v1/billing/cost/runtime-sessions/example/replay",
             json={"consented": True},
         )
+    if edition == "core":
+        assert response.status_code == 409, response.text
+        replay.assert_called_once()
+        return
     assert response.status_code == 403
     replay.assert_not_called()
 
 
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 def test_optimization_apply_requires_declared_model_permission(
-    client, db_session: Session, test_user: models.User
+    client,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    edition: str,
 ) -> None:
+    """The role fallback also requires edit_ai_models; core admits all."""
+    use_edition(monkeypatch, edition)
     set_role(db_session, test_user, "viewer")
     role = crud.crud_role.create(
         db_session,
@@ -261,7 +374,9 @@ def test_optimization_apply_requires_declared_model_permission(
     )
     crud.crud_user_role.assign_role(db_session, user_id=test_user.id, role_id=role.id)
     with patch.object(
-        SessionOptimizationService, "apply_account_session_optimization_action"
+        SessionOptimizationService,
+        "apply_account_session_optimization_action",
+        side_effect=HTTPException(409, "Apply reached"),
     ) as apply:
         response = client.post(
             "/api/v1/billing/cost/runtime-sessions/example/optimizations/apply",
@@ -271,6 +386,10 @@ def test_optimization_apply_requires_declared_model_permission(
                 "action": {"type": "set_budget"},
             },
         )
+    if edition == "core":
+        assert response.status_code == 409, response.text
+        apply.assert_called_once()
+        return
     assert response.status_code == 403
     assert "edit_ai_models" in response.json()["detail"]
     apply.assert_not_called()
@@ -310,6 +429,7 @@ def test_mcp_oauth_continuation_requires_permission_claim(
 
 def test_mcp_oauth_continuation_preserves_state_and_pkce(
     client,
+    person_session: None,
     db_session: Session,
     test_user: models.User,
     monkeypatch: pytest.MonkeyPatch,

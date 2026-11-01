@@ -1,4 +1,8 @@
-"""Wrapped tracker, organization and project permission checks in OSS builds."""
+"""Wrapped tracker, organization and project permission checks in OSS builds.
+
+The core edition has no access controls: every member of an account may manage
+that account's trackers, organizations and projects, whatever roles they hold.
+"""
 
 from datetime import UTC, datetime
 from types import ModuleType, SimpleNamespace
@@ -278,7 +282,7 @@ def route_operations(
     ROUTES,
     ids=[f"{method}-{path}" for _, method, path, *_ in ROUTES],
 )
-def test_wrapped_route_permission_consistency(
+def test_wrapped_route_admits_every_member_in_core(
     db_session: Session,
     permission_user: tuple[models.Account, models.User],
     route_operations: SimpleNamespace,
@@ -290,7 +294,7 @@ def test_wrapped_route_permission_consistency(
     success: int,
     effect: str,
 ) -> None:
-    """Primary users, superusers and local permission holders reach the operation."""
+    """Every account member reaches the operation in the core edition."""
     account, user = permission_user
     if actor == "primary":
         crud.crud_account.update(
@@ -331,9 +335,8 @@ def test_wrapped_route_permission_consistency(
     assert user.is_active
     assert user.is_superuser == (actor == "superuser")
     assert (str(account.primary_user_id) == str(user.id)) == (actor == "primary")
-    assert permissions.user_holds_permission(db_session, user, permission) == (
-        actor == "holder"
-    )
+    assert permissions.members_have_full_access()
+    assert permissions.user_holds_permission(db_session, user, permission)
 
     ops = route_operations
     payload: dict[str, object] = {"name": "Example", "identifier": "example"}
@@ -369,26 +372,14 @@ def test_wrapped_route_permission_consistency(
         response = client.request(
             method, "/api/v1" + path.format(id=resource_id), json=payload
         )
-    if actor in {"non_holder", "foreign_role"}:
-        assert response.status_code == 403, response.text
-        assert (
-            response.json()["detail"]
-            == f"Insufficient permissions. Required: {permission}"
-        )
-        for operation in ops.effects.values():
-            operation.assert_not_called()
-        assert ops.tracker.is_deleted is False
-        assert ops.tracker.is_active is True
-        assert ops.tracker.scope_rules == []
-    else:
-        assert response.status_code == success, response.text
-        ops.effects[effect].assert_called_once()
-        if module is trackers and method == "DELETE":
-            if "hard_delete=true" in path:
-                ops.db.delete.assert_called_once_with(ops.tracker)
-            else:
-                assert ops.tracker.is_deleted is True
-                assert ops.tracker.is_active is False
+    assert response.status_code == success, response.text
+    ops.effects[effect].assert_called_once()
+    if module is trackers and method == "DELETE":
+        if "hard_delete=true" in path:
+            ops.db.delete.assert_called_once_with(ops.tracker)
+        else:
+            assert ops.tracker.is_deleted is True
+            assert ops.tracker.is_active is False
 
 
 @pytest.mark.parametrize(

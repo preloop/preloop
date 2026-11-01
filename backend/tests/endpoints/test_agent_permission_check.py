@@ -84,6 +84,8 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_s
         "operator_note": None,
         # No approval row was involved, so nobody is named as the decider.
         "decided_by": None,
+        # Not an unattended flow credential, so nothing was paused.
+        "parked": False,
     }
     decide.assert_awaited_once()
     kwargs = decide.await_args.kwargs
@@ -596,3 +598,72 @@ def test_non_carrying_tool_hook_does_not_claim_notes(client, source: str) -> Non
     assert response.status_code == 200, response.text
     claim.assert_not_called()
     assert response.json()["operator_note"] is None
+
+
+def test_flow_execution_credential_park_is_sent_as_a_parked_deny(client):
+    """An unattended run's park is a deny the hook cannot widen."""
+    import uuid
+
+    from preloop.api.endpoints import agent_permission
+
+    execution_id = uuid.uuid4()
+    identity = agent_permission.PermissionIdentity(
+        account_id=str(uuid.uuid4()),
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        managed_agent_id=None,
+        runtime_session_id=None,
+        managed_agent_name="Agent",
+        flow_id=uuid.uuid4(),
+        flow_execution_id=execution_id,
+    )
+    decide = AsyncMock(return_value=("park", "Paused for approval", "req-9", False))
+    with (
+        patch.object(
+            agent_permission, "_resolve_permission_identity", lambda _t: identity
+        ),
+        patch.object(agent_permission, "request_agent_permission", decide),
+    ):
+        response = _post_permission_check(
+            client,
+            "flow-token",
+            {
+                "source": "codex_cli",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git push"},
+                "evaluation_phase": "pre_tool_use",
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["decision"] == "deny"
+    assert body["parked"] is True
+    assert body["request_id"] == "req-9"
+    assert body["decided_by"] is None
+    assert decide.await_args.kwargs["flow_execution_id"] == execution_id
+
+
+def test_flow_execution_id_needs_an_execution_scoped_flow_token() -> None:
+    import uuid
+
+    from preloop.api.endpoints.agent_permission import (
+        _flow_execution_id_from_context,
+    )
+
+    execution_id = uuid.uuid4()
+    assert (
+        _flow_execution_id_from_context(
+            {"flow_execution_id": str(execution_id), "flow_id": str(uuid.uuid4())}
+        )
+        == execution_id
+    )
+    assert (
+        _flow_execution_id_from_context({"flow_execution_id": str(execution_id)})
+        is None
+    )
+    assert (
+        _flow_execution_id_from_context(
+            {"flow_execution_id": "not-a-uuid", "flow_id": str(uuid.uuid4())}
+        )
+        is None
+    )

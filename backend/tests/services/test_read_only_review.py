@@ -517,7 +517,7 @@ async def test_unsupported_executor_rejected_before_lease(
     with patch(
         "preloop.services.read_only_review.mint_repository_lease", AsyncMock()
     ) as mint:
-        with pytest.raises(ValueError, match="supported hosted native executor"):
+        with pytest.raises(ValueError, match="supported native executor"):
             await prepare_read_only_review(MagicMock(), flow, MagicMock(), {})
     mint.assert_not_awaited()
 
@@ -632,7 +632,7 @@ def test_factory_checks_both_effective_configuration_sources(
     from preloop.agents.factory import create_executor_for_execution
 
     _, flow = review
-    with pytest.raises(ValueError, match="supported hosted native executor"):
+    with pytest.raises(ValueError, match="supported native executor"):
         create_executor_for_execution(
             "codex",
             config,

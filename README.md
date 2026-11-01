@@ -17,6 +17,8 @@ It has two halves, and the same policies, budgets and session timeline apply to 
 - **Control plane.** An MCP firewall that allows, denies or holds any tool call for human approval; an AI model gateway with budgets and attribution; policy-as-code in YAML and CEL; one runtime timeline per session.
 - **Software factory.** Flows run agents, in hosted containers or on your own runners, when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests you can review.
 
+Both halves are multi-user: invite colleagues and organize teams in Preloop (OSS). Each user can connect devices, runners and agents. Preloop (OSS) has no roles or access controls between users of an account; those are in Preloop Cloud and Preloop Enterprise.
+
 **Who it is for:**
 
 - Platform and security teams that need agents governed before they reach production systems.
@@ -198,14 +200,19 @@ Your data: self-hosted, nothing leaves your network except the optional daily ve
 
 Governance itself is open source: every model provider, flows, private runners, session search, operator notes, the audit trail, single-approver workflows and budgets scoped to the account, a flow, an API key or a managed agent. What is commercial is the organizational layer on top:
 
-| Feature | Open Source | Cloud / Enterprise |
+| Feature | Preloop (OSS) | Preloop Cloud / Preloop Enterprise |
 |---|:---:|:---:|
 | Audit collection, query API, and console | Yes | Yes |
-| Users, teams, and RBAC on one account | No | Yes |
+| Multiple users, invitations, teams and team membership | Yes | Yes |
+| Per-user devices, runners and agents; basic approvals and usage views | Yes | Yes |
+| Isolation between accounts | Yes | Yes |
+| Roles, owner protection, RBAC/ABAC, resource access rules and sharing | No | Yes |
+| Subaccounts, pooled billing, SSO/SAML/SCIM, fleet findings | No | Yes |
+| Governance reviews, advanced reporting, audit export/retention | No | Yes |
 | Budgets scoped to a user or a team, budget notification routing | No | Yes |
 | Multi-approver routing, quorum, escalations | No | Yes |
 
-A self-hosted OSS instance is one operator per account. Public signup, if left on, creates a separate account, not a teammate. Enterprise licensing: sales@preloop.ai.
+Preloop (OSS) supports multiple users on one account, with no access controls between them: every user of an account can do everything in that account, including inviting and removing colleagues and managing teams. Accounts stay isolated from each other. Public signup, if enabled, creates a separate account. All access control (roles, owner protection, RBAC/ABAC) is in Preloop Cloud and Preloop Enterprise.
 
 ## Working in this repository
 

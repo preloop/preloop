@@ -221,6 +221,26 @@ def oss_checks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     account_hooks.reset_account_hooks()
 
 
+def _identity_plugin(permission_name: str) -> Any:
+    """Stand in for the RBAC plugin decorator without enforcing anything."""
+
+    def decorate(func: Any) -> Any:
+        return func
+
+    return decorate
+
+
+def use_ee_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install the RBAC plugin stand-in with its checks disabled.
+
+    This is the only configuration in which the role-matrix fallback still
+    runs. In the core edition (no plugin) every account member is admitted.
+    """
+    monkeypatch.setenv("DISABLE_RBAC", "true")
+    monkeypatch.setattr(settings, "disable_rbac", True)
+    monkeypatch.setattr(permissions, "_plugin_require_permission", _identity_plugin)
+
+
 @pytest.fixture
 def member(db_session: Session, test_user: models.User) -> models.User:
     row = crud_account.get(db_session, id=test_user.account_id)
@@ -270,6 +290,7 @@ def control_client(
         yield client
 
 
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 @pytest.mark.parametrize("role_scope", ["none", "other_account"])
 @pytest.mark.parametrize("method,path,body,permission_name", CONTROL_ROUTES)
 def test_control_without_permission_precedes_effects(
@@ -282,7 +303,11 @@ def test_control_without_permission_precedes_effects(
     body: dict[str, Any] | None,
     permission_name: str,
     role_scope: str,
+    edition: str,
 ) -> None:
+    """With RBAC, refusal precedes effects; core admits roleless members."""
+    if edition == "ee_fallback":
+        use_ee_fallback(monkeypatch)
     if role_scope == "other_account":
         other_account = crud_account.create(
             db_session, obj_in={"organization_name": "Example organization"}
@@ -290,7 +315,8 @@ def test_control_without_permission_precedes_effects(
         grant_permission(
             db_session, member, permission_name, role_account_id=other_account.id
         )
-    assert not permissions.user_holds_permission(db_session, member, permission_name)
+    holds = permissions.user_holds_permission(db_session, member, permission_name)
+    assert holds is (edition == "core")
     writes: list[str] = []
 
     def record_write(connection: Any, cursor: Any, statement: str, *args: Any) -> None:
@@ -311,6 +337,11 @@ def test_control_without_permission_precedes_effects(
         response = control_client.request(method, f"/api/v1{path}", json=body)
     finally:
         event.remove(connection, "before_cursor_execute", record_write)
+    if edition == "core":
+        # Referenced resources are absent, so the route fails later on its
+        # own lookups; it must not be refused for lack of a role.
+        assert response.status_code != 403, response.text
+        return
     assert response.status_code == 403, response.text
     assert permission_name in response.text
     assert writes == []
@@ -420,12 +451,23 @@ def test_shared_control_helpers_allow_permitted_users(
         )
 
 
+def test_desktop_operator_is_admitted_in_core(
+    db_session: Session,
+    member: models.User,
+    oss_checks: None,
+) -> None:
+    """Core lets a roleless member operate desktop views."""
+    desktop._authorize_operator(db_session, member)
+
+
 def test_desktop_uses_declared_control_permission(
     db_session: Session,
     member: models.User,
     oss_checks: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With RBAC, the desktop checks the permission it declares."""
+    use_ee_fallback(monkeypatch)
     grant_permission(db_session, member, "control_managed_agent")
     monkeypatch.setattr(desktop, "PERMISSION", "manage_agents")
     with pytest.raises(HTTPException) as exc:
@@ -474,12 +516,17 @@ def test_control_permission_allows_primary_and_holder(
     assert response.status_code in {200, 201, 204, 400, 404, 409, 503}, response.text
 
 
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 def test_desktop_viewer_without_permission_precedes_view_lookup(
     control_client: TestClient,
     member: models.User,
     monkeypatch: pytest.MonkeyPatch,
+    edition: str,
 ) -> None:
-    lookup = MagicMock()
+    """With RBAC, refusal precedes the view lookup; core reaches the lookup."""
+    if edition == "ee_fallback":
+        use_ee_fallback(monkeypatch)
+    lookup = MagicMock(return_value=None)
     bus = AsyncMock()
     monkeypatch.setattr(desktop, "_resolve_viewer", AsyncMock(return_value=member))
     monkeypatch.setattr(desktop.crud_desktop, "get_view", lookup)
@@ -489,12 +536,18 @@ def test_desktop_viewer_without_permission_precedes_view_lookup(
     ) as ws:
         message = ws.receive()
     assert message["type"] == "websocket.close"
+    if edition == "core":
+        assert message["code"] != 4403
+        lookup.assert_called_once()
+        return
     assert message["code"] == 4403
     lookup.assert_not_called()
     bus.assert_not_called()
 
 
-@pytest.mark.parametrize("identity", ["denied", "primary", "holder", "superuser"])
+@pytest.mark.parametrize(
+    "identity", ["roleless", "denied_with_rbac", "primary", "holder", "superuser"]
+)
 @pytest.mark.parametrize("transport", ["execution", "unified", "helper"])
 @pytest.mark.parametrize("command", ["stop", "send_message"])
 @pytest.mark.asyncio
@@ -507,8 +560,11 @@ async def test_execution_commands_check_permission_before_publication(
     transport: str,
     command: str,
 ) -> None:
+    """With RBAC, refusal precedes publication; core admits roleless members."""
     from preloop.models.crud import crud_flow, crud_flow_execution
 
+    if identity == "denied_with_rbac":
+        use_ee_fallback(monkeypatch)
     if identity == "primary":
         row = crud_account.get(db_session, id=member.account_id)
         crud_account.update(
@@ -554,7 +610,7 @@ async def test_execution_commands_check_permission_before_publication(
             reply = await websockets._run_execution_command(
                 member, execution.id, {"command": command, "message": "Continue"}
             )
-    if identity == "denied":
+    if identity == "denied_with_rbac":
         if transport == "helper":
             assert reply is None
         else:
@@ -762,7 +818,9 @@ def test_permitted_user_can_update_referenced_control(
     assert response.status_code == 200, response.text
 
 
-@pytest.mark.parametrize("identity", ["denied", "primary", "holder"])
+@pytest.mark.parametrize(
+    "identity", ["roleless", "denied_with_rbac", "primary", "holder"]
+)
 @pytest.mark.parametrize(
     "action,body",
     [
@@ -782,8 +840,11 @@ def test_agent_control_permission_precedes_command_delivery(
     action: str,
     body: dict[str, Any],
 ) -> None:
+    """With RBAC, refusal precedes delivery; core admits roleless members."""
     from preloop.models.crud import crud_managed_agent, crud_managed_agent_enrollment
 
+    if identity == "denied_with_rbac":
+        use_ee_fallback(monkeypatch)
     if identity == "primary":
         row = crud_account.get(db_session, id=member.account_id)
         crud_account.update(
@@ -822,7 +883,7 @@ def test_agent_control_permission_precedes_command_delivery(
     response = control_client.post(
         f"/api/v1/agents/{agent.id}/control/{action}", json=body
     )
-    if identity == "denied":
+    if identity == "denied_with_rbac":
         assert response.status_code == 403, response.text
         nats.publish.assert_not_called()
     else:

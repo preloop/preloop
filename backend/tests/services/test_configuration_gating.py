@@ -259,7 +259,7 @@ def test_import_rejects_foreign_recipient_before_creating_other_workflows(
 
 
 @pytest.mark.asyncio
-async def test_oss_member_cannot_import_approval_configuration(
+async def test_oss_member_reaches_approval_configuration_import(
     db_session, import_account, monkeypatch
 ):
     from io import BytesIO
@@ -269,17 +269,18 @@ async def test_oss_member_cannot_import_approval_configuration(
 
     monkeypatch.setattr(permissions, "_plugin_require_permission", None)
     account, users = import_account
-    with pytest.raises(HTTPException) as error:
-        await upload_policy(
-            file=UploadFile(BytesIO(b"metadata: {name: Test}")),
-            dry_run=False,
-            resolve_env=False,
-            skip_missing_servers=False,
-            account=account,
-            current_user=users[1],
-            db=db_session,
-        )
-    assert error.value.status_code == 403
+    # Core has no role checks, so the member passes the permission gate and
+    # the import runs to completion.
+    result = await upload_policy(
+        file=UploadFile(BytesIO(b"metadata: {name: Test}")),
+        dry_run=False,
+        resolve_env=False,
+        skip_missing_servers=False,
+        account=account,
+        current_user=users[1],
+        db=db_session,
+    )
+    assert result is not None
 
 
 def test_import_new_default_unmarks_existing_without_partial_flush(

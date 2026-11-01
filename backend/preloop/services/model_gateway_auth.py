@@ -538,10 +538,14 @@ def _principal_authorized_model_ids(
     - Credentials that resolve to a managed agent with no bindings (custom
       runtimes enrolled through a runtime session token, MCP-only
       enrollments) keep every BYOK / API-key / ambient model, as before.
-    - Fail closed: credentials that resolve to no managed agent — legacy
-      gateway keys without ``managed_agent_id`` and OAuth MCP client tokens —
-      are never authorized for principal-bound models, and bound models with
-      no binding row are authorized for nobody but user tokens.
+    - A flow-execution runtime credential (no managed agent) is authorized
+      for a subscription-OAuth model only through the owner opt-in: the
+      subscription's owner enabled it and owns the flow
+      (``subscription_flow_use``). No binding is created or changed.
+    - Fail closed: other credentials that resolve to no managed agent —
+      legacy gateway keys without ``managed_agent_id`` and OAuth MCP client
+      tokens — are never authorized for principal-bound models, and bound
+      models with no binding row are authorized for nobody but user tokens.
 
     Args:
         db: Active database session.
@@ -567,6 +571,22 @@ def _principal_authorized_model_ids(
     authorized = set(all_ids - bound_ids)
     managed_agent_id = resolve_managed_agent_id_for_context(db, auth_context)
     if managed_agent_id is None:
+        if bound_ids and auth_context.api_key is not None:
+            from preloop.services.subscription_flow_use import (
+                owner_flow_authorized_model_ids,
+            )
+
+            context_data = auth_context.api_key.context_data
+            authorized |= owner_flow_authorized_model_ids(
+                db,
+                account_id=auth_context.account_id,
+                context_data=context_data if isinstance(context_data, dict) else {},
+                bound_models=[
+                    ai_model
+                    for ai_model in account_models
+                    if str(ai_model.id) in bound_ids
+                ],
+            )
         return frozenset(authorized)
 
     bindings = crud_managed_agent_ai_model_binding.list_for_agent(

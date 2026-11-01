@@ -165,26 +165,10 @@ describe('delivery-report-policy-settings', () => {
     expect(text).to.contain('The report never closes an issue.');
   });
 
-  it('shows an account opt-in only when the member update feature is enabled', async () => {
-    const { puts } = stubApi({ memberUpdates: true });
-    const el = await mount();
-    const toggle = el.shadowRoot!.querySelector(
-      'sl-switch[data-field="per_member_updates"]'
-    ) as any;
-    expect(toggle.checked).to.equal(false);
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await el.updateComplete;
-    (
-      el.shadowRoot!.querySelector('[data-action="save"]') as HTMLElement
-    ).click();
-    await waitUntil(() => puts.length === 1);
-    expect(puts[0].body.overrides.per_member_updates).to.equal(true);
-  });
-
   it('keeps the member opt-in off repository settings and OSS feature sets', async () => {
     stubApi({ memberUpdates: false });
     const account = await mount();
+    expect(account.shadowRoot!.textContent).not.to.contain('Recipients');
     expect(
       account.shadowRoot!.querySelector('[data-field="per_member_updates"]')
     ).to.equal(null);

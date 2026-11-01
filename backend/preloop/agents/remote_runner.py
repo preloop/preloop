@@ -62,6 +62,12 @@ from .runner_launch import (
 logger = logging.getLogger(__name__)
 
 
+def _clone_mapping(git_clone_config: Any) -> Optional[Mapping[str, Any]]:
+    if hasattr(git_clone_config, "model_dump"):
+        git_clone_config = git_clone_config.model_dump()
+    return git_clone_config if isinstance(git_clone_config, Mapping) else None
+
+
 def _config_without_publication_mode(git_clone_config: Any) -> Any:
     """Return checkout config with publication mode removed.
 
@@ -685,6 +691,24 @@ class RemoteRunnerExecutor(AgentExecutor):
                 # the id against its own list and re-applies the root, home,
                 # read-only, harness and dirty-tree refusals.
                 payload[HOST_EXEC_WORKSPACE_KEY] = workspace
+            from preloop.services.read_only_review import (
+                HOST_READ_ONLY_LEASE_KEY,
+                read_only_review,
+            )
+
+            if read_only_review(_clone_mapping(git_clone_config)):
+                # Data only: assignment requires a runner that advertises the
+                # read-only review capability; delivery adds the lease-backed
+                # exact-revision checkout plan.
+                if host_resume is not None or workspace is not None:
+                    raise ValueError(
+                        "Read-only review does not resume sessions or run in "
+                        "an authorized host directory"
+                    )
+                payload[HOST_READ_ONLY_LEASE_KEY] = {
+                    "mode": "read_only",
+                    "commit": self._admitted_review_commit(execution_id),
+                }
             if host_publication_requested(git_clone_config):
                 # Data only: assignment requires a host_publication runner
                 # and delivery replaces it with the transient runner plan.
@@ -703,6 +727,23 @@ class RemoteRunnerExecutor(AgentExecutor):
             if resume_from:
                 payload["resume_from"] = resume_from
         return payload
+
+    def _admitted_review_commit(self, execution_id: UUID) -> str:
+        """The restricted CI binding's admitted head SHA (not a secret).
+
+        Raises:
+            ValueError: When the execution has no restricted CI binding.
+        """
+        execution = self.execution
+        if execution is None or str(getattr(execution, "id", "")) != str(execution_id):
+            execution = crud_flow_execution.get(
+                self.db, id=execution_id, account_id=str(self.account_id)
+            )
+        binding = getattr(execution, "ci_review_binding", None)
+        commit = binding.get("head_sha") if isinstance(binding, Mapping) else None
+        if not isinstance(commit, str) or not commit:
+            raise ValueError("Read-only review requires a restricted CI execution")
+        return commit
 
     def _flow_agent_config(self, flow: Any = None) -> Dict[str, Any]:
         """The flow's own agent_config (not the lease-shaped context copy)."""

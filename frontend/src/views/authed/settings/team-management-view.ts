@@ -265,6 +265,9 @@ export class TeamManagementView extends LitElement {
   @state()
   private featureEnabled = true;
 
+  @state()
+  private advancedRolesEnabled = false;
+
   /**
    * The account's subaccounts (capability `account_hierarchy`). With at
    * least one, each row offers "Subaccount access".
@@ -281,6 +284,7 @@ export class TeamManagementView extends LitElement {
         this.isLoading = false;
         return;
       }
+      this.advancedRolesEnabled = featuresResponse.features?.['rbac'] === true;
       if (hasCapability(featuresResponse.features, 'account_hierarchy')) {
         // Loaded on demand, so the gated hierarchy code stays out of this
         // chunk where the capability is off.
@@ -295,7 +299,7 @@ export class TeamManagementView extends LitElement {
     await Promise.all([
       this.fetchTeams(),
       this.fetchUsers(),
-      this.fetchRoles(),
+      this.advancedRolesEnabled ? this.fetchRoles() : Promise.resolve(),
     ]);
   }
 
@@ -476,6 +480,16 @@ export class TeamManagementView extends LitElement {
 
   async openRoleModal(team: Team) {
     if (!this.editPermissions.allows('manage_teams')) return;
+    if (!this.advancedRolesEnabled) {
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
     this.selectedTeam = team;
     this.dialogError = null;
     this.isRoleModalOpen = true;
@@ -653,9 +667,7 @@ export class TeamManagementView extends LitElement {
                 style="font-size: 2.5rem;"
                 aria-hidden="true"
               ></sl-icon>
-              <p>
-                No teams yet. Teams let several people share the same roles.
-              </p>
+              <p>No teams yet. Create a team and assign its members.</p>
               <sl-tooltip
                 content=${!this.editPermissions.allows('create_teams') ? 'Requires create_teams' : ''}
                 ><sl-button

@@ -166,6 +166,9 @@ push-notifications = [
 # Used only by the Enterprise Edition growth plugin; no core module imports
 # them. The EE image installs ".[ee]" so core deployments do not carry them.
 ee = [
+    "python3-saml==1.16.0",  # Enterprise SAML protocol validation
+    "xmlsec==1.3.17",  # XML signatures and encrypted assertions
+    "lxml==6.1.3",  # Compatible libxml2 wheels with xmlsec
     "maxminddb>=2.6.0",  # Local GeoIP lookups (no IPs leave the server)
     "user-agents>=2.2.0",  # User-agent parsing for analytics enrichment
 ]

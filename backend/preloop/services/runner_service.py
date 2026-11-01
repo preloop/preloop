@@ -858,6 +858,7 @@ def lease_job(
             payload.get("agent_type") or HOST_EXEC_AGENT_TYPE,
             require_publication=bool(payload.get("host_exec_publication")),
             require_continuation=bool(payload.get("host_exec_resume")),
+            require_read_only_review=bool(payload.get("host_exec_read_only")),
         ):
             continue
         if workspace_id and not runner_offers_authorized_directory(

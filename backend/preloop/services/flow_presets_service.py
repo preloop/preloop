@@ -34,6 +34,7 @@ _CLONE_EXCLUDE = {
     "is_preset",
     "is_enabled",
     "account_id",
+    "created_by_user_id",
     "ai_model_id",
     "source_preset_id",
     "source_prompt_hash",
@@ -162,6 +163,7 @@ def clone_preset_for_account(
     flow_crud: Any = None,
     clear_event_triggers: bool = False,
     is_enabled: bool = False,
+    created_by_user_id: Optional[UUID] = None,
 ) -> Any:
     """Clone a global or owned preset into a disabled account flow by default.
 
@@ -183,6 +185,8 @@ def clone_preset_for_account(
         is_enabled: Explicit activation for callers such as ad-hoc run-preset,
             which also clear tracker triggers. Ordinary copies stay disabled
             until the user configures their scope and enables them.
+        created_by_user_id: User cloning the preset, recorded as the flow
+            owner. ``None`` leaves the owner unrecorded.
 
     Returns:
         The created flow row.
@@ -238,7 +242,14 @@ def clone_preset_for_account(
         tools_customized=False,
         preset_update_available=False,
     )
-    return crud.create(db=db, flow_in=cloned_flow_in, account_id=account_id)
+    if created_by_user_id is None:
+        return crud.create(db=db, flow_in=cloned_flow_in, account_id=account_id)
+    return crud.create(
+        db=db,
+        flow_in=cloned_flow_in,
+        account_id=account_id,
+        created_by_user_id=created_by_user_id,
+    )
 
 
 def ensure_global_presets_exist_background() -> None:

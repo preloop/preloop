@@ -89,33 +89,108 @@ sets behave like absent routing configuration.
 
 ## Subscription credentials and execution identity
 
-An active model registration does not authorize every executor to use it.
-Ordinary ephemeral flows have their own runtime credential, with no identity
-of an enrolled agent. Selecting an agent-bound Codex or Claude subscription
-model, including through a matrix cell, cannot transfer that agent's identity.
-Changing `runner_pool` to a private pool still launches an independent Docker
-job unless a supported native host profile was explicitly configured.
+A subscription model is a Codex (ChatGPT sign-in) or Claude subscription
+registration created when an agent was onboarded. Its credential lives in
+Preloop, and the model gateway is the only component that uses or refreshes
+it. By default it serves only the agent it was onboarded with.
 
-Trigger admission rejects these subscription selections with HTTP 422 before
-creating an execution or launching a worker. Matrix admission validates every
-cell before creating any execution. The same check covers defaults, label
-rules, retries and restricted CI. Gateway authorization remains enforced at
-request time; successful admission does not guarantee future credential health.
-Legacy queued executions are checked again at authoritative startup before
-context preparation or runtime launch. An incompatible subscription selection
-ends as `FAILED` with category `model_config`, rather than remaining pending
-for repeated recovery.
+An ordinary ephemeral flow runs with its own runtime credential, which carries
+the flow and execution identity and no enrolled agent's identity. Selecting a
+subscription model (including through a matrix cell), changing `runner_pool`,
+or setting `target_agent_id` on an ephemeral flow does not transfer the
+agent's identity.
 
-For an ordinary ephemeral Codex flow, select an API-key or hosted model that
-supports Responses. `credentials_status: active` describes the secret's state.
-`supports_server_side_generation` describes Preloop's own generation eligibility
-(for example summaries); it is not a complete executor/model compatibility API.
-There is no separate dry-run model-compatibility endpoint.
+### Use from my flows (owner opt-in)
+
+The owner of a subscription can let flows they own use it from hosted
+executions. Turn on **Use from my flows** on the model's page in the console,
+or run `preloop models flow-use <model-id> on`. Three conditions must all
+hold, and admission and the gateway check them independently:
+
+- **Subscription owner.** The model's onboarded agent (every active agent
+  bound to its credential) belongs to one user. That user is the
+  subscription's owner. Only that user sees the switch and can change it;
+  account admins cannot turn it on for someone else.
+- **Opt-in.** The owner turned the setting on. Preloop stores who turned it
+  on, so the setting stops applying if the agent later belongs to someone
+  else.
+- **Flow owner.** The flow was created by the same user, in the same account.
+  The flow's owner is `created_by_user_id`, recorded when the flow is created
+  or cloned from a preset (console, API or CLI). Flows that existed before
+  this setting are owned by the account's only user in single-user accounts,
+  and have no owner in multi-user accounts; a flow with no owner is never
+  eligible. To use the subscription from such a flow, create a new flow (or
+  copy the preset again) as the subscription's owner.
+
+In a team account this means another member's flow never runs on your
+subscription, including flows an admin created. Whoever can edit your flow
+can still change what it does, so keep edit access to the flows you run on
+your subscription limited to people you trust.
+
+When the conditions hold, every admission site accepts the selection:
+triggers, matrix cells, defaults and label rules, retries and continuations,
+no-progress escalation, restricted CI preparation and orchestrator startup.
+The gateway then serves the subscription to that execution's runtime
+credential. Nothing changes for the onboarded agent: no binding is added or
+removed, and other agents stay refused. Refreshes of the subscription token
+are serialized on the stored credential, so the agent on your machine and a
+hosted run never refresh it at the same time and the agent's sign-in keeps
+working.
+
+Usage from these runs is attributed to the flow execution and recorded with
+the subscription cost model ($0 marginal spend, with the API-equivalent price
+as an estimate). The rows carry `meta_data.subscription_use: "owner_flow"`,
+and the model page shows "Used by your flows" totals for the last 30 days.
+Hosted runs use the subscription's quota just like the agent does.
+
+Before turning this on, check your provider's terms. For Codex, OpenAI's
+documentation recommends API keys for automation. It also publishes a
+supported guide, "Maintain Codex account auth in CI/CD", limited to trusted
+private automation, which says not to use it for public or open-source
+repositories. OpenAI's Sign in with ChatGPT terms (for apps that integrate
+that sign-in) say tokens must be stored locally under the user's control and
+requests must come from a runtime the user controls; whether those terms
+cover tools that wrap Codex's own sign-in is not settled. Preloop already
+holds the subscription token in the gateway for onboarded agents, so this
+setting adds no new place where the token is stored; it adds a new runtime
+(Preloop's hosted container). The account-sharing clauses are respected by
+design: only the subscription's owner can turn this on, and only that owner's
+flows can use it. If you want to stay within OpenAI's recommendation, run the
+flow on a private runner you control instead, which matches OpenAI's own CI
+pattern more closely, or use an API-key model.
+
+### Admission and errors
+
+Without the opt-in, trigger admission rejects a subscription selection with
+HTTP 422 before creating an execution or launching a worker. Matrix admission
+validates every cell before creating any execution. The same check covers
+defaults, label rules, retries and restricted CI. Legacy queued executions
+are checked again at authoritative startup before context preparation or
+runtime launch; an incompatible selection ends as `FAILED` with category
+`model_config` rather than remaining pending. The gateway enforces the same
+rule on every request, so turning the setting off stops later requests of a
+running execution with `model_not_authorized`. Successful admission does not
+guarantee future credential health.
+
+`credentials_status: active` describes the secret's state.
+`supports_server_side_generation` describes Preloop's own generation
+eligibility (for example summaries); it is not an executor compatibility API.
+`GET /api/v1/ai-models/{id}/owner-flow-use` reports whether the opt-in applies
+(`applicable`), is on (`enabled`) and whether you may change it
+(`can_manage`).
 
 Persistent execution with `agent_config.execution_path: persistent` and
 `target_agent_id` uses the enrolled target's identity and existing permissions.
-A private native `host_exec_profile` uses the host CLI's local authentication
-and model map. Neither route borrows the model registration's credentials for
-an ephemeral flow. They have distinct checkout, completion and permission
-contracts, and neither is supported by the
-[native restricted CI read-only review mode](restricted-ci.md#read-only-native-github-app-review).
+A private native `host_exec_profile` uses the host CLI's local configuration
+and model map; an onboarded Codex or Claude Code CLI reaches the gateway with
+its agent's own key, and the runner marks those requests with the execution.
+Neither route borrows the model registration's credentials for an ephemeral
+flow. They have distinct checkout, completion and permission
+contracts. A private Codex host profile is also a supported executor for the
+[native restricted CI read-only review mode](restricted-ci.md#read-only-review-on-a-private-runner):
+that is the route for reviewing with the onboarded host Codex and its agent's
+subscription, through the Preloop gateway, without the owner opt-in (**Use
+from my flows**) that lets a hosted flow use a subscription. There the selected
+model only names the alias the profile's `model_map` translates, and the
+gateway serves it with the onboarded agent's key. Persistent execution remains unsupported for
+read-only review.

@@ -757,10 +757,31 @@ compliance and member warnings.
 
 Private runners can execute installed Codex (`codex`), OpenCode (`opencode`)
 and DeepSeek CLI (`dsh`) directly on Windows, macOS and Linux without Docker.
-This path uses the runner user's existing authenticated CLI credentials.
-It requires an explicit local host profile and a private runner pool; it does
-not silently switch to hosted compute or a gateway-funded model. Existing
-Docker flows keep their existing behavior when no host profile is selected.
+This path uses the runner user's existing CLI configuration. It requires an
+explicit local host profile and a private runner pool; it does not silently
+switch to hosted compute. Existing Docker flows keep their existing behavior
+when no host profile is selected.
+
+Onboard Codex through Preloop as the runner user
+(`preloop agents onboard "Codex CLI" --approvals`) and keep that
+configuration: its `model_provider = "preloop"` sends every model call through
+the Preloop gateway with the agent's own key. For each run the runner adds the
+execution marker header to that provider with a command-line override (your
+`config.toml` is not edited), so the gateway attributes the run's requests to
+the flow execution as well as the agent, enforces the flow's run limits, and
+the result records `gateway_metered: true` and `gateway_request_count`. Codex
+exposes no per-request count, so a Codex run passes this check with at least
+one gateway row. For Claude Code the runner reports the exact model call count
+(`cli_model_calls`), and a run whose CLI calls exceed its gateway rows by more
+than 2 calls and more than 20% fails with `gateway_bypassed` too. Do not
+point the runner at a separate `CODEX_HOME` without the Preloop provider: the
+run would call the model service directly and end `FAILED` with
+`gateway_bypassed`. Claude Code profiles work the same way when Claude Code is
+onboarded to the gateway (`ANTHROPIC_BASE_URL` on Preloop); the marker is sent
+with `ANTHROPIC_CUSTOM_HEADERS`. A flow that must run a Codex or Claude Code
+host CLI unmetered can set `agent_config.allow_unmetered_host_model: true`
+(break-glass, recorded on the result as `gateway_bypass_allowed`); read-only
+review never allows it.
 
 For example, add these profiles to the local `runner-host-profiles.json`
 file (use provider and model names configured in your local CLI):
@@ -789,7 +810,19 @@ models fail closed instead of silently selecting another model.
 
 Onboard the CLI's Preloop governance hooks or plugin before enabling the
 profile. Native permissions and Preloop approval policy both apply; installing
-a profile does not grant blanket approval. If OpenCode or DeepSeek reports
+a profile does not grant blanket approval.
+
+A command that matches a rule requiring approval does not run and does not
+hold the hook open. The execution pauses (`WAITING_FOR_HUMAN`), the runner job
+is stopped and its credential released, and a normal approval request naming
+the flow, the execution, the command and the rule appears in **Approvals** and
+on your notification channels. The window is the flow's
+`approval_window_seconds` (or the workflow and account defaults). If it is
+approved, the run resumes and that exact command may run once. If it is
+refused, cancelled or the window closes, the run ends `FAILED` with
+`approval_denied` or `approval_timeout`. While a run is paused, any other
+command it tries is denied without a second request. The runner does not need
+to stay online while the run is paused. If OpenCode or DeepSeek reports
 `host_governance_not_ready`, reinstall or check the Preloop plugin: the runner
 withholds the task until plugin activation is acknowledged and terminates the
 process if readiness times out. Per-job MCP configuration carries

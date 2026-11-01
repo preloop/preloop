@@ -648,3 +648,48 @@ async def test_model_response_frames_do_not_query_runner_row(
     monkeypatch.setattr(runners.crud_flow_runner, "get", lookup)
     await runners.runner_ws(websocket, runner.id, MagicMock())
     lookup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runner_log_lines_are_stored_once_not_again_by_the_persister(
+    monkeypatch,
+) -> None:
+    """Each runner log line yields exactly one stored row.
+
+    The batch is committed directly and then broadcast on flow-updates; the
+    NATS log persister used to store every broadcast copy again, so the logs
+    endpoint returned each line twice.
+    """
+    from preloop.services import websocket_manager
+
+    stored: list[str] = []
+    published: list[dict] = []
+
+    def append(db, entries) -> None:
+        stored.extend(entry[1]["payload"]["line"] for entry in entries)
+
+    async def publish(execution_id: str, payload: dict) -> None:
+        published.append(payload)
+
+    async def persister_store(execution_id: str, log_data: dict) -> None:
+        stored.append(log_data["payload"]["line"])
+
+    monkeypatch.setattr(runners.crud_flow_execution_log, "append_logs", append)
+    monkeypatch.setattr(runners, "_publish_flow_update", publish)
+    monkeypatch.setattr(websocket_manager, "persist_execution_log", persister_store)
+    lines = ["one", "two", "three"]
+    await runners.persist_runner_logs(MagicMock(), uuid4(), lines, str(uuid4()))
+    for payload in published:
+        await websocket_manager.persist_flow_update(payload)
+
+    assert len(published) == len(lines)
+    assert stored == lines
+    # A message that was not stored by its publisher is still persisted.
+    assert await websocket_manager.persist_flow_update(
+        {
+            "execution_id": str(uuid4()),
+            "type": "agent_log_line",
+            "payload": {"line": "x"},
+        }
+    )
+    assert stored[-1] == "x"

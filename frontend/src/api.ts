@@ -4744,6 +4744,56 @@ export async function getAIModelRuntimeSessions(
   return response.json();
 }
 
+/** Owner opt-in for running own flows on a subscription model. */
+export interface AIModelOwnerFlowUse {
+  applicable: boolean;
+  enabled: boolean;
+  can_manage: boolean;
+  usage: {
+    request_count: number;
+    total_tokens: number;
+    execution_count: number;
+    api_equivalent_cost: number;
+  } | null;
+}
+
+export async function getAIModelOwnerFlowUse(
+  modelId: string
+): Promise<AIModelOwnerFlowUse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${encodeURIComponent(modelId)}/owner-flow-use`
+  );
+  if (!response.ok) {
+    throw new Error('Could not load the flow setting for this subscription');
+  }
+  return (await response.json()) as AIModelOwnerFlowUse;
+}
+
+export async function setAIModelOwnerFlowUse(
+  modelId: string,
+  enabled: boolean
+): Promise<AIModelOwnerFlowUse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${encodeURIComponent(modelId)}/owner-flow-use`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    throw new Error(
+      typeof body.detail === 'string'
+        ? body.detail
+        : 'Could not change the flow setting'
+    );
+  }
+  return (await response.json()) as AIModelOwnerFlowUse;
+}
+
 /** Agents and flows configured to use the model (configuration only). */
 export async function getAIModelUsedBy(
   modelId: string,
@@ -4836,6 +4886,8 @@ export interface FlowSummary {
     cron?: string;
   } | null;
   execution_stats: Record<string, any> | null;
+  /** Read-only review flow: only its CI identity may start it. */
+  ci_only?: boolean;
 }
 
 /** List presentation metadata; statistics are opt-in, configurations omitted. */
