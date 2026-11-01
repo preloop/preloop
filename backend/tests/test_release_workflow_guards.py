@@ -73,8 +73,7 @@ def _trigger(workflow: Dict[str, Any]) -> Dict[str, Any]:
 
 
 REHEARSAL_EVENTS = (
-    "(github.event_name == 'pull_request' || "
-    "github.event_name == 'workflow_dispatch')"
+    "(github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')"
 )
 NOT_REHEARSAL = "env.REHEARSAL != 'true'"
 PUBLISHING_ACTIONS = (
@@ -203,9 +202,7 @@ def test_every_release_image_gets_signed_provenance() -> None:
             if "actions/attest-build-provenance" in s.get("uses", "")
         )
         assert attest["with"]["subject-name"] == "${{ env.IMAGE }}", name
-        assert attest["with"]["subject-digest"] == (
-            "${{ steps.index.outputs.digest }}"
-        )
+        assert attest["with"]["subject-digest"] == ("${{ steps.index.outputs.digest }}")
         assert attest["with"]["push-to-registry"] is True, name
 
 
