@@ -11,6 +11,22 @@ from preloop.models.models.mcp_tool import MCPTool
 
 
 @pytest.fixture(autouse=True)
+def browser_person_session(client, test_user):
+    """Browser redirects derive their assurance from the verified session."""
+    from preloop.api.auth.jwt import create_access_token, user_auth_generation
+
+    client.headers["Authorization"] = "Bearer " + create_access_token(
+        {"sub": str(test_user.id)},
+        auth_generation=user_auth_generation(test_user),
+        auth_context={
+            "amr": ["password"],
+            "auth_account_id": str(test_user.account_id),
+            "nsg": 0,
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
 def mock_event_bus_connect():
     """Auto-mock the event bus connect method to avoid NATS connection attempts."""
     with patch(
@@ -364,6 +380,8 @@ def test_oauth_authorize_token_is_short_lived_and_scoped(
     assert payload["purpose"] == "mcp_oauth_authorize"
     assert payload["server_id"] == str(server.id)
     assert payload["sub"] == str(test_user.id)
+    assert payload["amr"] == ["password"]
+    assert payload["auth_account_id"] == str(test_user.account_id)
 
 
 def test_oauth_authorize_rejects_plain_access_token(
@@ -748,3 +766,30 @@ def test_callback_wrong_browser_and_provider_denial_do_not_exchange(
         client.get(f"/api/v1/mcp-servers/{server.id}").json()["connection_state"]
         == "reconnect_required"
     )
+
+
+def test_oauth_redirect_rechecks_current_authentication_policy(
+    client: TestClient, db_session, test_user, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+    from fastapi import HTTPException
+    from preloop.services import authentication_policy
+
+    server = _oauth_server(db_session, test_user)
+    response = client.post(f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token")
+    assert response.status_code == 200
+    gate = Mock()
+    gate.authorize.side_effect = HTTPException(403, "SSO required")
+    monkeypatch.setattr(
+        authentication_policy,
+        "get_plugin_manager",
+        lambda: Mock(get_service=Mock(return_value=gate)),
+    )
+    refused = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": response.json()["authorize_token"]},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 403
+    assert gate.authorize.call_args.kwargs["purpose"] == "exchange"
+    assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["password"]

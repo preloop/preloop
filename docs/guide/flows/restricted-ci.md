@@ -196,7 +196,8 @@ sets no result schema. Name your result fields so that none is withheld.
 
 Human-owned historical executions retain their human ownership. These CI
 permissions do not authorize reading or publishing another execution. Historic
-result recovery/publication needs separate human authorization and revision checks. GitLab, PAT and alternate-tracker bindings are not
+result recovery/publication uses the explicit export grant described below.
+GitLab, PAT and alternate-tracker clone bindings are not
 supported by this mode. Local tests use a synthetic provider; they do not certify
 an installation's live GitHub permissions.
 
@@ -611,3 +612,73 @@ insertion, not from the latest hit. Unknown or expired entries still fail closed
 when verification is unavailable. Machine credential results are never cached.
 A pass-through classification supplies no identity or authorization: the route's
 normal authentication still checks current credential validity and restrictions.
+
+## Explicit export of a completed human review
+
+A current account owner can authorize one completed account-owned review for a
+specific CI principal without changing execution ownership or rerunning the
+model. This is an explicit API operation, not automatic access to history.
+The principal must already carry `execution:result-export:read`. EE additionally
+requires current CI identity administration and resource permissions for the
+owner; those permissions are checked again at every export. An active account
+flow halt denies new grants and reads with the explicit halt 403 before provider
+I/O; revocation remains available.
+
+1. Review the original execution and public result. The human tool-evidence
+   response's `captured_result_sha256` is the digest of the public result
+   projection: sorted, compact UTF-8 JSON, without private controller fields.
+   Inspect the fixed helper's diff/challenge/verdict evidence separately; a hash
+   proves byte agreement, not the correctness of the review.
+2. As the current human owner, send
+   `POST /api/v1/flows/executions/{execution_id}/result-export` with
+   `principal_id`, `pr_number`, `head_sha`, `base_sha`, `result_sha256` and an
+   aware `expires_at` no more than 24 hours ahead. No arbitrary URLs or repository
+   inputs are accepted. The original event must record the matching project,
+   immutable provider repository and PR IDs, same-repository head and base SHAs.
+   Missing historical provenance is rejected, never filled from caller claims.
+3. Use the returned grant UUID with the restricted credential at
+   `GET /api/v1/flows/executions/{execution_id}/result-export/{grant_id}`.
+   Every call checks the current principal/key/actions, owner authority, expiry,
+   revocation, unchanged source flow/event/result and a fresh provider PR read.
+   Only SUCCEEDED executions with a captured result and no failed schema
+   validation qualify. STOPPED/failed runs, CI-owned runs and fork reviews do not.
+4. To revoke, the current owner sends
+   `DELETE /api/v1/flows/executions/{execution_id}/result-export/{grant_id}`.
+   Revocation is irreversible. Key rotation preserves the principal's grant;
+   disabling/narrowing the identity removes access immediately.
+
+The export contains a public result, exact revision/digest receipt and a stable
+`publication_idempotency_key`. Consent identity, digest, revisions and expiry
+are immutable in the database. New grants for the same reviewed result keep the
+same publication key. General execution, result and log routes continue to deny
+the principal access to this historical execution. No historical grant is
+created by the migration.
+
+The GitHub operator example supports this path with these additional flags:
+
+```sh
+python scripts/restricted_ci_review.py \
+  --url "$PRELOOP_URL" --project "$PROJECT_ID" --flow "$FLOW_ID" \
+  --repository "$REPOSITORY" --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+  --execution "$EXECUTION_ID" --result-export-grant "$GRANT_ID" \
+  --export-account "$ACCOUNT_ID" --base "$BASE_SHA" \
+  --expected-result-sha256 "$REVIEWED_RESULT_SHA256"
+```
+
+The default verifies the export only. `--publish-review` additionally requires a
+separately authorized `GITHUB_TOKEN` with review-write permission. The example
+never launches, cancels, polls or adopts an execution in export mode. It checks
+current head/base, reviewed digest and grant again before a write, deduplicates
+by the stable marker, and independently reads back the exact review body,
+commit and expected author. Reviews above the provider body limit are rejected
+without truncating approved text. The example is GitHub-only; the export API
+also verifies GitLab when its original event retained the necessary revisions.
+
+Serialize publishers using one trusted workflow concurrency group per repository
+and PR. The marker protects sequential retries; GitHub does not provide an
+atomic review-post idempotency key across concurrent external publishers.
+Consent revocation, provider head/base changes and publication are separate
+systems: a change immediately after the final preflight can still race the
+external write. Final read-back and grant checks then fail instead of reporting
+current authorized publication success. No live activation or external receipt
+is implied by the synthetic tests.

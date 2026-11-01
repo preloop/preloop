@@ -20,6 +20,15 @@ import {
 } from './api';
 import { CapabilityOffError } from './capabilities';
 
+export class SsoRequiredError extends Error {
+  constructor() {
+    super(
+      "Sign in with your organization's SSO provider. Account owners can use fresh password or passkey sign-in for emergency access."
+    );
+    this.name = 'SsoRequiredError';
+  }
+}
+
 export class NotFoundError extends Error {
   constructor(message = 'Not found') {
     super(message);
@@ -80,6 +89,8 @@ async function request<T>(
   if (response.status === 409) throw new ConflictError();
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    if (response.status === 403 && body?.detail?.code === 'sso_required')
+      throw new SsoRequiredError();
     const message = extractErrorMessage(body, fallback);
     if (
       response.status === 403 &&
@@ -251,12 +262,30 @@ export async function switchAccount(
   accountId: string,
   navigate: (url: string) => void = (url) => window.location.assign(url)
 ): Promise<void> {
-  const pair = await request<TokenPair>(
-    REST_API_PREFIX + '/auth/switch-account',
-    { method: 'POST', body: JSON.stringify({ account_id: accountId }) },
-    'capability-off',
-    'Could not switch account'
-  );
+  let pair: TokenPair;
+  try {
+    pair = await request<TokenPair>(
+      REST_API_PREFIX + '/auth/switch-account',
+      { method: 'POST', body: JSON.stringify({ account_id: accountId }) },
+      'capability-off',
+      'Could not switch account'
+    );
+  } catch (error) {
+    if (!(error instanceof SsoRequiredError)) throw error;
+    const { confirmDialog } = await import('./components/confirm-dialog');
+    if (
+      await confirmDialog({
+        title: 'Sign in to the selected account',
+        message: error.message,
+        confirmLabel: 'Sign in again',
+      })
+    ) {
+      localStorage.setItem('loginRedirect', '/console');
+      navigate(`/login?account_id=${encodeURIComponent(accountId)}`);
+      return;
+    }
+    throw error;
+  }
   applyTokenPair(pair);
   rememberAccount(accountId);
   const { pathname, search } = window.location;

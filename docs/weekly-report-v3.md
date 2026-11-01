@@ -1,13 +1,28 @@
 # Weekly report settings
 
-Account settings expose three independent switches through
+Account settings expose independent switches through
 `GET` and `PUT /api/v1/weekly-report/preferences`:
 
 - `account_enabled`: weekly reports for owners and admins, on by default.
 - `members_enabled`: personal reports for regular members. The stored nullable
   field uses the edition's plan default until an admin explicitly changes it.
 - `member_policy_findings_enabled`: allow personal reports to include explicitly
-  attributed stored governance findings, off by default.
+  attributed stored governance findings, off by default. The automatic factual
+  digest carries no policy findings, so the console no longer shows this
+  switch; the field stays in the API for explicit previews.
+- `synthesis_enabled` and `synthesis_model_id`: an optional short summary of
+  the selected facts, off by default. Only account administrators can change
+  them, and the model must belong to the account. When the model, pricing or
+  the account-week cap ($0.02, two calls, 12,000 tokens, 20 seconds) is not
+  available, the digest sends the deterministic facts.
+
+The automatic Enterprise sender is a factual exception digest of gateway
+failures and approval requests. It sends nothing when no actionable fact changed
+since the last delivered material state. Each emailed fact links to an
+authenticated confirmation that calls
+`POST /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}`;
+only the member it was sent to can acknowledge it, and opening the link alone
+does not.
 
 `user_enabled` remains the recipient's personal unsubscribe preference.
 Account switches require the primary owner, a superuser, or `manage_account`;

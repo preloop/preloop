@@ -212,6 +212,23 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The agent user cannot change the hook CLI, hooks.json or config.toml,
+      # and root's post-run git runs nothing the agent planted.
+      - name: Set up Python
+        if: matrix.arch == 'amd64'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+
+      - name: Agent user container test
+        if: matrix.arch == 'amd64'
+        env:
+          PRELOOP_UNIVERSAL_TEST_IMAGE: preloop-codex-universal:smoke
+        run: |
+          set -euo pipefail
+          pip install --require-hashes -r .github/requirements/runtime-test.txt
+          python backend/tests/agents/test_codex_agent_user_container.py
+
       - name: Log in to Container Registry
         if: needs.gate.outputs.publish == 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0

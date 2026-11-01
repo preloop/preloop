@@ -164,6 +164,7 @@ def test_login_success():
     ):
         mock_user = MagicMock(spec=User)
         mock_user.id = uuid.uuid4()
+        mock_user.account_id = uuid.uuid4()
         mock_user.username = "testuser"
         mock_user.email = "test@example.com"
         mock_user.hashed_password = "hashed_password"

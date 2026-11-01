@@ -11140,7 +11140,12 @@ class OpenAIGatewayService:
             method=method,
             status_code=status_code,
             duration=duration,
-            user_id=str(self.auth_context.user.id),
+            # A managed-agent principal has no human membership id.
+            user_id=(
+                str(self.auth_context.user.id)
+                if self.auth_context.user.id is not None
+                else None
+            ),
             account_id=str(self.auth_context.account_id),
             api_key_id=(
                 str(self.auth_context.api_key.id) if self.auth_context.api_key else None

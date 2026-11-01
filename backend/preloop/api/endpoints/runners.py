@@ -721,6 +721,11 @@ async def _publish_flow_update(execution_id: str, payload: Dict[str, Any]) -> No
     try:
         from preloop.sync.services.event_bus import get_nats_client
 
+        from preloop.services.execution_realtime import stamp_execution_event_async
+
+        payload = await stamp_execution_event_async(
+            {**payload, "execution_id": execution_id}
+        )
         nats_client = await get_nats_client()
         await nats_client.publish(
             f"flow-updates.{execution_id}", json.dumps(payload).encode("utf-8")
@@ -772,13 +777,14 @@ async def persist_runner_logs(
     await run_in_threadpool(crud_flow_execution_log.append_logs, db, entries)
 
     async def broadcast() -> None:
-        for line in lines:
+        for _, entry in entries:
             await _publish_flow_update(
                 str(execution_id),
                 {
                     "execution_id": str(execution_id),
                     "type": "agent_log_line",
-                    "payload": {"line": line},
+                    "log_id": entry["_persistence_id"],
+                    "payload": entry["payload"],
                     # Committed above; the log persister must not store it again.
                     PERSISTED_FLAG: True,
                 },

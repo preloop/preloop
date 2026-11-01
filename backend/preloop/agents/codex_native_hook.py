@@ -178,3 +178,276 @@ if [ -n "$_pl_hook_error" ]; then
     echo "WARNING: Preloop native command hook not installed: $_pl_hook_error; tool rules are not applied to native commands in this run"
 fi
 """
+
+
+#: The unprivileged user hosted Codex runs as (environments/universal/Dockerfile).
+AGENT_USER = "preloop-agent"
+#: Root-owned launcher the run writes once the agent user is set up.
+AGENT_LAUNCHER_PATH = "/usr/local/libexec/preloop-as-agent"
+#: Log line naming the user Codex runs as.
+AGENT_USER_LINE = "PRELOOP_AGENT_USER"
+
+#: Files in ``$CODEX_HOME`` that stay root-owned and read-only to the agent:
+#: everything Codex reads its configuration, hooks, trust state and
+#: credentials from. Codex's own runtime state (sessions, logs, sqlite
+#: databases) is handed to the agent user.
+LOCKED_CODEX_FILES = (
+    "config.toml",
+    "hooks.json",
+    "auth.json",
+    "managed_config.toml",
+    "requirements.toml",
+    "preloop-models.json",
+    "preloop-browser-mcp.toml",
+    "AGENTS.md",
+    "AGENTS.override.md",
+)
+_LOCKED_CODEX_FILES = " ".join(LOCKED_CODEX_FILES)
+
+#: Environment variables the launcher removes before Codex starts (shell
+#: ``case`` patterns). They carry credentials for root's own steps (clone and
+#: publication, checkpoints, evidence and session uploads) or root's git
+#: overrides; Codex passes its environment to the commands it runs.
+#: Codex keeps its model key and the runtime credential (its MCP bearer and
+#: the hook's flow credential).
+LAUNCHER_DROPPED_ENV = (
+    "MCP_CONFIG_JSON",
+    "PRELOOP_GIT_*",
+    "PRELOOP_PUBLICATION_*",
+    "PRELOOP_CHECKPOINT_*",
+    "PRELOOP_EVIDENCE_*",
+    "PRELOOP_NATIVE_SESSION_*",
+    "PRELOOP_MODEL_GATEWAY_TOKEN",
+    "*_PUT_TOKEN*",
+    "*CAPABILITY*",
+    "GIT_CONFIG_*",
+)
+
+# Written to AGENT_LAUNCHER_PATH. The values in angle brackets are filled in
+# by the block below.
+_LAUNCHER = r"""#!/bin/bash
+# Runs a command as the unprivileged Codex agent user (written per run).
+for _pl_v in $(compgen -e); do
+    case "$_pl_v" in <DROPPED>) unset "$_pl_v" ;; esac
+done
+unset _pl_v
+export HOME=<HOME> USER=<USER> LOGNAME=<USER> CODEX_HOME=<CODEX_HOME>
+export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
+export CARGO_HOME="$HOME/.cargo" GOPATH="$HOME/go" GOBIN="$HOME/go/bin"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$PATH"
+# Through env: a binary that setpriv itself executes stays dumpable even when
+# it is unreadable; one executed after the drop is not (checked in
+# test_codex_agent_user_container.py).
+exec setpriv --reuid=<USER> --regid=<USER> --init-groups --no-new-privs \
+    --inh-caps=-all --bounding-set=-all -- /usr/bin/env -- "$@"
+""".replace("<DROPPED>", "|".join(LAUNCHER_DROPPED_ENV))
+
+#: ``preloop.agents.cli_session.SESSION_PACK_ROOT``; repeated here so this
+#: module loads on its own (the image workflow's container test).
+SESSION_PACK_ROOT = "/workspace/.preloop-agent-session"
+
+#: Root-only directory holding each repository's git config from before the
+#: agent ran, restored by :func:`codex_reclaim_workspace_block`.
+_GIT_CONFIG_SAVE_DIR = "/run/preloop-git-config"
+
+
+def codex_agent_user_block() -> str:
+    """Shell that drops Codex to the unprivileged agent user.
+
+    Runs as root after ``config.toml``, ``hooks.json`` and the hook trust
+    state are written (:func:`codex_native_hook_block`) and before
+    ``codex exec``. It leaves those files and the hook CLI root-owned and
+    read-only to the agent user, makes ``$CODEX_HOME`` a sticky directory
+    so the agent can add sessions and logs but cannot replace or remove the
+    files root wrote, hands the workspace and the agent's home to the agent
+    user, and writes :data:`AGENT_LAUNCHER_PATH`. Every ``codex`` launch
+    is prefixed with ``$PRELOOP_AS_AGENT``.
+
+    The ``node`` binary and the native ``codex`` binary are made
+    execute-only (0711). The kernel marks a process that runs an
+    unreadable binary as not dumpable, so ``/proc/<pid>/environ`` of Codex
+    and of the hook CLI is not readable by commands the agent runs as the
+    same user. That keeps the runtime credential, which Codex holds for its
+    MCP connection and passes to the hook, out of reach of shell commands;
+    Codex already removes it from the environment it gives them.
+
+    An image without the agent user, a container that is not root, or a
+    missing ``setpriv`` keeps the earlier behaviour (Codex runs as the
+    container user) and logs why.
+
+    Returns:
+        A bash fragment that sets ``PRELOOP_AS_AGENT``.
+    """
+    launcher = shlex.quote(_LAUNCHER)
+    return f"""
+# ============================================================
+# Run Codex as the unprivileged agent user
+# ============================================================
+PRELOOP_AS_AGENT=""
+_pl_agent_error=""
+rm -f {AGENT_LAUNCHER_PATH} 2>/dev/null || true
+if [ "$(id -u)" != "0" ]; then
+    _pl_agent_error="the container does not run as root"
+elif ! id -u {AGENT_USER} >/dev/null 2>&1; then
+    _pl_agent_error="the image has no {AGENT_USER} user"
+elif ! command -v setpriv >/dev/null 2>&1; then
+    _pl_agent_error="setpriv is not available"
+fi
+_pl_codex_parent="$(dirname "$CODEX_HOME")"
+if [ -z "$_pl_agent_error" ] && {{ [ "$(stat -c %u "$_pl_codex_parent")" != "0" ] \\
+    || [ -n "$(find "$_pl_codex_parent" -maxdepth 0 -perm /022)" ]; }}; then
+    _pl_agent_error="$_pl_codex_parent is writable by other users"
+fi
+if [ -z "$_pl_agent_error" ]; then
+    _pl_agent_home="$(getent passwd {AGENT_USER} | cut -d: -f6)"
+    _pl_agent_home="${{_pl_agent_home:-/home/{AGENT_USER}}}"
+    mkdir -p "$_pl_agent_home"
+    if [ -f /root/.gitconfig ]; then cp /root/.gitconfig "$_pl_agent_home/.gitconfig"; fi
+    chown -R {AGENT_USER}:{AGENT_USER} "$_pl_agent_home"
+    # The base image keeps its toolchains under /root: traverse, not list.
+    chmod 0711 /root
+    # Keep each repository's git config from before the agent runs; root
+    # restores it before its own post-run git steps.
+    rm -rf {_GIT_CONFIG_SAVE_DIR}
+    install -d -m 0700 {_GIT_CONFIG_SAVE_DIR}
+    : > {_GIT_CONFIG_SAVE_DIR}/repos
+    _pl_n=0
+    while IFS= read -r -d '' _pl_gitdir; do
+        if [ -f "$_pl_gitdir/config" ]; then
+            _pl_gitdir="$(readlink -f "$_pl_gitdir")"
+            _pl_n=$((_pl_n + 1))
+            cp "$_pl_gitdir/config" "{_GIT_CONFIG_SAVE_DIR}/$_pl_n"
+            printf '%s\t%s\n' "$_pl_n" "$_pl_gitdir" >> {_GIT_CONFIG_SAVE_DIR}/repos
+        fi
+    done < <(find /workspace "$PWD" -maxdepth 4 -name .git -type d -prune -print0 2>/dev/null | sort -zu)
+    # The workspace (and a working directory outside it) belongs to the agent.
+    if [ -d /workspace ]; then chown -R {AGENT_USER}:{AGENT_USER} /workspace; fi
+    case "$PWD" in
+        /|/workspace|/workspace/*|/root|/root/*|/opt|/opt/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib*|/var|/var/*|/proc*|/sys*|/dev*|/boot*) ;;
+        *) chown -R {AGENT_USER}:{AGENT_USER} "$PWD" ;;
+    esac
+    # Same git access as before: the agent's own fetches use the clone store.
+    if [ -f /tmp/.preloop-git-credentials ]; then
+        chown {AGENT_USER} /tmp/.preloop-git-credentials
+    fi
+    # $CODEX_HOME: root-owned and sticky. The agent may add files and owns
+    # the subdirectories (sessions, logs); config.toml, hooks.json and the
+    # rest of what root wrote stay root-owned, read-only to the agent, and
+    # cannot be removed or renamed by it.
+    # Empty managed layers stop the agent from adding its own.
+    mkdir -p "$CODEX_HOME/sessions"
+    for _pl_f in managed_config.toml requirements.toml; do
+        [ -e "$CODEX_HOME/$_pl_f" ] || : > "$CODEX_HOME/$_pl_f"
+    done
+    chown -R {AGENT_USER}:{AGENT_USER} "$CODEX_HOME"
+    for _pl_f in {_LOCKED_CODEX_FILES}; do
+        if [ -e "$CODEX_HOME/$_pl_f" ] || [ -L "$CODEX_HOME/$_pl_f" ]; then
+            chown -h root:{AGENT_USER} "$CODEX_HOME/$_pl_f"
+            [ -L "$CODEX_HOME/$_pl_f" ] || chmod 0640 "$CODEX_HOME/$_pl_f"
+        fi
+    done
+    chown root:{AGENT_USER} "$CODEX_HOME"
+    chmod 1770 "$CODEX_HOME"
+    # The hook CLI and the binaries that hold the runtime credential (node
+    # and every executable Codex ships, such as its code-mode host) are
+    # root-owned and execute-only: not writable, and not dumpable when run.
+    for _pl_bin in "${{_pl_cli:-}}" "$(command -v node 2>/dev/null || true)"; do
+        [ -n "$_pl_bin" ] || continue
+        _pl_bin="$(readlink -f "$_pl_bin")"
+        if [ -f "$_pl_bin" ]; then chown root:root "$_pl_bin"; chmod 0711 "$_pl_bin"; fi
+    done
+    _pl_npm_root="$(npm root -g 2>/dev/null || true)"
+    if [ -n "$_pl_npm_root" ] && [ -d "$_pl_npm_root/@openai" ]; then
+        while IFS= read -r -d '' _pl_bin; do
+            if [ "$(head -c 4 "$_pl_bin" | od -An -c | tr -d ' ')" = "177ELF" ]; then
+                chmod 0711 "$_pl_bin"
+            fi
+        done < <(find -L "$_pl_npm_root/@openai" -type f -perm -u+x -print0 2>/dev/null)
+    fi
+    mkdir -p "$(dirname {AGENT_LAUNCHER_PATH})"
+    printf '%s' {launcher} \\
+        | sed -e "s|<HOME>|$_pl_agent_home|g" -e "s|<USER>|{AGENT_USER}|g" \\
+            -e "s|<CODEX_HOME>|$CODEX_HOME|g" > {AGENT_LAUNCHER_PATH}
+    chown root:root {AGENT_LAUNCHER_PATH}
+    chmod 0755 {AGENT_LAUNCHER_PATH}
+    if {AGENT_LAUNCHER_PATH} true; then
+        PRELOOP_AS_AGENT={AGENT_LAUNCHER_PATH}
+    else
+        rm -f {AGENT_LAUNCHER_PATH}
+        _pl_agent_error="dropping to {AGENT_USER} failed"
+    fi
+fi
+if [ -n "$PRELOOP_AS_AGENT" ]; then
+    echo "{AGENT_USER_LINE} {AGENT_USER}"
+else
+    echo "{AGENT_USER_LINE} $(id -un 2>/dev/null || id -u) ($_pl_agent_error; Codex can change its own hook configuration in this run)"
+fi
+"""
+
+
+def codex_reclaim_workspace_block() -> str:
+    """Shell that takes the workspace back from the agent user.
+
+    Runs as root after the last Codex round and before root's own post-run
+    steps (session upload, push and pull request). The agent owned the
+    workspace, including ``.git``, so it could have planted git hooks or
+    configuration (``core.hooksPath``, ``core.fsmonitor``, filter drivers,
+    credential helpers, a ``commondir`` redirect) that root's git would run.
+    The agent could also have left links for root's session pack to write
+    through. This block stops every agent process, gives the workspace and
+    ``$CODEX_HOME`` back to root, removes links at the top of
+    ``$CODEX_HOME``, recreates :data:`SESSION_PACK_ROOT` as a root-only
+    directory, restores each repository's git config saved before the agent
+    ran, removes hooks and the files that can redirect or extend the
+    configuration, and exports ``core.hooksPath=/dev/null`` and
+    ``core.fsmonitor=false`` for root's later git commands. If a repository
+    path or its ``.git`` no longer resolves to itself (the agent replaced it
+    with a link or a file), the run stops with ``PRELOOP_SETUP_FAILED
+    agent_workspace_tampered`` before root's steps run. Idempotent; does
+    nothing when Codex did not run as the agent user.
+
+    Returns:
+        A bash fragment.
+    """
+    return f"""
+# ============================================================
+# Take the workspace back from the agent user
+# ============================================================
+if [ -n "${{PRELOOP_AS_AGENT:-}}" ]; then
+    pkill -KILL -u {AGENT_USER} 2>/dev/null || true
+    sleep 1
+    pkill -KILL -u {AGENT_USER} 2>/dev/null || true
+    if [ -d /workspace ]; then chown -R root:root /workspace; fi
+    find "$CODEX_HOME" -mindepth 1 -maxdepth 1 -type l -exec rm -f {{}} +
+    chown -R root:root "$CODEX_HOME"
+    rm -rf {SESSION_PACK_ROOT}
+    install -d -m 0700 {SESSION_PACK_ROOT}
+    case "$PWD" in
+        /|/workspace|/workspace/*|/root|/root/*|/opt|/opt/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib*|/var|/var/*|/proc*|/sys*|/dev*|/boot*) ;;
+        *) chown -R root:root "$PWD" ;;
+    esac
+    while IFS=$'\t' read -r _pl_n _pl_gitdir; do
+        [ -n "$_pl_gitdir" ] || continue
+        if [ ! -d "$_pl_gitdir" ] \
+            || [ "$(readlink -f "$_pl_gitdir")" != "$_pl_gitdir" ]; then
+            echo "agent_workspace_tampered: $_pl_gitdir was replaced during the run"
+            echo "PRELOOP_SETUP_FAILED agent_workspace_tampered"
+            exit 1
+        fi
+        # Remove, never write through: any entry may be a link the agent left.
+        rm -rf "$_pl_gitdir/config" "$_pl_gitdir/hooks"
+        cp "{_GIT_CONFIG_SAVE_DIR}/$_pl_n" "$_pl_gitdir/config"
+        mkdir -p "$_pl_gitdir/hooks"
+        rm -f "$_pl_gitdir/commondir" "$_pl_gitdir/config.worktree"
+        if [ -L "$_pl_gitdir/info" ]; then
+            rm -f "$_pl_gitdir/info"
+        else
+            rm -f "$_pl_gitdir/info/attributes"
+        fi
+    done < {_GIT_CONFIG_SAVE_DIR}/repos
+    export GIT_CONFIG_COUNT=2
+    export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+    export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
+    echo "{AGENT_USER_LINE} workspace returned to root"
+fi
+"""

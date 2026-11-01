@@ -1259,6 +1259,14 @@ paths:
       summary: Authentication Options
       description: 'Begin passkey sign-in. Discoverable credentials: no username needed.'
       operationId: authentication_options_api_v1_auth_webauthn_authenticate_options_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AuthenticationOptionsRequest'
+              - type: 'null'
+              title: Body
       responses:
         '200':
           description: Successful Response
@@ -1266,6 +1274,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthenticationOptionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '401':
           description: Invalid or expired credential
         '403':
@@ -4699,6 +4713,53 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}:
+    post:
+      tags:
+      - Account
+      summary: Acknowledge Weekly Exception
+      description: Suppress a delivered fact's unchanged material state for this recipient.
+      operationId: acknowledge_weekly_exception_api_v1_weekly_report_deliveries__delivery_id__acknowledge__exception_key__post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: delivery_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Delivery Id
+      - name: exception_key
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Exception Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                title: Response Acknowledge Weekly Exception Api V1 Weekly Report
+                  Deliveries  Delivery Id  Acknowledge  Exception Key  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/account/deletion-request:
     post:
@@ -17167,6 +17228,139 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/result-export:
+    post:
+      tags:
+      - Flows
+      summary: Grant Execution Result Export
+      description: Current human owner consents to one reviewed, expiring result export.
+      operationId: grant_execution_result_export_api_v1_flows_executions__execution_id__result_export_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiResultExportCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Grant Execution Result Export Api V1 Flows Executions  Execution
+                  Id  Result Export Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/result-export/{grant_id}:
+    delete:
+      tags:
+      - Flows
+      summary: Revoke Execution Result Export
+      description: Revoke explicit consent without changing historical execution ownership.
+      operationId: revoke_execution_result_export_api_v1_flows_executions__execution_id__result_export__grant_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Grant Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Result Export
+      description: Export only under the exact explicit grant, current identity and
+        revisions.
+      operationId: get_execution_result_export_api_v1_flows_executions__execution_id__result_export__grant_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Grant Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Result Export Api V1 Flows Executions  Execution
+                  Id  Result Export  Grant Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: execution:result-export:read
   /api/v1/flows/executions/{execution_id}/tool-evidence:
     get:
       tags:
@@ -20037,6 +20231,57 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/flow-executions/{execution_id}/lifecycle:
+    get:
+      tags:
+      - WebSockets
+      summary: Get Execution Lifecycle
+      description: Authoritative, small snapshot for realtime gap recovery (no log
+        replay).
+      operationId: get_execution_lifecycle_api_v1_flow_executions__execution_id__lifecycle_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: sequence_domain
+        in: query
+        required: false
+        schema:
+          enum:
+          - execution
+          - lifecycle
+          type: string
+          default: execution
+          title: Sequence Domain
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Execution Lifecycle Api V1 Flow Executions  Execution
+                  Id  Lifecycle Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/commands:
     post:
@@ -23619,6 +23864,53 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/users/{user_id}/machine-credentials:
+    get:
+      tags:
+      - Users
+      summary: List User Machine Credentials
+      description: "List account-owned machine credentials a member created.\n\nRemoving\
+        \ the member leaves these credentials working, because the account\nowns them.\
+        \ Admins use this list to review or rotate them.\n\nArgs:\n    user_id: Membership\
+        \ whose machine credentials to list.\n    current_user: Current authenticated\
+        \ user.\n    db: Database session.\n\nReturns:\n    CI identity and managed-agent\
+        \ credentials created by the member.\n\nRaises:\n    HTTPException: 404 if\
+        \ the member is not in the caller's account."
+      operationId: list_user_machine_credentials_api_v1_users__user_id__machine_credentials_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemberMachineCredential'
+                title: Response List User Machine Credentials Api V1 Users  User Id  Machine
+                  Credentials Get
         '422':
           description: Validation Error
           content:
@@ -29736,6 +30028,17 @@ components:
       type: object
       title: AuthUserUpdate
       description: User update model.
+    AuthenticationOptionsRequest:
+      properties:
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+      type: object
+      title: AuthenticationOptionsRequest
+      description: Optional account destination, signed into the passkey challenge.
     AuthenticationOptionsResponse:
       properties:
         options:
@@ -29760,6 +30063,12 @@ components:
         challenge_token:
           type: string
           title: Challenge Token
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
       type: object
       required:
       - credential
@@ -30529,6 +30838,12 @@ components:
       title: Body_import_usage_csv_api_v1_usage_import_csv_post
     Body_login_form_api_v1_auth_token_post:
       properties:
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
         grant_type:
           anyOf:
           - type: string
@@ -31388,6 +31703,7 @@ components:
       - execution:read
       - execution:result:read
       - execution:evidence:read
+      - execution:result-export:read
       - execution:stop
       - subscription:create
       - subscription:read
@@ -31769,6 +32085,43 @@ components:
       - actions
       title: CiGrant
       description: Exactly one account-local project and its dedicated flow.
+    CiResultExportCreate:
+      properties:
+        pr_number:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Pr Number
+        head_sha:
+          type: string
+          pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+          title: Head Sha
+        base_sha:
+          type: string
+          pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+          title: Base Sha
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        result_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Result Sha256
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      additionalProperties: false
+      type: object
+      required:
+      - pr_number
+      - head_sha
+      - base_sha
+      - principal_id
+      - result_sha256
+      - expires_at
+      title: CiResultExportCreate
+      description: Expected digest and revisions protect the human's reviewed decision.
     CliSessionResponse:
       properties:
         id:
@@ -41411,6 +41764,13 @@ components:
         password:
           type: string
           title: Password
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+          description: Optional already-held account to select after credential verification
       type: object
       required:
       - username
@@ -43010,6 +43370,56 @@ components:
       - clock
       title: MediaTiming
       description: Wall clock at media t=0, optionally supplemented by exact offsets.
+    MemberMachineCredential:
+      properties:
+        api_key_id:
+          type: string
+          format: uuid
+          title: Api Key Id
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          enum:
+          - ci_principal
+          - managed_agent
+          title: Kind
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        principal_name:
+          type: string
+          title: Principal Name
+        is_active:
+          type: boolean
+          title: Is Active
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+      type: object
+      required:
+      - api_key_id
+      - name
+      - kind
+      - principal_id
+      - principal_name
+      - is_active
+      title: MemberMachineCredential
+      description: 'Account-owned machine credential created by a member.
+
+
+        Offboarding a member leaves these working; admins review or rotate them.'
     MobileDeviceRegistration:
       properties:
         platform:
@@ -54327,6 +54737,16 @@ components:
         member_policy_findings_enabled:
           type: boolean
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          type: boolean
+          title: Synthesis Enabled
+          default: false
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       type: object
       required:
       - account_enabled
@@ -54363,6 +54783,17 @@ components:
           - type: boolean
           - type: 'null'
           title: Member Policy Findings Enabled
+        synthesis_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Synthesis Enabled
+        synthesis_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Synthesis Model Id
       additionalProperties: false
       type: object
       title: WeeklyReportPreferencesUpdate

@@ -117,6 +117,10 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, comment="Whether the user account is active"
     )
+    offboarded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_superuser: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -198,6 +202,11 @@ class User(Base):
         comment="Incremented to revoke all outstanding JWT sessions",
     )
 
+    # Selective SSO enforcement revokes only non-SSO sessions for this membership.
+    non_sso_auth_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # Account hierarchy (#986). One membership is one user row; a person
     # links the rows of one human. Rows created without a person get one in
     # the session hook (preloop.models.models.hierarchy), so no caller has to
@@ -236,7 +245,7 @@ class User(Base):
         "Person", back_populates="memberships", foreign_keys="[User.person_id]"
     )
     api_keys: Mapped[List["ApiKey"]] = relationship(
-        "ApiKey", back_populates="creator", cascade="all, delete-orphan"
+        "ApiKey", back_populates="creator", passive_deletes="all"
     )
     # No delete cascade: usage rows must survive user deletion so account
     # cost history stays intact (the DB FK is ON DELETE SET NULL); the ORM

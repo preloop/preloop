@@ -578,6 +578,11 @@ def update_team_member(
     membership = crud_team.update_member(
         db, membership=membership, role=member_data.role
     )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not a member of this team",
+        )
 
     # Get user info
     from preloop.models.crud import crud_user

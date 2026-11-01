@@ -149,7 +149,7 @@ class UserContext:
 
     def __init__(
         self,
-        user_id: str,
+        user_id: Optional[str],
         account_id: str,
         username: str,
         has_tracker: bool = False,

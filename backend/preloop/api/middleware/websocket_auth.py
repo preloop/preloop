@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # WebSocket path prefixes that require authentication
 # These use prefix matching to support dynamic segments like /ws/flow-executions/{id}
 # All WebSocket routes are mounted under /api/v1
-AUTHENTICATED_WS_PREFIXES = ("/api/v1/ws/flow-executions",)
+AUTHENTICATED_WS_PREFIXES = ("/api/v1/ws/flow-executions", "/api/v1/ws/flows")
 
 # Exact WebSocket paths that require authentication
 AUTHENTICATED_WS_PATHS = {"/api/v1/ws"}

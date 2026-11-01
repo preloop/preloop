@@ -8,6 +8,8 @@ from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, JSON
 
+from preloop.models.db.encrypted_types import SecretFieldsJSON
+
 from .base import Base
 
 if TYPE_CHECKING:
@@ -230,7 +232,9 @@ class ApprovalWorkflow(Base):
 
     # Generic approval configuration (for future extensibility)
     approval_config: Mapped[Optional[Dict]] = mapped_column(
-        JSON, nullable=True, comment="Generic configuration for approval mechanism"
+        SecretFieldsJSON("webhook_secret"),
+        nullable=True,
+        comment="Generic configuration for approval mechanism",
     )
 
     # workflow settings

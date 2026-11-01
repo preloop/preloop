@@ -142,9 +142,12 @@ def _connection_context_from_auth(
     context: RuntimeBearerAuthContext,
 ) -> AgentControlConnectionContext:
     """Capture connection identifiers before ORM rows can be deleted."""
+    from preloop.models.crud.managed_agent_auth import actor_user_id
+
+    creator_id = actor_user_id(context.user)
     return AgentControlConnectionContext(
         api_key_id=str(context.api_key.id),
-        user_id=str(context.user.id),
+        user_id=str(creator_id) if creator_id is not None else None,
         agent_kind=context.managed_agent.agent_kind,
         session_reference=context.runtime_session.session_reference,
         runtime_principal_id=context.runtime_session.runtime_principal_id,

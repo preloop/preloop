@@ -454,7 +454,8 @@ async def test_runner_log_batch_replay_has_stable_persistence_ids(monkeypatch) -
     execution_id, batch_id = uuid4(), uuid4()
     append = MagicMock()
     monkeypatch.setattr(runners.crud_flow_execution_log, "append_logs", append)
-    monkeypatch.setattr(runners, "_publish_flow_update", AsyncMock())
+    publish = AsyncMock()
+    monkeypatch.setattr(runners, "_publish_flow_update", publish)
     await runners.persist_runner_logs(
         db, execution_id, ["session", "PR"], str(batch_id)
     )
@@ -464,6 +465,10 @@ async def test_runner_log_batch_replay_has_stable_persistence_ids(monkeypatch) -
     first, replay = [call.args[1] for call in append.call_args_list]
     assert first == replay
     assert len({entry[1]["_persistence_id"] for entry in first}) == 2
+
+    assert [call.args[1]["log_id"] for call in publish.call_args_list] == [
+        entry[1]["_persistence_id"] for entry in first + replay
+    ]
 
 
 @pytest.mark.asyncio
@@ -635,9 +640,9 @@ async def test_model_response_frames_do_not_query_runner_row(
     monkeypatch.setattr(
         runners.crud_flow_runner,
         "set_publication_capabilities",
-        lambda *args, **kwargs: False
-        if kwargs.get("offline")
-        else writer(*args, **kwargs),
+        lambda *args, **kwargs: (
+            False if kwargs.get("offline") else writer(*args, **kwargs)
+        ),
     )
     lookup = MagicMock(side_effect=AssertionError("Token frame queried the runner row"))
     monkeypatch.setattr(runners.crud_flow_runner, "get", lookup)

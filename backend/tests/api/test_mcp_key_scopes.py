@@ -1,6 +1,7 @@
 """API-key capabilities survive MCP authentication and dispatch."""
 
 import json
+from tests.cross_account_keys import legacy_cross_account_runtime_key
 from collections.abc import AsyncIterator
 from contextlib import ExitStack, asynccontextmanager
 from types import SimpleNamespace
@@ -305,7 +306,7 @@ async def test_mcp_scopes_do_not_override_key_account_binding(
             "is_active": True,
         },
     )
-    _, secret = crud_api_key.create_runtime_key(
+    _, secret = legacy_cross_account_runtime_key(
         db_session,
         name="Mismatched account",
         account_id=test_user.account_id,

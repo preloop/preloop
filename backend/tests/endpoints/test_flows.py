@@ -2182,6 +2182,7 @@ async def test_send_execution_command_stop_pending_execution(
 
 def _mock_execution_log_row(execution_id: uuid.UUID, message: str) -> MagicMock:
     row = MagicMock()
+    row.id = uuid.uuid4()
     row.execution_id = execution_id
     row.timestamp = datetime(2026, 9, 5, 12, 0, 0)
     row.log_type = "agent_log_line"
@@ -2236,6 +2237,9 @@ async def test_get_flow_execution_logs_runner_backed_reads_database(
     assert [entry["payload"]["message"] for entry in result["logs"]] == [
         "line one",
         "line two",
+    ]
+    assert [entry["log_id"] for entry in result["logs"]] == [
+        str(row.id) for row in mock_log_crud.get_by_execution_id.return_value
     ]
     mock_create_executor.assert_not_called()
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -169,6 +170,52 @@ def verify_callback(
     return payload
 
 
+def json_digest(value: Any) -> str:
+    """Match the export API's canonical JSON digest."""
+    raw = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def verify_result_export(
+    document: dict[str, Any], expected: dict[str, Any], args: argparse.Namespace
+) -> None:
+    """Check reviewed bytes, current grant and exact provenance before publishing."""
+    receipt = document.get("receipt")
+    if not isinstance(receipt, dict):
+        raise VerificationError("Result export receipt missing")
+    tracker_url = receipt.get("tracker_url")
+    if isinstance(tracker_url, str):
+        tracker_url = tracker_url.rstrip("/")
+    if (
+        document.get("grant_id") != args.result_export_grant
+        or document.get("status") != "SUCCEEDED"
+        or document.get("purpose") != "result_export"
+        or document.get("publication_authority") != "separate_publisher_required"
+        or receipt.get("version") != 1
+        or receipt.get("account_id") != args.export_account
+        or receipt.get("execution_id") != args.execution
+        or receipt.get("base_sha") != args.base
+        or receipt.get("tracker_type") != "github"
+        or tracker_url not in (None, "https://github.com", "https://api.github.com")
+        or receipt.get("repository_slug") != args.repository
+        or any(receipt.get(field) != expected[field] for field in CORRELATION)
+        or receipt.get("result_sha256") != args.expected_result_sha256
+        or json_digest(document.get("result")) != args.expected_result_sha256
+        or document.get("publication_idempotency_key")
+        != "preloop-result-export-v1:" + json_digest(receipt)
+    ):
+        raise VerificationError("Result export correlation or digest mismatch")
+    expires = datetime.fromisoformat(document["expires_at"].replace("Z", "+00:00"))
+    if expires.tzinfo is None or expires <= datetime.now(timezone.utc):
+        raise VerificationError("Result export consent expired")
+
+
 def run(args: argparse.Namespace) -> None:
     """Deduplicate, stop obsolete owned work, poll, and optionally publish proof."""
     token = os.environ.get("PRELOOP_CI_TOKEN", "")
@@ -190,10 +237,44 @@ def run(args: argparse.Namespace) -> None:
     def remote(path: str, method: str = "GET", body: Any = None) -> Any:
         return request_json(args.url, "/api/v1" + path, token, method, body)
 
+    export_grant = getattr(args, "result_export_grant", None)
+    if export_grant:
+        UUID(export_grant)
+        UUID(args.execution)
+        UUID(args.export_account)
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", args.base or "")
+            or not re.fullmatch(r"[0-9a-f]{64}", args.expected_result_sha256 or "")
+            or args.callback_body
+        ):
+            raise VerificationError(
+                "Export requires reviewed digest/base and no CI callback"
+            )
+
+    provider_ids: tuple[str, str] | None = None
+
+    def verify_current_pr(pr: dict[str, Any]) -> None:
+        verify_pr(pr, args.repository, args.head)
+        if (
+            export_grant
+            and provider_ids is not None
+            and (
+                str(pr.get("id")) != provider_ids[1]
+                or any(
+                    str(pr.get(side, {}).get("repo", {}).get("id")) != provider_ids[0]
+                    for side in ("head", "base")
+                )
+            )
+        ):
+            raise VerificationError("Result export provider identity changed")
+        if export_grant and pr.get("base", {}).get("sha") != args.base:
+            raise VerificationError("Result export base revision changed")
+
     pr_path = f"/repos/{args.repository}/pulls/{args.pr}"
     pr = github(pr_path)
-    verify_pr(pr, args.repository, args.head)
+    verify_current_pr(pr)
     repository_id = str(pr["base"]["repo"]["id"])
+    provider_ids = (repository_id, str(pr["id"]))
     expected = dict(
         flow_id=args.flow,
         project_id=args.project,
@@ -202,82 +283,95 @@ def run(args: argparse.Namespace) -> None:
         provider_pr_id=str(pr["id"]),
         head_sha=args.head,
     )
-    candidates = []
-    for page in range(100):
-        rows = remote(
-            f"/flows/executions?flow_id={args.flow}&limit=100&skip={page * 100}"
-        )
-        candidates.extend(rows)
-        if len(rows) < 100:
-            break
+    if export_grant:
+        execution_id = args.execution
+        export_path = f"/flows/executions/{execution_id}/result-export/{export_grant}"
+        result = remote(export_path)
+        verify_result_export(result, expected, args)
+        detail = {"status": "SUCCEEDED"}
     else:
-        raise VerificationError("Owned history exceeds safe deduplication bound")
-    execution_id = args.execution
-    # Enumeration is principal-owned on the server. Correlation is still
-    # checked locally before every cancellation or reuse.
-    for row in candidates:
-        same_pr = all(
-            row.get(field) == expected[field]
-            for field in CORRELATION
-            if field != "head_sha"
-        )
-        if not same_pr:
-            continue
-        UUID(row["id"])
-        if row.get("head_sha") == args.head and execution_id is None:
-            execution_id = row["id"]
-        elif row.get("head_sha") != args.head and row.get("status") not in TERMINAL:
-            detail = remote(f"/flows/executions/{row['id']}")
-            verify_execution(
-                detail, {**expected, "head_sha": row["head_sha"]}, row["id"]
+        candidates = []
+        for page in range(100):
+            rows = remote(
+                f"/flows/executions?flow_id={args.flow}&limit=100&skip={page * 100}"
             )
-            remote(
-                f"/flows/executions/{row['id']}/command", "POST", {"command": "stop"}
+            candidates.extend(rows)
+            if len(rows) < 100:
+                break
+        else:
+            raise VerificationError("Owned history exceeds safe deduplication bound")
+        execution_id = args.execution
+        # Enumeration is principal-owned on the server. Correlation is still
+        # checked locally before every cancellation or reuse.
+        for row in candidates:
+            same_pr = all(
+                row.get(field) == expected[field]
+                for field in CORRELATION
+                if field != "head_sha"
             )
-    if execution_id is None:
-        created = remote(
-            f"/flows/{args.flow}/trigger",
-            "POST",
-            {"pr_number": args.pr, "head_sha": args.head},
-        )
-        execution_id = created["id"]
-        verify_execution(created, expected, execution_id)
-    UUID(execution_id)
-    deadline = time.monotonic() + args.timeout
-    while True:
-        detail = remote(f"/flows/executions/{execution_id}")
-        verify_execution(detail, expected, execution_id)
-        # A transport failure never fetched a PR, so it must not stop the
-        # owned execution. A fetched PR that is no longer the approved head
-        # does. One failure ends this run; it is not retried.
-        try:
-            current_pr = github(pr_path)
-        except TransportError:
-            raise
-        try:
-            verify_pr(current_pr, args.repository, args.head)
-        except VerificationError:
-            remote(
-                f"/flows/executions/{execution_id}/command", "POST", {"command": "stop"}
+            if not same_pr:
+                continue
+            UUID(row["id"])
+            if row.get("head_sha") == args.head and execution_id is None:
+                execution_id = row["id"]
+            elif row.get("head_sha") != args.head and row.get("status") not in TERMINAL:
+                detail = remote(f"/flows/executions/{row['id']}")
+                verify_execution(
+                    detail, {**expected, "head_sha": row["head_sha"]}, row["id"]
+                )
+                remote(
+                    f"/flows/executions/{row['id']}/command",
+                    "POST",
+                    {"command": "stop"},
+                )
+        if execution_id is None:
+            created = remote(
+                f"/flows/{args.flow}/trigger",
+                "POST",
+                {"pr_number": args.pr, "head_sha": args.head},
             )
-            raise
-        if detail["status"] in TERMINAL:
-            break
-        if time.monotonic() >= deadline:
-            remote(
-                f"/flows/executions/{execution_id}/command", "POST", {"command": "stop"}
+            execution_id = created["id"]
+            verify_execution(created, expected, execution_id)
+        UUID(execution_id)
+        deadline = time.monotonic() + args.timeout
+        while True:
+            detail = remote(f"/flows/executions/{execution_id}")
+            verify_execution(detail, expected, execution_id)
+            # A transport failure never fetched a PR, so it must not stop the
+            # owned execution. A fetched PR that is no longer the approved head
+            # does. One failure ends this run; it is not retried.
+            try:
+                current_pr = github(pr_path)
+            except TransportError:
+                raise
+            try:
+                verify_pr(current_pr, args.repository, args.head)
+            except VerificationError:
+                remote(
+                    f"/flows/executions/{execution_id}/command",
+                    "POST",
+                    {"command": "stop"},
+                )
+                raise
+            if detail["status"] in TERMINAL:
+                break
+            if time.monotonic() >= deadline:
+                remote(
+                    f"/flows/executions/{execution_id}/command",
+                    "POST",
+                    {"command": "stop"},
+                )
+                raise VerificationError("Timed out; owned execution stopped")
+            time.sleep(10)
+        result = remote(f"/flows/executions/{execution_id}/result")
+        verify_execution(result, expected, execution_id)
+        if (
+            result.get("execution_id") != execution_id
+            or result.get("status") != detail["status"]
+        ):
+            raise VerificationError(
+                "Result does not match authoritative terminal execution"
             )
-            raise VerificationError("Timed out; owned execution stopped")
-        time.sleep(10)
-    result = remote(f"/flows/executions/{execution_id}/result")
-    verify_execution(result, expected, execution_id)
-    if (
-        result.get("execution_id") != execution_id
-        or result.get("status") != detail["status"]
-    ):
-        raise VerificationError(
-            "Result does not match authoritative terminal execution"
-        )
     if args.callback_body:
         from pathlib import Path
 
@@ -305,7 +399,14 @@ def run(args: argparse.Namespace) -> None:
         review = reported.get("review") if isinstance(reported, dict) else None
         if not isinstance(review, str) or not review.strip():
             raise VerificationError("Persisted result has no review text")
-        marker = f"<!-- preloop-ci:{execution_id}:{args.head} -->"
+        if export_grant and len(review) > 60000:
+            raise VerificationError("Approved review exceeds publication limit")
+        marker = (
+            f"<!-- {result['publication_idempotency_key']} -->"
+            if export_grant
+            else f"<!-- preloop-ci:{execution_id}:{args.head} -->"
+        )
+        expected_body = review[:60000] + "\n\n" + marker
         # GITHUB_TOKEN is an installation token and cannot call GET /user.
         # Resolve the expected public author and require it on the receipt.
         author_id = github("/users/" + quote(args.review_author, safe=""))["id"]
@@ -322,6 +423,7 @@ def run(args: argparse.Namespace) -> None:
                 item
                 for item in existing
                 if marker in (item.get("body") or "")
+                and (not export_grant or item.get("body") == expected_body)
                 and item.get("commit_id") == args.head
                 and item.get("user", {}).get("id") == author_id
                 and item.get("state") == "COMMENTED"
@@ -330,19 +432,22 @@ def run(args: argparse.Namespace) -> None:
             ),
             None,
         )
-        verify_pr(github(pr_path), args.repository, args.head)
+        verify_current_pr(github(pr_path))
+        if export_grant:
+            verify_result_export(remote(export_path), expected, args)
         posted = found or github(
             pr_path + "/reviews",
             "POST",
             {
                 "commit_id": args.head,
                 "event": "COMMENT",
-                "body": review[:60000] + "\n\n" + marker,
+                "body": expected_body,
             },
         )
         proof = github(pr_path + f"/reviews/{posted['id']}")
         if (
-            proof.get("commit_id") != args.head
+            (export_grant and proof.get("body") != expected_body)
+            or proof.get("commit_id") != args.head
             or marker not in (proof.get("body") or "")
             or proof.get("user", {}).get("id") != author_id
             or proof.get("state") != "COMMENTED"
@@ -351,7 +456,9 @@ def run(args: argparse.Namespace) -> None:
         ):
             raise VerificationError("Review publication receipt mismatch")
         publication_id = proof["id"]
-    verify_pr(github(pr_path), args.repository, args.head)
+    verify_current_pr(github(pr_path))
+    if export_grant:
+        verify_result_export(remote(export_path), expected, args)
     print(
         json.dumps(
             {
@@ -371,6 +478,10 @@ def main() -> None:
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--execution")
+    parser.add_argument("--result-export-grant")
+    parser.add_argument("--export-account")
+    parser.add_argument("--base")
+    parser.add_argument("--expected-result-sha256")
     parser.add_argument("--timeout", type=int, default=2400)
     parser.add_argument("--callback-body")
     parser.add_argument("--callback-account")
