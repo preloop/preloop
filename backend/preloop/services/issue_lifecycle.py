@@ -17,6 +17,7 @@ from preloop.schemas.issue_lifecycle import (
     CriterionEvidence,
     ReadinessContract,
 )
+from preloop.services.model_routing import prepare_execution_routing
 from preloop.services.issue_lifecycle_provider import (
     LifecycleProvider,
     publication_budget,
@@ -415,7 +416,10 @@ class IssueLifecycleService:
                     },
                 }
             execution = crud_issue_lifecycle.create_execution(
-                self.db, row=row, flow_id=flow.id, event=event
+                self.db,
+                row=row,
+                flow_id=flow.id,
+                event=prepare_execution_routing(self.db, flow, event),
             )
             state = (
                 "dispatch_pending" if execution.status == "PENDING" else "dispatched"
@@ -588,7 +592,10 @@ class IssueLifecycleService:
             },
         }
         return crud_issue_lifecycle.create_execution(
-            self.db, row=row, flow_id=flow.id, event=event
+            self.db,
+            row=row,
+            flow_id=flow.id,
+            event=prepare_execution_routing(self.db, flow, event),
         )
 
     def _defer_until_checks(
@@ -711,7 +718,10 @@ class IssueLifecycleService:
                 },
             }
             execution = crud_issue_lifecycle.create_execution(
-                self.db, row=row, flow_id=flow.id, event=event
+                self.db,
+                row=row,
+                flow_id=flow.id,
+                event=prepare_execution_routing(self.db, flow, event),
             )
         if execution.status == "PENDING":
             await dispatch(execution)

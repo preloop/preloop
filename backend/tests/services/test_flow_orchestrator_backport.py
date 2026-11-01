@@ -190,3 +190,46 @@ async def test_backport_is_bounded_by_the_flow_timeout_budget() -> None:
     assert result["status"] == "FAILED"
     assert result["failure_category"] == "timeout"
     assert "timed out" in result["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_report_does_not_require_a_model_principal() -> None:
+    """Only the actual model branch is subject to runtime model admission."""
+    subject = orchestrator(event())
+    subject.execution_log = SimpleNamespace(id=uuid.uuid4(), result=None)
+    report_result = {
+        "status": "SUCCEEDED",
+        "output_summary": "Report disabled",
+        "result": {},
+    }
+    with (
+        patch.object(subject, "_get_flow_details"),
+        patch.object(subject, "_create_execution_log"),
+        patch.object(subject, "_resolve_backport_plan", return_value=None),
+        patch.object(
+            subject,
+            "_plan_delivery_report_run",
+            return_value=SimpleNamespace(calls_model=False, decision="disabled"),
+        ),
+        patch.object(
+            subject, "_run_deterministic_delivery_report", return_value=report_result
+        ) as report,
+        patch.object(subject, "_publish_update", AsyncMock()),
+        patch.object(subject, "_update_commit_status", AsyncMock()),
+        patch.object(subject, "_update_execution_log", AsyncMock()) as update,
+        patch.object(subject, "_prepare_execution_context", AsyncMock()) as prepare,
+        patch.object(subject, "_run_agent_with_retries", AsyncMock()) as agent,
+        patch.object(subject, "_notify_terminal", AsyncMock()),
+        patch.object(subject, "_start_queued_followup", AsyncMock()),
+        patch.object(subject, "_retry_after_no_progress", AsyncMock()),
+        patch.object(subject, "_sync_runtime_session"),
+        patch(
+            "preloop.services.model_routing.validate_execution_model_principal"
+        ) as admission,
+    ):
+        await subject.run()
+    admission.assert_not_called()
+    prepare.assert_not_awaited()
+    agent.assert_not_awaited()
+    report.assert_called_once()
+    assert update.await_args_list[-1].kwargs["status"] == "SUCCEEDED"

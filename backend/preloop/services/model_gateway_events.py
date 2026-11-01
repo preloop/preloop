@@ -27,7 +27,7 @@ from preloop.services.cache_accounting import reported_cache_miss_tokens
 from preloop.services.gateway_activity_body import slim_gateway_payload
 from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
-from preloop.sync.services.realtime_publisher import publish_realtime
+from preloop.sync.services.realtime_publisher import PERSISTED_FLAG, publish_realtime
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
@@ -130,6 +130,20 @@ class ModelGatewayEventEmitter:
         )
         execution_id = str(usage.flow_execution_id) if usage.flow_execution_id else None
         if execution_id:
+            from preloop.models.crud.execution_tool_evidence import (
+                persist_tool_evidence,
+            )
+            from preloop.services.execution_tool_evidence import capture_tools
+
+            persist_tool_evidence(
+                self.db,
+                usage=usage,
+                document=capture_tools(
+                    request_payload,
+                    response_payload,
+                    capture_content=settings.model_gateway_capture_content,
+                ),
+            )
             # Stored slim, like the session activity row below: only what
             # this call added, bounded in bytes. The live event published to
             # NATS further down still carries the full payload.
@@ -274,8 +288,10 @@ class ModelGatewayEventEmitter:
         if not execution_id:
             return
         try:
+            # The stored row was written by _record; flag the live copy so the
+            # log persister does not store it a second time.
             payload_bytes = encode_realtime_event_for_nats(
-                event,
+                {**event, PERSISTED_FLAG: True},
                 context=f"execution {execution_id}",
             )
         except Exception:  # noqa: BLE001 - realtime is best-effort

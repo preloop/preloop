@@ -57,6 +57,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The run reached a token, USD or turn ceiling configured for it, so the gateway refused further model calls.',
   },
+  default_limit_reached: {
+    label: 'default limit reached',
+    tooltip:
+      'The run reached a default token, USD or turn ceiling the flow did not set. Set agent_config.limits on the flow to raise it.',
+  },
   /**
    * Superseded by `provider_billing`, which the server writes now. Kept so
    * runs classified before it still read as something.
@@ -102,6 +107,31 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     label: 'model stream idle',
     tooltip:
       'The run reached its time limit while the model stream was sending nothing. Lower agent_config.stream_idle_timeout_seconds or use another model; a longer limit rarely helps.',
+  },
+  approval_denied: {
+    label: 'approval denied',
+    tooltip:
+      'A command needed approval, the run paused, and the request was refused. The run stopped instead of going on without it.',
+  },
+  approval_timeout: {
+    label: 'approval timeout',
+    tooltip:
+      'A command needed approval and nobody decided within the approval window, so the run stopped.',
+  },
+  approval_unavailable: {
+    label: 'approval unavailable',
+    tooltip:
+      'A deny or approval rule applies to native commands, and this run could not install the Preloop command hook that enforces it. Check the run log for the setup line, or change the rule.',
+  },
+  resume_failed: {
+    label: 'resume failed',
+    tooltip:
+      'The run paused for a decision or for its child runs, and the run that should have continued it failed. Open the linked resume run for the cause.',
+  },
+  gateway_bypassed: {
+    label: 'gateway bypassed',
+    tooltip:
+      'The private runner CLI produced model output without going through the Preloop gateway, so the run was not governed or metered. Keep the CLI configuration Preloop onboarding wrote.',
   },
   timeout: {
     label: 'timeout',

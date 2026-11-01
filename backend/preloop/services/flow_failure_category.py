@@ -87,6 +87,29 @@ it*, not about severity:
     model had produced nothing since (issue #872). Distinct from ``timeout``
     because the fix is a shorter ``agent_config.stream_idle_timeout_seconds``
     or another model or provider, not a larger budget.
+``approval_denied``
+    A command in an unattended run matched a rule that requires approval,
+    the run parked, and a human refused (or cancelled) the request. The run
+    fails closed instead of continuing without the command.
+``approval_timeout``
+    The same park, but nobody decided within the flow's approval window.
+``approval_unavailable``
+    The run needed a per-command approval the executor cannot ask for (a
+    hosted Codex container whose Preloop command hook could not be
+    installed, or another hosted harness without one), so it was refused
+    rather than run ungated.
+``resume_failed``
+    A run that parked (for an approval or for its child runs) could not be
+    continued: the resume refused the parked run's checkpoint before the
+    agent started. Also recorded on the parked run itself when the
+    execution that continues it fails, so the parked row never reads as an
+    uncategorised failure.
+``gateway_bypassed``
+    A private-runner Codex or Claude Code host CLI produced model output
+    without a single request through the Preloop gateway, so the run was
+    neither governed nor metered. Fixed by keeping the onboarded CLI
+    configuration; ``agent_config.allow_unmetered_host_model`` is the
+    break-glass (never in read-only review).
 ``timeout``
     The execution exceeded its wall-clock budget.
 ``cancelled``
@@ -121,6 +144,8 @@ FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
 FAILURE_CATEGORY_BUDGET_EXCEEDED = "budget_exceeded"
+#: A run stopped by a default per-execution ceiling the flow did not set.
+FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED = "default_limit_reached"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
@@ -136,6 +161,14 @@ FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
 FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
+FAILURE_CATEGORY_APPROVAL_DENIED = "approval_denied"
+FAILURE_CATEGORY_APPROVAL_TIMEOUT = "approval_timeout"
+FAILURE_CATEGORY_APPROVAL_UNAVAILABLE = "approval_unavailable"
+#: A parked run's continuation failed (or refused its checkpoint).
+FAILURE_CATEGORY_RESUME_FAILED = "resume_failed"
+#: A private-runner host CLI produced model output without any request
+#: through the Preloop gateway (and the flow did not opt out).
+FAILURE_CATEGORY_GATEWAY_BYPASSED = "gateway_bypassed"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
@@ -147,6 +180,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_AUTH,
     FAILURE_CATEGORY_PROVIDER_BILLING,
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
+    FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
@@ -159,6 +193,11 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
+    FAILURE_CATEGORY_APPROVAL_DENIED,
+    FAILURE_CATEGORY_APPROVAL_TIMEOUT,
+    FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+    FAILURE_CATEGORY_RESUME_FAILED,
+    FAILURE_CATEGORY_GATEWAY_BYPASSED,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_CANCELLED,
     FAILURE_CATEGORY_UNKNOWN,
@@ -278,6 +317,16 @@ _HOSTED_TARIFF_RE = re.compile(
 # per-execution ceiling (agent_config.limits). Matched structurally, before
 # the provider rules: the agent may also log an upstream 429/5xx it produced
 # while retrying the same refused request, and the money rule is the cause.
+# "Execution budget exceeded: default execution token ceiling reached: ...
+# (instance default PRELOOP_DEFAULT_MAX_TOTAL_TOKENS=...; ...)", or the older
+# "built-in default ..." wording of rows written before built-in defaults were
+# removed. The same refusal as
+# below, but for a ceiling the flow never set; matched first so it keeps its
+# own category.
+_DEFAULT_LIMIT_RE = re.compile(
+    r"default execution [_a-z]+ ceiling reached",
+    re.IGNORECASE,
+)
 _EXECUTION_BUDGET_RE = re.compile(
     r"execution budget exceeded|execution [_a-z]+ ceiling reached"
     # The gateway's own budget denial (account, flow, user, key, subject or
@@ -398,10 +447,28 @@ _RESULT_SCHEMA_INVALID_RE = re.compile(
     r"^Result document does not match the flow result schema\b"
 )
 
+# The completion handler's bypass refusal (host_exec_gateway) and the
+# hosted Codex hook setup refusal both lead with their category.
+_GATEWAY_BYPASSED_RE = re.compile(r"^gateway_bypassed:", re.IGNORECASE)
+_APPROVAL_UNAVAILABLE_RE = re.compile(
+    r"PRELOOP_SETUP_FAILED approval_unavailable|\bapproval_unavailable:",
+    re.IGNORECASE,
+)
+# checkpoint_runtime.checkpoint_context's refusals of a resume binding.
+_RESUME_FAILED_RE = re.compile(
+    r"\bcheckpoint_resume_not_authorized\b|\bworkspace_checkpoint_missing\b"
+    # flow_feedback.resolve_native_checkpoint's refusals of a thread resume.
+    r"|^resume_failed:"
+)
+
 _STRUCTURAL_MESSAGE_RULES = (
+    (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
+    (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
+    (_RESUME_FAILED_RE, FAILURE_CATEGORY_RESUME_FAILED),
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_DEFAULT_LIMIT_RE, FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED),
     (_EXECUTION_BUDGET_RE, FAILURE_CATEGORY_BUDGET_EXCEEDED),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),

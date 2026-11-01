@@ -4240,10 +4240,45 @@ class ContainerAgentExecutor(AgentExecutor):
 
         if checkpoint:
             commands.append("_preloop_start_checkpoint_loop")
+        if review_checkout:
+            # Last link of the chain: printed only after the pinned checkout
+            # was verified and setup completed. The controller records it as
+            # the startup receipt. ``set -e`` does not stop a failed non-final
+            # link of an ``&&`` list, so the review fails closed explicitly.
+            from preloop.services.read_only_review import read_only_startup_line
+
+            commands.append(
+                "echo "
+                + shlex.quote(
+                    read_only_startup_line(
+                        self._read_only_admitted_commit(execution_context)
+                    )
+                )
+            )
+            return " && ".join(command.rstrip() for command in commands) + " || exit 1"
         # Join all commands with &&
         if commands:
             return " && ".join(command.rstrip() for command in commands)
         return ""
+
+    @staticmethod
+    def _read_only_admitted_commit(execution_context: Dict[str, Any]) -> str:
+        """The admitted commit a read-only review checkout is pinned to.
+
+        Raises:
+            ValueError: When the context does not carry exactly one pinned
+                repository.
+        """
+        config = execution_context.get("git_clone_config") or {}
+        repositories = config.get("repositories") or []
+        commit = (
+            repositories[0].get("commit")
+            if len(repositories) == 1 and isinstance(repositories[0], dict)
+            else None
+        )
+        if not isinstance(commit, str) or not commit:
+            raise ValueError("Read-only review requires its admitted commit")
+        return commit
 
     @staticmethod
     def _workspace_seed_payload(

@@ -831,6 +831,25 @@ type localEnrollmentState struct {
 	// CodexOAuthSyncModelIDs caches one model row id per distinct Codex
 	// OAuth secret for this enrollment, so a marker check is one request.
 	CodexOAuthSyncModelIDs []string `json:"codex_oauth_sync_model_ids,omitempty"`
+	// ClaudeOAuthSyncedLocalExpiresMS is the Claude Code login's expiresAt
+	// (epoch milliseconds) at the last sync in either direction. A later
+	// local expiry means Claude Code rotated its login and the hooks push it.
+	ClaudeOAuthSyncedLocalExpiresMS int64 `json:"claude_oauth_synced_local_expires_ms,omitempty"`
+	// ClaudeOAuthSyncedFileMtimeNS is ~/.claude/.credentials.json's mtime at
+	// that sync, so the no-change path is one stat when no Keychain login
+	// exists.
+	ClaudeOAuthSyncedFileMtimeNS int64 `json:"claude_oauth_synced_file_mtime_ns,omitempty"`
+	// ClaudeOAuthSyncedServerExpiresMS is Preloop's stored expiry at the
+	// last sync. A larger marker expiry means Preloop rotated and the hooks
+	// pull its bundle into the local login.
+	ClaudeOAuthSyncedServerExpiresMS int64 `json:"claude_oauth_synced_server_expires_ms,omitempty"`
+	// ClaudeOAuthServerCheckedAt is when a hook last read Preloop's marker.
+	ClaudeOAuthServerCheckedAt string `json:"claude_oauth_server_checked_at,omitempty"`
+	// ClaudeOAuthSyncLastAttempt is when a sync last failed (1 min back-off).
+	ClaudeOAuthSyncLastAttempt string `json:"claude_oauth_sync_last_attempt,omitempty"`
+	// ClaudeOAuthSyncModelIDs caches one model id per distinct Claude Code
+	// OAuth secret for this enrollment.
+	ClaudeOAuthSyncModelIDs []string `json:"claude_oauth_sync_model_ids,omitempty"`
 	// PinModelFamilies records the operator's choice from
 	// `--pin-model-families` so `preloop agents refresh` honours it without the
 	// flag on a later run. It only affects Claude Code's stock family pins.

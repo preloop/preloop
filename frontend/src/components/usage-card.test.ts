@@ -88,6 +88,7 @@ async function renderCard(props: Partial<UsageCard> = {}): Promise<UsageCard> {
       ?updating=${props.updating ?? false}
       .error=${props.error ?? null}
       .priorSummary=${props.priorSummary ?? null}
+      .now=${props.now ?? null}
     ></usage-card>
   `);
   await element.updateComplete;
@@ -789,6 +790,9 @@ describe('usage-card', () => {
         timeRange: 'this-month',
         priorSummary: prior,
         summary: summaryFixture({ requests_by_day: daysFixture(7) }),
+        // The fixture days are 2026-08-01..07; the chart plots the month
+        // that contains "now", so pin it inside that week.
+        now: new Date('2026-08-07T12:00:00Z'),
       });
       expect(text(month, '.delta')).to.equal('▲ 17% vs prior month');
       expect(

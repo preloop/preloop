@@ -840,3 +840,39 @@ class AIModelGatewayUsageSummaryResponse(BaseModel):
     estimated_cost: float = 0.0
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
+
+
+class AIModelOwnerFlowUsage(BaseModel):
+    """Last-30-day usage of a subscription model by its owner's flows."""
+
+    request_count: int = 0
+    total_tokens: int = 0
+    execution_count: int = 0
+    api_equivalent_cost: float = Field(
+        0.0, description="Estimated pay-per-use price; the subscription paid it."
+    )
+
+
+class AIModelOwnerFlowUseRead(BaseModel):
+    """Owner opt-in state for using a subscription model from own flows."""
+
+    applicable: bool = Field(
+        description="The model uses subscription (OAuth) credentials."
+    )
+    enabled: bool = Field(
+        description=(
+            "The subscription's current owner allows flows they own to use it."
+        )
+    )
+    can_manage: bool = Field(
+        description="The current user owns the subscription and may toggle it."
+    )
+    usage: Optional[AIModelOwnerFlowUsage] = Field(
+        None, description="Owner-flow usage, shown to the owner only."
+    )
+
+
+class AIModelOwnerFlowUseUpdate(BaseModel):
+    """Turn the owner-flow subscription opt-in on or off."""
+
+    enabled: bool
