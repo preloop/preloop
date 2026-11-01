@@ -226,9 +226,9 @@ def test_every_executable_codex_ships_is_execute_only():
 
 def test_session_pack_root_matches_the_session_module():
     from preloop.agents.cli_session import SESSION_PACK_ROOT
-    from preloop.agents.codex_native_hook import SESSION_PACK_ROOT as repeated
+    from preloop.agents import codex_native_hook
 
-    assert repeated == SESSION_PACK_ROOT
+    assert codex_native_hook.SESSION_PACK_ROOT == SESSION_PACK_ROOT
     block = codex_reclaim_workspace_block()
     assert f"rm -rf {SESSION_PACK_ROOT}" in block
     assert f"install -d -m 0700 {SESSION_PACK_ROOT}" in block
