@@ -60,6 +60,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
       packages: read
       security-events: read
     env:
@@ -91,8 +92,11 @@ jobs:
           python3 scripts/release_audit.py collect --directory audited-sbom \
             --repo "$GITHUB_REPOSITORY" --tag "$AUDIT_TAG" --source-sha "$AUDIT_SHA" \
             --wait-seconds 0
-      - name: Validate inventory against registries
+      - name: Validate inventory, registries and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release_audit.py validate --directory audited-sbom \
-            --tag "$AUDIT_TAG" --source-sha "$AUDIT_SHA" \
-            --verify-registry --require-workflows --report audited-sbom/release-audit.json
+            --repo "$GITHUB_REPOSITORY" --tag "$AUDIT_TAG" --source-sha "$AUDIT_SHA" \
+            --verify-registry --require-workflows --verify-provenance \
+            --report audited-sbom/release-audit.json

@@ -4,6 +4,12 @@
 # PUSH_TO_DOCKERHUB=true. `latest` moves on a stable tag (no pre-release
 # suffix). A push to main does not publish images; it still generates an SBOM.
 #
+# Rehearsal: a pull request that touches the release pipeline, or a manual
+# run with a rehearsal_tag, builds the backend and console images to local
+# OCI archives, exports their SBOMs, builds the component SBOMs and runs the
+# release audit offline against that tag name. It pushes, attests and
+# publishes nothing, and every publishing job stays skipped.
+#
 # Windows Authenticode (SignPath Foundation, free for OSS):
 # 1. Apply at https://signpath.org/ and link github.com/preloop/preloop
 # 2. Create project + signing policy + artifact config slug `windows-cli`
@@ -24,19 +30,34 @@ on:
     tags: ['v*']
   release:
     types: [published]
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/image_sbom.py'
+      - 'scripts/release_audit.py'
+  workflow_dispatch:
+    inputs:
+      rehearsal_tag:
+        description: Tag name to rehearse. Nothing is pushed or published.
+        required: true
+        default: v1.0.0
 
 env:
   PRELOOP_DISABLE_TELEMETRY: "true"
   REGISTRY: ghcr.io
   IMAGE_NAME_BACKEND: preloop/preloop
   IMAGE_NAME_FRONTEND: preloop/console
+  # 'true' on rehearsal runs, which must never push, attest or publish.
+  REHEARSAL: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+  # Tag name the run builds evidence for: the pushed tag, or the rehearsal tag.
+  AUDIT_TAG: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && (inputs.rehearsal_tag || 'v1.0.0') || github.ref_name }}
 
 concurrency:
   # A newer main commit cancels the SBOM run for the commit it replaced.
   # Tag pushes and published releases are never cancelled: every tag is its
   # own group and cancel is off for them.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 permissions:
   contents: read
@@ -52,10 +73,13 @@ jobs:
     # A version tag, from pushing the tag or publishing the release. A push
     # to main does not match. create-release uses GITHUB_TOKEN, which does
     # not start another run, so the tag-push path does not build twice.
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       packages: write
+      # Sign build provenance for the pushed image digest (Sigstore).
+      id-token: write
+      attestations: write
 
     outputs:
       image-tag: ${{ steps.meta.outputs.tags }}
@@ -72,6 +96,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
+        if: env.REHEARSAL != 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -79,7 +104,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: vars.PUSH_TO_DOCKERHUB == 'true'
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -101,6 +126,7 @@ jobs:
 
       - name: Build and push
         id: image
+        if: env.REHEARSAL != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -112,7 +138,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Rehearsal: same platforms and SBOM generator, written to a local OCI
+      # archive. Reads the build cache but never writes it.
+      - name: Build rehearsal image without pushing
+        if: env.REHEARSAL == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          sbom: generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          outputs: type=oci,dest=${{ runner.temp }}/backend-image.tar
+          cache-from: type=gha
+
+      - name: Export rehearsal image SBOMs
+        if: env.REHEARSAL == 'true'
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/image_sbom.py --name backend --oci-archive "$RUNNER_TEMP/backend-image.tar" \
+            --tag "$AUDIT_TAG" --source-sha "$SOURCE_SHA" --output image-sbom-backend
+
       - name: Verify and export image SBOMs
+        if: env.REHEARSAL != 'true'
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}@${{ steps.image.outputs.digest }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -131,13 +180,23 @@ jobs:
           path: image-sbom-backend/
           if-no-files-found: error
 
+      # Signed build provenance for the image index, pushed next to it so
+      # `gh attestation verify oci://<image>@<digest>` works from the registry.
+      - name: Attest image build provenance
+        if: env.REHEARSAL != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
       # Docker Hub description, synced from docker/dockerhub/ so the listing
       # cannot drift from the repo. Stable tags only. DOCKERHUB_TOKEN must be
       # a personal access token with Read, Write, Delete scope: Docker Hub
       # refuses description edits from narrower tokens.
       - name: Read Docker Hub short description
         id: dockerhub-short
-        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
         run: |
           short="$(head -n 1 docker/dockerhub/preloop.short.txt)"
           if [ "${#short}" -gt 100 ]; then
@@ -147,7 +206,7 @@ jobs:
           echo "text=${short}" >> "$GITHUB_OUTPUT"
 
       - name: Update Docker Hub description
-        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -163,10 +222,13 @@ jobs:
   build-frontend:
     name: Build Frontend
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       packages: write
+      # Sign build provenance for the pushed image digest (Sigstore).
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,6 +242,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
+        if: env.REHEARSAL != 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -187,7 +250,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: vars.PUSH_TO_DOCKERHUB == 'true'
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -209,6 +272,7 @@ jobs:
 
       - name: Build and push
         id: image
+        if: env.REHEARSAL != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ./frontend
@@ -222,7 +286,32 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Rehearsal: same platforms and SBOM generator, written to a local OCI
+      # archive. Reads the build cache but never writes it.
+      - name: Build rehearsal image without pushing
+        if: env.REHEARSAL == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./frontend
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          sbom: generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          build-args: |
+            BRAND=preloop
+          outputs: type=oci,dest=${{ runner.temp }}/frontend-image.tar
+          cache-from: type=gha
+
+      - name: Export rehearsal image SBOMs
+        if: env.REHEARSAL == 'true'
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/image_sbom.py --name frontend --oci-archive "$RUNNER_TEMP/frontend-image.tar" \
+            --tag "$AUDIT_TAG" --source-sha "$SOURCE_SHA" --output image-sbom-frontend
+
       - name: Verify and export image SBOMs
+        if: env.REHEARSAL != 'true'
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}@${{ steps.image.outputs.digest }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -241,13 +330,23 @@ jobs:
           path: image-sbom-frontend/
           if-no-files-found: error
 
+      # Signed build provenance for the image index, pushed next to it so
+      # `gh attestation verify oci://<image>@<digest>` works from the registry.
+      - name: Attest image build provenance
+        if: env.REHEARSAL != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
       # Docker Hub description, synced from docker/dockerhub/ so the listing
       # cannot drift from the repo. Stable tags only. DOCKERHUB_TOKEN must be
       # a personal access token with Read, Write, Delete scope: Docker Hub
       # refuses description edits from narrower tokens.
       - name: Read Docker Hub short description
         id: dockerhub-short
-        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
         run: |
           short="$(head -n 1 docker/dockerhub/console.short.txt)"
           if [ "${#short}" -gt 100 ]; then
@@ -257,7 +356,7 @@ jobs:
           echo "text=${short}" >> "$GITHUB_OUTPUT"
 
       - name: Update Docker Hub description
-        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -323,7 +422,10 @@ jobs:
         id: sbom-version
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+          if [ "${REHEARSAL}" = "true" ]; then
+            printf '%s' "$AUDIT_TAG" | grep -Eq '^v[0-9][0-9A-Za-z._-]*$'
+            sbom_version="${AUDIT_TAG#v}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             sbom_version="${GITHUB_REF_NAME#v}"
           else
             # Main-branch SBOMs are not a release, so mark them with the
@@ -382,6 +484,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attest SBOM build provenance
+        if: env.REHEARSAL != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'sbom/*.cdx.json'
@@ -403,7 +506,7 @@ jobs:
   build-python:
     name: Build Python Package
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -433,7 +536,7 @@ jobs:
   build-cli:
     name: Build CLI (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     strategy:
       matrix:
         include:
@@ -505,7 +608,7 @@ jobs:
     name: Sign Windows CLI
     runs-on: ubuntu-latest
     needs: [build-cli]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     permissions:
       actions: read
       contents: read
@@ -601,7 +704,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     needs: [sign-windows-cli]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     permissions:
       contents: read
     env:
@@ -650,7 +753,7 @@ jobs:
     name: VirusTotal Windows CLI
     runs-on: ubuntu-latest
     needs: [sign-windows-cli, create-release]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     permissions:
       contents: read
 
@@ -705,7 +808,7 @@ jobs:
     name: Verify OSS Install
     runs-on: ubuntu-latest
     needs: [build-backend, build-frontend]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -722,10 +825,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 200
     needs: [build-backend, build-frontend, sbom]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       actions: read
+      attestations: read
       packages: read
       security-events: read
     steps:
@@ -745,16 +849,29 @@ jobs:
           merge-multiple: true
           path: audited-sbom/
       - name: Require tag image and security workflows
+        if: env.REHEARSAL != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release_audit.py collect --directory audited-sbom \
             --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --source-sha "$GITHUB_SHA"
-      - name: Verify complete release SBOMs against published digests
+      - name: Verify complete release SBOMs, digests and provenance
+        if: env.REHEARSAL != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release_audit.py validate --directory audited-sbom \
-            --tag "$GITHUB_REF_NAME" --source-sha "$GITHUB_SHA" \
-            --verify-registry --require-workflows --report audited-sbom/release-audit.json
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --source-sha "$GITHUB_SHA" \
+            --verify-registry --require-workflows --verify-provenance \
+            --report audited-sbom/release-audit.json
+      # Rehearsal: scanner and universal images come from their own workflows
+      # on a tag, so only the two images built here are required.
+      - name: Rehearse the audit offline
+        if: env.REHEARSAL == 'true'
+        run: |
+          python3 scripts/release_audit.py validate --directory audited-sbom \
+            --tag "$AUDIT_TAG" --source-sha "$GITHUB_SHA" --images backend,frontend \
+            --report audited-sbom/release-audit.json
       - name: Upload audited release evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -770,7 +887,7 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: [build-backend, build-frontend, build-python, verify-oss-install, release-audit]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     environment: release
     permissions:
       id-token: write
