@@ -107,8 +107,15 @@ def _round_trip(db):
     saml_migration = _load_migration(
         MIGRATION_PATH.with_name("20261116_saml_sp_certificate.py")
     )
+    scim_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261118_scim_provisioning.py")
+    )
     connection = db.connection()
     with Operations.context(MigrationContext.configure(connection)):
+        scim_migration.downgrade()
+        assert not {"scim_resource", "scim_group_member"} & set(
+            inspect(connection).get_table_names()
+        )
         saml_migration.downgrade()
         enforcement_migration.downgrade()
         grants_migration.downgrade()
@@ -119,8 +126,9 @@ def _round_trip(db):
         grants_migration.upgrade()
         enforcement_migration.upgrade()
         saml_migration.upgrade()
+        scim_migration.upgrade()
     names = set(inspect(connection).get_table_names())
-    assert set(TABLES) <= names
+    assert set(TABLES) | {"scim_resource", "scim_group_member"} <= names
 
 
 def test_migration_round_trip_on_empty_tables(db_session):

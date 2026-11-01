@@ -40,6 +40,7 @@ def resolve_identity(
     email: str,
     email_verified: bool,
     source: str = "oidc",
+    connection_id: uuid.UUID | None = None,
 ) -> tuple[models.Person | None, models.User | None]:
     """Link by provider proof or verified email of an existing tenant member.
 
@@ -69,6 +70,19 @@ def resolve_identity(
             raise IdentityConflictError("identity_enrollment_required")
         if candidates:
             person = crud_person.get(db, id=candidates[0].person_id)
+        elif connection_id is not None:
+            from .scim import resolve_pending_identity
+
+            person = resolve_pending_identity(
+                db,
+                account_id=account_id,
+                connection_id=connection_id,
+                email=normalized_email,
+                source=source,
+                provider=provider,
+            )
+            if person is None and crud_person.list_by_email(db, email=email):
+                raise IdentityConflictError("identity_enrollment_required")
         elif crud_person.list_by_email(db, email=email):
             # Global verified-email uniqueness cannot safely represent a new
             # verified person at an address owned elsewhere. Do not auto-link.
