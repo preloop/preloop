@@ -130,9 +130,26 @@ REFERENCE_SUMMARY_PREFIX = "[reference-only:"
 #: Exactly what :func:`reference.reference_summary` writes. A string that
 #: only starts like one is caller data and goes through redaction.
 REFERENCE_SUMMARY_RE = re.compile(
-    r"\[reference-only:[^\]\s]+\] \S+ args_hmac=[0-9a-f]{0,16} "
-    r"result_hmac=[0-9a-f]{0,16} salt_id=\S+"
+    r"\[reference-only:(?P<rule>[^\]\s]+)\] (?P<tool>\S+) "
+    r"args_hmac=[0-9a-f]{0,16} result_hmac=[0-9a-f]{0,16} "
+    r"salt_id=(?P<salt>salt-[0-9a-f]{12}|None)"
 )
+
+
+def _is_reference_summary(
+    value: str, *, config: SensitiveDataConfig, scope: StorageScope
+) -> bool:
+    """True only for a summary a configured rule could have written here.
+
+    Every free field is pinned: the rule id must be a configured reference
+    rule, the tool must be the row's tool and the salt id has the generated
+    shape, so no field can carry other text.
+    """
+    match = REFERENCE_SUMMARY_RE.fullmatch(value)
+    if match is None or not scope.tool_name or match["tool"] != scope.tool_name:
+        return False
+    return match["rule"] in {rule.id for rule in config.reference_only}
+
 
 PENDING_APPROVAL = "pending"
 
@@ -308,7 +325,9 @@ def apply_rules_to_value(
         return _Outcome(value, False, {}, [])
     if _is_stored_reference(value):
         return _retighten_reference(value, config=config, scope=scope)
-    if isinstance(value, str) and REFERENCE_SUMMARY_RE.fullmatch(value):
+    if isinstance(value, str) and _is_reference_summary(
+        value, config=config, scope=scope
+    ):
         return _Outcome(value, False, {}, [])
     redacted, counts, rules = redact_for_storage(
         account_id, value, scope=scope, config=config

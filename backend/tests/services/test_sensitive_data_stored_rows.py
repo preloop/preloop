@@ -849,3 +849,50 @@ def test_agent_scoped_rules_match_a_managed_agent_principal(db_session, account_
 def test_a_malformed_cursor_is_a_value_error(db_session, account_id):
     with pytest.raises(ValueError):
         _run(db_session, account_id, cursors={STORE_AUDIT: ["2026-10-01T00:00:00"]})
+
+
+def test_an_event_outside_the_chain_does_not_vouch(db_session, account_id):
+    _tool_rows(db_session, account_id, 2)
+    _seal(db_session, account_id)
+    report = _run(db_session, account_id, dry_run=False)
+    event = db_session.get(models.AuditLog, report.events[0])
+    assert _verify(db_session, account_id)["status"] == "ok"
+
+    # Same content, self-consistent hash, but a position outside the chain.
+    event.chain_seq = 0
+    event.prev_hash = audit_chain.GENESIS_HASH
+    event.row_hash = audit_chain.hash_row(
+        audit_chain.canonical_row(event, seq=0, prev_hash=audit_chain.GENESIS_HASH)
+    )
+    db_session.flush()
+
+    verdict = _verify(db_session, account_id)
+    assert verdict["status"] == "broken"
+
+
+def test_a_summary_with_text_in_its_fields_is_redacted(db_session, account_id):
+    forged = (
+        f"[reference-only:record-refs] read_record args_hmac=ab result_hmac= "
+        f"salt_id={EMAIL}"
+    )
+    db_session.add(
+        models.AuditLog(
+            account_id=account_id,
+            action="approval_tool_executed",
+            status="success",
+            details={"tool_name": "read_record", "result_preview": forged},
+            timestamp=datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    db_session.flush()
+
+    report = _run(db_session, account_id, dry_run=False, config=WITH_REFERENCE)
+
+    assert report.stores[STORE_AUDIT].changed == 1
+    row = db_session.execute(
+        select(models.AuditLog).where(
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.action == "approval_tool_executed",
+        )
+    ).scalar_one()
+    assert EMAIL not in str(row.details)

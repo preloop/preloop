@@ -957,6 +957,29 @@ def redaction_listing(details: Any) -> dict[str, tuple[str, str]]:
     return listing
 
 
+def _event_in_chain(db: Session, *, account_id: Any, event: Any, row: Any) -> bool:
+    """True when ``event`` holds its place in the chain after ``row``.
+
+    Sealed and self-consistent is not enough: a row given a made-up
+    ``chain_seq`` outside the chain would pass both. The event must sit
+    after the rewritten row and at or below the head, be the only row at
+    its sequence, and link to the row before it.
+    """
+    seq = int(event.chain_seq)
+    state = get_state(db, account_id=account_id, create=False)
+    head = int(state.last_seq) if state else 0
+    if seq <= int(row.chain_seq or 0) or seq > head:
+        return False
+    if crud_audit_chain.ids_at_seq(db, account_id=account_id, seq=seq) != [event.id]:
+        return False
+    expected_prev = (
+        GENESIS_HASH
+        if seq == 1
+        else crud_audit_chain.row_hash_at_seq(db, account_id=account_id, seq=seq - 1)
+    )
+    return expected_prev is not None and str(event.prev_hash or "") == expected_prev
+
+
 def redaction_anchored(
     db: Session,
     *,
@@ -992,6 +1015,7 @@ def redaction_anchored(
         if (
             event is not None
             and event.chain_seq is not None
+            and _event_in_chain(db, account_id=account_id, event=event, row=row)
             and event.row_hash
             and hash_row(
                 canonical_row(

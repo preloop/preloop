@@ -79,3 +79,28 @@ def get_redaction_event(
             models.AuditLog.action == action,
         )
     ).scalar_one_or_none()
+
+
+def ids_at_seq(db: Session, *, account_id: Any, seq: int) -> list[Any]:
+    """Ids of the account's audit rows at chain sequence ``seq``."""
+    return list(
+        db.execute(
+            select(models.AuditLog.id).where(
+                models.AuditLog.account_id == account_id,
+                models.AuditLog.chain_seq == seq,
+            )
+        ).scalars()
+    )
+
+
+def row_hash_at_seq(db: Session, *, account_id: Any, seq: int) -> str | None:
+    """The stored row_hash at chain sequence ``seq``, or None."""
+    value = db.execute(
+        select(models.AuditLog.row_hash)
+        .where(
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.chain_seq == seq,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return str(value) if value else None
