@@ -39593,6 +39593,7 @@ components:
               type: string
               format: uuid
             type: array
+            maxItems: 13
           - type: 'null'
           title: Role Ids
         team_ids:
@@ -39601,6 +39602,7 @@ components:
               type: string
               format: uuid
             type: array
+            maxItems: 13
           - type: 'null'
           title: Team Ids
       type: object
