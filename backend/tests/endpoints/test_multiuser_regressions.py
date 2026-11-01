@@ -348,3 +348,58 @@ def test_invitation_passes_email_to_optional_seat_policy(
         )
     assert response.status_code == 201, response.text
     assert claims == ["colleague@example.com"]
+
+
+def test_solo_account_purge_includes_its_machine_credentials(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """Account-owned machine credentials do not block deleting the whole account."""
+    from datetime import UTC, datetime
+
+    from preloop.models.crud import crud_api_key, crud_managed_agent_credential
+
+    crud_user.update(db_session, db_obj=test_user, obj_in={"is_superuser": True})
+    account, target = other_account(db_session)
+    crud_account.update(
+        db_session, db_obj=account, obj_in={"primary_user_id": target.id}
+    )
+    now = datetime.now(UTC)
+    agent = models.ManagedAgent(
+        account_id=account.id,
+        owner_user_id=target.id,
+        agent_kind="custom",
+        session_source_type="custom",
+        session_source_id=str(uuid4()),
+        display_name="Solo automation",
+        lifecycle_state="active",
+        lifecycle_updated_at=now,
+        last_seen_at=now,
+    )
+    db_session.add(agent)
+    db_session.flush()
+    machine, _ = crud_api_key.create_runtime_key(
+        db_session,
+        account_id=account.id,
+        user_id=target.id,
+        name="Durable machine",
+        scopes=["mcp:read"],
+        context_data={
+            "managed_agent_id": str(agent.id),
+            "credential_kind": "managed_agent_durable",
+        },
+    )
+    crud_managed_agent_credential.create_for_agent(
+        db_session,
+        account_id=account.id,
+        agent_id=agent.id,
+        api_key_id=machine.id,
+        created_by_user_id=target.id,
+        name="Durable",
+        scopes=machine.scopes,
+    )
+    machine_id = machine.id
+    response = remove_request(client, target, "hard")
+    assert response.status_code == 200, response.text
+    assert response.json()["results"][0]["status"] == "account_purged", response.text
+    db_session.expire_all()
+    assert crud_api_key.get(db_session, id=machine_id) is None

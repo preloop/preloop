@@ -417,8 +417,8 @@ def update_user(
             )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-    # Switching a membership off is a removal: a primary row hands the
-    # person's credentials to another membership first, as deactivate does.
+    # Switching a membership off is a removal and offboards the membership,
+    # as deactivate does.
     if update_fields.get("is_active") is False:
         if user.id == current_user.id:
             raise HTTPException(400, "Cannot deactivate your own account")
@@ -698,19 +698,6 @@ def bulk_delete_users(
                                 "transfer ownership or delete the account "
                                 "instead"
                             ),
-                        )
-                    )
-                    continue
-                from preloop.models.crud.membership_lifecycle import (
-                    account_machine_key_ids,
-                )
-
-                if account_machine_key_ids(db, account_id=user.account_id):
-                    results.append(
-                        BulkDeleteUserResult(
-                            user_id=user_id,
-                            status="skipped",
-                            reason="Account owns machine credentials; delete the account explicitly instead",
                         )
                     )
                     continue

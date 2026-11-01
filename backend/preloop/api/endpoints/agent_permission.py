@@ -66,6 +66,16 @@ class PermissionIdentity:
     #: run. Approval-required calls park this execution.
     flow_execution_id: Optional[UUID] = None
 
+    @property
+    def runner_join_actor(self) -> UUID:
+        """Identity checked before a hook may join a runner-hosted session.
+
+        A managed-agent credential has no human membership. Its agent id never
+        matches a runner session's user, so the ownership guard refuses it
+        instead of being skipped.
+        """
+        return self.user_id or self.managed_agent_id or self.api_key_id
+
 
 def _flow_execution_id_from_context(context: dict) -> Optional[UUID]:
     """Return the execution id an execution-scoped flow token names."""
@@ -187,7 +197,7 @@ def _origin_runtime_session_id(
             db,
             account_id=identity.account_id,
             external_session_id=session_id,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if hosted is not None:
             return OriginSession(str(hosted.id), hosted_runner=True)
@@ -1114,7 +1124,7 @@ def _register_session_start(
             parent_session_id=payload.parent_session_id,
             first_prompt=payload.first_prompt,
             alias=payload.alias,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if result is not None and is_prompt_event(payload.hook_event_name):
             try:
@@ -1243,7 +1253,7 @@ def _record_session_event(
             db,
             account_id=identity.account_id,
             external_session_id=external,
-            actor_user_id=identity.user_id,
+            actor_user_id=identity.runner_join_actor,
         )
         if session is None:
             qualified = session_source_id_for(principal_id, external)

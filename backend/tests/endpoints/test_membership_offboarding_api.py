@@ -292,3 +292,32 @@ def test_platform_superuser_may_offboard_in_another_account(
     )
     assert result.counts["personal_keys"] == 1
     assert not member.target.is_active
+
+
+def test_offboarding_after_reactivation_and_direct_deactivation_revokes_new_keys(
+    db_session: Session, test_user: models.User, member: SimpleNamespace
+) -> None:
+    ids = {"account_id": member.target.account_id, "user_id": member.target.id}
+    offboard_membership(db_session, **ids, actor=test_user, reason="First removal")
+    reactivate_membership(db_session, **ids, actor=test_user)
+    assert member.target.offboarded_at is None
+    later, _ = crud_api_key.issue(
+        db_session,
+        obj_in={
+            "account_id": member.target.account_id,
+            "user_id": member.target.id,
+            "name": "After return",
+            "is_active": True,
+            "scopes": [],
+        },
+    )
+    # Another writer (for example a plan limit) switches the seat off directly.
+    member.target.is_active = False
+    db_session.flush()
+    result = offboard_membership(
+        db_session, **ids, actor=test_user, reason="Second removal"
+    )
+    assert not result.already_offboarded
+    assert result.counts["personal_keys"] == 1
+    assert not later.is_active
+    assert len(_audit(db_session, "access.revoked", member.target.id)) == 2

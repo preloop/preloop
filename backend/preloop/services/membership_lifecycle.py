@@ -55,6 +55,9 @@ def offboard_membership(
         )
         if not result.already_offboarded:
             user = crud_user.get(db, id=user_id, account_id=str(account_id))
+            # The account hierarchy overlay only repairs the person's
+            # preferred-membership pointers; it moves no credentials, so it
+            # is safe after revocation and must skip this inactive row.
             membership = membership_module()
             if membership is not None:
                 membership.release_membership(db, user)
@@ -119,6 +122,10 @@ def reactivate_membership(
         if not user.is_active:
             enforce_seat_available(db, account_id)
             crud_user.update(db, db_obj=user, obj_in={"is_active": True}, commit=False)
+            # The marker means "offboarded and not since reactivated". Leaving
+            # it set would turn a later removal into a no-op and leave keys
+            # issued after the return active.
+            user.offboarded_at = None
             crud_audit_log.log_action(
                 db,
                 account_id=account_id,
