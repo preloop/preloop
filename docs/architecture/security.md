@@ -16,6 +16,7 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **Built-in Backend:** `local_encrypted` for encrypted-at-rest credentials stored in Preloop-managed storage.
 *   **External Backends:** Optional Vault/OpenBao-compatible KV v2 references via `SecretReference.external_ref`.
 *   **Runtime Boundary:** Gateway-enabled runtimes receive Preloop gateway tokens instead of provider API keys.
+*   **Rotation:** `POST /api/v1/ai-models/{model_id}/credentials/rotate` replaces a model's API key (`local_encrypted`) or external reference (Vault/OpenBao) in place, so every model sharing the secret picks it up on its next request. New material is verified first (encryption round-trip, or a successful external read); on failure the old secret stays in force. Each replacement increments `SecretReference.version` and sets `rotated_at`, shown on models as `credentials_version` and `credentials_rotated_at`, and writes a `secret_reference`/`rotated` audit event without the material. Subscription OAuth bundles rotate through provider refresh instead.
 
 User, mobile and runtime API keys store SHA-256 fingerprints and lookup prefixes;
 issuance returns the token once. AI model keys and webhook secrets use account-owned
