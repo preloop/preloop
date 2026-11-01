@@ -552,48 +552,59 @@ def test_mark_terminal_result_is_idempotent(db_session, create_account) -> None:
     assert second.last_error is None
 
 
-def test_mark_terminal_result_two_callers_keep_first_payload(
-    db_session, create_account
-) -> None:
-    """A result and a stop racing each other keep the first committed payload."""
+def test_mark_terminal_result_two_callers_keep_first_payload(db_engine) -> None:
+    """A result and a stop racing each other keep the first committed payload.
+
+    Each caller uses its own connection, as in production. Two sessions on
+    one shared connection share one PostgreSQL backend, so the row lock does
+    not serialize them and the test would race itself.
+    """
     import threading
 
-    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import delete
+    from sqlalchemy.orm import Session
 
-    account = create_account()
-    agent = _create_agent(db_session, account.id)
-    command_id = str(uuid4())
-    crud_agent_control_command.create_command(
-        db_session,
-        account_id=account.id,
-        managed_agent_id=agent.id,
-        runtime_session_id=None,
-        command_id=command_id,
-        envelope=_envelope(
-            account_id=account.id,
-            managed_agent_id=agent.id,
+    from preloop.models import models
+    from preloop.models.crud import crud_account
+
+    with Session(db_engine) as setup:
+        account = crud_account.create(
+            setup,
+            obj_in={"organization_name": f"control-{uuid4()}", "is_active": True},
+        )
+        account_id = account.id
+        agent_id = _create_agent(setup, account_id).id
+        command_id = str(uuid4())
+        crud_agent_control_command.create_command(
+            setup,
+            account_id=account_id,
+            managed_agent_id=agent_id,
+            runtime_session_id=None,
             command_id=command_id,
-        ),
-    )
-    crud_agent_control_command.mark_acked(
-        db_session,
-        account_id=account.id,
-        command_id=command_id,
-        managed_agent_id=agent.id,
-        acked_at=datetime.now(UTC),
-    )
-    factory = sessionmaker(bind=db_session.get_bind())
+            envelope=_envelope(
+                account_id=account_id,
+                managed_agent_id=agent_id,
+                command_id=command_id,
+            ),
+        )
+        crud_agent_control_command.mark_acked(
+            setup,
+            account_id=account_id,
+            command_id=command_id,
+            managed_agent_id=agent_id,
+            acked_at=datetime.now(UTC),
+        )
+        setup.commit()
     barrier = threading.Barrier(2)
     seen: list[dict] = []
 
     def _write(*, failed: bool, payload: dict, error: str | None) -> None:
-        session = factory()
-        try:
+        with Session(db_engine) as session:
             barrier.wait(timeout=5)
             crud_agent_control_command.mark_terminal_result(
                 session,
-                account_id=account.id,
-                managed_agent_id=agent.id,
+                account_id=account_id,
+                managed_agent_id=agent_id,
                 command_id=command_id,
                 result_payload=payload,
                 failed=failed,
@@ -601,46 +612,52 @@ def test_mark_terminal_result_two_callers_keep_first_payload(
             )
             record = crud_agent_control_command.get_by_command_id(
                 session,
-                account_id=account.id,
+                account_id=account_id,
                 command_id=command_id,
-                managed_agent_id=agent.id,
+                managed_agent_id=agent_id,
             )
             seen.append(crud_agent_control_command.command_result_payload(record) or {})
-        finally:
-            session.close()
 
-    first = threading.Thread(
-        target=_write,
-        kwargs={
-            "failed": False,
-            "payload": {"status": "completed", "reply_text": "done"},
-            "error": None,
-        },
-    )
-    second = threading.Thread(
-        target=_write,
-        kwargs={
-            "failed": True,
-            "payload": {"status": "failed", "error": "stopped"},
-            "error": "stopped",
-        },
-    )
-    first.start()
-    second.start()
-    first.join(timeout=10)
-    second.join(timeout=10)
-    db_session.expire_all()
-    winner = crud_agent_control_command.command_result_payload(
-        crud_agent_control_command.get_by_command_id(
-            db_session,
-            account_id=account.id,
-            command_id=command_id,
-            managed_agent_id=agent.id,
+    try:
+        first = threading.Thread(
+            target=_write,
+            kwargs={
+                "failed": False,
+                "payload": {"status": "completed", "reply_text": "done"},
+                "error": None,
+            },
         )
-    )
-    assert winner is not None
-    assert winner in (
-        {"status": "completed", "reply_text": "done"},
-        {"status": "failed", "error": "stopped"},
-    )
-    assert all(item == winner for item in seen)
+        second = threading.Thread(
+            target=_write,
+            kwargs={
+                "failed": True,
+                "payload": {"status": "failed", "error": "stopped"},
+                "error": "stopped",
+            },
+        )
+        first.start()
+        second.start()
+        first.join(timeout=10)
+        second.join(timeout=10)
+        with Session(db_engine) as check:
+            winner = crud_agent_control_command.command_result_payload(
+                crud_agent_control_command.get_by_command_id(
+                    check,
+                    account_id=account_id,
+                    command_id=command_id,
+                    managed_agent_id=agent_id,
+                )
+            )
+        assert winner is not None
+        assert winner in (
+            {"status": "completed", "reply_text": "done"},
+            {"status": "failed", "error": "stopped"},
+        )
+        assert len(seen) == 2
+        assert all(item == winner for item in seen)
+    finally:
+        with Session(db_engine) as cleanup:
+            cleanup.execute(
+                delete(models.Account).where(models.Account.id == account_id)
+            )
+            cleanup.commit()

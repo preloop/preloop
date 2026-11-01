@@ -581,10 +581,20 @@ func TestClaudeOAuthLocalReadFailureHonoursBackoff(t *testing.T) {
 
 func TestSessionSubscriptionSyncHonoursDeadline(t *testing.T) {
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	exited := make(chan struct{}, 1)
 	prev := syncClaudeOAuthFromHook
-	syncClaudeOAuthFromHook = func() { <-release }
+	syncClaudeOAuthFromHook = func() {
+		defer func() { exited <- struct{}{} }()
+		<-release
+	}
+	// Cleanups run last-in first-out: the abandoned sync goroutine is
+	// released and has returned before the seam is restored, so the
+	// restore does not race the goroutine's read of the seam.
 	t.Cleanup(func() { syncClaudeOAuthFromHook = prev })
+	t.Cleanup(func() {
+		close(release)
+		<-exited
+	})
 	begin := time.Now()
 	runSessionSubscriptionSync(permissionSourceClaudeCode, time.Now().Add(-(sessionSubscriptionSyncBudget - 1500*time.Millisecond)))
 	if elapsed := time.Since(begin); elapsed > 3*time.Second {
