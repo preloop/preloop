@@ -833,7 +833,7 @@ def verify_chain(
     checked = 0
     previous_timestamp: Optional[str] = None
     expected_seq = begin
-    tombstones: dict[str, dict[str, str]] = {}
+    tombstones: dict[str, dict[str, tuple[str, str]]] = {}
     for row in rows:
         seq = int(row.chain_seq)
         if seq < expected_seq:
@@ -943,9 +943,9 @@ def verify_chain(
     return report
 
 
-def redaction_listing(details: Any) -> dict[str, str]:
-    """``{row_id: redacted_row_hash}`` from a ``redaction_applied`` row."""
-    listing: dict[str, str] = {}
+def redaction_listing(details: Any) -> dict[str, tuple[str, str]]:
+    """``{row_id: (redacted_row_hash, row_hash)}`` from a redaction event."""
+    listing: dict[str, tuple[str, str]] = {}
     entries = details.get("rows") if isinstance(details, dict) else None
     for entry in entries or []:
         if not isinstance(entry, dict):
@@ -953,7 +953,7 @@ def redaction_listing(details: Any) -> dict[str, str]:
         row_id = entry.get("id")
         redacted = entry.get("redacted_row_hash")
         if row_id and redacted:
-            listing[str(row_id)] = str(redacted)
+            listing[str(row_id)] = (str(redacted), str(entry.get("row_hash") or ""))
     return listing
 
 
@@ -963,7 +963,7 @@ def redaction_anchored(
     account_id: Any,
     row: Any,
     recomputed: str,
-    cache: Optional[dict[str, dict[str, str]]] = None,
+    cache: Optional[dict[str, dict[str, tuple[str, str]]]] = None,
 ) -> bool:
     """True when a rewritten row is vouched for by its redaction event.
 
@@ -986,10 +986,31 @@ def redaction_anchored(
             event_id=event_id,
             action=ACTION_REDACTION_APPLIED,
         )
-        listing = redaction_listing(event.details) if event is not None else {}
+        listing = {}
+        # Only a sealed event that still hashes to its own row_hash vouches:
+        # an unsealed row is as editable as the row it would vouch for.
+        if (
+            event is not None
+            and event.chain_seq is not None
+            and event.row_hash
+            and hash_row(
+                canonical_row(
+                    event,
+                    seq=int(event.chain_seq),
+                    prev_hash=str(event.prev_hash or ""),
+                )
+            )
+            == str(event.row_hash)
+        ):
+            listing = redaction_listing(event.details)
         if cache is not None:
             cache[key] = listing
-    return listing.get(str(row.id)) == recomputed
+    entry = listing.get(str(row.id))
+    return (
+        entry is not None
+        and entry[0] == recomputed
+        and entry[1] == str(row.row_hash or "")
+    )
 
 
 def _verify_checkpoints(

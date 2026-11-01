@@ -561,9 +561,10 @@ sealing by a stored-row redaction (see
 Such a row keeps its `row_hash`, so the next row's `prev_hash` and every
 checkpoint still verify. It also carries `redacted_row_hash`, the same hash
 over its rewritten content, and `redaction_event_id`, the
-`redaction_applied` audit row that lists the row id with that hash. Both
-walks accept the row only if the event exists in the same account and lists
-it with exactly that hash; otherwise they report `redaction_unanchored`.
+`redaction_applied` audit row that lists the row id with that hash and its
+original `row_hash`. Both walks accept the row only if that event is sealed
+in the same account, verifies itself, and lists it with exactly those
+hashes; otherwise they report `redaction_unanchored`.
 `redacted_rows` counts the rows accepted this way. The CLI also reports
 `unresolved_redactions`: rewritten rows whose event lies outside the walked
 range. Widen the range to check them. Period exports carry both fields on

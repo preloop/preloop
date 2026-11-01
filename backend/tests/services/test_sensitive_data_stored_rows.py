@@ -183,14 +183,13 @@ def test_sealed_rows_are_redacted_and_the_chain_still_verifies(
     ).scalar_one()
     assert plain.details == {"note": EMAIL} and plain.redacted_row_hash is None
 
-    # Unsealed event row: verifiable before it is sealed and after.
+    # The pass seals its event, so the rewrite is anchored straight away.
     after = _verify(db_session, account_id)
     assert after["status"] == "ok", after["first_break"]
     assert after["redacted_rows"] == 4
-    assert after["checkpoints_verified"] == before["checkpoints_verified"]
-    _seal(db_session, account_id)
-    sealed = _verify(db_session, account_id)
-    assert sealed["status"] == "ok" and sealed["redacted_rows"] == 4
+    # Every checkpoint taken before the rewrite still verifies.
+    assert after["checkpoints_verified"] >= before["checkpoints_verified"]
+    assert after["checkpoint_failures"] == []
 
     event = db_session.get(models.AuditLog, report.events[0])
     assert event.action == audit_chain.ACTION_REDACTION_APPLIED
@@ -703,3 +702,150 @@ def test_endpoint_is_admin_only_and_dry_run_by_default(db_session, test_user, mo
     assert all(
         EMAIL not in text for text in _stored_text(db_session, test_user.account_id)
     )
+
+
+def _first_redacted(db, account_id):
+    return db.execute(
+        select(models.AuditLog).where(
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.chain_seq == 1,
+        )
+    ).scalar_one()
+
+
+def test_an_unsealed_event_does_not_vouch(db_session, account_id, monkeypatch):
+    _tool_rows(db_session, account_id, 2)
+    _seal(db_session, account_id)
+    # The pass cannot seal (chain off), so its event stays unsealed.
+    monkeypatch.setattr(settings, "audit_chain_enabled", False, raising=False)
+    report = _run(db_session, account_id, dry_run=False)
+    event = db_session.get(models.AuditLog, report.events[0])
+    assert event.chain_seq is None
+
+    verdict = _verify(db_session, account_id)
+    assert verdict["first_break"]["kind"] == audit_chain.BREAK_REDACTION_UNANCHORED
+
+    _seal(db_session, account_id)
+    assert _verify(db_session, account_id)["status"] == "ok"
+
+
+def test_an_edited_event_does_not_vouch(db_session, account_id):
+    _tool_rows(db_session, account_id, 2)
+    _seal(db_session, account_id)
+    report = _run(db_session, account_id, dry_run=False)
+    event = db_session.get(models.AuditLog, report.events[0])
+    rows = [dict(item) for item in event.details["rows"]]
+    rows[0]["row_hash"] = "ff" * 32
+    event.details = {**event.details, "rows": rows}
+    db_session.flush()
+    verdict = _verify(db_session, account_id)
+    assert verdict["status"] == "broken"
+
+
+def test_approvals_of_held_executions_and_sessions_are_skipped(db_session, account_id):
+    held_session = _runtime_session(db_session, account_id, legal_hold=True)
+    row = _approval(db_session, account_id)
+    row.runtime_session_id = held_session.id
+    db_session.flush()
+
+    report = _run(db_session, account_id, dry_run=False, stores=[STORE_APPROVALS])
+
+    assert report.stores[STORE_APPROVALS].skipped_legal_hold == 1
+    db_session.refresh(row)
+    assert row.tool_args == {"to": EMAIL}
+
+
+def test_a_string_that_only_looks_like_a_reference_is_redacted(db_session, account_id):
+    db_session.add(
+        models.AuditLog(
+            account_id=account_id,
+            action="approval_tool_executed",
+            status="success",
+            details={
+                "tool_name": "send_mail",
+                "result_preview": f"[reference-only:x] send_mail {EMAIL}",
+            },
+            timestamp=datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    db_session.flush()
+
+    report = _run(db_session, account_id, dry_run=False)
+
+    assert report.stores[STORE_AUDIT].changed == 1
+    row = db_session.execute(
+        select(models.AuditLog).where(
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.action == "approval_tool_executed",
+        )
+    ).scalar_one()
+    assert EMAIL not in row.details["result_preview"]
+
+
+def test_a_removed_reference_rule_still_redacts_kept_values(db_session, account_id):
+    db_session.add(
+        models.AuditLog(
+            account_id=account_id,
+            action="tool_call",
+            status="success",
+            details={
+                "tool_name": "read_record",
+                "tool_args": {
+                    reference.REFERENCE_MARKER: True,
+                    "schema": reference.RECORD_SCHEMA,
+                    "rule_id": "gone",
+                    "kept": {"$.contact": EMAIL},
+                    "args_hmac": "ab" * 16,
+                },
+            },
+            timestamp=datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    db_session.flush()
+
+    report = _run(db_session, account_id, dry_run=False)
+
+    assert report.stores[STORE_AUDIT].changed == 1
+    stored = _stored_text(db_session, account_id)
+    assert EMAIL not in stored[0] and "$.contact" in stored[0]
+
+
+def test_agent_scoped_rules_match_a_managed_agent_principal(db_session, account_id):
+    config = SensitiveDataConfig.model_validate(
+        {
+            "rules": [
+                {
+                    "id": "agent-email",
+                    "on": ["tool.args"],
+                    "types": ["email"],
+                    "action": "redact",
+                    "scope": {"agents": ["agent-7"]},
+                }
+            ]
+        }
+    )
+    for principal in ("agent-7", "agent-8"):
+        db_session.add(
+            models.AuditLog(
+                account_id=account_id,
+                action="tool_call",
+                status="success",
+                details={
+                    "tool_name": "send_mail",
+                    "tool_args": {"to": EMAIL},
+                    "runtime_principal_type": "managed_agent",
+                    "runtime_principal_id": principal,
+                },
+                timestamp=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
+    db_session.flush()
+
+    report = _run(db_session, account_id, dry_run=False, config=config)
+
+    assert report.stores[STORE_AUDIT].changed == 1
+
+
+def test_a_malformed_cursor_is_a_value_error(db_session, account_id):
+    with pytest.raises(ValueError):
+        _run(db_session, account_id, cursors={STORE_AUDIT: ["2026-10-01T00:00:00"]})

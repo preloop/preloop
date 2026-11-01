@@ -111,13 +111,19 @@ type ChainWalk struct {
 	// the event's own row is fed.
 	pendingRedactions map[string]pendingRedaction
 	// redactionEvents maps an event row id to the rows and hashes it lists.
-	redactionEvents map[string]map[string]string
+	redactionEvents map[string]map[string]listedRedaction
 }
 
 type pendingRedaction struct {
 	seq     int64
 	eventID string
 	hash    string
+	rowHash string
+}
+
+type listedRedaction struct {
+	redacted string
+	sealed   string
 }
 
 // NewChainWalk starts a walk that expects the row after afterSeq next.
@@ -206,6 +212,7 @@ func (w *ChainWalk) Feed(entries []SegmentEntry) bool {
 			}
 			w.pendingRedactions[entry.RowID] = pendingRedaction{
 				seq: entry.Seq, eventID: entry.RedactionEventID, hash: computed,
+				rowHash: entry.RowHash,
 			}
 			w.Redacted++
 		}
@@ -281,7 +288,7 @@ func (w *ChainWalk) noteRedactionEvent(entry SegmentEntry) {
 	}
 	details, _ := entry.Payload["details"].(map[string]interface{})
 	rows, _ := details["rows"].([]interface{})
-	listing := map[string]string{}
+	listing := map[string]listedRedaction{}
 	for _, item := range rows {
 		row, ok := item.(map[string]interface{})
 		if !ok {
@@ -289,12 +296,13 @@ func (w *ChainWalk) noteRedactionEvent(entry SegmentEntry) {
 		}
 		id, _ := row["id"].(string)
 		hash, _ := row["redacted_row_hash"].(string)
+		sealed, _ := row["row_hash"].(string)
 		if id != "" && hash != "" {
-			listing[id] = hash
+			listing[id] = listedRedaction{redacted: hash, sealed: sealed}
 		}
 	}
 	if w.redactionEvents == nil {
-		w.redactionEvents = map[string]map[string]string{}
+		w.redactionEvents = map[string]map[string]listedRedaction{}
 	}
 	w.redactionEvents[entry.RowID] = listing
 }
@@ -311,12 +319,14 @@ func (w *ChainWalk) Finish() (unresolved int64) {
 			unresolved++
 			continue
 		}
-		if listing[rowID] != pending.hash && (first == nil || pending.seq < first.Seq) {
+		listed := listing[rowID]
+		matches := listed.redacted == pending.hash && listed.sealed == pending.rowHash
+		if !matches && (first == nil || pending.seq < first.Seq) {
 			first = &Break{
 				Kind:     BreakRedactionUnanchored,
 				Seq:      pending.seq,
 				RowID:    rowID,
-				Expected: listing[rowID],
+				Expected: listed.redacted,
 				Found:    pending.hash,
 				Detail:   "the row was rewritten after sealing, but its redaction event does not list it with this hash",
 			}

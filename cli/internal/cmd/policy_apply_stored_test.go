@@ -92,3 +92,58 @@ func TestPolicyApplyStoredFollowsCursorsUntilComplete(t *testing.T) {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
+
+func TestPolicyApplyStoredStartsTheNextStoreAndSkipsFinishedOnes(t *testing.T) {
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	testenv.SetTempHome(t)
+	var bodies []applyStoredRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body applyStoredRequest
+		_ = json.Unmarshal(raw, &body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			// The first store finished on the last batch of the request; the
+			// second was never started and has no cursor.
+			_, _ = w.Write([]byte(`{"dry_run":false,"complete":false,"batches":50,
+			  "rule_ids":[],"redaction_events":["e1"],"chained_rows_rewritten":2,
+			  "stores":{"audit_log":{"scanned":5,"changed":2,"counts_by_type":{},"cursor":["2026-10-01T00:00:00","a"],"done":true},
+			  "approval_requests":{"scanned":0,"changed":0,"counts_by_type":{},"cursor":null,"done":false}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"dry_run":false,"complete":true,"batches":1,
+		  "rule_ids":[],"redaction_events":["e2"],"chained_rows_rewritten":0,
+		  "stores":{"approval_requests":{"scanned":1,"changed":1,"counts_by_type":{},"cursor":null,"done":true}}}`))
+	}))
+	t.Cleanup(server.Close)
+	originalURL, originalToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "tok"
+	t.Cleanup(func() { FlagURL, FlagToken = originalURL, originalToken })
+
+	resetApplyStoredFlags(t)
+	stdout := &bytes.Buffer{}
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"policy", "apply-stored", "--apply"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("apply-stored failed: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2", len(bodies))
+	}
+	if got := bodies[1].Stores; len(got) != 1 || got[0] != "approval_requests" {
+		t.Fatalf("second request stores = %v", got)
+	}
+	if len(bodies[1].Cursors) != 0 {
+		t.Fatalf("second request cursors = %v", bodies[1].Cursors)
+	}
+	if !strings.Contains(stdout.String(), "Recorded 2 redaction events") {
+		t.Fatalf("output:\n%s", stdout.String())
+	}
+}

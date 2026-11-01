@@ -46,14 +46,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import logging
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
+
+from preloop.config import settings
 
 from preloop.models import models
 from preloop.models.crud import audit_chain as crud_audit_chain
@@ -69,6 +72,7 @@ from preloop.services.audit_chain import (
     canonical_row,
     hash_row,
     invalidate_chain_status,
+    seal_account,
 )
 from preloop.services.policy.schema import SensitiveDataConfig
 from preloop.services.sensitive_data import reference as reference_module
@@ -123,6 +127,12 @@ REFERENCE_RECORD_KEYS = frozenset(
     }
 )
 REFERENCE_SUMMARY_PREFIX = "[reference-only:"
+#: Exactly what :func:`reference.reference_summary` writes. A string that
+#: only starts like one is caller data and goes through redaction.
+REFERENCE_SUMMARY_RE = re.compile(
+    r"\[reference-only:[^\]\s]+\] \S+ args_hmac=[0-9a-f]{0,16} "
+    r"result_hmac=[0-9a-f]{0,16} salt_id=\S+"
+)
 
 PENDING_APPROVAL = "pending"
 
@@ -243,20 +253,25 @@ def _retighten_reference(
         server_name=scope.server_name,
         managed_agent_id=scope.managed_agent_id,
     )
-    if rule is None:
-        return _Outcome(record, False, {}, [])
-    args_paths, result_paths = reference_module.split_keep_fields(rule.keep_fields)
+    # No matching rule any more means the rule was removed or narrowed: a
+    # loosening, so kept paths stay. Current redact rules still apply.
+    allowed_paths: Optional[Tuple[List[str], List[str]]] = (
+        reference_module.split_keep_fields(rule.keep_fields) if rule else None
+    )
     updated = dict(record)
     counts: Counts = {}
     rule_ids: List[str] = []
     redact_rules = redact_rules_for(config, scope)
-    for key, allowed in (("kept", args_paths), ("kept_result", result_paths)):
+    for index, key in enumerate(("kept", "kept_result")):
         kept = record.get(key)
         if not isinstance(kept, dict):
             continue
-        trimmed = {path: value for path, value in kept.items() if path in allowed}
-        if trimmed != kept:
-            rule_ids.append(rule.id)
+        trimmed = dict(kept)
+        if rule is not None and allowed_paths is not None:
+            allowed = allowed_paths[index]
+            trimmed = {path: value for path, value in kept.items() if path in allowed}
+            if trimmed != kept:
+                rule_ids.append(rule.id)
         if trimmed and redact_rules:
             trimmed, found = redact_structure(
                 trimmed, detector_config_for(config, redact_rules)
@@ -293,7 +308,7 @@ def apply_rules_to_value(
         return _Outcome(value, False, {}, [])
     if _is_stored_reference(value):
         return _retighten_reference(value, config=config, scope=scope)
-    if isinstance(value, str) and value.startswith(REFERENCE_SUMMARY_PREFIX):
+    if isinstance(value, str) and REFERENCE_SUMMARY_RE.fullmatch(value):
         return _Outcome(value, False, {}, [])
     redacted, counts, rules = redact_for_storage(
         account_id, value, scope=scope, config=config
@@ -331,6 +346,8 @@ def _cursor_of(stamp: Any, row_id: Any) -> Tuple[str, str]:
 def _parse_cursor(value: Optional[Sequence[str]]) -> crud_stored.Cursor:
     if not value:
         return None
+    if len(value) != 2:
+        raise ValueError("a cursor is [timestamp, id]")
     stamp, row_id = value[0], value[1]
     return (datetime.fromisoformat(stamp), uuid.UUID(str(row_id)))
 
@@ -403,6 +420,8 @@ class _Pass:
                 continue
             tool_name = details.get("tool_name")
             agent = details.get("managed_agent_id")
+            if not agent and details.get("runtime_principal_type") == "managed_agent":
+                agent = details.get("runtime_principal_id")
             new_details = dict(details)
             changed = False
             for key, target in (
@@ -473,7 +492,12 @@ class _Pass:
         )
         for row in rows:
             store.scanned += 1
-            if row.legal_hold or _held(self.holds, "approval", row.id):
+            if (
+                row.legal_hold
+                or _held(self.holds, "approval", row.id)
+                or _held(self.holds, "execution", row.execution_id)
+                or _held(self.holds, "runtime_session", row.runtime_session_id)
+            ):
                 store.skipped_legal_hold += 1
                 continue
             if row.status == PENDING_APPROVAL:
@@ -721,8 +745,8 @@ def apply_to_stored_rows(
                     db.rollback()
                 else:
                     db.commit()
-                    if name == STORE_AUDIT:
-                        invalidate_chain_status(account_id)
+                    if event_id is not None:
+                        _seal_now(db, account_id)
             except Exception as exc:  # noqa: BLE001 - report, keep the cursor
                 db.rollback()
                 _restore(store, before)
@@ -754,6 +778,24 @@ def apply_to_stored_rows(
         {name: item.changed for name, item in report.stores.items()},
     )
     return report
+
+
+def _seal_now(db: Session, account_id: Any) -> None:
+    """Chain the redaction event now instead of after the seal lag.
+
+    The verifier only accepts a rewrite whose event is sealed, so the window
+    in which a rewritten row reads as unanchored is this call, not a sealing
+    interval. A failure is logged; the next sealer pass closes it.
+    """
+    if not settings.audit_chain_enabled:
+        invalidate_chain_status(account_id)
+        return
+    try:
+        seal_account(db, account_id=account_id, lag=timedelta(0))
+    except Exception:  # noqa: BLE001 - the sealer pass retries
+        db.rollback()
+        logger.warning("Sealing the redaction event failed for %s", account_id)
+    invalidate_chain_status(account_id)
 
 
 def _record_event(

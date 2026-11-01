@@ -108,18 +108,27 @@ func runPolicyApplyStored(cmd *cobra.Command, args []string) error {
 		if page.Error != "" || page.Complete {
 			break
 		}
-		// Continue each unfinished store from where this request stopped.
-		// A dry run writes nothing, so its counts are per request: the
-		// next request starts after the rows this one counted.
+		// Ask again only for the stores that are not done: a finished store
+		// would be walked again from the start, and a store not started
+		// yet has no cursor and starts from the beginning.
+		request.Stores = nil
 		request.Cursors = map[string][]string{}
 		for name, store := range page.Stores {
-			if !store.Done && len(store.Cursor) == 2 {
+			if store.Done {
+				continue
+			}
+			request.Stores = append(request.Stores, name)
+			if len(store.Cursor) == 2 {
 				request.Cursors[name] = store.Cursor
 			}
 		}
-		if len(request.Cursors) == 0 {
+		sort.Strings(request.Stores)
+		if len(request.Stores) == 0 {
 			break
 		}
+	}
+	if total.Error == "" && !total.Complete {
+		total.Error = "stopped before every store was done"
 	}
 	for rule := range rules {
 		total.RuleIDs = append(total.RuleIDs, rule)

@@ -283,9 +283,13 @@ What it covers:
 
 Stored audit and approval rows do not record the MCP server of a call. On
 those rows a rule that names both tools and servers applies by tool name; a
-rule that names only servers does not apply. A stored reference record is
-kept, with its fingerprints, and cut down to the `keep_fields` the current
-rule still keeps.
+rule that names only servers does not apply. Agent-scoped rules apply where
+the row records the agent: an approval's managed agent, or an audit row whose
+`managed_agent_id` is set or whose runtime principal is a managed agent. A
+stored reference record is kept, with its fingerprints, and cut down to the
+`keep_fields` the current rule still keeps. If no reference rule matches any
+more (removed or narrowed), its kept values stay, but current redact rules
+still run over them.
 
 How it behaves:
 
@@ -294,7 +298,10 @@ How it behaves:
   detected type and the rule ids. It writes nothing.
 - **Batched and resumable.** Each batch (default 200 rows) is its own
   transaction. The API runs at most `max_batches` per request and returns a
-  cursor per store; the CLI follows the cursors until every store is done.
+  cursor and a `done` flag per store. A store that has not started yet has
+  no cursor and `done: false`; send it again without a cursor. The CLI
+  repeats the request for the stores that are not done until all are, and
+  exits non-zero if it stops first.
   A failed batch rolls back on its own and the response names the store and
   the error type. Run it again to finish.
 - **Idempotent.** It applies the current rules to the current content.
@@ -318,10 +325,12 @@ computed over its new content) and `redaction_event_id`, and the
 redacted hash. `preloop audit verify` and the server verifier accept a row
 whose content no longer matches `row_hash` only when it matches
 `redacted_row_hash` and that event lists it with that hash. Any other edit
-is still reported as a break. Signed checkpoints keep verifying, because they
-anchor `row_hash`. The event row is sealed into the chain like any other
-row; until it is sealed (up to one sealing interval) it is as editable as
-any unsealed row.
+is still reported as a break, and so is a row whose event is not sealed or
+no longer hashes to its own `row_hash`, or lists a different original hash.
+Signed checkpoints keep verifying, because they anchor `row_hash`. The pass
+seals its event as soon as the batch commits, so a rewritten row is
+anchored at once; if that seal fails, the row reads as unanchored until the
+next sealer pass.
 
 The rewrite removes the values from these stores. It cannot reach exports
 already downloaded, provider logs or other copies outside Preloop.
