@@ -223,7 +223,10 @@ def test_universal_exports_attestations_for_the_smoked_image() -> None:
     steps = workflow["jobs"]["image"]["steps"]
     publish = next(s for s in steps if s.get("name") == "Push smoked amd64 image")
     assert "--sbom=generator=" in publish["run"]
-    assert 'test "$published_config" = "$smoked_config"' in publish["run"]
+    assert (
+        publish["env"]["SMOKED_MANIFEST"] == "${{ steps.smoke_build.outputs.digest }}"
+    )
+    assert '[ "$platform_digest" != "$SMOKED_MANIFEST" ]' in publish["run"]
     for step in steps[: steps.index(publish)]:
         if "buildx prune" in step.get("run", ""):
             assert "needs.gate.outputs.publish != 'true'" in step["if"]
