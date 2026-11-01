@@ -272,7 +272,7 @@ def test_environments_doc_names_the_published_digest() -> None:
     assert "publish-universal-image.yml" in text
     assert (
         "ghcr.io/preloop/preloop-codex-universal@sha256:"
-        "d60ffe7dcdc054d8186f40c0740c0e567a533d8222eca12ed9ca267999e56d8d"
+        "191dc7e2ef84b7a05c2b3d6403df59c9b2e51e890b0853eae1935ccc4417dd78"
     ) in text
     assert "agents.codexImage" in text
     assert "hosted default stays" not in text
