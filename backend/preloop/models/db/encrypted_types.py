@@ -37,6 +37,10 @@ SEALED_PREFIX = "enc:v1:"
 #: workflow configuration documents.
 WEBHOOK_SECRET_KEY = "webhook_secret"
 
+#: Credential keys flow and approval workflow configuration documents carry:
+#: webhook and employee-event signing secrets and the AI approval provider key.
+CONFIG_SECRET_KEYS = frozenset({WEBHOOK_SECRET_KEY, "employee_secret", "api_key"})
+
 Transform = Callable[[str], str]
 
 
@@ -123,17 +127,42 @@ def _mcp_auth_config(value: Any, transform: Transform) -> Any:
     return _map_secret_leaves(value, transform, _is_mcp_secret_key)
 
 
+def _is_config_secret_key(key: Any) -> bool:
+    return key in CONFIG_SECRET_KEYS
+
+
 def _webhook_secret(value: Any, transform: Transform) -> Any:
-    if isinstance(value, dict) and isinstance(value.get(WEBHOOK_SECRET_KEY), str):
-        return {**value, WEBHOOK_SECRET_KEY: transform(value[WEBHOOK_SECRET_KEY])}
-    return value
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: transform(item)
+        if isinstance(item, str) and _is_config_secret_key(key)
+        else item
+        for key, item in value.items()
+    }
+
+
+def _is_agent_config_secret_key(key: Any) -> bool:
+    from preloop.utils.redaction import _is_sensitive_key
+
+    return bool(_is_sensitive_key(key))
+
+
+def _agent_config(value: Any, transform: Transform) -> Any:
+    """Seal credentials in captured or managed agent configuration."""
+    return _map_secret_leaves(value, transform, _is_agent_config_secret_key)
 
 
 def _policy_snapshot(value: Any, transform: Transform) -> Any:
     """Seal MCP server credentials and webhook secrets kept for rollback."""
     if not isinstance(value, dict):
         return value
-    result = _map_secret_leaves(value, transform, lambda key: key == WEBHOOK_SECRET_KEY)
+    result = {
+        key: item
+        if key == "mcp_servers"
+        else _map_secret_leaves(item, transform, _is_config_secret_key)
+        for key, item in value.items()
+    }
     servers = result.get("mcp_servers")
     if isinstance(servers, list):
         result["mcp_servers"] = [
@@ -156,6 +185,7 @@ SECRET_SELECTORS: dict[str, Callable[[Any, Transform], Any]] = {
     "mcp_auth_config": _mcp_auth_config,
     "webhook_secret": _webhook_secret,
     "policy_snapshot": _policy_snapshot,
+    "agent_config": _agent_config,
 }
 
 
@@ -224,6 +254,9 @@ class SecretFieldsJSON(TypeDecorator[Any]):
         super().__init__()
         self.selector = selector
         self.jsonb = jsonb
+        if jsonb:
+            # Keep JSONB operators (``astext``, ``has_key``) on the column.
+            self.impl = JSONB()
 
     def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
         """Use JSONB on PostgreSQL when requested."""

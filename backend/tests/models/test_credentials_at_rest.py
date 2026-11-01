@@ -5,6 +5,7 @@ stored form, and reads through the ORM to prove callers still get plaintext.
 """
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -59,13 +60,21 @@ def rows(db_session, create_account, create_tracker, create_organization):
         trigger_event_source="webhook",
         agent_type="codex",
         agent_config={},
-        webhook_config={"webhook_secret": SECRET, "dedupe_path": "id"},
+        webhook_config={
+            "webhook_secret": SECRET,
+            "employee_secret": SECRET,
+            "dedupe_path": "id",
+        },
     )
     workflow = models.ApprovalWorkflow(
         account_id=account.id,
         name="wf",
         approval_type="webhook",
-        approval_config={"webhook_secret": SECRET, "webhook_url": "https://x"},
+        approval_config={
+            "webhook_secret": SECRET,
+            "api_key": SECRET,
+            "webhook_url": "https://x",
+        },
     )
     snapshot = models.PolicySnapshot(
         account_id=account.id,
@@ -74,7 +83,28 @@ def rows(db_session, create_account, create_tracker, create_organization):
             "mcp_servers": [{"name": "srv", "auth_config": {"token": SECRET}}]
         },
     )
-    db_session.add_all([webhook, server, flow, workflow, snapshot])
+    now = datetime.now(UTC).replace(tzinfo=None)
+    agent = models.ManagedAgent(
+        account_id=account.id,
+        agent_kind="openclaw",
+        session_source_type="test",
+        session_source_id=str(uuid.uuid4()),
+        display_name="agent",
+        lifecycle_updated_at=now,
+        last_seen_at=now,
+    )
+    db_session.add_all([webhook, server, flow, workflow, snapshot, agent])
+    db_session.flush()
+    agent_doc = {"baseUrl": "https://gw", "apiKey": SECRET, "runtime_session_id": "r1"}
+    enrollment = models.ManagedAgentEnrollment(
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        adapter_key="openclaw",
+        discovered_config=agent_doc,
+        managed_config=agent_doc,
+        backup_metadata={"env": {"ANTHROPIC_AUTH_TOKEN": SECRET}},
+    )
+    db_session.add(enrollment)
     db_session.flush()
     return {
         "tracker": tracker,
@@ -84,6 +114,7 @@ def rows(db_session, create_account, create_tracker, create_organization):
         "flow": flow,
         "approval_workflow": workflow,
         "policy_snapshot": snapshot,
+        "managed_agent_enrollment": enrollment,
     }
 
 
@@ -103,6 +134,26 @@ def test_live_credentials_keep_working(db_session, rows) -> None:
         assert tracker.resolved_api_key == SECRET
     server = _reload(db_session, models.MCPServer, rows["mcp_server"].id)
     assert server.auth_config["headers"]["X-Api-Key"] == SECRET
+    flow = _reload(db_session, models.Flow, rows["flow"].id)
+    assert flow.webhook_config["employee_secret"] == SECRET
+    workflow = _reload(
+        db_session, models.ApprovalWorkflow, rows["approval_workflow"].id
+    )
+    assert workflow.approval_config["api_key"] == SECRET
+    enrollment_id = rows["managed_agent_enrollment"].id
+    enrollment = _reload(db_session, models.ManagedAgentEnrollment, enrollment_id)
+    assert enrollment.managed_config["apiKey"] == SECRET
+    # Non-secret fields stay queryable with JSONB operators.
+    found = (
+        db_session.query(models.ManagedAgentEnrollment.id)
+        .filter(
+            models.ManagedAgentEnrollment.id == enrollment_id,
+            models.ManagedAgentEnrollment.managed_config["runtime_session_id"].astext
+            == "r1",
+        )
+        .scalar()
+    )
+    assert found == enrollment_id
     # The generator compares the column with "" in SQL; it must still find the
     # stored secret instead of minting a new one.
     org_id = rows["organization"].id
@@ -124,7 +175,8 @@ def _write_legacy_plaintext(db: Session, rows: dict[str, Any]) -> None:
 
             raw = {
                 "mcp_auth_config": {"token": SECRET, "scope": "read"},
-                "webhook_secret": {"webhook_secret": SECRET},
+                "webhook_secret": {"api_key": SECRET},
+                "agent_config": {"apiKey": SECRET, "model": "m"},
                 "policy_snapshot": {
                     "mcp_servers": [{"name": "s", "auth_config": {"token": SECRET}}]
                 },

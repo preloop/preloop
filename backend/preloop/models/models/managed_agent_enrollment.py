@@ -8,6 +8,8 @@ from sqlalchemy import Boolean, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from preloop.models.db.encrypted_types import SecretFieldsJSON
+
 from .base import Base
 
 if TYPE_CHECKING:
@@ -47,9 +49,15 @@ class ManagedAgentEnrollment(Base):
     target_config_path: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
     )
-    discovered_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    managed_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    backup_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    discovered_config: Mapped[dict] = mapped_column(
+        SecretFieldsJSON("agent_config", jsonb=True), nullable=False, default=dict
+    )
+    managed_config: Mapped[dict] = mapped_column(
+        SecretFieldsJSON("agent_config", jsonb=True), nullable=False, default=dict
+    )
+    backup_metadata: Mapped[dict] = mapped_column(
+        SecretFieldsJSON("agent_config", jsonb=True), nullable=False, default=dict
+    )
     validation_result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     restore_available: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

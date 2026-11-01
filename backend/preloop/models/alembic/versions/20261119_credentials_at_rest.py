@@ -40,6 +40,9 @@ _BACKFILLS = (
     "cred_flow_webhook_config",
     "cred_approval_config",
     "cred_policy_snapshot",
+    "cred_agent_discovered",
+    "cred_agent_managed",
+    "cred_agent_backup",
 )
 
 

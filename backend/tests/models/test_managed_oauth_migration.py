@@ -1,5 +1,6 @@
 """PostgreSQL upgrade/rollback preserves legacy GitHub and manual credentials."""
 
+from preloop.models.db.encrypted_types import unseal
 import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,5 +158,7 @@ def test_managed_oauth_upgrade_rollback_preserves_legacy(db_session: Session) ->
             {"id": tracker.id},
         ).one()
         assert (
-            manual.api_key == "synthetic-manual" and manual.auth_type == "oauth_token"
+            # The ORM write sealed the value at rest.
+            unseal(manual.api_key) == "synthetic-manual"
+            and manual.auth_type == "oauth_token"
         )

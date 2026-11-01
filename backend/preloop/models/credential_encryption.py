@@ -92,6 +92,27 @@ TARGETS: tuple[Target, ...] = (
         "json",
     ),
     Target(
+        "cred_agent_discovered",
+        "managed_agent_enrollment",
+        "discovered_config",
+        "agent_config",
+        "jsonb",
+    ),
+    Target(
+        "cred_agent_managed",
+        "managed_agent_enrollment",
+        "managed_config",
+        "agent_config",
+        "jsonb",
+    ),
+    Target(
+        "cred_agent_backup",
+        "managed_agent_enrollment",
+        "backup_metadata",
+        "agent_config",
+        "jsonb",
+    ),
+    Target(
         "cred_policy_snapshot",
         "policy_snapshot",
         "snapshot_data",

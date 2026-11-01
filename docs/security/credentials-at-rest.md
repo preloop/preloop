@@ -5,7 +5,9 @@ key or kept only as a one-way hash. This page lists each stored column that
 could hold one, how it is protected, and the migration that introduced that
 protection. A test (`backend/tests/models/test_credentials_at_rest_doc.py`)
 fails when a model gains a column whose name contains `secret`, `token`,
-`key`, `password` or `credential` without an entry here.
+`key`, `password` or `credential` without an entry here. Credentials inside
+JSON documents are listed separately below; a JSON column with a neutral name
+is not caught by that test, so review new configuration documents by hand.
 
 ## Key management
 
@@ -52,9 +54,12 @@ cannot read sealed values.
 | Column | Fields sealed | Since |
 | --- | --- | --- |
 | `mcp_server.auth_config` | Every string under a secret key (`token`, `api_key`, `client_secret`, header values such as `Authorization`); endpoints, `client_id` and scopes stay readable | `20261119_credentials_at_rest` |
-| `flow.webhook_config` | `webhook_secret` | `20261119_credentials_at_rest` |
-| `approval_workflow.approval_config` | `webhook_secret` | `20261119_credentials_at_rest` |
-| `policy_snapshot.snapshot_data` | `mcp_servers[].auth_config` secrets and any `webhook_secret` kept for rollback | `20261119_credentials_at_rest` |
+| `flow.webhook_config` | `webhook_secret`, `employee_secret`, `api_key` | `20261119_credentials_at_rest` |
+| `approval_workflow.approval_config` | `webhook_secret`, `employee_secret`, `api_key` (AI approval provider key) | `20261119_credentials_at_rest` |
+| `policy_snapshot.snapshot_data` | `mcp_servers[].auth_config` secrets, and `webhook_secret`, `employee_secret`, `api_key` anywhere else, kept for rollback | `20261119_credentials_at_rest` |
+| `managed_agent_enrollment.discovered_config` | Every string under a key the redaction layer treats as sensitive (`apiKey`, `api_key`, `*_TOKEN`, `*_SECRET`, `authorization`, ...) | `20261119_credentials_at_rest` |
+| `managed_agent_enrollment.managed_config` | Same as `discovered_config` | `20261119_credentials_at_rest` |
+| `managed_agent_enrollment.backup_metadata` | Same as `discovered_config` | `20261119_credentials_at_rest` |
 
 Other encrypted columns whose names do not match the audit pattern:
 `secret_reference.encrypted_value`, `support_conversation.contact_encrypted`,

@@ -63,9 +63,15 @@ def test_mcp_auth_config_seals_secret_leaves_only() -> None:
 
 
 def test_webhook_secret_selector_seals_only_the_secret() -> None:
-    config = {"webhook_secret": SECRET, "webhook_url": "https://hooks.example/x"}
+    config = {
+        "webhook_secret": SECRET,
+        "employee_secret": SECRET,
+        "api_key": SECRET,
+        "webhook_url": "https://hooks.example/x",
+    }
     sealed = seal_document("webhook_secret", config)
-    assert is_sealed(sealed["webhook_secret"])
+    for key in ("webhook_secret", "employee_secret", "api_key"):
+        assert is_sealed(sealed[key]), key
     assert sealed["webhook_url"] == config["webhook_url"]
     assert unseal_document("webhook_secret", sealed) == config
 
@@ -103,3 +109,22 @@ def test_column_types_seal_on_bind_and_decrypt_on_result() -> None:
 def test_unknown_selector_is_rejected() -> None:
     with pytest.raises(ValueError):
         SecretFieldsJSON("nope")
+
+
+def test_agent_config_seals_nested_credentials() -> None:
+    config = {
+        "baseUrl": "https://gw.example",
+        "apiKey": SECRET,
+        "env": {"ANTHROPIC_AUTH_TOKEN": SECRET, "ANTHROPIC_MODEL": "m"},
+        "runtime_session_id": "r1",
+    }
+    sealed = seal_document("agent_config", config)
+    assert SECRET not in repr(sealed)
+    assert sealed["env"]["ANTHROPIC_MODEL"] == "m"
+    assert sealed["runtime_session_id"] == "r1"
+    assert unseal_document("agent_config", sealed) == config
+
+
+def test_policy_snapshot_seals_approval_provider_keys() -> None:
+    snapshot = {"approval_workflows": [{"approval_config": {"api_key": SECRET}}]}
+    assert SECRET not in repr(seal_document("policy_snapshot", snapshot))
