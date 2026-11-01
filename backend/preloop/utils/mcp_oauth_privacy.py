@@ -3,18 +3,19 @@
 import logging
 import re
 
-from preloop.utils.sentry_filters import register_private_callback_prefix
+from preloop.utils.sentry_filters import (
+    redact_flow_webhook_secret,
+    register_private_callback_prefix,
+)
 
 _QUERY = re.compile(
     r"(/api/v1/mcp-servers/(?:[^/?\s]+/oauth/authorize|oauth/callback))\?[^\s\"']*"
 )
-# Inbound flow webhooks carry their shared secret as the last path segment.
-_FLOW_WEBHOOK = re.compile(r"(/api/v1/webhooks/flows/[^/?\s\"']+/)[^/?\s\"']+")
 
 
 def _scrub(value: str) -> str:
     """Redact OAuth query strings and flow webhook secrets in one string."""
-    return _FLOW_WEBHOOK.sub(r"\1[redacted]", _QUERY.sub(r"\1?[redacted]", value))
+    return redact_flow_webhook_secret(_QUERY.sub(r"\1?[redacted]", value))
 
 
 class MCPOAuthLogFilter(logging.Filter):

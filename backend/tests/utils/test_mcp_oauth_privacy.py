@@ -53,3 +53,19 @@ def test_flow_webhook_secret_is_redacted_from_access_log():
     assert "synthetic-webhook-secret" not in message
     assert "/api/v1/webhooks/flows/synthetic-flow-id/[redacted]" in message
     assert len(record.args) == 5
+
+
+def test_flow_webhook_secret_is_scrubbed_from_telemetry():
+    path = "/api/v1/webhooks/flows/f-1/synthetic-webhook-secret"
+    event = {
+        "request": {"url": "https://console.example.com" + path},
+        "transaction": path,
+        "tags": {"url": "https://console.example.com" + path},
+    }
+    sent = sentry_before_send(event, {})
+    assert sent is not None  # Genuine webhook failures are still reported.
+    assert "synthetic-webhook-secret" not in str(sent)
+    assert sent["transaction"] == "/api/v1/webhooks/flows/f-1/[redacted]"
+    trace = sentry_before_send_transaction({"transaction": path}, {})
+    assert trace is not None
+    assert "synthetic-webhook-secret" not in str(trace)

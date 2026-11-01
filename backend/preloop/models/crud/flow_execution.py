@@ -609,12 +609,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         Returns:
             The updated execution.
+
+        Raises:
+            ValueError: A mapping names a key that is not a column.
         """
-        update_data = (
-            dict(obj_in)
-            if isinstance(obj_in, dict)
-            else obj_in.model_dump(exclude_unset=True)
-        )
+        if isinstance(obj_in, dict):
+            unknown = set(obj_in) - {c.key for c in FlowExecution.__table__.columns}
+            if unknown:
+                raise ValueError(
+                    "Unknown flow execution columns: " + ", ".join(sorted(unknown))
+                )
+            update_data = dict(obj_in)
+        else:
+            update_data = obj_in.model_dump(exclude_unset=True)
         if "result" in update_data:
             # Result writers may hold an old ORM snapshot while the runner
             # advances publication. Lock/read the current protected state and
