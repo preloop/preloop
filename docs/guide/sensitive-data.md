@@ -68,9 +68,11 @@ rule to be skipped, so review it deliberately.
 ## What is stored
 
 The following applies to **new records** covered by the configured scope.
-Installing a rule does not rewrite historical rows or erase external copies.
-Ordinary capture settings and retention still determine whether a store has a
-record at all.
+Installing a rule does not rewrite historical rows on its own; an account
+admin applies it to stored rows explicitly (see
+[Apply rules to stored rows](#apply-rules-to-stored-rows)). Nothing here
+erases external copies. Ordinary capture settings and retention still
+determine whether a store has a record at all.
 
 | Store/surface | Redaction mode | Reference-only tool mode |
 | --- | --- | --- |
@@ -132,7 +134,9 @@ cannot reconstruct omitted arguments after the original is removed; an
 in-process wait retains the original in memory.
 
 Redaction/reference conversion happens **before** an audit row is sealed into
-its hash chain. Do not edit sealed records. The audit/evidence services expose
+its hash chain. Do not edit sealed records by hand; use
+[Apply rules to stored rows](#apply-rules-to-stored-rows), which keeps the
+chain verifiable. The audit/evidence services expose
 signed chain checkpoints and period exports. Verify independently:
 
 ```bash
@@ -250,6 +254,77 @@ sensitive_data:
 ```
 
 ![Sensitive data console with the synthetic payment policy](../assets/screenshots/sensitive-data/payments.png)
+
+## Apply rules to stored rows
+
+Rules run when a row is written. When you install or tighten a redact rule or
+a `reference_only` rule, rows written earlier still hold what was stored
+then. To apply the current rules to them, an account admin runs:
+
+```bash
+preloop policy apply-stored                       # dry run: counts only
+preloop policy apply-stored --since 2026-10-01T00:00:00Z --store audit_log
+preloop policy apply-stored --apply               # rewrite; cannot be undone
+```
+
+or `POST /api/v1/policies/sensitive-data/apply-to-stored` with
+`{"dry_run": false}`. On a server host,
+`python -m preloop.services.sensitive_data.stored_rows --account-id <id>
+[--apply]` does the same and prints a JSON report.
+
+What it covers:
+
+| Store | Fields | Rules applied |
+| --- | --- | --- |
+| Audit rows (`tool_call`, `policy_*`, approval execution and other rows with tool content) | `details.tool_args` (as `tool.args`), `details.result_preview` (as `tool.result`) | Redact and reference-only rules for the row's tool and agent |
+| Approval requests (decided, expired or cancelled) | `tool_args`, `tool_result` | Redact and reference-only rules for the tool and agent |
+| Session timeline (`runtime_session_activity`) | `summary` (tool rules), `metadata` (account-wide rules) | As the timeline writer applies them |
+| Session search index | chunk text | Account-wide redact rules, as the indexer applies them. A changed chunk loses its embedding and is queued to be embedded again from the redacted text. |
+
+Stored audit and approval rows do not record the MCP server of a call. On
+those rows a rule that names both tools and servers applies by tool name; a
+rule that names only servers does not apply. A stored reference record is
+kept, with its fingerprints, and cut down to the `keep_fields` the current
+rule still keeps.
+
+How it behaves:
+
+- **Dry run by default.** The dry run walks the same rows and reports what
+  would change: rows scanned, rows to change, reference records, counts per
+  detected type and the rule ids. It writes nothing.
+- **Batched and resumable.** Each batch (default 200 rows) is its own
+  transaction. The API runs at most `max_batches` per request and returns a
+  cursor per store; the CLI follows the cursors until every store is done.
+  A failed batch rolls back on its own and the response names the store and
+  the error type. Run it again to finish.
+- **Idempotent.** It applies the current rules to the current content.
+  Content that is already redacted or already a reference does not change,
+  so a second run changes nothing and records nothing.
+- **Recorded.** Each batch that changes rows appends one `redaction_applied`
+  audit row with the store, rule ids, counts per type, the actor and the
+  window. It never holds the removed values.
+- **Legal holds and pending approvals are skipped.** Rows of a held runtime
+  session, execution or approval are counted as `skipped_legal_hold` and not
+  touched. Pending approvals are counted as `skipped_pending`, because an
+  approver is still deciding on what they show.
+
+### The audit chain after a rewrite
+
+A sealed audit row's hash covers its `details`, and the next row's
+`prev_hash` commits to that hash, so the rewrite does not touch `row_hash` or
+`prev_hash`. Instead the row records `redacted_row_hash` (the same hash
+computed over its new content) and `redaction_event_id`, and the
+`redaction_applied` row lists the row id, sequence, original hash and
+redacted hash. `preloop audit verify` and the server verifier accept a row
+whose content no longer matches `row_hash` only when it matches
+`redacted_row_hash` and that event lists it with that hash. Any other edit
+is still reported as a break. Signed checkpoints keep verifying, because they
+anchor `row_hash`. The event row is sealed into the chain like any other
+row; until it is sealed (up to one sealing interval) it is as editable as
+any unsealed row.
+
+The rewrite removes the values from these stores. It cannot reach exports
+already downloaded, provider logs or other copies outside Preloop.
 
 ## Apply and inspect
 

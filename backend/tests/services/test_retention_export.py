@@ -577,6 +577,32 @@ def test_the_exported_audit_rows_carry_their_chain_position(
     assert exported["chain_seq"] == 7
     assert exported["prev_hash"] == "aa" * 32
     assert exported["row_hash"] == "bb" * 32
+    assert exported["redacted_row_hash"] is None
+    assert exported["redaction_event_id"] is None
+
+
+def test_an_exported_redacted_row_names_its_redaction_event(
+    db_session, test_user, account
+):
+    import uuid
+
+    row = _audit_row(db_session, account.id, INSIDE)
+    event_id = uuid.uuid4()
+    row.chain_seq = 3
+    row.row_hash = "bb" * 32
+    row.redacted_row_hash = "cc" * 32
+    row.redaction_event_id = event_id
+    db_session.add(row)
+    db_session.flush()
+
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+
+    exported = json.loads(_members(export.archive)[MEMBER_AUDIT].splitlines()[0])
+    assert exported["row_hash"] == "bb" * 32
+    assert exported["redacted_row_hash"] == "cc" * 32
+    assert exported["redaction_event_id"] == str(event_id)
 
 
 def test_an_unsigned_export_is_still_an_export(db_session, test_user, account):

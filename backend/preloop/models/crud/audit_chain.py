@@ -61,3 +61,21 @@ def get_state(
         # when requested; never reset the head or pruning floor to genesis.
         state = db.execute(stmt.execution_options(populate_existing=True)).scalar_one()
     return state
+
+
+def get_redaction_event(
+    db: Session, *, account_id: Any, event_id: Any, action: str
+) -> models.AuditLog | None:
+    """The redaction event row ``event_id`` in ``account_id``, or None.
+
+    Scoped to the account and the action so a row from another account, or
+    an ordinary row with a look-alike ``details["rows"]``, cannot vouch for a
+    rewrite.
+    """
+    return db.execute(
+        select(models.AuditLog).where(
+            models.AuditLog.id == event_id,
+            models.AuditLog.account_id == account_id,
+            models.AuditLog.action == action,
+        )
+    ).scalar_one_or_none()

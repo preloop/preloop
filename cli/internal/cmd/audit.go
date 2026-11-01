@@ -104,18 +104,24 @@ type serverChainVerdict struct {
 // auditVerifyReport is the --json shape. It is deliberately explicit about
 // scope: a verdict without a range is not a verdict.
 type auditVerifyReport struct {
-	Status         string                 `json:"status"`
-	CheckedRows    int64                  `json:"checked_rows"`
-	StartSeq       int64                  `json:"start_seq"`
-	EndSeq         int64                  `json:"end_seq"`
-	HeadSeq        int64                  `json:"head_seq"`
-	PrunedBelowSeq int64                  `json:"pruned_below_seq"`
-	UnsealedRows   int64                  `json:"unsealed_rows"`
-	FirstBreak     *verify.Break          `json:"first_break,omitempty"`
-	Checkpoints    []checkpointVerdict    `json:"checkpoints,omitempty"`
-	ServerStatus   string                 `json:"server_status,omitempty"`
-	ServerAgrees   bool                   `json:"server_agrees"`
-	Proves         map[string]interface{} `json:"proves"`
+	Status         string        `json:"status"`
+	CheckedRows    int64         `json:"checked_rows"`
+	StartSeq       int64         `json:"start_seq"`
+	EndSeq         int64         `json:"end_seq"`
+	HeadSeq        int64         `json:"head_seq"`
+	PrunedBelowSeq int64         `json:"pruned_below_seq"`
+	UnsealedRows   int64         `json:"unsealed_rows"`
+	FirstBreak     *verify.Break `json:"first_break,omitempty"`
+	// RedactedRows were rewritten by a recorded redaction after sealing and
+	// hash to the redacted hash their redaction event lists.
+	RedactedRows int64 `json:"redacted_rows"`
+	// UnresolvedRedactions are rewritten rows whose redaction event lies
+	// outside the walked range, so this walk could not check them.
+	UnresolvedRedactions int64                  `json:"unresolved_redactions"`
+	Checkpoints          []checkpointVerdict    `json:"checkpoints,omitempty"`
+	ServerStatus         string                 `json:"server_status,omitempty"`
+	ServerAgrees         bool                   `json:"server_agrees"`
+	Proves               map[string]interface{} `json:"proves"`
 }
 
 // checkpointVerdict is one anchor checked against the rows in hand.
@@ -289,6 +295,8 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	report.UnresolvedRedactions = walk.Finish()
+	report.RedactedRows = walk.Redacted
 	report.CheckedRows = walk.Checked
 	report.StartSeq = walk.FirstSeq
 	report.EndSeq = walk.LastSeq
@@ -363,6 +371,14 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 	case "ok":
 		fmt.Fprintf(out, "Chain intact: %d rows, sequences %d to %d.\n",
 			report.CheckedRows, report.StartSeq, report.EndSeq)
+		if report.RedactedRows > 0 {
+			fmt.Fprintf(out, "  %d rows were rewritten by a recorded redaction after sealing.\n",
+				report.RedactedRows)
+		}
+		if report.UnresolvedRedactions > 0 {
+			fmt.Fprintf(out, "  %d of them name a redaction event outside this range; widen the range to check them.\n",
+				report.UnresolvedRedactions)
+		}
 	case "empty":
 		fmt.Fprintln(out, "Nothing to verify: no sealed rows in this range.")
 	default:

@@ -102,6 +102,12 @@ BREAK_MISSING_ROW = "missing_row"
 BREAK_PREV_HASH = "prev_hash_mismatch"
 BREAK_ROW_HASH = "row_hash_mismatch"
 BREAK_DUPLICATE_SEQ = "duplicate_seq"
+BREAK_REDACTION_UNANCHORED = "redaction_unanchored"
+
+#: The audit action a stored-row redaction appends per batch (#2133). Its
+#: ``details["rows"]`` lists every sealed row it rewrote with the original and
+#: the redacted hash; the verifier accepts a rewritten row only against it.
+ACTION_REDACTION_APPLIED = "redaction_applied"
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -701,6 +707,10 @@ def chain_segment(
             "row_id": str(row.id),
             "prev_hash": row.prev_hash,
             "row_hash": row.row_hash,
+            "redacted_row_hash": row.redacted_row_hash,
+            "redaction_event_id": (
+                str(row.redaction_event_id) if row.redaction_event_id else None
+            ),
             "payload": canonical_row(
                 row, seq=int(row.chain_seq), prev_hash=str(row.prev_hash or "")
             ),
@@ -729,8 +739,10 @@ def chain_segment(
         "note": (
             "Recompute row_hash as sha256(row_domain + canonical JSON of "
             "payload) with sorted keys and no insignificant whitespace, and "
-            "check that each prev_hash equals the previous row_hash. A "
-            "verdict from this server is not a verification."
+            "check that each prev_hash equals the previous row_hash. A row "
+            "rewritten by a redaction hashes to redacted_row_hash instead, "
+            "which the redaction_applied row named by redaction_event_id "
+            "must list. A verdict from this server is not a verification."
         ),
     }
 
@@ -778,6 +790,7 @@ def verify_chain(
         "first_break": None,
         "checkpoints_verified": 0,
         "checkpoint_failures": [],
+        "redacted_rows": 0,
     }
     if head == 0 or finish < begin:
         return report
@@ -820,6 +833,7 @@ def verify_chain(
     checked = 0
     previous_timestamp: Optional[str] = None
     expected_seq = begin
+    tombstones: dict[str, dict[str, str]] = {}
     for row in rows:
         seq = int(row.chain_seq)
         if seq < expected_seq:
@@ -860,7 +874,31 @@ def verify_chain(
             }
             break
         recomputed = hash_row(canonical_row(row, seq=seq, prev_hash=stored_prev))
-        if recomputed != str(row.row_hash or ""):
+        if recomputed != str(row.row_hash or "") and row.redacted_row_hash:
+            if redaction_anchored(
+                db,
+                account_id=account_id,
+                row=row,
+                recomputed=recomputed,
+                cache=tombstones,
+            ):
+                report["redacted_rows"] = int(report["redacted_rows"]) + 1
+            else:
+                report["status"] = STATUS_BROKEN
+                report["first_break"] = {
+                    "kind": BREAK_REDACTION_UNANCHORED,
+                    "seq": seq,
+                    "row_id": str(row.id),
+                    "detail": (
+                        "the row was rewritten after sealing, but no "
+                        "redaction_applied row in this account lists this "
+                        "row with the hash it has now"
+                    ),
+                    "expected": str(row.redacted_row_hash or ""),
+                    "found": recomputed,
+                }
+                break
+        elif recomputed != str(row.row_hash or ""):
             report["status"] = STATUS_BROKEN
             report["first_break"] = {
                 "kind": BREAK_ROW_HASH,
@@ -903,6 +941,55 @@ def verify_chain(
         db, account_id=account_id, report=report, begin=begin, end=finish
     )
     return report
+
+
+def redaction_listing(details: Any) -> dict[str, str]:
+    """``{row_id: redacted_row_hash}`` from a ``redaction_applied`` row."""
+    listing: dict[str, str] = {}
+    entries = details.get("rows") if isinstance(details, dict) else None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        row_id = entry.get("id")
+        redacted = entry.get("redacted_row_hash")
+        if row_id and redacted:
+            listing[str(row_id)] = str(redacted)
+    return listing
+
+
+def redaction_anchored(
+    db: Session,
+    *,
+    account_id: Any,
+    row: Any,
+    recomputed: str,
+    cache: Optional[dict[str, dict[str, str]]] = None,
+) -> bool:
+    """True when a rewritten row is vouched for by its redaction event.
+
+    The row must hash to its recorded ``redacted_row_hash``, and the
+    ``redaction_applied`` row it names must belong to the same account and
+    list this row id with exactly that hash. The event row is an ordinary
+    audit row: once sealed, editing it breaks the chain like any other row.
+    """
+    if not row.redacted_row_hash or recomputed != str(row.redacted_row_hash):
+        return False
+    event_id = getattr(row, "redaction_event_id", None)
+    if event_id is None:
+        return False
+    key = str(event_id)
+    listing = cache.get(key) if cache is not None else None
+    if listing is None:
+        event = crud_audit_chain.get_redaction_event(
+            db,
+            account_id=account_id,
+            event_id=event_id,
+            action=ACTION_REDACTION_APPLIED,
+        )
+        listing = redaction_listing(event.details) if event is not None else {}
+        if cache is not None:
+            cache[key] = listing
+    return listing.get(str(row.id)) == recomputed
 
 
 def _verify_checkpoints(

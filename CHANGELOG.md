@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Apply the current sensitive-data rules to rows that were stored before a
+  rule was installed or tightened: `preloop policy apply-stored`, `POST
+  /api/v1/policies/sensitive-data/apply-to-stored` (account admins) and
+  `python -m preloop.services.sensitive_data.stored_rows`. Covers audit row
+  tool content, decided approval requests, the session timeline and the
+  session search index. Dry run by default, batched, resumable and
+  idempotent; legal holds and pending approvals are skipped. Each batch that
+  changes rows records a `redaction_applied` audit event with rule ids and
+  counts, never content. Rewritten sealed audit rows keep their `row_hash`
+  and record `redacted_row_hash` and `redaction_event_id`; the server
+  verifier and `preloop audit verify` accept such a row only when its event
+  lists it with that hash, and report `redacted_rows`. Migration
+  `20261123_audit_row_redaction` adds the three nullable `audit_log`
+  columns. See `docs/guide/sensitive-data.md#apply-rules-to-stored-rows`.
 - Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
   Codex configuration, the `PreToolUse` hook and its trust state first; the
   agent cannot overwrite or remove the hook CLI, `hooks.json` or

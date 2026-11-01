@@ -19408,6 +19408,55 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/policies/sensitive-data/apply-to-stored:
+    post:
+      tags:
+      - Policies
+      summary: Apply the current redaction and reference-only rules to stored rows
+      description: 'Rewrite stored rows under the account''s current rules, or count
+        them.
+
+
+        Account admins only: the rewrite is irreversible. Dry run by default.
+
+        Every batch that changes rows appends a ``redaction_applied`` audit row
+
+        (rule ids, counts, actor; never content), and the audit chain keeps
+
+        verifying. Bounded per request; pass the returned ``cursors`` back until
+
+        ``complete`` is true. Rows under legal hold and pending approvals are
+
+        skipped and counted.'
+      operationId: sensitive_data_apply_to_stored_api_v1_policies_sensitive_data_apply_to_stored_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoredRowRedactionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoredRowRedactionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/model-io-rules:
     get:
       tags:
@@ -31515,6 +31564,19 @@ components:
           - type: string
           - type: 'null'
           title: Row Hash
+        redacted_row_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redacted Row Hash
+          description: 'Set when a redaction rewrote this row after sealing: the hash
+            of the payload as served. row_hash stays the value the chain links to.'
+        redaction_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redaction Event Id
+          description: row_id of the redaction_applied row listing this rewrite
         payload:
           additionalProperties: true
           type: object
@@ -31681,6 +31743,13 @@ components:
             type: object
           type: array
           title: Checkpoint Failures
+        redacted_rows:
+          type: integer
+          title: Redacted Rows
+          description: Rows that no longer hash to their sealed row_hash because a
+            recorded redaction_applied event rewrote them, and that hash to the redacted_row_hash
+            that event lists
+          default: 0
       type: object
       required:
       - account_id
@@ -51604,6 +51673,166 @@ components:
       type: object
       title: SpendOutlierSettingsResponse
       description: The account's thresholds; defaults when never configured.
+    StoredRowRedactionRequest:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          description: Count only. Set false to rewrite rows; it cannot be undone.
+          default: true
+        since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Since
+          description: Rows at or after this time
+        until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Until
+          description: Rows before this time
+        stores:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Stores
+          description: audit_log, approval_requests, runtime_session_activity, session_search_documents.
+            All when omitted.
+        batch_size:
+          type: integer
+          maximum: 1000.0
+          minimum: 1.0
+          title: Batch Size
+          description: Rows per transaction
+          default: 200
+        max_batches:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Max Batches
+          description: Batches in this request; continue with cursors
+          default: 50
+        cursors:
+          anyOf:
+          - additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+          - type: 'null'
+          title: Cursors
+          description: Per-store cursors from an earlier response, to resume
+      type: object
+      title: StoredRowRedactionRequest
+      description: Apply the current sensitive-data rules to rows already stored (#2133).
+    StoredRowRedactionResponse:
+      properties:
+        account_id:
+          type: string
+          title: Account Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+        since:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Since
+        until:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Until
+        complete:
+          type: boolean
+          title: Complete
+        batches:
+          type: integer
+          title: Batches
+        rule_ids:
+          items:
+            type: string
+          type: array
+          title: Rule Ids
+        redaction_events:
+          items:
+            type: string
+          type: array
+          title: Redaction Events
+          description: ids of the redaction_applied audit rows written
+        chained_rows_rewritten:
+          type: integer
+          title: Chained Rows Rewritten
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        stores:
+          additionalProperties:
+            $ref: '#/components/schemas/StoredRowRedactionStore'
+          type: object
+          title: Stores
+      type: object
+      required:
+      - account_id
+      - dry_run
+      - complete
+      - batches
+      - rule_ids
+      - redaction_events
+      - chained_rows_rewritten
+      - stores
+      title: StoredRowRedactionResponse
+      description: Outcome of one request. Call again with ``cursors`` until complete.
+    StoredRowRedactionStore:
+      properties:
+        scanned:
+          type: integer
+          title: Scanned
+        changed:
+          type: integer
+          title: Changed
+        skipped_legal_hold:
+          type: integer
+          title: Skipped Legal Hold
+        skipped_pending:
+          type: integer
+          title: Skipped Pending
+        references:
+          type: integer
+          title: References
+        counts_by_type:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts By Type
+        cursor:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Cursor
+        done:
+          type: boolean
+          title: Done
+      type: object
+      required:
+      - scanned
+      - changed
+      - skipped_legal_hold
+      - skipped_pending
+      - references
+      - counts_by_type
+      - done
+      title: StoredRowRedactionStore
+      description: Counts for one store. Never content.
     SubjectGovernanceConfig:
       properties:
         allowed_models:
@@ -53819,7 +54048,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
