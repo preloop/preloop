@@ -7704,9 +7704,7 @@ class FlowExecutionOrchestrator:
                 "Could not verify the park link of resume %s", parked_id, exc_info=True
             )
             return False
-        if parked is None or str(getattr(parked, "flow_id", "")) != str(
-            self.flow.id
-        ):
+        if parked is None or str(getattr(parked, "flow_id", "")) != str(self.flow.id):
             return False
         linked = str(getattr(parked, "resume_execution_id", "") or "")
         if not linked:
