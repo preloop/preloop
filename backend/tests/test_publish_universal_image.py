@@ -324,20 +324,28 @@ _SMOKED_CONFIG = "sha256:" + "c" * 64
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
 @pytest.mark.parametrize(
-    ("local_id", "pushed_manifest", "ok"),
+    ("local_id", "pushed_manifest", "error"),
     [
         # containerd image store: the local ID is the manifest digest.
-        (_SMOKED_MANIFEST, _SMOKED_MANIFEST, True),
+        (_SMOKED_MANIFEST, _SMOKED_MANIFEST, None),
         # classic store: the local ID is the config digest.
-        (_SMOKED_CONFIG, _SMOKED_MANIFEST, True),
+        (_SMOKED_CONFIG, _SMOKED_MANIFEST, None),
         # the push rebuilt something other than the smoked image.
-        (_SMOKED_MANIFEST, "sha256:" + "e" * 64, False),
+        (
+            _SMOKED_MANIFEST,
+            "sha256:" + "e" * 64,
+            "published amd64 manifest differs from the smoked image",
+        ),
         # the smoke tag names an unrelated image.
-        ("sha256:" + "d" * 64, _SMOKED_MANIFEST, False),
+        (
+            "sha256:" + "d" * 64,
+            _SMOKED_MANIFEST,
+            "smoked image id matches neither",
+        ),
     ],
 )
 def test_push_requires_the_published_manifest_to_be_the_smoked_one(
-    tmp_path: Path, local_id: str, pushed_manifest: str, ok: bool
+    tmp_path: Path, local_id: str, pushed_manifest: str, error: str | None
 ) -> None:
     """The amd64 push passes on either image store and fails on any drift."""
     step = next(
@@ -379,8 +387,9 @@ def test_push_requires_the_published_manifest_to_be_the_smoked_one(
             "GITHUB_RUN_ATTEMPT": "1",
         },
     )
-    if ok:
+    assert f"published manifest: {pushed_manifest}" in result.stdout, result.stderr
+    if error is None:
         assert result.returncode == 0, result.stderr
-        assert f"published manifest: {pushed_manifest}" in result.stdout
     else:
         assert result.returncode != 0
+        assert error in result.stderr
