@@ -55,6 +55,11 @@ hashes and commit/tag identities, and all three component SBOMs. It re-measures
 component minimum elements using the generator job's existing implementation.
 The release job also verifies version tags still resolve to recorded digests and
 compares the assets with registry-attached SBOMs, including configured mirrors.
+With `--verify-provenance` it runs `gh attestation verify` on every image digest
+and requires a Sigstore build provenance attestation signed by the workflow that
+builds that image (Release for backend/console, Publish Scanner Image, Publish
+Universal Image) for the tag's ref and commit. Each of those workflows attests
+its image digest and pushes the attestation to GHCR.
 The existing component generator's schema validation remains mandatory.
 
 This gate checks existing security workflows and findings; it does not invoke a
@@ -68,7 +73,8 @@ For a version such as `1.2.3`, published evidence includes:
 - `preloop-image-{backend,frontend,scanner,universal}-1.2.3.json`: commit, tag,
   image digests, mirror references and SBOM hashes
 - `release-audit-runs.json`: exact workflow run IDs, attempts and conclusions
-- `release-audit.json`: validated inventory and verification modes
+- `release-audit.json`: validated inventory, required images and verification
+  modes
 
 These enter the existing `SHA256SUMS` and signed provenance bundle; see
 [release verification](release-verification.md). Asset preparation validates the
@@ -105,8 +111,22 @@ remains read-only:
 ```sh
 python3 scripts/release_audit.py validate --directory release-evidence \
   --tag "$RELEASE_TAG" --source-sha "$RELEASE_SHA" \
-  --verify-registry --require-workflows
+  --verify-registry --require-workflows --verify-provenance
 ```
+
+### Release rehearsal
+
+The Release workflow itself runs as a rehearsal on pull requests that change
+`release.yml`, `scripts/image_sbom.py` or `scripts/release_audit.py`, and on a
+manual run with a `rehearsal_tag` input (default `v1.0.0`). A rehearsal builds
+the backend and console images for both platforms to local OCI archives with
+the release SBOM generator, exports their SBOMs under the rehearsal tag name,
+generates the component SBOMs and runs `release_audit.py validate --images
+backend,frontend` offline. It logs in to no registry, pushes, attests and
+publishes nothing, and every other job is skipped; a manual run on a tag ref
+skips them too. Scanner and universal images come from their own workflows on
+a tag, so the rehearsal does not require them. A run with `--images` never
+prints a passing tag audit.
 
 ### First gated release
 
@@ -122,18 +142,20 @@ remote execution. Expected evidence on that run:
 - The tag has a code-scanning analysis for `refs/tags/<tag>` at that commit.
   Without one the job fails with `No code-scanning analysis recorded`; it never
   reads a missing analysis as zero findings.
-- `release-audit.json` reports `registry_verified: true` and
-  `tag_workflows_verified: true`, and the log ends with
+- `release-audit.json` reports `registry_verified: true`,
+  `tag_workflows_verified: true` and `provenance_verified: true`, and the log
+  ends with
   `Release SBOM audit passed`.
 
 Any other outcome blocks publication of that candidate; fix it before the
 final tag. To repeat the remote checks for an existing tag without the release
 workflow, dispatch **Release validation (nonpublishing)** with the `tag` input.
 Its read-only remote audit job downloads that tag's release-run artifacts and
-runs `collect` and `validate --verify-registry --require-workflows`.
+runs `collect` and `validate --verify-registry --require-workflows
+--verify-provenance`.
 
-Offline validation omits the last two flags and reports both verification modes
-as false when `--report` is requested, and the command prints that it is not a
-passing tag audit.
+Offline validation omits those three flags and reports the verification modes
+as false when `--report` is requested. Without all three flags and the full
+image set, the command prints that it is not a passing tag audit.
 The final **1.0.0 tag** check in #1870 remains pending until that tag is released
 and its actual Release audit job passes.

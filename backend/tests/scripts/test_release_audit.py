@@ -246,6 +246,75 @@ class ReleaseAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "minimum elements failed"):
             release_audit.validate(self.directory, TAG, SHA)
 
+    def test_provenance_must_come_from_each_image_workflow(self) -> None:
+        signed = release_audit.subprocess.CompletedProcess([], 0, "[{}]", "")
+        with patch.object(
+            release_audit.subprocess, "run", return_value=signed
+        ) as verify:
+            report = release_audit.validate(
+                self.directory, TAG, SHA, verify_provenance_for="example/project"
+            )
+        self.assertTrue(report["provenance_verified"])
+        signers = {
+            call.args[0][call.args[0].index("--signer-workflow") + 1]
+            for call in verify.call_args_list
+        }
+        self.assertEqual(
+            signers,
+            {
+                "example/project/.github/workflows/release.yml",
+                "example/project/.github/workflows/publish-scanner-image.yml",
+                "example/project/.github/workflows/publish-universal-image.yml",
+            },
+        )
+        for call in verify.call_args_list:
+            self.assertIn(f"refs/tags/{TAG}", call.args[0])
+            self.assertIn(SHA, call.args[0])
+        for missing in (
+            release_audit.subprocess.CompletedProcess([], 1, "", "404"),
+            release_audit.subprocess.CompletedProcess([], 0, "[]", ""),
+            release_audit.subprocess.CompletedProcess([], 0, "not json", ""),
+        ):
+            with (
+                patch.object(release_audit.subprocess, "run", return_value=missing),
+                self.assertRaisesRegex(ValueError, "Missing build provenance"),
+            ):
+                release_audit.validate(
+                    self.directory, TAG, SHA, verify_provenance_for="example/project"
+                )
+
+    def test_rehearsal_subset_never_reports_a_tag_audit(self) -> None:
+        for name in ("scanner", "universal"):
+            (self.directory / f"preloop-image-{name}-{TAG[1:]}.json").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing release images"):
+            release_audit.validate(self.directory, TAG, SHA)
+        report = release_audit.validate(
+            self.directory, TAG, SHA, images_required={"backend", "frontend"}
+        )
+        self.assertEqual(report["images_required"], ["backend", "frontend"])
+        with self.assertRaisesRegex(ValueError, "Missing release images"):
+            release_audit.validate(
+                self.directory, TAG, SHA, images_required={"backend", "scanner"}
+            )
+        argv = [
+            "release_audit.py",
+            "validate",
+            "--directory",
+            str(self.directory),
+            "--tag",
+            TAG,
+            "--source-sha",
+            SHA,
+            "--images",
+            "backend,frontend",
+        ]
+        with (
+            patch.object(release_audit.sys, "argv", argv),
+            patch("builtins.print") as printed,
+        ):
+            release_audit.main()
+        self.assertIn("not a passing tag audit", printed.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -309,6 +309,29 @@ async def _deliver_question_in_band(
         return False
 
 
+def agent_reasoning_for(arguments: Any = None) -> Optional[str]:
+    """Return the agent's justification for the call being gated (#1152).
+
+    ``DynamicFastMCP._call_tool`` pops ``justification`` from the arguments
+    into a context variable before dispatch; callers that skip that path may
+    still carry it in the arguments. Blank values read as no reasoning.
+
+    Args:
+        arguments: The tool call arguments, if any.
+
+    Returns:
+        The justification text, or None when the agent gave none.
+    """
+    from preloop.services.dynamic_fastmcp import _justification_var
+
+    value = _justification_var.get(None)
+    if not value and isinstance(arguments, dict):
+        value = arguments.get("justification")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 async def require_approval(
     tool_name: str,
     tool_source: str,

@@ -1,7 +1,7 @@
 """Record retroactive redaction of sealed audit rows.
 
-Revision ID: 20261123_audit_row_redaction
-Revises: 20261121_exception_digest
+Revision ID: 20261124_audit_row_redaction
+Revises: 20261123_secret_rotation
 
 Adds three nullable columns to ``audit_log``. A sealed row whose content is
 rewritten by the stored-row redaction keeps its ``row_hash`` (the next row and
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision = "20261123_audit_row_redaction"
-down_revision = "20261121_exception_digest"
+revision = "20261124_audit_row_redaction"
+down_revision = "20261123_secret_rotation"
 branch_labels = None
 depends_on = None
 

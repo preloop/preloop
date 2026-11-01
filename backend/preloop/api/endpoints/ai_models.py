@@ -26,6 +26,8 @@ from preloop.schemas.ai_model import (
     AIModelCreate,
     AIModelCredentialExportResponse,
     AIModelCredentialMarkerResponse,
+    AIModelCredentialRotateRequest,
+    AIModelCredentialRotateResponse,
     AIModelGatewayUsageSummaryResponse,
     AIModelOverviewItem,
     AIModelOwnerFlowUsage,
@@ -1115,6 +1117,94 @@ def _coerce_expires_ms(payload: Dict) -> Optional[int]:
     if isinstance(expires_raw, (int, float)) and expires_raw > 0:
         return int(expires_raw)
     return None
+
+
+@router.post(
+    "/ai-models/{model_id}/credentials/rotate",
+    response_model=AIModelCredentialRotateResponse,
+    summary="Rotate AI Model Credential",
+    tags=["AI Models"],
+)
+@require_permission("edit_ai_models")
+def rotate_ai_model_credential(
+    model_id: uuid.UUID,
+    body: AIModelCredentialRotateRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCredentialRotateResponse:
+    """Replace a model's credential in place and record the rotation.
+
+    The secret is replaced where it is stored, so every model sharing it
+    resolves the new key on its next request. Locally encrypted API keys take
+    ``api_key``; Vault/OpenBao references take ``external_ref``, which must
+    resolve before it is saved. The secret's ``version`` increments and
+    ``rotated_at`` is set. An audit event records the secret id, backend and
+    versions, never the material. Subscription OAuth and structured
+    credentials are refused with 400: they rotate through refresh or
+    ``PUT /ai-models/{model_id}``.
+    """
+    ensure_permission_in_oss(db, current_user, "edit_ai_models")
+    api_key = (body.api_key or "").strip() or None
+    external_ref = (body.external_ref or "").strip() or None
+    if (api_key is None) == (external_ref is None):
+        # Fixed message: never echo the submitted material back.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide exactly one non-blank api_key or external_ref",
+        )
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    secret_id = db_model.credentials_secret_id
+    if secret_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This model has no stored credential to rotate",
+        )
+    previous_version = db_model.credentials_version or 1
+    try:
+        secret = get_secret_service().rotate_secret_reference(
+            db,
+            secret_id=secret_id,
+            account_id=current_user.account_id,
+            secret_value=api_key,
+            external_ref=external_ref,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Credential secret not found",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    from preloop.utils.audit import log_config_change
+
+    shared = crud_ai_model.count_sharing_secret(
+        db, secret_id=secret.id, account_id=current_user.account_id
+    )
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="secret_reference",
+        action="rotated",
+        old_value={"reference_id": str(secret.id), "version": previous_version},
+        new_value={
+            "reference_id": str(secret.id),
+            "ai_model_id": str(db_model.id),
+            "backend_type": secret.backend_type,
+            "version": secret.version,
+            "shared_model_count": shared,
+        },
+    )
+    return AIModelCredentialRotateResponse(
+        secret_id=secret.id,
+        backend_type=secret.backend_type,
+        version=secret.version,
+        rotated_at=secret.rotated_at,
+        shared_model_count=shared,
+    )
 
 
 @router.get(

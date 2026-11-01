@@ -1,0 +1,28 @@
+{{- if .Values.database.pgbouncer.enabled }}
+{{- if or .Values.database.external (not .Values.database.enabled) }}
+{{- fail "database.pgbouncer.enabled requires the chart's CNPG cluster (database.enabled=true, database.external=false)" }}
+{{- end }}
+{{- $pgb := .Values.database.pgbouncer }}
+{{- $cluster := .Values.database.cnpg.name | default (printf "%s-db" (include "preloop.fullname" .)) }}
+# Optional PgBouncer (CNPG Pooler). Not used by the application unless an
+# operator points DATABASE_URL at it; see docs/operations/pgbouncer.md.
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: {{ printf "%s-pooler-rw" $cluster }}
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+spec:
+  cluster:
+    name: {{ $cluster }}
+  instances: {{ int $pgb.instances }}
+  type: rw
+  pgbouncer:
+    poolMode: {{ $pgb.poolMode | default "transaction" }}
+    {{- with $pgb.parameters }}
+    parameters:
+      {{- range $key, $value := . }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+    {{- end }}
+{{- end }}

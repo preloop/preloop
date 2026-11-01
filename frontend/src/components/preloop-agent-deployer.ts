@@ -10,6 +10,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import { fetchWithAuth, getAIModels } from '../api';
 import type { AIModel } from '../types';
 import {
@@ -50,6 +51,11 @@ export class PreloopAgentDeployer extends LitElement {
 
       .boot-log-line.success {
         color: var(--sl-color-success-700);
+        font-weight: 600;
+      }
+
+      .boot-log-line.warning {
+        color: var(--sl-color-warning-800);
         font-weight: 600;
       }
 
@@ -161,6 +167,10 @@ export class PreloopAgentDeployer extends LitElement {
 
   @state()
   private deployComputeSize = 'standard';
+
+  /** Install the loopback-only desktop after onboarding (#1359). */
+  @state()
+  private deployDesktop = false;
 
   @state()
   private deploymentError = '';
@@ -332,6 +342,8 @@ export class PreloopAgentDeployer extends LitElement {
       runtime: this.deployAgentType,
       model_id: this.deployModel,
       compute_size: this.deployComputeSize,
+      // Omitted when unticked so the payload stays what it was before #1359.
+      ...(this.deployDesktop ? { desktop: true } : {}),
       ...(target === 'ssh'
         ? {
             ssh: {
@@ -380,6 +392,7 @@ export class PreloopAgentDeployer extends LitElement {
       this.bootLogs = [
         ...(result.logs || []),
         'SUCCESS: Runtime installation and agent onboarding verified.',
+        ...this.desktopStageLog(result.desktop),
       ];
       this.deploymentSucceeded = true;
       this.sshPassword = '';
@@ -402,6 +415,36 @@ export class PreloopAgentDeployer extends LitElement {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /** The desktop stage is non-fatal: a failure is a warning, not an error. */
+  private desktopStageLog(stage: unknown): string[] {
+    if (!this.deployDesktop) return [];
+    if (stage === 'installed') {
+      return ['Desktop installed (Xvfb, Chromium, VNC on localhost only).'];
+    }
+    if (stage === 'failed') {
+      return [
+        'WARNING: Desktop install failed. The agent is connected; see ~/.local/state/preloop/desktop.log on the host.',
+      ];
+    }
+    return ['WARNING: Desktop install was skipped by the host.'];
+  }
+
+  private renderDesktopField() {
+    return html`
+      <sl-checkbox
+        class="desktop-option"
+        .checked=${this.deployDesktop}
+        help-text="Optional. VNC listens on localhost only; reach it over an SSH tunnel. See Agent deployment in the docs."
+        @sl-change=${(e: Event) => {
+          this.deployDesktop = Boolean(
+            (e.target as unknown as { checked: boolean }).checked
+          );
+        }}
+        >Install a desktop (Xvfb, Chromium, VNC on localhost only)</sl-checkbox
+      >
+    `;
   }
 
   private handleBack() {
@@ -902,6 +945,7 @@ export class PreloopAgentDeployer extends LitElement {
               `
         }
         ${this.renderRuntimeField()} ${this.renderModelField()}
+        ${this.renderDesktopField()}
 
         <div class="wizard-summary">
           <div class="wizard-summary-title">About to deploy</div>
@@ -916,6 +960,7 @@ export class PreloopAgentDeployer extends LitElement {
             }`
           )}
           ${this.renderSummaryRow('Model', this.selectedModelName())}
+          ${this.renderSummaryRow('Desktop', this.deployDesktop ? 'Yes' : 'No')}
           ${this.renderSummaryRow(
             'Authentication',
             this.sshAuthType === 'password' ? 'Password' : 'Private key'
@@ -965,7 +1010,7 @@ export class PreloopAgentDeployer extends LitElement {
           <sl-option value="high-mem">High memory (4 vCPU, 32GB RAM)</sl-option>
         </sl-select>
 
-        ${this.renderModelField()}
+        ${this.renderModelField()} ${this.renderDesktopField()}
 
         <div class="wizard-summary">
           <div class="wizard-summary-title">About to provision</div>
@@ -978,6 +1023,7 @@ export class PreloopAgentDeployer extends LitElement {
             sizeLabels[this.deployComputeSize] || this.deployComputeSize
           )}
           ${this.renderSummaryRow('Model', this.selectedModelName())}
+          ${this.renderSummaryRow('Desktop', this.deployDesktop ? 'Yes' : 'No')}
         </div>
       </div>
 
@@ -1020,12 +1066,12 @@ export class PreloopAgentDeployer extends LitElement {
 
         <div class="boot-log" role="log" aria-live="polite">
           ${this.bootLogs.map((log) => {
-            const isSuccess = log.startsWith('SUCCESS');
-            return html`
-              <div class="boot-log-line ${isSuccess ? 'success' : ''}">
-                ${log}
-              </div>
-            `;
+            const tone = log.startsWith('SUCCESS')
+              ? 'success'
+              : log.startsWith('WARNING')
+                ? 'warning'
+                : '';
+            return html` <div class="boot-log-line ${tone}">${log}</div> `;
           })}
         </div>
 

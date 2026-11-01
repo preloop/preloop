@@ -53,7 +53,16 @@ def test_lit_app_successful_login(page: Page):
     )
 
     # 1. Navigate directly to the login page to avoid any landing page routing issues
-    page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
+    # The features response decides which first step the login view renders.
+    with page.expect_response(
+        lambda r: r.request.method == "GET"
+        and r.url.split("?", 1)[0].endswith("/features"),
+        timeout=15000,
+    ) as features_response:
+        page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
+    sso_enabled = (
+        features_response.value.json().get("features", {}).get("enterprise_sso") is True
+    )
 
     # 2. Wait for the page to load and locate the main app shell
     lit_app_shell = page.locator("lit-app")
@@ -67,6 +76,13 @@ def test_lit_app_successful_login(page: Page):
     login_form = login_view.locator("form")
     expect(login_heading).to_be_visible(timeout=15000)
     expect(login_form).to_be_visible(timeout=15000)
+
+    # With enterprise SSO on, the view asks for an email first; password
+    # sign-in sits behind "Use another sign-in method".
+    if sso_enabled:
+        other_methods = login_view.locator("#other-sign-in-methods")
+        expect(other_methods).to_be_visible(timeout=15000)
+        other_methods.click()
 
     # 4. Fill in the login credentials and submit the form.
     # We locate the Shoelace (sl-*) input components by their name attribute

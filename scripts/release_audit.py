@@ -40,6 +40,14 @@ WORKFLOWS = {
     "publish-universal-image.yml": "universal",
 }
 
+# The workflow that must have signed each image's Sigstore build provenance.
+SIGNER_WORKFLOWS = {
+    "backend": "release.yml",
+    "frontend": "release.yml",
+    "scanner": "publish-scanner-image.yml",
+    "universal": "publish-universal-image.yml",
+}
+
 
 def select_run(runs: list[dict], tag: str, source_sha: str) -> dict | None:
     """Select the newest push run for this tag and commit, never another ref."""
@@ -166,15 +174,87 @@ def collect(
     )
 
 
+def verify_provenance(
+    image: str, name: str, repo: str, tag: str, source_sha: str
+) -> None:
+    """Require signed build provenance for the image digest from its workflow.
+
+    Args:
+        image: Digest-pinned image reference.
+        name: Release image name, a key of ``SIGNER_WORKFLOWS``.
+        repo: ``owner/name`` of the repository that must have signed it.
+        tag: Release tag the provenance must name as its source ref.
+        source_sha: Commit the provenance must name as its source digest.
+
+    Raises:
+        ValueError: If no attestation from the expected workflow verifies.
+    """
+    signer = f"{repo}/.github/workflows/{SIGNER_WORKFLOWS[name]}"
+    result = subprocess.run(
+        [
+            "gh",
+            "attestation",
+            "verify",
+            f"oci://{image}",
+            "--repo",
+            repo,
+            "--signer-workflow",
+            signer,
+            "--source-ref",
+            f"refs/tags/{tag}",
+            "--source-digest",
+            source_sha,
+            "--deny-self-hosted-runners",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    verified = []
+    if result.returncode == 0:
+        try:
+            verified = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            verified = []
+    require(
+        isinstance(verified, list) and verified,
+        f"Missing build provenance for {name} image",
+    )
+
+
 def validate(
     directory: Path,
     tag: str,
     source_sha: str,
     verify_registry: bool = False,
     require_workflows: bool = False,
+    verify_provenance_for: str | None = None,
+    images_required: set[str] | None = None,
 ) -> dict:
-    """Require every image/platform and component SBOM for this release."""
+    """Require every image/platform and component SBOM for this release.
+
+    Args:
+        directory: Directory holding the downloaded evidence.
+        tag: Release tag.
+        source_sha: Commit the tag points at.
+        verify_registry: Compare the evidence with the published registry.
+        require_workflows: Require successful tag workflow evidence.
+        verify_provenance_for: Repository whose workflows must have signed
+            build provenance for every image digest; ``None`` skips the check.
+        images_required: Images that must be present. Defaults to every
+            release image; a subset is only for rehearsals.
+
+    Returns:
+        The audit report.
+
+    Raises:
+        ValueError: On missing or inconsistent evidence.
+    """
     check_identity(tag, source_sha)
+    required = set(IMAGES) if images_required is None else images_required
+    require(required and required <= set(IMAGES), "Unknown required images")
     manifests = sorted(directory.glob("preloop-image-*.json"))
     images: dict[str, dict] = {}
     for path in manifests:
@@ -198,9 +278,13 @@ def validate(
                         published.get(entry["platform"], {}).get("SPDX") == document,
                         "Published SBOM differs from release asset",
                     )
+        if verify_provenance_for:
+            verify_provenance(
+                data["image"], data["name"], verify_provenance_for, tag, source_sha
+            )
     require(
-        set(images) == set(IMAGES),
-        f"Missing release images: {sorted(set(IMAGES) - set(images))}",
+        set(images) == required,
+        f"Missing release images: {sorted(required - set(images))}",
     )
     components = []
     for name in ("backend", "frontend", "cli"):
@@ -246,6 +330,8 @@ def validate(
         "component_minimum_elements": measured,
         "registry_verified": verify_registry,
         "tag_workflows_verified": require_workflows,
+        "provenance_verified": bool(verify_provenance_for),
+        "images_required": sorted(required),
     }
     return report
 
@@ -261,6 +347,11 @@ def main() -> None:
     parser.add_argument("--wait-seconds", type=int, default=10800)
     parser.add_argument("--verify-registry", action="store_true")
     parser.add_argument("--require-workflows", action="store_true")
+    parser.add_argument("--verify-provenance", action="store_true")
+    parser.add_argument(
+        "--images",
+        help="Comma-separated image subset, for non-publishing rehearsals only",
+    )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.command == "collect":
@@ -272,15 +363,24 @@ def main() -> None:
             args.source_sha,
             args.verify_registry,
             args.require_workflows,
+            args.repo if args.verify_provenance else None,
+            set(args.images.split(",")) if args.images else None,
         )
         if args.report:
             write_json(args.report, report)
-        if args.verify_registry and args.require_workflows:
+        if (
+            args.verify_registry
+            and args.require_workflows
+            and args.verify_provenance
+            and not args.images
+        ):
             print("Release SBOM audit passed")
         else:
             print(
-                "Offline SBOM validation passed (registry and tag workflows "
-                "were not both verified; this is not a passing tag audit)"
+                "SBOM validation passed for "
+                f"{', '.join(report['images_required'])} (registry, tag workflows, "
+                "provenance and the full image set were not all verified; "
+                "this is not a passing tag audit)"
             )
 
 

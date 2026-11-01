@@ -220,6 +220,20 @@ class AIModel(Base):
         return None
 
     @property
+    def credentials_version(self) -> Optional[int]:
+        """Rotation counter of the credential secret (1 = never rotated)."""
+        if self.credentials_secret:
+            return self.credentials_secret.version
+        return None
+
+    @property
+    def credentials_rotated_at(self) -> Optional[datetime]:
+        """When the credential material was last replaced, if ever."""
+        if self.credentials_secret:
+            return self.credentials_secret.rotated_at
+        return None
+
+    @property
     def credentials_backend_type(self) -> Optional[str]:
         """Return the backend type for the configured credentials."""
         if self.credentials_secret:

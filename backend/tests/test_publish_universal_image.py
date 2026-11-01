@@ -270,10 +270,9 @@ def test_environments_doc_names_the_published_digest() -> None:
         REPO / "docs" / "guide" / "flows" / "environments-and-recovery.md"
     ).read_text()
     assert "publish-universal-image.yml" in text
-    assert (
-        "ghcr.io/preloop/preloop-codex-universal@sha256:"
-        "d60ffe7dcdc054d8186f40c0740c0e567a533d8222eca12ed9ca267999e56d8d"
-    ) in text
+    from preloop.agents.images import DEFAULT_AGENT_IMAGES
+
+    assert DEFAULT_AGENT_IMAGES["codex"] in text
     assert "agents.codexImage" in text
     assert "hosted default stays" not in text
 
