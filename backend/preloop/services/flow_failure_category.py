@@ -457,6 +457,8 @@ _APPROVAL_UNAVAILABLE_RE = re.compile(
 # checkpoint_runtime.checkpoint_context's refusals of a resume binding.
 _RESUME_FAILED_RE = re.compile(
     r"\bcheckpoint_resume_not_authorized\b|\bworkspace_checkpoint_missing\b"
+    # flow_feedback.resolve_native_checkpoint's refusals of a thread resume.
+    r"|^resume_failed:"
 )
 
 _STRUCTURAL_MESSAGE_RULES = (

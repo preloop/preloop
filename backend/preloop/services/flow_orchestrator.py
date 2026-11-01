@@ -197,6 +197,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Retries of a failed park resume that still count as that resume.
+_MAX_PARK_RESUME_RETRY_HOPS = 5
+
 # Log lines the post-execution block prints once it has started publishing.
 # ``PRELOOP_EVIDENCE committed`` is deliberately absent: the evidence upload
 # runs from an EXIT trap, so it also prints on a pre-push transient failure.
@@ -7676,7 +7679,8 @@ class FlowExecutionOrchestrator:
 
         True only when the execution named by ``resume["execution_id"]``
         belongs to this flow and its ``resume_execution_id`` is this
-        execution. That link is written by the park resume path when it
+        execution, or an execution this one retries (directly or through
+        a short retry chain). That link is written by the park resume path when it
         creates this row, so a ``_resume`` copied into a trigger payload by
         a caller does not satisfy it.
 
@@ -7700,11 +7704,33 @@ class FlowExecutionOrchestrator:
                 "Could not verify the park link of resume %s", parked_id, exc_info=True
             )
             return False
-        if parked is None:
+        if parked is None or str(getattr(parked, "flow_id", "")) != str(
+            self.flow.id
+        ):
             return False
-        return str(getattr(parked, "flow_id", "")) == str(self.flow.id) and str(
-            getattr(parked, "resume_execution_id", "") or ""
-        ) == str(self.execution_log.id)
+        linked = str(getattr(parked, "resume_execution_id", "") or "")
+        if not linked:
+            return False
+        # A retry of a failed resume is a new row whose retry chain leads
+        # back to the execution the parked row names.
+        current: Any = self.execution_log
+        for _ in range(_MAX_PARK_RESUME_RETRY_HOPS + 1):
+            if str(current.id) == linked:
+                return True
+            retry_of = getattr(current, "retry_of_execution_id", None)
+            if not retry_of:
+                return False
+            try:
+                current = crud_flow_execution.get(
+                    self.db, id=str(retry_of), account_id=str(self.flow.account_id)
+                )
+            except Exception:
+                return False
+            if current is None or str(getattr(current, "flow_id", "")) != str(
+                self.flow.id
+            ):
+                return False
+        return False
 
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float

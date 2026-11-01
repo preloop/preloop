@@ -627,6 +627,17 @@ class TestStatusTransitions:
         assert values["status"] == "FAILED"
         assert values["failure_category"] == "resume_failed"
 
+    @pytest.mark.parametrize("status", ["STOPPED", "CANCELLED"])
+    def test_close_parked_parent_marks_a_stopped_resume_cancelled(self, status):
+        db = _FakeDB(rowcounts=[1])
+        self.crud.close_parked_parent_for_resume(
+            db, resume_execution_id=uuid.uuid4(), status=status
+        )
+        values = {
+            getattr(key, "key", key): value for key, value in db.updates[0].items()
+        }
+        assert values["failure_category"] == "cancelled"
+
     def test_close_parked_parent_does_not_categorise_success(self):
         db = _FakeDB(rowcounts=[1])
         self.crud.close_parked_parent_for_resume(

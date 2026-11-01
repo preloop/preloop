@@ -483,7 +483,11 @@ def test_unsupported_wire_api_is_model_configuration() -> None:
 
 @pytest.mark.parametrize(
     "message",
-    ["checkpoint_resume_not_authorized", "workspace_checkpoint_missing"],
+    [
+        "checkpoint_resume_not_authorized",
+        "workspace_checkpoint_missing",
+        "resume_failed: checkpoint binding mismatch",
+    ],
 )
 def test_refused_resume_checkpoint_is_resume_failed(message: str) -> None:
     assert (

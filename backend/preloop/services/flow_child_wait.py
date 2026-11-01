@@ -451,8 +451,17 @@ def build_child_resume_details(
     ``approval_park.build_resume_details`` because the harness side of a
     resume does not care what the run was waiting for.
     """
+    from preloop.services.flow_artifacts import artifact_thread_id
+
     details = deepcopy(getattr(parked, "trigger_event_details", None) or {})
-    resume: Dict[str, Any] = {"execution_id": str(parked.id)}
+    resume: Dict[str, Any] = {
+        "execution_id": str(parked.id),
+        # The parked run's checkpoints live under its own artifact thread,
+        # which for a run that already resumed once is the chain's root.
+        "checkpoint_thread_id": artifact_thread_id(
+            getattr(parked, "trigger_event_details", None), parked.id
+        ),
+    }
     cli_session = getattr(parked, "cli_session", None)
     if isinstance(cli_session, dict) and cli_session.get("session_id"):
         resume["cli_session"] = cli_session

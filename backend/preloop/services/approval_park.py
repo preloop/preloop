@@ -265,8 +265,17 @@ def build_resume_details(
     ``_resume`` binding and the answer, in both the machine-readable payload
     slot and the prompt block.
     """
+    from preloop.services.flow_artifacts import artifact_thread_id
+
     details = deepcopy(parked.trigger_event_details or {})
-    resume: Dict[str, Any] = {"execution_id": str(parked.id)}
+    resume: Dict[str, Any] = {
+        "execution_id": str(parked.id),
+        # The parked run's checkpoints live under its own artifact thread,
+        # which for a run that already resumed once is the chain's root.
+        "checkpoint_thread_id": artifact_thread_id(
+            getattr(parked, "trigger_event_details", None), parked.id
+        ),
+    }
     cli_session = getattr(parked, "cli_session", None)
     if (
         allow_native_resume

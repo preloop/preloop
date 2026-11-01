@@ -39,13 +39,18 @@ def _orchestrator(agent_type: str, trigger: dict) -> FlowExecutionOrchestrator:
     orch.flow.git_clone_config = None
     orch.flow.trigger_project_ids = None
     orch.flow.agent_type = agent_type
-    orch.execution_log = MagicMock(ci_principal_id=None)
+    orch.execution_log = MagicMock(ci_principal_id=None, retry_of_execution_id=None)
     orch.execution_log.id = str(uuid4())
     orch.ai_model = MagicMock()
     return orch
 
 
-async def _prepare(orch: FlowExecutionOrchestrator, parked_row: object) -> dict:
+async def _prepare(
+    orch: FlowExecutionOrchestrator, parked_row: object, *more_rows: object
+) -> dict:
+    resume = (orch.trigger_event_data or {}).get("_resume") or {}
+    rows = {str(resume.get("execution_id")): parked_row}
+    rows.update({str(row.id): row for row in more_rows})
     runtime = MagicMock()
     runtime.model_gateway_enabled = False
     runtime.to_execution_context.return_value = {}
@@ -57,7 +62,10 @@ async def _prepare(orch: FlowExecutionOrchestrator, parked_row: object) -> dict:
         patch.object(orch, "_resolve_execution_model_runtime", return_value=runtime),
         patch.object(orch, "_resolve_cli_session_restore_archive", return_value=None),
         patch("preloop.services.model_routing.validate_native_resume_identity"),
-        patch("preloop.models.crud.crud_flow_execution.get", return_value=parked_row),
+        patch(
+            "preloop.models.crud.crud_flow_execution.get",
+            side_effect=lambda db, id, **kw: rows.get(str(id)),
+        ),
     ):
         context = await orch._prepare_execution_context()
     return context
@@ -153,3 +161,53 @@ async def test_unlinked_resume_payload_stays_refused(
     assert context.get("checkpoint_resume_authorized") is not True
     with pytest.raises(ValueError, match="checkpoint_resume_not_authorized"):
         _checkpoint_env(context, monkeypatch)
+
+
+async def test_retry_of_a_failed_park_resume_is_authorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parked = _parked()
+    failed_resume = SimpleNamespace(
+        id=uuid4(), flow_id=FLOW_ID, retry_of_execution_id=None
+    )
+    parked.resume_execution_id = failed_resume.id
+    orch = _orchestrator("codex", _approval_details(parked))
+    orch.execution_log.retry_of_execution_id = failed_resume.id
+
+    context = await _prepare(orch, parked, failed_resume)
+
+    assert context["checkpoint_resume_authorized"] is True
+
+
+async def test_second_park_in_a_chain_reads_the_first_resume_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed run that parks again keeps the chain's artifact thread."""
+    from preloop.models.crud import flow_artifact
+
+    first = _parked()
+    second = _parked(trigger_event_details=_approval_details(first))
+    orch = _orchestrator("codex", _approval_details(second))
+    second.resume_execution_id = orch.execution_log.id
+
+    context = await _prepare(orch, second)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    monkeypatch.setattr(
+        flow_artifact, "latest", lambda *a, **k: calls.append(k) or MagicMock()
+    )
+    with (
+        patch(
+            "preloop.api.endpoints.flow_artifacts.mint_artifact_capability",
+            return_value="cap",
+        ),
+        patch(
+            "preloop.services.checkpoint_runtime.artifact_reference",
+            return_value=MagicMock(),
+        ),
+    ):
+        checkpoint_context(MagicMock(), context)
+
+    assert calls[0]["thread_id"] == str(first.id)
+    assert str(calls[0]["execution_id"]) == str(second.id)
