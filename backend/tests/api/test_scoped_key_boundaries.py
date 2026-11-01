@@ -1,6 +1,7 @@
 """Scope confinement at REST and runtime authentication boundaries."""
 
 import re
+from tests.cross_account_keys import legacy_cross_account_runtime_key
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -259,7 +260,7 @@ def test_rest_scopes_do_not_allow_mismatched_key_owner_accounts(
     path: str,
 ) -> None:
     other = _other_user(db_session)
-    _, token = crud_api_key.create_runtime_key(
+    _, token = legacy_cross_account_runtime_key(
         db_session,
         name="Mismatched account",
         account_id=test_user.account_id,
@@ -296,6 +297,9 @@ def test_all_account_rest_operations_confine_scoped_keys(
         "/api/v1/agents/discovery-salt",
         "/api/v1/agents/discovery-reports",
         "/api/v1/agents/enrollment/exchange",
+        # Accepts only the app's own managed-agent credential and refuses
+        # every other key; covered in tests/test_agent_enrollment.py.
+        "/api/v1/agents/enrollment/applied",
     }
     tested = 0
     with TestClient(app) as client:

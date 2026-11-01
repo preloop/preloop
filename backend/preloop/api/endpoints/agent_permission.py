@@ -54,7 +54,7 @@ class PermissionIdentity:
     """Authenticated scalars safe to retain while awaiting a human decision."""
 
     account_id: str
-    user_id: UUID
+    user_id: Optional[UUID]
     api_key_id: UUID
     managed_agent_id: Optional[UUID]
     runtime_session_id: Optional[UUID]
@@ -91,7 +91,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
     """Authenticate in one worker-owned session, closed before approval waits."""
     with get_session_factory()() as db:
         api_key = crud_api_key.get_by_key(db, key=token)
-        user = _authenticate_with_api_key(db, api_key)
+        user = _authenticate_with_api_key(db, api_key, allow_managed_agent=True)
         enforce_runtime_api_key_scope(api_key)
         managed_agent = _managed_agent_for_api_key(db, api_key)
         runtime_session = None

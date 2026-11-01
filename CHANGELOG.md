@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with `approval_unavailable`; that category now means the hook could
   not be installed, or the hosted harness has none. The universal Codex image
   ships the CLI at `/opt/preloop/bin/preloop`.
+- Removing or deactivating a member now revokes that member's access to the
+  account in one transaction: sessions and tokens, CLI sessions, MCP OAuth
+  tokens, team memberships, personal API and runtime keys, and runners they
+  registered. An `access.revoked` audit event records the counts. The same
+  person's other account memberships are unaffected. Account-owned CI and
+  managed-agent credentials keep working; `GET /api/v1/users/{id}/machine-credentials`
+  lists the ones the member created. Reactivation re-enables the membership
+  only and writes `access.restored`.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,

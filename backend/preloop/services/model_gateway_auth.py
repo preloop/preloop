@@ -15,6 +15,7 @@ from preloop.api.auth.jwt import (
     _managed_agent_for_api_key,
 )
 from preloop.api.auth.key_scopes import is_single_purpose_api_key
+from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 from preloop.models import models
 from preloop.models.db.gateway_session import release_gateway_session
 from preloop.models.crud import (
@@ -46,7 +47,7 @@ class ModelGatewayAuthContext:
     """Authenticated model gateway request context."""
 
     token: str
-    user: models.User | GatewayUserSnapshot
+    user: models.User | GatewayUserSnapshot | ManagedAgentPrincipal
     api_key: models.ApiKey | GatewayApiKeySnapshot | None = None
     oauth_access_token: models.OAuthMCPAccessToken | GatewayOAuthSnapshot | None = None
     # Set only for a trusted upstream key (``model_gateway:trusted_upstream``)
@@ -107,7 +108,16 @@ class ModelGatewayAuthContext:
         return ModelGatewayAuthContext(
             # Authentication is complete. No later phase needs the bearer.
             token=NO_BEARER_TOKEN,
-            user=GatewayUserSnapshot(id=self.user.id, account_id=self.user.account_id),
+            user=GatewayUserSnapshot(
+                id=self.user.id,
+                account_id=self.user.account_id,
+                principal_id=self.user.principal_id
+                if isinstance(self.user, ManagedAgentPrincipal)
+                else None,
+                created_by_user_id=self.user.created_by_user_id
+                if isinstance(self.user, ManagedAgentPrincipal)
+                else None,
+            ),
             api_key=GatewayApiKeySnapshot(
                 id=key.id,
                 account_id=key.account_id,
@@ -158,6 +168,7 @@ async def authenticate_bearer_token(
             session,
             allow_ended_runtime_session=allow_ended_runtime_session,
             allow_read_only_review=allow_read_only_review,
+            allow_managed_agent=True,
         )
         if user is not None:
             # A last-use commit may expire the user. Hydrate while this worker
@@ -214,6 +225,8 @@ def _key_owner_account_differs(db: Session, api_key: Any) -> bool:
 
     Used only to name the rejection reason in the gateway diagnostic log.
     """
+    if api_key.user_id is None:
+        return False
     owner = crud_user.get(db, id=str(api_key.user_id))
     return owner is not None and str(owner.account_id) != str(api_key.account_id)
 
@@ -362,7 +375,22 @@ def build_runtime_key_auth_context(
     ):
         return None
 
-    user = crud_user.get(db, id=str(api_key.user_id))
+    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    if context.get("credential_kind") == "managed_agent_durable":
+        from preloop.models.crud.managed_agent_auth import authenticate
+
+        user = authenticate(
+            db,
+            account_id=api_key.account_id,
+            key_id=api_key.id,
+            agent_id=context.get("managed_agent_id"),
+        )
+    else:
+        user = (
+            crud_user.get(db, id=str(api_key.user_id))
+            if api_key.user_id is not None
+            else None
+        )
     if user is None or not user.is_active:
         return None
     if not _key_matches_user_account(api_key, user):

@@ -287,6 +287,7 @@ nav:
       - Roles and permissions: guide/users/roles.md
       - Managing teams: guide/users/managing-teams.md
       - Accounts and CLI profiles: guide/accounts-and-profiles.md
+      - Removing a member: guide/removing-members.md
 
   - Self-hosting and operations:
       - Anthropic Enterprise hooks: operations/anthropic-inference-hooks.md

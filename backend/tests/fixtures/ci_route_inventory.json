@@ -575,5 +575,6 @@
   "WEBSOCKET /api/v1/ws/flow-executions/{execution_id}": "deny",
   "WEBSOCKET /api/v1/ws/flows/{flow_id}/lifecycle": "deny",
   "WEBSOCKET /api/v1/ws/runtime-sessions/{runtime_session_id}": "deny",
-  "WEBSOCKET /api/v1/ws/unified": "deny"
+  "WEBSOCKET /api/v1/ws/unified": "deny",
+  "GET /api/v1/users/{user_id}/machine-credentials": "deny"
 }

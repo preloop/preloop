@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from starlette.authentication import AuthCredentials, AuthenticationBackend
 from starlette.requests import HTTPConnection
 
+from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 from preloop.api.auth.jwt import get_user_from_token_if_valid
 from preloop.api.auth.key_scopes import is_single_purpose_api_key
 from preloop.services.dynamic_mcp_server import (
@@ -115,6 +116,7 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
             current_user = await get_user_from_token_if_valid(
                 token,
                 db,
+                allow_managed_agent=True,
                 allow_restricted_runtime=getattr(conn, "scope", {}).get("type")
                 == "http",
             )
@@ -202,7 +204,11 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
         # Store account ID in the AccessToken so we can retrieve the user later
         access_token = AccessToken(
             token=token,
-            client_id=str(current_user.id),  # Use account ID as client_id
+            client_id=str(
+                current_user.principal_id
+                if isinstance(current_user, ManagedAgentPrincipal)
+                else current_user.id
+            ),
             scopes=[scope for scope in (key.scopes or []) if isinstance(scope, str)]
             if key
             else [],
@@ -279,14 +285,16 @@ async def get_user_context_for_mcp(
 
     # Extract token and cached account from AuthenticatedUser
     token = auth_user.access_token.token
-    current_user = getattr(auth_user.access_token, "account", None)
+    current_user = getattr(auth_user.access_token, "user", None)
 
     if not current_user:
         # Fallback: re-validate if account wasn't cached (shouldn't happen)
         logger.warning(
             f"Account not cached in AccessToken, re-validating token {token[:10]}..."
         )
-        current_user = await get_user_from_token_if_valid(token, db)
+        current_user = await get_user_from_token_if_valid(
+            token, db, allow_managed_agent=True
+        )
         if not current_user:
             logger.warning(
                 f"MCP authentication failed: Could not load user for token {token[:10]}..."
@@ -298,7 +306,10 @@ async def get_user_context_for_mcp(
     )
 
     # Check if user has tracker(s)
-    user_has_tracker = has_tracker(current_user, db)
+    from preloop.models.crud import crud_account
+
+    account = crud_account.get(db, id=current_user.account_id)
+    user_has_tracker = has_tracker(account, db) if account is not None else False
 
     # For Phase 1A: Return all default tools if user has tracker
     # Phase 1B will implement granular tool configuration from database
@@ -310,8 +321,8 @@ async def get_user_context_for_mcp(
     enabled_proxied_tools = []
 
     user_context = {
-        "user_id": str(current_user.id),
-        "account_id": str(current_user.id),  # For Phase 1A, account_id = user_id
+        "user_id": str(current_user.id) if current_user.id is not None else None,
+        "account_id": str(current_user.account_id),
         "username": current_user.username,
         "has_tracker": user_has_tracker,
         "enabled_default_tools": enabled_default_tools,

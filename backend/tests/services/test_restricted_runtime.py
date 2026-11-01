@@ -34,7 +34,10 @@ async def test_runtime_transport_opt_in_is_http_only(
     )
     assert await mcp_http.PreloopBearerAuthBackend().authenticate(connection) is None
     authenticate.assert_awaited_once_with(
-        "synthetic-runtime-key", db, allow_restricted_runtime=transport == "http"
+        "synthetic-runtime-key",
+        db,
+        allow_managed_agent=True,
+        allow_restricted_runtime=transport == "http",
     )
     db.close.assert_called_once()
 

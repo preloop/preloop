@@ -18,6 +18,7 @@ from preloop.schemas.user import (
     AdminUserResponse,
     UserSummary,
     AdminUserUpdate,
+    MemberMachineCredential,
 )
 from preloop.models import models
 from preloop.models.crud import crud_account, crud_person, crud_user
@@ -30,9 +31,12 @@ from preloop.models.crud.person import IdentityConflictError, IdentityUnavailabl
 from preloop.services.multiuser import email_exists
 from preloop.models.db.session import get_db_session
 from preloop.utils.permissions import require_permission
+from preloop.services.membership_lifecycle import (
+    offboard_membership,
+    reactivate_membership,
+)
 from preloop.services import multiuser
 
-from preloop.services.multiuser import membership_module
 from preloop.services.multiuser import enforce_seat_available
 from preloop.services.multiuser import ensure_can_remove_member
 
@@ -403,28 +407,36 @@ def update_user(
             key: value for key, value in update_fields.items() if key == "is_active"
         }
     if update_fields.get("is_active") is True and not user.is_active:
-        enforce_seat_available(db, current_user.account_id)
+        try:
+            reactivate_membership(
+                db,
+                account_id=user.account_id,
+                user_id=user.id,
+                actor=current_user,
+                commit=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     # Switching a membership off is a removal: a primary row hands the
     # person's credentials to another membership first, as deactivate does.
     if update_fields.get("is_active") is False:
         if user.id == current_user.id:
             raise HTTPException(400, "Cannot deactivate your own account")
         ensure_can_remove_member(db, current_user, user)
-        if user.is_active:
-            _release_membership(db, user)
+        offboard_membership(
+            db,
+            account_id=user.account_id,
+            user_id=user.id,
+            reason="Console membership deactivation",
+            actor=current_user,
+            commit=False,
+        )
 
     updated_user = crud_user.update(db=db, db_obj=user, obj_in=update_fields)
     db.commit()
     db.refresh(updated_user)
 
     return _build_admin_user_response(db, updated_user)
-
-
-def _release_membership(db: Session, user: User) -> None:
-    """Let the account hierarchy plugin move a leaving primary's credentials."""
-    membership = membership_module()
-    if membership is not None:
-        membership.release_membership(db, user)
 
 
 @router.post("/users/{user_id}/deactivate", status_code=status.HTTP_204_NO_CONTENT)
@@ -466,9 +478,14 @@ def deactivate_user(
         )
 
     ensure_can_remove_member(db, current_user, user)
-    _release_membership(db, user)
-    crud_user.deactivate(db=db, user_id=user_id)
-    db.commit()
+    offboard_membership(
+        db,
+        account_id=user.account_id,
+        user_id=user_id,
+        reason="Console membership removal",
+        actor=current_user,
+        commit=True,
+    )
 
     logger.info(f"User {user_id} deactivated by {current_user.username}")
 
@@ -482,6 +499,47 @@ def deactivate_user(
         # Don't fail user deactivation if billing update fails
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/users/{user_id}/machine-credentials",
+    response_model=List[MemberMachineCredential],
+)
+@require_permission("manage_users")
+def list_user_machine_credentials(
+    user_id: UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Session = Depends(get_db_session),
+) -> List[MemberMachineCredential]:
+    """List account-owned machine credentials a member created.
+
+    Removing the member leaves these credentials working, because the account
+    owns them. Admins use this list to review or rotate them.
+
+    Args:
+        user_id: Membership whose machine credentials to list.
+        current_user: Current authenticated user.
+        db: Database session.
+
+    Returns:
+        CI identity and managed-agent credentials created by the member.
+
+    Raises:
+        HTTPException: 404 if the member is not in the caller's account.
+    """
+    from preloop.models.crud.membership_lifecycle import (
+        list_member_machine_credentials,
+    )
+
+    user = crud_user.get(db=db, id=user_id)
+    if user is None or user.account_id != current_user.account_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    return [
+        MemberMachineCredential.model_validate(item, from_attributes=True)
+        for item in list_member_machine_credentials(
+            db, account_id=user.account_id, user_id=user.id
+        )
+    ]
 
 
 class BulkDeleteUsersRequest(BaseModel):
@@ -609,8 +667,14 @@ def bulk_delete_users(
                 )
                 continue
             if not request.hard_delete:
-                _release_membership(db, user)
-                crud_user.deactivate(db=db, user_id=user.id)
+                offboard_membership(
+                    db,
+                    account_id=user.account_id,
+                    user_id=user.id,
+                    reason="Console bulk membership removal",
+                    actor=current_user,
+                    commit=True,
+                )
                 touched_account_ids.add(account_id)
                 results.append(
                     BulkDeleteUserResult(user_id=user_id, status="deactivated")
@@ -637,6 +701,19 @@ def bulk_delete_users(
                         )
                     )
                     continue
+                from preloop.models.crud.membership_lifecycle import (
+                    account_machine_key_ids,
+                )
+
+                if account_machine_key_ids(db, account_id=user.account_id):
+                    results.append(
+                        BulkDeleteUserResult(
+                            user_id=user_id,
+                            status="skipped",
+                            reason="Account owns machine credentials; delete the account explicitly instead",
+                        )
+                    )
+                    continue
                 _purge_account(db, account_id, deleted_by)
                 results.append(
                     BulkDeleteUserResult(user_id=user_id, status="account_purged")
@@ -647,7 +724,14 @@ def bulk_delete_users(
                 )
                 continue
 
-            _release_membership(db, user)
+            offboard_membership(
+                db,
+                account_id=user.account_id,
+                user_id=user.id,
+                reason="Console permanent membership removal",
+                actor=current_user,
+                commit=False,
+            )
             crud_user.hard_delete(db, user_id=user.id)
             touched_account_ids.add(account_id)
             results.append(BulkDeleteUserResult(user_id=user_id, status="deleted"))

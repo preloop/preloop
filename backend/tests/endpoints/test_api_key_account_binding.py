@@ -3,6 +3,7 @@
 import logging
 
 import pytest
+from tests.cross_account_keys import legacy_cross_account_runtime_key
 from fastapi import HTTPException
 
 from preloop.api.auth import jwt as jwt_module
@@ -21,7 +22,7 @@ def test_key_bound_to_another_account_is_rejected_like_an_invalid_key(
 ):
     """A key whose account differs from its user's account fails closed."""
     other = _other_account(db_session)
-    api_key, _token = crud_api_key.create_runtime_key(
+    api_key, _token = legacy_cross_account_runtime_key(
         db_session,
         name="Cross-account key",
         account_id=other.id,
@@ -52,7 +53,7 @@ def test_key_bound_to_another_account_is_rejected_like_an_invalid_key(
 def test_token_lookup_returns_no_user_for_a_cross_account_key(db_session, test_user):
     """The bearer path used by the gateway resolves no user for such a key."""
     other = _other_account(db_session)
-    _api_key, token = crud_api_key.create_runtime_key(
+    _api_key, token = legacy_cross_account_runtime_key(
         db_session,
         name="Cross-account key",
         account_id=other.id,

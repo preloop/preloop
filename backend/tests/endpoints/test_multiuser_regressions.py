@@ -218,8 +218,13 @@ def test_bulk_delete_rolls_back_one_error_and_continues(
     """A failed target is reported while a later target can still be changed."""
     bad = colleague(db_session, test_user, "failed_member")
     good = colleague(db_session, test_user, "valid_member")
-    method = "hard_delete" if hard else "deactivate"
-    original = getattr(crud_user, method)
+    # Soft removal goes through the offboarding service, hard removal
+    # through crud_user.hard_delete.
+    from preloop.api.endpoints import users as users_endpoint
+
+    target = crud_user if hard else users_endpoint
+    method = "hard_delete" if hard else "offboard_membership"
+    original = getattr(target, method)
     rollback = Mock(wraps=db_session.rollback)
     monkeypatch.setattr(db_session, "rollback", rollback)
 
@@ -228,7 +233,7 @@ def test_bulk_delete_rolls_back_one_error_and_continues(
             raise RuntimeError("Synthetic deletion failure")
         return original(db, user_id=user_id, **kwargs)
 
-    monkeypatch.setattr(crud_user, method, fail_one)
+    monkeypatch.setattr(target, method, fail_one)
     response = client.post(
         "/api/v1/users/bulk-delete",
         json={"user_ids": [str(bad.id), str(good.id)], "hard_delete": hard},

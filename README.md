@@ -204,6 +204,7 @@ Governance itself is open source: every model provider, flows, private runners, 
 |---|:---:|:---:|
 | Audit collection, query API, and console | Yes | Yes |
 | Multiple users, invitations, teams and team membership | Yes | Yes |
+| Membership offboarding with personal credential revocation and retained account automation | Yes | Yes |
 | Per-user devices, runners and agents; basic approvals and usage views | Yes | Yes |
 | Isolation between accounts | Yes | Yes |
 | Roles, owner protection, RBAC/ABAC, resource access rules and sharing | No | Yes |

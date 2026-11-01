@@ -2763,7 +2763,9 @@ async def {internal_name}({params_str}):
                         and name not in self._proxied_tool_servers
                     ),
                     account_id=uuid.UUID(user_context.account_id),
-                    user_id=uuid.UUID(user_context.user_id),
+                    user_id=uuid.UUID(user_context.user_id)
+                    if user_context.user_id
+                    else None,
                     server_name=scope_server_name,
                     extra_bindings=(
                         {**(sensitive_bindings or {}), "grant": grant_binding}
@@ -3010,7 +3012,9 @@ async def {internal_name}({params_str}):
                     )
                     audit_fields = dict(
                         account_id=uuid.UUID(user_context.account_id),
-                        user_id=uuid.UUID(user_context.user_id),
+                        user_id=uuid.UUID(user_context.user_id)
+                        if user_context.user_id
+                        else None,
                         # The name the client called, not the internal
                         # ``account_<id>_`` router name: the audit trail,
                         # the Activity feed and the policy sub-events all
@@ -3726,7 +3730,9 @@ async def {internal_name}({params_str}):
                 }
             audit_fields = dict(
                 account_id=uuid.UUID(str(account_id)),
-                user_id=uuid.UUID(str(user_context.user_id)),
+                user_id=uuid.UUID(str(user_context.user_id))
+                if user_context.user_id
+                else None,
                 tool_name=client_tool_name,
                 tool_args=tool_args,
                 result=AUDIT_TOOL_CALL_DECLINED,
@@ -4056,8 +4062,15 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             # Server-side ceiling, including direct calls and legacy aliases.
             allowed_flow_tools = []
 
+        from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
+
+        if isinstance(user, ManagedAgentPrincipal):
+            runtime_principal_type = "managed_agent"
+            runtime_principal_id = str(user.principal_id)
+            runtime_principal_name = user.username
+
         user_context = UserContext(
-            user_id=str(user.id),
+            user_id=str(user.id) if user.id is not None else None,
             account_id=str(user.account_id),
             username=user.username,
             has_tracker=user_has_tracker,

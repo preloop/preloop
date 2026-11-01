@@ -80,10 +80,10 @@ class ApiKey(Base):
         index=True,
         comment="The account this API key belongs to",
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("user.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
         comment="The user who created this API key",
     )
     scopes: Mapped[List] = mapped_column(JSON, default=list, nullable=False)
@@ -123,7 +123,7 @@ class ApiKey(Base):
 
     # Relationships
     account: Mapped["Account"] = relationship("Account")
-    creator: Mapped["User"] = relationship("User", back_populates="api_keys")
+    creator: Mapped[Optional["User"]] = relationship("User", back_populates="api_keys")
     managed_agent_credential: Mapped[Optional["ManagedAgentCredential"]] = relationship(
         "ManagedAgentCredential", back_populates="api_key", uselist=False
     )

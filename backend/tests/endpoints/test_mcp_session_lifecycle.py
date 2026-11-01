@@ -76,7 +76,7 @@ TOOL_NAMES = (
 async def test_all_native_tools_release_connection_on_auth_failure(
     tool_name: str, tool_pool: QueuePool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def invalid_token(token: str, db: Session) -> None:
+    async def invalid_token(token: str, db: Session, **kwargs: Any) -> None:
         db.execute(text("SELECT 1"))
         return None
 
@@ -105,7 +105,7 @@ async def test_concurrent_pr_reads_release_pool_before_provider_wait(
     all_entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def valid_token(token: str, db: Session) -> Any:
+    async def valid_token(token: str, db: Session, **kwargs: Any) -> Any:
         db.execute(text("SELECT 1"))
         return SimpleNamespace(account_id="account")
 
@@ -255,7 +255,7 @@ async def test_native_tool_cancellation_during_auth_releases_connection(
 ) -> None:
     entered = asyncio.Event()
 
-    async def authenticate(token: str, db: Session) -> None:
+    async def authenticate(token: str, db: Session, **kwargs: Any) -> None:
         db.execute(text("SELECT 1"))
         entered.set()
         await asyncio.Event().wait()
@@ -319,7 +319,7 @@ async def test_failed_tool_call_rolls_back_session_and_recovers_next_call(
         lambda: SimpleNamespace(headers={"authorization": "Bearer test"}),
     )
 
-    async def valid_token(token: str, db: Session) -> Any:
+    async def valid_token(token: str, db: Session, **kwargs: Any) -> Any:
         db.execute(text("SELECT 1"))
         return SimpleNamespace(account_id="account")
 

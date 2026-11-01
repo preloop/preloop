@@ -23830,6 +23830,53 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/users/{user_id}/machine-credentials:
+    get:
+      tags:
+      - Users
+      summary: List User Machine Credentials
+      description: "List account-owned machine credentials a member created.\n\nRemoving\
+        \ the member leaves these credentials working, because the account\nowns them.\
+        \ Admins use this list to review or rotate them.\n\nArgs:\n    user_id: Membership\
+        \ whose machine credentials to list.\n    current_user: Current authenticated\
+        \ user.\n    db: Database session.\n\nReturns:\n    CI identity and managed-agent\
+        \ credentials created by the member.\n\nRaises:\n    HTTPException: 404 if\
+        \ the member is not in the caller's account."
+      operationId: list_user_machine_credentials_api_v1_users__user_id__machine_credentials_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemberMachineCredential'
+                title: Response List User Machine Credentials Api V1 Users  User Id  Machine
+                  Credentials Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/users/bulk-delete:
     post:
       tags:
@@ -43274,6 +43321,56 @@ components:
       - clock
       title: MediaTiming
       description: Wall clock at media t=0, optionally supplemented by exact offsets.
+    MemberMachineCredential:
+      properties:
+        api_key_id:
+          type: string
+          format: uuid
+          title: Api Key Id
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          enum:
+          - ci_principal
+          - managed_agent
+          title: Kind
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        principal_name:
+          type: string
+          title: Principal Name
+        is_active:
+          type: boolean
+          title: Is Active
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+      type: object
+      required:
+      - api_key_id
+      - name
+      - kind
+      - principal_id
+      - principal_name
+      - is_active
+      title: MemberMachineCredential
+      description: 'Account-owned machine credential created by a member.
+
+
+        Offboarding a member leaves these working; admins review or rotate them.'
     MobileDeviceRegistration:
       properties:
         platform:
