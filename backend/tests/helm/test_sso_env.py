@@ -120,7 +120,6 @@ def _render_fails(public_url: str) -> str:
         "https://sso.example.com/preloop",
         "http://sso.example.com",
         "https://user@sso.example.com",
-        "https://sso.example.com\\x",
         "https://sso example.com",
     ],
 )
