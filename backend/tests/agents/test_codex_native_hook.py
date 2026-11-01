@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import sys
 import textwrap
 import uuid
 from datetime import datetime, timezone
@@ -71,6 +72,9 @@ def _run_block(tmp_path: Path, *, required: bool, cli: bool, token: str = "tok")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _exe(bin_dir / "codex", FAKE_CODEX)
+    # The hook block and the fake app-server need python3. Slim images keep
+    # it in /usr/local/bin, which this restricted PATH leaves out.
+    (bin_dir / "python3").symlink_to(sys.executable)
     if cli:
         _exe(bin_dir / "preloop", "#!/bin/sh\nexit 0\n")
     # No network in tests: a curl that always fails.
