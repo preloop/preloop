@@ -32,6 +32,15 @@ from preloop.services.upstream_identity import (
 
 logger = logging.getLogger(__name__)
 
+# MCP content blocks forwarded to the agent as-is (#1151).
+_PASSTHROUGH_CONTENT_TYPES = (
+    types.TextContent,
+    types.ImageContent,
+    types.AudioContent,
+    types.ResourceLink,
+    types.EmbeddedResource,
+)
+
 
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Return the first meaningful leaf from a (possibly nested) exception group.
@@ -591,9 +600,13 @@ class MCPClient:
                 result = await session.call_tool(name=tool_name, arguments=arguments)
 
                 # Convert to list and extract all data
-                content_list = []
+                content_list: list[Any] = []
                 for item in result.content:
-                    if hasattr(item, "text"):
+                    # Forward known MCP block types unchanged so audio stays
+                    # audio and resource links are not dropped (#1151).
+                    if isinstance(item, _PASSTHROUGH_CONTENT_TYPES):
+                        content_list.append(item)
+                    elif hasattr(item, "text"):
                         content_list.append(
                             types.TextContent(type="text", text=item.text)
                         )

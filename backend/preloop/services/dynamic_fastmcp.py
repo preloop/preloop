@@ -427,19 +427,25 @@ def _upstream_error_detail(
     return (_short_reason(code) or "tool_error"), _short_reason(reason)
 
 
-def _proxied_upstream_result(text: str, upstream: Any) -> Any:
+def _proxied_upstream_result(
+    text: str, upstream: Any, content: list[Any] | None = None
+) -> Any:
     """Return what the agent receives for a proxied upstream result.
 
-    A plain success keeps the historical string. When the upstream set
+    A plain text success keeps the historical string. When the upstream set
     ``isError`` or ``structuredContent`` both are forwarded unchanged, so a
     refusal reaches the agent as an error, and the outcome is stamped for the
-    audit row.
+    audit row. Non-text blocks (image, audio, resource links, embedded
+    resources) in ``content`` are forwarded with their types intact (#1151).
     """
     is_error = getattr(upstream, "is_error", False) is True
     structured = getattr(upstream, "structured_content", None)
     if not isinstance(structured, dict):
         structured = None
-    if not is_error and structured is None:
+    typed = content is not None and any(
+        not isinstance(item, TextContent) for item in content
+    )
+    if not is_error and structured is None and not typed:
         return text
     if is_error:
         _tool_outcome_var.set(_WRAPPER_OUTCOME_UPSTREAM_ERROR)
@@ -447,7 +453,7 @@ def _proxied_upstream_result(text: str, upstream: Any) -> Any:
             _upstream_error_detail(list(upstream or []), structured)
         )
     return ToolResult(
-        content=[TextContent(type="text", text=text)],
+        content=list(content) if typed else [TextContent(type="text", text=text)],
         structured_content=structured,
         is_error=is_error,
     )
@@ -2135,7 +2141,9 @@ async def {internal_name}({params_str}):
             )
         else:
             text = str(result)
-        return _proxied_upstream_result(text, upstream)
+        return _proxied_upstream_result(
+            text, upstream, result if isinstance(result, list) else None
+        )
 
     except Exception as e:
         from preloop.services.mcp_client_pool import (

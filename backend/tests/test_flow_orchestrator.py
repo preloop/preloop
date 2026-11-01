@@ -32,6 +32,7 @@ from preloop.services.flow_orchestrator import (
     repository_path_from_git_url,
     _build_confirmation_nudge_prompt,
     _failure_report_in_log_lines,
+    _artifact_failure_signal,
     _result_artifact_confirmation,
     _sentinel_in_log_lines,
     _success_instruction_for_prompt,
@@ -2956,6 +2957,54 @@ class TestResultArtifactConfirmation:
 
     def test_pass_is_success_confirmation(self):
         assert _result_artifact_confirmation({"status": "pass"}) == "success"
+
+
+class TestReviewPublicationConfirmation:
+    """EE #202: an unposted review must not confirm success.
+
+    The preset spells the field ``review_posted``; production agents also
+    wrote ``review_posted_to_github``. Both fail the flow when false.
+    """
+
+    @pytest.mark.parametrize("key", ["review_posted", "review_posted_to_github"])
+    def test_unposted_review_with_action_is_failure(self, key):
+        artifact = {"status": "success", "review_action": "approve", key: False}
+        assert _result_artifact_confirmation(artifact) == "failure"
+
+    @pytest.mark.parametrize("key", ["review_posted", "review_posted_to_github"])
+    def test_unposted_review_with_blocker_is_failure(self, key):
+        artifact = {
+            "status": "success",
+            "review_action": None,
+            key: False,
+            "blocker": "GitHub App 401",
+        }
+        assert _result_artifact_confirmation(artifact) == "failure"
+
+    def test_contradictory_aliases_are_failure(self):
+        artifact = {
+            "status": "success",
+            "review_action": "comment",
+            "review_posted": True,
+            "review_posted_to_github": False,
+        }
+        assert _result_artifact_confirmation(artifact) == "failure"
+
+    @pytest.mark.parametrize("key", ["review_posted", "review_posted_to_github"])
+    def test_posted_review_is_success(self, key):
+        artifact = {"status": "success", "review_action": "approve", key: True}
+        assert _result_artifact_confirmation(artifact) == "success"
+
+    def test_deliberate_no_post_stays_success(self):
+        # Preset Step 8.2: a deliberate skip is review_posted false with
+        # review_action null and no blocker.
+        artifact = {"status": "success", "review_posted": False, "review_action": None}
+        assert _result_artifact_confirmation(artifact) == "success"
+
+    @pytest.mark.parametrize("key", ["review_posted", "review_posted_to_github"])
+    def test_failure_signal_names_the_publication_field(self, key):
+        artifact = {"status": "success", "review_action": "approve", key: False}
+        assert _artifact_failure_signal(artifact) == (key, False)
 
 
 class TestResultArtifactVerdictConfirmation:

@@ -395,3 +395,55 @@ async def test_uninspectable_audit_service_warns_once(monkeypatch, caplog):
     assert len(caplog.records) == 1
     assert "error_reason" in caplog.records[0].message
     assert "private-reason" not in caplog.records[0].message
+
+
+AUDIO = types.AudioContent(type="audio", data="UklGRg==", mimeType="audio/wav")
+IMAGE = types.ImageContent(type="image", data="iVBORw0=", mimeType="image/png")
+LINK = types.ResourceLink(
+    type="resource_link", uri="file:///shift/nord-late.wav", name="nord-late.wav"
+)
+
+
+async def test_client_call_tool_keeps_audio_and_resource_link_blocks():
+    """#1151: audio stays audio and resource links are not dropped."""
+    client = MCPClient(url="http://localhost:8001/mcp")
+    client._connected = True
+    upstream = types.CallToolResult(
+        content=[types.TextContent(type="text", text="t"), AUDIO, IMAGE, LINK]
+    )
+    streams = AsyncMock()
+    streams.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    streams.__aexit__ = AsyncMock(return_value=None)
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.call_tool = AsyncMock(return_value=upstream)
+    with (
+        patch(
+            "preloop.services.mcp_client_pool.streamable_http_client",
+            return_value=streams,
+        ),
+        patch("preloop.services.mcp_client_pool.ClientSession", return_value=session),
+    ):
+        result = await client.call_tool("t", {})
+
+    assert [item.type for item in result] == ["text", "audio", "image", "resource_link"]
+    assert result[1].mimeType == "audio/wav"
+    assert str(result[3].uri) == "file:///shift/nord-late.wav"
+
+
+async def test_proxied_tool_forwards_typed_content_blocks(monkeypatch, user_context):
+    """#1151: the agent receives audio/image/link blocks, not str() dumps."""
+    upstream = [types.TextContent(type="text", text="shift audio"), AUDIO, LINK]
+    mcp, _, audit_service, _ = _setup(monkeypatch, user_context, upstream=upstream)
+
+    result = await mcp.call_tool("safe_tool", {"ok": "yes"})
+
+    assert not result.is_error
+    assert [item.type for item in result.content] == [
+        "text",
+        "audio",
+        "resource_link",
+    ]
+    assert result.content[1].data == "UklGRg=="
+    assert _audit_kwargs(audit_service)["result"] == "executed"
