@@ -174,7 +174,9 @@ def collect(
     )
 
 
-def verify_provenance(image: str, name: str, repo: str, tag: str, source_sha: str) -> None:
+def verify_provenance(
+    image: str, name: str, repo: str, tag: str, source_sha: str
+) -> None:
     """Require signed build provenance for the image digest from its workflow.
 
     Args:
