@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
 from preloop.models.crud import crud_runner_share, crud_team, crud_user
+from preloop.models.crud.runner_share import RunnerShareAccountError
 
 
 def _user(db, account_id, name):
@@ -173,3 +174,24 @@ def test_policy_set_and_clear(db_session, test_user):
         )
         is None
     )
+
+
+def test_rows_stay_in_one_account(db_session, test_user):
+    runner = _runner(db_session, test_user)
+    other = models.Account(organization_name=f"other-{uuid4().hex[:6]}")
+    db_session.add(other)
+    db_session.flush()
+    stranger = _user(db_session, other.id, "stranger")
+    with pytest.raises(RunnerShareAccountError):
+        _grant(db_session, runner, test_user, "user", stranger.id)
+    with pytest.raises(RunnerShareAccountError):
+        _grant(db_session, runner, test_user, "user", test_user.id, account_id=other.id)
+    with pytest.raises(RunnerShareAccountError):
+        crud_runner_share.set_policy(
+            db_session,
+            account_id=other.id,
+            runner_id=runner.id,
+            owner_consent="required",
+            updated_by_user_id=None,
+            commit=False,
+        )

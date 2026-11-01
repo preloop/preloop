@@ -1134,6 +1134,7 @@ def harness_options(
     *,
     account_id: Any,
     usable: Any,
+    usable_harness: Any = None,
 ) -> Dict[str, Any]:
     """Harness + model choices for the flow editor (contract B).
 
@@ -1143,6 +1144,9 @@ def harness_options(
         account_id: Caller's account.
         usable: ``callable(runner) -> bool``, whether the caller may route
             to the runner (registrant or account admin in wave 1).
+        usable_harness: Optional ``callable(runner, harness) -> bool``. When
+            given, a harness the caller may not pin on that runner (a share
+            limited to other harnesses) is left out for that runner.
 
     Returns:
         ``{"harnesses": [...]}`` for runnable harnesses (``copilot_cli``,
@@ -1165,6 +1169,8 @@ def harness_options(
             if harness not in HOST_EXEC_AGENT_TYPE_BY_HARNESS:
                 continue
             if entry.get("support_level") in (None, "presence_only"):
+                continue
+            if usable_harness is not None and not usable_harness(runner, harness):
                 continue
             ok, reason, _entry = runner_eligible_for_harness(
                 db,

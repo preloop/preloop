@@ -1,4 +1,5 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
 import './runner-sharing-panel';
 import type { RunnerSharingPanel } from './runner-sharing-panel';
 import { CAPABILITY_EXTENSIONS } from '../../../components/capability-extension';
@@ -208,5 +209,103 @@ describe('runner sharing panel', () => {
       harnesses: ['claude_code'],
       directory_ids: ['dir_d'],
     });
+  });
+});
+
+describe('runner sharing panel edge cases', () => {
+  let api: MockApi;
+  beforeEach(() => signInForTest());
+  afterEach(() => {
+    api?.restore();
+    localStorage.clear();
+  });
+
+  it('renders nothing when the server has no runner sharing', async () => {
+    api = mockApi({ routes: [] });
+    const el = await fixture<RunnerSharingPanel>(
+      html`<runner-sharing-panel
+        .context=${{ runners: [{ id: RUNNER, name: 'laptop' }] }}
+      ></runner-sharing-panel>`
+    );
+    const select = el.shadowRoot!.querySelector(
+      '[data-testid="sharing-runner"]'
+    ) as HTMLSelectElement;
+    select.value = RUNNER;
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() => !el.shadowRoot!.querySelector('h3'));
+    expect(el.shadowRoot!.querySelector('[role="alert"]')).to.be.null;
+  });
+
+  it('explains when the owner cannot list people', async () => {
+    api = mockApi({
+      routes: [
+        {
+          path: `/api/v1/runners/${RUNNER}/shares`,
+          body: sharing({ grants: [] }),
+        },
+        { path: '/api/v1/teams', status: 403, body: {} },
+        { path: '/api/v1/users', status: 403, body: {} },
+      ],
+    });
+    const el = await mount();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="share-form-unavailable"]')
+    );
+    expect(el.shadowRoot!.querySelector('[data-testid="share-form"]')).to.be
+      .null;
+  });
+
+  it('drops a response for a runner that is no longer selected', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const reply = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    const stub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.includes(`/runners/${RUNNER}/shares`)) {
+          await gate;
+          return reply(sharing());
+        }
+        if (url.includes('/runners/runner-2/shares')) {
+          return reply(sharing({ runner_id: 'runner-2', grants: [] }));
+        }
+        if (url.includes('/auth/users/me')) return reply(TEST_PROFILE);
+        return new Response('{}', { status: 404 });
+      });
+    try {
+      const el = await fixture<RunnerSharingPanel>(
+        html`<runner-sharing-panel
+          .context=${{
+            runners: [
+              { id: RUNNER, name: 'laptop' },
+              { id: 'runner-2', name: 'desktop' },
+            ],
+          }}
+        ></runner-sharing-panel>`
+      );
+      const select = el.shadowRoot!.querySelector(
+        '[data-testid="sharing-runner"]'
+      ) as HTMLSelectElement;
+      select.value = RUNNER;
+      select.dispatchEvent(new CustomEvent('sl-change'));
+      await el.updateComplete;
+      select.value = 'runner-2';
+      select.dispatchEvent(new CustomEvent('sl-change'));
+      await waitUntil(() =>
+        (el.shadowRoot!.textContent ?? '').includes('Not shared.')
+      );
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(el.shadowRoot!.textContent).to.contain('Not shared.');
+      expect(el.shadowRoot!.querySelector('[data-testid="share-row"]')).to.be
+        .null;
+    } finally {
+      stub.restore();
+    }
   });
 });

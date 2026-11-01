@@ -4,6 +4,7 @@
  */
 import { REST_API_PREFIX } from './api-path';
 import { extractErrorMessage, fetchWithAuth } from './api';
+import { CapabilityOffError } from './capabilities';
 
 export type ShareScope = 'flows' | 'sessions';
 export type OwnerConsent = 'required' | 'not_required';
@@ -72,12 +73,25 @@ const json = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
-export function getRunnerSharing(runnerId: string): Promise<RunnerSharing> {
-  return call(
-    `/runners/${encodeURIComponent(runnerId)}/shares`,
-    { method: 'GET' },
-    'Failed to load runner sharing'
-  );
+/** A 404 on the collection means the plugin is not mounted. */
+export async function getRunnerSharing(
+  runnerId: string
+): Promise<RunnerSharing> {
+  const path = `/runners/${encodeURIComponent(runnerId)}/shares`;
+  const response = await fetchWithAuth(`${REST_API_PREFIX}${path}`);
+  if (response.status === 404) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: { code?: string };
+    };
+    if (body.detail?.code !== 'runner_not_found') {
+      throw new CapabilityOffError(path);
+    }
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(body, 'Failed to load runner sharing'));
+  }
+  return response.json() as Promise<RunnerSharing>;
 }
 
 export function createRunnerShare(

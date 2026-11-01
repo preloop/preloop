@@ -7,7 +7,11 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import { getTeams, getUserProfile, getUsers } from '../../../api';
-import { NO_CAPABILITIES, type CapabilitySet } from '../../../capabilities';
+import {
+  NO_CAPABILITIES,
+  isCapabilityOff,
+  type CapabilitySet,
+} from '../../../capabilities';
 import {
   answerRunnerShare,
   createRunnerShare,
@@ -156,6 +160,12 @@ export class RunnerSharingPanel extends LitElement {
   @state() private scopes: ShareScope[] = ['sessions'];
   @state() private harnesses = '';
   @state() private directories = '';
+  /** The server does not serve runner sharing: render nothing. */
+  @state() private off = false;
+  /** The caller cannot list users or teams, so cannot pick a grantee. */
+  @state() private peopleUnavailable = false;
+  /** Bumped on every load; a response for an older load is dropped. */
+  private generation = 0;
 
   private runners(): SharingRunner[] {
     const value = this.context.runners;
@@ -178,6 +188,7 @@ export class RunnerSharingPanel extends LitElement {
       getUsers().catch(() => null),
     ]);
     this.me = profile?.id ?? '';
+    this.peopleUnavailable = teams === null && users === null;
     this.grantees = [
       ...(teams?.teams ?? []).map((t) => ({
         key: `team:${t.id}`,
@@ -195,11 +206,20 @@ export class RunnerSharingPanel extends LitElement {
   }
 
   private async load(): Promise<void> {
+    const generation = ++this.generation;
+    const runnerId = this.runnerId;
     this.error = '';
+    this.sharing = null;
     try {
-      this.sharing = await getRunnerSharing(this.runnerId);
+      const sharing = await getRunnerSharing(runnerId);
+      if (generation !== this.generation || runnerId !== this.runnerId) return;
+      this.sharing = sharing;
     } catch (error) {
-      this.sharing = null;
+      if (generation !== this.generation) return;
+      if (isCapabilityOff(error)) {
+        this.off = true;
+        return;
+      }
       this.error = (error as Error).message;
     }
   }
@@ -321,7 +341,7 @@ export class RunnerSharingPanel extends LitElement {
                 ?disabled=${this.busy}
                 @click=${() =>
                   this.act(() =>
-                    answerRunnerShare(this.runnerId, share.id, true)
+                    answerRunnerShare(share.runner_id, share.id, true)
                   )}
                 >Accept</sl-button
               >
@@ -331,7 +351,7 @@ export class RunnerSharingPanel extends LitElement {
                 ?disabled=${this.busy}
                 @click=${() =>
                   this.act(() =>
-                    answerRunnerShare(this.runnerId, share.id, false)
+                    answerRunnerShare(share.runner_id, share.id, false)
                   )}
                 >Decline</sl-button
               >`
@@ -344,7 +364,7 @@ export class RunnerSharingPanel extends LitElement {
               data-testid="revoke-share"
               ?disabled=${this.busy}
               @click=${() =>
-                this.act(() => revokeRunnerShare(this.runnerId, share.id))}
+                this.act(() => revokeRunnerShare(share.runner_id, share.id))}
               >Revoke</sl-button
             >`
           : nothing
@@ -380,6 +400,12 @@ export class RunnerSharingPanel extends LitElement {
   }
 
   private renderForm() {
+    if (this.peopleUnavailable) {
+      return html`<div class="meta" data-testid="share-form-unavailable">
+        Your role cannot list users or teams, so it cannot pick who to share
+        with. Ask an account admin to share this runner.
+      </div>`;
+    }
     return html`<div class="form" data-testid="share-form">
       <sl-select
         size="small"
@@ -434,7 +460,7 @@ export class RunnerSharingPanel extends LitElement {
 
   render() {
     const runners = this.runners();
-    if (runners.length === 0) return nothing;
+    if (runners.length === 0 || this.off) return nothing;
     const sharing = this.sharing;
     return html`<h3>Runner sharing</h3>
       <sl-select

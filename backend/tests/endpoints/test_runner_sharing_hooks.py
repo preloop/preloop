@@ -8,6 +8,7 @@ the flow pin gate.
 """
 
 from typing import Any, Dict, List
+from uuid import uuid4
 
 import pytest
 
@@ -305,3 +306,34 @@ def test_start_consent_waiver_defaults_to_none(db_session, test_user):
         account_hooks.start_consent_waiver(db_session, test_user, runner)
         == "admin_override"
     )
+
+
+def test_lease_passes_pin_harness_and_directory(db_session, test_user):
+    from preloop.plugins.account_hooks import ACTION_RUNNER_ACCEPT
+    from preloop.services.runner_service import _runner_may_accept
+
+    runner = _runner(db_session, test_user)
+    seen: List[Dict[str, Any]] = []
+
+    def authorizer(ctx, action, resource):
+        if action == ACTION_RUNNER_ACCEPT:
+            seen.append(dict(ctx.attributes))
+            return Decision("deny", ("ee:share",), "runner_share_revoked")
+        return None
+
+    account_hooks.register_authorizer(authorizer)
+    allowed = _runner_may_accept(
+        db_session,
+        account_id=test_user.account_id,
+        runner=runner,
+        pool="auto",
+        execution_id=uuid4(),
+        flow_id="flow-1",
+        pinned_runner_id=runner.id,
+        harness="claude_code",
+        workspace_id="dir_d",
+    )
+    assert allowed is False
+    assert seen[0]["pinned_runner_id"] == str(runner.id)
+    assert seen[0]["harness"] == "claude_code"
+    assert seen[0]["workspace_id"] == "dir_d"

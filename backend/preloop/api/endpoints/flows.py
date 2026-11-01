@@ -236,6 +236,7 @@ def _caller_may_use_runner(
     *,
     operation: str = "pin",
     harness: Optional[str] = None,
+    is_admin: Optional[bool] = None,
 ) -> bool:
     """The runner's registrant, an account admin, or a ``flows`` share grantee.
 
@@ -251,7 +252,8 @@ def _caller_may_use_runner(
 
     if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
         return True
-    is_admin = _is_account_admin(db, current_user)
+    if is_admin is None:
+        is_admin = _is_account_admin(db, current_user)
     if get_authorizer() is None:
         return is_admin
     return may_use_runner_for_flows(
@@ -720,23 +722,50 @@ def get_flow_harness_options(
     runners = crud_flow_runner.list_for_account(
         db, account_id=current_user.account_id, limit=500
     )
+    from preloop.api.auth.router import _is_account_admin
     from preloop.plugins.account_hooks import get_authorizer
 
-    admin: Dict[str, bool] = {}
     shared = get_authorizer() is not None
+    admin: Dict[str, bool] = {}
 
-    def usable(runner: Any) -> bool:
-        if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
-            return True
-        if shared:
-            # A share is per runner, so the answer cannot be cached.
-            return _caller_may_use_runner(db, current_user, runner, operation="options")
+    def is_admin() -> bool:
         if "value" not in admin:
-            admin["value"] = _caller_may_use_runner(db, current_user, runner)
+            admin["value"] = bool(_is_account_admin(db, current_user))
         return admin["value"]
 
+    def owns(runner: Any) -> bool:
+        return str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id)
+
+    def usable(runner: Any) -> bool:
+        if owns(runner):
+            return True
+        if shared:
+            # A share is per runner, so only the admin answer is cached.
+            return _caller_may_use_runner(
+                db, current_user, runner, operation="options", is_admin=is_admin()
+            )
+        return is_admin()
+
+    def usable_harness(runner: Any, harness: str) -> bool:
+        if not shared or owns(runner) or is_admin():
+            return True
+        return _caller_may_use_runner(
+            db,
+            current_user,
+            runner,
+            operation="options",
+            harness=harness,
+            is_admin=False,
+        )
+
     return HarnessOptionsResponse.model_validate(
-        harness_options(db, runners, account_id=current_user.account_id, usable=usable)
+        harness_options(
+            db,
+            runners,
+            account_id=current_user.account_id,
+            usable=usable,
+            usable_harness=usable_harness,
+        )
     )
 
 

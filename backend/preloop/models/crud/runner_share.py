@@ -30,6 +30,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class RunnerShareAccountError(ValueError):
+    """A runner, team or user is not in the account the row is written for."""
+
+
+def _require_runner_in_account(db: Session, runner_id: Any, account_id: Any) -> None:
+    runner = db.get(models.FlowRunner, _uuid(runner_id))
+    if runner is None or runner.account_id != _uuid(account_id):
+        raise RunnerShareAccountError("runner is not in this account")
+
+
+def _require_grantee_in_account(
+    db: Session, grantee_type: str, grantee_id: Any, account_id: Any
+) -> None:
+    model = models.Team if grantee_type == "team" else models.User
+    row = db.get(model, _uuid(grantee_id))
+    if row is None or row.account_id != _uuid(account_id):
+        raise RunnerShareAccountError(f"{grantee_type} is not in this account")
+
+
 class CRUDRunnerShare:
     """Grant and policy rows for runner sharing."""
 
@@ -71,7 +90,13 @@ class CRUDRunnerShare:
 
         Returns:
             The new grant.
+
+        Raises:
+            RunnerShareAccountError: The runner or the grantee is not in
+                ``account_id``.
         """
+        _require_runner_in_account(db, runner_id, account_id)
+        _require_grantee_in_account(db, grantee_type, grantee_id, account_id)
         grant = RunnerShareGrant(
             account_id=_uuid(account_id),
             runner_id=_uuid(runner_id),
@@ -240,7 +265,12 @@ class CRUDRunnerShare:
 
         ``owner_consent=None`` deletes the row: the account row falls back to
         the default, a runner row falls back to the account row.
+
+        Raises:
+            RunnerShareAccountError: ``runner_id`` is not in ``account_id``.
         """
+        if runner_id is not None:
+            _require_runner_in_account(db, runner_id, account_id)
         row = self.get_policy(db, account_id=account_id, runner_id=runner_id)
         if owner_consent is None:
             if row is not None:

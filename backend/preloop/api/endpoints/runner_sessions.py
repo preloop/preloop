@@ -609,6 +609,9 @@ class _AuditContext:
     access: Optional[str] = None
     access_rule_ids: tuple[str, ...] = ()
     consent_decision: str = "approved"
+    #: Cached admin answer: options asks the rule once per harness and
+    #: directory, and the admin lookup costs two queries.
+    is_admin: Optional[bool] = None
 
     def details(self, **extra: Any) -> Dict[str, Any]:
         owner_id = getattr(self.runner, "registered_by_user_id", None)
@@ -668,7 +671,9 @@ def _authorization(
     audit: _AuditContext, operation: str, **attributes: Any
 ) -> tuple[Any, bool]:
     """Ask the runner session rule; return the decision and the admin flag."""
-    is_admin = _is_account_admin(audit.db, audit.user)
+    if audit.is_admin is None:
+        audit.is_admin = _is_account_admin(audit.db, audit.user)
+    is_admin = audit.is_admin
     attrs: Dict[str, Any] = {
         "operation": operation,
         "harness": audit.harness,
