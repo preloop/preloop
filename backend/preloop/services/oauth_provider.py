@@ -519,8 +519,11 @@ class PreloopOAuthProvider(OAuthProvider):
 
             # 2. Fall back to legacy Bearer token (API key / JWT)
             from preloop.api.auth.jwt import get_user_from_token_if_valid
+            from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 
-            user = await get_user_from_token_if_valid(token, db)
+            user = await get_user_from_token_if_valid(
+                token, db, allow_managed_agent=True
+            )
             if user:
                 from preloop.api.auth.key_scopes import is_single_purpose_api_key
 
@@ -535,7 +538,11 @@ class PreloopOAuthProvider(OAuthProvider):
                     return None
                 access_token = AccessToken(
                     token=token,
-                    client_id=str(user.id),
+                    client_id=str(
+                        user.principal_id
+                        if isinstance(user, ManagedAgentPrincipal)
+                        else user.id
+                    ),
                     scopes=[
                         scope
                         for scope in (api_key_obj.scopes or [])

@@ -724,7 +724,7 @@ async def _close(websocket: WebSocket, code: int, reason: str = "") -> None:
 
 class _EndpointIdentity(BaseModel):
     account_id: uuid.UUID
-    user_id: uuid.UUID
+    user_id: Optional[uuid.UUID]
     api_key_id: uuid.UUID
     bound_agent_id: Optional[uuid.UUID] = None
 
@@ -739,7 +739,9 @@ def _authenticate_endpoint(db: Session, token: str) -> _EndpointIdentity:
     api_key = crud_api_key.get_by_key(db, key=token)
     if api_key is None:
         raise _error(401, "unauthorized", "Invalid API key")
-    user = _authenticate_with_api_key(db, api_key, allow_stale_runtime_session=True)
+    user = _authenticate_with_api_key(
+        db, api_key, allow_stale_runtime_session=True, allow_managed_agent=True
+    )
     from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
 
     enforce_runtime_api_key_scope(api_key)

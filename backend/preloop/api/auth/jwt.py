@@ -33,6 +33,7 @@ from preloop.models.crud import (
 from preloop.models.db.session import get_db_session
 from preloop.plugins import account_hooks
 from preloop.models.models.managed_agent import ManagedAgent
+from preloop.models.crud.managed_agent_auth import ManagedAgentPrincipal
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.user import User
 from preloop.schemas.auth import TokenData
@@ -83,7 +84,7 @@ def _token_log_fingerprint(token: str) -> str:
 class RuntimeBearerAuthContext:
     """Authenticated runtime bearer identity bound to a managed agent."""
 
-    user: User
+    user: User | ManagedAgentPrincipal
     api_key: Any
     runtime_session: RuntimeSession
     managed_agent: ManagedAgent
@@ -184,7 +185,8 @@ def _authenticate_with_api_key(
     allow_ended_runtime_session: bool = False,
     allow_restricted_runtime: bool = False,
     allow_read_only_review: bool = False,
-) -> User:
+    allow_managed_agent: bool = False,
+) -> User | ManagedAgentPrincipal:
     """Validate an API key and return its active owner.
 
     ``allow_stale_runtime_session`` is for DURABLE managed-agent credentials
@@ -310,6 +312,23 @@ def _authenticate_with_api_key(
     if not allow_stale_runtime_session and not allow_ended_runtime_session:
         _reject_finished_flow_execution_key(session, api_key)
 
+    if context_data.get("credential_kind") == "managed_agent_durable":
+        if not allow_managed_agent:
+            raise HTTPException(
+                403, "Managed-agent credentials require a runtime channel"
+            )
+        from preloop.models.crud.managed_agent_auth import authenticate
+
+        principal = authenticate(
+            session,
+            account_id=api_key.account_id,
+            key_id=api_key.id,
+            agent_id=context_data.get("managed_agent_id"),
+        )
+        if principal is None:
+            raise HTTPException(401, "Managed-agent credential is invalid")
+        return principal
+
     user = crud_user.get(session, id=api_key.user_id)
     if not user:
         raise HTTPException(
@@ -367,7 +386,7 @@ def authenticate_runtime_bearer_token(
 
     api_key = crud_api_key.get_by_key(session, key=token)
     user = _authenticate_with_api_key(
-        session, api_key, allow_stale_runtime_session=True
+        session, api_key, allow_stale_runtime_session=True, allow_managed_agent=True
     )
     enforce_runtime_api_key_scope(api_key)
 
@@ -988,8 +1007,12 @@ def get_current_active_user_optional(
 
 
 async def get_user_from_token_if_valid(
-    token: str, db_session: Any, *, allow_restricted_runtime: bool = False
-) -> Optional[User]:
+    token: str,
+    db_session: Any,
+    *,
+    allow_restricted_runtime: bool = False,
+    allow_managed_agent: bool = False,
+) -> Optional[User | ManagedAgentPrincipal]:
     """
     Manually attempts to retrieve a user from a token string.
     Returns None if the token is invalid, expired, or the user doesn't exist.
@@ -997,9 +1020,12 @@ async def get_user_from_token_if_valid(
     """
     from preloop.api.loop_safety import run_db_off_loop
 
-    def authenticate() -> Optional[User]:
+    def authenticate() -> Optional[User | ManagedAgentPrincipal]:
         user = get_user_from_token_if_valid_sync(
-            token, db_session, allow_restricted_runtime=allow_restricted_runtime
+            token,
+            db_session,
+            allow_restricted_runtime=allow_restricted_runtime,
+            allow_managed_agent=allow_managed_agent,
         )
         if user is not None:
             # API-key last-used commits expire the user. Hydrate its scalar
@@ -1017,7 +1043,8 @@ def get_user_from_token_if_valid_sync(
     allow_ended_runtime_session: bool = False,
     allow_restricted_runtime: bool = False,
     allow_read_only_review: bool = False,
-) -> Optional[User]:
+    allow_managed_agent: bool = False,
+) -> Optional[User | ManagedAgentPrincipal]:
     """Sync variant for short-lived sessions in WebSocket handlers.
 
     Args:
@@ -1044,6 +1071,7 @@ def get_user_from_token_if_valid_sync(
                     allow_ended_runtime_session=allow_ended_runtime_session,
                     allow_restricted_runtime=allow_restricted_runtime,
                     allow_read_only_review=allow_read_only_review,
+                    allow_managed_agent=allow_managed_agent,
                 )
 
         token_data = decode_token(token)

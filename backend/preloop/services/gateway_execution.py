@@ -21,8 +21,10 @@ from preloop.models import models
 class GatewayUserSnapshot:
     """Authenticated identity, without a user row or password hash."""
 
-    id: UUID
+    id: UUID | None
     account_id: UUID
+    principal_id: UUID | None = None
+    created_by_user_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ class GatewayApiKeySnapshot:
 
     id: UUID
     account_id: UUID
-    user_id: UUID
+    user_id: UUID | None
     name: str
     context_json: str
     scopes: tuple[Any, ...] = ()

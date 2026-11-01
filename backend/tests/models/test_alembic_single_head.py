@@ -526,4 +526,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert realtime.down_revision == "20261116_saml_sp_certificate"
     result_export = script.get_revision("20261122_execution_result_grant")
     assert result_export.down_revision == "20261120_execution_realtime_seq"
-    assert script.get_heads() == ["20261122_execution_result_grant"]
+    offboarding = script.get_revision("20261117_membership_offboarding")
+    assert offboarding.down_revision == "20261122_execution_result_grant"
+    assert script.get_heads() == ["20261117_membership_offboarding"]

@@ -48,6 +48,20 @@ def _runner_visibility_clause(db: Session, account_id: Any) -> Any:
 class CRUDFlowRunner(CRUDBase[FlowRunner]):
     """CRUD helpers for FlowRunner."""
 
+    def create(
+        self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
+    ) -> FlowRunner:
+        """Serialize registration with offboarding of its human registrant."""
+        from .membership_lifecycle import require_active_membership
+
+        if obj_in.get("registered_by_user_id") is not None:
+            require_active_membership(
+                db,
+                account_id=obj_in["account_id"],
+                user_id=obj_in["registered_by_user_id"],
+            )
+        return super().create(db, obj_in=obj_in, commit=commit)
+
     def get_fresh(self, db: Session, *, runner_id: UUID) -> Optional[models.FlowRunner]:
         """Reload committed runner state after a compare-and-swap update."""
         return (
@@ -941,6 +955,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         account_id: UUID,
         force: bool = False,
         reason: str = "The runner holding this execution was deleted",
+        commit: bool = True,
     ) -> Optional[List[UUID]]:
         """Delete one runner row of an account, and with it its token.
 
@@ -985,7 +1000,8 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
                 .first()
             )
             if runner is None:
-                db.rollback()
+                if commit:
+                    db.rollback()
                 return None
             held = [
                 row.execution_id
@@ -995,7 +1011,8 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
                 .all()
             ]
             if held and not force:
-                db.rollback()
+                if commit:
+                    db.rollback()
                 raise RunnerHasLeasesError(held)
             now = datetime.now(timezone.utc)
             for execution_id in held:
@@ -1008,13 +1025,17 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             db.query(FlowRunner).filter(FlowRunner.id == runner_id).delete(
                 synchronize_session=False
             )
-            db.commit()
-            db.expire_all()
+            if commit:
+                db.commit()
+                db.expire_all()
+            else:
+                db.flush()
             return held
         except RunnerHasLeasesError:
             raise
         except Exception:
-            db.rollback()
+            if commit:
+                db.rollback()
             raise
 
     def rotate_token(
@@ -1031,6 +1052,9 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         Returns:
             The updated runner, or None when no such runner exists in the account.
         """
+        db.query(models.Account).filter(
+            models.Account.id == account_id
+        ).with_for_update().first()
         updated = (
             db.query(FlowRunner)
             .filter(FlowRunner.id == runner_id, FlowRunner.account_id == account_id)
