@@ -210,6 +210,12 @@ def _audit_rows(
             "chain_seq": row.chain_seq,
             "prev_hash": row.prev_hash,
             "row_hash": row.row_hash,
+            # A redaction after sealing (#2133) keeps row_hash and records
+            # the hash of the rewritten content and the event listing it.
+            "redacted_row_hash": row.redacted_row_hash,
+            "redaction_event_id": (
+                str(row.redaction_event_id) if row.redaction_event_id else None
+            ),
         }
         for row in _fetch(db, stmt)
     ]

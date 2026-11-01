@@ -84,6 +84,14 @@ class ChainVerifyRead(BaseModel):
     first_break: Optional[ChainBreakRead] = None
     checkpoints_verified: int
     checkpoint_failures: List[Dict[str, Any]] = Field(default_factory=list)
+    redacted_rows: int = Field(
+        0,
+        description=(
+            "Rows that no longer hash to their sealed row_hash because a "
+            "recorded redaction_applied event rewrote them, and that hash to "
+            "the redacted_row_hash that event lists"
+        ),
+    )
 
 
 class ChainSegmentEntry(BaseModel):
@@ -93,6 +101,16 @@ class ChainSegmentEntry(BaseModel):
     row_id: str
     prev_hash: Optional[str] = None
     row_hash: Optional[str] = None
+    redacted_row_hash: Optional[str] = Field(
+        None,
+        description=(
+            "Set when a redaction rewrote this row after sealing: the hash of "
+            "the payload as served. row_hash stays the value the chain links to."
+        ),
+    )
+    redaction_event_id: Optional[str] = Field(
+        None, description="row_id of the redaction_applied row listing this rewrite"
+    )
     payload: Dict[str, Any]
 
 

@@ -38,6 +38,7 @@ export class LoginView extends LitElement {
   @state() private discovering = false;
   @state() private ssoEmail = '';
   @state() private ssoUrl: string | null = null;
+  @state() private prefillUsername = '';
   private discoveryGeneration = 0;
 
   @state()
@@ -179,7 +180,9 @@ export class LoginView extends LitElement {
       this.registrationEnabled = features.features['registration'] !== false;
       this.passkeysEnabled =
         features.features['passkeys'] !== false && passkeysSupported();
-      this.ssoEnabled = features.features['enterprise_sso'] === true;
+      // The plugin flag (enterprise_sso) only says SSO can be set up.
+      // sso_login is true only when a working connection exists.
+      this.ssoEnabled = features.features['sso_login'] === true;
       this.multiAccount = hasCapability(features.features, 'multi_account');
     } catch (error) {
       this.oauthProviders = [];
@@ -360,7 +363,12 @@ export class LoginView extends LitElement {
       const url = await discoverSso(email);
       if (!this.isConnected || generation !== this.discoveryGeneration) return;
       this.ssoUrl = url;
-      if (!url) this.showOtherMethods = true;
+      if (!url) {
+        // No provider for this domain: go straight to the password form
+        // with the email filled in, so the user is not sent round again.
+        this.prefillUsername = email;
+        this.showOtherMethods = true;
+      }
     } catch (error) {
       if (this.isConnected && generation === this.discoveryGeneration)
         this.error =
@@ -517,8 +525,18 @@ export class LoginView extends LitElement {
                 this.showOtherMethods = false;
                 this.error = '';
                 this.ssoUrl = null;
+                // After a miss, ask for a different address instead of
+                // offering the one that just had no provider.
+                if (this.prefillUsername) {
+                  this.ssoEmail = '';
+                  this.prefillUsername = '';
+                }
               }}
-              >Use single sign-on</sl-button
+              >${
+                this.prefillUsername
+                  ? 'Try a different email for single sign-on'
+                  : 'Use single sign-on'
+              }</sl-button
             >`
           : nothing
       }
@@ -530,6 +548,7 @@ export class LoginView extends LitElement {
             id="username"
             name="username"
             autocomplete="username"
+            .value=${this.prefillUsername}
             required
           ></sl-input>
         </div>

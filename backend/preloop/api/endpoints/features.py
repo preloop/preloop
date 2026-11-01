@@ -12,6 +12,7 @@ from preloop.api.auth.bootstrap import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.models import models
+from preloop.models.crud import crud_account_sso_connection
 from preloop.api.auth import get_current_active_user
 from preloop.services.configuration_gating import configuration_capabilities
 from preloop.plugins.base import get_plugin_manager
@@ -122,6 +123,15 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # The live activity board (#1889) is served by an extension plugin; the
     # open-source edition reports it off explicitly.
     result["features"].setdefault("live_activity", False)
+
+    # The email-first sign-in step is offered only when single sign-on is
+    # actually configured: the plugin is on AND an enabled connection with a
+    # verified domain exists. The plugin flag alone would send every user
+    # through an email step that can never find a provider.
+    result["features"]["sso_login"] = bool(
+        result["features"].get("enterprise_sso") is True
+        and crud_account_sso_connection.login_configured(db)
+    )
 
     # Passkey (WebAuthn) support: PASSKEYS_ENABLED env, default true. The
     # login page uses this to decide whether to render "Sign in with passkey".

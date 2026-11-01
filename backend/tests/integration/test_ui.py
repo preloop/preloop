@@ -61,7 +61,7 @@ def test_lit_app_successful_login(page: Page):
     ) as features_response:
         page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
     sso_enabled = (
-        features_response.value.json().get("features", {}).get("enterprise_sso") is True
+        features_response.value.json().get("features", {}).get("sso_login") is True
     )
 
     # 2. Wait for the page to load and locate the main app shell
@@ -77,8 +77,9 @@ def test_lit_app_successful_login(page: Page):
     expect(login_heading).to_be_visible(timeout=15000)
     expect(login_form).to_be_visible(timeout=15000)
 
-    # With enterprise SSO on, the view asks for an email first; password
-    # sign-in sits behind "Use another sign-in method".
+    # Only when an SSO connection is configured does the view ask for an
+    # email first; password sign-in then sits behind "Use another sign-in
+    # method". Otherwise the password form is shown directly.
     if sso_enabled:
         other_methods = login_view.locator("#other-sign-in-methods")
         expect(other_methods).to_be_visible(timeout=15000)

@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The console shows a runner sharing panel when the server reports the
   `runner_sharing` capability. Without a plugin, runners stay owner or
   account admin only.
+- Apply the current sensitive-data rules to rows that were stored before a
+  rule was installed or tightened: `preloop policy apply-stored`, `POST
+  /api/v1/policies/sensitive-data/apply-to-stored` (account admins) and
+  `python -m preloop.services.sensitive_data.stored_rows`. Covers audit row
+  tool content, decided approval requests, the session timeline and the
+  session search index. Dry run by default, batched, resumable and
+  idempotent; legal holds and pending approvals are skipped. Each batch that
+  changes rows records a `redaction_applied` audit event with rule ids and
+  counts, never content. Rewritten sealed audit rows keep their `row_hash`
+  and record `redacted_row_hash` and `redaction_event_id`; the server
+  verifier and `preloop audit verify` accept such a row only when its event
+  lists it with that hash, and report `redacted_rows`. Migration
+  `20261124_audit_row_redaction` adds the three nullable `audit_log`
+  columns. See `docs/guide/sensitive-data.md#apply-rules-to-stored-rows`.
 - Operators can rotate an AI model credential with
   `POST /api/v1/ai-models/{model_id}/credentials/rotate`, sending a new
   `api_key` or a new Vault/OpenBao `external_ref`. The secret is replaced in

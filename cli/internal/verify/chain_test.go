@@ -186,3 +186,107 @@ func TestARepeatedSequenceIsCaught(t *testing.T) {
 		t.Fatalf("break = %+v", walk.Break)
 	}
 }
+
+func redactionFixture(t *testing.T) ([]SegmentEntry, string) {
+	t.Helper()
+	entries := buildChain(t, 3)
+	// Rewrite row 1 after sealing: row_hash and prev_hash links stay.
+	rewritten := map[string]interface{}{}
+	for key, value := range entries[0].Payload {
+		rewritten[key] = value
+	}
+	rewritten["details"] = map[string]interface{}{"tool_args": "[REDACTED:email]"}
+	redacted, err := RowHash(RowDomainV1, rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries[0].Payload = rewritten
+	entries[0].RedactedRowHash = redacted
+	entries[0].RedactionEventID = entries[2].RowID
+	entries[2].Payload["action"] = ActionRedactionApplied
+	entries[2].Payload["details"] = map[string]interface{}{
+		"rows": []interface{}{
+			map[string]interface{}{
+				"id": entries[0].RowID, "redacted_row_hash": redacted,
+				"row_hash": entries[0].RowHash,
+			},
+		},
+	}
+	resealed, err := RowHash(RowDomainV1, entries[2].Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries[2].RowHash = resealed
+	return entries, redacted
+}
+
+func TestRedactedRowWithItsEventVerifies(t *testing.T) {
+	entries, _ := redactionFixture(t)
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Feed(entries)
+	if unresolved := walk.Finish(); unresolved != 0 {
+		t.Fatalf("unresolved %d", unresolved)
+	}
+	if !walk.OK() || walk.Redacted != 1 {
+		t.Fatalf("break %+v redacted %d", walk.Break, walk.Redacted)
+	}
+}
+
+func TestRedactedRowNotListedByItsEventBreaks(t *testing.T) {
+	entries, _ := redactionFixture(t)
+	entries[2].Payload["details"] = map[string]interface{}{"rows": []interface{}{}}
+	entries[2].RowHash, _ = RowHash(RowDomainV1, entries[2].Payload)
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Feed(entries)
+	walk.Finish()
+	if walk.Break == nil || walk.Break.Kind != BreakRedactionUnanchored || walk.Break.Seq != 1 {
+		t.Fatalf("break %+v", walk.Break)
+	}
+}
+
+func TestRedactedRowWithoutRedactedHashIsARowHashBreak(t *testing.T) {
+	entries, _ := redactionFixture(t)
+	entries[0].RedactedRowHash = ""
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Feed(entries)
+	if walk.Break == nil || walk.Break.Kind != BreakRowHash {
+		t.Fatalf("break %+v", walk.Break)
+	}
+}
+
+func TestRedactionEventOutsideTheRangeIsUnresolved(t *testing.T) {
+	entries, _ := redactionFixture(t)
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Feed(entries[:2])
+	if unresolved := walk.Finish(); unresolved != 1 || !walk.OK() {
+		t.Fatalf("unresolved %d break %+v", unresolved, walk.Break)
+	}
+}
+
+func TestCheckpointAtARedactedRowKeepsTheLinkedHash(t *testing.T) {
+	entries, _ := redactionFixture(t)
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Watch([]int64{1})
+	walk.Feed(entries)
+	if walk.Observed[1] != entries[0].RowHash {
+		t.Fatalf("observed %q, want the sealed hash", walk.Observed[1])
+	}
+}
+
+func TestRedactionEventListingAnotherSealedHashBreaks(t *testing.T) {
+	entries, redacted := redactionFixture(t)
+	entries[2].Payload["details"] = map[string]interface{}{
+		"rows": []interface{}{
+			map[string]interface{}{
+				"id": entries[0].RowID, "redacted_row_hash": redacted, "row_hash": "ff",
+			},
+		},
+	}
+	entries[2].RowHash, _ = RowHash(RowDomainV1, entries[2].Payload)
+	walk := NewChainWalk(RowDomainV1, 0, GenesisHash)
+	walk.Feed(entries)
+	walk.Finish()
+	if walk.Break == nil || walk.Break.Kind != BreakRedactionUnanchored {
+		t.Fatalf("break %+v", walk.Break)
+	}
+}

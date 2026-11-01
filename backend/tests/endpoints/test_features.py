@@ -67,6 +67,7 @@ class TestGetFeatures:
                 "live_activity": False,
                 "ticket_readiness": False,
                 "desktop_views": False,
+                "sso_login": False,
             },
         }
         mock_get_plugin_manager.assert_called_once()
@@ -109,6 +110,7 @@ class TestGetFeatures:
                 "live_activity": False,
                 "ticket_readiness": False,
                 "desktop_views": False,
+                "sso_login": False,
             },
         }
 
@@ -139,7 +141,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 20
+        assert len(result["features"]) == 21
         assert result["features"]["policy_simulation"] is True
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True
@@ -557,3 +559,40 @@ def test_features_report_desktop_views(
     assert get_features(db=MagicMock())["features"]["desktop_views"] is True
     monkeypatch.setattr(settings, "desktop_views_enabled", False)
     assert get_features(db=MagicMock())["features"]["desktop_views"] is False
+
+
+@pytest.mark.parametrize(
+    ("plugin_flag", "configured", "expected"),
+    [
+        (None, True, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, True),
+    ],
+)
+def test_sso_login_requires_a_configured_connection(
+    plugin_flag: bool | None, configured: bool, expected: bool
+) -> None:
+    """The plugin flag alone never turns on the email-first sign-in step."""
+    from preloop.api.endpoints.features import get_features
+
+    features: dict = {}
+    if plugin_flag is not None:
+        features["enterprise_sso"] = plugin_flag
+    manager = MagicMock()
+    manager.get_enabled_features.return_value = {"plugins": [], "features": features}
+    with (
+        patch(
+            "preloop.api.endpoints.features.get_plugin_manager", return_value=manager
+        ),
+        patch("preloop.api.auth.bootstrap.crud_user") as crud_user,
+        patch(
+            "preloop.api.endpoints.features.crud_account_sso_connection"
+        ) as connections,
+    ):
+        crud_user.has_any_users.return_value = True
+        connections.login_configured.return_value = configured
+        result = get_features(db=MagicMock())
+    assert result["features"]["sso_login"] is expected
+    if plugin_flag is not True:
+        connections.login_configured.assert_not_called()

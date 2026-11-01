@@ -555,6 +555,21 @@ purge under a stated policy: the purge raises that floor as it deletes, so
 enforcing retention does not read as tampering. Rows written since the last
 sealing pass are not chained yet (`unsealed_rows`).
 
+A third case is reported as a count, not a break: rows rewritten after
+sealing by a stored-row redaction (see
+[Sensitive-data handling](../sensitive-data.md#apply-rules-to-stored-rows)).
+Such a row keeps its `row_hash`, so the next row's `prev_hash` and every
+checkpoint still verify. It also carries `redacted_row_hash`, the same hash
+over its rewritten content, and `redaction_event_id`, the
+`redaction_applied` audit row that lists the row id with that hash and its
+original `row_hash`. Both walks accept the row only if that event is sealed
+in the same account, verifies itself, and lists it with exactly those
+hashes; otherwise they report `redaction_unanchored`.
+`redacted_rows` counts the rows accepted this way. The CLI also reports
+`unresolved_redactions`: rewritten rows whose event lies outside the walked
+range. Widen the range to check them. Period exports carry both fields on
+each audit row.
+
 ### In the console
 
 Settings > Records, under Audit integrity, shows sealed and unsealed counts,

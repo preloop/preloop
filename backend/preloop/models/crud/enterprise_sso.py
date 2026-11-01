@@ -177,6 +177,38 @@ class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
             ).scalars()
         )
 
+    def login_configured(self, db: Session) -> bool:
+        """Whether any account can route a sign-in to single sign-on.
+
+        True only when an enabled OIDC or SAML connection belongs to an
+        account that holds at least one verified domain, which is the
+        minimum the email discovery step needs to return a provider.
+
+        Args:
+            db: Database session.
+
+        Returns:
+            True when at least one such connection exists on the instance.
+        """
+        verified = (
+            select(AccountVerifiedDomain.id)
+            .where(
+                AccountVerifiedDomain.account_id == AccountSsoConnection.account_id,
+                AccountVerifiedDomain.verified_at.is_not(None),
+            )
+            .exists()
+        )
+        row = db.execute(
+            select(AccountSsoConnection.id)
+            .where(
+                AccountSsoConnection.enabled.is_(True),
+                AccountSsoConnection.protocol.in_(("oidc", "saml")),
+                verified,
+            )
+            .limit(1)
+        ).first()
+        return row is not None
+
     def get_in_account(
         self, db: Session, *, connection_id: Any, account_id: Any
     ) -> Optional[AccountSsoConnection]:

@@ -4,8 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20261124_runner_share_grant"
-down_revision = "20261123_secret_rotation"
+revision = "20261125_runner_share_grant"
+down_revision = "20261124_audit_row_redaction"
 branch_labels = None
 depends_on = None
 

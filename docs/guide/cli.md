@@ -241,6 +241,7 @@ preloop policy validate <file>
 preloop policy apply <file> [--dry-run] [-r]   # -r: recurse into a directory
 preloop policy diff <file>
 preloop policy export [-o file]
+preloop policy apply-stored [--apply] [--since T] [--until T] [--store NAME] [--json]   # apply current sensitive-data rules to stored rows; dry run without --apply
 preloop policy generate "<prompt>" [-o file] [-f prompt-file] \
   [--from-audit-logs --start-date 2026-01-01 --end-date 2026-02-01] [--no-context]
 ```
