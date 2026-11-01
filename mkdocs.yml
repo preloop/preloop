@@ -301,6 +301,7 @@ nav:
       - Upgrade acceptance: operations/upgrade-acceptance.md
       - Schema migrations: operations/schema-migrations.md
       - Database credentials: operations/database-credentials.md
+      - PgBouncer: operations/pgbouncer.md
       - Gateway memory: operations/gateway-memory.md
       - Gateway activity storage: operations/gateway-activity-storage.md
       - Reference sizing on AKS: operations/sizing-aks.md
