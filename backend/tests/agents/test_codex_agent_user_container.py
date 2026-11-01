@@ -7,21 +7,43 @@ fail with a permission error and leave the files unchanged, so later
 commands are still checked by the same hook. Also checks that the agent user
 cannot read the environment of a process that holds the runtime credential.
 
+Then it plants git hooks and configuration in the workspace as the agent and
+checks that root's git, after the workspace is taken back, runs none of it.
+
 Needs Docker and a local image named by ``PRELOOP_UNIVERSAL_TEST_IMAGE``
 (for example one built from environments/universal/Dockerfile). An image
 without the ``preloop-agent`` user gets one added inside the throwaway
-container, so the check also runs against an older image.
+container, so the check also runs against an older image. The universal
+image workflow runs this file against the image it builds:
+
+    PRELOOP_UNIVERSAL_TEST_IMAGE=preloop-codex-universal:smoke \\
+        python3 backend/tests/agents/test_codex_agent_user_container.py
+
+The launch module is loaded from its file, so this needs neither the
+backend's dependencies nor its conftest.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from preloop.agents.codex_native_hook import AGENT_USER, codex_agent_user_block
+_HOOK_PY = (
+    Path(__file__).resolve().parents[2] / "preloop" / "agents" / "codex_native_hook.py"
+)
+_spec = importlib.util.spec_from_file_location("_codex_native_hook", _HOOK_PY)
+assert _spec is not None and _spec.loader is not None
+_hook = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_hook)
+AGENT_USER = _hook.AGENT_USER
+codex_agent_user_block = _hook.codex_agent_user_block
+codex_reclaim_workspace_block = _hook.codex_reclaim_workspace_block
 
 IMAGE = os.environ.get("PRELOOP_UNIVERSAL_TEST_IMAGE", "")
 
@@ -61,7 +83,14 @@ def _script() -> str:
 set -e
 id -u {AGENT_USER} >/dev/null 2>&1 \\
     || useradd --uid 10001 --user-group --create-home {AGENT_USER}
-mkdir -p /workspace && cd /workspace
+mkdir -p /workspace/repo && cd /workspace/repo
+git init -q . && git -c user.name=t -c user.email=t@example.com \\
+    commit -q --allow-empty -m init
+export PRELOOP_CHECKPOINT_PUT_TOKEN=put-secret
+# A stand-in for the code-mode host Codex ships next to its binary.
+_pl_pkg="$(npm root -g)/@openai/codex/vendor/fixture/bin"
+mkdir -p "$_pl_pkg" && cp "$(readlink -f "$(command -v sleep)")" \\
+    "$_pl_pkg/codex-code-mode-host"
 export CODEX_HOME=/root/.codex
 mkdir -p "$CODEX_HOME"
 printf 'model = "gpt-5.4"\\n[hooks.state."k"]\\ntrusted_hash = "sha256:x"\\n' \\
@@ -104,6 +133,32 @@ else
     echo "RESULT environ hidden"
 fi
 kill "$holder" 2>/dev/null || true
+PRELOOP_FLOW_TOKEN=flow-secret $PRELOOP_AS_AGENT \\
+    "$_pl_pkg/codex-code-mode-host" 20 </dev/null &
+sleep 2
+pid="$(pgrep -u {AGENT_USER} -f codex-code-mode-host | head -1)"
+if [ -n "$pid" ] && ! $PRELOOP_AS_AGENT cat "/proc/$pid/environ" </dev/null \\
+        2>/dev/null | tr '\\0' '\\n' | grep -q flow-secret; then
+    echo "RESULT code-mode host hidden"
+fi
+$PRELOOP_AS_AGENT bash -c 'env | grep -q put-secret' </dev/null \\
+    || echo "RESULT upload token dropped"
+# The agent plants git hooks and configuration for root's later git.
+$PRELOOP_AS_AGENT bash -c '
+    cd /workspace/repo
+    printf "#!/bin/sh\\ntouch /tmp/pwned-hook\\n" > .git/hooks/post-commit
+    chmod +x .git/hooks/post-commit
+    mkdir -p /tmp/evil && printf "#!/bin/sh\\ntouch /tmp/pwned-config\\n" \\
+        > /tmp/evil/post-commit && chmod +x /tmp/evil/post-commit
+    git config core.hooksPath /tmp/evil
+    nohup sleep 300 >/dev/null 2>&1 &
+' </dev/null
+{codex_reclaim_workspace_block()}
+pgrep -u {AGENT_USER} >/dev/null || echo "RESULT agent processes stopped"
+git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m root
+[ -e /tmp/pwned-hook ] || [ -e /tmp/pwned-config ] \\
+    || echo "RESULT root git ran no agent hook"
+[ "$(stat -c %u /workspace/repo/.git/config)" = 0 ] && echo "RESULT workspace root-owned"
 """
 
 
@@ -143,3 +198,15 @@ def test_agent_commands_cannot_change_the_hook():
     assert "files unchanged" in results
     assert "workspace writable" in results
     assert "environ hidden" in results
+    assert "code-mode host hidden" in results
+    assert "upload token dropped" in results
+    assert "agent processes stopped" in results
+    assert "root git ran no agent hook" in results
+    assert "workspace root-owned" in results
+
+
+if __name__ == "__main__":
+    if not _image_available():
+        sys.exit("needs docker and PRELOOP_UNIVERSAL_TEST_IMAGE present locally")
+    test_agent_commands_cannot_change_the_hook()
+    print("agent user container test: OK")

@@ -639,7 +639,13 @@ fi
 
         # Native shell commands go through the Preloop PreToolUse hook, as on
         # a private-runner host profile. The read-only sandbox has no shell.
-        from .codex_native_hook import codex_agent_user_block, codex_native_hook_block
+        from .codex_native_hook import (
+            codex_agent_user_block,
+            codex_native_hook_block,
+            codex_reclaim_workspace_block,
+        )
+
+        reclaim_block = codex_reclaim_workspace_block()
 
         native_hook_block = (
             ""
@@ -802,7 +808,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
+{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """

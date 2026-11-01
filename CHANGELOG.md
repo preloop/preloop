@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config.toml`, so the hook checks every command in the run. Workspaces,
   the agent's home and caches stay writable. The runtime credential stays
   out of shell commands' reach: Codex and the hook run from execute-only
-  binaries whose environment the agent user cannot read. The universal
+  binaries whose environment the agent user cannot read, and root's own
+  credentials are removed from Codex's environment. Before its post-run git
+  steps, root takes the workspace back, restores the git config and removes
+  hooks, so nothing the agent planted runs as root. The universal
   image adds the user and checks the language smoke as that user; hosted
   runs use it once the hosted image pin moves to an image built with it.
   See `docs/security/agent-isolation.md`.

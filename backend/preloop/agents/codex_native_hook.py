@@ -204,15 +204,31 @@ LOCKED_CODEX_FILES = (
 )
 _LOCKED_CODEX_FILES = " ".join(LOCKED_CODEX_FILES)
 
+#: Environment variables the launcher removes before Codex starts (shell
+#: ``case`` patterns). They carry credentials for root's own steps (clone and
+#: publication, checkpoints, evidence and session uploads) or root's git
+#: overrides; Codex passes its environment to the commands it runs.
+#: Codex keeps its model key and the runtime credential (its MCP bearer and
+#: the hook's flow credential).
+LAUNCHER_DROPPED_ENV = (
+    "MCP_CONFIG_JSON",
+    "PRELOOP_GIT_*",
+    "PRELOOP_PUBLICATION_*",
+    "PRELOOP_CHECKPOINT_*",
+    "PRELOOP_EVIDENCE_*",
+    "PRELOOP_NATIVE_SESSION_*",
+    "PRELOOP_MODEL_GATEWAY_TOKEN",
+    "*_PUT_TOKEN*",
+    "*CAPABILITY*",
+    "GIT_CONFIG_*",
+)
+
 # Written to AGENT_LAUNCHER_PATH. The values in angle brackets are filled in
-# by the block below. Variables Codex does not need and that carry
-# credentials are dropped; Codex itself keeps its model key and the runtime
-# credential (the MCP bearer and the hook's flow credential).
+# by the block below.
 _LAUNCHER = r"""#!/bin/bash
 # Runs a command as the unprivileged Codex agent user (written per run).
-unset MCP_CONFIG_JSON PRELOOP_GIT_CREDENTIALS
 for _pl_v in $(compgen -e); do
-    case "$_pl_v" in PRELOOP_GIT_TOKEN_*) unset "$_pl_v" ;; esac
+    case "$_pl_v" in <DROPPED>) unset "$_pl_v" ;; esac
 done
 unset _pl_v
 export HOME=<HOME> USER=<USER> LOGNAME=<USER> CODEX_HOME=<CODEX_HOME>
@@ -224,7 +240,11 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:$PATH"
 # test_codex_agent_user_container.py).
 exec setpriv --reuid=<USER> --regid=<USER> --init-groups --no-new-privs \
     --inh-caps=-all --bounding-set=-all -- /usr/bin/env -- "$@"
-"""
+""".replace("<DROPPED>", "|".join(LAUNCHER_DROPPED_ENV))
+
+#: Root-only directory holding each repository's git config from before the
+#: agent ran, restored by :func:`codex_reclaim_workspace_block`.
+_GIT_CONFIG_SAVE_DIR = "/run/preloop-git-config"
 
 
 def codex_agent_user_block() -> str:
@@ -282,6 +302,19 @@ if [ -z "$_pl_agent_error" ]; then
     chown -R {AGENT_USER}:{AGENT_USER} "$_pl_agent_home"
     # The base image keeps its toolchains under /root: traverse, not list.
     chmod 0711 /root
+    # Keep each repository's git config from before the agent runs; root
+    # restores it before its own post-run git steps.
+    rm -rf {_GIT_CONFIG_SAVE_DIR}
+    install -d -m 0700 {_GIT_CONFIG_SAVE_DIR}
+    : > {_GIT_CONFIG_SAVE_DIR}/repos
+    _pl_n=0
+    while IFS= read -r -d '' _pl_gitdir; do
+        if [ -f "$_pl_gitdir/config" ]; then
+            _pl_n=$((_pl_n + 1))
+            cp "$_pl_gitdir/config" "{_GIT_CONFIG_SAVE_DIR}/$_pl_n"
+            printf '%s\t%s\n' "$_pl_n" "$_pl_gitdir" >> {_GIT_CONFIG_SAVE_DIR}/repos
+        fi
+    done < <(find /workspace "$PWD" -maxdepth 4 -name .git -type d -prune -print0 2>/dev/null | sort -zu)
     # The workspace (and a working directory outside it) belongs to the agent.
     if [ -d /workspace ]; then chown -R {AGENT_USER}:{AGENT_USER} /workspace; fi
     case "$PWD" in
@@ -310,7 +343,8 @@ if [ -z "$_pl_agent_error" ]; then
     done
     chown root:{AGENT_USER} "$CODEX_HOME"
     chmod 1770 "$CODEX_HOME"
-    # The hook CLI and the binaries that hold the runtime credential are
+    # The hook CLI and the binaries that hold the runtime credential (node
+    # and every executable Codex ships, such as its code-mode host) are
     # root-owned and execute-only: not writable, and not dumpable when run.
     for _pl_bin in "${{_pl_cli:-}}" "$(command -v node 2>/dev/null || true)"; do
         [ -n "$_pl_bin" ] || continue
@@ -323,7 +357,7 @@ if [ -z "$_pl_agent_error" ]; then
             if [ "$(head -c 4 "$_pl_bin" | od -An -c | tr -d ' ')" = "177ELF" ]; then
                 chmod 0711 "$_pl_bin"
             fi
-        done < <(find -L "$_pl_npm_root/@openai" -type f -name codex -print0 2>/dev/null)
+        done < <(find -L "$_pl_npm_root/@openai" -type f -perm -u+x -print0 2>/dev/null)
     fi
     mkdir -p "$(dirname {AGENT_LAUNCHER_PATH})"
     printf '%s' {launcher} \\
@@ -342,5 +376,59 @@ if [ -n "$PRELOOP_AS_AGENT" ]; then
     echo "{AGENT_USER_LINE} {AGENT_USER}"
 else
     echo "{AGENT_USER_LINE} $(id -un 2>/dev/null || id -u) ($_pl_agent_error; Codex can change its own hook configuration in this run)"
+fi
+"""
+
+
+def codex_reclaim_workspace_block() -> str:
+    """Shell that takes the workspace back from the agent user.
+
+    Runs as root after the last Codex round and before root's own post-run
+    steps (session upload, push and pull request). The agent owned the
+    workspace, including ``.git``, so it could have planted git hooks or
+    configuration (``core.hooksPath``, ``core.fsmonitor``, filter drivers,
+    credential helpers, a ``commondir`` redirect) that root's git would run.
+    This block stops every agent process, gives the workspace back to root,
+    restores each repository's git config saved before the agent ran,
+    removes hooks and the files that can redirect or extend the
+    configuration, and exports ``core.hooksPath=/dev/null`` and
+    ``core.fsmonitor=false`` for root's later git commands. A repository
+    whose ``.git`` was replaced by a file or a link loses it, so the
+    publication steps fail for that repository instead of following it.
+    Does nothing when Codex did not run as the agent user.
+
+    Returns:
+        A bash fragment.
+    """
+    return f"""
+# ============================================================
+# Take the workspace back from the agent user
+# ============================================================
+if [ -n "${{PRELOOP_AS_AGENT:-}}" ]; then
+    pkill -KILL -u {AGENT_USER} 2>/dev/null || true
+    sleep 1
+    pkill -KILL -u {AGENT_USER} 2>/dev/null || true
+    if [ -d /workspace ]; then chown -R root:root /workspace; fi
+    case "$PWD" in
+        /|/workspace|/workspace/*|/root|/root/*|/opt|/opt/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib*|/var|/var/*|/proc*|/sys*|/dev*|/boot*) ;;
+        *) chown -R root:root "$PWD" ;;
+    esac
+    while IFS=$'\t' read -r _pl_n _pl_gitdir; do
+        [ -n "$_pl_gitdir" ] || continue
+        if [ -L "$_pl_gitdir" ] || [ ! -d "$_pl_gitdir" ]; then
+            echo "WARNING: $_pl_gitdir was replaced during the run; removed it"
+            rm -f "$_pl_gitdir"
+            continue
+        fi
+        cp "{_GIT_CONFIG_SAVE_DIR}/$_pl_n" "$_pl_gitdir/config"
+        rm -rf "$_pl_gitdir/hooks"
+        mkdir -p "$_pl_gitdir/hooks"
+        rm -f "$_pl_gitdir/commondir" "$_pl_gitdir/config.worktree" \
+            "$_pl_gitdir/info/attributes"
+    done < {_GIT_CONFIG_SAVE_DIR}/repos
+    export GIT_CONFIG_COUNT=2
+    export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+    export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
+    echo "{AGENT_USER_LINE} workspace returned to root"
 fi
 """

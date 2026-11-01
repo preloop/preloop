@@ -25,6 +25,7 @@ from preloop.agents.codex_native_hook import (
     AGENT_USER_LINE,
     LOCKED_CODEX_FILES,
     codex_agent_user_block,
+    codex_reclaim_workspace_block,
 )
 
 
@@ -161,8 +162,16 @@ def test_launcher_keeps_codex_credentials_and_drops_the_rest(tmp_path):
             "PRELOOP_API_TOKEN": "flow",
             "OPENAI_API_KEY": "model",
             "MCP_CONFIG_JSON": "{}",
+            "PRELOOP_FLOW_API_URL": "https://preloop.example.com",
             "PRELOOP_GIT_CREDENTIALS": "store",
             "PRELOOP_GIT_TOKEN_0": "push",
+            "PRELOOP_PUBLICATION_CAPABILITY_0": "mint",
+            "PRELOOP_PUBLICATION_REFRESH_CAPABILITY": "mint",
+            "PRELOOP_CHECKPOINT_PUT_TOKEN": "put",
+            "PRELOOP_EVIDENCE_PUT_TOKEN": "put",
+            "PRELOOP_NATIVE_SESSION_PUT_TOKEN": "put",
+            "PRELOOP_MODEL_GATEWAY_TOKEN": "model",
+            "GIT_CONFIG_COUNT": "1",
         },
         capture_output=True,
         text=True,
@@ -175,10 +184,41 @@ def test_launcher_keeps_codex_credentials_and_drops_the_rest(tmp_path):
     assert env["USER"] == AGENT_USER
     assert env["PRELOOP_API_TOKEN"] == "flow"
     assert env["OPENAI_API_KEY"] == "model"
+    assert env["PRELOOP_FLOW_API_URL"] == "https://preloop.example.com"
     for dropped in (
         "MCP_CONFIG_JSON",
         "PRELOOP_GIT_CREDENTIALS",
         "PRELOOP_GIT_TOKEN_0",
+        "PRELOOP_PUBLICATION_CAPABILITY_0",
+        "PRELOOP_PUBLICATION_REFRESH_CAPABILITY",
+        "PRELOOP_CHECKPOINT_PUT_TOKEN",
+        "PRELOOP_EVIDENCE_PUT_TOKEN",
+        "PRELOOP_NATIVE_SESSION_PUT_TOKEN",
+        "PRELOOP_MODEL_GATEWAY_TOKEN",
+        "GIT_CONFIG_COUNT",
     ):
         assert dropped not in env
     assert env["PATH"].startswith("/home/preloop-agent/.local/bin:")
+
+
+def test_root_takes_the_workspace_back_before_its_own_git_steps():
+    script = CodexAgent({})._build_codex_script(
+        {**_context(), "native_hook_required": True}
+    )
+    reclaim_at = script.index("Take the workspace back from the agent user")
+    last_round = script.rindex("$PRELOOP_AS_AGENT codex exec")
+    assert last_round < reclaim_at
+    assert reclaim_at < script.index("# Exit with codex's exit code")
+    block = codex_reclaim_workspace_block()
+    assert f"pkill -KILL -u {AGENT_USER}" in block
+    assert "chown -R root:root /workspace" in block
+    assert 'rm -rf "$_pl_gitdir/hooks"' in block
+    assert "GIT_CONFIG_VALUE_0=/dev/null" in block
+
+
+def test_every_executable_codex_ships_is_execute_only():
+    # Not only the binary named codex: its code-mode host holds the same
+    # environment.
+    block = codex_agent_user_block()
+    assert "-type f -perm -u+x -print0" in block
+    assert "-name codex" not in block

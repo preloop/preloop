@@ -310,11 +310,24 @@ primary user's is the remaining backend change.
   The execution's runtime credential stays in Codex's environment, because
   Codex uses it for the Preloop MCP connection and passes it to the hook.
   Shell commands do not inherit it (`shell_environment_policy`), and the
-  `node` binary, the native `codex` binary and the hook CLI are
-  execute-only (0711), so the kernel marks those processes as not dumpable
-  and the agent user cannot read their `/proc/<pid>/environ`. The clone's
-  git token variables and the MCP configuration variable are removed from
-  Codex's environment.
+  `node` binary, every executable the Codex package ships (the `codex`
+  binary and its code-mode host) and the hook CLI are execute-only (0711),
+  so the kernel marks those processes as not dumpable and the agent user
+  cannot read their `/proc/<pid>/environ`. The credentials root uses for
+  its own steps (clone and publication tokens, the publication capability,
+  checkpoint, evidence and session upload tokens, the MCP configuration)
+  are removed from Codex's environment, so commands Codex runs never see
+  them.
+
+  After the last Codex round, root takes the workspace back before its own
+  git steps (session upload, push, pull request): it stops every agent
+  process, makes the workspace root-owned again, restores each repository's
+  git config from before the run, removes git hooks and the files that can
+  redirect the configuration (`commondir`, `config.worktree`,
+  `info/attributes`), and runs its git with `core.hooksPath=/dev/null` and
+  `core.fsmonitor=false`. Hooks or configuration the agent planted do not
+  run as root. Git remotes or upstreams the agent configured are dropped
+  with its config changes; the publication steps set their own.
 
   Remaining gaps:
 
@@ -322,7 +335,9 @@ primary user's is the remaining backend change.
     because Codex reads it as that user.
   - The git credential store is handed to the agent user, so its own
     fetches and pushes keep working as before.
-  - Root's post-run git steps run in the workspace the agent owns.
+  - Root's git still reads the agent's work tree: a `.gitattributes` file
+    can name a filter or diff driver, but only the restored config could
+    define one, so nothing the agent wrote is run.
   - The hook judges the command it is shown. An allowed command that starts
     an interpreter can do whatever that interpreter can.
   - Kernel or container escapes are out of scope. The pod and its
