@@ -378,6 +378,16 @@ live (`agent_session_lineage.runner_session_for_external`); a session a hook
 opened before the id arrived is folded into it. See
 [Remote sessions](docs/guide/runners/remote-sessions.md).
 
+Who may use a runner is the owner-or-admin rule in
+`account_hooks.may_start_runner_session` / `may_use_runner_for_flows`. The
+session routes pass `operation`, `harness`, `workspace_kind` and
+`workspace_id` to the authorizer, which may widen the rule only with an
+explicit allow naming a rule (EE runner sharing, grants in
+`runner_share_grant`, owner consent policy in `runner_sharing_policy`). Each
+heartbeat calls `runner_sessions.reauthorize_live_sessions`, which re-checks
+non-owner sessions and queues a kill for those no longer allowed before the
+heartbeat's session frames go out.
+
 Operator-note receipts distinguish a deferred claim from delivery at a supported
 model or hook boundary. Native session-end signals settle pending and claimed
 notes targeted at that session. The minute runner sweeper also reconciles notes

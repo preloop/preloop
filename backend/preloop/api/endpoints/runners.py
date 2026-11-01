@@ -50,6 +50,7 @@ from preloop.models.db.session import release_transaction
 
 from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
+from preloop.api.endpoints.runner_sessions import reauthorize_live_sessions
 from preloop.services.runner_sessions import (
     apply_runner_session_message,
     end_sessions_for_kill_switch,
@@ -1234,6 +1235,15 @@ async def runner_ws(
                     reply["halt"] = True
                     reply["halt_execution_id"] = halts[0]
                     reply["halt_execution_ids"] = halts
+                # A revoked share stops the grantee's sessions on this beat:
+                # the stop frames go out with the session messages below.
+                try:
+                    reauthorize_live_sessions(db, runner)
+                except Exception:  # noqa: BLE001 - liveness must not drop
+                    logger.exception(
+                        "Runner session re-authorization failed for %s", runner.id
+                    )
+                    db.rollback()
                 # The reply is fully built, and a stalled peer can park this
                 # send for as long as the keepalive allows. Same reason as the
                 # release before `receive_json`.

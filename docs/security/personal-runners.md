@@ -21,8 +21,10 @@ these ids and ship a test per id.
 - Install prompt after `preloop login` and the account runner policy (#1479,
   EE #182).
 
-Deferred to 0.18.0: system versus user service split (#1488), runner sharing
-to teams (EE #183), MDM enrollment and device credential (#1344 track), more
+Runner sharing to teams and users is an enterprise plugin (EE #183, #186)
+on the extension points described under T2.
+
+Deferred to 0.18.0: system versus user service split (#1488), MDM enrollment and device credential (#1344 track), more
 session harnesses (#1489, #1490).
 
 ## Workstation correlation
@@ -95,12 +97,32 @@ Turn off any time: preloop runner sessions disable copilot_cli
 
 ### T2. Who may start a session
 
-Wave 1 rule: the runner owner (`registered_by_user_id`) and account owners and
+Default rule: the runner owner (`registered_by_user_id`) and account owners and
 admins. Everyone else gets 403 `not_runner_owner`. The check is the authorizer
-action `runner:session_start` (`ACTION_RUNNER_SESSION_START`) so team sharing
-(EE #183) plugs in later without changing the endpoint. The admin path is
+action `runner:session_start` (`ACTION_RUNNER_SESSION_START`). The admin path is
 disclosed to the host user in the T1 consent text and in the T3 notice, which
 names the actor. Implemented by #1483.
+
+Sharing (EE #186) widens this only through the authorizer, and only with an
+explicit allow that names the granting rule; an authorizer with no opinion
+never opens a runner. The session routes pass `operation` (`options`,
+`start`, `list`, `turn`, `stop`, `heartbeat`), `harness`, `workspace_kind`
+and `workspace_id`. A caller admitted through a grant sees only the
+harnesses and directories it covers, lists and drives only their own
+sessions (`403 not_session_actor` otherwise) and cannot open a dirty work
+tree. Flow pinning and the flow editor's harness options ask
+`runner:flow_use` with the same contract, and the lease passes the pinned
+runner, harness and directory with `runner:accept`.
+
+The per-start owner approval (T3) stays unless a registered start consent
+waiver returns a reason; the waiver is asked only after authorization and
+every scope check, and its use is audited as `decision: waived`.
+
+Revocation: every runner heartbeat re-checks the live sessions started by
+someone other than the owner and asks the runner to kill those the rule no
+longer allows (`access_revoked`). The stop frame goes out with that
+heartbeat, so a revoked grant stops the grantee's sessions within one
+heartbeat, whichever replica took the revoke.
 
 ### T3. Host-visible notice
 

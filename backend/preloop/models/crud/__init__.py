@@ -249,6 +249,7 @@ from .governance_review import (
     crud_governance_review_settings,
     crud_governance_session_digest,
 )
+from .runner_share import CRUDRunnerShare, crud_runner_share
 from .team import CRUDTeam, crud_team
 from .tool_access_rule import CRUDToolAccessRule
 from .tool_configuration import CRUDToolConfiguration
@@ -516,6 +517,8 @@ __all__ = [
     "crud_role",
     "crud_user_role",
     "crud_team_role",
+    "crud_runner_share",
+    "CRUDRunnerShare",
     "crud_team",
     "crud_user_invitation",
     "crud_registration_token",

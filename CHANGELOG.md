@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Overview Usage box no longer shows the paragraph on how budget usage
+  is counted. A small info icon next to the first budget number shows it in
+  a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere
+  closes it.
+
 ### Added
 
+- Extension points for runner sharing. The runner session API passes the
+  requested harness, workspace and operation to the account authorizer; a
+  caller admitted through a grant sees only the harnesses and directories
+  the grant covers and only their own sessions. A start consent waiver hook
+  can lift the per-start owner approval. Flow pinning and harness options
+  ask a `runner:flow_use` action, and the lease passes the pinned runner,
+  harness and directory with `runner:accept`. Each runner heartbeat
+  re-checks live sessions started by someone other than the owner and stops
+  those no longer allowed. New `runner_share_grant` and
+  `runner_sharing_policy` tables hold grants and the owner consent policy.
+  The console shows a runner sharing panel when the server reports the
+  `runner_sharing` capability. Without a plugin, runners stay owner or
+  account admin only.
 - Apply the current sensitive-data rules to rows that were stored before a
   rule was installed or tightened: `preloop policy apply-stored`, `POST
   /api/v1/policies/sensitive-data/apply-to-stored` (account admins) and

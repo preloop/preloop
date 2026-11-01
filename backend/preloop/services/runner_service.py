@@ -468,6 +468,9 @@ def _runner_may_accept(
     pool: str,
     execution_id: UUID,
     flow_id: Optional[str] = None,
+    pinned_runner_id: Optional[UUID] = None,
+    harness: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> bool:
     """Whether the account authorizer (hook H4) lets ``runner`` take the job.
 
@@ -498,6 +501,11 @@ def _runner_may_accept(
             "pool": pool,
             "execution_id": str(execution_id),
             "flow_id": flow_id,
+            "pinned_runner_id": (
+                str(pinned_runner_id) if pinned_runner_id is not None else None
+            ),
+            "harness": harness,
+            "workspace_id": workspace_id,
         },
     )
     return authorize(ctx, ACTION_RUNNER_ACCEPT, runner).allowed
@@ -847,6 +855,9 @@ def lease_job(
             pool=pool,
             execution_id=execution_id,
             flow_id=flow_id,
+            pinned_runner_id=pinned,
+            harness=workspace_harness,
+            workspace_id=workspace_id,
         ):
             continue
         if required_profile and not runner_has_host_exec_profile(
@@ -1123,6 +1134,7 @@ def harness_options(
     *,
     account_id: Any,
     usable: Any,
+    usable_harness: Any = None,
 ) -> Dict[str, Any]:
     """Harness + model choices for the flow editor (contract B).
 
@@ -1132,6 +1144,9 @@ def harness_options(
         account_id: Caller's account.
         usable: ``callable(runner) -> bool``, whether the caller may route
             to the runner (registrant or account admin in wave 1).
+        usable_harness: Optional ``callable(runner, harness) -> bool``. When
+            given, a harness the caller may not pin on that runner (a share
+            limited to other harnesses) is left out for that runner.
 
     Returns:
         ``{"harnesses": [...]}`` for runnable harnesses (``copilot_cli``,
@@ -1154,6 +1169,8 @@ def harness_options(
             if harness not in HOST_EXEC_AGENT_TYPE_BY_HARNESS:
                 continue
             if entry.get("support_level") in (None, "presence_only"):
+                continue
+            if usable_harness is not None and not usable_harness(runner, harness):
                 continue
             ok, reason, _entry = runner_eligible_for_harness(
                 db,

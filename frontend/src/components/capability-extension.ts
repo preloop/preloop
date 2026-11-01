@@ -40,6 +40,11 @@ export const CAPABILITY_EXTENSIONS: Record<string, ExtensionEntry> = {
     tag: 'runner-pool-access',
     load: () => import('../views/authed/hierarchy/runner-pool-access'),
   },
+  'runner-sharing': {
+    capabilities: ['runner_sharing'],
+    tag: 'runner-sharing-panel',
+    load: () => import('../views/authed/hierarchy/runner-sharing-panel'),
+  },
   'usage-rollup': {
     capabilities: ['account_hierarchy'],
     tag: 'usage-rollup-panel',

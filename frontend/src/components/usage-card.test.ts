@@ -390,12 +390,28 @@ describe('usage-card', () => {
 
     expect(text(element, '.primary-value')).to.equal('$80.00');
     expect(text(element, '.budget-row-value')).to.equal('$120.00 / $300.00');
-    expect(text(element, '.budget-basis')).to.contain('Budget usage');
-    expect(text(element, '.budget-basis')).to.contain('request-time prices');
-    expect(text(element, '.budget-basis')).to.contain('UTC');
-    expect(text(element, '.budget-basis')).to.contain(
-      'repricing or reconciliation'
-    );
+    // The explanation lives behind the info icon, not inline in the box.
+    const group = element.shadowRoot!.querySelector('.policy-budgets')!;
+    const visible = [...group.querySelectorAll('.budget-row')]
+      .map((row) => row.textContent ?? '')
+      .join(' ');
+    expect(visible).to.not.contain('request-time prices');
+    const info = element.shadowRoot!.querySelector(
+      '.budget-basis-info'
+    ) as HTMLButtonElement;
+    expect(info.getAttribute('aria-label')).to.equal('About budget usage');
+    const described = element.shadowRoot!.getElementById(
+      info.getAttribute('aria-describedby')!
+    )!;
+    const tip = element.shadowRoot!.querySelector('.budget-basis-tip')!;
+    for (const fragment of [
+      'request-time prices',
+      'UTC',
+      'repricing or reconciliation',
+    ]) {
+      expect(described.textContent).to.contain(fragment);
+      expect(tip.getAttribute('content')).to.contain(fragment);
+    }
     // The meter must still represent the counter that enforces the limit.
     expect(
       element
@@ -417,7 +433,8 @@ describe('usage-card', () => {
       }),
     });
     expect(text(element, '.budget-row-value')).to.equal('$80.00 / $300.00');
-    expect(element.shadowRoot!.querySelector('.budget-basis')).to.not.exist;
+    expect(element.shadowRoot!.querySelector('.budget-basis-info')).to.not
+      .exist;
   });
 
   it('keeps a legacy monthly row outside the request-time policy group', async () => {
@@ -433,8 +450,7 @@ describe('usage-card', () => {
         },
       }),
     });
-    const basis = element.shadowRoot!.querySelector('.budget-basis')!;
-    const group = basis.parentElement!;
+    const group = element.shadowRoot!.querySelector('.policy-budgets')!;
     const rows = group.querySelectorAll('.budget-row');
     expect(rows.length).to.equal(1);
     expect(rows[0].textContent).to.contain('Daily budget');
@@ -882,5 +898,71 @@ describe('usage-card states the server total (#1955)', () => {
     const content = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
     expect(content).to.contain('1.5K');
     expect(content).to.not.contain('2.8K');
+  });
+
+  describe('budget usage info', () => {
+    type Tip = HTMLElement & { open: boolean };
+    async function tipCard() {
+      const element = await renderCard({
+        timeRange: 'this-month',
+        summary: summaryFixture({ estimated_cost: 80 }),
+        policies: [policyFixture({ current_spend_usd: 120 })],
+      });
+      const root = element.shadowRoot!;
+      return {
+        element,
+        tip: root.querySelector('.budget-basis-tip') as Tip,
+        button: root.querySelector('.budget-basis-info') as HTMLButtonElement,
+      };
+    }
+    const settle = async (element: UsageCard) => {
+      await element.updateComplete;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await element.updateComplete;
+    };
+
+    it('sits next to the budget number and opens on hover, focus and tap', async () => {
+      const { element, tip, button } = await tipCard();
+      expect(button.closest('.budget-row-value')).to.exist;
+      expect(tip.getAttribute('trigger')).to.equal('hover focus click');
+      expect(tip.open).to.be.false;
+
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await oneEvent(tip, 'sl-show');
+      await settle(element);
+      expect(tip.open).to.be.true;
+      tip.open = false;
+      await settle(element);
+
+      button.focus();
+      await settle(element);
+      expect(tip.open).to.be.true;
+      button.blur();
+      tip.open = false;
+      await settle(element);
+
+      button.click();
+      await settle(element);
+      expect(tip.open).to.be.true;
+    });
+
+    it('closes on Escape and on a tap elsewhere', async () => {
+      const { element, tip, button } = await tipCard();
+      button.click();
+      await settle(element);
+      expect(tip.open).to.be.true;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await settle(element);
+      expect(tip.open).to.be.false;
+
+      button.click();
+      await settle(element);
+      expect(tip.open).to.be.true;
+      document.body.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, composed: true })
+      );
+      await settle(element);
+      expect(tip.open).to.be.false;
+    });
   });
 });

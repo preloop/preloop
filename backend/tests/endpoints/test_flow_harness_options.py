@@ -126,3 +126,42 @@ def test_fallback_model_must_resolve_when_the_flow_is_saved(
     body["agent_config"]["fallback_model_identifier"] = str(known.id)
     response = client.post("/api/v1/flows", json=body)
     assert response.status_code == 200, response.text
+
+
+def test_harness_options_follow_a_harness_limited_share(
+    client, test_user, monkeypatch
+) -> None:
+    from preloop.plugins import account_hooks
+    from preloop.plugins.account_hooks import ACTION_RUNNER_FLOW_USE, Decision
+
+    colleague = _runner(test_user.account_id, uuid4(), "colleague")
+    monkeypatch.setattr(
+        crud_flow_runner, "list_for_account", lambda db, **kw: [colleague]
+    )
+    admin_calls = []
+
+    def not_admin(db, user):
+        admin_calls.append(1)
+        return False
+
+    monkeypatch.setattr("preloop.api.auth.router._is_account_admin", not_admin)
+    seen = []
+
+    def share(ctx, action, resource):
+        if action != ACTION_RUNNER_FLOW_USE:
+            return None
+        seen.append(ctx.attributes.get("harness"))
+        if ctx.attributes.get("harness") in (None, "cursor_cli"):
+            return Decision("allow", ("ee:share",))
+        return Decision("deny", ("ee:share",), "runner_share_harness_not_shared")
+
+    account_hooks.register_authorizer(share)
+    try:
+        response = client.get("/api/v1/flows/harness-options")
+    finally:
+        account_hooks.register_authorizer(None)
+    assert response.status_code == 200, response.text
+    # The runner only advertises copilot_cli, which the share does not cover.
+    assert response.json()["harnesses"] == []
+    assert "copilot_cli" in seen
+    assert len(admin_calls) == 1

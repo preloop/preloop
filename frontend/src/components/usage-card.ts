@@ -104,6 +104,11 @@ const SUBJECT_TYPE_LABELS: Record<string, string> = {
   api_key: 'API keys',
 };
 
+/** How the policy budget counter is computed; shown behind an info icon. */
+const BUDGET_BASIS_TEXT =
+  'Budget usage uses request-time prices and UTC periods. Later repricing or ' +
+  'reconciliation changes usage estimates, not this limit counter.';
+
 /**
  * Usage first, budgets second: tokens are the primary currency of the
  * gateway, dollars are always an estimate. Replaces Budget health on the
@@ -158,6 +163,8 @@ export class UsageCard extends LitElement {
    * apology.
    */
   @state() private longRangeHint = false;
+  /** The budget basis tooltip is showing (hover, focus or tap). */
+  @state() private budgetBasisOpen = false;
   private longRangeTimer: number | null = null;
 
   static styles = [
@@ -386,14 +393,38 @@ export class UsageCard extends LitElement {
         gap: var(--sl-spacing-small);
       }
 
-      .budget-basis {
-        margin: 0;
-        line-height: 1.5;
+      .budget-basis-info {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 4px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--console-meta-color);
+        cursor: pointer;
+        vertical-align: middle;
+        font-size: 0.875rem;
       }
 
-      .budget-basis strong {
-        display: block;
-        color: var(--sl-color-neutral-800);
+      .budget-basis-info:focus-visible {
+        outline: 2px solid var(--sl-color-primary-600);
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+
+      .budget-basis-tip::part(body) {
+        max-width: 18rem;
+        white-space: normal;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
 
       .budget-row {
@@ -462,10 +493,14 @@ export class UsageCard extends LitElement {
     } catch {
       // Private mode or a blocked storage partition: keep the default.
     }
+    document.addEventListener('pointerdown', this.closeBudgetBasisOnOutside);
+    document.addEventListener('keydown', this.closeBudgetBasisOnEscape);
   }
 
   disconnectedCallback(): void {
     this.clearLongRangeTimer();
+    document.removeEventListener('pointerdown', this.closeBudgetBasisOnOutside);
+    document.removeEventListener('keydown', this.closeBudgetBasisOnEscape);
     super.disconnectedCallback();
   }
 
@@ -1067,7 +1102,8 @@ export class UsageCard extends LitElement {
     spend: number | null,
     softLimit: number,
     hardLimit: number,
-    bounds: { start?: string | null; end?: string | null } = {}
+    bounds: { start?: string | null; end?: string | null } = {},
+    withBasisInfo = false
   ) {
     const denominator = hardLimit || softLimit;
     if (spend === null) {
@@ -1092,6 +1128,7 @@ export class UsageCard extends LitElement {
                 ? html`/ ${formatUsd(denominator)}`
                 : html`<span class="muted">spent</span>`
             }
+            ${withBasisInfo ? this.renderBudgetBasisInfo() : nothing}
           </span>
         </div>
         ${
@@ -1119,6 +1156,46 @@ export class UsageCard extends LitElement {
     `;
   }
 
+  /**
+   * How the policy counter is computed, behind a small info icon next to the
+   * first policy budget number. Opens on hover, focus and tap; Escape or a
+   * tap elsewhere closes it.
+   */
+  private renderBudgetBasisInfo() {
+    return html`<sl-tooltip
+      class="budget-basis-tip"
+      trigger="hover focus click"
+      hoist
+      content=${BUDGET_BASIS_TEXT}
+      .open=${this.budgetBasisOpen}
+      @sl-show=${() => (this.budgetBasisOpen = true)}
+      @sl-after-hide=${() => (this.budgetBasisOpen = false)}
+    >
+      <button
+        type="button"
+        class="budget-basis-info"
+        aria-label="About budget usage"
+        aria-describedby="budget-basis-text"
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key === 'Escape') this.budgetBasisOpen = false;
+        }}
+      >
+        <sl-icon name="info-circle"></sl-icon>
+      </button>
+    </sl-tooltip>`;
+  }
+
+  private readonly closeBudgetBasisOnOutside = (event: Event): void => {
+    if (!this.budgetBasisOpen) return;
+    const tip = this.shadowRoot?.querySelector('.budget-basis-tip');
+    if (tip && event.composedPath().includes(tip)) return;
+    this.budgetBasisOpen = false;
+  };
+
+  private readonly closeBudgetBasisOnEscape = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') this.budgetBasisOpen = false;
+  };
+
   private renderBudgets() {
     const globals = this.globalPolicies;
     const scoped = this.scopedPolicies;
@@ -1131,14 +1208,15 @@ export class UsageCard extends LitElement {
       return html`<div class="muted">No budget set.</div>`;
     }
 
-    const rows = globals.map((policy) =>
+    const rows = globals.map((policy, index) =>
       this.renderBudgetRow(
         budgetPeriodLabel(policy.period),
         policy.period,
         policy.current_spend_usd ?? null,
         policy.soft_limit_usd || 0,
         policy.hard_limit_usd || 0,
-        { start: policy.period_start, end: policy.period_end }
+        { start: policy.period_start, end: policy.period_end },
+        index === 0
       )
     );
 
@@ -1159,12 +1237,9 @@ export class UsageCard extends LitElement {
         ${
           globals.length > 0
             ? html`<div class="policy-budgets">
-                <p class="budget-basis muted">
-                  <strong>Budget usage</strong>
-                  Uses request-time prices and UTC periods. Later repricing or
-                  reconciliation changes usage estimates, not this limit
-                  counter.
-                </p>
+                <span id="budget-basis-text" class="visually-hidden"
+                  >${BUDGET_BASIS_TEXT}</span
+                >
                 ${rows}
               </div>`
             : nothing

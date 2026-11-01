@@ -137,6 +137,7 @@ from .person import Person
 from .account_access_grant import AccountAccessGrant, account_access_grant_target
 from .access_rule import AccessRule
 from .resource_share import ResourceShare, ResourceShareRecipient
+from .runner_share import RunnerShareGrant, RunnerSharingPolicy
 from .resource_tag import ResourceTag, TagKeyPolicy
 from . import hierarchy  # noqa: F401  (registers the before_flush defaults)
 from .permission import Permission, Role, RolePermission, UserRole, TeamRole
@@ -388,6 +389,8 @@ __all__ = [
     "AccessRule",
     "ResourceShare",
     "ResourceShareRecipient",
+    "RunnerShareGrant",
+    "RunnerSharingPolicy",
     "ResourceTag",
     "TagKeyPolicy",
     "UserSource",
