@@ -1,4 +1,4 @@
-"""Guards for the release workflow's Windows signing configuration check.
+"""Guards for the release workflow: Windows signing, publication and rehearsal.
 
 The release may publish unsigned Windows binaries only while the repository
 variable ``SIGNPATH_SIGNING_REQUIRED`` is not ``true``. These tests pin the
@@ -72,34 +72,53 @@ def _trigger(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return trigger
 
 
-def test_images_publish_only_on_version_tags() -> None:
-    """GHCR and Docker Hub move only for a ``v*`` tag, not main or a PR.
+REHEARSAL_EVENTS = (
+    "(github.event_name == 'pull_request' || "
+    "github.event_name == 'workflow_dispatch')"
+)
+NOT_REHEARSAL = "env.REHEARSAL != 'true'"
+PUBLISHING_ACTIONS = (
+    "docker/login-action",
+    "actions/attest-build-provenance",
+    "peter-evans/dockerhub-description",
+)
 
-    ``workflow_dispatch`` is absent on purpose. A tag push publishes, and a
-    release published from that tag does too. ``latest`` is a stable tag
-    only: a pre-release suffix (a hyphen in the tag name) does not move it.
-    Version tags come from the semver patterns, not from the branch name.
+
+def test_images_publish_only_on_version_tags() -> None:
+    """GHCR and Docker Hub move only for a ``v*`` tag, never main or a rehearsal.
+
+    A tag push publishes, and a release published from that tag does too.
+    Pull requests that touch the release pipeline and manual runs are
+    rehearsals: ``REHEARSAL`` is true for exactly those events, and every
+    login, push, attestation and Docker Hub step is skipped for them.
+    ``latest`` is a stable tag only: a pre-release suffix (a hyphen in the
+    tag name) does not move it. Version tags come from the semver patterns,
+    not from the branch name.
     """
     workflow = _workflow()
     trigger = _trigger(workflow)
-    assert "workflow_dispatch" not in trigger
-    assert "pull_request" not in trigger
     assert trigger["push"]["branches"] == ["main"]
     assert trigger["push"]["tags"] == ["v*"]
     assert trigger["release"]["types"] == ["published"]
+    assert set(trigger["workflow_dispatch"]["inputs"]) == {"rehearsal_tag"}
     assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["env"]["REHEARSAL"] == "${{ " + REHEARSAL_EVENTS + " }}"
 
     for job_id in IMAGE_JOBS:
         job = workflow["jobs"][job_id]
-        assert job["if"] == "startsWith(github.ref, 'refs/tags/v')", job_id
+        assert job["if"] == (
+            "startsWith(github.ref, 'refs/tags/v') || " + REHEARSAL_EVENTS
+        ), job_id
         assert job["permissions"] == {
             "contents": "read",
             "packages": "write",
+            "id-token": "write",
+            "attestations": "write",
         }, job_id
         login = next(
             step for step in job["steps"] if step.get("name") == "Log in to Docker Hub"
         )
-        assert login["if"] == "vars.PUSH_TO_DOCKERHUB == 'true'"
+        assert login["if"] == NOT_REHEARSAL + " && vars.PUSH_TO_DOCKERHUB == 'true'"
         meta = next(
             step for step in job["steps"] if step.get("name") == "Extract metadata"
         )
@@ -117,6 +136,77 @@ def test_images_publish_only_on_version_tags() -> None:
             step for step in job["steps"] if step.get("name") == "Build and push"
         )
         assert push["with"]["push"] is True
+        for step in job["steps"]:
+            publishes = step.get("with", {}).get("push") is True or any(
+                action in step.get("uses", "") for action in PUBLISHING_ACTIONS
+            )
+            if publishes:
+                assert step["if"].startswith(NOT_REHEARSAL), (job_id, step)
+        rehearsal = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Build rehearsal image without pushing"
+        )
+        assert rehearsal["if"] == "env.REHEARSAL == 'true'"
+        assert rehearsal["with"]["push"] is False
+        assert rehearsal["with"]["outputs"].startswith("type=oci,dest=")
+        assert "cache-to" not in rehearsal["with"]
+        assert rehearsal["with"]["sbom"] == push["with"]["sbom"]
+        assert rehearsal["with"]["platforms"] == push["with"]["platforms"]
+
+
+def test_other_publishing_jobs_never_run_on_rehearsals() -> None:
+    """Only the image, SBOM and audit jobs run for a PR or a manual run."""
+    jobs = _workflow()["jobs"]
+    for job_id, job in jobs.items():
+        if job_id in (*IMAGE_JOBS, "release-audit", "sbom"):
+            continue
+        condition = job["if"]
+        assert "startsWith(github.ref, 'refs/tags/v')" in condition, job_id
+        assert (
+            "github.event_name != 'workflow_dispatch'" in condition
+            or "github.event_name == 'push'" in condition
+        ), job_id
+    attest = next(
+        step
+        for step in jobs["sbom"]["steps"]
+        if step.get("name") == "Attest SBOM build provenance"
+    )
+    assert attest["if"] == NOT_REHEARSAL
+
+
+def test_every_release_image_gets_signed_provenance() -> None:
+    """Each image digest is attested and the attestation pushed to GHCR."""
+    jobs = _workflow()["jobs"]
+    for job_id, image in (
+        ("build-backend", "IMAGE_NAME_BACKEND"),
+        ("build-frontend", "IMAGE_NAME_FRONTEND"),
+    ):
+        attest = next(
+            s
+            for s in jobs[job_id]["steps"]
+            if "actions/attest-build-provenance" in s.get("uses", "")
+        )
+        assert attest["with"]["subject-name"] == (
+            "${{ env.REGISTRY }}/${{ env." + image + " }}"
+        )
+        assert attest["with"]["subject-digest"] == "${{ steps.image.outputs.digest }}"
+        assert attest["with"]["push-to-registry"] is True
+    for name in ("publish-scanner-image.yml", "publish-universal-image.yml"):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows" / name).read_text())
+        job = workflow["jobs"]["publish"]
+        assert job["permissions"]["id-token"] == "write", name
+        assert job["permissions"]["attestations"] == "write", name
+        attest = next(
+            s
+            for s in job["steps"]
+            if "actions/attest-build-provenance" in s.get("uses", "")
+        )
+        assert attest["with"]["subject-name"] == "${{ env.IMAGE }}", name
+        assert attest["with"]["subject-digest"] == (
+            "${{ steps.index.outputs.digest }}"
+        )
+        assert attest["with"]["push-to-registry"] is True, name
 
 
 def test_release_publication_requires_complete_tag_audit() -> None:
@@ -125,13 +215,20 @@ def test_release_publication_requires_complete_tag_audit() -> None:
         assert "release-audit" in jobs[job_id]["needs"]
     audit = jobs["release-audit"]
     assert set(audit["needs"]) == {"build-backend", "build-frontend", "sbom"}
-    assert audit["if"] == "startsWith(github.ref, 'refs/tags/v')"
+    assert audit["if"] == "startsWith(github.ref, 'refs/tags/v') || " + REHEARSAL_EVENTS
     for step in audit["steps"]:
         assert not step.get("continue-on-error")
     commands = "\n".join(step.get("run", "") for step in audit["steps"])
     assert "release_audit.py collect" in commands
-    assert "--verify-registry --require-workflows" in commands
+    assert "--verify-registry --require-workflows --verify-provenance" in commands
     assert '--tag "$GITHUB_REF_NAME" --source-sha "$GITHUB_SHA"' in commands
+    tag_steps = [s for s in audit["steps"] if "release_audit.py" in s.get("run", "")]
+    for step in tag_steps:
+        if "--images" in step["run"]:
+            assert step["if"] == "env.REHEARSAL == 'true'"
+            assert "--verify-registry" not in step["run"]
+        else:
+            assert step["if"] == NOT_REHEARSAL
     prepare = next(
         s
         for s in jobs["create-release"]["steps"]
@@ -190,7 +287,7 @@ def test_manual_remote_audit_is_read_only_and_runs_the_full_gate() -> None:
     assert set(job["permissions"].values()) == {"read"}
     commands = "\n".join(step.get("run", "") for step in job["steps"])
     assert "release_audit.py collect" in commands
-    assert "--verify-registry --require-workflows" in commands
+    assert "--verify-registry --require-workflows --verify-provenance" in commands
     for forbidden in ("--push", "docker push", "gh release", "secrets."):
         assert forbidden not in commands
     for step in job["steps"]:
