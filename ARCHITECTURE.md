@@ -295,7 +295,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
-| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
+| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, restricted CI machine identities, owned review execution admission, principal-bound completion callbacks and default-deny HTTP boundary, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
@@ -1599,6 +1599,15 @@ completion outbox transactionally. Codex's opt-in native result schema uses CLI
 structured output plus the existing capture-time validation gate; protocol
 translation preserves the requested schema or fails explicitly.
 
+Completed human-owned reviews can be exported through an explicit, expiring
+`execution_result_grant`, without adopting their execution into a CI principal.
+The CRUD layer binds current owner consent to original provider revisions and
+result/event digests; immutable grant fields and monotonic revocation are guarded
+in PostgreSQL. Export checks authority before and after a bounded provider read.
+The separate publisher verifies the public receipt, exact head/base and stable
+publication marker, then requires independent provider read-back. It neither
+launches a model nor receives publication authority from the export grant.
+
 ### Enterprise authentication persistence boundary
 
 `preloop.models.crud.sso_login` supplies account-scoped identity lookup, serialized
@@ -1622,3 +1631,37 @@ deletion revokes its claims before cascading configuration, retaining assignment
 claimed by other sources. Account hierarchy `access_grant_id` stays independent.
 The CRUD boundary validates tenant references and rejects owner authority;
 protocol adapters and role selection remain in the enterprise plugin.
+
+
+### Session authentication assurance
+
+Core carries a bounded authentication context through browser JWTs, account switch
+extensions, CLI consent/exchange and opaque MCP OAuth access/refresh records. The
+optional `authentication_policy` plugin service can enforce account methods at
+issuance, access and refresh. A membership-local `non_sso_auth_generation` is separate
+from canonical person/session revocation; all session types still honor ordinary
+`auth_generation`. Original authentication account/generation remain distinct from
+the selected account to prevent switches from upgrading or reviving assurance.
+The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+SAML persistence remains edition-neutral: `AccountSsoConnection` stores the
+public SP certificate paired with its SecretReference, and replay CRUD atomically
+consumes expiring pending SAML requests. Protocol implementation and certificate
+creation stay in EE. The shared identity CRUD accepts explicit OIDC/SAML sources
+while preserving canonical verified-email linkage, account membership boundaries
+and provider-link locking. The optional `ee` dependency extra supplies the SAML
+XML toolkit; core modules do not import it.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.
+
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.

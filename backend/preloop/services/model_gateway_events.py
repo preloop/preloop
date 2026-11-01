@@ -288,6 +288,9 @@ class ModelGatewayEventEmitter:
         if not execution_id:
             return
         try:
+            from preloop.services.execution_realtime import stamp_execution_event
+
+            event = stamp_execution_event(event)
             # The stored row was written by _record; flag the live copy so the
             # log persister does not store it a second time.
             payload_bytes = encode_realtime_event_for_nats(

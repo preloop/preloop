@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Helm values for enterprise single sign-on on the API: `sso.enabled`
+  (`ENTERPRISE_SSO_ENABLED`), `sso.publicUrl` (`SSO_PUBLIC_URL`, origin of the
+  OIDC redirect URI and SAML SP URLs) and `sso.allowPrivateIssuers`
+  (`GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`, the core setting shared with gateway
+  identity providers). The open-source image ignores the first two.
 - Private-runner Codex and Claude Code host runs are metered per execution.
   The control plane delivers a signed execution marker with each host job and
   the runner sends it as `X-Preloop-Execution` on the onboarded CLI's gateway

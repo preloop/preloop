@@ -43,6 +43,7 @@ CONNECTION_UPDATABLE_FIELDS = frozenset(
         "saml_idp_metadata_url",
         "saml_idp_certs",
         "saml_sp_signing_key_ref_id",
+        "saml_sp_certificate",
         "saml_want_assertions_signed",
         "default_role",
         "jit_enabled",
@@ -539,6 +540,28 @@ class CRUDSsoReplayGuard(_ThroughConnection, _AccountScopedCRUD[SsoReplayGuard])
                 expires_at=expires_at,
             )
             .on_conflict_do_nothing(constraint="uq_sso_replay_guard_connection_id")
+            .returning(SsoReplayGuard.id)
+        )
+        return result.first() is not None
+
+    def consume_pending(
+        self,
+        db: Session,
+        *,
+        connection_id: Any,
+        guard_id: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically remove one unexpired, server-stored pending request."""
+        if not guard_id.startswith("pending:saml:"):
+            raise ValueError("Only pending SAML requests may be consumed")
+        result = db.execute(
+            delete(SsoReplayGuard)
+            .where(
+                SsoReplayGuard.connection_id == connection_id,
+                SsoReplayGuard.guard_id == guard_id,
+                SsoReplayGuard.expires_at > (now or utc_now()),
+            )
             .returning(SsoReplayGuard.id)
         )
         return result.first() is not None

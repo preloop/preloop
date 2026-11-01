@@ -101,14 +101,24 @@ def _round_trip(db):
     grants_migration = _load_migration(
         MIGRATION_PATH.with_name("20261114_sso_group_grants.py")
     )
+    enforcement_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261115_sso_enforcement.py")
+    )
+    saml_migration = _load_migration(
+        MIGRATION_PATH.with_name("20261116_saml_sp_certificate.py")
+    )
     connection = db.connection()
     with Operations.context(MigrationContext.configure(connection)):
+        saml_migration.downgrade()
+        enforcement_migration.downgrade()
         grants_migration.downgrade()
         migration.downgrade()
         names = set(inspect(connection).get_table_names())
         assert not names & set(TABLES)
         migration.upgrade()
         grants_migration.upgrade()
+        enforcement_migration.upgrade()
+        saml_migration.upgrade()
     names = set(inspect(connection).get_table_names())
     assert set(TABLES) <= names
 
@@ -494,3 +504,26 @@ def test_generic_writes_require_validated_helpers(crud, field: str) -> None:
         crud.create(None, obj_in=fields)
     with pytest.raises(TypeError, match="requires a named write helper"):
         crud.update(None, db_obj=None, obj_in=fields)
+
+
+def test_saml_public_certificate_create_update_clear_round_trip(db_session, test_user):
+    connection = crud_account_sso_connection.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        protocol="saml",
+        fields={"name": "Public SP certificate", "saml_sp_certificate": "public-v1"},
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate == "public-v1"
+    previous_revision = connection.updated_at
+    crud_account_sso_connection.apply_update(
+        db_session, connection=connection, fields={"saml_sp_certificate": "public-v2"}
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate == "public-v2"
+    assert connection.updated_at != previous_revision
+    crud_account_sso_connection.apply_update(
+        db_session, connection=connection, fields={"saml_sp_certificate": None}
+    )
+    db_session.expire(connection)
+    assert connection.saml_sp_certificate is None

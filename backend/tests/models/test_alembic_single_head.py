@@ -518,4 +518,12 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert startup_receipt.down_revision == "20261114_owner_flow_subscription"
     group_grants = script.get_revision("20261114_sso_group_grants")
     assert group_grants.down_revision == "20261115_startup_receipt"
-    assert script.get_heads() == ["20261114_sso_group_grants"]
+    enforcement = script.get_revision("20261115_sso_enforcement")
+    assert enforcement.down_revision == "20261114_sso_group_grants"
+    saml_certificate = script.get_revision("20261116_saml_sp_certificate")
+    assert saml_certificate.down_revision == "20261115_sso_enforcement"
+    realtime = script.get_revision("20261120_execution_realtime_seq")
+    assert realtime.down_revision == "20261116_saml_sp_certificate"
+    result_export = script.get_revision("20261122_execution_result_grant")
+    assert result_export.down_revision == "20261120_execution_realtime_seq"
+    assert script.get_heads() == ["20261122_execution_result_grant"]

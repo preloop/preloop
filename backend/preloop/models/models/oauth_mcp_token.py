@@ -1,7 +1,7 @@
 """OAuth MCP token models for authorization codes, access tokens, and refresh tokens."""
 
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -52,6 +52,12 @@ class OAuthMCPAuthorizationCode(Base):
         nullable=False, default=True
     )
     code_challenge: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    auth_generation: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
     scopes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     expires_at: Mapped[float] = mapped_column(Float, nullable=False)
     resource: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
@@ -91,6 +97,12 @@ class OAuthMCPAccessToken(Base):
         ForeignKey("account.id", ondelete="CASCADE"),
         nullable=False,
     )
+    auth_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    auth_generation: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
     scopes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     expires_at: Mapped[Optional[int]] = mapped_column(nullable=True)
     resource: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
@@ -128,6 +140,12 @@ class OAuthMCPRefreshToken(Base):
         UUID(as_uuid=True),
         ForeignKey("account.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    auth_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    auth_generation: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
     )
     scopes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     expires_at: Mapped[Optional[int]] = mapped_column(nullable=True)

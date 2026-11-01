@@ -1815,6 +1815,9 @@ class FlowExecutionOrchestrator:
                 "type": message_type,
                 "payload": payload,
             }
+            from preloop.services.execution_realtime import stamp_execution_event_async
+
+            message = await stamp_execution_event_async(message)
             subject = f"flow-updates.{self.execution_log.id}"
             encoded_message = json.dumps(message).encode()
 
