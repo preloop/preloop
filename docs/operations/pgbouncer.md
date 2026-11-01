@@ -14,8 +14,9 @@ database:
       max_client_conn: "400"
 ```
 
-This creates the Service `<cluster>-pooler-rw` (by default
-`<release>-db-pooler-rw`). The chart does not point the application at it:
+This creates the Service `<cluster>-pooler-rw`, where `<cluster>` is
+`database.cnpg.name` or, by default, `<fullname>-db` (for example release
+`prod` renders `prod-preloop-db-pooler-rw`). The chart does not point the application at it:
 `DATABASE_URL` still targets the cluster's `-rw` Service. It is not available
 with `database.external=true`; the render fails instead.
 
@@ -29,6 +30,20 @@ engine and a small auth pool. The chart sets these per component under
 over OpenTelemetry and logs a WARNING when a pod reaches 80% of its pool
 ceiling. Lowering pool sizes or adding database capacity is the supported
 fix today.
+
+## Connection budget with PgBouncer
+
+Each Pooler instance opens up to `default_pool_size` server connections per
+database/user pair, so the Pooler itself uses up to
+`instances x default_pool_size` connections (40 with the defaults). Count
+them against `max_connections` alongside anything still connecting
+directly. If you route the application through a session-mode pooler, every
+client session holds one server connection for its lifetime, so the server
+pool must cover the app's steady total from the `database.pool` budget in
+`values.yaml` (roughly 150 to 190 with the chart defaults); with the default
+40 server connections, clients would queue and hit `pool_timeout`. Raise
+`default_pool_size` (or lower app pool sizes) before routing in session
+mode.
 
 ## Why the application is not routed through it yet
 
@@ -51,7 +66,9 @@ session-scoped state in a few places:
   to `ignore_startup_parameters` makes the connection succeed but silently
   drops the timeout. Set `statement_timeout` on the database role instead.
 
-**Session** mode has none of these problems, but it only caps concurrent
+**Session** mode avoids the advisory-lock, LISTEN and prepared-statement
+problems, but the `options` startup parameter is rejected in every pool
+mode (handled below). Session mode it only caps concurrent
 server connections; it does not multiplex. To use it, set
 `poolMode: session` and supply a `DATABASE_URL` pointing at the pooler
 Service through `database.urlFromSecret`, then add `options` to

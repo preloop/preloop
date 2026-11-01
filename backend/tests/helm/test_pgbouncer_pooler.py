@@ -86,8 +86,16 @@ def test_pooler_does_not_reroute_database_url() -> None:
     assert base == enabled
 
 
-def test_pooler_with_external_database_fails() -> None:
-    """There is no CNPG cluster to pool for an external database."""
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["database.external=true", "database.externalDatabase.host=db.example.com"],
+        ["database.enabled=false"],
+    ],
+    ids=["external", "disabled"],
+)
+def test_pooler_without_chart_cluster_fails(overrides: List[str]) -> None:
+    """There is no chart CNPG cluster to pool for external or disabled DBs."""
     helm = shutil.which("helm")
     if helm is None:  # pragma: no cover - depends on the local toolchain
         pytest.skip("helm binary not available")
@@ -96,8 +104,7 @@ def test_pooler_with_external_database_fails() -> None:
         for override in [
             f"environment.jwtSecret={TEST_JWT_SECRET}",
             "database.pgbouncer.enabled=true",
-            "database.external=true",
-            "database.externalDatabase.host=db.example.com",
+            *overrides,
         ]:
             command += ["--set", override]
         result = subprocess.run(command, capture_output=True, text=True, check=False)
