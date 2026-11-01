@@ -2024,6 +2024,22 @@ describe('DashboardView', () => {
     });
   });
   describe('wave 6 Overview', () => {
+    // Fixture runs start minutes or hours before "now" and must land in the
+    // page's default range ("this month"). On the first of a month before
+    // those offsets have elapsed they fall into the previous month, so pin
+    // the date mid-month. Only Date is faked; timers stay real.
+    let clock: sinon.SinonFakeTimers;
+    before(() => {
+      clock = sinon.useFakeTimers({
+        now: new Date('2026-08-15T12:00:00Z'),
+        toFake: ['Date'],
+        shouldAdvanceTime: true,
+      });
+    });
+    after(() => {
+      clock.restore();
+    });
+
     async function mountLoaded(): Promise<DashboardView> {
       const element = await mountDashboard();
       await waitUntil(
