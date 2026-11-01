@@ -3923,6 +3923,11 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
+        elif self._is_platform_park_resume(resume):
+            # Approval-park and child-wait resumes are created by the
+            # platform from a recorded decision. The parked row names this
+            # execution as its resume, which a trigger payload cannot forge.
+            execution_context["checkpoint_resume_authorized"] = True
         cold_handoff = bool(native and native.get("cold_handoff_authorized"))
         if cold_handoff:
             execution_context["published_branch_handoff_authorized"] = True
@@ -7665,6 +7670,41 @@ class FlowExecutionOrchestrator:
             raise AgentStartError(
                 reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
             )
+
+    def _is_platform_park_resume(self, resume: Dict[str, Any]) -> bool:
+        """Whether ``_resume`` continues a parked run the platform resumed.
+
+        True only when the execution named by ``resume["execution_id"]``
+        belongs to this flow and its ``resume_execution_id`` is this
+        execution. That link is written by the park resume path when it
+        creates this row, so a ``_resume`` copied into a trigger payload by
+        a caller does not satisfy it.
+
+        Args:
+            resume: The ``_resume`` binding from the trigger event data.
+
+        Returns:
+            True when the parked row links to this execution.
+        """
+        parked_id = resume.get("execution_id")
+        if not parked_id:
+            return False
+        from preloop.models.crud import crud_flow_execution
+
+        try:
+            parked = crud_flow_execution.get(
+                self.db, id=str(parked_id), account_id=str(self.flow.account_id)
+            )
+        except Exception:
+            logger.warning(
+                "Could not verify the park link of resume %s", parked_id, exc_info=True
+            )
+            return False
+        if parked is None:
+            return False
+        return str(getattr(parked, "flow_id", "")) == str(self.flow.id) and str(
+            getattr(parked, "resume_execution_id", "") or ""
+        ) == str(self.execution_log.id)
 
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float

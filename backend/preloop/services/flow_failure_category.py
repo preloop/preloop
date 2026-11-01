@@ -98,6 +98,12 @@ it*, not about severity:
     hosted Codex container whose Preloop command hook could not be
     installed, or another hosted harness without one), so it was refused
     rather than run ungated.
+``resume_failed``
+    A run that parked (for an approval or for its child runs) could not be
+    continued: the resume refused the parked run's checkpoint before the
+    agent started. Also recorded on the parked run itself when the
+    execution that continues it fails, so the parked row never reads as an
+    uncategorised failure.
 ``gateway_bypassed``
     A private-runner Codex or Claude Code host CLI produced model output
     without a single request through the Preloop gateway, so the run was
@@ -158,6 +164,8 @@ FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
 FAILURE_CATEGORY_APPROVAL_DENIED = "approval_denied"
 FAILURE_CATEGORY_APPROVAL_TIMEOUT = "approval_timeout"
 FAILURE_CATEGORY_APPROVAL_UNAVAILABLE = "approval_unavailable"
+#: A parked run's continuation failed (or refused its checkpoint).
+FAILURE_CATEGORY_RESUME_FAILED = "resume_failed"
 #: A private-runner host CLI produced model output without any request
 #: through the Preloop gateway (and the flow did not opt out).
 FAILURE_CATEGORY_GATEWAY_BYPASSED = "gateway_bypassed"
@@ -188,6 +196,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_APPROVAL_DENIED,
     FAILURE_CATEGORY_APPROVAL_TIMEOUT,
     FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+    FAILURE_CATEGORY_RESUME_FAILED,
     FAILURE_CATEGORY_GATEWAY_BYPASSED,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_CANCELLED,
@@ -445,10 +454,15 @@ _APPROVAL_UNAVAILABLE_RE = re.compile(
     r"PRELOOP_SETUP_FAILED approval_unavailable|\bapproval_unavailable:",
     re.IGNORECASE,
 )
+# checkpoint_runtime.checkpoint_context's refusals of a resume binding.
+_RESUME_FAILED_RE = re.compile(
+    r"\bcheckpoint_resume_not_authorized\b|\bworkspace_checkpoint_missing\b"
+)
 
 _STRUCTURAL_MESSAGE_RULES = (
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
     (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
+    (_RESUME_FAILED_RE, FAILURE_CATEGORY_RESUME_FAILED),
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),

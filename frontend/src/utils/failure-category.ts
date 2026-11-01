@@ -123,6 +123,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'A deny or approval rule applies to native commands, and this run could not install the Preloop command hook that enforces it. Check the run log for the setup line, or change the rule.',
   },
+  resume_failed: {
+    label: 'resume failed',
+    tooltip:
+      'The run paused for a decision or for its child runs, and the run that should have continued it failed. Open the linked resume run for the cause.',
+  },
   gateway_bypassed: {
     label: 'gateway bypassed',
     tooltip:
