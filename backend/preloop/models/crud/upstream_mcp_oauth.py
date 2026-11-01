@@ -20,6 +20,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.services.upstream_identity import without_identity_flags
 from preloop.utils.encryption import decrypt_value, encrypt_value
 
 
@@ -53,7 +54,8 @@ def server_digest(server: models.MCPServer) -> str:
                 server.url,
                 server.transport,
                 server.auth_type,
-                server.auth_config,
+                # Header preferences do not change the credential binding.
+                without_identity_flags(server.auth_config),
                 server.status == "disabled",
             ],
             sort_keys=True,

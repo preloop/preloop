@@ -25,6 +25,9 @@ INSTANCE_HEADER = "X-Preloop-Instance"
 SEND_IDENTITY_HEADERS_KEY = "send_identity_headers"
 #: ``auth_config`` key; ``True`` adds :data:`INSTANCE_HEADER` for a server.
 SEND_INSTANCE_ID_KEY = "send_instance_id"
+#: Header preferences stored in ``auth_config`` that are not credentials.
+#: Changing them must not invalidate an OAuth grant.
+IDENTITY_FLAG_KEYS = frozenset({SEND_IDENTITY_HEADERS_KEY, SEND_INSTANCE_ID_KEY})
 
 #: Environment override for the instance id (for example, several replicas
 #: that should present one id, or an operator-chosen label).
@@ -32,6 +35,24 @@ INSTANCE_ID_ENV = "PRELOOP_INSTANCE_ID"
 
 _INSTANCE_ID_LABEL = b"preloop-upstream-instance-id:v1:"
 _instance_id_cache: Optional[str] = None
+
+
+def without_identity_flags(auth_config: Any) -> Any:
+    """Return ``auth_config`` without the identity header preferences.
+
+    Used where ``auth_config`` stands for the credential binding (OAuth
+    change detection), so toggling a header preference keeps the grant.
+
+    Args:
+        auth_config: A stored or incoming ``auth_config``.
+
+    Returns:
+        A copy without :data:`IDENTITY_FLAG_KEYS`, or the value unchanged
+        when it is not a dict.
+    """
+    if not isinstance(auth_config, dict):
+        return auth_config
+    return {k: v for k, v in auth_config.items() if k not in IDENTITY_FLAG_KEYS}
 
 
 def preloop_user_agent() -> str:

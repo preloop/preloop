@@ -215,3 +215,42 @@ def test_identity_flags_must_be_booleans(key: str) -> None:
     MCPServerCreate(**base, auth_config={key: False})
     with pytest.raises(ValidationError):
         MCPServerCreate(**base, auth_config={key: "false"})
+
+
+def test_approval_correlation_id_comes_from_the_created_row(db_session) -> None:
+    from preloop.models import models
+    from preloop.models.crud.audit_log import crud_audit_log
+
+    account = models.Account(organization_name="Synthetic correlation")
+    db_session.add(account)
+    db_session.flush()
+    approval_id = str(uuid4())
+    for action, correlation in (
+        ("approval_created", "paused-call"),
+        ("approval_approved", None),
+        ("approval_created", None),
+    ):
+        details = {"approval_id": approval_id}
+        if correlation:
+            details["correlation_id"] = correlation
+        crud_audit_log.log_action(
+            db_session,
+            account_id=account.id,
+            action=action,
+            resource_type="approval",
+            resource_id=approval_id,
+            status="created",
+            details=details,
+        )
+    assert (
+        crud_audit_log.get_approval_correlation_id(
+            db_session, account_id=account.id, approval_id=approval_id
+        )
+        == "paused-call"
+    )
+    assert (
+        crud_audit_log.get_approval_correlation_id(
+            db_session, account_id=account.id, approval_id=str(uuid4())
+        )
+        is None
+    )

@@ -202,7 +202,9 @@ class MCPServerBase(BaseModel):
         cls, value: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
         """``send_identity_headers``/``send_instance_id`` must be booleans."""
-        for key in ("send_identity_headers", "send_instance_id"):
+        from preloop.services.upstream_identity import IDENTITY_FLAG_KEYS
+
+        for key in sorted(IDENTITY_FLAG_KEYS):
             if value and key in value and not isinstance(value[key], bool):
                 raise ValueError(f"auth_config.{key} must be true or false")
         return value

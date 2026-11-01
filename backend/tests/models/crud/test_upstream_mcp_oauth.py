@@ -643,3 +643,61 @@ def test_snapshot_from_before_a_refresh_keeps_the_rotated_grant(storage):
         config = store.config_for_edit(db, server)
         assert config["access_token"] == "rotated-access"
         assert config["expires_at"] > time.time() + 3500
+
+
+def edit_form_config(store, db, server):
+    """The redacted auth_config the console sends back on an edit."""
+    from preloop.models.schemas.mcp_server import redact_auth_config
+
+    return redact_auth_config(store.config_for_edit(db, server))
+
+
+@pytest.mark.parametrize(
+    "flag", [{"send_identity_headers": False}, {"send_instance_id": True}]
+)
+def test_identity_header_flags_keep_the_oauth_grant(storage, flag):
+    store = grant(storage)
+    factory, (_, _, server_id) = storage
+    with factory() as db:
+        row = (
+            db.query(models.UpstreamMCPOAuthConnection)
+            .filter_by(server_id=server_id)
+            .one()
+        )
+        version, secret_id = row.version, row.secret_id
+        server = db.get(models.MCPServer, server_id)
+        state = store.state(db, server)
+        crud_mcp_server.update(
+            db,
+            db_obj=server,
+            obj_in={"auth_config": {**edit_form_config(store, db, server), **flag}},
+        )
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        row = (
+            db.query(models.UpstreamMCPOAuthConnection)
+            .filter_by(server_id=server_id)
+            .one()
+        )
+        assert (row.version, row.secret_id) == (version, secret_id)
+        assert store.state(db, server) == state
+        assert server.auth_config[next(iter(flag))] == next(iter(flag.values()))
+
+
+def test_identity_header_flags_keep_pending_authorization(storage):
+    store = begin(storage)
+    factory, (_, _, server_id) = storage
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        crud_mcp_server.update(
+            db,
+            db_obj=server,
+            obj_in={
+                "auth_config": {
+                    **edit_form_config(store, db, server),
+                    "send_instance_id": True,
+                }
+            },
+        )
+    with factory() as db:
+        assert consume(store, db) is not None

@@ -288,14 +288,15 @@ gate and join their own access record with the Preloop audit row:
 | Header | Sent | Value |
 |--------|------|-------|
 | `User-Agent` | Always | `Preloop/<version>`, the same value Preloop sends to model providers |
-| `X-Preloop-Correlation-Id` | On the session that serves a proxied tool call | The `correlation_id` written to the `policy_allow`, `policy_deny` and `tool_call` audit rows for that call. Scans and connection tests carry none. |
+| `X-Preloop-Correlation-Id` | On the session that serves a proxied tool call | The `correlation_id` written to the `policy_allow`, `policy_deny` and `tool_call` audit rows for that call. A call replayed after approval carries the id of the call that paused (from its `approval_created` row), or none if that row is missing. Scans and connection tests carry none. |
 | `X-Preloop-Instance` | Only when the server sets `send_instance_id: true` | A stable, non-secret id for this installation: a one-way hash of the installation id created at first start, or the value of `PRELOOP_INSTANCE_ID` when set. Never the account id. |
 
 Preloop never forwards headers from the calling agent to the upstream; only
 the headers above and the configured authentication are sent. Authentication
 headers are unchanged and win if a name collides.
 
-Per-server settings in `auth_config` (booleans):
+Per-server settings in `auth_config` (booleans). They are header preferences,
+not credentials: changing them keeps an OAuth connection.
 
 ```yaml
 send_identity_headers: false  # remove all three headers for this server
