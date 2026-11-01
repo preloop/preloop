@@ -75,6 +75,28 @@ def _team_member_responses(
     return responses
 
 
+def _reject_taken_team_name(
+    db: Session, *, name: str, account_id: Any, team_id: UUID | None = None
+) -> None:
+    """Raise 409 when another team in the account already uses ``name``.
+
+    Args:
+        db: Database session.
+        name: Requested team name.
+        account_id: Account the team belongs to.
+        team_id: Team being renamed, which may keep its own name.
+
+    Raises:
+        HTTPException: 409 if the name is taken by a different team.
+    """
+    existing = crud_team.get_by_name(db, name=name, account_id=account_id)
+    if existing is not None and existing.id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A team with this name already exists",
+        )
+
+
 @router.post("/teams", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
 @require_permission("create_teams")
 def create_team(
@@ -94,6 +116,9 @@ def create_team(
     """
     team_dict = team_data.model_dump()
     team_dict["account_id"] = current_user.account_id
+    _reject_taken_team_name(
+        db, name=team_dict["name"], account_id=current_user.account_id
+    )
 
     team = crud_team.create(db=db, obj_in=team_dict)
     db.commit()
@@ -257,9 +282,15 @@ def update_team(
             detail="Cannot update team from different account",
         )
 
-    updated_team = crud_team.update(
-        db=db, db_obj=team, obj_in=team_data.model_dump(exclude_unset=True)
-    )
+    changes = team_data.model_dump(exclude_unset=True)
+    if changes.get("name") is not None:
+        _reject_taken_team_name(
+            db,
+            name=changes["name"],
+            account_id=current_user.account_id,
+            team_id=team.id,
+        )
+    updated_team = crud_team.update(db=db, db_obj=team, obj_in=changes)
     db.commit()
     db.refresh(updated_team)
 
