@@ -81,9 +81,12 @@ The report does not pay twice for a judgement that already exists.
   met (for example its last comment, after the last criteria edit,
   measures it), the issue was closed too early. A follow-up the run
   proposed for that issue becomes a reopen request pinned to the closing
-  merge SHA, with the follow-up's and the criterion's evidence. Without a
-  known closing merge SHA the follow-up stays. An evidence gap (`met: null`)
-  never becomes a reopen request.
+  merge SHA, with the follow-up's and the criterion's evidence. The
+  follow-up stays when the closing merge SHA is unknown, when no unmet
+  criterion cites evidence, or when the run already opened it. An evidence
+  gap (`met: null`) never becomes a reopen request. The run returns each
+  change's `files` and `files_changed` so the platform can derive the
+  metadata-only label.
 
 Only closed issues with no audit and no unchanged previous assessment, and
 PRs with neither a brief nor a summary, go to the model (source `report`).

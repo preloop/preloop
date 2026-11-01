@@ -7,10 +7,12 @@ in ``tests/fixtures/delivery_report/eval``.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
+from preloop.flow_presets import DEFAULT_PRESETS_DIR
 from preloop.services import delivery_report as dr
 from preloop.services import delivery_report_eval as dre
 
@@ -215,3 +217,31 @@ class TestReopenNotFollowUp:
         )
         assert report["follow_ups"] == [other]
         assert report["reopen_requests"] == []
+
+    def test_an_opened_follow_up_is_kept(self) -> None:
+        opened = dict(_FOLLOW_UP, issue_url="https://github.com/acme/app/issues/8")
+        report = dr.finalize_delivery_report(
+            {"closed_issues": [_closed()], "follow_ups": [opened]}
+        )
+        assert [f.get("issue_url") for f in report["follow_ups"]] == [
+            opened["issue_url"]
+        ]
+        assert report["reopen_requests"] == []
+
+    def test_an_uncited_miss_is_not_enough(self) -> None:
+        issue = _closed(
+            purpose={"criteria": [{"text": "x", "met": False, "evidence": []}]}
+        )
+        report = dr.finalize_delivery_report(
+            {"closed_issues": [issue], "follow_ups": [_FOLLOW_UP]}
+        )
+        assert len(report["follow_ups"]) == 1
+        assert report["reopen_requests"] == []
+
+
+def test_preset_result_schema_carries_the_file_list() -> None:
+    """The assessed run must return the files the metadata label reads."""
+    text = (DEFAULT_PRESETS_DIR / "022-delivery-report.yaml").read_text()
+    shipped = text[text.index('"shipped": [') : text.index('"closed_issues": [')]
+    assert re.search(r'"files": \[', shipped)
+    assert '"files_changed"' in shipped

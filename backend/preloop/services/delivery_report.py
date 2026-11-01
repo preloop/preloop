@@ -1995,8 +1995,9 @@ def follow_ups_to_reopens(
     example the issue's last comment measures it), the issue was closed too
     early: the right proposal is to reopen it, not to open a new issue. The
     request is pinned to the closing revision, so it goes stale after new
-    commits or an issue edit. Without a known closing revision the
-    follow-up stays as it is.
+    commits or an issue edit. The follow-up stays as it is when the closing
+    revision is unknown, when no unmet criterion cites evidence, or when the
+    run already opened it (``issue_url`` set).
 
     Args:
         follow_ups: The report's follow-up proposals.
@@ -2014,12 +2015,14 @@ def follow_ups_to_reopens(
         follow = dict(item)
         issue = by_ref.get(str(follow.get("ref") or ""))
         revision = (issue or {}).get("closing_sha")
+        # A miss must cite its measurement, as for an audited reopen; a
+        # follow-up the run already opened stays, so its record is kept.
         unmet = [
             c
             for c in normalize_purpose((issue or {}).get("purpose"))["criteria"]
-            if c["met"] is False
+            if c["met"] is False and c["evidence"]
         ]
-        if issue is None or not revision or not unmet:
+        if issue is None or not revision or not unmet or follow.get("issue_url"):
             kept.append(follow)
             continue
         ref = str(issue["ref"])
@@ -2031,9 +2034,6 @@ def follow_ups_to_reopens(
                 + [e for c in unmet for e in c["evidence"]]
             )
         )
-        if not evidence:
-            kept.append(follow)
-            continue
         requests.append(
             {
                 "ref": ref,

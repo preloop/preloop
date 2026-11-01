@@ -224,6 +224,7 @@ prompt_template: |
      "merged_at": "<iso>", "issues": ["<issue ref>"], "summary": "<one line>",
      "head_sha": "<sha>", "merge_sha": "<sha>",
      "metadata_only": null | "dependabot" | "docs_only",
+     "files": ["<changed file path>"], "files_changed": <forge's file count>,
      "purpose": {"verdict": "covered" | "partial" | "unverified" | "no_criteria",
        "criteria": [{"text": "...", "met": true | false | null,
          "evidence": ["path/to/file.py:42", "test_name passed", "review comment URL"],
