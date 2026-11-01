@@ -41,9 +41,15 @@ Project reruns use the existing manual flow trigger, narrow the report policy's
 scope for that execution, and recheck the policy before running. They preserve
 the account's assessment budgets and tracker-write rules.
 
+The account report policy shows recipient roles only when the Enterprise plugin
+advertises `delivery_report_recipients`. Its roster, role overrides, sponsoring
+lead and per-person opt-outs use the plugin recipient API and policy permissions,
+independently of budget editing. Budget saves retain the current recipient
+settings; each person retains the shared self-subscription control.
+
 [Restricted CI administration](docs/guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's explicit route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
 
-Restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. Legacy and isolated publication retain their existing contracts.
+Restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. The executor is either hosted Codex on the server pool or a Codex `host_exec_profile` on a named private runner pool: the lease travels only in the transient delivered checkout plan, the runner clones with host git config and credential helpers disabled, verifies the admitted SHA, revokes the lease before starting `codex exec --sandbox read-only`, and returns a receipt the control plane requires for success; the control plane revokes delivered leases again at completion. Legacy and isolated publication retain their existing contracts.
 
 
 Credential checks use a dedicated synchronous auth pool alongside the sync and
@@ -102,6 +108,33 @@ Period exports and evidence packs carry detached Ed25519 signatures.
 caller's machine. See [Evidence storage and signed records](docs/guide/flows/evidence-storage.md).
 The chain proves order and non-deletion in the range it names, not that the
 records were true when written; the signing key lives beside the records.
+
+Password and passkey sign-in record one final `auth.login.succeeded` or
+`auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
+plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
+Payloads retain bounded identity metadata, known changed-field names and
+UUID-only owner lists; tokens, assertions and nested
+provider payloads are excluded. Known identities route to their account audit
+trail and period exports; attempts without a trustworthy account emit a
+content-free service security log, never a caller-selected tenant row. Existing
+`user.login` activity events remain available for cohort metrics. SSO labels
+retain their schema bounds (name 255, domain 253, group/issuer/entity 512 characters);
+secret-looking identifier labels remain intentional identifiers. Identity URLs
+drop userinfo, query strings and fragments. Owner lists retain at most 100 UUIDs
+and report the original total when truncated; nested values never survive.
+
+Authentication audit volume is intentionally one outcome per attempt, without
+sampling or deduplication. Password login and passkey verification have no
+built-in attempt limiter, so operators should enforce ingress limits on
+`/api/v1/auth/token`, `/api/v1/auth/token/json`, and
+`/api/v1/auth/webauthn/authenticate/verify` using the trusted proxy's client
+address. Incoming forwarded headers alone are not a rate-limit identity.
+A known-account failure adds one audit row; sustained attempts therefore grow
+the account's retained audit history and period exports linearly. The ordinary
+audit retention policy applies, and the period export row cap requires smaller
+periods for high-volume accounts. Unknown-account failures grow service logs;
+apply the same ingress limits and log rotation there. Limit attempts before
+authentication, rather than suppressing required compliance events afterward.
 
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
@@ -187,7 +220,13 @@ rejections and unhandled errors retain it. CLI and console REST URL builders
 share a prefix within each client; they do not negotiate versions by header.
 
 Flow routing admission rejects agent-bound subscription models for ordinary
-ephemeral execution credentials before creating executions. Matrix admission
+ephemeral execution credentials before creating executions, unless the
+subscription's owner opted in ("Use from my flows",
+`ai_model.owner_flow_use_user_id`) and also owns the flow
+(`flow.created_by_user_id`). The gateway applies the same rule to the
+execution's runtime credential (`services/subscription_flow_use.py`) without
+touching agent bindings; refreshes stay serialized on the credential row, so
+the onboarded agent and hosted runs share one token lineage. Matrix admission
 validates all cells before writing the batch. Authoritative orchestrator startup
 rechecks legacy queued rows before runtime launch and records incompatible
 subscription selections as terminal `model_config` failures. Persistent agents, private host
@@ -733,6 +772,61 @@ the allowance when supported. Before adding a system alias, operators can run
 The lookup exposes no account identifiers and does not change model routing.
 
 
+### Users, teams and edition overlays
+
+Preloop (OSS) owns user, invitation and team CRUD in
+`preloop.api.endpoints.users`, `invitations` and `teams`. Models, schemas and
+CRUD remain in `preloop.models`. Core registers these routers once, including
+the unauthenticated invitation inspection/acceptance routes. Blocking CRUD
+handlers use FastAPI's synchronous thread-pool dispatch. User and team
+management capability flags are present without commercial plugins, including
+with `DISABLE_PROPRIETARY_PLUGINS=true`.
+
+Core applies no access control between users of the same account: there are
+no roles, no role assignment and no owner protection, and every active member
+can do everything in the account. Without the RBAC plugin
+`preloop.utils.permissions.members_have_full_access()` is true, so
+`user_holds_permission` grants every permission, `ensure_permission_in_oss`
+and the kill-switch toggle admit every member, and `/auth/users/me` reports a
+null permission list. Explicitly disabling commercial plugins uses the same
+boolean flag parser for loading and authorization. Missing optional RBAC packages
+mean core; broken installed RBAC imports refuse startup, and failed commercial
+profile permission lookups return an empty list rather than unrestricted access.
+Endpoints keep their `@require_permission` decorators;
+they are no-ops in core and enforced by the RBAC plugin. Tenant isolation is
+not an access control between users and stays: controllers validate account
+ownership before reading or mutating users, teams or invitations. Invitations
+that request roles answer 402 `upgrade_required` in core, and roles stored on
+an invitation by a commercial edition are not granted on acceptance. Bulk hard
+deletion still skips the primary user of an account with other members,
+because an account needs a primary user.
+
+The role catalog route (`GET /api/v1/roles`) is registered only by the commercial
+RBAC plugin. Core user/team responses retain the `roles`/`inherited_roles` fields
+for API compatibility but return empty lists without its access-control service;
+legacy invitation metadata likewise does not advertise commercial role grants.
+Team membership labels remain descriptive and grant no account privileges.
+
+`preloop.services.multiuser` resolves optional services through PluginManager:
+`multiuser_seat_gate`, `multiuser_billing_service`, `multiuser_membership` and
+`multiuser_access_control`. The last implements the `AccessControl` protocol
+(`validate_invitation_roles`, `apply_invitation_roles`,
+`ensure_can_remove_member`). Moved controllers import no proprietary packages.
+The RBAC and account hierarchy plugins in Preloop Cloud and Preloop Enterprise
+supply seat policies, subscription housekeeping, canonical membership linking
+and all access control: roles and role assignment (`/users/{id}/roles`,
+`/teams/{id}/roles`), owner protection, RBAC/ABAC and permission enforcement
+on the core endpoints. They register only their additional routes, never a
+second copy of a core route. Invitation context includes the invitee email so
+the overlay can recognize an existing seat across its account tree.
+
+Preloop Cloud and Preloop Enterprise also retain resource rules and sharing,
+team budgets, subaccount hierarchy, pooled billing, SSO/SAML/SCIM, fleet
+findings, multi-approver/escalation workflows, weekly governance review,
+advanced reporting and audit export/retention. The console shows no role
+controls in core; role actions open the upgrade affordance. Per-user
+devices/runners/agents, basic approvals and basic usage views remain in core.
+
 ### Cache-inclusive input tokens
 
 `ApiUsage.prompt_tokens` is cache inclusive for every provider: it counts the
@@ -767,7 +861,8 @@ token counts.
 ### Console edit permissions
 
 Edit controls use the cached user profile with three distinct states: a null
-permission list preserves OSS behavior, an RBAC list grants only named actions,
+permission list means no access control applies (core, or disabled checks),
+an RBAC list grants only named actions,
 and an unresolved or failed profile disables edits. Budget components also accept
 `readOnly` to display limits without add/edit/delete actions. Models use separate
 create/edit/delete grants; user actions use `manage_users`, invitations use
@@ -1128,6 +1223,24 @@ fields remain unknown. This in-memory view is not a durable tracker event journa
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
+### Host-profile gateway attribution and hosted Codex hook
+
+A private-runner Codex or Claude Code host profile runs the runner user's
+Preloop-onboarded CLI, whose model calls reach the gateway with the agent's
+own key. Host delivery adds `host_exec_gateway`: a signed, identifiers-only
+execution marker the runner sends as `X-Preloop-Execution` (Codex through a
+per-run provider override, Claude Code through `ANTHROPIC_CUSTOM_HEADERS`).
+The gateway auth dependency verifies it against the key's account and a live
+execution and folds `flow_execution_id`/`flow_id` into the detached key
+snapshot, so usage attribution, per-execution ceilings and cost rollups use
+their existing paths. At completion the server counts the execution's gateway
+rows for `gateway_metered`; a Codex or Claude Code run with model output and
+no row fails `gateway_bypassed` unless the flow opts out
+(`allow_unmetered_host_model`, never in read-only review). See
+`services/host_exec_gateway.py`. Hosted Codex containers install the Preloop
+`PreToolUse` hook before Codex starts (`agents/codex_native_hook.py`), so
+native commands follow the same deny and approval-park rules.
+
 ### Restricted external runtime authority
 
 The default-disabled restricted runtime primitive reuses SecretReference policy
@@ -1485,3 +1598,61 @@ coverage/redaction flags. STOPPED writes queue the existing principal-filtered
 completion outbox transactionally. Codex's opt-in native result schema uses CLI
 structured output plus the existing capture-time validation gate; protocol
 translation preserves the requested schema or fails explicitly.
+
+### Enterprise authentication persistence boundary
+
+`preloop.models.crud.sso_login` supplies account-scoped identity lookup, serialized
+provider-subject enrollment, membership persistence and expiring administrator
+proof lookup for enterprise protocols. Verified IdP email only resolves an existing
+destination-account member whose canonical address is already verified; matching another account's email cannot establish
+identity. Known provider subjects can identify a person independently of email.
+The caller owns seat admission and authorization; these core helpers assign no
+roles and create no accounts. Connection updates advance their revision even
+when a write-only secret retains the same secret-reference id. Protocol handling,
+role policy and token issuance remain in the enterprise SSO plugin.
+
+### SSO grant provenance
+
+`crud.sso_group_grants` reconciles complete OIDC, SAML and SCIM snapshots without
+committing. Each connection/source claim references a physical role or team
+assignment. Existing assignments default to `manually_granted=true`; only rows
+created by the mapper are eligible for automatic removal after their final claim
+disappears. Manual replacement and explicit team edits remain manual. Connection
+deletion revokes its claims before cascading configuration, retaining assignments
+claimed by other sources. Account hierarchy `access_grant_id` stays independent.
+The CRUD boundary validates tenant references and rejects owner authority;
+protocol adapters and role selection remain in the enterprise plugin.
+
+
+### Session authentication assurance
+
+Core carries a bounded authentication context through browser JWTs, account switch
+extensions, CLI consent/exchange and opaque MCP OAuth access/refresh records. The
+optional `authentication_policy` plugin service can enforce account methods at
+issuance, access and refresh. A membership-local `non_sso_auth_generation` is separate
+from canonical person/session revocation; all session types still honor ordinary
+`auth_generation`. Original authentication account/generation remain distinct from
+the selected account to prevent switches from upgrading or reviving assurance.
+The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+SAML persistence remains edition-neutral: `AccountSsoConnection` stores the
+public SP certificate paired with its SecretReference, and replay CRUD atomically
+consumes expiring pending SAML requests. Protocol implementation and certificate
+creation stay in EE. The shared identity CRUD accepts explicit OIDC/SAML sources
+while preserving canonical verified-email linkage, account membership boundaries
+and provider-link locking. The optional `ee` dependency extra supplies the SAML
+XML toolkit; core modules do not import it.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.
+
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.

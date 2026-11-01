@@ -24,11 +24,57 @@ from preloop.utils.execve_limits import (
 
 LAUNCH_VERSION = 1
 MAX_RESULT_BYTES = 256 * 1024
+# The private runner CLI refuses a bootstrap script or any one environment
+# value above this size (cli/internal/cmd/runner_launch.go). Checked here so
+# the execution fails with a launch_error naming the item instead of the
+# CLI's generic "invalid private runner bootstrap script".
+MAX_RUNNER_LAUNCH_STRING_BYTES = 96 * 1024
 logger = logging.getLogger(__name__)
 
 
 class RunnerLaunchConfigurationChangedError(ValueError):
     """Leased configuration no longer matches the flow definition."""
+
+
+class RunnerLaunchRejectedError(ValueError):
+    """A launch the private runner CLI would refuse; the message names why."""
+
+
+def check_runner_launch(script: str, env: dict[str, str]) -> None:
+    """Apply the runner CLI's launch limits before the lease is delivered.
+
+    Args:
+        script: Bootstrap script for the private Docker container.
+        env: Launch environment applied to that container.
+
+    Raises:
+        RunnerLaunchRejectedError: The script is empty, or the script or one
+            environment value is larger than the CLI accepts.
+    """
+    limit = MAX_RUNNER_LAUNCH_STRING_BYTES
+    if not script.strip():
+        raise RunnerLaunchRejectedError(
+            "Private runner launch has an empty bootstrap script; the flow's "
+            "harness produced no launch. Check the flow's agent type and model."
+        )
+    size = len(script.encode("utf-8"))
+    if size > limit:
+        raise RunnerLaunchRejectedError(
+            f"Private runner bootstrap script is {size} bytes; the runner "
+            f"accepts at most {limit}. Reduce setup commands or repositories "
+            "in the flow."
+        )
+    oversized = sorted(
+        (len(value.encode("utf-8")), key)
+        for key, value in env.items()
+        if len(value.encode("utf-8")) > limit
+    )
+    if oversized:
+        size, key = oversized[-1]
+        raise RunnerLaunchRejectedError(
+            f"Private runner launch variable {key} is {size} bytes; the runner "
+            f"accepts at most {limit} per variable."
+        )
 
 
 def flow_launch_fingerprint(flow: Any) -> str | None:
@@ -107,7 +153,7 @@ async def prepare_runner_delivery(
             **public_job,
             "launch_error": "Flow configuration changed after leasing; retry the execution",
         }
-    except LaunchPayloadTooLargeError as exc:
+    except (LaunchPayloadTooLargeError, RunnerLaunchRejectedError) as exc:
         return {
             **public_job,
             "launch_error": str(exc),
@@ -196,6 +242,7 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     env.update(prompt_transport_env(context["prompt"]))
     agent._apply_git_credential_env(env, context)
     check_launch_payload(command=None, args=None, env=env, what="private runner launch")
+    check_runner_launch(script, env)
     return {"version": LAUNCH_VERSION, "script": script, "env": env}
 
 

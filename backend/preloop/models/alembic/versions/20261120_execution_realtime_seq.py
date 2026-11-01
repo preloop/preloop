@@ -1,7 +1,7 @@
 """Persist cross-process execution realtime sequence allocation.
 
 Revision ID: 20261120_execution_realtime_seq
-Revises: 20261113_pull_request_details
+Revises: 20261116_saml_sp_certificate
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20261120_execution_realtime_seq"
-down_revision = "20261113_pull_request_details"
+down_revision = "20261116_saml_sp_certificate"
 branch_labels = None
 depends_on = None
 

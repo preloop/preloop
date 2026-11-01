@@ -818,3 +818,16 @@ def test_tool_evidence_capture_survives_execution_sequence_stamping() -> None:
     assert published["lifecycle_seq"] == 3
     assert published["sequence_domain"] == "execution"
     assert published["execution_id"] == str(usage.flow_execution_id)
+
+def test_published_gateway_event_is_flagged_as_already_stored():
+    """The stored model-call row must not be stored again by the log persister."""
+    import json as _json
+
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    event = {"execution_id": "execution-1", "type": "model_gateway_call"}
+    with patch("preloop.services.model_gateway_events.publish_realtime") as publish:
+        emitter._publish_to_nats(event)
+
+    sent = _json.loads(publish.call_args.args[1])
+    assert sent["persisted"] is True
+    assert "persisted" not in event

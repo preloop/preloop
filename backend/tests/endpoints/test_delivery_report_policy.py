@@ -43,8 +43,14 @@ def account_owner(db_session: Session, test_user: Any) -> Any:
 
 
 def test_a_user_without_the_permission_cannot_save(
-    db_session: Session, test_viewer_user: Any
+    db_session: Session, test_viewer_user: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """With the RBAC plugin a viewer is refused; core has no role checks."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda f: f
+    )
     from preloop.api.app import create_app
     from preloop.api.auth import get_current_active_user
     from preloop.models.db.session import get_db_session
@@ -289,10 +295,16 @@ def test_tracker_connection_creates_one_default_report_flow(
         "preloop.api.endpoints.flows._resolve_clone_model_binding",
         side_effect=HTTPException(status_code=422, detail="no model"),
     ):
-        flow = ensure_default_report_flow(db_session, account_id=test_user.account_id)
+        flow = ensure_default_report_flow(
+            db_session,
+            account_id=test_user.account_id,
+            created_by_user_id=test_user.id,
+        )
         again = ensure_default_report_flow(db_session, account_id=test_user.account_id)
     assert flow is not None
     assert again.id == flow.id
+    # The connecting user owns the report flow (subscription opt-in rule).
+    assert flow.created_by_user_id == test_user.id
     assert flow.is_enabled is True
     assert flow.schedule_config["type"] == "weekly"
     assert flow.schedule_config["payload"] == {"previous_result_execution_id": "last"}

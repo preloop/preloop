@@ -15,6 +15,17 @@ export interface FlowActionResource {
   name?: string;
   /** False means paused: the flow exists but no trigger starts it. */
   is_enabled: boolean;
+  /**
+   * True for a read-only review flow, which only its restricted CI identity
+   * may start. The server refuses a person's trigger with 409, so Run now is
+   * shown disabled with the reason instead of failing on click.
+   */
+  ci_only?: boolean;
+}
+
+/** Why Run now is disabled on a read-only review flow; matches the API 409. */
+export function ciOnlyRunTooltip(flowId: string): string {
+  return `Read-only review runs only from its CI identity: POST /api/v1/flows/${flowId}/trigger with pr_number and head_sha`;
 }
 
 export interface FlowActionContext extends ActionContext {
@@ -73,9 +84,11 @@ export function flowActions(
         variant: 'primary',
         loading: busy,
         disabled: busy,
-        available: (item) => item.is_enabled,
+        available: (item) => item.is_enabled && !item.ci_only,
         visibleWhenUnavailable: true,
-        unavailableTooltip: 'Resume the flow before running it',
+        unavailableTooltip: flow.ci_only
+          ? ciOnlyRunTooltip(flow.id)
+          : 'Resume the flow before running it',
         onClick: ctx.onRun ? () => ctx.onRun!(flow) : undefined,
       },
       {

@@ -220,6 +220,10 @@ class UserRole(Base):
 
     __tablename__ = "user_role"
 
+    manually_granted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("user.id", ondelete="CASCADE"),

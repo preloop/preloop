@@ -125,6 +125,23 @@ func TestRunnerLaunchRejectsMissingAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestRunnerLaunchRejectionNamesTheCause(t *testing.T) {
+	for _, tc := range []struct {
+		launch map[string]any
+		want   string
+	}{
+		{map[string]any{"version": float64(1), "script": "  ", "env": map[string]any{}}, "sent no script"},
+		{map[string]any{"version": float64(1), "env": map[string]any{}}, "sent no script"},
+		{map[string]any{"version": float64(1), "script": strings.Repeat("x", runnerLaunchStringLimit+1), "env": map[string]any{}}, "98305 bytes, limit 98304"},
+		{map[string]any{"version": float64(1), "script": "true", "env": map[string]any{"BIG": strings.Repeat("y", runnerLaunchStringLimit+2)}}, "entry BIG: 98306 bytes"},
+	} {
+		_, err := runnerLaunchFromJob(map[string]any{"agent_type": "codex", "launch": tc.launch})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("want %q, got %v", tc.want, err)
+		}
+	}
+}
+
 func TestRunnerBootstrapPassesNoSecretsInArgv(t *testing.T) {
 	env := map[string]string{"PRELOOP_RUNNER_SCRIPT": "private prompt and script", "OPENAI_API_KEY": "secret-key"}
 	args := dockerRunArgs("example/custom:1", env, runnerDockerOpts{Launch: true})

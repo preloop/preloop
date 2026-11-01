@@ -26,6 +26,7 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '../../../components/view-header.ts';
 import { formatProviderLookupSummary } from '../../../components/reprice-job-status';
@@ -52,6 +53,9 @@ import {
   getAIModelGatewayUsageSummary,
   getAIModelRuntimeSessions,
   getAIModelUsedBy,
+  getAIModelOwnerFlowUse,
+  setAIModelOwnerFlowUse,
+  type AIModelOwnerFlowUse,
   getFeatures,
   repriceCost,
   updateAIModel,
@@ -156,6 +160,10 @@ export class AIModelDetailView extends LitElement {
   /** Configured consumers; null while loading or after an error. */
   @state() private usedBy: AIModelUsedByResponse | null = null;
   @state() private usedByError: string | null = null;
+  /** Owner opt-in for flows on a subscription model; null until loaded. */
+  @state() private ownerFlowUse: AIModelOwnerFlowUse | null = null;
+  @state() private ownerFlowUseSaving = false;
+  @state() private ownerFlowUseError: string | null = null;
   @state() private sessionsError: string | null = null;
   @state() private summaryLoading = false;
 
@@ -858,6 +866,8 @@ export class AIModelDetailView extends LitElement {
       // from this model's traffic as "configured".
       this.usedBy = null;
       this.usedByError = null;
+      this.ownerFlowUse = null;
+      this.ownerFlowUseError = null;
     }
     if (!options.preserveLoadingState) {
       this.loading = true;
@@ -876,6 +886,7 @@ export class AIModelDetailView extends LitElement {
       }
       this.model = model;
       void this.loadUsedBy(modelId);
+      void this.loadOwnerFlowUse(modelId);
     } catch (error) {
       if (!isCurrent()) {
         this.refreshInFlight = false;
@@ -1211,6 +1222,93 @@ export class AIModelDetailView extends LitElement {
         ? 'the most recent session'
         : `the ${count} most recent sessions`;
     return `Called this model in ${sessions} (${this.rangeWindowLabel()}) but is not configured to use it.`;
+  }
+
+  private async loadOwnerFlowUse(modelId: string): Promise<void> {
+    try {
+      const state = await getAIModelOwnerFlowUse(modelId);
+      if (modelId === this.modelId) this.ownerFlowUse = state;
+    } catch {
+      // Optional card: an older server without the route shows nothing.
+      if (modelId === this.modelId) this.ownerFlowUse = null;
+    }
+  }
+
+  private async toggleOwnerFlowUse(enabled: boolean): Promise<void> {
+    const modelId = this.modelId;
+    this.ownerFlowUseSaving = true;
+    this.ownerFlowUseError = null;
+    try {
+      const state = await setAIModelOwnerFlowUse(modelId, enabled);
+      if (modelId === this.modelId) this.ownerFlowUse = state;
+    } catch (error) {
+      if (modelId !== this.modelId) return;
+      this.ownerFlowUseError =
+        error instanceof Error ? error.message : 'Could not change the setting';
+    } finally {
+      this.ownerFlowUseSaving = false;
+    }
+  }
+
+  /**
+   * Subscription owner's opt-in to run their own hosted flows on this
+   * subscription. Rendered only for the owner; nobody else can change it.
+   */
+  private renderOwnerFlowUse() {
+    const state = this.ownerFlowUse;
+    if (!state?.applicable || !state.can_manage) return nothing;
+    const usage = state.usage;
+    return html`
+      <sl-card data-testid="owner-flow-use">
+        <div slot="header" class="model-heading">
+          <div class="model-title">Use from my flows</div>
+        </div>
+        <sl-switch
+          ?checked=${state.enabled}
+          ?disabled=${this.ownerFlowUseSaving}
+          @sl-change=${(event: Event) =>
+            void this.toggleOwnerFlowUse(
+              (event.target as HTMLInputElement).checked
+            )}
+          >Let flows I own run on this subscription</sl-switch
+        >
+        <p class="meta-line" data-testid="owner-flow-use-note">
+          Hosted runs of your flows use this subscription's quota.
+          ${
+            (this.model?.provider_name || '').toLowerCase() === 'openai-codex'
+              ? 'OpenAI recommends API keys for automation; a private runner is the closer match to its guidance.'
+              : "Check your provider's terms for automated use."
+          }
+          <a
+            href="https://docs.preloop.ai/guide/flows/model-routing/#subscription-credentials-and-execution-identity"
+            target="_blank"
+            rel="noopener"
+            >Learn more</a
+          >
+        </p>
+        ${
+          state.enabled && usage
+            ? html`<p class="meta-line" data-testid="owner-flow-use-usage">
+                Used by your flows in the last 30 days:
+                ${formatCount(usage.request_count)}
+                request${usage.request_count === 1 ? '' : 's'} across
+                ${formatCount(usage.execution_count)}
+                run${usage.execution_count === 1 ? '' : 's'},
+                ${formatCount(usage.total_tokens)} tokens
+                (${formatUsd(usage.api_equivalent_cost)} est. at API prices,
+                covered by the subscription).
+              </p>`
+            : nothing
+        }
+        ${
+          this.ownerFlowUseError
+            ? html`<p class="meta-line" role="alert">
+                ${this.ownerFlowUseError}
+              </p>`
+            : nothing
+        }
+      </sl-card>
+    `;
   }
 
   private renderUsedBy() {
@@ -3190,6 +3288,7 @@ export class AIModelDetailView extends LitElement {
                  and gateway checks sit below it in one Settings section. -->
             <section class="model-settings" data-model-settings>
               <h2 class="section-title">Settings</h2>
+              ${this.renderOwnerFlowUse()}
               <!-- #1692: identifiers and credentials are reference, not the
                    reason to open the page; they sit with the settings. -->
               <sl-card data-model-details>

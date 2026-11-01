@@ -74,6 +74,15 @@ class CRUDUserInvitation(CRUDBase[UserInvitation]):
             query = query.filter(UserInvitation.status == status)
         return query.offset(skip).limit(limit).all()
 
+    def count_by_account(
+        self, db: Session, *, account_id: uuid.UUID, status: Optional[str] = None
+    ) -> int:
+        """Count invitations in an account with the same filter as the list."""
+        query = db.query(UserInvitation).filter(UserInvitation.account_id == account_id)
+        if status:
+            query = query.filter(UserInvitation.status == status)
+        return query.count()
+
     def get_pending(
         self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
     ) -> List[UserInvitation]:

@@ -3,7 +3,10 @@
 import uuid
 from typing import List, Optional
 
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
+
+from preloop.models import models
 
 from ..models.team import Team, TeamMembership
 from ..models.user import User
@@ -52,6 +55,37 @@ class CRUDTeam(CRUDBase[Team]):
             .all()
         )
 
+    def count_by_account(self, db: Session, *, account_id: uuid.UUID) -> int:
+        """Count teams belonging to one account."""
+        return db.query(Team).filter(Team.account_id == account_id).count()
+
+    def update_member(
+        self, db: Session, *, membership: TeamMembership, role: Optional[str]
+    ) -> Optional[TeamMembership]:
+        """Claim a manual edit under a row lock, or return None if removed.
+
+        The caller may have read this object before a concurrent reconciliation
+        removed it. Read its persisted identity without triggering a stale lazy
+        load, then refresh under lock before making the membership manual.
+        """
+        identity = inspect(membership).identity
+        if identity is None:
+            return None
+        with db.no_autoflush:
+            locked = db.scalar(
+                select(models.TeamMembership)
+                .where(models.TeamMembership.id == identity[0])
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        if locked is None:
+            return None
+        locked.role = role
+        locked.manually_granted = True
+        db.commit()
+        db.refresh(locked)
+        return locked
+
     def get_members(
         self, db: Session, *, team_id: uuid.UUID, skip: int = 0, limit: int = 100
     ) -> List[User]:
@@ -74,6 +108,22 @@ class CRUDTeam(CRUDBase[Team]):
             .limit(limit)
             .all()
         )
+
+    def get_memberships_for_users(
+        self, db: Session, *, team_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, models.TeamMembership]:
+        """Load membership metadata for one authorized team page in one query."""
+        if not user_ids:
+            return {}
+        rows = (
+            db.query(models.TeamMembership)
+            .filter(
+                models.TeamMembership.team_id == team_id,
+                models.TeamMembership.user_id.in_(user_ids),
+            )
+            .all()
+        )
+        return {row.user_id: row for row in rows}
 
     def get_membership(
         self, db: Session, *, team_id: uuid.UUID, user_id: uuid.UUID

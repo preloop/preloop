@@ -991,7 +991,6 @@ def _register_control_plane_routes(
         public_approval,
         pull_requests,
         retention,
-        roles,
         runner_sessions,
         runners,
         runtime_session_artifacts,
@@ -1467,11 +1466,13 @@ def _register_control_plane_routes(
         dependencies=[Depends(get_current_active_user)],
     )
 
+    from preloop.api.endpoints import invitations, teams, users
+
+    app.include_router(users.router, prefix="/api/v1", tags=["Users"])
+    app.include_router(teams.router, prefix="/api/v1", tags=["Teams"])
+    app.include_router(invitations.router, prefix="/api/v1", tags=["Invitations"])
     app.include_router(
-        roles.router,
-        prefix="/api/v1",
-        tags=["Roles"],
-        dependencies=[Depends(get_current_active_user)],
+        invitations.public_router, prefix="/api/v1", tags=["Invitations"]
     )
 
     # --- Public Approval Page ---

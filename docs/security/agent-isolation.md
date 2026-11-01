@@ -290,6 +290,15 @@ primary user's is the remaining backend change.
   usual path to it, and the agent manager Role
   (`helm/preloop/templates/agent-rbac.yaml`) is bound to the Preloop
   service account, not to the agents.
+- **The hosted Codex command hook is a guardrail, not a boundary.** Hosted
+  Codex checks native shell commands against tool rules through the Preloop
+  `PreToolUse` hook (`backend/preloop/agents/codex_native_hook.py`). The
+  universal image runs Codex as root with its sandbox off, so an allowed
+  command can overwrite the hook CLI (`/opt/preloop/bin/preloop` or the
+  downloaded fallback) or the hook configuration, and later checks in the
+  same run can then pass. Deny and approval rules stop an agent that follows
+  them and record what it tried; they do not contain an agent that sets out
+  to defeat them. Treat the pod and its credential, above, as the boundary.
 
 ## Related
 

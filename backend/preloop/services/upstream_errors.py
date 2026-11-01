@@ -13,6 +13,7 @@ taxonomy that both the streaming and non-streaming gateway paths use for:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 from urllib import error as urllib_error
@@ -301,6 +302,47 @@ def _is_connection_exception(exc: Exception) -> bool:
     return False
 
 
+# Provider sentences that mean "pay first". No retry can satisfy them.
+_BILLING_MARKERS = (
+    "payment required",
+    "requires more credits",
+    "insufficient credits",
+    "out of credits",
+    "insufficient balance",
+    "insufficient_quota",
+    "credit balance is too low",
+)
+# A provider status written inside a wrapped error body, e.g. OpenRouter's
+# ``{"error": {"message": "...", "code": 402}}`` relayed by litellm as a
+# mid-stream fallback error with no HTTP status of its own.
+_EMBEDDED_TERMINAL_STATUS_RE = re.compile(
+    r"""["']?(?:code|status|status_code)["']?\s*[:=]\s*["']?(40[123])\b"""
+)
+
+
+def _terminal_provider_status(text: str, status: Optional[int]) -> Optional[int]:
+    """The 401/402/403 a provider answered with, if any.
+
+    Args:
+        text: Lowercased exception text.
+        status: HTTP status carried by the exception, when it has one.
+
+    Returns:
+        401, 402 or 403 when the provider refused on authentication,
+        permission or billing; None otherwise.
+    """
+    if status in (401, 402, 403):
+        return status
+    if status is not None and status < 500:
+        return None
+    match = _EMBEDDED_TERMINAL_STATUS_RE.search(text)
+    if match:
+        return int(match.group(1))
+    if _contains(text, _BILLING_MARKERS):
+        return 402
+    return None
+
+
 def _mro_contains(exc: Exception, fragment: str) -> bool:
     """True when any class name in ``exc``'s MRO contains ``fragment``."""
     return any(fragment in klass.__name__ for klass in type(exc).__mro__)
@@ -344,6 +386,24 @@ def classify_upstream_error(exc: Exception) -> Optional[UpstreamErrorClass]:
         return UpstreamErrorClass(
             error_class=ERROR_CLASS_UPSTREAM_PROTOCOL,
             status_code=400,
+            terminal=True,
+        )
+
+    # Billing and credential refusals are terminal whatever wraps them: a
+    # retry (ours or the client's) asks the same provider the same question.
+    # Checked before the mid-stream wrapper, which would read as a transient
+    # disconnect and let a harness reconnect against an empty balance.
+    provider_status = _terminal_provider_status(text, status)
+    if provider_status == 402:
+        return UpstreamErrorClass(
+            error_class=ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+            status_code=402,
+            terminal=True,
+        )
+    if provider_status in (401, 403):
+        return UpstreamErrorClass(
+            error_class=ERROR_CLASS_UPSTREAM_AUTH,
+            status_code=provider_status,
             terminal=True,
         )
 

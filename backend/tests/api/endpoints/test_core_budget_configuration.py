@@ -66,7 +66,8 @@ def test_oss_owner_creates_reads_updates_and_removes_basic_zero_budget(budget_cl
     assert remaining.json() == []
 
 
-def test_oss_member_cannot_raise_or_delete_budget(budget_client, db_session):
+def test_oss_member_can_raise_and_delete_budget(budget_client, db_session):
+    """Core has no role checks: any member of the account manages budgets."""
     client, account, user = budget_client
     response = client.post(
         "/api/v1/budget/policies",
@@ -78,13 +79,13 @@ def test_oss_member_cannot_raise_or_delete_budget(budget_client, db_session):
         "/api/v1/budget/policies",
         json={"subject_type": "account", "period": "daily", "hard_limit_usd": 100},
     )
-    assert raised.status_code == 403
+    assert raised.status_code in (200, 201)
     updated = client.put(
         "/api/v1/budget/policies/" + policy_id, json={"hard_limit_usd": 100}
     )
-    assert updated.status_code == 403
+    assert updated.status_code == 200
     deleted = client.delete("/api/v1/budget/policies/" + policy_id)
-    assert deleted.status_code == 403
+    assert deleted.status_code in (200, 204)
 
 
 def test_foreign_policy_and_subject_are_not_accessible(budget_client, db_session):

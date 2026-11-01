@@ -27,7 +27,7 @@ from preloop.services.cache_accounting import reported_cache_miss_tokens
 from preloop.services.gateway_activity_body import slim_gateway_payload
 from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
-from preloop.sync.services.realtime_publisher import publish_realtime
+from preloop.sync.services.realtime_publisher import PERSISTED_FLAG, publish_realtime
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
@@ -291,8 +291,10 @@ class ModelGatewayEventEmitter:
             from preloop.services.execution_realtime import stamp_execution_event
 
             event = stamp_execution_event(event)
+            # The stored row was written by _record; flag the live copy so the
+            # log persister does not store it a second time.
             payload_bytes = encode_realtime_event_for_nats(
-                event,
+                {**event, PERSISTED_FLAG: True},
                 context=f"execution {execution_id}",
             )
         except Exception:  # noqa: BLE001 - realtime is best-effort

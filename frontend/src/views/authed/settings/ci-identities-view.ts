@@ -109,12 +109,46 @@ export class CiIdentitiesView extends LitElement {
         flow.id &&
         flow.account_id &&
         flow.is_enabled === true &&
-        flow.runner_pool === 'server' &&
+        (flow.runner_pool === 'server' || this.privateReadOnlyReview(flow)) &&
         flow.trigger_project_ids?.length === 1 &&
         flow.trigger_project_ids[0] === this.projectId &&
         flow.git_clone_config?.enabled === true &&
         flow.git_clone_config.repositories?.length === 1 &&
         flow.git_clone_config.repositories[0].project_id === this.projectId
+    );
+  }
+  /**
+   * Read-only review may run on a named private pool with a Codex host
+   * profile. Mirrors the backend admission (validate_read_only_flow): Codex,
+   * no MCP, no persistent execution, harness or authorized directory, and the
+   * same unwrapping of a nested `{"agent_config": {...}}` storage shape.
+   */
+  private privateReadOnlyReview(flow: Flow): boolean {
+    const pool = flow.runner_pool?.trim().toLowerCase();
+    let config = (flow.agent_config ?? {}) as Record<string, unknown>;
+    const inner = config.agent_config;
+    if (
+      Object.keys(config).length === 1 &&
+      inner &&
+      typeof inner === 'object' &&
+      !Array.isArray(inner)
+    ) {
+      config = inner as Record<string, unknown>;
+    }
+    const profile = config.host_exec_profile;
+    return (
+      flow.git_clone_config?.publication_mode === 'read_only' &&
+      flow.agent_type === 'codex' &&
+      !!pool &&
+      pool !== 'server' &&
+      pool !== 'auto' &&
+      typeof profile === 'string' &&
+      profile.trim() !== '' &&
+      config.execution_path !== 'persistent' &&
+      !config.harness &&
+      config.workspace == null &&
+      !flow.allowed_mcp_tools?.length &&
+      !flow.allowed_mcp_servers?.length
     );
   }
   private grant(): CiGrant {
@@ -500,7 +534,7 @@ export class CiIdentitiesView extends LitElement {
                     >
                       Preview grant
                     </button>
-                    ${this.preview ? html`<p id="ci-preview-summary">Validated ${this.preview.tracker_type} repository ${this.preview.repository_slug}; hosted flow ${this.preview.grant.flow_id}.</p>` : nothing}
+                    ${this.preview ? html`<p id="ci-preview-summary">Validated ${this.preview.tracker_type} repository ${this.preview.repository_slug}; ${this.preview.runner_pool === 'server' ? 'hosted flow' : `flow on private runner pool ${this.preview.runner_pool}:`} ${this.preview.grant.flow_id}.</p>` : nothing}
                     <button
                       id="ci-create"
                       ?disabled=${this.busy || !!this.secret || !this.name.trim() || !this.preview}

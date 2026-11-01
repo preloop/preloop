@@ -676,7 +676,61 @@ def test_read_only_unsupported_executor_cannot_provision(
     flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
     flow.agent_type = agent_type
     db_session.commit()
-    with pytest.raises(ValueError, match="supported hosted native executor"):
+    with pytest.raises(ValueError, match="supported native executor"):
+        crud.crud_ci_principal.provision(
+            db_session, actor=owner, name="Rejected review", grant=grant
+        )
+
+
+def test_read_only_review_on_private_host_profile_can_provision(
+    db_session: Session, ci_resources: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import publication_credentials
+
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    owner, _, flow, grant = ci_resources
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": "read_only"}
+    flow.agent_type = "codex"
+    flow.runner_pool = "review-hosts"
+    flow.agent_config = {"host_exec_profile": "codex-review"}
+    db_session.commit()
+    preview = crud.crud_ci_administration.preview(db_session, actor=owner, grant=grant)
+    assert preview["runner_pool"] == "review-hosts"
+    principal, _, _ = provision(db_session, ci_resources)
+    assert principal.repository_binding["publication_mode"] == "read_only"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"git_clone_config": "legacy"},
+        {"agent_config": {}},
+        {"runner_pool": "auto"},
+    ],
+)
+def test_private_pool_ci_flow_requires_read_only_host_profile(
+    db_session: Session,
+    ci_resources: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, Any],
+) -> None:
+    from preloop.services import publication_credentials
+
+    monkeypatch.setattr(
+        publication_credentials, "validate_publication_tracker", lambda tracker: None
+    )
+    owner, _, flow, grant = ci_resources
+    mode = "legacy" if changes.get("git_clone_config") == "legacy" else "read_only"
+    flow.git_clone_config = {**flow.git_clone_config, "publication_mode": mode}
+    flow.agent_type = "codex"
+    flow.runner_pool = changes.get("runner_pool", "review-hosts")
+    flow.agent_config = changes.get(
+        "agent_config", {"host_exec_profile": "codex-review"}
+    )
+    db_session.commit()
+    with pytest.raises(ValueError):
         crud.crud_ci_principal.provision(
             db_session, actor=owner, name="Rejected review", grant=grant
         )

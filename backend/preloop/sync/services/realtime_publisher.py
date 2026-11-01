@@ -25,6 +25,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+
+# Set on a flow-updates message whose row the publisher already committed
+# (runner log batches, gateway call events). The log persister skips it, so
+# the live copy does not become a second stored row.
+PERSISTED_FLAG = "persisted"
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_PENDING_MESSAGES = 1_000

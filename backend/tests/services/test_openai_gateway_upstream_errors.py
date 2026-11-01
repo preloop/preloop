@@ -639,3 +639,106 @@ def _deliver_alerts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "preloop.services.openai_gateway.enqueue_gateway_5xx_alert", _deliver
     )
+
+
+_OPENROUTER_402 = (
+    'OpenrouterException - {"error":{"message":"This request requires more '
+    'credits, or fewer max_tokens.","code":402}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "error_class"),
+    [
+        (
+            _FakeHTTPError(_OPENROUTER_402, status_code=402),
+            402,
+            ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ),
+        # litellm wraps a provider error on the first stream event as a
+        # mid-stream fallback; the provider's 402 must survive that wrapper.
+        (
+            _MidStreamFallbackError(
+                "litellm.MidStreamFallbackError: " + _OPENROUTER_402
+            ),
+            402,
+            ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ),
+        (
+            _FakeHTTPError("Payment Required", status_code=402),
+            402,
+            ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ),
+        (
+            _FakeHTTPError("No auth credentials found", status_code=401),
+            401,
+            "upstream_auth",
+        ),
+        (
+            _FakeHTTPError("Key is disabled", status_code=403),
+            403,
+            "upstream_auth",
+        ),
+        (
+            _MidStreamFallbackError(
+                'litellm.MidStreamFallbackError: {"error":{"message":"User not '
+                'found.","code":401}}'
+            ),
+            401,
+            "upstream_auth",
+        ),
+    ],
+)
+def test_upstream_billing_and_auth_failures_are_terminal(exc, status, error_class):
+    """401/402/403 from the provider: no gateway retry, no client retry hint."""
+    from preloop.services.flow_failure_category import _ERROR_CLASS_CATEGORIES
+    from preloop.services.upstream_errors import is_retryable_upstream_failure
+
+    assert is_retryable_upstream_failure(exc) is False
+    err = OpenAIGatewayService._normalize_upstream_error("openai", exc)
+    assert err.status_code == status
+    assert err.error_class == error_class
+    assert err.terminal is True
+    assert err.response_headers()["X-Preloop-Retry-Terminal"] == "true"
+    expected_category = "provider_billing" if status == 402 else "model_auth"
+    assert _ERROR_CLASS_CATEGORIES[error_class] == expected_category
+    if status == 402:
+        assert "requires more credits" in err.message or "Payment" in err.message
+        assert err.code == "insufficient_quota"
+
+
+def test_upstream_402_on_first_stream_event_is_not_retried():
+    """A fake upstream that fails its first event with 402 is called once."""
+    service = _service()
+    calls = []
+
+    def attempt():
+        calls.append(1)
+        raise _MidStreamFallbackError(
+            "litellm.MidStreamFallbackError: " + _OPENROUTER_402
+        )
+
+    with pytest.raises(ModelGatewayAPIError) as caught:
+        service._run_with_upstream_retries("openai", attempt)
+    assert len(calls) == 1
+    assert caught.value.status_code == 402
+    assert caught.value.terminal is True
+
+
+def test_terminal_responses_stream_error_is_a_failed_response():
+    """After headers are sent, a terminal error is a ``response.failed`` event.
+
+    Responses clients (Codex) treat a stream that ends without a terminal
+    response event as a dropped connection and reconnect.
+    """
+    import json as _json
+
+    service = _service()
+    exc = _FakeHTTPError(_OPENROUTER_402, status_code=402)
+    error = service._stream_error("openai", exc)
+    frame = service._responses_stream_error_event(exc, error)
+    event = _json.loads(frame.split("data:", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["response"]["status"] == "failed"
+    assert event["response"]["error"]["code"] == "insufficient_quota"
+    assert "requires more credits" in event["response"]["error"]["message"]

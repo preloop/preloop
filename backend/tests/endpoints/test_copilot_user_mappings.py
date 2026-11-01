@@ -210,7 +210,8 @@ def test_unauthenticated_requests_are_401(anon_client):
     assert anon_client.get(COVERAGE_URL).status_code == 401
 
 
-def test_viewer_cannot_read_or_write_mappings(db_session, test_viewer_user):
+def test_viewer_role_can_read_and_write_mappings_in_core(db_session, test_viewer_user):
+    """Core has no role checks: a viewer-role member manages mappings."""
     connect(db_session, test_viewer_user.account_id)
     with _client_as(db_session, test_viewer_user) as viewer:
         listed = viewer.get(MAPPINGS_URL)
@@ -221,16 +222,14 @@ def test_viewer_cannot_read_or_write_mappings(db_session, test_viewer_user):
         deleted = viewer.delete(f"{MAPPINGS_URL}/alice")
         coverage = viewer.get(COVERAGE_URL)
 
-    assert listed.status_code == 403
-    assert "view_cost" in listed.json()["detail"]
-    assert written.status_code == 403
-    assert "manage_budgets" in written.json()["detail"]
-    assert deleted.status_code == 403
-    assert coverage.status_code == 403
+    assert listed.status_code == 200, listed.text
+    assert written.status_code == 200, written.text
+    assert deleted.status_code == 204, deleted.text
+    assert coverage.status_code == 200, coverage.text
 
 
-def test_cost_reader_can_list_but_not_write(db_session, test_viewer_user):
-    """An analyst holds view_cost but not manage_budgets."""
+def test_cost_reader_can_list_and_write_in_core(db_session, test_viewer_user):
+    """An analyst lacks manage_budgets, which core does not enforce."""
     analyst_role = crud_role.get_by_name(db_session, name="analyst")
     crud_user_role.create(
         db_session, obj_in={"user_id": test_viewer_user.id, "role_id": analyst_role.id}
@@ -255,8 +254,8 @@ def test_cost_reader_can_list_but_not_write(db_session, test_viewer_user):
 
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
-    assert written.status_code == 403
-    assert deleted.status_code == 403
+    assert written.status_code == 200, written.text
+    assert deleted.status_code == 204, deleted.text
     assert coverage.status_code == 200
 
 

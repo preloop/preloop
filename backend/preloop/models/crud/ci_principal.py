@@ -130,8 +130,18 @@ class CRUDCiPrincipal:
             else []
         )
         projects = flow.trigger_project_ids or []
+        from preloop.services.read_only_review import (
+            read_only_private_runner,
+            read_only_review,
+        )
+
+        # Read-only review may also run on a named private runner pool with a
+        # Codex host profile; every other CI flow is hosted.
+        private_review = read_only_review(configuration) and read_only_private_runner(
+            flow
+        )
         if (
-            flow.runner_pool != "server"
+            (flow.runner_pool != "server" and not private_review)
             or not isinstance(repositories, list)
             or len(selected) != 1
             or selected[0].get("tracker_id") != str(tracker.id)

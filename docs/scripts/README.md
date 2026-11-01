@@ -81,7 +81,7 @@ zones.
 
 ## Not captured here
 
-- `settings/*.png` (users, teams, invitations): EE-only screens.
+- `settings/*.png` (users, teams, invitations): available in Preloop (OSS), Preloop Cloud and Preloop Enterprise; advanced controls remain capability-gated.
 - `quickstart/mobile_approval.png`: a mobile app screenshot.
 - Landing animations (`.mp4`, `agents-onboarding.webp`): recorded, not
   captured.

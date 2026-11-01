@@ -1,4 +1,4 @@
-"""Model and usage controls apply their declared permissions in OSS builds."""
+"""Model and usage controls admit every account member in OSS builds."""
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -342,32 +342,8 @@ def permission_client(
         yield client
 
 
-def test_member_without_declared_permission_is_refused(
-    control: Control,
-    permission_client: TestClient,
-    effects: dict[str, MagicMock],
-    db_session: Session,
-    mocker: MockerFixture,
-) -> None:
-    commit = mocker.spy(db_session, "commit")
-    rollback = mocker.spy(db_session, "rollback")
-    response = permission_client.request(
-        control.method, f"/api/v1{control.path}", **control.kwargs
-    )
-
-    assert response.status_code == 403, response.text
-    assert (
-        response.json()["detail"]
-        == f"Insufficient permissions. Required: {control.permission}"
-    )
-    for effect in effects.values():
-        effect.assert_not_called()
-    commit.assert_not_called()
-    rollback.assert_not_called()
-
-
-@pytest.mark.parametrize("grant", ["primary", "permission"])
-def test_primary_user_and_permission_holder_can_use_control(
+@pytest.mark.parametrize("grant", ["none", "primary", "permission"])
+def test_every_account_member_can_use_control(
     control: Control,
     permission_client: TestClient,
     effects: dict[str, MagicMock],
@@ -375,13 +351,19 @@ def test_primary_user_and_permission_holder_can_use_control(
     db_session: Session,
     grant: str,
 ) -> None:
+    """Members reach the control in core whether or not they hold a role.
+
+    The core edition has no access controls: a member with no role at all
+    (``none``) is admitted just like the primary user or a role holder.
+    """
     account = crud.crud_account.get(db_session, id=operator.account_id)
     assert account is not None
+    assert permissions.members_have_full_access()
     if grant == "primary":
         crud.crud_account.update(
             db_session, db_obj=account, obj_in={"primary_user_id": operator.id}
         )
-    else:
+    elif grant == "permission":
         permission = crud.crud_permission.get_by_name(
             db_session, name=control.permission
         )

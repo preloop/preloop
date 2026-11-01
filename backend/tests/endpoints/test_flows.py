@@ -70,8 +70,12 @@ async def test_create_flow(mock_account: Account, mocker: MockerFixture):
 
     # Assert
     assert result.name == flow_in.name
+    # The creator is recorded as the flow owner (subscription opt-in rule).
     mock_crud_flow.create.assert_called_once_with(
-        db=mocker.ANY, flow_in=flow_in, account_id=mock_account.account_id
+        db=mocker.ANY,
+        flow_in=flow_in,
+        account_id=mock_account.account_id,
+        created_by_user_id=mock_account.id,
     )
 
 
@@ -2958,7 +2962,7 @@ async def test_create_flow_with_schedule_config_defaults_source(
         trigger_event_source=None, trigger_event_types=["schedule"]
     )
 
-    def fake_create(db, flow_in, account_id):
+    def fake_create(db, flow_in, account_id, created_by_user_id=None):
         return schemas.FlowResponse(
             **flow_in.model_dump(),
             id=uuid.uuid4(),
@@ -3285,7 +3289,7 @@ async def test_create_webhook_flow_keeps_supersede_flag(
 ):
     """The generated secret is added to, not substituted for, the config."""
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
-    mock_crud_flow.create.side_effect = lambda db, flow_in, account_id: (
+    mock_crud_flow.create.side_effect = lambda db, flow_in, account_id, **_: (
         schemas.FlowResponse(
             **flow_in.model_dump(),
             id=uuid.uuid4(),
@@ -3893,3 +3897,68 @@ async def test_control_execution_log_tail_pagination_has_no_overlap(
     executor_class.return_value.get_logs.assert_called_with(
         execution.agent_session_reference
     )
+
+
+@pytest.mark.asyncio
+async def test_update_flow_disable_only_validates_against_stored_codex_flow(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A one-field body disabling a Codex flow succeeds and changes nothing else.
+
+    FlowUpdate used to inherit ``agent_type="openhands"`` from FlowBase, so a
+    partial update was validated as an OpenHands flow carrying the stored
+    Codex host profile and rejected with 400.
+    """
+    flow_id = uuid.uuid4()
+    flow_update = schemas.FlowUpdate.model_validate({"is_enabled": False})
+    assert flow_update.agent_type is None
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+    seen: dict = {}
+
+    def fake_host_exec_flow_error(**kwargs):
+        seen.update(kwargs)
+        return None if kwargs["agent_type"] == "codex" else "wrong harness"
+
+    mocker.patch(
+        "preloop.api.endpoints.flows.host_exec_flow_error",
+        side_effect=fake_host_exec_flow_error,
+    )
+    mocker.patch("preloop.api.endpoints.flows._validate_flow_model_binding")
+    mocker.patch("preloop.api.endpoints.flows.log_config_change")
+    mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
+    mock_flow.name = "PR review"
+    mock_flow.is_preset = False
+    mock_flow.is_enabled = True
+    mock_flow.source_preset_id = None
+    mock_flow.agent_type = "codex"
+    mock_flow.agent_config = {"host_exec_profile": "codex-review"}
+    mock_flow.runner_pool = "review-pool"
+    mock_flow.git_clone_config = {"enabled": True, "publication_mode": "read_only"}
+    mock_flow.custom_commands = None
+    mock_flow.allowed_mcp_tools = []
+    mock_flow.allowed_mcp_servers = []
+    mock_flow.trigger_event_source = None
+    mock_flow.webhook_config = None
+    mock_crud_flow.get.return_value = mock_flow
+    mock_crud_flow.update.return_value = mock_flow
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=flow_id,
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert seen["agent_type"] == "codex"
+    assert seen["agent_config"] == {"host_exec_profile": "codex-review"}
+    sent = mock_crud_flow.update.call_args.kwargs["flow_in"]
+    assert sent.model_dump(exclude_unset=True) == {
+        "is_enabled": False,
+        "source_preset_id": None,
+    }

@@ -4,10 +4,11 @@ import logging
 import secrets
 import string
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import (
+    Form,
     APIRouter,
     BackgroundTasks,
     Depends,
@@ -230,26 +231,30 @@ def _is_account_owner(user: UserModel, db: Session) -> bool:
 
 
 def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str]]:
-    """Return RBAC permissions, or None when RBAC is disabled/unavailable.
+    """Return permissions, or None only when access control is explicitly absent.
 
-    Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
-    still returns the core profile when optional permissions cannot be loaded.
+    A failed commercial lookup returns no permissions, preserving the profile
+    without presenting an authorization failure as unrestricted account access.
     """
-    if settings.disable_rbac:
+    from preloop.utils.permissions import members_have_full_access
+
+    if settings.disable_rbac or members_have_full_access():
         return None
 
     try:
         from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
     except ImportError:
-        # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
-        return None
+        logger.exception(
+            "Commercial permission module unavailable; denying permissions"
+        )
+        return []
 
     try:
         return get_user_permissions(user, db)
     except Exception:
         # RBAC is optional on this path; never 500 /users/me for permission lookup.
-        logger.exception("Failed to resolve user permissions; returning None")
-        return None
+        logger.exception("Failed to resolve user permissions; denying permissions")
+        return []
 
 
 def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
@@ -867,11 +872,15 @@ async def verify_email(
         response: Dict[str, Any] = {"message": "Email verified successfully"}
         user = login_membership(session, person)
         if user is not None:
+            from preloop.services.authentication_policy import new_authentication
+
+            auth_context = new_authentication(db, user, method="email_link")
             generation = user_auth_generation(user)
             access_token = create_access_token(
                 data={"sub": str(user.id), "scopes": []},
                 expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
                 auth_generation=generation,
+                auth_context=auth_context,
             )
             response.update(
                 {
@@ -880,6 +889,7 @@ async def verify_email(
                         sub=str(user.id),
                         scopes=[],
                         auth_generation=generation,
+                        auth_context=auth_context,
                     ),
                     "token_type": "bearer",
                     "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -1069,6 +1079,77 @@ async def reset_password(
         )
 
 
+async def _audited_password_login(
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: str | None,
+    *,
+    account_id: UUID | None = None,
+) -> tuple[UserModel | None, dict[str, Any]]:
+    """Audit the final password result, including landing-policy refusals."""
+    from preloop.api.loop_safety import run_db_off_loop
+    from preloop.services.auth_audit import (
+        login_failure_reason,
+        login_subject,
+        record_login_event,
+    )
+
+    from preloop.services.authentication_policy import (
+        new_authentication,
+        select_authenticated_membership,
+    )
+
+    user = None
+    auth_context: dict[str, Any] = {}
+    succeeded = False
+    reason_code = "invalid_credentials"
+    try:
+        user = await authenticate_user(username, password, source_ip=source_ip, db=db)
+        if user is not None:
+            reason_code = "identity_or_policy_rejected"
+            user = await _landing_row(user, db)
+            if account_id is not None:
+                user = await run_db_off_loop(
+                    lambda: select_authenticated_membership(
+                        db, user, account_id=account_id
+                    )
+                )
+            auth_context = await run_db_off_loop(
+                lambda: new_authentication(
+                    db, user, method="password", source_ip=source_ip
+                )
+            )
+            succeeded = True
+        return user, auth_context
+    except Exception as exc:
+        reason_code = login_failure_reason(exc, method="password")
+        raise
+    finally:
+
+        def record() -> None:
+            subject = user
+            if subject is None:
+                try:
+                    person = crud_person.resolve_login(db, identifier=username)
+                except IdentityConflictError:
+                    person = None
+                subject = login_subject(db, person)
+            record_login_event(
+                db,
+                user=subject,
+                method="password",
+                succeeded=succeeded,
+                reason_code=None if succeeded else reason_code,
+                source_ip=source_ip,
+            )
+
+        try:
+            await run_db_off_loop(record)
+        except Exception:
+            logger.warning("Authentication audit submission failed")
+
+
 async def _landing_row(user: UserModel, db: Session) -> UserModel:
     """Select an eligible membership and always gate its identity off the loop."""
     from preloop.api.loop_safety import run_db_off_loop
@@ -1089,6 +1170,7 @@ async def login_form(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db_session),
+    account_id: Annotated[UUID | None, Form()] = None,
 ) -> Dict[str, str]:
     """Login to get an access token using form data (required for OAuth2 flow).
 
@@ -1104,8 +1186,12 @@ async def login_form(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await authenticate_user(
-        form_data.username, form_data.password, source_ip=get_client_ip(request), db=db
+    user, auth_context = await _audited_password_login(
+        form_data.username,
+        form_data.password,
+        db,
+        get_client_ip(request),
+        account_id=account_id,
     )
     if not user:
         raise HTTPException(
@@ -1113,7 +1199,6 @@ async def login_form(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1122,6 +1207,7 @@ async def login_form(
         data={"sub": str(user.id), "scopes": form_data.scopes or []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
@@ -1130,6 +1216,7 @@ async def login_form(
         sub=str(user.id),
         scopes=form_data.scopes or [],
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {
@@ -1160,8 +1247,12 @@ async def login_json(
             ``email_not_verified`` when the deployment requires a verified
             address and this password user has not verified one yet.
     """
-    user = await authenticate_user(
-        request.username, request.password, source_ip=get_client_ip(http_request), db=db
+    user, auth_context = await _audited_password_login(
+        request.username,
+        request.password,
+        db,
+        get_client_ip(http_request),
+        account_id=request.account_id,
     )
     if not user:
         raise HTTPException(
@@ -1169,7 +1260,6 @@ async def login_json(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1178,12 +1268,16 @@ async def login_json(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
     # sliding session window (sat claim).
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {
@@ -1252,6 +1346,11 @@ def refresh_token(
 
         require_active_identity(session, user)
         reject_stale_token_generation(user, token_data)
+        from preloop.services.authentication_policy import authorize_authentication
+
+        auth_context = authorize_authentication(
+            db, user, claims=token_data.claims, purpose="refresh"
+        )
 
         # A session may not outlive the verification requirement either: a
         # user who was signed in when the setting went on stops rotating.
@@ -1278,6 +1377,7 @@ def refresh_token(
             data={"sub": token_data.sub, "scopes": token_data.scopes},
             expires_delta=access_token_expires,
             auth_generation=generation,
+            auth_context=auth_context,
         )
 
         # Rotate the refresh token, carrying the original session start
@@ -1287,6 +1387,7 @@ def refresh_token(
             scopes=token_data.scopes,
             session_started_at=session_started_at,
             auth_generation=generation,
+            auth_context=auth_context,
         )
 
         return {
@@ -2460,8 +2561,16 @@ async def complete_onboarding(
             membership_id=user.id,
             hashed_password=get_password_hash(request.password),
             expected_generation=person.auth_generation,
+            commit=False,
         )
         require_active_identity(session, user)
+        from preloop.services.authentication_policy import new_authentication
+
+        auth_context = new_authentication(db, user, method="password")
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
     except (IdentityConflictError, IdentityUnavailableError, ValueError):
         session.rollback()
         raise _refuse_claim()
@@ -2473,9 +2582,13 @@ async def complete_onboarding(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
         auth_generation=generation,
+        auth_context=auth_context,
     )
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=[], auth_generation=generation
+        sub=str(user.id),
+        scopes=[],
+        auth_generation=generation,
+        auth_context=auth_context,
     )
 
     return {

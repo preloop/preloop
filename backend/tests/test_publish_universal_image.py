@@ -316,3 +316,80 @@ def test_publication_checks_anonymous_access_not_visibility_mutation(
     else:
         assert result.returncode != 0
         assert "anonymous access failed" in result.stderr
+
+
+_SMOKED_MANIFEST = "sha256:" + "f" * 64
+_SMOKED_CONFIG = "sha256:" + "c" * 64
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+@pytest.mark.parametrize(
+    ("local_id", "pushed_manifest", "error"),
+    [
+        # containerd image store: the local ID is the manifest digest.
+        (_SMOKED_MANIFEST, _SMOKED_MANIFEST, None),
+        # classic store: the local ID is the config digest.
+        (_SMOKED_CONFIG, _SMOKED_MANIFEST, None),
+        # the push rebuilt something other than the smoked image.
+        (
+            _SMOKED_MANIFEST,
+            "sha256:" + "e" * 64,
+            "published amd64 manifest differs from the smoked image",
+        ),
+        # the smoke tag names an unrelated image.
+        (
+            "sha256:" + "d" * 64,
+            _SMOKED_MANIFEST,
+            "smoked image id matches neither",
+        ),
+    ],
+)
+def test_push_requires_the_published_manifest_to_be_the_smoked_one(
+    tmp_path: Path, local_id: str, pushed_manifest: str, error: str | None
+) -> None:
+    """The amd64 push passes on either image store and fails on any drift."""
+    step = next(
+        step
+        for step in _steps(_jobs(_workflow())["image"])
+        if step.get("name") == "Push smoked amd64 image"
+    )
+    index = (
+        '{"manifests":[{"digest":"%s","platform":{"architecture":"amd64"}},'
+        '{"digest":"sha256:%s","platform":{"architecture":"unknown"}}]}'
+        % (pushed_manifest, "a" * 64)
+    )
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2 $3" in\n'
+        '  "buildx build "*) exit 0 ;;\n'
+        '  "buildx imagetools inspect")\n'
+        '    case "$4" in\n'
+        f'      *@sha256:*) echo \'{{"config":{{"digest":"{_SMOKED_CONFIG}"}}}}\' ;;\n'
+        f"      *) echo '{index}' ;;\n"
+        "    esac ;;\n"
+        f'  "image inspect "*) echo "{local_id}" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    fake_docker.chmod(0o755)
+    result = subprocess.run(
+        [BASH, "-c", str(step["run"])],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "IMAGE": "ghcr.io/example/universal",
+            "SHORT": "a4e47e6364f0",
+            "SMOKED_MANIFEST": _SMOKED_MANIFEST,
+            "GITHUB_RUN_ID": "1",
+            "GITHUB_RUN_ATTEMPT": "1",
+        },
+    )
+    assert f"published manifest: {pushed_manifest}" in result.stdout, result.stderr
+    if error is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert error in result.stderr

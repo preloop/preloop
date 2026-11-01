@@ -361,8 +361,18 @@ register) instead of asking the operator to download the archive.
 
 ## Native Codex structured results
 
-A hosted Codex flow can opt into `agent_config.native_result: true` with a
-`result_schema` and `validate_result: true`. The adapter passes the schema to the
+A hosted Codex flow uses `agent_config.native_result: true` with a
+`result_schema` and `validate_result: true`. When the flow does not set the
+key, it defaults to `true` for the Codex review presets (Pull Request
+Reviewer, the four full-repo lenses above, and Portfolio Review) and for every
+flow in read-only review mode (`git_clone_config.publication_mode:
+read_only`), provided the flow has a result schema with validation on;
+without a schema the default stays off, because there is nothing to
+constrain the answer to. An explicit `false` is always respected. The
+setting a run actually used is recorded on the execution's trigger details
+under `_native_result` (`{"value": true, "source": "default"}`). A Codex run
+that exits 0 without confirming success says in its failure message whether
+`agent_config.native_result` was on and points to this section. The adapter passes the schema to the
 pinned CLI's `--output-schema` and captures its final answer with
 `--output-last-message /workspace/result.json`. The normal capture-time schema
 and completion-status gates still decide success. Setting a schema alone keeps
@@ -387,5 +397,5 @@ Preset **003 Observe / Eval** now includes the documented
 `preloop.eval.result/v1` schema. It requires schema, status, summary, numeric
 metrics, named boolean checks with details, and string artifact references.
 Sync the global preset through the normal preset-sync deployment operation;
-existing customized account flows are not silently rewritten. Native generation
-is an explicit separate opt-in and is not enabled by the preset schema.
+existing customized account flows are not silently rewritten. Observe / Eval is
+not a review preset, so native generation stays an explicit opt-in there.
