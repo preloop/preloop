@@ -178,6 +178,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Responses gateway accepts more than one output for the same tool call
+  within a tool turn, as Codex records when an `exec` cell yields and later
+  calls `notify()`. Later outputs are appended to that call's tool result in
+  order, so both the running acknowledgement and the final result reach the
+  model. Outputs for unknown calls, or for a call answered in an earlier tool
+  turn, are still rejected. Fixes #2173.
+
 - The Delivery Report turns a follow-up proposed for a closed issue whose
   criterion is shown not met into a reopen request at the issue's closing
   merge SHA, so a measured miss is reported as a reopen, not as new work. The
