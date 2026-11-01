@@ -69,6 +69,17 @@ def test_rename_team_to_taken_name_returns_conflict(
     assert same.status_code == 200
 
 
+def test_rename_team_to_null_is_rejected(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """An explicit null name is a 422, not a NOT NULL database error."""
+    team = client.post("/api/v1/teams", json={"name": "Nullable"}).json()
+
+    response = client.patch(f"/api/v1/teams/{team['id']}", json={"name": None})
+
+    assert response.status_code == 422
+
+
 def test_list_teams(client: TestClient, test_user: User, db_session: Session):
     """Test listing teams in account."""
     # Create multiple teams

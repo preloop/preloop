@@ -283,6 +283,11 @@ def update_team(
         )
 
     changes = team_data.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Team name cannot be null",
+        )
     if changes.get("name") is not None:
         _reject_taken_team_name(
             db,
