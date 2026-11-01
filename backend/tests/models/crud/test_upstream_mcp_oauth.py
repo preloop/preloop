@@ -700,4 +700,44 @@ def test_identity_header_flags_keep_pending_authorization(storage):
             },
         )
     with factory() as db:
-        assert consume(store, db) is not None
+        snapshot = consume(store, db)
+        assert snapshot is not None
+        # The authorization started before the edit; completing it keeps it.
+        assert store.complete(
+            db, snapshot, {**CONFIG, "access_token": "synthetic-new-access"}
+        )
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        assert server.auth_config["send_instance_id"] is True
+        assert store.prepare(db, server_id).config["send_instance_id"] is True
+
+
+def test_identity_header_flag_edit_survives_an_in_flight_refresh(storage):
+    store = grant(storage)
+    factory, (_, _, server_id) = storage
+    with factory() as db:
+        lease = store.prepare(db, server_id)
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        crud_mcp_server.update(
+            db,
+            db_obj=server,
+            obj_in={
+                "auth_config": {
+                    **edit_form_config(store, db, server),
+                    "send_identity_headers": False,
+                }
+            },
+        )
+    with factory() as db:
+        assert store.complete(
+            db,
+            lease,
+            {**lease.config, "access_token": "synthetic-refreshed"},
+        )
+    with factory() as db:
+        server = db.get(models.MCPServer, server_id)
+        assert server.auth_config["send_identity_headers"] is False
+        snapshot = store.prepare(db, server_id)
+        assert snapshot.config["send_identity_headers"] is False
+        assert snapshot.config["access_token"] == "synthetic-refreshed"

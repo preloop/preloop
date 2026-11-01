@@ -20,7 +20,10 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.services.upstream_identity import without_identity_flags
+from preloop.services.upstream_identity import (
+    IDENTITY_FLAG_KEYS,
+    without_identity_flags,
+)
 from preloop.utils.encryption import decrypt_value, encrypt_value
 
 
@@ -196,6 +199,13 @@ class CRUDUpstreamMCPOAuth:
                 status="active",
             )
             db.add(secret)
+        # Header preferences edited after this snapshot was taken (they do not
+        # bump the version) must survive: the server row's current values win.
+        current = server.auth_config or {}
+        config = {
+            **without_identity_flags(config),
+            **{key: current[key] for key in IDENTITY_FLAG_KEYS if key in current},
+        }
         secret.encrypted_value = encrypt_value(json.dumps(config))
         db.flush()
         row.secret_id = secret.id
