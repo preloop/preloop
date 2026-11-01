@@ -326,7 +326,9 @@ async def _get_authenticated_user(request_headers):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     token = authorization.split("Bearer ")[1]
-    current_user = await get_user_from_token_if_valid(token, db)
+    current_user = await get_user_from_token_if_valid(
+        token, db, allow_managed_agent=True
+    )
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -700,7 +702,9 @@ async def _tool_user(db: Session) -> Any:
     authorization = get_http_request().headers.get("authorization", "")
     user = None
     if authorization.startswith("Bearer "):
-        user = await get_user_from_token_if_valid(authorization[7:], db)
+        user = await get_user_from_token_if_valid(
+            authorization[7:], db, allow_managed_agent=True
+        )
     if user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
@@ -1012,7 +1016,9 @@ async def create_issue(
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ")[1]
-        current_user = await get_user_from_token_if_valid(token, db)
+        current_user = await get_user_from_token_if_valid(
+            token, db, allow_managed_agent=True
+        )
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     project_obj = crud_project.get_by_slug_or_identifier(
@@ -1455,7 +1461,9 @@ async def search_issues(
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ")[1]
-        current_user = await get_user_from_token_if_valid(token, db)
+        current_user = await get_user_from_token_if_valid(
+            token, db, allow_managed_agent=True
+        )
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     project_obj = crud_project.get_by_slug_or_identifier(
@@ -1832,7 +1840,9 @@ async def add_comment(
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ")[1]
-        current_user = await get_user_from_token_if_valid(token, db)
+        current_user = await get_user_from_token_if_valid(
+            token, db, allow_managed_agent=True
+        )
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     _guard_delivery_report_write(

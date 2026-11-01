@@ -245,6 +245,7 @@ class AuditActionType:
     SSO_BREAK_GLASS_USED = "sso.break_glass.used"
     SSO_ENFORCEMENT_BLOCKED = "sso.enforcement.blocked"
     ACCESS_REVOKED = "access.revoked"
+    ACCESS_RESTORED = "access.restored"
     SSO_CONNECTION_CREATED = "sso.connection.created"
     SSO_CONNECTION_UPDATED = "sso.connection.updated"
     SSO_CONNECTION_DELETED = "sso.connection.deleted"

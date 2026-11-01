@@ -28,6 +28,7 @@ def mock_account():
     """Create a mock account."""
     account = MagicMock()
     account.id = str(uuid4())
+    account.account_id = str(uuid4())
     account.username = "testuser"
     return account
 
@@ -205,6 +206,7 @@ class TestGetUserContextForMCP:
                 context = await get_user_context_for_mcp(mock_request, mock_db)
 
         assert context["user_id"] == str(mock_account.id)
+        assert context["account_id"] == str(mock_account.account_id)
         assert context["username"] == mock_account.username
         assert context["has_tracker"] is True
 
@@ -216,7 +218,7 @@ class TestGetUserContextForMCP:
             token="test-token", client_id=str(mock_account.id), scopes=[]
         )
         # Cache account in access token
-        object.__setattr__(access_token, "account", mock_account)
+        object.__setattr__(access_token, "user", mock_account)
         auth_user = AuthenticatedUser(access_token)
         mock_request.scope = {"user": auth_user}
 
@@ -224,6 +226,7 @@ class TestGetUserContextForMCP:
             context = await get_user_context_for_mcp(mock_request, mock_db)
 
         assert context["user_id"] == str(mock_account.id)
+        assert context["account_id"] == str(mock_account.account_id)
         assert context["username"] == mock_account.username
         assert context["has_tracker"] is False
         assert context["enabled_default_tools"] == []

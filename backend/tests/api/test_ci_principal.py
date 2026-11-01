@@ -770,3 +770,31 @@ def test_shared_read_only_flow_keeps_principals_project_bound(
     }
     db_session.commit()
     assert crud.crud_ci_principal.authenticate(db_session, token=token) is None
+
+
+def test_ci_authority_survives_creator_offboarding_and_hard_delete(
+    db_session: Session,
+    ci_resources: tuple[models.User, models.Project, models.Flow, CiGrant],
+) -> None:
+    from preloop.services.membership_lifecycle import offboard_membership
+
+    owner, _, _, _ = ci_resources
+    principal, key, token = provision(db_session, ci_resources)
+    account_id = owner.account_id
+    offboard_membership(
+        db_session,
+        account_id=account_id,
+        user_id=owner.id,
+        actor=None,
+        reason="Synthetic CI creator removal",
+    )
+    inspection = crud.crud_ci_principal.inspect_tokens(db_session, tokens=(token,))
+    assert inspection.context is not None
+    assert inspection.context.principal_id == principal.id
+    crud.crud_user.hard_delete(db_session, user_id=owner.id)
+    db_session.expire_all()
+    assert crud.crud_api_key.get(db_session, id=key.id).user_id is None
+    inspection = crud.crud_ci_principal.inspect_tokens(db_session, tokens=(token,))
+    assert (
+        inspection.context is not None and inspection.context.account_id == account_id
+    )

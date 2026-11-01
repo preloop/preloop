@@ -1,5 +1,7 @@
 """ORM model definitions."""
 
+from .sso_break_glass_notice import SsoBreakGlassNotice
+
 from .oauth_connection import OAuthProviderConfiguration, OAuthConnectionTransaction
 from .account import Account
 from .account_halt import AccountHalt, HALT_SCOPES
@@ -12,7 +14,10 @@ from .enterprise_sso import (
     AccountSsoPolicy,
     AccountVerifiedDomain,
     ScimToken,
+    ScimResource,
+    ScimGroupMember,
     SsoGroupMapping,
+    SsoProvisioningGrant,
     SsoReplayGuard,
 )
 from .gateway_identity_provider import (
@@ -20,6 +25,7 @@ from .gateway_identity_provider import (
     GatewayIdentityProviderAudience,
 )
 from .ci_principal import CiPrincipal
+from .execution_result_grant import ExecutionResultGrant
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
@@ -37,6 +43,7 @@ from .flow_artifact import FlowArtifact
 from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
+from .execution_realtime_cursor import ExecutionRealtimeCursor
 from .fleet import FleetFinding, FleetAlertSettings
 from .live_activity import (
     ActivityRollup,
@@ -206,11 +213,15 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "SsoBreakGlassNotice",
     "UpstreamMCPOAuthConnection",
     "UpstreamMCPOAuthTransaction",
     "AgentUsageTotal",
     "AgentUsageCounted",
     "AgentUsageBackfill",
+    "ExceptionDigestWeek",
+    "ExceptionDigestDelivery",
+    "ExceptionDigestState",
     "ObservationVerification",
     "ChatSetupDraft",
     "ChatListener",
@@ -288,7 +299,10 @@ __all__ = [
     "AccountSsoPolicy",
     "AccountVerifiedDomain",
     "ScimToken",
+    "ScimResource",
+    "ScimGroupMember",
     "SsoGroupMapping",
+    "SsoProvisioningGrant",
     "SsoReplayGuard",
     "GatewayIdentityProvider",
     "GatewayIdentityProviderAudience",
@@ -301,6 +315,8 @@ __all__ = [
     "Flow",
     "FlowArtifact",
     "FlowExecution",
+    "ExecutionResultGrant",
+    "ExecutionRealtimeCursor",
     "FlowRunner",
     "FlowRunnerAssignment",
     "RUNNER_SESSION_LIVE_STATES",
@@ -461,3 +477,9 @@ from .observation_verification import ObservationVerification
 
 from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill
 from .upstream_mcp_oauth import UpstreamMCPOAuthConnection, UpstreamMCPOAuthTransaction
+
+from .exception_digest import (
+    ExceptionDigestWeek,
+    ExceptionDigestDelivery,
+    ExceptionDigestState,
+)

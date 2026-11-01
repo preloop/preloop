@@ -2380,7 +2380,7 @@ class TestCreateProxiedToolWrapper:
         dynamic_mcp.set_user_context_provider(lambda: user_context)
         captured_upstream = {}
 
-        async def fake_upstream_call(name, arguments):
+        async def fake_upstream_call(name, arguments, correlation_id=None):
             captured_upstream["name"] = name
             captured_upstream["arguments"] = arguments
             return [types.TextContent(type="text", text="ok")]

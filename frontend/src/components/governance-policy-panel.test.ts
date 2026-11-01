@@ -124,6 +124,7 @@ function fakeServer(
       string | null,
     analysis_model_alias: mode === 'on_own_model' ? 'Own small model' : null,
     own_model_exempt: false,
+    effective_reason: undefined as string | undefined,
     privacy_line: 'server line',
   };
   const email = { account_enabled: true, user_enabled: true };
@@ -277,6 +278,21 @@ describe('governance-policy-panel', () => {
     sinon.restore();
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+  });
+
+  it('explains legacy implicit analysis is off until explicit opt-in', async () => {
+    server = fakeServer('off');
+    server.settings.effective_reason = 'explicit_analysis_opt_in_required';
+    const element = await mount(true);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Automatic analysis now requires an explicit opt-in'
+    );
+    expect(element.shadowRoot!.textContent).to.contain(
+      'factual exception emails work without it'
+    );
+    expect(server.calls.filter((call) => call.method === 'PUT')).to.have.length(
+      0
+    );
   });
 
   it('saving creates a version and shows it in the history', async () => {

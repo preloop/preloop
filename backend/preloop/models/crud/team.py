@@ -3,6 +3,7 @@
 import uuid
 from typing import List, Optional
 
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -60,12 +61,30 @@ class CRUDTeam(CRUDBase[Team]):
 
     def update_member(
         self, db: Session, *, membership: TeamMembership, role: Optional[str]
-    ) -> TeamMembership:
-        """Update a team member's label without changing account privileges."""
-        membership.role = role
+    ) -> Optional[TeamMembership]:
+        """Claim a manual edit under a row lock, or return None if removed.
+
+        The caller may have read this object before a concurrent reconciliation
+        removed it. Read its persisted identity without triggering a stale lazy
+        load, then refresh under lock before making the membership manual.
+        """
+        identity = inspect(membership).identity
+        if identity is None:
+            return None
+        with db.no_autoflush:
+            locked = db.scalar(
+                select(models.TeamMembership)
+                .where(models.TeamMembership.id == identity[0])
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        if locked is None:
+            return None
+        locked.role = role
+        locked.manually_granted = True
         db.commit()
-        db.refresh(membership)
-        return membership
+        db.refresh(locked)
+        return locked
 
     def get_members(
         self, db: Session, *, team_id: uuid.UUID, skip: int = 0, limit: int = 100

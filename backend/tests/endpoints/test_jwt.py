@@ -512,3 +512,24 @@ class TestApiKeyFallback:
                     jwt_module.get_current_user(token, db=mock_session)
 
                 assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_purpose_scoped_redirect_token_is_not_a_person_session() -> None:
+    """Preserving SSO assurance never broadens a one-purpose redirect token."""
+    token = jwt_module.create_access_token(
+        {
+            "sub": str(uuid.uuid4()),
+            "purpose": "mcp_oauth_authorize",
+        },
+        auth_context={"amr": ["sso", "oidc"], "auth_account_id": str(uuid.uuid4())},
+    )
+    with pytest.raises(HTTPException) as denied:
+        jwt_module.get_current_user(token, db=MagicMock())
+    assert denied.value.status_code == 401
+    assert (
+        await jwt_module.get_user_from_token_if_valid(
+            token=token, db_session=MagicMock()
+        )
+        is None
+    )

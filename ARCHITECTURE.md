@@ -295,7 +295,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
-| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
+| [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, restricted CI machine identities, owned review execution admission, principal-bound completion callbacks and default-deny HTTP boundary, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
@@ -1418,6 +1418,17 @@ sessions, and per-tool schema costs with unknown tariffs represented as null.
 email delivery, defaults on, and audits changes in the same transaction. Account
 changes require account administration; members can unsubscribe themselves without
 changing approval notifications. The Enterprise digest enforces both switches.
+The Enterprise automatic sender is a factual exception digest: it sends only
+newly actionable or changed gateway failure and approval facts and sends
+nothing in a quiet or unchanged week. Its ledger lives in
+`models.crud.exception_digest` (migration `20261121_exception_digest`): one
+claim per recipient and week, a committed dispatch claim before SMTP,
+per-member material history, and an account-week synthesis reservation capped
+at $0.02, two calls, 12,000 tokens and 20 seconds. `POST
+/api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}`
+acknowledges a fact only for the member it was sent to and only while its
+material state is current. Implicit governance analysis is off on every
+edition until an account opts in explicitly.
 
 
 The `governance_review` capability registers lazy `/console/governance` and
@@ -1472,7 +1483,10 @@ server does not advertise or call them.
 Weekly report settings live in core Account fields and the audited
 `models.crud.weekly_report` transaction. `/api/v1/weekly-report/preferences`
 keeps individual unsubscribe separate from independent account controls for
-owner/admin delivery, member delivery, and member policy findings. An unset
+owner/admin delivery, member delivery, member policy findings and the optional
+admin-only synthesis switch and model (account models only). The console no
+longer shows the member policy findings switch because the factual digest
+carries no policy findings; the API field remains for explicit previews. An unset
 member-delivery field uses an optional edition service for its effective plan
 default. The capability-gated Lit settings card lives in OSS. Report queries in
 `models.crud.weekly_report_data` apply account and user attribution before
@@ -1589,6 +1603,8 @@ extension failures are isolated from core imports with a sanitized warning.
 
 [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.
 
+Every upstream MCP session built by `MCPClient` (`services/mcp_client_pool.py`) carries the identity headers defined in `services/upstream_identity.py`: `User-Agent: Preloop/<version>` (shared with the model path), `X-Preloop-Correlation-Id` equal to the audit `correlation_id` on proxied tool calls, and an opt-in `X-Preloop-Instance`. Per-server `auth_config` flags remove them or add the instance id; client headers are never forwarded.
+
 Restricted CI's optional shared-flow selector resolves exactly one repository from
 the principal's immutable project binding before minting a read lease. Tool audit
 observations are stored as bounded canonical chunks in `flow_execution_log`,
@@ -1598,6 +1614,15 @@ coverage/redaction flags. STOPPED writes queue the existing principal-filtered
 completion outbox transactionally. Codex's opt-in native result schema uses CLI
 structured output plus the existing capture-time validation gate; protocol
 translation preserves the requested schema or fails explicitly.
+
+Completed human-owned reviews can be exported through an explicit, expiring
+`execution_result_grant`, without adopting their execution into a CI principal.
+The CRUD layer binds current owner consent to original provider revisions and
+result/event digests; immutable grant fields and monotonic revocation are guarded
+in PostgreSQL. Export checks authority before and after a bounded provider read.
+The separate publisher verifies the public receipt, exact head/base and stable
+publication marker, then requires independent provider read-back. It neither
+launches a model nor receives publication authority from the export grant.
 
 ### Enterprise authentication persistence boundary
 
@@ -1610,3 +1635,95 @@ The caller owns seat admission and authorization; these core helpers assign no
 roles and create no accounts. Connection updates advance their revision even
 when a write-only secret retains the same secret-reference id. Protocol handling,
 role policy and token issuance remain in the enterprise SSO plugin.
+
+### SSO grant provenance
+
+`crud.sso_group_grants` reconciles complete OIDC, SAML and SCIM snapshots without
+committing. Each connection/source claim references a physical role or team
+assignment. Existing assignments default to `manually_granted=true`; only rows
+created by the mapper are eligible for automatic removal after their final claim
+disappears. Manual replacement and explicit team edits remain manual. Connection
+deletion revokes its claims before cascading configuration, retaining assignments
+claimed by other sources. Account hierarchy `access_grant_id` stays independent.
+The CRUD boundary validates tenant references and rejects owner authority;
+protocol adapters and role selection remain in the enterprise plugin.
+
+
+### Session authentication assurance
+
+Core carries a bounded authentication context through browser JWTs, account switch
+extensions, CLI consent/exchange and opaque MCP OAuth access/refresh records. The
+optional `authentication_policy` plugin service can enforce account methods at
+issuance, access and refresh. A membership-local `non_sso_auth_generation` is separate
+from canonical person/session revocation; all session types still honor ordinary
+`auth_generation`. Original authentication account/generation remain distinct from
+the selected account to prevent switches from upgrading or reviving assurance.
+The schema also holds durable SSO owner notices; delivery and enforcement stay in EE.
+SAML persistence remains edition-neutral: `AccountSsoConnection` stores the
+public SP certificate paired with its SecretReference, and replay CRUD atomically
+consumes expiring pending SAML requests. Protocol implementation and certificate
+creation stay in EE. The shared identity CRUD accepts explicit OIDC/SAML sources
+while preserving canonical verified-email linkage, account membership boundaries
+and provider-link locking. The optional `ee` dependency extra supplies the SAML
+XML toolkit; core modules do not import it.
+
+Fresh password and passkey authentication can select an explicitly requested,
+already-held active membership after credential verification. Passkey challenge
+and completion bind the same optional account UUID. This makes owner recovery
+reachable after a different account was last active without treating an existing
+session switch as fresh credential proof. Unknown and unavailable destinations
+share one refusal.
+
+Email verification uses explicit `email_link` assurance and onboarding uses proven
+password assurance before auto-login. Chat-derived requests carry `chat` assurance
+and pass the same policy gate before internal bearer dispatch. MCP browser redirect
+codes retain the original session assurance and recheck policy when redeemed;
+their purpose restriction prevents use as general person sessions. Recovery owner
+selection requires the global system owner role, and verified domain comparisons
+normalize both stored claims and email domains to IDNA.
+
+### Optional enterprise single sign-on settings
+
+Account settings includes a Single sign-on tab. The Lit console checks the
+`enterprise_sso` feature and the caller's account administration permission
+before loading account-scoped provider, domain, policy, mapping or SCIM-token
+configuration. Without the feature it offers the existing upgrade action.
+Submitted client secrets and signing keys are cleared immediately and never
+repopulated from configuration reads; SCIM tokens appear once until dismissed.
+
+Email-first login is enabled only when the feature is advertised. Discovery
+can offer a local SSO start URL or return the user to existing sign-in methods.
+Provider callback/metadata URLs and test-sign-in availability come from the
+server. Enforcement controls require a current configuration test completed by the signed-in administrator within 24 hours, a verified
+domain and an enabled connection; missing support is explained in the UI.
+The API remains responsible for the recent administrator test requirement and
+authentication enforcement.
+
+Test sign-in obtains a one-use start URL through an authenticated POST. SAML metadata imports are previewed before applying them to the unsaved editor; only public SP certificates are displayed. A refused account switch can request fresh password/passkey authentication bound to that account, preserving the existing session until credential proof succeeds. All owners retain emergency access, which the enterprise plugin audits and notifies.
+
+Public SSO starts require the configured console/backend Origin or Referer before minting state. The validated local login link explicitly preserves the browser referrer rather than inheriting Shoelace's `noreferrer` default; originless shared URLs remain refused.
+
+### Membership offboarding and machine credential ownership
+
+Console removal and SCIM provisioning share `services.membership_lifecycle`.
+Offboarding locks the account, Person and target membership, marks only that
+membership inactive and increments only its token generation. In the same
+transaction it revokes personal API/runtime keys, CLI and MCP OAuth grants,
+ends their runtime sessions, removes team memberships and registered runners,
+and records `access.revoked` with actual affected-row counts. Repeated removal
+is a no-op. Reactivation checks canonical identity and seat availability without
+restoring credentials. Credential issuance serializes with the same lifecycle
+boundary and refuses an inactive membership. SCIM uses `commit=False` so its
+provisioning record and revocation commit or roll back together.
+
+Account-owned CI principals and durable managed-agent credentials retain their
+keys. `ApiKey.user_id` is nullable creator attribution with `ON DELETE SET NULL`;
+account deletion still cascades its credentials. A durable credential requires
+an active account, agent, key and matching persisted credential binding. Its
+runtime principal contains the agent ID separately from creator attribution
+and has no human membership ID. Gateway, native permissions, control, desktop
+and MCP adapters use that machine identity; ordinary human/admin REST
+authentication rejects it. App configuration acknowledgment is a dedicated
+self-credential endpoint. Runtime policy checks never inherit the creator's
+human permissions. Migration `20261117_membership_offboarding` refuses downgrade
+while credentials with deleted creators remain, preserving those credentials.

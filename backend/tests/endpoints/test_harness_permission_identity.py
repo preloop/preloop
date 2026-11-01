@@ -55,7 +55,7 @@ def test_flow_permission_requires_own_active_execution(
     monkeypatch.setattr(
         endpoint,
         "_authenticate_with_api_key",
-        lambda *args: SimpleNamespace(id=uuid4()),
+        lambda *args, **kwargs: SimpleNamespace(id=uuid4()),
     )
     managed = (
         SimpleNamespace(

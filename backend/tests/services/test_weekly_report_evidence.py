@@ -97,6 +97,8 @@ def test_preferences_default_on_and_changes_are_audited(
         "user_enabled": True,
         "members_enabled": False,
         "member_policy_findings_enabled": False,
+        "synthesis_enabled": False,
+        "synthesis_model_id": None,
     }
     assert update_preferences(
         db_session,
@@ -110,6 +112,8 @@ def test_preferences_default_on_and_changes_are_audited(
         "user_enabled": False,
         "members_enabled": False,
         "member_policy_findings_enabled": False,
+        "synthesis_enabled": False,
+        "synthesis_model_id": None,
     }
     logs = (
         db_session.query(models.AuditLog)

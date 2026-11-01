@@ -269,6 +269,10 @@ class LoginRequest(BaseModel):
     # is longer than 72 characters. verify_password uses bcrypt's 72-byte
     # prefix, which is how passlib hashed those secrets before bcrypt 5.
     password: str
+    account_id: UUID | None = Field(
+        None,
+        description="Optional already-held account to select after credential verification",
+    )
 
 
 class RefreshRequest(BaseModel):

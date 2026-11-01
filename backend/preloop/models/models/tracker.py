@@ -12,6 +12,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from sqlalchemy.types import JSON, DateTime
 
+from preloop.models.db.encrypted_types import EncryptedText
+
 from .base import Base
 from .tracker_scope_rule import TrackerScopeRule
 
@@ -63,7 +65,7 @@ class Tracker(Base):
         comment="URL to the tracker (required for Jira, optional for others)",
     )
     api_key: Mapped[Optional[str]] = mapped_column(
-        String(1000),
+        EncryptedText(),
         nullable=True,
         comment=(
             "Legacy plaintext API key/token. New writes store the credential in "

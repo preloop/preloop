@@ -974,3 +974,31 @@ def test_result_projection_denies_alternate_runtime_field_spellings(field: str) 
 def test_result_projection_denies_prefixed_credential_class_fields(field: str) -> None:
     value = {"ReviewScore": 1, "nested": [{field: "synthetic-private-value"}]}
     assert service.public_ci_result(value) == {"ReviewScore": 1, "nested": [{}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+@pytest.mark.parametrize("base", ["b" * 40, "c" * 40, None])
+async def test_result_export_checks_exact_provider_base_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    context: CiAuthorizationContext,
+    provider: str,
+    base: str | None,
+) -> None:
+    context = replace(context, tracker_type=provider)
+    payload = provider_payload(context)
+    if provider == "github":
+        payload["base"]["sha"] = base
+    else:
+        payload["diff_refs"] = {"base_sha": base}
+    mock_provider(monkeypatch, context, payload=payload)
+    if base == "b" * 40:
+        result = await service._read_provider(
+            source_for(context), expected_base_sha="b" * 40
+        )
+        assert result.head_sha == "a" * 40
+    else:
+        with pytest.raises(service.CiReviewDeniedError, match="base revision"):
+            await service._read_provider(
+                source_for(context), expected_base_sha="b" * 40
+            )

@@ -52,6 +52,10 @@ import litellm
 
 from preloop.models.models.ai_model import AIModel
 from preloop.services.tls_verify import ssl_verify_setting
+from preloop.services.upstream_identity import (
+    USER_AGENT_HEADER,
+    preloop_user_agent,
+)
 
 BEDROCK_PROVIDERS = frozenset({"bedrock", "amazon-bedrock", "aws"})
 
@@ -109,20 +113,9 @@ OPENROUTER_APP_NAME = PRELOOP_APP_NAME
 OPENROUTER_SITE_URL = PRELOOP_SITE_URL
 
 
-def preloop_user_agent() -> str:
-    """User-Agent sent on every LiteLLM completion.
-
-    LiteLLM otherwise stamps ``litellm/{version}``, which is what provider
-    dashboards (OpenRouter, z.ai, OpenAI, ...) display as the client app.
-    """
-    from preloop import __version__
-
-    return f"Preloop/{__version__}"
-
-
 def preloop_client_headers() -> Dict[str, str]:
     """LiteLLM-default client headers replaced on every upstream."""
-    return {"User-Agent": preloop_user_agent()}
+    return {USER_AGENT_HEADER: preloop_user_agent()}
 
 
 def openrouter_app_headers() -> Dict[str, str]:

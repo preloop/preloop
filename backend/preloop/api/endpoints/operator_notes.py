@@ -516,7 +516,9 @@ def _hosted_runner_session_id(
             db,
             account_id=str(context.api_key.account_id),
             external_session_id=external,
-            actor_user_id=context.api_key.user_id,
+            # A key without a human creator is checked as itself, so the
+            # runner-session ownership guard refuses it rather than skipping.
+            actor_user_id=context.api_key.user_id or context.api_key.id,
         )
     except Exception:
         logger.warning("Resolving the hosted runner session failed", exc_info=True)

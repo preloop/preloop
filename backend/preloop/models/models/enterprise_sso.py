@@ -34,6 +34,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -70,6 +71,7 @@ class AccountSsoConnection(Base):
         saml_idp_metadata_url: Optional IdP metadata URL.
         saml_idp_certs: PEM signing certificates; several allow rotation.
         saml_sp_signing_key_ref_id: ``secret_reference`` holding the SP key.
+        saml_sp_certificate: Public certificate paired with the SP private key.
         saml_want_assertions_signed: Require signed assertions.
         default_role: Role given to JIT-provisioned members; never ``owner``.
         jit_enabled: Create a membership on first sign-in.
@@ -85,7 +87,8 @@ class AccountSsoConnection(Base):
             "protocol IN ('oidc', 'saml')", name="ck_account_sso_connection_protocol"
         ),
         CheckConstraint(
-            "default_role <> 'owner'", name="ck_account_sso_connection_not_owner"
+            "lower(btrim(default_role)) <> 'owner'",
+            name="ck_account_sso_connection_not_owner",
         ),
     )
 
@@ -124,6 +127,7 @@ class AccountSsoConnection(Base):
         ForeignKey("secret_reference.id", ondelete="SET NULL"),
         nullable=True,
     )
+    saml_sp_certificate: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     saml_want_assertions_signed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
@@ -231,7 +235,8 @@ class SsoGroupMapping(Base):
             name="ck_sso_group_mapping_target",
         ),
         CheckConstraint(
-            "role IS NULL OR role <> 'owner'", name="ck_sso_group_mapping_not_owner"
+            "role IS NULL OR lower(btrim(role)) <> 'owner'",
+            name="ck_sso_group_mapping_not_owner",
         ),
     )
 
@@ -269,6 +274,16 @@ class ScimToken(Base):
         nullable=False,
         index=True,
     )
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account_sso_connection.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    rate_window_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    rate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     prefix: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -303,3 +318,121 @@ class SsoReplayGuard(Base):
     )
     guard_id: Mapped[str] = mapped_column(String(512), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class SsoProvisioningGrant(Base):
+    """A connection/source claim on a physical role or team assignment.
+
+    No IdP group names or assertion contents are retained. Physical-row foreign
+    keys prevent an old claim from removing a manually replaced assignment.
+    """
+
+    __tablename__ = "sso_provisioning_grant"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_role_id IS NOT NULL) <> (team_membership_id IS NOT NULL)",
+            name="ck_sso_provisioning_grant_target",
+        ),
+        CheckConstraint(
+            "source IN ('oidc', 'saml', 'scim')", name="ck_sso_grant_source"
+        ),
+        UniqueConstraint(
+            "connection_id", "source", "user_role_id", name="uq_sso_grant_role"
+        ),
+        UniqueConstraint(
+            "connection_id", "source", "team_membership_id", name="uq_sso_grant_team"
+        ),
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account_sso_connection.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_role_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user_role.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    team_membership_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("team_membership.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+
+class ScimResource(Base):
+    """Connection-local provisioning profile, independent of canonical identity.
+
+    User resources reference physical memberships. Group resources reference
+    existing configured team mappings; neither resource grants human credentials.
+    Deleting a resource keeps its membership, which can be provisioned again.
+    """
+
+    __tablename__ = "scim_resource"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "kind", "name_normalized", name="uq_scim_resource_name"
+        ),
+        UniqueConstraint(
+            "connection_id", "kind", "external_id", name="uq_scim_resource_external"
+        ),
+        UniqueConstraint("connection_id", "user_id", name="uq_scim_resource_user"),
+        UniqueConstraint(
+            "connection_id", "mapping_id", name="uq_scim_resource_mapping"
+        ),
+        CheckConstraint(
+            "(kind = 'Users' AND user_id IS NOT NULL AND mapping_id IS NULL) OR (kind = 'Groups' AND mapping_id IS NOT NULL AND user_id IS NULL)",
+            name="ck_scim_resource_target",
+        ),
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account_sso_connection.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    mapping_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sso_group_mapping.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    external_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class ScimGroupMember(Base):
+    """Desired SCIM membership; source claims are reconciled from all groups."""
+
+    __tablename__ = "scim_group_member"
+    __table_args__ = (
+        UniqueConstraint("group_id", "member_id", name="uq_scim_group_member"),
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("scim_resource.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    member_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("scim_resource.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
