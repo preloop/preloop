@@ -9,14 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Private-runner Codex and Claude Code host runs are metered per execution.
+  The control plane delivers a signed execution marker with each host job and
+  the runner sends it as `X-Preloop-Execution` on the onboarded CLI's gateway
+  requests (Codex: a per-run override on its Preloop model provider, with the
+  value hidden from shell commands; Claude Code: `ANTHROPIC_CUSTOM_HEADERS`).
+  The gateway attributes those requests to the flow execution as well as the
+  agent and enforces the flow's run limits on them; results record the real
+  `gateway_metered` and `gateway_request_count`. A run that produced model
+  output with no gateway request fails with the new `gateway_bypassed`
+  category, unless the flow sets the break-glass
+  `agent_config.allow_unmetered_host_model: true` (never in read-only review).
+  For Claude Code the runner also reports the exact model call count
+  (`cli_model_calls`); CLI calls that exceed the gateway rows by more than 2
+  calls and more than 20% fail the run as a partial bypass. Codex exposes no
+  per-request count and keeps the at-least-one rule. `gateway_call_check`
+  names the rule that applied.
+- Hosted Codex containers install the Preloop `PreToolUse` hook (from the
+  image CLI, or a pinned checksum-verified release) and trust it through
+  Codex's own `hooks/list` hash, so deny rules block native commands and
+  approval-required rules park the run with the execution's runtime
+  credential. Hosted Codex runs with approval-required rules are no longer
+  refused with `approval_unavailable`; that category now means the hook could
+  not be installed, or the hosted harness has none. The universal Codex image
+  ships the CLI at `/opt/preloop/bin/preloop`.
 - Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
   for native checkout of the admitted commit using an exact-repository, read-only
   GitHub App lease. Review workers can use inference and their own evidence upload,
   but cannot use MCP, account/runtime administration, push, or publish. Publication
   requires a separate trusted publisher.
 - Read-only native review also runs on a private runner pool with a Codex
-  `host_exec_profile`, so the host's own Codex login (for example a ChatGPT
-  subscription) serves the review. The runner clones the admitted SHA with the
+  `host_exec_profile`, so the runner user's Preloop-onboarded Codex (for
+  example with a ChatGPT subscription) serves the review through the gateway. The runner clones the admitted SHA with the
   delivered read lease only (host git config and credential helpers disabled),
   revokes the lease before starting `codex exec --sandbox read-only`, and
   reports a receipt the control plane requires for success. Runners advertise
@@ -31,6 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other agents stay refused, and the onboarded agent's bindings and sign-in are
   untouched. Usage is attributed to the execution with
   `meta_data.subscription_use: "owner_flow"`.
+
+### Changed
+
+- No built-in default run ceilings. A flow runs without a token, turn or
+  cost ceiling unless it sets `agent_config.limits`, or the operator sets
+  `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
+  `PRELOOP_DEFAULT_MAX_USD`, which become the instance default (a run they
+  stop fails `default_limit_reached`). The 2,000,000-token built-in default
+  stopped legitimate PR reviews, which use 2 to 13 million tokens. The flow
+  page shows "None" with a hint when no ceiling applies.
+- The Pull Request Reviewer preset's own ceilings are 100,000,000 tokens and
+  1000 turns (were 2,000,000 and 300); USD stays at 50, which an expensive
+  model can reach first.
+- A run the gateway stopped at a run limit keeps `default_limit_reached` or
+  `budget_exceeded` and the limit message, even when the agent then fails on
+  a checkpoint or capture call refused because the execution was closed.
+- Docs: private-runner Codex review keeps the Preloop-onboarded Codex
+  configuration; a separate `CODEX_HOME` without the Preloop model provider
+  is no longer described, because it bypasses the gateway.
 
 ### Telemetry
 
@@ -86,6 +129,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#1426).
 
 ### Fixed
+
+- **Rules that require approval now pause unattended flow runs.** On a private
+  runner host profile, a native command matching a `require_approval` rule used
+  to hold the hook for the workflow timeout and, when refused or expired, only
+  denied that command while the run carried on. The command now does not run;
+  the execution parks on a normal approval request linked to it (flow window,
+  console, notifications, audit), resumes on approval with that exact command
+  allowed once, and fails closed with the new `approval_denied` or
+  `approval_timeout` category otherwise. Hosted container runs, which have no
+  native command hook yet, are refused before launch with
+  `approval_unavailable` when such a rule applies, instead of running ungated.
 
 - Stored model gateway call rows no longer lose the call's own content when
   they exceed `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`. The response, the

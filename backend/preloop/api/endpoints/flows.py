@@ -96,6 +96,7 @@ from preloop.services.host_exec_publication import (
 )
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.issue_triage_controller import TriageControllerError
+from preloop.services.read_only_review import ReadOnlyHumanTriggerError
 from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.model_routing import (
@@ -2380,7 +2381,10 @@ def get_flow_execution_metrics(
         - cost_is_partial: Whether estimated_cost excludes unpriced requests
         - unpriced_requests: Requests that could not be priced
         - unpriced_tokens: Token volume behind the unpriced requests
-        - limits: Configured per-execution ceilings (only keys that are set)
+        - limits: Effective per-execution ceilings (only keys that are set),
+          defaults included
+        - limit_sources: Where each ceiling came from (``flow``,
+          ``environment`` or ``default``)
         - limit_status: Current usage against those ceilings
           (``total_tokens``, ``estimated_cost_usd``, ``turns``)
     """
@@ -2406,6 +2410,7 @@ def get_flow_execution_metrics(
 
         limits, usage = describe_execution_limits(db, execution)
         metrics["limits"] = limits.as_dict()
+        metrics["limit_sources"] = dict(limits.sources)
         metrics["limit_status"] = {
             "total_tokens": usage.total_tokens,
             "estimated_cost_usd": usage.cost_usd,
@@ -2430,6 +2435,7 @@ def get_flow_execution_metrics(
             "unpriced_requests": 0,
             "unpriced_tokens": 0,
             "limits": {},
+            "limit_sources": {},
             "limit_status": {
                 "total_tokens": 0,
                 "estimated_cost_usd": None,
@@ -2675,6 +2681,7 @@ RESERVED_TRIGGER_KEYS = frozenset(
         "_workspace_file_paths",
         "_subject",
         "_agent_control",
+        "_native_result",
     }
 )
 
@@ -2916,7 +2923,7 @@ async def trigger_flow_execution(
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        except TriageControllerError as exc:
+        except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ModelRoutingError, RunnerCapabilityError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2935,7 +2942,7 @@ async def trigger_flow_execution(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except TriageControllerError as exc:
+    except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3026,7 +3033,7 @@ async def retry_flow_execution(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except TriageControllerError as exc:
+    except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3655,6 +3662,8 @@ async def trigger_flow_via_webhook(
             test_mode=False,
             trigger_event_data=event_data,
         )
+    except ReadOnlyHumanTriggerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:

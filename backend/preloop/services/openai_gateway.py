@@ -9123,10 +9123,27 @@ class OpenAIGatewayService:
             if error is not None
             else self._stream_error("openai", exc, ai_model=ai_model)
         )
+        code = gateway_error.code or gateway_error.error_type
+        if gateway_error.terminal:
+            # A Responses client reads a stream that ends without a terminal
+            # response event as a dropped connection and reconnects. A
+            # billing or credential refusal must end the turn instead.
+            return self._sse_event(
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "status": "failed",
+                        "error": {
+                            "code": code,
+                            "message": gateway_error.message,
+                        },
+                    },
+                }
+            )
         return self._sse_event(
             {
                 "type": "error",
-                "code": gateway_error.code or gateway_error.error_type,
+                "code": code,
                 "message": gateway_error.message,
                 "param": gateway_error.param,
             }

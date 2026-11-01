@@ -1,5 +1,6 @@
 """Flow list summaries defer heavy configuration and optional aggregates."""
 
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -207,7 +208,10 @@ def test_lightweight_crud_sql_excludes_large_columns(
         "prompt_template",
         "agent_config",
         "allowed_mcp_tools",
-        "git_clone_config",
         "review_instructions",
     ):
         assert f"flow.{column}" not in sql
+    # The clone config is never selected whole; only its publication_mode key
+    # is extracted in SQL for the summary's ci_only flag.
+    assert "flow.git_clone_config ->>" in sql
+    assert re.search(r"flow\.git_clone_config(?!\s*->>)", sql) is None

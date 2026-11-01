@@ -181,14 +181,16 @@ eligibility (for example summaries); it is not an executor compatibility API.
 
 Persistent execution with `agent_config.execution_path: persistent` and
 `target_agent_id` uses the enrolled target's identity and existing permissions.
-A private native `host_exec_profile` uses the host CLI's local authentication
-and model map. Neither route borrows the model registration's credentials for
-an ephemeral flow. They have distinct checkout, completion and permission
+A private native `host_exec_profile` uses the host CLI's local configuration
+and model map; an onboarded Codex or Claude Code CLI reaches the gateway with
+its agent's own key, and the runner marks those requests with the execution.
+Neither route borrows the model registration's credentials for an ephemeral
+flow. They have distinct checkout, completion and permission
 contracts. A private Codex host profile is also a supported executor for the
 [native restricted CI read-only review mode](restricted-ci.md#read-only-review-on-a-private-runner):
-that is the route for reviewing with the host CLI's own Codex login, without
-the owner opt-in (**Use from my flows**) that lets a hosted flow use a
-subscription. There the selected
-model only names the alias the profile's `model_map` translates, and the host
-CLI's own login serves it. Persistent execution remains unsupported for
+that is the route for reviewing with the onboarded host Codex and its agent's
+subscription, through the Preloop gateway, without the owner opt-in (**Use
+from my flows**) that lets a hosted flow use a subscription. There the selected
+model only names the alias the profile's `model_map` translates, and the
+gateway serves it with the onboarded agent's key. Persistent execution remains unsupported for
 read-only review.

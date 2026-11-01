@@ -2958,6 +2958,60 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.commit()
         return bool(count)
 
+    def fail_parked_for_request(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        approval_request_id: Any,
+        failure_category: str,
+        error_message: str,
+        commit: bool = True,
+    ) -> bool:
+        """End a run parked on a refused or expired approval, failed closed.
+
+        Used for native command parks, where a refusal must not continue the
+        run: the command was the reason for the park, and an unattended agent
+        that is told "no" has no human to agree a different plan with. The
+        same conditional shape as :meth:`claim_parked_for_resume`, so a
+        decision that arrives twice fails the row once and never fails a
+        row that a resume already claimed.
+
+        Args:
+            db: Database session.
+            execution_id: Parked execution.
+            approval_request_id: Approval the row is parked on.
+            failure_category: Stored ``failure_category``.
+            error_message: Operator-visible reason.
+            commit: Commit the update.
+
+        Returns:
+            True when this call failed the row.
+        """
+        now = datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.park_request_id == approval_request_id,
+                models.FlowExecution.resume_execution_id.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "FAILED",
+                    models.FlowExecution.failure_category: failure_category,
+                    models.FlowExecution.error_message: error_message,
+                    models.FlowExecution.end_time: now,
+                    models.FlowExecution.park_expires_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
     def claim_parked_children_for_resume(
         self, db: Session, *, execution_id: Any, wait_id: Any
     ) -> bool:
@@ -3431,7 +3485,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return 0
         if resume_execution_id is None:
             return 0
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_CANCELLED,
+            FAILURE_CATEGORY_RESUME_FAILED,
+        )
+
         closed_at = end_time or datetime.now(timezone.utc)
+        values: dict[Any, Any] = {
+            models.FlowExecution.status: status,
+            models.FlowExecution.end_time: closed_at,
+        }
+        # The parked row ends with its continuation. A failed continuation
+        # must not leave the parked row as an uncategorised failure.
+        if status == "FAILED":
+            values[models.FlowExecution.failure_category] = (
+                FAILURE_CATEGORY_RESUME_FAILED
+            )
+        elif status in {"STOPPED", "CANCELLED"}:
+            values[models.FlowExecution.failure_category] = FAILURE_CATEGORY_CANCELLED
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -3439,13 +3510,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.status == self.RESUMING_STATUS,
                 models.FlowExecution.resume_execution_id.isnot(None),
             )
-            .update(
-                {
-                    models.FlowExecution.status: status,
-                    models.FlowExecution.end_time: closed_at,
-                },
-                synchronize_session=False,
-            )
+            .update(values, synchronize_session=False)
         )
         if commit:
             db.commit()

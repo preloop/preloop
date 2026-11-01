@@ -197,6 +197,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Retries of a failed park resume that still count as that resume.
+_MAX_PARK_RESUME_RETRY_HOPS = 5
+
 # Log lines the post-execution block prints once it has started publishing.
 # ``PRELOOP_EVIDENCE committed`` is deliberately absent: the evidence upload
 # runs from an EXIT trap, so it also prints on a pre-push transient failure.
@@ -1333,6 +1336,83 @@ class FlowExecutionOrchestrator:
                         )
             if getattr(self, "_startup_receipt", None) is not None:
                 self._persist_startup_receipt(lease_revoked=revoked == len(leases))
+
+    def _flow_preset_slug(self) -> Optional[str]:
+        """Catalog slug of the preset this flow is (or was cloned from)."""
+        from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return None
+        if getattr(flow, "is_preset", False):
+            return PRESET_SLUGS_BY_NAME.get(getattr(flow, "name", None) or "")
+        source_id = getattr(flow, "source_preset_id", None)
+        if not source_id:
+            return None
+        try:
+            from preloop.models.crud import crud_flow
+
+            preset = crud_flow.get(self.db, id=source_id)
+        except Exception:  # noqa: BLE001 - a lookup never fails a run
+            logger.debug("Could not read source preset %s", source_id, exc_info=True)
+            return None
+        if preset is None:
+            return None
+        return PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+
+    def _resolve_native_result(self) -> bool:
+        """Decide native structured results for this run and record the choice.
+
+        The flow's explicit ``agent_config.native_result`` wins; otherwise the
+        review default applies (see :mod:`preloop.services.native_result`).
+        The value and its source are written to the execution's
+        ``trigger_event_details`` under the reserved ``_native_result`` key, so
+        an operator can see which setting a run actually used.
+
+        Returns:
+            Whether this run uses native structured results.
+        """
+        from preloop.services.native_result import (
+            NATIVE_RESULT_RECORD_KEY,
+            resolve_native_result,
+        )
+
+        enabled, source = resolve_native_result(
+            self.flow, preset_slug=self._flow_preset_slug()
+        )
+        self._native_result_effective = enabled
+        self._native_result_source = source
+        execution = getattr(self, "execution_log", None)
+        if execution is not None:
+            details = dict(getattr(execution, "trigger_event_details", None) or {})
+            record = {"value": enabled, "source": source}
+            if details.get(NATIVE_RESULT_RECORD_KEY) != record:
+                details[NATIVE_RESULT_RECORD_KEY] = record
+                try:
+                    from preloop.models.crud import crud_flow_execution
+
+                    self.execution_log = crud_flow_execution.update(
+                        self.db,
+                        db_obj=execution,
+                        obj_in={"trigger_event_details": details},
+                    )
+                except Exception:  # noqa: BLE001 - the record never fails a run
+                    logger.warning(
+                        "Could not record native_result on execution %s",
+                        getattr(execution, "id", None),
+                        exc_info=True,
+                    )
+        return enabled
+
+    def _run_agent_config(self) -> Any:
+        """The flow's ``agent_config`` with the effective native_result applied."""
+        from preloop.services.native_result import apply_native_result_default
+
+        config = self.flow.agent_config
+        enabled = getattr(self, "_native_result_effective", None)
+        if enabled is None:
+            return config
+        return apply_native_result_default(config, enabled)
 
     def _read_only_review_mode(self) -> bool:
         """Retain the startup capability even if the flow is edited later."""
@@ -3780,7 +3860,7 @@ class FlowExecutionOrchestrator:
             "execution_id": str(self.execution_log.id),
             "prompt": resolved_prompt,
             "agent_type": effective_agent_type,
-            "agent_config": self.flow.agent_config,
+            "agent_config": self._run_agent_config(),
             "result_schema": getattr(self.flow, "result_schema", None),
             "validate_result": getattr(self.flow, "validate_result", True),
             # The wall clock this run may spend. Harnesses keep their own
@@ -3846,6 +3926,11 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
+        elif self._is_platform_park_resume(resume):
+            # Approval-park and child-wait resumes are created by the
+            # platform from a recorded decision. The parked row names this
+            # execution as its resume, which a trigger payload cannot forge.
+            execution_context["checkpoint_resume_authorized"] = True
         cold_handoff = bool(native and native.get("cold_handoff_authorized"))
         if cold_handoff:
             execution_context["published_branch_handoff_authorized"] = True
@@ -4625,6 +4710,11 @@ class FlowExecutionOrchestrator:
                     "Could not compute the runtime deadline backstop",
                     exc_info=True,
                 )
+
+            if not isinstance(
+                agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
+            ):
+                self._refuse_hosted_approval_gap(execution_context)
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)
@@ -7090,7 +7180,40 @@ class FlowExecutionOrchestrator:
                 " The agent was reminded once in its own container and still "
                 "did not confirm."
             )
+        if not result.error_message:
+            error_message += self._native_result_hint()
         return "FAILED", error_message, result_artifact
+
+    def _native_result_hint(self) -> str:
+        """Name the native-result flag in a Codex no-confirmation failure.
+
+        A Codex review that exits 0 without a result document is the case
+        native structured results exist for, so the message says whether the
+        flag was on for this run and where it is documented.
+        """
+        from preloop.services.native_result import (
+            NATIVE_RESULT_DOC,
+            native_result_enabled,
+        )
+
+        if str(getattr(self, "agent_type", "") or "").lower() != "codex":
+            return ""
+        enabled = getattr(self, "_native_result_effective", None)
+        if enabled is None:
+            enabled = native_result_enabled(
+                getattr(getattr(self, "flow", None), "agent_config", None)
+            )
+        if enabled:
+            return (
+                " agent_config.native_result was on for this run, so the "
+                "Codex CLI was asked to write result.json against the flow "
+                f"result schema and did not; see {NATIVE_RESULT_DOC}."
+            )
+        return (
+            " agent_config.native_result was off for this run; set it to "
+            "true with an enabled result_schema so the Codex CLI writes "
+            f"result.json itself (see {NATIVE_RESULT_DOC})."
+        )
 
     async def _run_confirmation_nudge(
         self, agent_executor: Any, prior_log_lines: List[str]
@@ -7505,6 +7628,107 @@ class FlowExecutionOrchestrator:
         if not park_request or park_request.get("parked_at") is not None:
             return None
         return park_request
+
+    def _refuse_hosted_approval_gap(self, execution_context: Dict[str, Any]) -> None:
+        """Gate or refuse a hosted launch that has native approval rules.
+
+        Hosted Codex installs the Preloop PreToolUse hook in its container
+        (``preloop.agents.codex_native_hook``), so an approval-required
+        native rule parks the run exactly as on a private-runner host
+        profile. Such a launch is marked ``native_hook_required``: the
+        container refuses to start Codex with ``approval_unavailable`` if the
+        hook cannot be installed. Other hosted harnesses have no native hook
+        and are still refused before launch. Codex in the read-only sandbox
+        runs with its shell tool disabled and has no native commands to gate.
+
+        Raises:
+            AgentStartError: With ``approval_unavailable`` when a rule applies
+                to a hosted harness without the hook.
+        """
+        from preloop.agents.errors import AgentStartError
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+        )
+        from preloop.services.native_flow_park import hosted_approval_gap
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return
+        agent_type = str(self.agent_type or flow.agent_type or "")
+        config = execution_context.get("agent_config") or {}
+        if (
+            agent_type == "codex"
+            and isinstance(config, dict)
+            and config.get("sandbox_type") == "read-only"
+        ):
+            return
+        if agent_type == "codex":
+            # Deny rules are enforced by the same hook, so they make it
+            # required too: a run must not fall open when it cannot install.
+            if hosted_approval_gap(self.db, flow, actions=("require_approval", "deny")):
+                execution_context["native_hook_required"] = True
+            return
+        reason = hosted_approval_gap(self.db, flow)
+        if reason:
+            raise AgentStartError(
+                reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
+            )
+
+    def _is_platform_park_resume(self, resume: Dict[str, Any]) -> bool:
+        """Whether ``_resume`` continues a parked run the platform resumed.
+
+        True only when the execution named by ``resume["execution_id"]``
+        belongs to this flow and its ``resume_execution_id`` is this
+        execution, or an execution this one retries (directly or through
+        a short retry chain). That link is written by the park resume path when it
+        creates this row, so a ``_resume`` copied into a trigger payload by
+        a caller does not satisfy it.
+
+        Args:
+            resume: The ``_resume`` binding from the trigger event data.
+
+        Returns:
+            True when the parked row links to this execution.
+        """
+        parked_id = resume.get("execution_id")
+        if not parked_id:
+            return False
+        from preloop.models.crud import crud_flow_execution
+
+        try:
+            parked = crud_flow_execution.get(
+                self.db, id=str(parked_id), account_id=str(self.flow.account_id)
+            )
+        except Exception:
+            logger.warning(
+                "Could not verify the park link of resume %s", parked_id, exc_info=True
+            )
+            return False
+        if parked is None or str(getattr(parked, "flow_id", "")) != str(self.flow.id):
+            return False
+        linked = str(getattr(parked, "resume_execution_id", "") or "")
+        if not linked:
+            return False
+        # A retry of a failed resume is a new row whose retry chain leads
+        # back to the execution the parked row names.
+        current: Any = self.execution_log
+        for _ in range(_MAX_PARK_RESUME_RETRY_HOPS + 1):
+            if str(current.id) == linked:
+                return True
+            retry_of = getattr(current, "retry_of_execution_id", None)
+            if not retry_of:
+                return False
+            try:
+                current = crud_flow_execution.get(
+                    self.db, id=str(retry_of), account_id=str(self.flow.account_id)
+                )
+            except Exception:
+                return False
+            if current is None or str(getattr(current, "flow_id", "")) != str(
+                self.flow.id
+            ):
+                return False
+        return False
 
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float
@@ -8321,6 +8545,72 @@ class FlowExecutionOrchestrator:
 
         logger.info(f"Execution log created with ID: {self.execution_log.id}")
 
+    def _keep_gateway_ceiling_outcome(
+        self, status: str, kwargs: Dict[str, Any]
+    ) -> None:
+        """Keep a run-limit stop the gateway already recorded on the row.
+
+        The gateway marks the execution FAILED with ``budget_exceeded`` or
+        ``default_limit_reached`` and the limit message when it refuses a
+        request over a ceiling. The agent then fails in its own way (a
+        checkpoint or capture call answered 409 because the execution is
+        closed), and that later error must not replace the reason the run
+        stopped.
+
+        Args:
+            status: Status about to be written.
+            kwargs: Update fields; rewritten in place.
+        """
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_BUDGET_EXCEEDED,
+            FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+        )
+
+        execution = getattr(self, "execution_log", None)
+        if execution is None or str(status).upper() != "FAILED":
+            return
+        try:
+            self.db.refresh(execution)
+        except Exception:  # noqa: BLE001 - a stale row only loses this guard
+            logger.debug("Could not refresh execution before final write")
+            return
+        stored = getattr(execution, "failure_category", None)
+        if stored in (
+            FAILURE_CATEGORY_BUDGET_EXCEEDED,
+            FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+        ):
+            kwargs["failure_category"] = stored
+            message = getattr(execution, "error_message", None)
+            if message:
+                kwargs["error_message"] = message
+            return
+        if kwargs.get("failure_category") is not None:
+            return
+        derived = derive_failure_category(
+            status=status, error_message=kwargs.get("error_message")
+        )
+        if derived != FAILURE_CATEGORY_UNKNOWN:
+            return
+        # An unclassifiable failure (often the agent's last prose) on a run
+        # that has spent a ceiling: the ceiling is why it stopped.
+        from preloop.services.flow_execution_limits import (
+            describe_execution_limits,
+            evaluate_execution_limits,
+        )
+
+        try:
+            limits, usage = describe_execution_limits(self.db, execution)
+            violation = (
+                None if limits.is_empty else evaluate_execution_limits(limits, usage)
+            )
+        except Exception:  # noqa: BLE001 - classification never fails a write
+            logger.debug("Could not evaluate limits for the final write")
+            return
+        if violation is None:
+            return
+        kwargs["failure_category"] = violation.category
+        kwargs["error_message"] = f"Execution budget exceeded: {violation.message}"
+
     async def _update_execution_log(
         self, status: Optional[str] = None, **kwargs
     ) -> Optional[str]:
@@ -8345,6 +8635,8 @@ class FlowExecutionOrchestrator:
         # Park finalize omits status so confirm_park's conditional UPDATE
         # is the only writer; deriving a category from a missing status
         # would invent one for a still-live run.
+        if status is not None:
+            self._keep_gateway_ceiling_outcome(status, kwargs)
         if status is not None and kwargs.get("failure_category") is None:
             derived = derive_failure_category(
                 status=status,
@@ -9989,7 +10281,10 @@ class FlowExecutionOrchestrator:
                 native_result_cold_start,
             )
 
-            if native_result_cold_start(self.flow, self.trigger_event_data):
+            native_enabled = self._resolve_native_result()
+            if native_result_cold_start(
+                self.flow, self.trigger_event_data, enabled=native_enabled
+            ):
                 await self._emit_execution_warning(COLD_START_MESSAGE)
             validate_read_only_flow(self.flow)
             if (

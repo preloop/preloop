@@ -17795,9 +17795,11 @@ paths:
         \ Whether any request could be priced\n    - cost_is_partial: Whether estimated_cost\
         \ excludes unpriced requests\n    - unpriced_requests: Requests that could\
         \ not be priced\n    - unpriced_tokens: Token volume behind the unpriced requests\n\
-        \    - limits: Configured per-execution ceilings (only keys that are set)\n\
-        \    - limit_status: Current usage against those ceilings\n      (``total_tokens``,\
-        \ ``estimated_cost_usd``, ``turns``)"
+        \    - limits: Effective per-execution ceilings (only keys that are set),\n\
+        \      defaults included\n    - limit_sources: Where each ceiling came from\
+        \ (``flow``,\n      ``environment`` or ``default``)\n    - limit_status: Current\
+        \ usage against those ceilings\n      (``total_tokens``, ``estimated_cost_usd``,\
+        \ ``turns``)"
       operationId: get_flow_execution_metrics_api_v1_flows_executions__execution_id__metrics_get
       security:
       - bearerAuth: []
@@ -25619,6 +25621,14 @@ components:
           description: True when the deny is only the expiry of an unanswered approval
             request, not a human decision. It remains a denial; adapters must not
             replace required central approval with a local prompt.
+          default: false
+        parked:
+          type: boolean
+          title: Parked
+          description: 'True when the call needed a human and the unattended flow
+            execution behind this credential is being paused on approval request_id.
+            The decision is ''deny'': the command must not run. The run resumes on
+            approval and fails closed on refusal or expiry.'
           default: false
       type: object
       required:
@@ -35341,12 +35351,17 @@ components:
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
-            budget_exceeded, model_config, no_confirmation, agent_no_progress, publication_missing,
-            result_schema_invalid (result.json does not match the flow result schema),
-            setup_failed, verification_failed, verification_blocked, tool_error, agent_error,
-            model_stream_idle (timed out while the model stream was silent), timeout,
-            cancelled, unknown. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            budget_exceeded, default_limit_reached (a default per-execution ceiling
+            the flow did not set), model_config, no_confirmation, agent_no_progress,
+            publication_missing, result_schema_invalid (result.json does not match
+            the flow result schema), setup_failed, verification_failed, verification_blocked,
+            tool_error, agent_error, model_stream_idle (timed out while the model
+            stream was silent), approval_denied, approval_timeout, approval_unavailable
+            (an approval-required rule could not pause the run), resume_failed (a
+            parked run could not be continued), gateway_bypassed (a private-runner
+            host CLI made no request through the Preloop gateway), timeout, cancelled,
+            unknown. Null for successful or still-running executions, and for executions
+            that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -35481,6 +35496,14 @@ components:
           - type: 'null'
           description: Present while the execution is parked on a human decision (status
             WAITING_FOR_HUMAN).
+        resume_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Execution Id
+          description: The execution that continued this one after it parked (on an
+            approval or on its child runs). Null when it never resumed.
         runner:
           $ref: '#/components/schemas/ExecutionRunner'
           description: Where this execution ran. Hosted when the built-in executor
@@ -35919,6 +35942,12 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        effective_limits:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          type: object
+          title: Effective Limits
         effective_publication_policy:
           $ref: '#/components/schemas/EffectivePublicationPolicy'
           description: Read-only description derived from this saved flow's configuration.
@@ -36033,6 +36062,10 @@ components:
             type: object
           - type: 'null'
           title: Execution Stats
+        ci_only:
+          type: boolean
+          title: Ci Only
+          default: false
       type: object
       required:
       - id
@@ -36142,7 +36175,6 @@ components:
           - type: string
           - type: 'null'
           title: Agent Type
-          default: openhands
         agent_config:
           anyOf:
           - additionalProperties: true
@@ -38343,7 +38375,9 @@ components:
         gateway_metered:
           type: boolean
           title: Gateway Metered
-          description: 'Always false: these rows never pass the model gateway.'
+          description: Whether the execution has model gateway rows. The hook rows
+            listed here never pass the gateway; an onboarded Codex or Claude Code
+            host run sends its model calls through it.
           default: false
       type: object
       required:

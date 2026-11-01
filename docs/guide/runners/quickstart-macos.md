@@ -189,6 +189,15 @@ completion, injection rejection, process-group halt). macOS specifics:
 
 ## What is and is not metered
 
+- **Codex and Claude Code profiles** onboarded through Preloop
+  (`preloop agents onboard "Codex CLI"` / `"Claude Code"` as the runner user)
+  send model traffic through the Preloop gateway with the agent's own key.
+  The runner adds the execution marker to each request, so usage is metered
+  per execution, the flow's run limits apply, and the result records
+  `gateway_metered: true`. Keep the onboarded configuration: a CLI that calls
+  its model service directly fails the run with `gateway_bypassed`
+  (`agent_config.allow_unmetered_host_model: true` is the documented
+  break-glass for a flow that must run unmetered; never in read-only review).
 - **Cursor profiles** run on the operator's own Cursor plan. Traffic goes to
   Cursor directly, so the run is not gateway metered and this path does not
   ingest usage; the structured result records the model only when Cursor
