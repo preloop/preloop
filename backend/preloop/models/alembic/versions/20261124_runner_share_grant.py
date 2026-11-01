@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20261123_runner_share_grant"
+revision = "20261124_runner_share_grant"
 down_revision = "20261121_exception_digest"
 branch_labels = None
 depends_on = None
