@@ -1,6 +1,7 @@
 """CRUD operations for AuditLog model."""
 
 import functools
+import ipaddress
 import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -261,6 +262,17 @@ def audit_row_id(details: Optional[Dict[str, Any]]) -> UUID:
     return uuid4()
 
 
+def _audit_ip_address(value: Optional[str]) -> Optional[str]:
+    """Keep only a canonical IP; client headers cannot overflow the audit column."""
+    if not value:
+        return None
+    try:
+        # Interface scope identifiers are local metadata, not an IP address.
+        return str(ipaddress.ip_address(value.split("%", 1)[0].strip()))
+    except ValueError:
+        return None
+
+
 class CRUDAuditLog(CRUDBase[AuditLog]):
     """CRUD operations for audit logging."""
 
@@ -307,7 +319,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             resource_type=resource_type,
             resource_id=resource_id,
             status=status,
-            ip_address=ip_address,
+            ip_address=_audit_ip_address(ip_address),
             user_agent=user_agent,
             details=details,
             timestamp=datetime.now(timezone.utc),

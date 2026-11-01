@@ -103,6 +103,33 @@ caller's machine. See [Evidence storage and signed records](docs/guide/flows/evi
 The chain proves order and non-deletion in the range it names, not that the
 records were true when written; the signing key lives beside the records.
 
+Password and passkey sign-in record one final `auth.login.succeeded` or
+`auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
+plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
+Payloads retain bounded identity metadata, known changed-field names and
+UUID-only owner lists; tokens, assertions and nested
+provider payloads are excluded. Known identities route to their account audit
+trail and period exports; attempts without a trustworthy account emit a
+content-free service security log, never a caller-selected tenant row. Existing
+`user.login` activity events remain available for cohort metrics. SSO labels
+retain their schema bounds (name 255, domain 253, group/issuer/entity 512 characters);
+secret-looking identifier labels remain intentional identifiers. Identity URLs
+drop userinfo, query strings and fragments. Owner lists retain at most 100 UUIDs
+and report the original total when truncated; nested values never survive.
+
+Authentication audit volume is intentionally one outcome per attempt, without
+sampling or deduplication. Password login and passkey verification have no
+built-in attempt limiter, so operators should enforce ingress limits on
+`/api/v1/auth/token`, `/api/v1/auth/token/json`, and
+`/api/v1/auth/webauthn/authenticate/verify` using the trusted proxy's client
+address. Incoming forwarded headers alone are not a rate-limit identity.
+A known-account failure adds one audit row; sustained attempts therefore grow
+the account's retained audit history and period exports linearly. The ordinary
+audit retention policy applies, and the period export row cap requires smaller
+periods for high-volume accounts. Unknown-account failures grow service logs;
+apply the same ingress limits and log rotation there. Limit attempts before
+authentication, rather than suppressing required compliance events afterward.
+
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
 Customer-facing gateway reports exclude replay validation and every

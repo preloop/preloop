@@ -1279,7 +1279,8 @@ paths:
       - Auth
       - Passkeys
       summary: Authentication Verify
-      description: Complete passkey sign-in; returns access and refresh tokens.
+      description: Audit one final passkey outcome, including challenge and policy
+        failures.
       operationId: authentication_verify_api_v1_auth_webauthn_authenticate_verify_post
       requestBody:
         content:
