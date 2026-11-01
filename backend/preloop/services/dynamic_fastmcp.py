@@ -427,6 +427,13 @@ def _upstream_error_detail(
     return (_short_reason(code) or "tool_error"), _short_reason(reason)
 
 
+def _has_typed_content(content: Any) -> bool:
+    """True when a proxied result list holds any non-text block (#1151)."""
+    return isinstance(content, list) and any(
+        not isinstance(item, TextContent) for item in content
+    )
+
+
 def _proxied_upstream_result(
     text: str, upstream: Any, content: list[Any] | None = None
 ) -> Any:
@@ -442,9 +449,7 @@ def _proxied_upstream_result(
     structured = getattr(upstream, "structured_content", None)
     if not isinstance(structured, dict):
         structured = None
-    typed = content is not None and any(
-        not isinstance(item, TextContent) for item in content
-    )
+    typed = _has_typed_content(content)
     if not is_error and structured is None and not typed:
         return text
     if is_error:
@@ -1227,6 +1232,7 @@ _WRAPPER_NAMESPACE_KEYS = (
     "_rule_workflow_id_var",
     "_correlation_id_var",
     "_proxied_raw_result_var",
+    "_has_typed_content",
     "_wrapper_tool_error",
     "_proxied_upstream_result",
     "_proxied_exception_outcome",
@@ -2134,7 +2140,11 @@ async def {internal_name}({params_str}):
             )
 
         # Convert result to string; forward isError/structuredContent.
-        if isinstance(result, list):
+        # Typed results are forwarded as blocks, so skip str() on base64
+        # payloads that would be thrown away.
+        if _has_typed_content(result):
+            text = ""
+        elif isinstance(result, list):
             text = "\\n".join(
                 item.text if hasattr(item, "text") else str(item)
                 for item in result
@@ -2204,6 +2214,7 @@ async def {internal_name}({params_str}):
             "Context": Context,
             "_rule_workflow_id_var": _rule_workflow_id_var,
             "_correlation_id_var": _correlation_id_var,
+            "_has_typed_content": _has_typed_content,
             "_proxied_raw_result_var": _proxied_raw_result_var,
             "_wrapper_tool_error": _wrapper_tool_error,
             "_proxied_upstream_result": _proxied_upstream_result,

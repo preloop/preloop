@@ -3001,6 +3001,10 @@ class TestReviewPublicationConfirmation:
         artifact = {"status": "success", "review_posted": False, "review_action": None}
         assert _result_artifact_confirmation(artifact) == "success"
 
+    def test_missing_review_action_is_not_a_deliberate_skip(self):
+        artifact = {"status": "success", "review_posted": False}
+        assert _result_artifact_confirmation(artifact) == "failure"
+
     @pytest.mark.parametrize("key", ["review_posted", "review_posted_to_github"])
     def test_failure_signal_names_the_publication_field(self, key):
         artifact = {"status": "success", "review_action": "approve", key: False}

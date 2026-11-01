@@ -447,3 +447,12 @@ async def test_proxied_tool_forwards_typed_content_blocks(monkeypatch, user_cont
     ]
     assert result.content[1].data == "UklGRg=="
     assert _audit_kwargs(audit_service)["result"] == "executed"
+
+
+def test_typed_results_skip_the_text_fallback():
+    """Review on #2167: no str() of base64 payloads when blocks are forwarded."""
+    from preloop.services.dynamic_fastmcp import _has_typed_content
+
+    assert _has_typed_content([types.TextContent(type="text", text="t"), AUDIO])
+    assert not _has_typed_content([types.TextContent(type="text", text="t")])
+    assert not _has_typed_content("plain")

@@ -430,8 +430,12 @@ def _unposted_review_field(artifact: Dict[str, Any]) -> Optional[str]:
     if not unposted:
         return None
     contradictory = any(artifact.get(key) is True for key in REVIEW_PUBLICATION_KEYS)
-    deliberate_skip = artifact.get("review_action") is None and not artifact.get(
-        "blocker"
+    # The skip must say review_action: null explicitly; a missing key is
+    # not a deliberate decision.
+    deliberate_skip = (
+        "review_action" in artifact
+        and artifact["review_action"] is None
+        and not artifact.get("blocker")
     )
     if deliberate_skip and not contradictory:
         return None
