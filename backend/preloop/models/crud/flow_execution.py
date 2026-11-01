@@ -593,10 +593,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return db_obj
 
     def update(
-        self, db: Session, db_obj: FlowExecution, obj_in: FlowExecutionUpdate
+        self,
+        db: Session,
+        db_obj: FlowExecution,
+        obj_in: FlowExecutionUpdate | dict[str, Any],
     ) -> FlowExecution:
-        """Update an existing flow execution (synchronous)."""
-        update_data = obj_in.model_dump(exclude_unset=True)
+        """Update an existing flow execution (synchronous).
+
+        Args:
+            db: Database session.
+            db_obj: Execution to update.
+            obj_in: Update schema, or a plain mapping of column values for
+                columns the schema does not carry (such as
+                ``trigger_event_details``).
+
+        Returns:
+            The updated execution.
+        """
+        update_data = (
+            dict(obj_in)
+            if isinstance(obj_in, dict)
+            else obj_in.model_dump(exclude_unset=True)
+        )
         if "result" in update_data:
             # Result writers may hold an old ORM snapshot while the runner
             # advances publication. Lock/read the current protected state and

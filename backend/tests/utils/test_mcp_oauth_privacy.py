@@ -35,3 +35,21 @@ def test_callback_access_log_redaction_and_telemetry(path):
     event = {"request": {"url": "https://console.example.com" + url}}
     assert sentry_before_send(event, {}) is None
     assert sentry_before_send_transaction(event, {}) is None
+
+
+def test_flow_webhook_secret_is_redacted_from_access_log():
+    url = "/api/v1/webhooks/flows/synthetic-flow-id/synthetic-webhook-secret"
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1", "POST", url, "1.1", 200),
+        None,
+    )
+    assert MCPOAuthLogFilter().filter(record)
+    message = record.getMessage()
+    assert "synthetic-webhook-secret" not in message
+    assert "/api/v1/webhooks/flows/synthetic-flow-id/[redacted]" in message
+    assert len(record.args) == 5
