@@ -79,7 +79,6 @@ def get_resource(
     connection_id: UUID,
     kind: str,
     resource_id: UUID,
-    include_deleted: bool = False,
 ) -> models.ScimResource | None:
     """A foreign resource id is indistinguishable from a missing resource."""
     query = select(models.ScimResource).where(
@@ -87,8 +86,6 @@ def get_resource(
         models.ScimResource.kind == kind,
         models.ScimResource.id == resource_id,
     )
-    if not include_deleted:
-        query = query.where(models.ScimResource.deleted_at.is_(None))
     return db.scalar(query)
 
 
@@ -105,7 +102,6 @@ def list_resources(
     conditions = [
         models.ScimResource.connection_id == connection_id,
         models.ScimResource.kind == kind,
-        models.ScimResource.deleted_at.is_(None),
     ]
     if name is not None:
         conditions.append(models.ScimResource.name_normalized == name.casefold())
@@ -191,7 +187,10 @@ def create_user(
         # Do not turn an unverified, independently created account into an IdP
         # identity. Existing verified members may be explicitly provisioned.
         person = crud_person.get(db, id=user.person_id)
-        if (
+        if _is_pending_scim_member(db, user):
+            # A deleted and re-provisioned member who never signed in.
+            pass
+        elif (
             person is None
             or person.email_verified_at is None
             or person.identity_status != "active"
@@ -267,9 +266,41 @@ def create_group(
 
 
 def update_profile(
-    db: Session, *, resource: models.ScimResource, profile: dict[str, Any]
+    db: Session,
+    *,
+    resource: models.ScimResource,
+    profile: dict[str, Any],
+    email: str | None = None,
 ) -> None:
-    """Write the connection-local profile without mutating Person or siblings."""
+    """Write the connection-local profile without mutating Person or siblings.
+
+    Args:
+        db: Session; the caller owns the transaction.
+        resource: Resource to update.
+        profile: Validated SCIM profile.
+        email: Normalized provisioning email for a User. While the member is
+            still pending (SCIM-created, never signed in, no other
+            membership), the canonical email follows it so first login
+            through the bound connection finds the member. Afterwards the
+            canonical identity is never changed by SCIM.
+
+    Raises:
+        IdentityConflictError: The new email belongs to another person.
+    """
+    if resource.kind == "Users" and email is not None:
+        user = db.get(models.User, resource.user_id)
+        person = crud_person.get(db, id=user.person_id) if user else None
+        if (
+            user is not None
+            and person is not None
+            and person.email_normalized != email
+            and _is_pending_scim_member(db, user)
+        ):
+            if crud_person.list_by_email(db, email=email):
+                raise IdentityConflictError("identity_enrollment_required")
+            crud_person.update_profile(
+                db, membership_id=user.id, changes={"email": email}, commit=False
+            )
     resource.profile = {
         key: value for key, value in profile.items() if key != "members"
     }
@@ -294,7 +325,6 @@ def members(db: Session, *, group: models.ScimResource) -> list[models.ScimResou
                 models.ScimGroupMember.group_id == group.id,
                 models.ScimResource.connection_id == group.connection_id,
                 models.ScimResource.kind == "Users",
-                models.ScimResource.deleted_at.is_(None),
             )
             .order_by(models.ScimResource.id)
         )
@@ -312,7 +342,6 @@ def replace_members(
                     models.ScimResource.id.in_(member_ids),
                     models.ScimResource.connection_id == group.connection_id,
                     models.ScimResource.kind == "Users",
-                    models.ScimResource.deleted_at.is_(None),
                 )
             )
         )
@@ -351,7 +380,6 @@ def group_snapshot(db: Session, *, resource: models.ScimResource) -> list[str]:
             .where(
                 models.ScimGroupMember.member_id == resource.id,
                 models.ScimResource.connection_id == resource.connection_id,
-                models.ScimResource.deleted_at.is_(None),
                 models.SsoGroupMapping.connection_id == resource.connection_id,
             )
         )
@@ -359,15 +387,33 @@ def group_snapshot(db: Session, *, resource: models.ScimResource) -> list[str]:
 
 
 def delete_resource(db: Session, *, resource: models.ScimResource) -> None:
-    """Tombstone a resource and remove its desired group memberships."""
-    resource.deleted_at = utc_now()
+    """Delete a resource and its desired group memberships.
+
+    The membership itself is kept (offboarded by the caller), so the same
+    userName or externalId can be provisioned again and links back to it.
+    """
     db.execute(
         delete(models.ScimGroupMember).where(
             (models.ScimGroupMember.member_id == resource.id)
             | (models.ScimGroupMember.group_id == resource.id)
         )
     )
+    db.delete(resource)
     db.flush()
+
+
+def _is_pending_scim_member(db: Session, user: models.User) -> bool:
+    """True for a SCIM-created membership whose person never signed in."""
+    person = crud_person.get(db, id=user.person_id)
+    return (
+        person is not None
+        and user.user_source == "scim"
+        and person.email_verified_at is None
+        and person.identity_status == "active"
+        and len(crud_person.list_memberships(db, person_id=person.id)) == 1
+        and not crud_person.list_password_hashes(db, person_id=person.id)
+        and not crud_person.has_external_identity(db, person_id=person.id)
+    )
 
 
 def resolve_pending_identity(
@@ -407,7 +453,6 @@ def resolve_pending_identity(
             .where(
                 models.ScimResource.connection_id == connection_id,
                 models.ScimResource.kind == "Users",
-                models.ScimResource.deleted_at.is_(None),
                 models.User.account_id == account_id,
                 models.User.user_source == "scim",
                 models.User.is_active.is_(True),

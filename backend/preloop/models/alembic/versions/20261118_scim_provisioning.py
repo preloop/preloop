@@ -71,7 +71,6 @@ def upgrade() -> None:
         sa.Column("name_normalized", sa.String(512), nullable=False),
         sa.Column("external_id", sa.String(512), nullable=True),
         sa.Column("profile", postgresql.JSONB(), nullable=False),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.UniqueConstraint(
             "connection_id", "kind", "name_normalized", name="uq_scim_resource_name"
         ),

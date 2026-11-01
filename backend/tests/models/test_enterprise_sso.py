@@ -42,6 +42,8 @@ TABLES = (
     "sso_provisioning_grant",
     "scim_token",
     "sso_replay_guard",
+    "scim_resource",
+    "scim_group_member",
 )
 
 
@@ -128,7 +130,7 @@ def _round_trip(db):
         saml_migration.upgrade()
         scim_migration.upgrade()
     names = set(inspect(connection).get_table_names())
-    assert set(TABLES) | {"scim_resource", "scim_group_member"} <= names
+    assert set(TABLES) <= names
 
 
 def test_migration_round_trip_on_empty_tables(db_session):

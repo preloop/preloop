@@ -375,7 +375,7 @@ class ScimResource(Base):
 
     User resources reference physical memberships. Group resources reference
     existing configured team mappings; neither resource grants human credentials.
-    Deleted resources retain their identity so their ids are never recycled.
+    Deleting a resource keeps its membership, which can be provisioned again.
     """
 
     __tablename__ = "scim_resource"
@@ -415,7 +415,6 @@ class ScimResource(Base):
     name_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
     external_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class ScimGroupMember(Base):
