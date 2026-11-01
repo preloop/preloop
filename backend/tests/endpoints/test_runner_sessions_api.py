@@ -23,6 +23,7 @@ from preloop.models import models
 from preloop.models.crud import crud_user
 from preloop.models.db.session import get_db_session as get_db
 from preloop.plugins import account_hooks
+from preloop.utils import permissions
 from preloop.services.runner_workspace_credentials import CheckoutCredential
 from preloop.plugins.account_hooks import (
     ACTION_RUNNER_SESSION_START,
@@ -350,7 +351,11 @@ def test_allow_dirty_is_owner_only(db_session, test_user, service):
     assert not service.plans
 
 
-def test_other_member_is_refused(db_session, test_user, service):
+def test_other_member_is_refused_with_rbac_plugin(
+    db_session, test_user, service, monkeypatch
+):
+    # Owner-only access is an RBAC-plugin (EE) rule. Core admits every member.
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
     runner = _runner(db_session, test_user)
     member = _member(db_session, test_user, "member")
     client = _client(db_session, member)
@@ -376,6 +381,9 @@ def test_other_member_is_refused(db_session, test_user, service):
 
 def test_authorizer_can_share_and_deny(db_session, test_user, service, monkeypatch):
     from preloop.services.owner_consent import OwnerConsentResult
+
+    # Owner-only access is an RBAC-plugin (EE) rule. Core admits every member.
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
 
     monkeypatch.setattr(
         "preloop.services.owner_consent.check_owner_consent",
@@ -722,7 +730,26 @@ def test_turns_list_and_stop(db_session, test_user, service):
     )
 
 
-def test_member_cannot_steer_owners_session(db_session, test_user, service):
+def test_core_member_can_steer_owners_session(db_session, test_user, service):
+    """Core has no role checks: any account member can steer the session."""
+    runner = _runner(db_session, test_user)
+    session_id = (
+        _client(db_session, test_user)
+        .post(f"/api/v1/runners/{runner.id}/sessions", json=_start_body())
+        .json()["session_id"]
+    )
+    member_client = _client(db_session, _member(db_session, test_user, "member"))
+    response = member_client.post(
+        f"/api/v1/runner-sessions/{session_id}/turns", json={"text": "hi"}
+    )
+    assert response.status_code == 202, response.text
+
+
+def test_member_cannot_steer_owners_session_with_rbac_plugin(
+    db_session, test_user, service, monkeypatch
+):
+    # Owner-only access is an RBAC-plugin (EE) rule. Core admits every member.
+    monkeypatch.setattr(permissions, "_plugin_require_permission", object())
     runner = _runner(db_session, test_user)
     session_id = (
         _client(db_session, test_user)

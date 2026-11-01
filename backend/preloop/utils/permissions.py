@@ -1,9 +1,11 @@
 """Permission utilities with OSS fallback.
 
-When the proprietary RBAC plugin is unavailable, this module exposes a no-op
-decorator. When it is available, the exported decorator preserves the wrapped
-function's sync/async nature so FastAPI can keep dispatching sync handlers via
-its threadpool.
+When commercial plugins are explicitly disabled or the RBAC package is absent,
+this module exposes a no-op decorator and the role helpers grant every member every permission: core
+applies no access control between users of the same account. When the plugin
+is available, the exported decorator preserves the wrapped function's
+sync/async nature so FastAPI can keep dispatching sync handlers via its
+threadpool.
 """
 
 from __future__ import annotations
@@ -11,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import logging
+import os
 import threading
 from contextvars import ContextVar, copy_context
 from typing import TYPE_CHECKING, Any, Callable
@@ -18,19 +22,33 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import HTTPException, status
 
 from preloop.schemas.ci_principal import CiAction
+from preloop.plugins.base import proprietary_plugins_disabled
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from preloop.models.models.user import User
 
-try:
-    from preloop.plugins.proprietary.rbac.permissions import (
-        require_permission as _plugin_require_permission,
+logger = logging.getLogger(__name__)
+
+if proprietary_plugins_disabled():
+    logger.info(
+        "Proprietary plugins explicitly disabled; account members have full access"
     )
-except ImportError:
-    # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
     _plugin_require_permission = None
+else:
+    try:
+        from preloop.plugins.proprietary.rbac.permissions import (
+            require_permission as _plugin_require_permission,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "preloop.plugins.proprietary",
+            "preloop.plugins.proprietary.rbac",
+        }:
+            raise
+        logger.info("Commercial RBAC package absent; account members have full access")
+        _plugin_require_permission = None
 
 # Compatibility extensions must leave denied-search collection to core.
 AUDITS_DENIED_SESSION_SEARCH = True
@@ -44,13 +62,21 @@ def _rbac_checks_enabled() -> bool:
     Honors both the process env flag and the in-memory settings singleton
     (tests often toggle env without recreating Settings).
     """
-    import os
 
     from preloop.config import settings
 
     if settings.disable_rbac:
         return False
     return os.getenv("DISABLE_RBAC", "false").lower() != "true"
+
+
+def members_have_full_access() -> bool:
+    """Return True when no access control applies between account members.
+
+    Core has no roles: every active user of an account can do everything in
+    it. Roles and permission enforcement belong to the RBAC plugin.
+    """
+    return _plugin_require_permission is None
 
 
 def _ensure_permission_dependencies(**kwargs: object) -> None:
@@ -366,8 +392,11 @@ def user_holds_permission(db, current_user, permission_name: str) -> bool:
     that merely happens to be named ``owner`` gets no special treatment.
 
     Resolved in one SQL round trip because the fallback runs on every
-    decorated request.
+    decorated request. Without the RBAC plugin every member holds every
+    permission (see :func:`members_have_full_access`).
     """
+    if members_have_full_access():
+        return True
     from sqlalchemy import and_, or_, select, true
 
     from preloop.models.models.permission import Permission, Role, RolePermission
@@ -401,7 +430,7 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     roles granted through teams in the user's account. Roles scoped to
     another account never count. Holding the system ``owner`` role expands
     to every permission name. A custom role that is merely named ``owner``
-    does not.
+    does not. Without the RBAC plugin every member holds every permission.
 
     Args:
         db: Database session.
@@ -413,6 +442,9 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     from sqlalchemy import or_, select, true
 
     from preloop.models.models.permission import Permission, Role, RolePermission
+
+    if members_have_full_access():
+        return list(db.scalars(select(Permission.name)).all())
 
     user_id = current_user.id
     account_id = current_user.account_id
@@ -438,14 +470,12 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
 
 
 def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:
-    """Enforce ``permission_name`` on builds where the RBAC plugin is absent.
+    """Check ``permission_name`` on paths the decorator does not cover.
 
-    :func:`require_permission` is a no-op in OSS builds, which is fine for
-    reads but not for the handful of controls that steer or stop a running
-    agent. This is the OSS half of those: EE returns immediately because the
-    decorator already enforced the permission, and OSS falls back to the
-    seeded role matrix, with the superuser and the account's primary user
-    always allowed so nobody can be locked out of their own account.
+    EE returns immediately because the decorator already enforced the
+    permission. Core applies no access control between users of the same
+    account, so every member passes. The role checks below run only when the
+    plugin is installed with its permission checks disabled.
 
     Raises:
         HTTPException: 403 when the user does not hold the permission.
@@ -453,6 +483,8 @@ def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:
     from preloop.models.crud import crud_account
 
     if _plugin_require_permission is not None and _rbac_checks_enabled():
+        return
+    if members_have_full_access():
         return
     if getattr(current_user, "is_superuser", False):
         return

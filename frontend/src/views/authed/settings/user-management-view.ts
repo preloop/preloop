@@ -51,6 +51,10 @@ export class UserManagementView extends LitElement {
   @state()
   private roles: Role[] = [];
 
+  /** Roles are an RBAC capability of Preloop Cloud and Preloop Enterprise. */
+  @state()
+  private advancedRolesEnabled = false;
+
   @state()
   private isLoading = true;
 
@@ -246,6 +250,7 @@ export class UserManagementView extends LitElement {
         this.isLoading = false;
         return;
       }
+      this.advancedRolesEnabled = featuresResponse.features?.['rbac'] === true;
       if (hasCapability(featuresResponse.features, 'account_hierarchy')) {
         // Loaded on demand, so the gated hierarchy code stays out of this
         // chunk where the capability is off.
@@ -257,7 +262,10 @@ export class UserManagementView extends LitElement {
     } catch {
       // If features endpoint fails, proceed optimistically
     }
-    await Promise.all([this.fetchUsers(), this.fetchRoles()]);
+    await Promise.all([
+      this.fetchUsers(),
+      this.advancedRolesEnabled ? this.fetchRoles() : Promise.resolve(),
+    ]);
   }
 
   async fetchUsers() {
@@ -348,6 +356,16 @@ export class UserManagementView extends LitElement {
   }
 
   async openRoleModal(user: User) {
+    if (!this.advancedRolesEnabled) {
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
     if (!this.editPermissions.allows('assign_roles')) return;
     this.selectedUser = user;
     this.dialogError = null;
@@ -476,7 +494,8 @@ export class UserManagementView extends LitElement {
     );
     const teams = UserManagementView.teamNames(user);
     const canManage = this.editPermissions.allows('manage_users');
-    const canAssign = this.editPermissions.allows('assign_roles');
+    const canAssign =
+      !this.advancedRolesEnabled || this.editPermissions.allows('assign_roles');
     return html`
       <tr
         data-user-id=${user.id}
@@ -568,7 +587,13 @@ export class UserManagementView extends LitElement {
               <sl-menu-item
                 data-action="roles"
                 ?disabled=${!canAssign}
-                title=${canAssign ? '' : 'Requires assign_roles'}
+                title=${
+                  !this.advancedRolesEnabled
+                    ? 'Roles are available in Preloop Cloud and Preloop Enterprise'
+                    : canAssign
+                      ? ''
+                      : 'Requires assign_roles'
+                }
                 @click=${() => this.openRoleModal(user)}
               >
                 <sl-icon slot="prefix" name="shield-check"></sl-icon>

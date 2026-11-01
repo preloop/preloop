@@ -394,10 +394,18 @@ def test_transfer_requires_destination_org_in_callers_account(
     assert str(moved_repo["project"].organization_id) == str(moved_repo["old_org"].id)
 
 
-def test_transfer_requires_manage_trackers(
-    app, db_session, moved_repo, destination_sees, test_user
+@pytest.mark.parametrize("commercial", [False, True])
+def test_transfer_follows_edition_permissions(
+    app, db_session, moved_repo, destination_sees, test_user, monkeypatch, commercial
 ):
-    """A same-account user without manage_trackers gets 403 and changes nothing."""
+    """Core members can transfer; an installed role resolver rejects a viewer."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(
+        permissions,
+        "_plugin_require_permission",
+        (lambda name: lambda func: func) if commercial else None,
+    )
     from preloop.api.auth import get_current_active_user
     from preloop.models.crud import crud_role, crud_user, crud_user_role
 
@@ -429,9 +437,10 @@ def test_transfer_requires_manage_trackers(
         response = _transfer(
             client, moved_repo["project"], moved_repo["new_org"], dry_run=False
         )
-    assert response.status_code == 403, response.text
+    assert response.status_code == (403 if commercial else 200), response.text
     db_session.refresh(moved_repo["project"])
-    assert str(moved_repo["project"].organization_id) == str(moved_repo["old_org"].id)
+    destination = moved_repo["old_org"] if commercial else moved_repo["new_org"]
+    assert str(moved_repo["project"].organization_id) == str(destination.id)
 
 
 def test_create_project_in_another_accounts_org_is_404(

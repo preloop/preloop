@@ -2,31 +2,29 @@
 
 Background
 ----------
-``preloop.utils.permissions.require_permission`` degrades to a no-op on an
-OSS build: when the proprietary RBAC plugin is not importable,
+``preloop.utils.permissions.require_permission`` degrades to a no-op on a
+core build: when the proprietary RBAC plugin is not importable,
 ``_require_human_permission`` returns ``_with_authorizer(func, ...)``, and
 ``_with_authorizer`` consults the account authorizer *only when one is
 registered*.  With neither present, every authenticated caller is admitted.
 
-That is fine for reads.  It is not fine for the approval-bypass endpoints,
-because an ``auto_approve`` bypass removes the human from the approval loop
-— the very thing ``decide_approvals`` governs.  The repository's own answer
-to this class of problem is ``ensure_permission_in_oss``, which the author
-applied to 13 endpoint modules; ``approval_bypass`` was not among them.
+That is intended.  The core edition has no access controls between members
+of an account: every member may do everything in it, including opening an
+``auto_approve`` bypass.  Roles and the ``decide_approvals`` gate belong to
+the RBAC plugin (Enterprise Edition), where the gate matters because a
+bypass removes the human from the approval loop.
 
 These tests pin three things:
 
-1. the *precondition* — the decorator really is a no-op on an OSS build,
-   and really does deny when the plugin is present (so the no-op is a
-   degradation, not a decorator that never denies anything);
-2. the *degradation itself* — with the gate absent, a principal who may
-   view approvals but not decide them could open an ``auto_approve``
-   bypass, and that bypass does short-circuit the human gate;
-3. the *fixed behaviour* — the write side now requires
-   ``decide_approvals`` and calls ``ensure_permission_in_oss``, so the
-   read-only ``analyst`` role is refused while a principal that holds the
-   permission, the superuser and the account's primary user are not locked
-   out.
+1. the *precondition* — the decorator really is a no-op on a core build,
+   and really does deny when the plugin is present;
+2. the *core behaviour* — without the plugin, ``ensure_permission_in_oss``
+   admits every member, and an ``auto_approve`` bypass does short-circuit
+   the human gate;
+3. the *EE behaviour* — the write side requires ``decide_approvals``, so
+   with the plugin a read-only ``analyst`` role is refused while a
+   principal that holds the permission, the superuser and the account's
+   primary user are not locked out.
 """
 
 import importlib
@@ -128,6 +126,7 @@ def _rbac_plugin_state(monkeypatch):
 
         return decorator
 
+    monkeypatch.setenv("DISABLE_PROPRIETARY_PLUGINS", "false")
     module = types.ModuleType("preloop.plugins.proprietary.rbac.permissions")
     module.require_permission = plugin_require_permission  # type: ignore[attr-defined]
     monkeypatch.setitem(
@@ -527,8 +526,8 @@ class TestEnsurePermissionInOssBehaviour:
             with patch("preloop.models.crud.crud_account.get", return_value=account):
                 perms.ensure_permission_in_oss(db, actor, "decide_approvals")
 
-    def test_ordinary_user_without_the_role_is_refused(self, monkeypatch):
-        """An ordinary user with no matching role is refused."""
+    def test_ordinary_user_without_the_role_is_admitted_in_core(self, monkeypatch):
+        """Core has no role checks: an ordinary member is admitted."""
         _oss_state(monkeypatch)
         import preloop.utils.permissions as perms
 
@@ -541,6 +540,4 @@ class TestEnsurePermissionInOssBehaviour:
         with patch.object(perms, "_plugin_require_permission", None):
             with patch("preloop.models.crud.crud_account.get", return_value=account):
                 with patch.object(perms, "user_holds_permission", return_value=False):
-                    with pytest.raises(HTTPException) as exc:
-                        perms.ensure_permission_in_oss(db, actor, "decide_approvals")
-        assert exc.value.status_code == 403
+                    perms.ensure_permission_in_oss(db, actor, "decide_approvals")

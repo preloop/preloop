@@ -230,26 +230,30 @@ def _is_account_owner(user: UserModel, db: Session) -> bool:
 
 
 def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str]]:
-    """Return RBAC permissions, or None when RBAC is disabled/unavailable.
+    """Return permissions, or None only when access control is explicitly absent.
 
-    Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
-    still returns the core profile when optional permissions cannot be loaded.
+    A failed commercial lookup returns no permissions, preserving the profile
+    without presenting an authorization failure as unrestricted account access.
     """
-    if settings.disable_rbac:
+    from preloop.utils.permissions import members_have_full_access
+
+    if settings.disable_rbac or members_have_full_access():
         return None
 
     try:
         from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
     except ImportError:
-        # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
-        return None
+        logger.exception(
+            "Commercial permission module unavailable; denying permissions"
+        )
+        return []
 
     try:
         return get_user_permissions(user, db)
     except Exception:
         # RBAC is optional on this path; never 500 /users/me for permission lookup.
-        logger.exception("Failed to resolve user permissions; returning None")
-        return None
+        logger.exception("Failed to resolve user permissions; denying permissions")
+        return []
 
 
 def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
