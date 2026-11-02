@@ -53,19 +53,19 @@
   },
   "dependencies": {
     "@novnc/novnc": "file:vendor/novnc",
-    "@sentry/browser": "^11.8.0",
+    "@sentry/browser": "^11.10.0",
     "@shoelace-style/shoelace": "^2.20.1",
     "@tanstack/table-core": "^9.3.1",
     "ansi_up": "^6.0.2",
     "dompurify": "^3.4.17",
     "lit": "^3.3.3",
-    "marked": "^18.1.1"
+    "marked": "^18.1.2"
   },
   "devDependencies": {
     "@open-wc/testing": "^5.0.0",
     "@playwright/test": "^1.64.1",
     "@types/mocha": "^10.0.10",
-    "@types/sinon": "^22.0.1",
+    "@types/sinon": "^22.0.2",
     "@vitest/browser-playwright": "^5.0.5",
     "@web/dev-server-esbuild": "^2.0.0",
     "@web/test-runner": "^1.0.0",
@@ -79,7 +79,7 @@
     "sinon": "^22.1.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
-    "vite-plugin-css-injected-by-js": "^5.0.2",
+    "vite-plugin-css-injected-by-js": "^5.0.3",
     "vitest": "^5.0.5",
     "ws": "^8.22.0"
   },
