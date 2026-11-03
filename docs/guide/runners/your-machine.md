@@ -100,8 +100,10 @@ A flow reaches your runner in one of two ways:
 
 The runner builds the command line itself from a generated host profile
 (`copilot`, `cursor`, `claude`, `devin`). The server never sends an executable
-or arguments. Hand-written profiles in `~/.preloop/runner-host-profiles.json`
-are an advanced override, not a requirement; see
+or arguments. For those four harnesses, hand-written profiles in
+`~/.preloop/runner-host-profiles.json` are an advanced override, not a
+requirement. Codex, OpenCode and DeepSeek native flows need a hand-written
+profile. See
 [Host execution profiles](quickstart-linux.md#host-execution-profiles-advanced-override-private-only).
 
 When no eligible runner is available, the flow's `harness_fallback` decides:
