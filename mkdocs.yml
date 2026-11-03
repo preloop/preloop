@@ -315,6 +315,8 @@ nav:
 
   - Security and compliance:
       - Security and privacy: security/security-privacy.md
+      - Hosting and subprocessors: security/hosting.md
+      - Sample signed evidence pack: security/sample-evidence-pack.md
       - Redaction: security/redaction.md
       - OWASP Top 10 coverage: security/owasp-top-10-coverage.md
       - Agent pod isolation: security/agent-isolation.md
