@@ -1540,6 +1540,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # EE #66: 429 body with the stable ``rate_limited`` code and Retry-After.
+    from preloop.services.rate_limit import install_rate_limit_handler
+
+    install_rate_limit_handler(app)
+
     # Add global exception handler to ensure all errors are logged
     @app.exception_handler(ModelGatewayAPIError)
     async def model_gateway_exception_handler(

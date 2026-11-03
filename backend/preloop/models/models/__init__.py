@@ -215,6 +215,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "RateLimitBucket",
     "SsoBreakGlassNotice",
     "UpstreamMCPOAuthConnection",
     "UpstreamMCPOAuthTransaction",
@@ -488,3 +489,5 @@ from .exception_digest import (
     ExceptionDigestDelivery,
     ExceptionDigestState,
 )
+
+from .rate_limit import RateLimitBucket

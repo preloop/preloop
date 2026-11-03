@@ -124,11 +124,13 @@ drop userinfo, query strings and fragments. Owner lists retain at most 100 UUIDs
 and report the original total when truncated; nested values never survive.
 
 Authentication audit volume is intentionally one outcome per attempt, without
-sampling or deduplication. Password login and passkey verification have no
-built-in attempt limiter, so operators should enforce ingress limits on
-`/api/v1/auth/token`, `/api/v1/auth/token/json`, and
-`/api/v1/auth/webauthn/authenticate/verify` using the trusted proxy's client
-address. Incoming forwarded headers alone are not a rate-limit identity.
+sampling or deduplication. Password login is throttled per client address
+and per username (failed attempts only) by the shared request limiter
+([docs/operations/rate-limiting.md](docs/operations/rate-limiting.md)), which
+keys on the first address outside the trusted proxy ranges, never on a
+client-written forwarded header. Passkey verification has no built-in attempt
+limiter yet, so operators should enforce an ingress limit on
+`/api/v1/auth/webauthn/authenticate/verify`.
 A known-account failure adds one audit row; sustained attempts therefore grow
 the account's retained audit history and period exports linearly. The ordinary
 audit retention policy applies, and the period export row cap requires smaller

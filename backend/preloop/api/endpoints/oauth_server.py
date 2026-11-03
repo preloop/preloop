@@ -19,10 +19,16 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 import jwt as pyjwt
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from preloop.services.rate_limit import (
+    OAUTH_AUTHORIZE,
+    OAUTH_REGISTER,
+    OAUTH_TOKEN,
+    limit_by_ip,
+)
 from preloop.schemas.auth import TokenData
 
 from preloop.services.authentication_policy import (
@@ -116,7 +122,7 @@ async def oauth_protected_resource_metadata():
 # ---------------------------------------------------------------------------
 
 
-@router.get("/oauth/authorize")
+@router.get("/oauth/authorize", dependencies=[Depends(limit_by_ip(OAUTH_AUTHORIZE))])
 async def authorize(
     request: "Request",
     response_type: str = Query("code"),
@@ -160,7 +166,7 @@ async def authorize(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/oauth/token")
+@router.post("/oauth/token", dependencies=[Depends(limit_by_ip(OAUTH_TOKEN))])
 async def token_exchange(
     grant_type: str = Form(...),
     code: str = Form(""),
@@ -697,7 +703,7 @@ async def _handle_refresh_token(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/oauth/register")
+@router.post("/oauth/register", dependencies=[Depends(limit_by_ip(OAUTH_REGISTER))])
 async def register_client(request_body: dict):
     """Register an OAuth client dynamically (RFC 7591).
 

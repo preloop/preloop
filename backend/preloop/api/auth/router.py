@@ -22,6 +22,17 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
+from preloop.services.rate_limit import (
+    AUTH_LOGIN_IP,
+    AUTH_LOGIN_USER,
+    AUTH_REFRESH,
+    AUTH_REGISTER,
+    AUTH_RESET_PASSWORD,
+    check_without_counting,
+    limit_by_ip,
+    normalize_username,
+    record as record_rate_limit,
+)
 from preloop.api.auth import bootstrap
 from preloop.api.auth.identity import (
     login_membership,
@@ -598,7 +609,10 @@ INVALID_ONBOARDING_CLAIM_MESSAGE = (
 
 
 @router.post(
-    "/register", response_model=AuthUserResponse, status_code=status.HTTP_201_CREATED
+    "/register",
+    response_model=AuthUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(limit_by_ip(AUTH_REGISTER))],
 )
 async def register(
     user_data: AuthUserCreate,
@@ -1034,7 +1048,11 @@ async def forgot_password(
     }
 
 
-@router.post("/reset-password", status_code=status.HTTP_200_OK)
+@router.post(
+    "/reset-password",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(limit_by_ip(AUTH_RESET_PASSWORD))],
+)
 async def reset_password(
     reset_data: PasswordResetConfirmRequest,
     db: Session = Depends(get_db_session),
@@ -1100,6 +1118,14 @@ async def _audited_password_login(
         select_authenticated_membership,
     )
 
+    from starlette.concurrency import run_in_threadpool
+
+    # EE #66: refuse before checking the password once this username has used
+    # its failure budget. Only failures count (see the finally block), so a
+    # correct password is never refused because someone else is guessing.
+    limited_username = normalize_username(username)
+    await run_in_threadpool(check_without_counting, AUTH_LOGIN_USER, limited_username)
+
     user = None
     auth_context: dict[str, Any] = {}
     succeeded = False
@@ -1126,6 +1152,13 @@ async def _audited_password_login(
         reason_code = login_failure_reason(exc, method="password")
         raise
     finally:
+        if not succeeded and reason_code == "invalid_credentials":
+            try:
+                await run_in_threadpool(
+                    record_rate_limit, AUTH_LOGIN_USER, limited_username
+                )
+            except Exception:
+                logger.warning("Could not count a failed login for rate limiting")
 
         def record() -> None:
             subject = user
@@ -1165,7 +1198,11 @@ async def _landing_row(user: UserModel, db: Session) -> UserModel:
     return await run_db_off_loop(select_and_gate)
 
 
-@router.post("/token", response_model=Token)
+@router.post(
+    "/token",
+    response_model=Token,
+    dependencies=[Depends(limit_by_ip(AUTH_LOGIN_IP))],
+)
 async def login_form(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -1227,7 +1264,11 @@ async def login_form(
     }
 
 
-@router.post("/token/json", response_model=Token)
+@router.post(
+    "/token/json",
+    response_model=Token,
+    dependencies=[Depends(limit_by_ip(AUTH_LOGIN_IP))],
+)
 async def login_json(
     http_request: Request,
     request: LoginRequest,
@@ -1288,7 +1329,11 @@ async def login_json(
     }
 
 
-@router.post("/refresh", response_model=Token)
+@router.post(
+    "/refresh",
+    response_model=Token,
+    dependencies=[Depends(limit_by_ip(AUTH_REFRESH))],
+)
 def refresh_token(
     request: RefreshRequest,
     db: Session = Depends(get_db_session),

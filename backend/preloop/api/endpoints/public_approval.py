@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import Session
 
+from preloop.services.rate_limit import (
+    APPROVAL_PUBLIC_IP,
+    APPROVAL_PUBLIC_REQUEST,
+    limit_by_ip,
+    limit_by_path_param,
+)
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
@@ -30,6 +36,13 @@ logger = logging.getLogger(__name__)
 TOKEN_URL_DECISION_CHANNEL = "token_url"
 
 router = APIRouter(prefix="/approval", tags=["public-approval"])
+
+# EE #66: per client and per approval request, never global, so one noisy
+# caller cannot stop another approver from deciding.
+_PUBLIC_LIMITS = [
+    Depends(limit_by_ip(APPROVAL_PUBLIC_IP)),
+    Depends(limit_by_path_param(APPROVAL_PUBLIC_REQUEST, "request_id")),
+]
 
 # One fixed sentence for every internal failure on the decision path. The
 # endpoint authenticates with a link token only, so the response body must not
@@ -136,7 +149,7 @@ def _to_public_request(
     )
 
 
-@router.get("/{request_id}/data")
+@router.get("/{request_id}/data", dependencies=_PUBLIC_LIMITS)
 def get_approval_request_public(
     request_id: uuid.UUID,
     token: str = Query(..., description="Approval token"),
@@ -217,7 +230,7 @@ _TOKEN_DECISION_ROUTES = ("approve", "decline", "decide")
 # synchronous Session on the event loop (see the ratchet in
 # tests/api/test_event_loop_pool_wait.py); the shared body offloads its sync
 # reads with run_db_off_loop instead.
-@router.post("/{request_id}/{route}")
+@router.post("/{request_id}/{route}", dependencies=_PUBLIC_LIMITS)
 async def decide_approval_request_public(
     request_id: uuid.UUID,
     route: str,

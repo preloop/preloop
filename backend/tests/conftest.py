@@ -55,6 +55,16 @@ def reset_ci_auth_pass_through_cache():
 
 
 @pytest.fixture(autouse=True)
+def reset_rate_limit_counters():
+    """Isolate the in-process request rate limit counters across tests."""
+    from preloop.services.rate_limit import reset_memory_store
+
+    reset_memory_store()
+    yield
+    reset_memory_store()
+
+
+@pytest.fixture(autouse=True)
 def reset_gateway_usage_index_queue_between_tests():
     """Isolate the process-wide indexing queue across tests."""
     from preloop.services.gateway_usage_index_queue import (
@@ -105,6 +115,10 @@ def pytest_configure(config):
     # Set TESTING mode to skip external service connections (NATS, MCP, etc.)
     os.environ["TESTING"] = "true"
     os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
+    # Request rate limits (EE #66) count in-process during tests; the
+    # autouse fixture below resets them, so one test's logins never spend
+    # another test's budget. Tests of the Postgres store opt in explicitly.
+    os.environ.setdefault("RATE_LIMIT_BACKEND", "memory")
 
     # Disable RBAC permission checks during unit tests
     # This ensures tests work consistently regardless of whether the EE RBAC
