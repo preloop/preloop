@@ -609,24 +609,94 @@ def _runner_registered_by_admin(
         return False
     if cache is not None and user_id in cache:
         return cache[user_id]
-    from preloop.utils.permissions import user_holds_permission
-
-    user = crud_user.get(db, id=user_id)
-    allowed = False
-    if user is not None:
-        if getattr(user, "is_superuser", False):
-            allowed = True
-        else:
-            account = crud_account.get(db, id=getattr(user, "account_id", None))
-            if account is not None and str(
-                getattr(account, "primary_user_id", "")
-            ) == str(user.id):
-                allowed = True
-            else:
-                allowed = bool(user_holds_permission(db, user, "manage_account"))
+    allowed = _user_is_account_admin(db, crud_user.get(db, id=user_id))
     if cache is not None:
         cache[user_id] = allowed
     return allowed
+
+
+def _user_is_account_admin(db: Session, user: Any) -> bool:
+    """Superuser, the account's primary user, or a ``manage_account`` holder."""
+    from preloop.utils.permissions import user_holds_permission
+
+    if user is None:
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    account = crud_account.get(db, id=getattr(user, "account_id", None))
+    if account is not None and str(getattr(account, "primary_user_id", "")) == str(
+        user.id
+    ):
+        return True
+    return bool(user_holds_permission(db, user, "manage_account"))
+
+
+def _flow_author_may_route_to(
+    db: Session,
+    runner: Any,
+    *,
+    account_id: UUID,
+    pool: Optional[str],
+    flow_id: Optional[str],
+    pinned_runner_id: Optional[UUID],
+    harness: Optional[str],
+    workspace_id: Optional[str],
+    admin_cache: Dict[Any, bool],
+) -> bool:
+    """Whether an explicit ``runner_pool`` may route the flow to ``runner``.
+
+    A pool can name any runner by id, name or label. For a personal runner
+    (registered by a member who is not an account admin) the flow author
+    must be allowed to use it for flows, the same rule as pinning it with
+    ``agent_config.runner_id``: its registrant, an account admin, or a
+    ``runner:flow_use`` grant from the authorizer (#2176).
+
+    Runners registered by an admin or by nobody stay routable by pool, the
+    ``auto`` and ``server`` pools are unaffected, and pinned leases are
+    checked when the flow is saved. Flows with no recorded author predate
+    authorship and keep the runner's flow consent as their gate.
+    """
+    if pinned_runner_id is not None:
+        return True
+    explicit = _explicit_pool(pool)
+    if not explicit or _is_auto_pool(explicit) or _is_server_pool(explicit):
+        return True
+    owner_id = getattr(runner, "registered_by_user_id", None)
+    if owner_id is None or _runner_registered_by_admin(db, runner, admin_cache):
+        return True
+    from preloop.models.crud import crud_flow
+    from preloop.plugins.account_hooks import (
+        AuthorizationContext,
+        may_use_runner_for_flows,
+    )
+
+    flow = crud_flow.get(db, id=flow_id) if flow_id else None
+    if flow is None:
+        return False
+    author_id = getattr(flow, "created_by_user_id", None)
+    if author_id is None:
+        return True
+    if str(author_id) == str(owner_id):
+        return True
+    author = crud_user.get(db, id=author_id)
+    if author is None or not getattr(author, "is_active", True):
+        return False
+    return may_use_runner_for_flows(
+        AuthorizationContext(
+            account_id=account_id,
+            db=db,
+            user=author,
+            attributes={
+                "operation": "lease",
+                "pool": explicit,
+                "flow_id": flow_id,
+                "harness": harness,
+                "workspace_id": workspace_id,
+            },
+        ),
+        runner,
+        is_account_admin=_user_is_account_admin(db, author),
+    ).allowed
 
 
 def runner_usable_by_flow(
@@ -858,6 +928,18 @@ def lease_job(
             pinned_runner_id=pinned,
             harness=workspace_harness,
             workspace_id=workspace_id,
+        ):
+            continue
+        if not _flow_author_may_route_to(
+            db,
+            candidate,
+            account_id=account_id,
+            pool=pool,
+            flow_id=flow_id,
+            pinned_runner_id=pinned,
+            harness=workspace_harness,
+            workspace_id=workspace_id,
+            admin_cache=admin_cache,
         ):
             continue
         if required_profile and not runner_has_host_exec_profile(
