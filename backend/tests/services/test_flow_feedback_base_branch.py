@@ -409,7 +409,7 @@ async def test_early_return_transitions_sync_the_notice(monkeypatch) -> None:
         None, provider, thread, {"state": "closed", "stop_reason": "pr_merged"}
     )
     assert calls[-1][0] == "PATCH" and "ended" in calls[-1][2]["body"].lower()
-    assert changes["cursor"]["park_notice"]["state"] == "resumed"
+    assert changes["cursor"]["park_notice"]["state"] == "closed"
 
 
 @pytest.mark.asyncio
@@ -434,4 +434,32 @@ async def test_a_revived_stop_corrects_the_notice() -> None:
     await sync_park_notice(provider, cursor, outcome="waiting", reason=None, pending=1)
     assert len(calls) == count + 1
     assert "resumed" in calls[-1][2]["body"].lower()
+    assert all(call[1].endswith("/555") for call in calls[1:])
+
+
+@pytest.mark.asyncio
+async def test_a_stop_or_end_after_a_resume_edits_the_notice() -> None:
+    provider, calls = _notice_provider()
+    cursor: dict[str, Any] = {}
+    await sync_park_notice(
+        provider, cursor, outcome="blocked", reason="ci_failure_base_branch", pending=1
+    )
+    await sync_park_notice(provider, cursor, outcome="repair", reason=None, pending=1)
+    await sync_park_notice(
+        provider, cursor, outcome="stopped", reason="no_progress", pending=0
+    )
+    assert "stopped" in calls[-1][2]["body"].lower()
+    await sync_park_notice(
+        provider, cursor, outcome="stopped", reason="turn_budget_exhausted", pending=0
+    )
+    assert "turn_budget_exhausted" in calls[-1][2]["body"]
+    await sync_park_notice(
+        provider, cursor, outcome="closed", reason="pr_merged", pending=0
+    )
+    assert "ended" in calls[-1][2]["body"].lower()
+    count = len(calls)
+    await sync_park_notice(
+        provider, cursor, outcome="closed", reason="pr_merged", pending=0
+    )
+    assert len(calls) == count
     assert all(call[1].endswith("/555") for call in calls[1:])

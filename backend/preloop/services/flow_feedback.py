@@ -541,6 +541,12 @@ def park_notice_due(cursor: dict[str, Any], outcome: str, reason: str | None) ->
     notice = cursor.get("park_notice") or {}
     if outcome == "blocked":
         return not (notice.get("state") == "blocked" and notice.get("reason") == reason)
+    if outcome in {"stopped", "closed", "expired"}:
+        # Only a thread that has a comment gets it updated on a stop or end,
+        # whatever it said last (parked, resumed or an earlier stop).
+        if not notice.get("id"):
+            return notice.get("state") == "blocked"
+        return notice.get("state") != outcome or notice.get("reason") != reason
     if notice.get("state") == "stopped":
         # A no-progress stop can be revived (``revive``); say so when it is.
         return outcome != "stopped"
@@ -574,7 +580,11 @@ async def sync_park_notice(
     if not park_notice_due(cursor, outcome, reason):
         return
     notice = dict(cursor.get("park_notice") or {})
-    state = outcome if outcome in {"blocked", "stopped"} else "resumed"
+    state = (
+        outcome
+        if outcome in {"blocked", "stopped", "closed", "expired"}
+        else ("resumed")
+    )
     comment_id = notice.get("id")
     if state == "resumed" and not comment_id:
         cursor["park_notice"] = {**notice, "state": state, "reason": reason}
