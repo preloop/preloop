@@ -378,3 +378,35 @@ async def test_github_unclassified_actions_failures_red_on_base_are_base_branch(
     provider, _ = _github_provider(head_checks=actions, base_checks=actions)
     state = await provider.read()
     assert state.blocked_reason == "ci_failure_base_branch"
+
+
+@pytest.mark.asyncio
+async def test_early_return_transitions_sync_the_notice(monkeypatch) -> None:
+    """Page limit enters blocked with a notice; a close edits it to ended."""
+    from preloop.services import flow_feedback
+
+    monkeypatch.setattr(
+        flow_feedback.crud_flow_feedback,
+        "pending",
+        lambda db, thread_id: [_item("review"), _item("signal")],
+    )
+    monkeypatch.setattr(
+        flow_feedback.crud_flow_feedback, "release_read", lambda db: None
+    )
+    provider, calls = _notice_provider()
+    thread = SimpleNamespace(id="t", state="waiting", cursor={})
+    changes = await flow_feedback._notice_changes(
+        None,
+        provider,
+        thread,
+        {"state": "blocked", "stop_reason": "provider_page_limit"},
+        head_sha="head",
+    )
+    assert [c[0] for c in calls] == ["POST"]
+    assert "Pending review findings: 1." in calls[0][2]["body"]
+    thread.cursor = changes["cursor"]
+    changes = await flow_feedback._notice_changes(
+        None, provider, thread, {"state": "closed", "stop_reason": "pr_merged"}
+    )
+    assert calls[-1][0] == "PATCH" and "ended" in calls[-1][2]["body"].lower()
+    assert changes["cursor"]["park_notice"]["state"] == "resumed"

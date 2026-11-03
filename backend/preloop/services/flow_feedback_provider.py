@@ -809,8 +809,8 @@ class FeedbackProvider:
         """Reclassify head failures that the base commit already has (#1207).
 
         Runs only when CI is terminal and failed without a platform or
-        permission explanation. One extra read of the base commit's checks
-        decides it; when every failing check also failed there, the thread
+        permission explanation. Reading the base commit's check runs and
+        statuses decides it; when every failing check also failed there, the thread
         blocks as ``ci_failure_base_branch`` and the failures are not handed
         to a CI repair. Returns the code failures to keep.
         """

@@ -503,7 +503,13 @@ def park_notice_body(outcome: str, reason: str | None, *, pending_findings: int)
     Returns:
         Markdown ending with :data:`PARK_NOTICE_MARKER`.
     """
-    if outcome != "blocked":
+    if outcome in {"closed", "expired", "stopped"}:
+        lines = [
+            f"**Preloop continuation ended** (`{outcome}`"
+            + (f": `{reason}`" if reason else "")
+            + "). It is no longer parked and will not resume."
+        ]
+    elif outcome != "blocked":
         lines = [
             "**Preloop continuation resumed.** The implementation agent is "
             f"no longer parked (now `{outcome}`"
@@ -578,6 +584,39 @@ async def sync_park_notice(
         "state": state,
         "reason": reason,
     }
+
+
+async def _notice_changes(
+    db: Session,
+    provider: Any,
+    thread: Any,
+    changes: dict[str, Any],
+    *,
+    head_sha: str | None = None,
+) -> dict[str, Any]:
+    """Sync the park notice for an early-return transition; return ``changes``.
+
+    The main path syncs after :func:`decide`; this covers the transitions
+    that return before it (closed, expired, cancelled, page limit, head
+    change), so a parked notice never outlives the state it describes.
+    """
+    cursor = dict(changes.get("cursor") or thread.cursor or {})
+    outcome = changes.get("state") or thread.state
+    reason = changes.get("stop_reason")
+    if not getattr(provider, "supports_park_notice", False) or not park_notice_due(
+        cursor, outcome, reason
+    ):
+        return changes
+    pending = sum(
+        item.kind in REVIEW_FEEDBACK_KINDS
+        and (not item.head_sha or not head_sha or item.head_sha == head_sha)
+        for item in crud_flow_feedback.pending(db, thread.id)
+    )
+    crud_flow_feedback.release_read(db)
+    await sync_park_notice(
+        provider, cursor, outcome=outcome, reason=reason, pending=pending
+    )
+    return {**changes, "cursor": cursor}
 
 
 def closed_reason(state: FeedbackState) -> str:
@@ -765,10 +804,15 @@ async def _reconcile(
             db,
             thread_id,
             token,
-            changes={
-                "state": "closed" if state.closed else "expired",
-                "stop_reason": reason,
-            },
+            changes=await _notice_changes(
+                db,
+                provider,
+                thread,
+                {
+                    "state": "closed" if state.closed else "expired",
+                    "stop_reason": reason,
+                },
+            ),
             now=now,
         )
         return
@@ -819,7 +863,12 @@ async def _reconcile(
                 db,
                 thread_id,
                 token,
-                changes={"state": "stopped", "stop_reason": "execution_cancelled"},
+                changes=await _notice_changes(
+                    db,
+                    provider,
+                    thread,
+                    {"state": "stopped", "stop_reason": "execution_cancelled"},
+                ),
                 now=now,
             )
             return
@@ -831,13 +880,19 @@ async def _reconcile(
             db,
             thread_id,
             token,
-            changes={
-                "state": "blocked"
-                if state.blocked_reason == "provider_page_limit"
-                else "waiting",
-                "stop_reason": state.blocked_reason,
-                "head_sha": state.head_sha,
-            },
+            changes=await _notice_changes(
+                db,
+                provider,
+                thread,
+                {
+                    "state": "blocked"
+                    if state.blocked_reason == "provider_page_limit"
+                    else "waiting",
+                    "stop_reason": state.blocked_reason,
+                    "head_sha": state.head_sha,
+                },
+                head_sha=state.head_sha,
+            ),
             now=now,
         )
         return

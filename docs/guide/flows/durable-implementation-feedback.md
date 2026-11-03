@@ -219,8 +219,8 @@ the reason above. A new head or a recovered rerun clears that allowance. Review
 feedback that arrives while CI infrastructure is broken still repairs normally.
 
 A red base branch is not the change's defect (#1207). On GitHub, when CI on
-the head fails without a platform or permission explanation, one extra read of
-the base commit's checks decides it: if every failing check also failed there,
+the head fails without a platform or permission explanation, reading the base
+commit's check runs and statuses decides it: if every failing check also failed there,
 the thread blocks with `ci_failure_base_branch` and those failures are never
 handed to a repair. A check that passed or never ran on the base stays the
 change's own. Under `ci_failure_base_branch` or `ci_failure_unclassified`,
@@ -233,7 +233,8 @@ A parked thread says so on the pull request (GitHub). Entering `blocked` posts
 one comment with the stop reason, the pending review findings count, and how
 it resumes (re-run CI so it passes on the current head, or push a commit). A
 new park reason edits the same comment, and leaving `blocked` edits it once
-more to say the continuation resumed. The comment id is kept in the thread
+more to say the continuation resumed (or ended, when the pull request closes,
+the subscription expires or the repair is cancelled while parked). The comment id is kept in the thread
 cursor (`park_notice`); a failed write is recorded and not retried every tick,
 and the comment is never read back as feedback. GitLab and Bitbucket threads
 park silently as before.
