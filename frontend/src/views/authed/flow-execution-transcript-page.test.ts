@@ -473,4 +473,31 @@ describe('FlowExecutionView transcript paging', () => {
     for (let index = CALLS; index < runCalls; index += 1)
       expect(keys.has(`usage-${index}`), `usage-${index}`).to.equal(true);
   });
+  it('pages through a gap even when the live call that revealed it is shown', async () => {
+    const { element } = await openTranscript();
+    runCalls = CALLS + 4 * TRANSCRIPT_PAGE_SIZE;
+    // The call that arrives after the gap is shown live before recovery
+    // reads the newest page, which contains it too.
+    (element as any).handleWebSocketMessage({
+      execution_id: 'exec-big',
+      timestamp: at(runCalls - 1),
+      type: 'model_gateway_call',
+      payload: { api_usage_id: `usage-${runCalls - 1}`, outcome: 'success' },
+    });
+    await (element as any).recoverRealtime();
+    await waitUntil(
+      () => transcriptUrls().length >= 2 && !(element as any).transcriptLoading
+    );
+    expect((element as any).transcriptNextCursor).to.equal(
+      `call-${runCalls - TRANSCRIPT_PAGE_SIZE}`
+    );
+    // Three older pages cover calls 300-374, between the two read pages.
+    for (let read = 0; read < 3; read += 1)
+      await (element as any).loadTranscript(true);
+    const keys = new Set(
+      (element as any).transcriptEvents.map((e: any) => e.payload.api_usage_id)
+    );
+    for (let index = CALLS; index < runCalls; index += 1)
+      expect(keys.has(`usage-${index}`), `usage-${index}`).to.equal(true);
+  });
 });
