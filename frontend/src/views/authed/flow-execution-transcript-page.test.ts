@@ -22,6 +22,8 @@ describe('FlowExecutionView transcript paging', () => {
   const CALLS = 300;
   const TEXT = 'y'.repeat(4000);
   let fetchStub: sinon.SinonStub;
+  /** Delta page reads left to fail with a 500 before they succeed. */
+  let failPages = 0;
 
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -135,7 +137,13 @@ describe('FlowExecutionView transcript paging', () => {
             logs.push(metadataCall(index));
           return json({ logs, source: 'database', has_more: true });
         }
-        if (url.searchParams.get('history') === 'delta') return json(page(url));
+        if (url.searchParams.get('history') === 'delta') {
+          if (failPages > 0) {
+            failPages -= 1;
+            return json({ detail: 'boom' }, 500);
+          }
+          return json(page(url));
+        }
         // The old transcript read: never answered on this run.
         return json({ detail: 'unbounded read' }, 500);
       }
@@ -150,6 +158,7 @@ describe('FlowExecutionView transcript paging', () => {
   });
 
   afterEach(() => {
+    failPages = 0;
     fetchStub.restore();
     localStorage.clear();
     window.history.replaceState({}, '', window.location.pathname);
@@ -277,5 +286,83 @@ describe('FlowExecutionView transcript paging', () => {
     expect(pageNodes, `page rendered ${pageNodes} nodes`).to.be.below(6000);
     expect(pageNodes * 5).to.be.below(wholeNodes);
     expect(elapsed, `took ${Math.round(elapsed)} ms`).to.be.below(5000);
+  });
+  it('adds a live model call without a row id to the transcript', async () => {
+    const { element } = await openTranscript();
+    // The websocket event carries the usage id, not the stored row id.
+    (element as any).handleWebSocketMessage({
+      execution_id: 'exec-big',
+      timestamp: at(CALLS),
+      type: 'model_gateway_call',
+      payload: {
+        api_usage_id: 'usage-live',
+        outcome: 'success',
+        conversation_preview: {
+          messages: [{ role: 'assistant', text: 'Live reply' }],
+        },
+      },
+    });
+    await element.updateComplete;
+
+    const events = (element as any).transcriptEvents;
+    expect(events).to.have.length(TRANSCRIPT_PAGE_SIZE + 1);
+    expect(events[0].payload.api_usage_id).to.equal('usage-live');
+    expect((element as any).transcriptTotal).to.equal(CALLS + 1);
+  });
+
+  it('re-reads the newest transcript page after a realtime gap', async () => {
+    const { element } = await openTranscript();
+    expect(transcriptUrls()).to.have.length(1);
+
+    await (element as any).recoverRealtime();
+    await waitUntil(
+      () =>
+        transcriptUrls().length === 2 && !(element as any).transcriptLoading,
+      'Recovery did not re-read the transcript'
+    );
+    expect(transcriptUrls()[1].searchParams.get('before')).to.equal(null);
+    const keys = (element as any).transcriptEvents.map(
+      (e: any) => e.payload.api_usage_id
+    );
+    // The same calls read twice are kept once.
+    expect(new Set(keys).size).to.equal(keys.length);
+    expect(keys).to.have.length(TRANSCRIPT_PAGE_SIZE);
+  });
+
+  it('retries a failed first transcript page', async () => {
+    failPages = 1;
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    element.executionId = 'exec-big';
+    await waitUntil(
+      () => (element as any).transcriptError !== null,
+      'The failed page was not reported'
+    );
+    await element.updateComplete;
+    const retry = element.shadowRoot!.querySelector(
+      '[data-testid="transcript-retry"]'
+    ) as HTMLElement;
+    expect(retry, 'no retry action on the error').to.exist;
+
+    retry.click();
+    await waitUntil(
+      () => (element as any).transcriptEvents.length === TRANSCRIPT_PAGE_SIZE,
+      'Retry did not load the page'
+    );
+    expect((element as any).transcriptError).to.equal(null);
+
+    // Reopening the tab after a failure also retries.
+    failPages = 1;
+    (element as any).transcriptEvents = [];
+    (element as any).transcriptRequested = false;
+    await (element as any).loadTranscript();
+    expect((element as any).transcriptError).to.not.equal(null);
+    (element as any).handleTabShow({ detail: { name: 'timeline' } });
+    (element as any).handleTabShow({ detail: { name: 'transcript' } });
+    await waitUntil(
+      () => (element as any).transcriptEvents.length === TRANSCRIPT_PAGE_SIZE,
+      'Reopening the tab did not retry'
+    );
   });
 });

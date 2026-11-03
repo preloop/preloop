@@ -1269,6 +1269,9 @@ export class FlowExecutionView extends LitElement {
     if (gateway.status === 'fulfilled' && Array.isArray(gateway.value?.logs)) {
       for (const event of gateway.value.logs) this.appendGatewayEvent(event);
     }
+    // Calls made during the gap reach the transcript through its own page:
+    // the metadata above carries no conversation.
+    if (this.transcriptRequested) void this.loadTranscript();
     if (
       persisted.status === 'fulfilled' &&
       Array.isArray(persisted.value?.logs)
@@ -2096,12 +2099,14 @@ export class FlowExecutionView extends LitElement {
         }
       );
       if (!current()) return;
-      const byId = new Map<string, FlowGatewayEvent>();
-      // Older pages extend what is shown; the first page replaces it but
-      // keeps live calls that arrived while it was read.
-      for (const event of this.transcriptEvents) byId.set(event.id, event);
-      for (const event of response.logs || []) byId.set(event.id, event);
-      this.transcriptEvents = Array.from(byId.values());
+      // Keyed like the timeline: a live call has no row id, only its usage
+      // id, and the stored row of the same call must replace it, not join it.
+      const byKey = new Map<string, FlowGatewayEvent>();
+      for (const event of this.transcriptEvents)
+        byKey.set(this.getGatewayEventKey(event), event);
+      for (const event of response.logs || [])
+        byKey.set(this.getGatewayEventKey(event), event);
+      this.transcriptEvents = Array.from(byKey.values());
       const pagination = response.pagination;
       this.transcriptTotal =
         typeof pagination?.total === 'number' ? pagination.total : null;
@@ -2112,6 +2117,9 @@ export class FlowExecutionView extends LitElement {
     } catch (error) {
       if (!current()) return;
       console.error('Failed to fetch the transcript:', error);
+      // A failed first page is retried by reopening the tab or the retry
+      // action; a failed older page keeps its cursor for the button.
+      if (!older) this.transcriptRequested = false;
       this.transcriptError =
         error instanceof Error
           ? error.message
@@ -2126,8 +2134,13 @@ export class FlowExecutionView extends LitElement {
 
   /** A live model call joins the transcript once its first page is read. */
   private appendTranscriptEvent(event: FlowGatewayEvent) {
-    if (!this.transcriptRequested || !event.id) return;
-    if (this.transcriptEvents.some((existing) => existing.id === event.id))
+    if (!this.transcriptRequested) return;
+    const key = this.getGatewayEventKey(event);
+    if (
+      this.transcriptEvents.some(
+        (existing) => this.getGatewayEventKey(existing) === key
+      )
+    )
       return;
     this.transcriptEvents = [event, ...this.transcriptEvents];
     if (this.transcriptTotal !== null) this.transcriptTotal += 1;
@@ -3648,8 +3661,17 @@ ${execution.model_output_summary}</pre>
   /** "Showing N of M" while older calls are left unread, and read errors. */
   private renderTranscriptPageNote() {
     if (this.transcriptError) {
+      const older = this.transcriptEvents.length > 0;
       return html`<div class="transcript-page-note" role="alert">
         Failed to load the transcript: ${this.transcriptError}
+        <sl-button
+          size="small"
+          variant="default"
+          data-testid="transcript-retry"
+          @click=${() => void this.loadTranscript(older)}
+        >
+          Retry
+        </sl-button>
       </div>`;
     }
     const shown = this.transcriptEvents.length;
