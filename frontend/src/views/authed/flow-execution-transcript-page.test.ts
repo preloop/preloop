@@ -24,6 +24,8 @@ describe('FlowExecutionView transcript paging', () => {
   let fetchStub: sinon.SinonStub;
   /** Delta page reads left to fail with a 500 before they succeed. */
   let failPages = 0;
+  /** Model calls the run has made so far; a test grows it mid-run. */
+  let runCalls = CALLS;
   /** When set, delta page reads wait for it before answering. */
   let pageGate: Promise<void> | null = null;
 
@@ -84,7 +86,7 @@ describe('FlowExecutionView transcript paging', () => {
   const page = (url: URL) => {
     const size = Number(url.searchParams.get('tail'));
     const before = url.searchParams.get('before');
-    const end = before ? Number(before.replace('call-', '')) : CALLS;
+    const end = before ? Number(before.replace('call-', '')) : runCalls;
     const start = Math.max(0, end - size);
     const logs = [];
     for (let index = start; index < end; index += 1)
@@ -101,7 +103,7 @@ describe('FlowExecutionView transcript paging', () => {
         offset: null,
         next_offset: null,
         next_cursor: hasMore ? oldest.id : null,
-        total: CALLS,
+        total: runCalls,
         has_more: hasMore,
       },
     };
@@ -162,6 +164,7 @@ describe('FlowExecutionView transcript paging', () => {
 
   afterEach(() => {
     failPages = 0;
+    runCalls = CALLS;
     pageGate = null;
     fetchStub.restore();
     localStorage.clear();
@@ -445,5 +448,29 @@ describe('FlowExecutionView transcript paging', () => {
       () => transcriptUrls().length === 3 && !(element as any).transcriptLoading
     );
     expect((element as any).transcriptNextCursor).to.equal(cursor);
+  });
+  it('reaches calls missed in a realtime gap longer than a page', async () => {
+    const { element } = await openTranscript();
+    // The socket drops while the run makes three more pages of calls.
+    runCalls = CALLS + 3 * TRANSCRIPT_PAGE_SIZE;
+    await (element as any).recoverRealtime();
+    await waitUntil(
+      () => transcriptUrls().length === 2 && !(element as any).transcriptLoading
+    );
+    // The refreshed page does not touch what was shown, so paging back
+    // starts from it and walks through the gap.
+    expect((element as any).transcriptNextCursor).to.equal(
+      `call-${runCalls - TRANSCRIPT_PAGE_SIZE}`
+    );
+    for (let read = 0; read < 2; read += 1) {
+      const count = (element as any).transcriptEvents.length;
+      await (element as any).loadTranscript(true);
+      expect((element as any).transcriptEvents.length).to.be.above(count);
+    }
+    const keys = new Set(
+      (element as any).transcriptEvents.map((e: any) => e.payload.api_usage_id)
+    );
+    for (let index = CALLS; index < runCalls; index += 1)
+      expect(keys.has(`usage-${index}`), `usage-${index}`).to.equal(true);
   });
 });

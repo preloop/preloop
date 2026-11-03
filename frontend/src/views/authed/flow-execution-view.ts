@@ -2113,15 +2113,22 @@ export class FlowExecutionView extends LitElement {
       const byKey = new Map<string, FlowGatewayEvent>();
       for (const event of this.transcriptEvents)
         byKey.set(this.getGatewayEventKey(event), event);
+      // A refreshed newest page that shares no call with what is shown is
+      // newer than all of it, and calls between the two may be unread.
+      const overlaps = (response.logs || []).some((event) =>
+        byKey.has(this.getGatewayEventKey(event))
+      );
       for (const event of response.logs || [])
         byKey.set(this.getGatewayEventKey(event), event);
       this.transcriptEvents = Array.from(byKey.values());
       const pagination = response.pagination;
       this.transcriptTotal =
         typeof pagination?.total === 'number' ? pagination.total : null;
-      // A newest-page refresh (realtime recovery) cannot change what is
-      // older than the pages already shown: keep their cursor.
-      if (older || !this.transcriptPageLoaded) {
+      // A newest-page refresh (realtime recovery) that overlaps the shown
+      // calls cannot change what is older than them: keep their cursor.
+      // One that does not overlap may have skipped a gap longer than a
+      // page, so paging back starts from it and walks through the gap.
+      if (older || !this.transcriptPageLoaded || !overlaps) {
         this.transcriptNextCursor =
           (pagination?.has_more ?? response.has_more)
             ? (pagination?.next_cursor ?? null)
