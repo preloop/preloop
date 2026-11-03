@@ -1845,6 +1845,43 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
 
+    def fail_if_active(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        error_message: str,
+        failure_category: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Mark an execution FAILED only when it has not ended; never commits.
+
+        One conditional UPDATE, so of several concurrent callers exactly one
+        sees ``True`` and owns any side effect of the transition (#1336).
+
+        Returns:
+            True when this call moved the row to FAILED.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "FAILED",
+                    models.FlowExecution.error_message: error_message,
+                    models.FlowExecution.failure_category: failure_category,
+                    models.FlowExecution.end_time: now or datetime.now(timezone.utc),
+                },
+                synchronize_session=False,
+            )
+        )
+        return bool(count)
+
     def mark_stopped(
         self,
         db: Session,

@@ -894,3 +894,20 @@ def test_gateway_stops_calling_upstream_after_repeated_identical_failures(
     assert execution.status == "FAILED"
     assert execution.failure_category == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
     assert len(_milestones(db_session, execution)) == 1
+
+
+def test_fail_if_active_moves_a_running_execution_exactly_once(
+    db_session: Session, test_user
+):
+    """The conditional update is what makes the breaker's milestone single."""
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    kwargs = dict(
+        execution_id=execution.id,
+        error_message="Repeated upstream failure: synthetic",
+        failure_category="repeated_upstream_failure",
+    )
+    assert crud_flow_execution.fail_if_active(db_session, **kwargs) is True
+    assert crud_flow_execution.fail_if_active(db_session, **kwargs) is False
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"

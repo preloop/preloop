@@ -1492,10 +1492,12 @@ class FlowExecutionLimits(BaseModel):
     """Optional per-execution ceilings inside ``agent_config.limits`` (#840).
 
     A flow bounds one run by wall clock (``timeout_seconds``); these bound
-    what that run may spend. All three are optional and independent; unset
+    what that run may spend. All are optional and independent; unset
     means that ceiling does not apply. Values must be positive, and the
     gateway refuses a request only once the run has *reached* a ceiling, so
     the request that crosses it is allowed to complete.
+    ``max_consecutive_identical_upstream_failures`` is not a spend ceiling: it
+    stops a run whose model calls keep failing the same way (#1336).
     """
 
     model_config = ConfigDict(extra="forbid")

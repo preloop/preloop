@@ -917,11 +917,39 @@ def enforce_failure_streak_for_id(db: Session, *, execution_id: Any) -> None:
         return
     message = repeated_failure_message(streak)
     if str(getattr(execution, "status", "") or "").upper() not in TERMINAL_STATUSES:
-        mark_execution_budget_exceeded(
-            db,
-            execution,
-            message,
-            category=FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
-        )
-        _append_breaker_milestone(db, execution, streak, message)
+        _fail_once_with_milestone(db, execution, streak, message)
     raise RepeatedUpstreamFailureError(message, streak=streak)
+
+
+def _fail_once_with_milestone(
+    db: Session, execution: Any, streak: FailureStreak, message: str
+) -> None:
+    """Move the run to FAILED and log the milestone, once across requests.
+
+    The conditional update decides which of several concurrent refusals owns
+    the transition; only that one appends the milestone, in the same commit.
+    Never raises: the refusal matters more than the annotation.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    try:
+        moved = crud_flow_execution.fail_if_active(
+            db,
+            execution_id=execution.id,
+            error_message=message,
+            failure_category=FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+        )
+        if not moved:
+            db.rollback()
+            return
+        _append_breaker_milestone(db, execution, streak, message)
+        db.refresh(execution)
+    except Exception:  # noqa: BLE001 - annotation never fails the refusal
+        logger.exception(
+            "Failed to mark execution %s as repeated_upstream_failure",
+            getattr(execution, "id", None),
+        )
+        try:
+            db.rollback()
+        except Exception:  # pragma: no cover - rollback is best effort
+            logger.debug("Rollback after breaker annotation failure failed")

@@ -190,6 +190,7 @@ def test_generated_launch_resumes_parent_and_publishes_once(
         "hosted_tariff",
         "budget_429_anthropic",
         "budget_429_openai",
+        "repeated_upstream_failure",
     ],
 )
 def test_generated_launch_refuses_unsafe_recovery(
@@ -240,6 +241,14 @@ def test_generated_launch_refuses_unsafe_recovery(
             "message": (
                 "unexpected status 429 Too Many Requests: Execution budget "
                 "exceeded: execution token ceiling reached"
+            )
+        },
+        # #1336: the breaker's refusal names the HTTP 500 it saw; that must not
+        # read as a transient stream failure worth resuming.
+        "repeated_upstream_failure": {
+            "message": (
+                "unexpected status 424 Failed Dependency: Repeated upstream "
+                "failure: 3 identical upstream_error (HTTP 500) failures in a row"
             )
         },
     }[scenario]

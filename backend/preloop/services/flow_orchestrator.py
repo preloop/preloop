@@ -8591,7 +8591,8 @@ class FlowExecutionOrchestrator:
 
         The gateway marks the execution FAILED with ``budget_exceeded`` or
         ``default_limit_reached`` and the limit message when it refuses a
-        request over a ceiling. The agent then fails in its own way (a
+        request over a ceiling, and with ``repeated_upstream_failure`` when
+        its breaker stops a run whose calls keep failing identically (#1336). The agent then fails in its own way (a
         checkpoint or capture call answered 409 because the execution is
         closed), and that later error must not replace the reason the run
         stopped.
