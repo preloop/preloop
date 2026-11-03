@@ -233,8 +233,9 @@ A parked thread says so on the pull request (GitHub). Entering `blocked` posts
 one comment with the stop reason, the pending review findings count, and how
 it resumes (re-run CI so it passes on the current head, or push a commit). A
 new park reason edits the same comment, and leaving `blocked` edits it once
-more to say the continuation resumed (or ended, when the pull request closes,
-the subscription expires or the repair is cancelled while parked). The comment id is kept in the thread
+more to say the continuation resumed (or ended when the pull request closes or
+the subscription expires; a stop says so and is edited again if the thread is
+revived). The comment id is kept in the thread
 cursor (`park_notice`); a failed write is recorded and not retried every tick,
 and the comment is never read back as feedback. GitLab and Bitbucket threads
 park silently as before.

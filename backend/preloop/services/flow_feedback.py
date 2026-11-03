@@ -503,7 +503,12 @@ def park_notice_body(outcome: str, reason: str | None, *, pending_findings: int)
     Returns:
         Markdown ending with :data:`PARK_NOTICE_MARKER`.
     """
-    if outcome in {"closed", "expired", "stopped"}:
+    if outcome == "stopped":
+        lines = [
+            f"**Preloop continuation stopped** (`{reason}`). It is no longer "
+            "waiting on CI. This comment is updated if it starts again."
+        ]
+    elif outcome in {"closed", "expired"}:
         lines = [
             f"**Preloop continuation ended** (`{outcome}`"
             + (f": `{reason}`" if reason else "")
@@ -536,6 +541,9 @@ def park_notice_due(cursor: dict[str, Any], outcome: str, reason: str | None) ->
     notice = cursor.get("park_notice") or {}
     if outcome == "blocked":
         return not (notice.get("state") == "blocked" and notice.get("reason") == reason)
+    if notice.get("state") == "stopped":
+        # A no-progress stop can be revived (``revive``); say so when it is.
+        return outcome != "stopped"
     return notice.get("state") == "blocked"
 
 
@@ -566,7 +574,7 @@ async def sync_park_notice(
     if not park_notice_due(cursor, outcome, reason):
         return
     notice = dict(cursor.get("park_notice") or {})
-    state = "blocked" if outcome == "blocked" else "resumed"
+    state = outcome if outcome in {"blocked", "stopped"} else "resumed"
     comment_id = notice.get("id")
     if state == "resumed" and not comment_id:
         cursor["park_notice"] = {**notice, "state": state, "reason": reason}

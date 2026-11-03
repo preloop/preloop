@@ -410,3 +410,28 @@ async def test_early_return_transitions_sync_the_notice(monkeypatch) -> None:
     )
     assert calls[-1][0] == "PATCH" and "ended" in calls[-1][2]["body"].lower()
     assert changes["cursor"]["park_notice"]["state"] == "resumed"
+
+
+@pytest.mark.asyncio
+async def test_a_revived_stop_corrects_the_notice() -> None:
+    """A no-progress stop can be revived; the notice must follow it."""
+    provider, calls = _notice_provider()
+    cursor: dict[str, Any] = {}
+    await sync_park_notice(
+        provider, cursor, outcome="blocked", reason="ci_failure_base_branch", pending=1
+    )
+    await sync_park_notice(
+        provider, cursor, outcome="stopped", reason="no_progress", pending=1
+    )
+    assert "stopped" in calls[-1][2]["body"].lower()
+    assert "will not resume" not in calls[-1][2]["body"].lower()
+    count = len(calls)
+    await sync_park_notice(
+        provider, cursor, outcome="stopped", reason="no_progress", pending=1
+    )
+    assert len(calls) == count
+    # revive() puts the thread back to waiting; the comment is edited again.
+    await sync_park_notice(provider, cursor, outcome="waiting", reason=None, pending=1)
+    assert len(calls) == count + 1
+    assert "resumed" in calls[-1][2]["body"].lower()
+    assert all(call[1].endswith("/555") for call in calls[1:])
