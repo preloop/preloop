@@ -127,6 +127,9 @@ list the goods-receipt workflows for nord
 
 ### Runner-hosted sessions
 
+Sessions that run on a member's own machine are enabled per harness by that
+member; see [Your machine as a Preloop runner](runners/your-machine.md#remote-sessions).
+
 A session a personal runner hosts (Copilot CLI, Cursor CLI, Devin CLI; see
 [Remote sessions](runners/remote-sessions.md)) is in command mode too, without
 a managed agent: a typed line is posted to

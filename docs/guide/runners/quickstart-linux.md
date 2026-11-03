@@ -2,6 +2,12 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+Installed the runner from the `preloop login` prompt on your own laptop? Start with
+[Your machine as a Preloop runner](your-machine.md), which covers what it
+reports, what it can run and how to remove it. This page is for setting up
+and tuning a runner by hand. Generated host profiles cover the installed
+harnesses; hand-written profiles are an advanced override.
+
 The Preloop CLI **is** the self-hosted runner. It registers itself with
 your Preloop control plane, holds an outbound WebSocket, leases flow
 executions for your account, and runs the agent in a local Docker

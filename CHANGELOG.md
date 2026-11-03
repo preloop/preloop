@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- New guide [Your machine as a Preloop runner](docs/guide/runners/your-machine.md)
+  with an FAQ: what the runner offered at `preloop login` installs and
+  reports, flows and remote sessions on your own seat, presence and sleep,
+  and how to undo it. The login prompt links it. The README editions table
+  now lists the audit hash chain, retention, legal holds and signed exports
+  as open source, and `SECURITY.md` names the latest release line instead of
+  a fixed minor. Refs #1486.
+
 - The Overview Usage box no longer shows the paragraph on how budget usage
   is counted. A small info icon next to the first budget number shows it in
   a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere

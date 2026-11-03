@@ -832,8 +832,9 @@ the overlay can recognize an existing seat across its account tree.
 
 Preloop Cloud and Preloop Enterprise also retain resource rules and sharing,
 team budgets, subaccount hierarchy, pooled billing, SSO/SAML/SCIM, fleet
-findings, multi-approver/escalation workflows, weekly governance review,
-advanced reporting and audit export/retention. The console shows no role
+findings, multi-approver/escalation workflows, weekly governance review
+and advanced reporting. The audit hash chain, retention, legal holds and
+signed exports are in core. The console shows no role
 controls in core; role actions open the upgrade affordance. Per-user
 devices/runners/agents, basic approvals and basic usage views remain in core.
 
