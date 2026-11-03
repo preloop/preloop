@@ -47,6 +47,18 @@ default). A value on the flow wins per key. A run stopped by such a default fail
 with ``default_limit_reached`` rather than ``budget_exceeded``, and its message
 names the knob that changes it, so a review that ran out of a ceiling nobody
 chose reads differently from one that hit the flow's own.
+
+Repeated identical upstream failures (#1336). The same preflight also stops a
+run whose model calls keep failing the same way: when the execution's newest
+gateway attempts are N failures in a row with the same request fingerprint,
+error class and status, the next request is refused and the run ends FAILED
+with ``repeated_upstream_failure``. N is
+``agent_config.limits.max_consecutive_identical_upstream_failures`` (default 3;
+a malformed value uses the default rather than disabling the breaker), and a
+terminal error class (one that can never succeed on retry) trips on its first
+repeat. A success, or any failure that differs in fingerprint, class or status,
+ends the streak. Rate limiting and overload are not counted: they clear with
+time, and the gateway already backs off on them.
 """
 
 from __future__ import annotations
@@ -57,13 +69,20 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
     FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+    FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+)
+from preloop.services.upstream_errors import (
+    ERROR_CLASS_CLIENT_CANCELLED,
+    ERROR_CLASS_UPSTREAM_OVERLOADED,
+    ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+    is_terminal_error_class,
 )
 
 logger = logging.getLogger(__name__)
@@ -657,3 +676,252 @@ def describe_execution_limits(
         )
         usage = ExecutionUsage()
     return limits, usage
+
+
+# --- repeated identical upstream failures (#1336) ---------------------------
+
+#: Key inside ``agent_config.limits`` for the breaker threshold.
+MAX_CONSECUTIVE_IDENTICAL_FAILURES_KEY = "max_consecutive_identical_upstream_failures"
+#: Identical failures in a row that stop a run when the flow sets nothing.
+DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES = 3
+#: A terminal error class stops the run on its first repeat.
+TERMINAL_CLASS_FAILURE_THRESHOLD = 2
+#: Milestone name written to the execution timeline when the breaker trips.
+REPEATED_UPSTREAM_FAILURE_MILESTONE = "repeated_upstream_failure"
+#: Failures that clear with time or come from the client, never counted.
+_UNCOUNTED_ERROR_CLASSES = frozenset(
+    {
+        ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+        ERROR_CLASS_UPSTREAM_OVERLOADED,
+        ERROR_CLASS_CLIENT_CANCELLED,
+        "stream_abandoned",
+        "kill_switch",
+        "budget_exceeded",
+        "hosted_credit_reserved",
+    }
+)
+
+
+@dataclass(frozen=True)
+class GatewayAttemptOutcome:
+    """One recorded gateway attempt, reduced to what the breaker compares."""
+
+    status_code: int
+    error_class: Optional[str]
+    request_fingerprint: Optional[str]
+
+    @property
+    def counts_as_failure(self) -> bool:
+        """True for an upstream failure the breaker may count."""
+        return (
+            int(self.status_code or 0) >= 400
+            and bool(self.error_class)
+            and self.error_class not in _UNCOUNTED_ERROR_CLASSES
+            and bool(self.request_fingerprint)
+        )
+
+    @property
+    def signature(self) -> tuple[Optional[str], int, Optional[str]]:
+        """What makes two failures identical."""
+        return (self.error_class, int(self.status_code), self.request_fingerprint)
+
+
+@dataclass(frozen=True)
+class FailureStreak:
+    """A run of identical failures long enough to stop the execution."""
+
+    error_class: str
+    status_code: int
+    request_fingerprint: str
+    count: int
+    threshold: int
+
+
+class RepeatedUpstreamFailureError(Exception):
+    """A run's model calls kept failing identically; stop it."""
+
+    category = FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+
+    def __init__(self, message: str, *, streak: FailureStreak) -> None:
+        super().__init__(message)
+        self.message = message
+        self.streak = streak
+
+
+def parse_failure_streak_threshold(agent_config: Optional[Mapping[str, Any]]) -> int:
+    """Read the breaker threshold from ``agent_config.limits``, tolerantly.
+
+    Anything that is not an integer of at least 2 (absent, junk, zero, a
+    bool, a fraction, 1) yields the default: a typo must never switch the
+    breaker off, and 1 would stop a run on its first failure.
+
+    Args:
+        agent_config: The flow's ``agent_config`` JSON, possibly None.
+
+    Returns:
+        The number of identical failures in a row that stops a run.
+    """
+    default = DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES
+    if not isinstance(agent_config, Mapping):
+        return default
+    raw_limits = agent_config.get(LIMITS_KEY)
+    if not isinstance(raw_limits, Mapping):
+        return default
+    raw = raw_limits.get(MAX_CONSECUTIVE_IDENTICAL_FAILURES_KEY)
+    if isinstance(raw, float) and not raw.is_integer():
+        return default
+    parsed = _positive_int(raw)
+    if parsed is None or parsed < 2:
+        return default
+    return parsed
+
+
+def evaluate_failure_streak(
+    outcomes: Sequence[GatewayAttemptOutcome], *, threshold: int
+) -> Optional[FailureStreak]:
+    """Return the trailing identical-failure streak when it has tripped.
+
+    Args:
+        outcomes: The execution's newest attempts, newest first.
+        threshold: Identical failures in a row that stop the run.
+
+    Returns:
+        The streak when it is long enough, otherwise None.
+    """
+    if not outcomes or not outcomes[0].counts_as_failure:
+        return None
+    head = outcomes[0]
+    count = 0
+    for outcome in outcomes:
+        if not outcome.counts_as_failure or outcome.signature != head.signature:
+            break
+        count += 1
+    effective = threshold
+    if is_terminal_error_class(head.error_class):
+        effective = min(threshold, TERMINAL_CLASS_FAILURE_THRESHOLD)
+    if count < effective:
+        return None
+    return FailureStreak(
+        error_class=str(head.error_class),
+        status_code=int(head.status_code),
+        request_fingerprint=str(head.request_fingerprint),
+        count=count,
+        threshold=effective,
+    )
+
+
+def repeated_failure_message(streak: FailureStreak) -> str:
+    """The readable sentence stored on the execution and sent to the agent."""
+    return (
+        f"Repeated upstream failure: {streak.count} identical "
+        f"{streak.error_class} (HTTP {streak.status_code}) failures in a row "
+        "for the same model request; the gateway stopped the run instead of "
+        f"retrying it (limit {streak.threshold}, set "
+        f"agent_config.limits.{MAX_CONSECUTIVE_IDENTICAL_FAILURES_KEY} to change it)"
+    )
+
+
+def _append_breaker_milestone(
+    db: Session, execution: Any, streak: FailureStreak, message: str
+) -> None:
+    """Persist the trip to the execution timeline. Never raises."""
+    try:
+        from preloop.models.crud import crud_flow_execution
+
+        crud_flow_execution.append_log(
+            db,
+            execution_id=execution.id,
+            log_data={
+                "type": "milestone",
+                "message": message,
+                "metadata": {
+                    "milestone": REPEATED_UPSTREAM_FAILURE_MILESTONE,
+                    "error_class": streak.error_class,
+                    "status_code": streak.status_code,
+                    "attempts": streak.count,
+                    "threshold": streak.threshold,
+                    "request_fingerprint": streak.request_fingerprint,
+                },
+            },
+        )
+    except Exception:  # noqa: BLE001 - the refusal matters more than the log
+        logger.exception(
+            "Could not log the repeated-upstream-failure milestone for %s",
+            getattr(execution, "id", None),
+        )
+        try:
+            db.rollback()
+        except Exception:  # pragma: no cover - rollback is best effort
+            logger.debug("Rollback after milestone failure failed")
+
+
+def enforce_failure_streak_for_id(db: Session, *, execution_id: Any) -> None:
+    """Refuse the next request of a run whose calls keep failing identically.
+
+    Read failures never break gateway traffic: any error while reading the
+    execution or its attempts lets the request through. A run already
+    terminal keeps being refused while the streak stands, but its row and
+    timeline are written only once, by the request that tripped the breaker.
+
+    Args:
+        db: Database session.
+        execution_id: The execution id from the credential context.
+
+    Raises:
+        RepeatedUpstreamFailureError: The trailing attempts are a tripped
+            streak. A running execution has been marked FAILED and the
+            milestone appended first.
+    """
+    if not execution_id:
+        return
+    try:
+        execution_uuid = uuid.UUID(str(execution_id))
+    except (ValueError, TypeError, AttributeError):
+        return
+    from preloop.models.crud import crud_api_usage, crud_flow, crud_flow_execution
+
+    try:
+        execution = crud_flow_execution.get(db, id=str(execution_uuid))
+        if execution is None:
+            return
+        flow = getattr(execution, "flow", None)
+        if flow is None and getattr(execution, "flow_id", None) is not None:
+            flow = crud_flow.get(db, id=execution.flow_id)
+        threshold = parse_failure_streak_threshold(getattr(flow, "agent_config", None))
+        rows = crud_api_usage.get_recent_gateway_outcomes(
+            db, execution_id=str(execution_uuid), limit=threshold
+        )
+        streak = evaluate_failure_streak(
+            [
+                GatewayAttemptOutcome(
+                    status_code=int(row.get("status_code") or 0),
+                    error_class=row.get("error_class"),
+                    request_fingerprint=row.get("request_fingerprint"),
+                )
+                for row in rows
+            ],
+            threshold=threshold,
+        )
+    except Exception:  # noqa: BLE001 - a breaker read never breaks a request
+        logger.warning(
+            "Could not evaluate the upstream failure streak for %s",
+            execution_uuid,
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:  # pragma: no cover - rollback is best effort
+            logger.debug("Rollback after streak read failure failed")
+        return
+    if streak is None:
+        return
+    message = repeated_failure_message(streak)
+    if str(getattr(execution, "status", "") or "").upper() not in TERMINAL_STATUSES:
+        mark_execution_budget_exceeded(
+            db,
+            execution,
+            message,
+            category=FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+        )
+        _append_breaker_milestone(db, execution, streak, message)
+    raise RepeatedUpstreamFailureError(message, streak=streak)

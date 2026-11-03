@@ -188,6 +188,26 @@ also uses `max_turns` as its own `-i` iteration cap when
 `agent_config.max_iterations` is unset, so it stops cleanly before the gateway
 would refuse it.
 
+#### Repeated identical upstream failures
+
+The same preflight also stops a run whose model calls keep failing the same
+way (#1336). It reads the execution's newest gateway attempts from the usage
+ledger; when the last N are failures with the same request fingerprint
+(`meta_data.request_fingerprint`), `error_class` and status, the next request is
+refused before any upstream call with HTTP 424 and code
+`repeated_upstream_failure` (terminal, so SDKs do not retry it), the execution
+is marked `FAILED` with the `repeated_upstream_failure` category, and one
+`milestone` row is appended to its timeline. N is
+`agent_config.limits.max_consecutive_identical_upstream_failures` (default 3;
+anything that is not an integer of at least 2 uses the default, so a typo never
+disables the breaker). A terminal error class (`upstream_auth`,
+`gateway_translation_error`, `upstream_quota_exhausted` and the rest of
+`upstream_errors._NON_RETRYABLE_ERROR_CLASSES`) trips on its first repeat. A
+success, or a failure that differs in fingerprint, class or status, ends the
+streak. Rate limiting, overload, client cancellations and Preloop's own
+refusals (kill switch, budget) are never counted. The refusal is not recorded
+as usage, so it neither extends the streak nor counts as a turn.
+
 ### Historical repricing jobs
 
 The billing repricing endpoint runs windows up to seven days in a worker

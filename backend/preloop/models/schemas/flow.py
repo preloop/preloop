@@ -1529,6 +1529,17 @@ class FlowExecutionLimits(BaseModel):
             "execution. Counted at the gateway as one turn per request."
         ),
     )
+    max_consecutive_identical_upstream_failures: Optional[int] = Field(
+        default=None,
+        ge=2,
+        le=1_000,
+        description=(
+            "Stop the execution after this many identical failing model "
+            "calls in a row (same request, error class and status). Default "
+            "3; an error class that can never succeed on retry stops on its "
+            "first repeat."
+        ),
+    )
 
 
 #: Top-level flow fields that are stored as ``agent_config.limits`` keys.

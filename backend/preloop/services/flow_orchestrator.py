@@ -8603,6 +8603,7 @@ class FlowExecutionOrchestrator:
         from preloop.services.flow_failure_category import (
             FAILURE_CATEGORY_BUDGET_EXCEEDED,
             FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+            FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
         )
 
         execution = getattr(self, "execution_log", None)
@@ -8617,6 +8618,7 @@ class FlowExecutionOrchestrator:
         if stored in (
             FAILURE_CATEGORY_BUDGET_EXCEEDED,
             FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+            FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
         ):
             kwargs["failure_category"] = stored
             message = getattr(execution, "error_message", None)

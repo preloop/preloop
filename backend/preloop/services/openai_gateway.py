@@ -269,6 +269,12 @@ FORWARDED_RESPONSE_HEADER_PREFIX = "anthropic-ratelimit-unified-"
 FORWARDED_RESPONSE_HEADERS = frozenset({"x-should-retry"})
 logger = logging.getLogger(__name__)
 
+#: Refusal of a run whose model calls keep failing identically (#1336). 424
+#: (Failed Dependency) is a 4xx that OpenAI and Anthropic SDKs do not retry,
+#: unlike 409 or 429.
+REPEATED_UPSTREAM_FAILURE_STATUS_CODE = 424
+REPEATED_UPSTREAM_FAILURE_CODE = "repeated_upstream_failure"
+
 # Bound streamed provider data before final envelope encoding/encryption.
 MAX_REASONING_BUFFER_BYTES = MAX_ENCRYPTED_REASONING_CHARS
 
@@ -11983,6 +11989,54 @@ class OpenAIGatewayService:
                 EXECUTION_BUDGET_EXCEEDED_CODE,
                 exc.message,
                 None,
+            ) from exc
+
+        self._check_repeated_upstream_failures(
+            execution_id, gateway_provider=gateway_provider
+        )
+
+    def _check_repeated_upstream_failures(
+        self,
+        execution_id: Any,
+        *,
+        gateway_provider: GatewayProvider = "openai",
+    ) -> None:
+        """Stop a run whose model calls keep failing identically (#1336).
+
+        Reads the execution's newest attempts from the usage ledger; when they
+        are a tripped streak (see
+        :func:`preloop.services.flow_execution_limits.evaluate_failure_streak`)
+        the request is refused before any upstream call with a terminal
+        ``424`` carrying ``repeated_upstream_failure``, which SDKs do not
+        retry. Like the ceiling refusal it is not recorded as usage, so the
+        refusals themselves never extend or reset the streak.
+        """
+        from preloop.services.flow_execution_limits import (
+            RepeatedUpstreamFailureError,
+            enforce_failure_streak_for_id,
+        )
+
+        try:
+            enforce_failure_streak_for_id(self.db, execution_id=execution_id)
+        except RepeatedUpstreamFailureError as exc:
+            logger.warning(
+                "Gateway request refused after repeated identical upstream "
+                "failures: execution=%s error_class=%s status=%s attempts=%s",
+                execution_id,
+                exc.streak.error_class,
+                exc.streak.status_code,
+                exc.streak.count,
+            )
+            if self._owns_db_session:
+                self.release_db_for_wait()
+            raise ModelGatewayAPIError(
+                provider=gateway_provider,
+                status_code=REPEATED_UPSTREAM_FAILURE_STATUS_CODE,
+                message=exc.message,
+                error_type="api_error",
+                code=REPEATED_UPSTREAM_FAILURE_CODE,
+                error_class=exc.streak.error_class,
+                terminal=True,
             ) from exc
 
     def _check_budget(

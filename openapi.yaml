@@ -37207,16 +37207,17 @@ components:
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
             budget_exceeded, default_limit_reached (a default per-execution ceiling
-            the flow did not set), model_config, no_confirmation, agent_no_progress,
-            publication_missing, result_schema_invalid (result.json does not match
-            the flow result schema), setup_failed, verification_failed, verification_blocked,
-            tool_error, agent_error, model_stream_idle (timed out while the model
-            stream was silent), approval_denied, approval_timeout, approval_unavailable
-            (an approval-required rule could not pause the run), resume_failed (a
-            parked run could not be continued), gateway_bypassed (a private-runner
-            host CLI made no request through the Preloop gateway), timeout, cancelled,
-            unknown. Null for successful or still-running executions, and for executions
-            that predate this field.'
+            the flow did not set), repeated_upstream_failure (the gateway stopped
+            a run whose model calls kept failing identically), model_config, no_confirmation,
+            agent_no_progress, publication_missing, result_schema_invalid (result.json
+            does not match the flow result schema), setup_failed, verification_failed,
+            verification_blocked, tool_error, agent_error, model_stream_idle (timed
+            out while the model stream was silent), approval_denied, approval_timeout,
+            approval_unavailable (an approval-required rule could not pause the run),
+            resume_failed (a parked run could not be continued), gateway_bypassed
+            (a private-runner host CLI made no request through the Preloop gateway),
+            timeout, cancelled, unknown. Null for successful or still-running executions,
+            and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -54178,7 +54179,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
