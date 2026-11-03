@@ -41,6 +41,9 @@ PROVIDER_PAGE_SIZE = 100
 # installation is no evidence; every other status stays an error.
 MISSING_OR_DENIED = frozenset({403, 404})
 _BOT_LOGIN_SUFFIX = "[bot]"
+# Hidden marker on the one pull request comment that says a continuation is
+# parked (#1207). Comments carrying it are never read back as feedback.
+PARK_NOTICE_MARKER = "<!-- preloop-continuation-park-notice -->"
 
 
 def _login_matches(token: str, login: str) -> bool:
@@ -441,6 +444,53 @@ def classify_checks(
     )
 
 
+def _check_name(item: Mapping[str, Any]) -> str:
+    return str(item.get("name") or item.get("context") or "")
+
+
+def _check_failed(item: Mapping[str, Any]) -> bool:
+    outcome = item.get("conclusion") or item.get("state") or item.get("status")
+    return outcome in FAILED_OUTCOMES
+
+
+def failing_check_names(checks: list[dict[str, Any]], required: list[str]) -> set[str]:
+    """Names of the checks that failed on a head and decide its CI outcome."""
+    names = set()
+    for item in checks:
+        if item.get("allow_failure") is True or item.get("superseded") is True:
+            continue
+        name = _check_name(item)
+        if required and name not in required:
+            continue
+        if _check_failed(item):
+            names.add(name)
+    return names
+
+
+def failed_on_base(names: set[str], base_checks: list[dict[str, Any]]) -> bool:
+    """Whether every check failing on the change also failed on its base commit.
+
+    This is the deterministic test for "main is red" (#1207): the base commit
+    the pull request was built on already fails the same checks, so the change
+    did not cause them. A check that passed, or never ran, on the base is the
+    change's own until proven otherwise.
+
+    Args:
+        names: Failing check names on the pull request head.
+        base_checks: Check runs and commit statuses of the base commit,
+            newest first per name.
+
+    Returns:
+        True only when ``names`` is non-empty and each one failed on the base.
+    """
+    if not names:
+        return False
+    latest: dict[str, dict[str, Any]] = {}
+    for item in base_checks:
+        latest.setdefault(_check_name(item), item)
+    return all(name in latest and _check_failed(latest[name]) for name in names)
+
+
 async def _optional(read: Any) -> Any:
     """Await one diagnostic read; a missing or denied resource is not an error.
 
@@ -624,6 +674,7 @@ class FeedbackProvider:
                 actor_id in self_ids
                 or item.get("system")
                 or (item.get("resolvable") and item.get("resolved"))
+                or PARK_NOTICE_MARKER in str(item.get("body") or item.get("note") or "")
             ):
                 continue
             if (
@@ -716,6 +767,87 @@ class FeedbackProvider:
                 continue
             item.pop("details_unavailable", None)
         return enriched
+
+    @property
+    def supports_park_notice(self) -> bool:
+        """Whether this provider can post the parked-thread comment."""
+        return self.thread.provider == "github"
+
+    async def upsert_park_notice(self, comment_id: str | None, body: str) -> str:
+        """Create or edit the one parked-thread comment; return its id.
+
+        Only the bound repository's endpoints are used, never a URL taken
+        from provider data.
+        """
+        if not self.supports_park_notice:
+            raise ValueError("park notice unsupported for this provider")
+        repo = f"/repositories/{quote(self.thread.repository_id, safe='')}"
+        if comment_id:
+            await self.client._request(
+                "PATCH",
+                f"{repo}/issues/comments/{quote(str(comment_id), safe='')}",
+                {"body": body},
+            )
+            return str(comment_id)
+        created = await self.client._request(
+            "POST",
+            f"{repo}/issues/{quote(self.thread.pr_number, safe='')}/comments",
+            {"body": body},
+        )
+        return str(created["id"])
+
+    async def _github_base_branch_failure(
+        self,
+        request: Any,
+        repo: str,
+        pr: Mapping[str, Any],
+        state: FeedbackState,
+        failed: list[dict[str, Any]],
+        checks: list[dict[str, Any]],
+        required: list[str],
+    ) -> list[dict[str, Any]]:
+        """Reclassify head failures that the base commit already has (#1207).
+
+        Runs only when CI is terminal and failed without a platform or
+        permission explanation. One extra read of the base commit's checks
+        decides it; when every failing check also failed there, the thread
+        blocks as ``ci_failure_base_branch`` and the failures are not handed
+        to a CI repair. Returns the code failures to keep.
+        """
+        if state.checks_pending or state.infra_failures:
+            return failed
+        if state.blocked_reason not in (None, "ci_failure_unclassified"):
+            return failed
+        if not failed and state.blocked_reason is None:
+            return failed
+        base_sha = (pr.get("base") or {}).get("sha")
+        if not isinstance(base_sha, str) or not base_sha:
+            return failed
+        names = failing_check_names(checks, required)
+        if not names:
+            return failed
+        base_runs = await _optional(
+            request(
+                "GET",
+                f"{repo}/commits/{quote(base_sha, safe='')}/check-runs"
+                "?per_page=100&filter=latest",
+            )
+        )
+        base_statuses = await _optional(
+            request(
+                "GET", f"{repo}/commits/{quote(base_sha, safe='')}/status?per_page=100"
+            )
+        )
+        if not isinstance(base_runs, dict) or base_runs.get("total_count", 0) > 100:
+            return failed
+        base_checks = list(base_runs.get("check_runs") or [])
+        if isinstance(base_statuses, dict):
+            base_checks += list(base_statuses.get("statuses") or [])
+        if not failed_on_base(names, base_checks):
+            return failed
+        state.blocked_reason = "ci_failure_base_branch"
+        state.checks_passed = False
+        return []
 
     async def _github(self) -> FeedbackState:
         request = self.client._request
@@ -836,6 +968,15 @@ class FeedbackProvider:
             failed,
             state.infra_failures,
         ) = classify_checks(check_runs + statuses.get("statuses", []), required)
+        failed = await self._github_base_branch_failure(
+            request,
+            repo,
+            pr,
+            state,
+            failed,
+            check_runs + statuses.get("statuses", []),
+            required,
+        )
         if (
             thread_page_limit
             or any(len(items) >= 100 for items in (reviews, comments, discussion))

@@ -18,6 +18,7 @@ from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_feedback
 from preloop.models.crud.flow_feedback import SESSIONLESS_RETRY_STATUSES
 from preloop.services.flow_feedback_provider import (
+    PARK_NOTICE_MARKER,
     FeedbackProvider,
     FeedbackState,
     bounded_text,
@@ -468,6 +469,117 @@ def feedback_retry_delay(retry_after: float) -> float:
     )
 
 
+#: CI outcomes the change is not shown to have caused. They block readiness,
+#: but pending review findings are still repaired (#1207): a reviewer's
+#: request is actionable whatever the state of the base branch.
+REVIEW_REPAIR_DESPITE_CI = frozenset(
+    {"ci_failure_base_branch", "ci_failure_unclassified"}
+)
+REVIEW_FEEDBACK_KINDS = frozenset({"review", "comment", "inline_comment"})
+
+#: What a human can do about each park reason, in one sentence.
+_PARK_HINTS = {
+    "ci_failure_base_branch": (
+        "The failing checks also fail on the base branch, so this change did "
+        "not cause them. Fix the base branch, then re-run CI here."
+    ),
+    "ci_failure_unclassified": (
+        "CI failed and the failure could not be attributed to this change "
+        "from the provider's job details."
+    ),
+    "ci_deadline_exceeded": "CI did not finish within the wait deadline.",
+    "ci_permission_required": "A CI job needs a permission or a manual action.",
+}
+
+
+def park_notice_body(outcome: str, reason: str | None, *, pending_findings: int) -> str:
+    """The pull request comment for a parked (or resumed) continuation.
+
+    Args:
+        outcome: ``blocked`` while parked; anything else once resumed.
+        reason: The thread's stop reason.
+        pending_findings: Review findings waiting for a repair turn.
+
+    Returns:
+        Markdown ending with :data:`PARK_NOTICE_MARKER`.
+    """
+    if outcome != "blocked":
+        lines = [
+            "**Preloop continuation resumed.** The implementation agent is "
+            f"no longer parked (now `{outcome}`"
+            + (f": `{reason}`" if reason else "")
+            + ")."
+        ]
+    else:
+        lines = [
+            f"**Preloop continuation parked: `{reason}`.**",
+            "",
+            _PARK_HINTS.get(reason or "", "The implementation agent is waiting."),
+            "",
+            f"Pending review findings: {pending_findings}.",
+            "",
+            "It resumes on its own when CI on the current head is re-run and "
+            "passes, or when a new commit is pushed to the branch. This "
+            "comment is updated when that happens.",
+        ]
+    return "\n".join(lines) + f"\n\n{PARK_NOTICE_MARKER}"
+
+
+def park_notice_due(cursor: dict[str, Any], outcome: str, reason: str | None) -> bool:
+    """Whether the parked-thread comment needs a write for this outcome."""
+    notice = cursor.get("park_notice") or {}
+    if outcome == "blocked":
+        return not (notice.get("state") == "blocked" and notice.get("reason") == reason)
+    return notice.get("state") == "blocked"
+
+
+async def sync_park_notice(
+    provider: Any,
+    cursor: dict[str, Any],
+    *,
+    outcome: str,
+    reason: str | None,
+    pending: int,
+) -> None:
+    """Post, edit or resolve the one parked-thread comment; never raises.
+
+    The comment id and what it last said live in ``cursor["park_notice"]``,
+    so parking posts once, a new park reason edits the same comment, and
+    unparking edits it once more. A failed write is recorded for this reason
+    and not retried every tick.
+
+    Args:
+        provider: The thread's :class:`FeedbackProvider`.
+        cursor: The thread cursor, updated in place.
+        outcome: The reconciliation outcome about to be stored.
+        reason: The stop reason about to be stored.
+        pending: Review findings waiting for a repair turn.
+    """
+    if not getattr(provider, "supports_park_notice", False):
+        return
+    if not park_notice_due(cursor, outcome, reason):
+        return
+    notice = dict(cursor.get("park_notice") or {})
+    state = "blocked" if outcome == "blocked" else "resumed"
+    comment_id = notice.get("id")
+    if state == "resumed" and not comment_id:
+        cursor["park_notice"] = {**notice, "state": state, "reason": reason}
+        return
+    body = park_notice_body(outcome, reason, pending_findings=pending)
+    try:
+        comment_id = await provider.upsert_park_notice(comment_id, body)
+        notice.pop("error", None)
+    except Exception as exc:  # noqa: BLE001 - a notice never blocks the thread
+        logger.warning("Could not write the park notice: %s", type(exc).__name__)
+        notice["error"] = type(exc).__name__
+    cursor["park_notice"] = {
+        **notice,
+        "id": comment_id,
+        "state": state,
+        "reason": reason,
+    }
+
+
 def closed_reason(state: FeedbackState) -> str:
     """``pr_merged`` or ``pr_closed``: which forge outcome ended the thread."""
     return PR_STOP_SOURCE_MERGED if state.merged else PR_STOP_SOURCE_CLOSED
@@ -482,7 +594,17 @@ def decide(
     if now >= thread.expires_at:
         return "expired", "subscription_expired"
     requirements_unknown = state.blocked_reason == "repository_requirements_unavailable"
-    if state.blocked_reason and not state.checks_pending and not requirements_unknown:
+    review_despite_ci = state.blocked_reason in REVIEW_REPAIR_DESPITE_CI and any(
+        item.kind in REVIEW_FEEDBACK_KINDS
+        and (not item.head_sha or item.head_sha == state.head_sha)
+        for item in pending
+    )
+    if (
+        state.blocked_reason
+        and not state.checks_pending
+        and not requirements_unknown
+        and not review_despite_ci
+    ):
         return "blocked", state.blocked_reason
     if state.checks_pending:
         started = (thread.cursor or {}).get("ci_wait_started")
@@ -773,6 +895,23 @@ async def _reconcile(
         cursor.pop("ci_wait_started", None)
     cursor["head_sha"] = state.head_sha
     cursor["reconciled_at"] = now.isoformat()
+    if getattr(provider, "supports_park_notice", False) and park_notice_due(
+        cursor, outcome, reason
+    ):
+        findings = sum(
+            item.kind in REVIEW_FEEDBACK_KINDS
+            and (not item.head_sha or item.head_sha == state.head_sha)
+            for item in pending
+        )
+        # End the read before provider I/O; the lease still guards the thread.
+        # The committed cursor is a copy: the notice below mutates ``cursor``,
+        # and a JSON column only sees a change against a distinct snapshot.
+        thread.cursor = dict(cursor)
+        crud_flow_feedback.release_read(db)
+        await sync_park_notice(
+            provider, cursor, outcome=outcome, reason=reason, pending=findings
+        )
+        thread.cursor = cursor
     if outcome != "repair":
         crud_flow_feedback.update(
             db,
@@ -831,6 +970,9 @@ async def _reconcile(
         "_feedback": {
             "head_sha": state.head_sha,
             "pr_url": thread.pr_url,
+            # Set when CI is red for a reason not shown to be this change's
+            # (#1207): repair the review findings, and say so if CI is unrelated.
+            "ci_blocked_reason": state.blocked_reason,
             "items": feedback,
             "acceptance_version": thread.context.get("acceptance_version"),
         },
