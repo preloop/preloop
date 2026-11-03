@@ -298,7 +298,7 @@ describe('FlowExecutionView first paint', () => {
     await waitUntil(() => (element as any).gatewayEventsLoaded);
   });
 
-  it('asks for full payloads when the page opens on the transcript', async () => {
+  it('reads a bounded transcript page when the page opens on the transcript', async () => {
     window.history.replaceState(
       {},
       '',
@@ -309,14 +309,19 @@ describe('FlowExecutionView first paint', () => {
     releaseAll();
 
     await waitUntil(
-      () => (element as any).gatewayEventsFullLoaded,
-      'The transcript deep link did not load full payloads'
+      () => (element as any).transcriptEvents.length > 0,
+      'The transcript deep link did not read its first page'
     );
-    expect(urlsFor('gateway')).to.have.length(1);
-    const [url] = urlsFor('gateway');
-    expect(url).to.not.contain('metadata_only');
-    expect(url).to.not.contain('model_calls_only');
-    expect(url).to.not.contain('tail=');
+    const urls = urlsFor('gateway');
+    // The strip's metadata read, and the transcript's own delta page (#1208).
+    expect(urls).to.have.length(2);
+    expect(
+      urls.filter((url) => url.includes('metadata_only=true'))
+    ).to.have.length(1);
+    const [page] = urls.filter((url) => !url.includes('metadata_only'));
+    expect(page).to.contain('history=delta');
+    expect(page).to.contain('model_calls_only=true');
+    expect(page).to.contain('tail=');
   });
 
   it('never lowers the run totals with a truncated set of calls', async () => {

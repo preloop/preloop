@@ -191,7 +191,16 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         limit: Optional[int] = None,
         log_types: Optional[Sequence[str]] = None,
         exclude_log_types: Optional[Sequence[str]] = None,
+        before: Optional[tuple[datetime, uuid.UUID]] = None,
     ) -> List[models.FlowExecutionLog]:
+        """Return the execution's log rows, oldest first.
+
+        Args:
+            before: Keyset cursor ``(timestamp, id)``: only rows strictly
+                older than that row are returned. Rows are ordered by
+                timestamp and then id, so ties on the timestamp do not make
+                a page skip or repeat a row.
+        """
         query = select(models.FlowExecutionLog).filter(
             models.FlowExecutionLog.execution_id == execution_id,
         )
@@ -216,10 +225,22 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
                 )
             )
 
+        if before is not None:
+            query = query.filter(
+                tuple_(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+                < tuple_(*before)
+            )
+
         if desc:
-            query = query.order_by(models.FlowExecutionLog.timestamp.desc())
+            query = query.order_by(
+                models.FlowExecutionLog.timestamp.desc(),
+                models.FlowExecutionLog.id.desc(),
+            )
         else:
-            query = query.order_by(models.FlowExecutionLog.timestamp.asc())
+            query = query.order_by(
+                models.FlowExecutionLog.timestamp.asc(),
+                models.FlowExecutionLog.id.asc(),
+            )
 
         if skip > 0:
             query = query.offset(skip)
@@ -263,6 +284,19 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
             models.FlowExecutionLog.timestamp.asc(), models.FlowExecutionLog.id.asc()
         ).limit(max(1, min(limit, 1000)))
         return list(db.execute(query).scalars().all())
+
+    def count_by_execution_id(
+        self,
+        db: Session,
+        execution_id: uuid.UUID,
+        log_types: Sequence[str],
+    ) -> int:
+        """Count the execution's rows of the given log types."""
+        query = select(func.count(models.FlowExecutionLog.id)).filter(
+            models.FlowExecutionLog.execution_id == execution_id,
+            models.FlowExecutionLog.log_type.in_(log_types),
+        )
+        return int(db.execute(query).scalar_one())
 
     def get_event_by_id(
         self,

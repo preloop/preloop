@@ -224,3 +224,79 @@ def elide_replayed_history(
 
         result[position] = {**event, "payload": new_payload}
     return result
+
+
+def _tool_result_items(items: list[Any]) -> list[Any]:
+    """The tool-result-shaped items of a raw request message list.
+
+    Mirrors ``collectRawToolResultPrefixes`` in the console's
+    ``utils/transcript.ts``: OpenAI ``role: "tool"`` messages, Responses API
+    ``function_call_output`` items, and Anthropic messages whose content holds
+    ``tool_result`` blocks (reduced to those blocks).
+    """
+    kept: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").lower()
+        item_type = str(item.get("type") or "").lower()
+        if role == "tool" or item_type == "function_call_output":
+            kept.append(item)
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        blocks = [
+            block
+            for block in content
+            if isinstance(block, dict)
+            and str(block.get("type") or "").lower() == "tool_result"
+        ]
+        if blocks:
+            kept.append({**item, "content": blocks})
+    return kept
+
+
+def reduce_requests_to_new_tool_results(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only the tool results a request adds over older events on the page.
+
+    A model call's sanitized ``request`` body replays the whole conversation,
+    which makes it the largest field of a long run's rows. The transcript
+    reads one thing from it: the exact text of tool results, to tell tool
+    output from user prompts. Each event therefore keeps the tool-result
+    items of its request that no older event on the page already carried, and
+    nothing else. Events without a request body are returned unchanged, so
+    the console still reports them as having no raw body. The input is not
+    mutated; the order of the returned list matches the input.
+    """
+    seen: set[str] = set()
+    oldest_first = sorted(
+        range(len(events)),
+        key=lambda i: (str(events[i].get("timestamp") or ""), i),
+    )
+    result: list[dict[str, Any]] = list(events)
+    for position in oldest_first:
+        event = events[position]
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        request = payload.get("request")
+        if not isinstance(request, dict):
+            continue
+        new_request: dict[str, Any] = {}
+        for key in ("messages", "input"):
+            items = request.get(key)
+            if not isinstance(items, list):
+                continue
+            new_items: list[Any] = []
+            for item in _tool_result_items(items):
+                signature = json.dumps(item, sort_keys=True, default=str)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                new_items.append(item)
+            new_request[key] = new_items
+        result[position] = {**event, "payload": {**payload, "request": new_request}}
+    return result
