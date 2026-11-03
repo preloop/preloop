@@ -5209,3 +5209,207 @@ def test_merged_confirmation_artifact_is_rechecked_against_the_schema():
     merged = {"status": "success", "verdict": "PASS"}
     assert orchestrator._persist_merged_artifact(merged, "s") == merged
     assert orchestrator._result_schema_validation["valid"] is True
+
+
+class TestReviewPublicationGate:
+    """EE #202: a required review is proven by a server receipt, not a claim."""
+
+    PR_URL = "https://github.com/example-org/example-repo/pull/7"
+    HEAD = "a" * 40
+    INCIDENT_ARTIFACT = {
+        "status": "success",
+        "review_action": "approve",
+        "review_posted_to_github": False,
+        "blocker": "GitHub App 401: could not post the review",
+        "findings_count": 2,
+    }
+
+    @pytest.fixture
+    def review_flow(self, db_session: Session, test_account: Account) -> Flow:
+        from preloop.models.crud import crud_flow
+
+        flow_in = FlowCreate(
+            name="Example PR Reviewer",
+            trigger_event_source="github",
+            trigger_event_types=["pull_request_opened"],
+            prompt_template="Review {{trigger_event.payload.object_attributes.url}}",
+            agent_type="openhands",
+            agent_config={"max_iterations": 10},
+            git_clone_config={
+                "enabled": False,
+                "review_publication": {"required": True},
+            },
+            account_id=test_account.id,
+        )
+        return crud_flow.create(
+            db=db_session, flow_in=flow_in, account_id=test_account.id
+        )
+
+    @pytest.fixture
+    def pr_event(self):
+        return {
+            "source": "github",
+            "type": "pull_request_opened",
+            "event_id": "evt_review_1",
+            "payload": {
+                "object_attributes": {
+                    "url": self.PR_URL,
+                    "last_commit": {"id": self.HEAD},
+                }
+            },
+            "account_id": str(uuid4()),
+        }
+
+    async def _run(
+        self,
+        db_session,
+        flow,
+        nats,
+        event,
+        artifact,
+        *,
+        receipt=None,
+        sentinel=True,
+    ):
+        from preloop.models.crud import crud_review_publication_receipt
+
+        executor = _confirmation_executor(artifact=artifact)
+        holder = {}
+
+        async def artifact_after_review(*_args, **_kwargs):
+            # The MCP tool writes the receipt while the agent runs.
+            if receipt is not None:
+                crud_review_publication_receipt.record(
+                    db_session,
+                    account_id=flow.account_id,
+                    execution_id=holder["orch"].execution_log.id,
+                    provider="github",
+                    **receipt,
+                )
+            return artifact
+
+        executor.get_result_artifact = AsyncMock(side_effect=artifact_after_review)
+        with patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=flow.id,
+                trigger_event_data=event,
+                nats_client=nats,
+            )
+            holder["orch"] = orchestrator
+            orchestrator._agent_exec_started = True
+            if sentinel:
+                orchestrator._success_sentinel_seen.set()
+            await orchestrator.run()
+        return orchestrator
+
+    def _receipt(self, action="approve", **overrides):
+        values = {
+            "repository": "example-org/example-repo",
+            "pull_request": "7",
+            "review_action": action,
+            "head_sha": self.HEAD,
+            "provider_review_id": "101",
+        }
+        values.update(overrides)
+        return values
+
+    @pytest.mark.asyncio
+    async def test_incident_artifact_fails_with_report_preserved(
+        self, db_session, review_flow, mock_nats_client, pr_event
+    ):
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            dict(self.INCIDENT_ARTIFACT),
+        )
+        log = orch.execution_log
+        assert log.status == "FAILED"
+        assert log.result["blocker"].startswith("GitHub App 401")
+        assert log.result["findings_count"] == 2
+
+    @pytest.mark.parametrize(
+        "artifact",
+        [
+            # The run says it posted, with the preset spelling and the alias,
+            # but the server holds no receipt.
+            {"status": "success", "review_action": "approve", "review_posted": True},
+            {
+                "status": "success",
+                "review_action": "comment",
+                "review_posted_to_github": True,
+            },
+            {"status": "success"},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_claimed_publication_without_receipt_fails(
+        self, db_session, review_flow, mock_nats_client, pr_event, artifact
+    ):
+        orch = await self._run(
+            db_session, review_flow, mock_nats_client, pr_event, artifact
+        )
+        log = orch.execution_log
+        assert log.status == "FAILED"
+        assert log.error_message.startswith("review_publication_incomplete")
+        assert log.result["review_publication"]["status"] == "not_published"
+
+    @pytest.mark.parametrize("action", ["approve", "comment", "request_changes"])
+    @pytest.mark.asyncio
+    async def test_receipt_for_this_run_succeeds(
+        self, db_session, review_flow, mock_nats_client, pr_event, action
+    ):
+        artifact = {"status": "success", "review_action": action, "review_posted": True}
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            artifact,
+            receipt=self._receipt(action),
+        )
+        log = orch.execution_log
+        assert log.status == "SUCCEEDED"
+        assert log.result["review_publication"]["status"] == "published"
+        assert log.result["review_publication"]["review_action"] == action
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"pull_request": "8"},
+            {"repository": "example-org/other-repo"},
+            {"head_sha": "b" * 40},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_receipt_for_another_target_fails(
+        self, db_session, review_flow, mock_nats_client, pr_event, overrides
+    ):
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            {"status": "success", "review_action": "approve", "review_posted": True},
+            receipt=self._receipt(**overrides),
+        )
+        assert orch.execution_log.status == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_flow_without_requirement_keeps_existing_behaviour(
+        self, db_session, test_flow, mock_nats_client, pr_event
+    ):
+        orch = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            pr_event,
+            {"status": "success", "review_action": "approve", "review_posted": True},
+        )
+        assert orch.execution_log.status == "SUCCEEDED"
+        assert "review_publication" not in (orch.execution_log.result or {})

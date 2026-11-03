@@ -6633,6 +6633,107 @@ class FlowExecutionOrchestrator:
                     _exception_message(error),
                 )
 
+    def _review_publication_required(self) -> bool:
+        """Whether this flow (or its source preset) requires a delivered review."""
+        from preloop.services.review_publication import (
+            review_publication_required,
+        )
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return False
+        own = getattr(flow, "git_clone_config", None)
+        preset_config = None
+        preset_id = getattr(flow, "source_preset_id", None)
+        own_block = own.get("review_publication") if isinstance(own, dict) else None
+        if own_block is None and preset_id is not None:
+            try:
+                preset = crud_flow.get(self.db, id=preset_id)
+            except Exception:
+                logger.warning(
+                    "Could not read source preset %s for the review gate",
+                    preset_id,
+                    exc_info=True,
+                )
+                preset = None
+            if preset is not None and getattr(preset, "is_preset", False):
+                preset_config = getattr(preset, "git_clone_config", None)
+        return review_publication_required(own, preset_config)
+
+    def _apply_review_publication_gate(
+        self, final_status: str, agent_result: Dict[str, Any], merged_result: Any
+    ) -> tuple[str, Dict[str, Any], Any]:
+        """Fail a review run whose review the code host never accepted (EE #202).
+
+        Records ``result.review_publication`` on every terminal run of a flow
+        that requires publication, so operators can tell review analysis
+        from review delivery. Only a SUCCEEDED run is overridden; the report
+        and the agent's blocker stay in the result for recovery.
+        """
+        if final_status in PARKED_STATUSES or not self._review_publication_required():
+            return final_status, agent_result, merged_result
+        from preloop.models.crud import crud_review_publication_receipt
+        from preloop.services.review_publication import (
+            REASON_LOOKUP_FAILED,
+            REVIEW_PUBLICATION_INCOMPLETE,
+            REVIEW_PUBLICATION_RESULT_KEY,
+            STATUS_NOT_PUBLISHED,
+            evaluate_review_publication,
+            trigger_pull_request,
+        )
+
+        account_id = getattr(self.flow, "account_id", None)
+        repository, pull_request = trigger_pull_request(self.trigger_event_data)
+        head_sha = getattr(self, "_commit_sha", None) or self._extract_commit_sha()
+        try:
+            receipts = crud_review_publication_receipt.list_for_execution(
+                self.db, account_id=account_id, execution_id=self.execution_log.id
+            )
+
+            def find_prior(repo: str, number: str, head: str) -> Any:
+                return crud_review_publication_receipt.find_for_target(
+                    self.db,
+                    account_id=account_id,
+                    repository=repo,
+                    pull_request=number,
+                    head_sha=head,
+                )
+
+            outcome = evaluate_review_publication(
+                receipts,
+                repository=repository,
+                pull_request=pull_request,
+                head_sha=head_sha,
+                artifact=merged_result,
+                find_prior_receipt=find_prior,
+            )
+        except Exception:
+            logger.error(
+                "Could not read review publication receipts for execution %s",
+                getattr(self.execution_log, "id", None),
+                exc_info=True,
+            )
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            outcome = {"status": STATUS_NOT_PUBLISHED, "reason": REASON_LOOKUP_FAILED}
+        if not isinstance(merged_result, dict):
+            merged_result = {}
+        merged_result[REVIEW_PUBLICATION_RESULT_KEY] = outcome
+        self.execution_logger.log_milestone("review_publication", dict(outcome))
+        if final_status == "SUCCEEDED" and outcome["status"] == STATUS_NOT_PUBLISHED:
+            final_status = "FAILED"
+            agent_result = {
+                **agent_result,
+                "status": "FAILED",
+                "error_message": (
+                    f"{REVIEW_PUBLICATION_INCOMPLETE}: {outcome.get('reason')}"
+                ),
+                "failure_category": FAILURE_CATEGORY_PUBLICATION_MISSING,
+            }
+        return final_status, agent_result, merged_result
+
     def _missing_publication_reason(
         self, final_status: str, merged_result: Any
     ) -> Optional[str]:
@@ -10670,6 +10771,15 @@ class FlowExecutionOrchestrator:
             # still stored below for the consumer to inspect.
             final_status, agent_result = self._apply_result_schema_gate(
                 final_status, agent_result
+            )
+
+            # A review flow that requires publication succeeds only with a
+            # server-recorded review the code host accepted (EE #202). The
+            # agent's report, exit code and success line are claims.
+            final_status, agent_result, merged_result = (
+                self._apply_review_publication_gate(
+                    final_status, agent_result, merged_result
+                )
             )
 
             # A run configured to open a pull request that ends without one
