@@ -197,3 +197,15 @@ def test_postgres_store_error_is_wrapped() -> None:
 
     with pytest.raises(rate_limit.RateLimitStoreError):
         PostgresStore(broken).hit("k", 60, 0.0)
+
+
+def test_invalid_config_values_are_not_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_TRUSTED_PROXIES", "not-a-cidr-SENTINEL")
+    monkeypatch.setenv("RATE_LIMIT_TEST_LOGGED", "SENTINEL")
+    with caplog.at_level("ERROR", logger="preloop.services.rate_limit"):
+        client_ip_for_rate_limit(_request("10.0.0.5"))
+        Rule("test.logged", 1, 60).effective()
+    assert "Ignoring" in caplog.text
+    assert "SENTINEL" not in caplog.text

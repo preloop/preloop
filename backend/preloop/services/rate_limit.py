@@ -76,9 +76,7 @@ class Rule:
             return limit, window
         except ValueError:
             logger.error(
-                "Ignoring invalid %s=%r; expected <limit>/<seconds>",
-                self.env_name,
-                raw,
+                "Ignoring invalid %s; expected <limit>/<seconds>", self.env_name
             )
             return self.limit, self.window_s
 
@@ -139,7 +137,7 @@ def _trusted_networks() -> list[Union[ipaddress.IPv4Network, ipaddress.IPv6Netwo
         try:
             networks.append(ipaddress.ip_network(part, strict=False))
         except ValueError:
-            logger.error("Ignoring invalid RATE_LIMIT_TRUSTED_PROXIES entry %r", part)
+            logger.error("Ignoring an invalid RATE_LIMIT_TRUSTED_PROXIES entry")
     return networks
 
 
