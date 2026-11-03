@@ -1127,6 +1127,15 @@ export class FlowExecutionView extends LitElement {
   private transcriptRequested = false;
 
   /**
+   * A newest page has landed, so `transcriptNextCursor` belongs to the older
+   * pages and a later newest-page refresh must not move it.
+   */
+  private transcriptPageLoaded = false;
+
+  /** The failed read was an older page, so Retry replays that one. */
+  private transcriptFailedOlder = false;
+
+  /**
    * The first page of logs is in flight. The page itself is already painted
    * from the detail row; only the logs panel and the timeline wait.
    */
@@ -2110,16 +2119,23 @@ export class FlowExecutionView extends LitElement {
       const pagination = response.pagination;
       this.transcriptTotal =
         typeof pagination?.total === 'number' ? pagination.total : null;
-      this.transcriptNextCursor =
-        (pagination?.has_more ?? response.has_more)
-          ? (pagination?.next_cursor ?? null)
-          : null;
+      // A newest-page refresh (realtime recovery) cannot change what is
+      // older than the pages already shown: keep their cursor.
+      if (older || !this.transcriptPageLoaded) {
+        this.transcriptNextCursor =
+          (pagination?.has_more ?? response.has_more)
+            ? (pagination?.next_cursor ?? null)
+            : null;
+      }
+      if (!older) this.transcriptPageLoaded = true;
     } catch (error) {
       if (!current()) return;
       console.error('Failed to fetch the transcript:', error);
       // A failed first page is retried by reopening the tab or the retry
       // action; a failed older page keeps its cursor for the button.
-      if (!older) this.transcriptRequested = false;
+      if (!older && !this.transcriptPageLoaded)
+        this.transcriptRequested = false;
+      this.transcriptFailedOlder = older;
       this.transcriptError =
         error instanceof Error
           ? error.message
@@ -2205,6 +2221,8 @@ export class FlowExecutionView extends LitElement {
     this.transcriptTotal = null;
     this.transcriptNextCursor = null;
     this.transcriptRequested = false;
+    this.transcriptPageLoaded = false;
+    this.transcriptFailedOlder = false;
     this.liveToolActivityEvents = [];
     // Sessions belong to one execution; a refresh of the same one keeps
     // them so the panel does not flicker, a new execution starts empty.
@@ -3661,7 +3679,7 @@ ${execution.model_output_summary}</pre>
   /** "Showing N of M" while older calls are left unread, and read errors. */
   private renderTranscriptPageNote() {
     if (this.transcriptError) {
-      const older = this.transcriptEvents.length > 0;
+      const older = this.transcriptFailedOlder;
       return html`<div class="transcript-page-note" role="alert">
         Failed to load the transcript: ${this.transcriptError}
         <sl-button

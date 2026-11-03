@@ -24,6 +24,8 @@ describe('FlowExecutionView transcript paging', () => {
   let fetchStub: sinon.SinonStub;
   /** Delta page reads left to fail with a 500 before they succeed. */
   let failPages = 0;
+  /** When set, delta page reads wait for it before answering. */
+  let pageGate: Promise<void> | null = null;
 
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -138,6 +140,7 @@ describe('FlowExecutionView transcript paging', () => {
           return json({ logs, source: 'database', has_more: true });
         }
         if (url.searchParams.get('history') === 'delta') {
+          if (pageGate) await pageGate;
           if (failPages > 0) {
             failPages -= 1;
             return json({ detail: 'boom' }, 500);
@@ -159,6 +162,7 @@ describe('FlowExecutionView transcript paging', () => {
 
   afterEach(() => {
     failPages = 0;
+    pageGate = null;
     fetchStub.restore();
     localStorage.clear();
     window.history.replaceState({}, '', window.location.pathname);
@@ -356,6 +360,7 @@ describe('FlowExecutionView transcript paging', () => {
     failPages = 1;
     (element as any).transcriptEvents = [];
     (element as any).transcriptRequested = false;
+    (element as any).transcriptPageLoaded = false;
     await (element as any).loadTranscript();
     expect((element as any).transcriptError).to.not.equal(null);
     (element as any).handleTabShow({ detail: { name: 'timeline' } });
@@ -364,5 +369,81 @@ describe('FlowExecutionView transcript paging', () => {
       () => (element as any).transcriptEvents.length === TRANSCRIPT_PAGE_SIZE,
       'Reopening the tab did not retry'
     );
+  });
+  it('retries the first page when a live call arrived during its failure', async () => {
+    failPages = 1;
+    let open!: () => void;
+    pageGate = new Promise<void>((resolve) => (open = resolve));
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    element.executionId = 'exec-big';
+    await waitUntil(() => (element as any).transcriptLoading);
+    (element as any).handleWebSocketMessage({
+      execution_id: 'exec-big',
+      timestamp: at(CALLS),
+      type: 'model_gateway_call',
+      payload: { api_usage_id: 'usage-live', outcome: 'success' },
+    });
+    pageGate = null;
+    open();
+    await waitUntil(() => (element as any).transcriptError !== null);
+    expect((element as any).transcriptEvents).to.have.length(1);
+    await element.updateComplete;
+
+    (
+      element.shadowRoot!.querySelector(
+        '[data-testid="transcript-retry"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(
+      () =>
+        (element as any).transcriptEvents.length === TRANSCRIPT_PAGE_SIZE + 1,
+      'Retry did not read the first page'
+    );
+    expect(transcriptUrls().at(-1)!.searchParams.get('before')).to.equal(null);
+  });
+
+  it('retries a failed newest-page refresh, not an older page', async () => {
+    const { element, chat } = await openTranscript();
+    (
+      chat.shadowRoot!.querySelector('[data-testid="load-earlier"]') as any
+    ).click();
+    await waitUntil(
+      () =>
+        (element as any).transcriptEvents.length === 2 * TRANSCRIPT_PAGE_SIZE
+    );
+    failPages = 1;
+    await (element as any).recoverRealtime();
+    await waitUntil(() => (element as any).transcriptError !== null);
+    await element.updateComplete;
+    const before = transcriptUrls().length;
+
+    (
+      element.shadowRoot!.querySelector(
+        '[data-testid="transcript-retry"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => transcriptUrls().length === before + 1);
+    expect(transcriptUrls().at(-1)!.searchParams.get('before')).to.equal(null);
+  });
+
+  it('keeps the older-page cursor across a realtime refresh', async () => {
+    const { element, chat } = await openTranscript();
+    (
+      chat.shadowRoot!.querySelector('[data-testid="load-earlier"]') as any
+    ).click();
+    await waitUntil(
+      () =>
+        (element as any).transcriptEvents.length === 2 * TRANSCRIPT_PAGE_SIZE
+    );
+    const cursor = (element as any).transcriptNextCursor;
+    expect(cursor).to.equal(`call-${CALLS - 2 * TRANSCRIPT_PAGE_SIZE}`);
+
+    await (element as any).recoverRealtime();
+    await waitUntil(
+      () => transcriptUrls().length === 3 && !(element as any).transcriptLoading
+    );
+    expect((element as any).transcriptNextCursor).to.equal(cursor);
   });
 });
