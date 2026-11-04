@@ -261,7 +261,7 @@ def test_endpoint_not_found_without_an_execution(mocker) -> None:
     user.account_id = uuid4()
     mocker.patch(
         "preloop.api.endpoints.flows.crud_flow_execution"
-    ).get.return_value = None
+    ).get_without_workspace.return_value = None
     with pytest.raises(HTTPException) as exc:
         flow_endpoints.get_flow_execution_evidence_members(
             db=MagicMock(),

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import flows
 from preloop.models import models
-from preloop.models.crud import crud_flow_execution
+from preloop.models.crud import crud_flow_execution, crud_flow_execution_log
 
 
 @pytest.fixture
@@ -144,6 +144,7 @@ async def test_logs_hide_other_accounts(
     [
         "get_flow_execution_metrics",
         "get_flow_execution_gateway_events",
+        "get_flow_execution_gateway_event",
         "get_flow_execution_evidence_status",
         "get_flow_execution_evidence",
         "get_flow_execution_evidence_members",
@@ -153,6 +154,11 @@ def test_subresources_do_not_reload_workspace(
     db_session: Session, saved_execution: tuple, name: str
 ) -> None:
     execution_id, account_id, _ = saved_execution
+    arguments = {}
+    if name == "get_flow_execution_gateway_event":
+        arguments["event_id"] = crud_flow_execution_log.get_by_execution_id(
+            db_session, execution_id, limit=1
+        )[0].id
     statements = []
 
     def capture(
@@ -169,11 +175,14 @@ def test_subresources_do_not_reload_workspace(
     event.listen(connection, "before_cursor_execute", capture)
     try:
         try:
-            inspect.unwrap(getattr(flows, name))(
+            response = inspect.unwrap(getattr(flows, name))(
                 db=db_session,
                 execution_id=execution_id,
                 current_user=SimpleNamespace(account_id=account_id),
+                **arguments,
             )
+            if name == "get_flow_execution_gateway_event":
+                assert response["payload"]["message"] == "line-0"
         except HTTPException as error:
             # This execution has no evidence pack; preserve its missing outcome.
             assert name in (
