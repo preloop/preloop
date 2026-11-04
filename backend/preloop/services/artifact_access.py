@@ -28,6 +28,15 @@ def bind_reader(db: Session, *, account_id: Any, **identity: Any) -> None:
     }
 
 
+def bind_user(db: Session, user: Any) -> None:
+    """Preserve the validated API-key identity carried by REST authentication."""
+    from preloop.services.subject_governance import build_subject_context_from_api_key
+
+    key = getattr(user, "_auth_api_key", None)
+    context = build_subject_context_from_api_key(key) if key is not None else {}
+    bind_reader(db, account_id=user.account_id, user_id=user.id, **context)
+
+
 def _policy(db: Session, account_id: Any) -> tuple[Any, dict]:
     subject = db.info.get(_SUBJECT_KEY, {})
     if subject and subject["account_id"] != str(account_id):

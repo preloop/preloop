@@ -971,15 +971,9 @@ def get_current_active_user(
         HTTPException: If the user is disabled.
     """
     # Disabled check is now handled in get_current_user
-    from preloop.services.artifact_access import bind_reader
+    from preloop.services.artifact_access import bind_user
 
-    bind_reader(
-        db,
-        account_id=current_user.account_id,
-        user_id=current_user.id,
-        api_key_id=getattr(current_user, "api_key_id", None),
-        managed_agent_id=getattr(current_user, "managed_agent_id", None),
-    )
+    bind_user(db, current_user)
     return current_user
 
 
