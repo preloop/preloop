@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now lists the audit hash chain, retention, legal holds and signed exports
   as open source, and `SECURITY.md` names the latest release line instead of
   a fixed minor. Refs #1486.
+- Taking control of a desktop view requires another admin's approval when
+  another active member can decide approvals. Single-admin accounts still
+  self-confirm with a reason (#1567).
 
 - `preloop agents discover` and `preloop agents status` print an
   `Operator notes:` line for Cursor: headless `--print` runs of Cursor CLI

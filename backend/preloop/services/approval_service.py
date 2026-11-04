@@ -1722,6 +1722,8 @@ class ApprovalService:
         account_id: str,
         managed_agent_id: Optional[uuid.UUID],
         required_mode: str,
+        *,
+        recipient_user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Optional[ApprovalBypass]:
         """Return an active bypass covering *every* approver, or None.
 
@@ -1744,12 +1746,17 @@ class ApprovalService:
             managed_agent_id: Agent raising the request, if known.
             required_mode: Minimum strength; ``auto_approve`` matches only
                 auto-approve bypasses, ``mute_notifications`` matches either.
+            recipient_user_ids: Explicit recipients for notification mute checks.
 
         Returns:
             The bypass to attribute the decision to, or None.
         """
         try:
-            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            approver_user_ids = (
+                list(recipient_user_ids)
+                if recipient_user_ids is not None
+                else await self._get_all_approver_user_ids(approval_workflow)
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
                 "Could not resolve approvers for bypass check on workflow %s: %s; "
@@ -2698,6 +2705,8 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        *,
+        recipient_user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send notifications for an approval request based on user preferences.
 
@@ -2714,7 +2723,10 @@ class ApprovalService:
 
         Args:
             approval_request: The approval request to notify about
-            approval_workflow: The approval workflow with approver configuration
+            approval_workflow: The persistent workflow with channel configuration
+            recipient_user_ids: Override per-user recipients without changing the
+                saved workflow. None uses workflow approvers; an empty list sends
+                no per-user notifications. Webhooks keep the workflow destination.
 
         Returns:
             Dict with results per notification channel
@@ -2749,6 +2761,7 @@ class ApprovalService:
                 str(approval_request.account_id),
                 approval_request.managed_agent_id,
                 required_mode=ApprovalBypassMode.MUTE_NOTIFICATIONS,
+                recipient_user_ids=recipient_user_ids,
             )
         except Exception as mute_error:  # pragma: no cover - defensive
             logger.warning(
@@ -2782,7 +2795,11 @@ class ApprovalService:
         notification_audits: list[dict[str, Any]] = []
         approver_user_ids: List[uuid.UUID] = []
         try:
-            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            approver_user_ids = (
+                list(recipient_user_ids)
+                if recipient_user_ids is not None
+                else await self._get_all_approver_user_ids(approval_workflow)
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
@@ -2811,7 +2828,7 @@ class ApprovalService:
         # Push first so watch/mobile get the head start.
         try:
             push_result = await self._send_push_notification(
-                approval_request, approval_workflow
+                approval_request, approval_workflow, user_ids=approver_user_ids
             )
             results["mobile_push"] = push_result
         except Exception as e:
@@ -2847,7 +2864,7 @@ class ApprovalService:
         if send_immediate_email:
             if immediate_email_ids:
                 email_user_ids: Optional[List[uuid.UUID]] = immediate_email_ids
-            elif approver_user_ids:
+            elif approver_user_ids or recipient_user_ids is not None:
                 # Approvers exist but none are due immediate email (e.g. push-only).
                 email_user_ids = []
             else:
@@ -3394,6 +3411,8 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        *,
+        user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send mobile push notification for approval request.
 
@@ -3404,6 +3423,7 @@ class ApprovalService:
         Args:
             approval_request: The approval request
             approval_workflow: The approval workflow
+            user_ids: Explicit recipients; None resolves the workflow approvers.
 
         Returns:
             Dict with send result
@@ -3440,8 +3460,12 @@ class ApprovalService:
             sync_db = next(get_db_session())
             try:
                 # Get all approver user IDs (including team members)
-                approver_user_ids = self._get_all_approver_user_ids_sync(
-                    approval_workflow, sync_db
+                approver_user_ids = (
+                    list(user_ids)
+                    if user_ids is not None
+                    else self._get_all_approver_user_ids_sync(
+                        approval_workflow, sync_db
+                    )
                 )
 
                 if not approver_user_ids:

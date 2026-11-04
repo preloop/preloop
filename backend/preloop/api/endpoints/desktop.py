@@ -699,24 +699,6 @@ def _has_other_approver(db: Session, user: models.User) -> bool:
     return bool(_other_approver_ids(db, user, limit=1))
 
 
-def _notify_workflow(workflow: Any, approver_ids: list[uuid.UUID]) -> Any:
-    """The workflow to notify with, never addressed only to the requester.
-
-    The account default workflow usually names the owner, who may be the
-    requester. A transient copy (never added to a session) addressed to the
-    other admins makes sure someone who can decide hears about it.
-    """
-    copy = models.ApprovalWorkflow(
-        **{
-            column.name: getattr(workflow, column.name)
-            for column in models.ApprovalWorkflow.__table__.columns
-        }
-    )
-    copy.approver_user_ids = list(approver_ids)
-    copy.approver_team_ids = None
-    return copy
-
-
 async def _request_control_approval(
     user: models.User, view_id: str, reason: str
 ) -> Optional[JSONResponse]:
@@ -813,9 +795,8 @@ async def _request_control_approval(
             try:
                 await service.send_notifications(
                     approval,
-                    _notify_workflow(
-                        workflow, [uuid.UUID(a) for a in create["approver_ids"]]
-                    ),
+                    workflow,
+                    recipient_user_ids=[uuid.UUID(a) for a in create["approver_ids"]],
                 )
             except Exception:  # noqa: BLE001 - the request is visible anyway
                 logger.warning(

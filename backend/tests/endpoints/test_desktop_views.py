@@ -16,6 +16,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, AsyncIterator, Optional
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -1705,8 +1706,8 @@ def test_control_request_notifies_the_other_admins_not_the_requester(
     colleague = two_admins
     notified = []
 
-    async def capture(self, approval, workflow):
-        notified.append(list(workflow.approver_user_ids or []))
+    async def capture(self, approval, workflow, *, recipient_user_ids):
+        notified.append(recipient_user_ids)
         return {}
 
     monkeypatch.setattr(ApprovalService, "send_notifications", capture)
@@ -1724,6 +1725,82 @@ def test_control_request_notifies_the_other_admins_not_the_requester(
 
     asyncio.run(scenario())
     assert notified == [[colleague.id]]
+
+
+@pytest.mark.parametrize("channel", ["webhook", "slack", "mattermost"])
+def test_control_request_queues_workflow_webhook(
+    harness: Harness, two_admins: models.User, monkeypatch: Any, channel: str
+) -> None:
+    """Recipient selection must not replace the persistent workflow row."""
+    from preloop.services import chat_worker
+    from preloop.services.approval_service import ApprovalService
+
+    h = harness
+    workflow = models.ApprovalWorkflow(
+        account_id=h.user.account_id,
+        name="Desktop approval notifications",
+        approval_type="standard",
+        is_default=True,
+        approver_user_ids=[h.user.id],
+        channel_configs={channel: {"url": "https://chat.example.com/approvals"}},
+    )
+    h.db.add(workflow)
+    h.db.commit()
+    # Only external per-user delivery is stubbed. Keep the webhook shim,
+    # delivery outbox and notification audit on the real database session.
+    monkeypatch.setattr(
+        ApprovalService,
+        "_partition_approvers_for_stagger",
+        AsyncMock(
+            return_value={
+                "push_capable": [two_admins.id],
+                "email_only": [two_admins.id],
+                "both_immediate": [],
+                "both_stagger": [],
+                "all_email": [two_admins.id],
+            }
+        ),
+    )
+    push = AsyncMock(return_value={"success": True})
+    email = AsyncMock(return_value={"success": True})
+    chat = Mock(return_value=1)
+    monkeypatch.setattr(ApprovalService, "_send_push_notification", push)
+    monkeypatch.setattr(ApprovalService, "_send_email_notification", email)
+    monkeypatch.setattr(chat_worker, "enqueue_approval_notifications", chat)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert asked.status_code == 202, asked.text
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            delivery = (
+                h.db.query(models.WebhookDelivery)
+                .filter(models.WebhookDelivery.subject_id == approval_id)
+                .one()
+            )
+            assert delivery.status == "pending"
+            shim = h.db.get(models.WebhookEndpoint, delivery.endpoint_id)
+            assert shim.approval_workflow_id == workflow.id
+            assert shim.url == "https://chat.example.com/approvals"
+            h.db.refresh(workflow)
+            assert workflow.approver_user_ids == [h.user.id]
+            assert workflow.approval_config["webhook_secret"]
+            assert h.db.is_active
+            push.assert_awaited_once_with(
+                push.await_args.args[0], workflow, user_ids=[two_admins.id]
+            )
+            email.assert_awaited_once_with(
+                email.await_args.args[0], workflow, user_ids=[two_admins.id]
+            )
+            assert chat.call_args.args[2] == [two_admins.id]
+            await endpoint.close()
+
+    asyncio.run(scenario())
 
 
 def test_existing_approval_found_under_the_lock_is_reused(harness, two_admins):
