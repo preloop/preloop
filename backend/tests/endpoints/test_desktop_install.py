@@ -142,6 +142,13 @@ def test_install_is_sent_over_agent_control_and_reports_done(
             "unsupported",
             None,
         ),
+        # Any other plugin failure is a failure, not "unsupported".
+        (
+            "command_error",
+            {"status": "failed", "error": "command_failed"},
+            "failed",
+            "desktop_failed",
+        ),
     ],
 )
 def test_install_failures_and_old_plugins(
@@ -204,3 +211,22 @@ def test_unknown_request_and_other_agents_are_404(nats, client, db_session, test
     assert (
         client.get(f"/api/v1/agents/{agent.id}/desktop/install/nope").status_code == 404
     )
+
+
+def test_a_repeated_result_is_audited_once(nats, client, db_session, test_user):
+    agent, token = _agent(client, db_session, test_user, "openclaw-desk-twice")
+    base = f"/api/v1/agents/{agent.id}/desktop/install"
+    request_id = client.post(base).json()["request_id"]
+    ok = {"status": "completed", "desktop_install": {"ok": True}}
+    _reply(client, token, request_id, "command_result", ok)
+    _reply(client, token, request_id, "command_result", ok)
+    _reply(
+        client,
+        token,
+        request_id,
+        "command_result",
+        {"status": "completed", "desktop_install": {"ok": False}},
+    )
+    assert client.get(f"{base}/{request_id}").json()["state"] == "done"
+    assert len(_audit(db_session, "desktop.install.succeeded")) == 1
+    assert _audit(db_session, "desktop.install.failed") == []

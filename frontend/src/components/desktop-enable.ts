@@ -35,6 +35,8 @@ export const DESKTOP_ENABLE_STRINGS = {
       'Installing needs root or passwordless sudo on the host. The agent is unaffected.',
     desktop_failed:
       'The desktop install failed on the host. The agent is unaffected.',
+    desktop_timed_out:
+      'The host has not reported back. Check the agent host, or run the command there.',
   } as Record<string, string>,
   docs: 'Desktop setup',
 };
@@ -50,6 +52,9 @@ export class DesktopEnableElement extends LitElement {
 
   /** How often a running install is re-checked. */
   @property({ attribute: false }) pollMs = 3000;
+
+  /** Give up following after this long (the install itself takes minutes). */
+  @property({ attribute: false }) followMs = 20 * 60 * 1000;
 
   @state() private phase: Phase = 'idle';
   @state() private error: string | null = null;
@@ -102,6 +107,7 @@ export class DesktopEnableElement extends LitElement {
   }
 
   private async start(): Promise<void> {
+    this.stopPoll();
     this.phase = 'installing';
     this.error = null;
     let requestId: string;
@@ -116,7 +122,18 @@ export class DesktopEnableElement extends LitElement {
       this.phase = 'command';
       return;
     }
+    if (!this.isConnected) return;
+    const deadline = Date.now() + this.followMs;
+    const giveUp = (error: string) => {
+      this.stopPoll();
+      this.error = error;
+      this.phase = 'failed';
+    };
     this.poll = window.setInterval(async () => {
+      if (Date.now() > deadline) {
+        giveUp('desktop_timed_out');
+        return;
+      }
       try {
         const status = await getDesktopInstall(this.agentId, requestId);
         if (status.state === 'pending') return;
@@ -136,8 +153,14 @@ export class DesktopEnableElement extends LitElement {
           this.error = status.error || 'desktop_failed';
           this.phase = 'failed';
         }
-      } catch {
-        // Transient: ask again on the next tick.
+      } catch (error) {
+        // 403/404 will not change on retry; anything else is transient.
+        if (
+          error instanceof DesktopApiError &&
+          (error.status === 403 || error.status === 404)
+        ) {
+          giveUp('desktop_failed');
+        }
       }
     }, this.pollMs);
   }

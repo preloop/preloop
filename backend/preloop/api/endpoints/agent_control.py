@@ -1071,11 +1071,13 @@ def _persist_agent_control_result(
     envelope_name = (
         command.envelope.get("name") if isinstance(command.envelope, dict) else None
     )
-    if envelope_name == DESKTOP_INSTALL_COMMAND and command.status not in {
-        "failed",
-        "expired",
-        "cancelled",
-    }:
+    # Audit the first result only: a repeated result is ignored by
+    # mark_terminal_result and must not write a second audit row.
+    if (
+        envelope_name == DESKTOP_INSTALL_COMMAND
+        and command.status not in {"failed", "expired", "cancelled"}
+        and crud_agent_control_command.command_result_payload(command) is None
+    ):
         _audit_desktop_install_result(
             db, command=command, inbound_name=inbound.name, payload=inbound.payload
         )
@@ -2575,6 +2577,8 @@ async def release_managed_agent_session(
 # one-line command instead. The request id is the command id.
 
 DESKTOP_INSTALL_COMMAND = "desktop.install"
+#: What the agent-control kit answers for a command name it does not know.
+UNKNOWN_COMMAND_ERROR = "unsupported agent-control command"
 DESKTOP_INSTALL_ERRORS = frozenset(
     {
         "desktop_unsupported_os",
@@ -2601,8 +2605,13 @@ def _desktop_install_outcome(
         error = result.get("error")
         return "failed", error if error in DESKTOP_INSTALL_ERRORS else "desktop_failed"
     error = payload.get("error")
-    if errored and error in DESKTOP_INSTALL_ERRORS:
-        return "failed", str(error)
+    if errored:
+        # Only the kit's own refusal means the plugin predates the command.
+        if error == UNKNOWN_COMMAND_ERROR:
+            return "unsupported", None
+        return "failed", str(error) if error in DESKTOP_INSTALL_ERRORS else (
+            "desktop_failed"
+        )
     return "unsupported", None
 
 

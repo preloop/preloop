@@ -165,3 +165,68 @@ describe('desktop-enable', () => {
     expect(text(el)).to.include(DESKTOP_ENABLE_STRINGS.runOnHost);
   });
 });
+
+describe('desktop-enable follow limits', () => {
+  let fetchStub: sinon.SinonStub;
+  afterEach(() => {
+    fixtureCleanup();
+    fetchStub?.restore();
+  });
+
+  function stub(getStatus: number, body: unknown) {
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (_input, init) => {
+      const method = String(init?.method || 'GET').toUpperCase();
+      if (method === 'POST')
+        return new Response(
+          JSON.stringify({ request_id: 'r', state: 'pending' }),
+          {
+            status: 202,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      return new Response(JSON.stringify(body), {
+        status: getStatus,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+  }
+
+  it('stops following on 404', async () => {
+    stub(404, { detail: 'Request not found' });
+    const el = await fixture<DesktopEnableElement>(
+      html`<desktop-enable
+        agentId="a"
+        controlOnline
+        .pollMs=${20}
+      ></desktop-enable>`
+    );
+    el.shadowRoot!.querySelector<HTMLElement>('sl-button.enable')!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes(
+        DESKTOP_ENABLE_STRINGS.failed.desktop_failed
+      )
+    );
+    const calls = fetchStub.callCount;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(fetchStub.callCount).to.equal(calls);
+  });
+
+  it('gives up after the follow deadline', async () => {
+    stub(200, { request_id: 'r', state: 'pending', error: null, command: '' });
+    const el = await fixture<DesktopEnableElement>(
+      html`<desktop-enable
+        agentId="a"
+        controlOnline
+        .pollMs=${20}
+        .followMs=${60}
+      ></desktop-enable>`
+    );
+    el.shadowRoot!.querySelector<HTMLElement>('sl-button.enable')!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes(
+        DESKTOP_ENABLE_STRINGS.failed.desktop_timed_out
+      )
+    );
+  });
+});
