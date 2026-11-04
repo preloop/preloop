@@ -59,6 +59,27 @@ screenshot is refused as `screenshot_too_large`, `screenshot_invalid` or
 still stored. More than 200 steps, or an
 empty batch, is a 422 for the whole request.
 
+### Finding the session id
+
+You do not need to mint a session token to learn `$SESSION_ID`. Pick a
+session key for the run, send it to the model gateway as
+`X-Preloop-Session-Id`, and resolve the same key once:
+
+```bash
+curl -G "https://preloop.example.com/api/v1/runtime-sessions/resolve" \
+  -H "Authorization: Bearer $AGENT_KEY" \
+  --data-urlencode "client_session_id=$PRELOOP_SESSION_ID" \
+  -d create=true
+# {"runtime_session_id": "...", "created": true}
+```
+
+`create=true` creates the session exactly as the gateway's first request
+would, so the steps and the model turns share one session whichever comes
+first. Without it, an unknown key is a 404, as is a key from another account.
+Every gateway response for a session-attributed request also carries the id
+as `X-Preloop-Runtime-Session-Id`. `PRELOOP_RUNTIME_SESSION_ID`, when set,
+still wins in both adapters.
+
 A missing or unknown bearer is 401. A session that belongs to another
 account is 404. When the key is pinned to a runtime session and the path
 names a different one, the response is 403. A session that has already
@@ -77,6 +98,8 @@ when Preloop is unreachable:
 ```python
 from preloop_browser_use import PreloopBrowserUseReporter
 
+# PRELOOP_URL, PRELOOP_API_KEY and PRELOOP_SESSION_ID (the key your LLM
+# client sends the gateway as X-Preloop-Session-Id) are enough.
 reporter = PreloopBrowserUseReporter.from_env()
 history = await reporter.run(agent, gif=True)
 ```
@@ -107,6 +130,8 @@ imports a finished Skyvern task: each step becomes a browser step with
 task, or from Skyvern's task webhook:
 
 ```bash
+preloop-skyvern-import --task tsk_123 --client-session-id "$PRELOOP_SESSION_ID"
+# or, with a known runtime session id:
 preloop-skyvern-import --task tsk_123 --session "$SESSION_ID"
 ```
 

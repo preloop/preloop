@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so every API replica shares one budget; refusals are 429 with
   `Retry-After` and code `rate_limited`. Configure with `RATE_LIMIT_*`
   variables, see docs/operations/rate-limiting.md.
+- Browser adapters find their runtime session without
+  `PRELOOP_RUNTIME_SESSION_ID`. Gateway model responses (OpenAI, Anthropic,
+  Gemini; streaming too) carry `X-Preloop-Runtime-Session-Id` when the request
+  was attributed to a session, and the new
+  `GET /api/v1/runtime-sessions/resolve?client_session_id=<key>` maps the
+  `X-Preloop-Session-Id` key to the session with the gateway's keying, scoped
+  to the caller's account; `create=true` creates it as the gateway would. The
+  Browser Use reporter resolves `PRELOOP_SESSION_ID` and offers an `httpx`
+  hook for the header; the Skyvern importer takes `--client-session-id`.
+  The old variable keeps priority. Refs #1358.
 - Extension points for runner sharing. The runner session API passes the
   requested harness, workspace and operation to the account authorizer; a
   caller admitted through a grant sees only the harnesses and directories

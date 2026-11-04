@@ -64,13 +64,15 @@ class PreloopBrowserUseReporter:
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> PreloopBrowserUseReporter:
-        """Build from ``PRELOOP_URL``, ``PRELOOP_AGENT_KEY`` and
-        ``PRELOOP_RUNTIME_SESSION_ID``; disabled with one warning if unset."""
+        """Build from ``PRELOOP_URL``, ``PRELOOP_AGENT_KEY`` and either
+        ``PRELOOP_RUNTIME_SESSION_ID`` or ``PRELOOP_SESSION_ID`` (the gateway
+        session key, resolved to the runtime session); disabled with one
+        warning if unset."""
         target = PreloopTarget.from_env()
         if target is None:
             logger.warning(
                 "Preloop reporting disabled: set PRELOOP_URL, PRELOOP_AGENT_KEY "
-                "and PRELOOP_RUNTIME_SESSION_ID"
+                "and PRELOOP_SESSION_ID (or PRELOOP_RUNTIME_SESSION_ID)"
             )
         return cls(target, **kwargs)
 

@@ -1076,6 +1076,16 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Gateway Identity Providers"],
     )
+    # Before account.router: its "/runtime-sessions/{runtime_session_id}"
+    # route would otherwise capture "/runtime-sessions/resolve". Gateway
+    # bearer auth happens inside the route (#1358).
+    from preloop.api.endpoints import runtime_session_resolve
+
+    app.include_router(
+        runtime_session_resolve.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+    )
     app.include_router(
         account.router,
         prefix="/api/v1",
@@ -1666,6 +1676,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Browser-side adapters read the session the gateway attributed the
+        # request to (#1358).
+        expose_headers=["X-Preloop-Runtime-Session-Id"],
     )
 
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()

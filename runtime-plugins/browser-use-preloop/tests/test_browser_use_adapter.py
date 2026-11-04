@@ -499,3 +499,74 @@ def test_history_gif_without_timing_is_plain(tmp_path: Any) -> None:
     path = tmp_path / "plain.gif"
     assert history_gif(steps, None, path) is None
     assert path.read_bytes().startswith(b"GIF")
+
+
+# --- Runtime session discovery without PRELOOP_RUNTIME_SESSION_ID (#1358) ---
+
+RESOLVED = "00000000-0000-4000-8000-0000000000bb"
+
+
+def _resolve_transport(calls: list, status: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if status != 200:
+            return httpx.Response(status, json={"detail": "nope"})
+        return httpx.Response(
+            200, json={"runtime_session_id": RESOLVED, "created": True}
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_from_env_resolves_session_from_client_session_key():
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    target = PreloopTarget.from_env(env, client=_resolve_transport(calls))
+    assert target is not None and target.runtime_session_id == RESOLVED
+    (request,) = calls
+    assert request.url.path == "/api/v1/runtime-sessions/resolve"
+    assert request.url.params["client_session_id"] == "run-42"
+    assert request.url.params["create"] == "true"
+    assert request.headers["Authorization"] == "Bearer agent-key"
+
+
+def test_explicit_runtime_session_id_keeps_priority():
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+        "PRELOOP_RUNTIME_SESSION_ID": "sess-1",
+    }
+    target = PreloopTarget.from_env(env, client=_resolve_transport(calls))
+    assert target is not None and target.runtime_session_id == "sess-1"
+    assert calls == []
+
+
+def test_resolve_failure_disables_reporting_without_raising(caplog):
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    with caplog.at_level(logging.WARNING, logger="preloop_browser_use"):
+        target = PreloopTarget.from_env(env, client=_resolve_transport(calls, 404))
+    assert target is None and len(calls) == 1
+    assert "resolve" in caplog.text
+
+
+def test_gateway_response_hook_captures_session_header():
+    from preloop_browser_use import RuntimeSessionCapture
+
+    capture = RuntimeSessionCapture()
+    capture(httpx.Response(200, headers={"X-Preloop-Runtime-Session-Id": RESOLVED}))
+    capture(httpx.Response(200))
+    assert capture.runtime_session_id == RESOLVED
+    target = capture.target("http://preloop.test", "agent-key")
+    assert target is not None and target.runtime_session_id == RESOLVED
+    assert RuntimeSessionCapture().target("http://preloop.test", "k") is None

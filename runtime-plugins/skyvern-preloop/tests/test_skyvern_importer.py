@@ -482,3 +482,48 @@ def test_recording_timing_uses_task_and_step_creation() -> None:
         )["step_offsets"]
         == []
     )
+
+
+def test_cli_client_session_id_resolves_in_place_of_session(
+    monkeypatch, capsys, skyvern_handler, preloop_handler
+):
+    """``--client-session-id`` maps the gateway key to its session (#1358)."""
+    real = httpx.Client
+
+    def routed(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs.pop("follow_redirects", None)
+
+        def handler(request):
+            if request.url.host == "preloop.test":
+                return preloop_handler(request)
+            return skyvern_handler(request)
+
+        return real(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "Client", routed)
+    monkeypatch.setenv("SKYVERN_API_KEY", "sk-skyvern-test")
+    monkeypatch.setenv("PRELOOP_AGENT_KEY", "agent-key")
+    code = cli.main(
+        [
+            "--task",
+            TASK,
+            "--client-session-id",
+            "run-42",
+            "--skyvern-url",
+            SKYVERN,
+            "--preloop-url",
+            "http://preloop.test",
+        ]
+    )
+    capsys.readouterr()
+    assert code == 0
+    assert preloop_handler.sessions == {"run-42": "rs-1"}
+    step_paths = {p for p in preloop_handler.paths if p.endswith("/browser-steps")}
+    assert step_paths == {"/api/v1/runtime-sessions/rs-1/browser-steps"}
+
+
+def test_cli_needs_session_or_client_session_id(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--task", TASK])
+    capsys.readouterr()

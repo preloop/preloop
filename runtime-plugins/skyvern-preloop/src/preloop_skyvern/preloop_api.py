@@ -35,6 +35,49 @@ class PreloopTarget:
         return f"{base}/runtime-sessions/{self.runtime_session_id}/{suffix}"
 
 
+def resolve_runtime_session_id(
+    base_url: str,
+    agent_key: str,
+    client_session_id: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = 30.0,
+) -> str | None:
+    """Map the gateway session key to its runtime session id (#1358).
+
+    Calls ``GET /api/v1/runtime-sessions/resolve?create=true`` with the key
+    the agent sends the gateway as ``X-Preloop-Session-Id``, so the import
+    lands on the session that holds the agent's model turns.
+
+    Returns:
+        The runtime session id, or ``None`` when it could not be resolved.
+    """
+    base = base_url.rstrip("/")
+    if not base.endswith("/api/v1"):
+        base += "/api/v1"
+    owns = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{base}/runtime-sessions/resolve",
+            params={"client_session_id": client_session_id, "create": "true"},
+            headers={"Authorization": f"Bearer {agent_key}"},
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "Preloop session resolve returned HTTP %s", response.status_code
+            )
+            return None
+        value = response.json().get("runtime_session_id")
+        return value if isinstance(value, str) and value else None
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        logger.warning("Preloop session resolve failed: %s", type(exc).__name__)
+        return None
+    finally:
+        if owns:
+            http.close()
+
+
 @dataclass
 class StepTotals:
     """Summed batch results."""
