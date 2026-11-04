@@ -123,6 +123,43 @@ def test_old_execution_logs_go_and_the_execution_summary_stays(db_session, accou
     assert result.classes[purge.SWEEP_EXECUTION_LOGS] == 3
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_newer_line_of_an_old_execution_survives(
+    db_session: Session,
+    account: models.Account,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    """The line cutoff applies independently of its execution's age."""
+    execution = _execution(db_session, account.id, age_days=400, logs=0)
+    old, recent = [
+        models.FlowExecutionLog(
+            execution_id=execution.id,
+            timestamp=datetime.now(UTC) - timedelta(days=age),
+            log_type="log",
+            message=message,
+        )
+        for age, message in [(400, "old line"), (10, "recent line")]
+    ]
+    db_session.add_all([old, recent])
+    db_session.flush()
+    old_id, recent_id = old.id, recent.id
+    db_session.commit()
+    monkeypatch.setattr(settings, "retention_purge_dry_run", dry_run)
+
+    result = _run(db_session, account)
+
+    remaining = set(
+        db_session.scalars(
+            select(models.FlowExecutionLog.id).where(
+                models.FlowExecutionLog.execution_id == execution.id
+            )
+        )
+    )
+    assert result.classes[purge.SWEEP_EXECUTION_LOGS] == 1
+    assert remaining == ({old_id, recent_id} if dry_run else {recent_id})
+
+
 def test_execution_logs_follow_the_accounts_evidence_retention(db_session, account):
     execution = _execution(db_session, account.id, age_days=250)
     account.meta_data = {"retention": {CLASS_EVIDENCE: 200}}
