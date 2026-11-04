@@ -48,7 +48,7 @@ func TestLogindCancelledSleepKeepsNextInhibitor(t *testing.T) {
 	for _, wakeFirst := range []bool{false, true} {
 		name := "queued sleep then wake"
 		if wakeFirst {
-			name = "wake drains queued sleep"
+			name = "wake then queued sleep cleanup"
 		}
 		t.Run(name, func(t *testing.T) {
 			var closes []*atomic.Int32
@@ -73,6 +73,10 @@ func TestLogindCancelledSleepKeepsNextInhibitor(t *testing.T) {
 			}
 			if ok, woke := waitForReconnect(nil, events, time.Minute); !ok || !woke {
 				t.Fatalf("waitForReconnect = (%v, %v), want (true, true)", ok, woke)
+			}
+			if wakeFirst {
+				// The next consumer releases the old event after reconnect.
+				(<-events).release()
 			}
 			if len(closes) != 2 {
 				t.Fatalf("acquired %d inhibitors, want a fresh inhibitor after wake", len(closes))
@@ -155,7 +159,7 @@ func TestLogindConcurrentOldReleasePreservesWakeInhibitor(t *testing.T) {
 func TestLogindDelayedSleepDoesNotReplayAfterWake(t *testing.T) {
 	for _, lookup := range []string{"owner", "state", "after wake"} {
 		blockedLookup := lookup != "after wake"
-		name := lookup + " lookup returns after wake drain"
+		name := lookup + " lookup returns after wake handling"
 		t.Run(name, func(t *testing.T) {
 			testenv.SetTempHome(t)
 			withHeartbeatEvery(t, 25*time.Millisecond)
@@ -224,7 +228,7 @@ func TestLogindDelayedSleepDoesNotReplayAfterWake(t *testing.T) {
 			}
 			_ = conn.Close()
 			if len(events) != 0 {
-				t.Fatal("wake did not finish draining the power queue")
+				t.Fatal("wake was not consumed")
 			}
 			resume()
 			if !blockedLookup {
@@ -331,6 +335,91 @@ func TestLogindPowerSourceRequiresAuthenticatedSleepState(t *testing.T) {
 			}
 			if scenario == "forged sender" && queries != 0 {
 				t.Fatal("forged signal reached the state lookup")
+			}
+		})
+	}
+}
+
+func TestWakePreservesSubsequentSleepForReconnect(t *testing.T) {
+	for _, disconnected := range []bool{false, true} {
+		name := "active session"
+		if disconnected {
+			name = "reconnect backoff"
+		}
+		t.Run(name, func(t *testing.T) {
+			testenv.SetTempHome(t)
+			inhibitor := &logindInhibitor{acquire: func() (func(), error) {
+				return func() {}, nil
+			}}
+			inhibitor.take()
+			t.Cleanup(func() { inhibitor.releaser()() })
+			source := &logindPowerSource{
+				inhibitor:         inhibitor,
+				epoch:             &runnerPowerEpoch{},
+				owner:             func() (string, error) { return ":1.42", nil },
+				preparingForSleep: func(string) (bool, error) { return true, nil },
+			}
+			observe := func(sleeping bool) runnerPowerEvent {
+				event, ok := source.event(&dbus.Signal{
+					Sender: ":1.42", Name: logindInterface + ".PrepareForSleep", Body: []any{sleeping},
+				})
+				if !ok {
+					t.Fatal("power observation was rejected")
+				}
+				return event
+			}
+			oldSleep := observe(true)
+			wake := observe(false)
+			nextSleep := observe(true)
+			events := make(chan runnerPowerEvent, 4)
+			// The busy consumer sees the prior wake, an old delayed sleep,
+			// then a genuine second suspend that must survive reconnect.
+			events <- wake
+			events <- oldSleep
+			events <- nextSleep
+			jobs := newRunnerJobs(1)
+			jobs.power = events
+			interrupt := make(chan os.Signal, 1)
+			if disconnected {
+				if ok, woke := waitForReconnect(interrupt, events, time.Minute); !ok || !woke {
+					t.Fatalf("waitForReconnect = (%v, %v), want (true, true)", ok, woke)
+				}
+			} else {
+				server, _, _ := jobServer(t, map[string]any{"type": "hello"})
+				conn := dialJobServer(t, server)
+				err := runRunnerSession(conn, interrupt, io.Discard, jobs)
+				_ = conn.Close()
+				if !errors.Is(err, errRunnerWoke) {
+					t.Fatalf("session ended with %v, want errRunnerWoke", err)
+				}
+			}
+			select {
+			case <-nextSleep.released:
+				t.Fatal("wake discarded the next suspend's unreleased inhibitor")
+			default:
+			}
+			if len(events) != 2 {
+				t.Fatal("wake consumed events that belong to the next session")
+			}
+			server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
+			conn := dialJobServer(t, server)
+			stopped := make(chan error, 1)
+			go func() { stopped <- runRunnerSession(conn, interrupt, io.Discard, jobs) }()
+			t.Cleanup(func() {
+				interrupt <- os.Interrupt
+				select {
+				case <-stopped:
+				case <-time.After(2 * time.Second):
+					t.Error("reconnected session did not stop")
+				}
+			})
+			waitForMessageType(t, messages, "going_to_sleep")
+			for _, event := range []runnerPowerEvent{oldSleep, nextSleep} {
+				select {
+				case <-event.released:
+				case <-time.After(2 * time.Second):
+					t.Fatal("reconnected session did not release its consumed sleep event")
+				}
 			}
 		})
 	}

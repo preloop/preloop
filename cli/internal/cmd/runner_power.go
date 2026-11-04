@@ -61,12 +61,39 @@ type runnerPowerEvent struct {
 // runnerPowerEpoch invalidates pending sleep observations across both wake
 // sources, including observations still blocked on a system-bus request.
 type runnerPowerEpoch struct {
-	generation atomic.Uint64
+	generation   atomic.Uint64
+	mu           sync.Mutex
+	lastWakeWall time.Time
 }
 
 func (p *runnerPowerEpoch) wakeEvent() runnerPowerEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastWakeWall = time.Now().Round(0)
 	p.generation.Add(1)
 	return runnerPowerEvent{kind: runnerPowerWake}
+}
+
+// clockWakeEvent detects only gaps after the latest known wake. A delayed
+// sample must not repeat logind's wake and invalidate a subsequent sleep.
+func (p *runnerPowerEpoch) clockWakeEvent(prevWall, nowWall time.Time, interval time.Duration) (runnerPowerEvent, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if nowWall.Before(prevWall) {
+		// A wall-clock reset must not leave a future wake timestamp
+		// suppressing subsequent suspend detection.
+		p.lastWakeWall = time.Time{}
+		return runnerPowerEvent{}, false
+	}
+	if p.lastWakeWall.After(prevWall) {
+		prevWall = p.lastWakeWall
+	}
+	if !runnerClockJumped(prevWall, nowWall, interval) {
+		return runnerPowerEvent{}, false
+	}
+	p.lastWakeWall = nowWall
+	p.generation.Add(1)
+	return runnerPowerEvent{kind: runnerPowerWake}, true
 }
 
 // newRunnerSleepEvent shares expiration across queued copies and releases the
@@ -159,8 +186,7 @@ func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{},
 			return
 		case <-ticker.C:
 			nowWall := time.Now().Round(0)
-			if runnerClockJumped(prevWall, nowWall, runnerWakeCheckEvery) {
-				event := epoch.wakeEvent()
+			if event, woke := epoch.clockWakeEvent(prevWall, nowWall, runnerWakeCheckEvery); woke {
 				select {
 				case events <- event:
 				default:
@@ -175,6 +201,8 @@ func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{},
 // ok=false on interrupt and woke=true when a wake cut the wait short, so
 // the caller retries at once with the backoff reset. A sleep event that
 // arrives while disconnected has nothing to report and is just released.
+// Stop consuming at wake: the queue may already contain the next suspend.
+// The new session rejects stale generations while preserving that later sleep.
 func waitForReconnect(
 	interrupt <-chan os.Signal, power <-chan runnerPowerEvent, d time.Duration,
 ) (ok, woke bool) {
@@ -189,23 +217,8 @@ func waitForReconnect(
 		case event := <-power:
 			event.release()
 			if event.kind == runnerPowerWake {
-				drainRunnerPowerEvents(power)
 				return true, true
 			}
-		}
-	}
-}
-
-// drainRunnerPowerEvents releases every queued event. Called on wake: a
-// sleep event still queued then belongs to the suspend that just ended,
-// however short it was, and must not mark the woken host asleep.
-func drainRunnerPowerEvents(power <-chan runnerPowerEvent) {
-	for {
-		select {
-		case event := <-power:
-			event.release()
-		default:
-			return
 		}
 	}
 }

@@ -101,7 +101,7 @@ type logindPowerSource struct {
 
 func (s *logindPowerSource) event(signal *dbus.Signal) (runnerPowerEvent, bool) {
 	// Capture before any blocking bus request. A clock wake can finish its
-	// queue drain while the owner or property reply is still pending.
+	// reconnect while the owner or property reply is still pending.
 	generation := s.epoch.generation.Load()
 	receivedAt := time.Now()
 	owner, err := s.owner()

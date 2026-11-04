@@ -801,7 +801,8 @@ func runRunnerSession(
 		case event := <-jobs.power:
 			if event.kind == runnerPowerWake {
 				event.release()
-				drainRunnerPowerEvents(jobs.power)
+				// Keep later events in FIFO order for the new session. Its
+				// epoch check discards old sleep without losing a new suspend.
 				return errRunnerWoke
 			}
 			if event.stale(time.Now()) {

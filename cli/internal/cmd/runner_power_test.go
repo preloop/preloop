@@ -229,7 +229,7 @@ func TestStaleSleepEventAfterWakeIsIgnored(t *testing.T) {
 }
 
 func TestShortSuspendDoesNotReplaySleep(t *testing.T) {
-	for _, order := range []string{"sleep then wake", "wake then sleep", "sleep delivered after wake drain"} {
+	for _, order := range []string{"sleep then wake", "wake then sleep", "sleep delivered after wake"} {
 		t.Run(order, func(t *testing.T) {
 			testenv.SetTempHome(t)
 			withHeartbeatEvery(t, 50*time.Millisecond)
@@ -238,16 +238,19 @@ func TestShortSuspendDoesNotReplaySleep(t *testing.T) {
 			jobs.power = events
 			interrupt := make(chan os.Signal, 1)
 			releases := 0
+			epoch := &runnerPowerEpoch{}
 			sleep := newRunnerSleepEvent(func() { releases++ })
+			sleep.epoch = epoch
+			sleep.generation = epoch.generation.Load()
 			sleep.at = time.Now().Add(-5 * time.Second)
 			// Simulate the 3 s inhibitor deadline firing while the session
 			// is blocked, followed by a wake inside the 10 s age limit.
-			// Keep one event unreleased to also verify the wake drain
-			// releases pending inhibitors instead of relying on expiration.
+			// Keep one event unreleased so the new session must reject its
+			// old epoch and release it, without relying on expiration.
 			if order != "wake then sleep" {
 				sleep.release()
 			}
-			wake := runnerPowerEvent{kind: runnerPowerWake}
+			wake := epoch.wakeEvent()
 			switch order {
 			case "sleep then wake":
 				events <- sleep
@@ -267,14 +270,11 @@ func TestShortSuspendDoesNotReplaySleep(t *testing.T) {
 				t.Fatalf("session ended with %v, want errRunnerWoke", err)
 			}
 			_ = conn.Close()
-			if len(events) != 0 {
-				t.Fatal("events left queued after wake")
-			}
 			// Closing the client does not guarantee that the server has
 			// finished reading its frames; use a separate server below.
 			waitForMessageType(t, messages, "heartbeat")
 
-			if order == "sleep delivered after wake drain" {
+			if order == "sleep delivered after wake" {
 				events <- sleep
 			}
 			server, messages, _ = jobServer(t, map[string]any{"type": "hello"})
@@ -311,6 +311,9 @@ func TestShortSuspendDoesNotReplaySleep(t *testing.T) {
 			if releases != 1 {
 				t.Fatalf("sleep inhibitor released %d times, want 1", releases)
 			}
+			if len(events) != 0 {
+				t.Fatal("new session did not consume stale sleep events")
+			}
 		})
 	}
 }
@@ -326,15 +329,69 @@ func TestSleepEventExpiresWhenInhibitorIsReleased(t *testing.T) {
 	}
 }
 
-func TestReconnectWakeDrainsQueuedSleep(t *testing.T) {
+func TestReconnectWakeLeavesStaleSleepForNextConsumer(t *testing.T) {
 	events := make(chan runnerPowerEvent, 4)
-	events <- runnerPowerEvent{kind: runnerPowerWake}
+	epoch := &runnerPowerEpoch{}
 	released := false
-	events <- newRunnerSleepEvent(func() { released = true })
+	sleep := newRunnerSleepEvent(func() { released = true })
+	sleep.epoch = epoch
+	sleep.generation = epoch.generation.Load()
+	events <- epoch.wakeEvent()
+	events <- sleep
 	if ok, woke := waitForReconnect(nil, events, time.Minute); !ok || !woke {
 		t.Fatalf("waitForReconnect = (%v, %v), want (true, true)", ok, woke)
 	}
-	if !released || len(events) != 0 {
-		t.Fatal("wake must drain queued sleep events and release their inhibitors")
+	if released || len(events) != 1 {
+		t.Fatal("wake must leave later events queued for the next consumer")
+	}
+	queued := <-events
+	if !queued.stale(time.Now()) {
+		t.Fatal("old sleep event was not invalidated by the wake")
+	}
+	queued.release()
+	if !released {
+		t.Fatal("stale event did not release its inhibitor when consumed")
+	}
+}
+
+func TestClockWakeDoesNotInvalidateSleepAfterReportedWake(t *testing.T) {
+	epoch := &runnerPowerEpoch{}
+	epoch.wakeEvent() // logind reported the wake before the detector's sample.
+	nextSleep := newRunnerSleepEvent(func() {})
+	nextSleep.epoch = epoch
+	nextSleep.generation = epoch.generation.Load()
+	now := time.Now().Round(0)
+	previousSample := now.Add(-time.Minute)
+	if _, woke := epoch.clockWakeEvent(previousSample, now, 5*time.Second); woke {
+		t.Fatal("late clock sample reported the same wake twice")
+	}
+	if nextSleep.stale(now) {
+		t.Fatal("duplicate clock wake invalidated a genuine subsequent sleep")
+	}
+	// Two suspends can occur between detector samples. A later gap since
+	// the reported wake must still reconnect, even though logind advanced
+	// the epoch since previousSample.
+	later := now.Add(time.Minute)
+	if event, woke := epoch.clockWakeEvent(previousSample, later, 5*time.Second); !woke || event.kind != runnerPowerWake {
+		t.Fatal("a later real suspend was hidden by the earlier logind wake")
+	}
+	if nextSleep.generation == epoch.generation.Load() {
+		t.Fatal("the later wake did not invalidate the previous sleep")
+	}
+	if _, woke := epoch.clockWakeEvent(previousSample, later, 5*time.Second); woke {
+		t.Fatal("repeated sample reported the later wake twice")
+	}
+}
+
+func TestClockWakeRecoversAfterWallClockMovesBack(t *testing.T) {
+	epoch := &runnerPowerEpoch{}
+	epoch.wakeEvent()
+	now := time.Now().Round(0)
+	reset := now.Add(-time.Hour)
+	if _, woke := epoch.clockWakeEvent(now, reset, 5*time.Second); woke {
+		t.Fatal("backward clock adjustment was treated as a wake")
+	}
+	if _, woke := epoch.clockWakeEvent(reset, reset.Add(time.Minute), 5*time.Second); !woke {
+		t.Fatal("old wake timestamp masked a suspend after the clock reset")
 	}
 }
