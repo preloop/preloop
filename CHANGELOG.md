@@ -218,7 +218,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admin, or holds a `flows` grant through the authorizer (`runner:flow_use`
   with `operation=lease`), the same rule as pinning `agent_config.runner_id`.
   Admin-registered and registrant-less runners, the `auto` and `server`
-  pools, and flows with no recorded author are unchanged (#2176).
+  pools, and flows with no recorded author (including one whose author was
+  hard deleted) are unchanged. A refused runner counts as unavailable for
+  harness routing, so `harness_fallback: fallback_server` applies (#2176).
 
 ### Fixed
 

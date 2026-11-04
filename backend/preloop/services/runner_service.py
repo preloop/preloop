@@ -653,8 +653,11 @@ def _flow_author_may_route_to(
 
     Runners registered by an admin or by nobody stay routable by pool, the
     ``auto`` and ``server`` pools are unaffected, and pinned leases are
-    checked when the flow is saved. Flows with no recorded author predate
-    authorship and keep the runner's flow consent as their gate.
+    checked when the flow is saved. Flows with no recorded author keep the
+    runner's flow consent as their gate: legacy rows that predate authorship,
+    and flows whose author was hard deleted (``created_by_user_id`` is
+    ``ON DELETE SET NULL``, so the two cannot be told apart). A deactivated
+    author is refused.
     """
     if pinned_runner_id is not None:
         return True
@@ -734,13 +737,16 @@ def runner_eligible_for_harness(
     pool: Optional[str] = None,
     pinned_runner_id: Optional[UUID] = None,
     admin_cache: Optional[Dict[Any, bool]] = None,
+    flow_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], Optional[Mapping[str, Any]]]:
     """The single eligibility rule for harness routing (contract B).
 
     Used by the lease and by the flow editor. A runner is eligible when it
     belongs to the account, the flow may use it, its inventory has an
     enabled, signed-in, runnable entry for ``harness`` that can run
-    ``model``, and it is online.
+    ``model``, and it is online. When ``flow_id`` is given, the flow's
+    author must also be allowed on the runner for explicit pool routing
+    (:func:`_flow_author_may_route_to`).
 
     Returns:
         ``(eligible, reason, entry)``. ``reason`` is a routing reason when
@@ -756,6 +762,20 @@ def runner_eligible_for_harness(
         pool=pool,
         pinned_runner_id=pinned_runner_id,
         admin_cache=admin_cache,
+    ):
+        return False, ROUTING_OWNER_HAS_NO_RUNNER, None
+    # A known flow also needs its author to be allowed on the runner (#2176),
+    # so routing and fallback decisions agree with what the lease accepts.
+    if flow_id is not None and not _flow_author_may_route_to(
+        db,
+        runner,
+        account_id=account_id,
+        pool=pool,
+        flow_id=flow_id,
+        pinned_runner_id=pinned_runner_id,
+        harness=harness,
+        workspace_id=None,
+        admin_cache=admin_cache if admin_cache is not None else {},
     ):
         return False, ROUTING_OWNER_HAS_NO_RUNNER, None
     entry = runner_harness_entry(runner, harness)
@@ -778,6 +798,7 @@ def harness_routing_reason(
     model: Optional[str] = None,
     pool: Optional[str] = None,
     pinned_runner_id: Optional[UUID] = None,
+    flow_id: Optional[str] = None,
 ) -> Tuple[int, Optional[str]]:
     """Count eligible runners and name why the rest cannot take the run.
 
@@ -799,6 +820,7 @@ def harness_routing_reason(
             pool=pool,
             pinned_runner_id=pinned_runner_id,
             admin_cache=cache,
+            flow_id=flow_id,
         )
         if ok:
             eligible += 1
@@ -915,6 +937,7 @@ def lease_job(
                 pool=pool,
                 pinned_runner_id=pinned,
                 admin_cache=admin_cache,
+                flow_id=flow_id,
             )
             if not ok:
                 continue
@@ -1088,6 +1111,7 @@ def lease_job(
             model=harness_model,
             pool=pool,
             pinned_runner_id=pinned,
+            flow_id=flow_id,
         )
         # Eligible but every slot is taken: still queued, no named cause.
         outcome["routing_reason"] = reason
