@@ -74,6 +74,10 @@ def resolve_runtime_session(
         client_session_id_is_explicit=True,
     )
     runtime_session_id, created = service.resolve_client_runtime_session(create=create)
+    if created:
+        # The request session does not commit on its own; without this the
+        # new row rolls back and the gateway later creates a different one.
+        db.commit()
     if runtime_session_id is None:
         raise HTTPException(status_code=404, detail="Runtime session not found")
     return RuntimeSessionResolveOut(

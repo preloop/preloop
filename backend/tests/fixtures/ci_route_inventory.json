@@ -579,5 +579,6 @@
   "WEBSOCKET /api/v1/ws/runtime-sessions/{runtime_session_id}": "deny",
   "WEBSOCKET /api/v1/ws/unified": "deny",
   "GET /api/v1/users/{user_id}/machine-credentials": "deny",
-  "POST /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}": "deny"
+  "POST /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}": "deny",
+  "GET /api/v1/runtime-sessions/resolve": "deny"
 }

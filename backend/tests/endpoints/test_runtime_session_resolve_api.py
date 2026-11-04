@@ -97,3 +97,24 @@ def test_other_account_key_gets_404(make_client, db_session, test_user):
     intruder = make_client(other, _key(db_session, other, name="Other key"))
     response = intruder.get(URL, params={"client_session_id": "conv-1"})
     assert response.status_code == 404
+
+
+def test_create_commits_the_new_session(db_session, test_user, monkeypatch):
+    """A created row must survive the request (review finding on #2194)."""
+    commits: list = []
+    real_commit = db_session.commit
+    monkeypatch.setattr(
+        db_session, "commit", lambda: (commits.append(1), real_commit())[1]
+    )
+    app = FastAPI()
+    app.include_router(runtime_session_resolve.router, prefix="/api/v1")
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    api_key = _key(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key)
+    )
+    with TestClient(app) as client:
+        commits.clear()
+        response = client.get(URL, params={"client_session_id": "c", "create": True})
+    assert response.status_code == 200 and response.json()["created"] is True
+    assert commits, "resolve with create=true must commit"
