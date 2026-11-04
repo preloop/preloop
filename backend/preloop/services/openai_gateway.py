@@ -5812,7 +5812,7 @@ class OpenAIGatewayService:
         headers.update(routing)
         from preloop.services.hosted_spend_guard import guard_unmetered_hosted_call
 
-        guard_unmetered_hosted_call(ai_model)
+        guard_unmetered_hosted_call(ai_model, account_id=self.auth_context.account_id)
         self._codex_transport_meta = {"transport": "http"}
         # Resolved while the DB phase is still open (account override).
         self._codex_ws_override_source = None
@@ -7330,7 +7330,7 @@ class OpenAIGatewayService:
         """
         from preloop.services.hosted_spend_guard import guard_unmetered_hosted_call
 
-        guard_unmetered_hosted_call(ai_model)
+        guard_unmetered_hosted_call(ai_model, account_id=self.auth_context.account_id)
         self.release_db_for_wait()
         try:
             response = _anthropic_passthrough_http_client().post(
@@ -7395,7 +7395,7 @@ class OpenAIGatewayService:
         """
         from preloop.services.hosted_spend_guard import guard_unmetered_hosted_call
 
-        guard_unmetered_hosted_call(ai_model)
+        guard_unmetered_hosted_call(ai_model, account_id=self.auth_context.account_id)
         self.release_db_for_wait()
         client = _anthropic_passthrough_http_client()
         try:

@@ -89,8 +89,12 @@ def hosted_tariff_unconfigured_error(
     )
 
 
-def guard_unmetered_hosted_call(model: Any) -> None:
+def guard_unmetered_hosted_call(model: Any, *, account_id: Any = None) -> None:
     """BYOK/OSS pass; metered hosted adapters must reserve before dispatch."""
+    from preloop.services.billing_enforcement import entitlements_enforced
+
+    if account_id is not None and not entitlements_enforced(account_id):
+        return
     meter = get_plugin_manager().get_service("hosted_spend")
     if meter is not None:
         meter.guard_unmetered(model)

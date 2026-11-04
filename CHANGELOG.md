@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Persisted global and per-account entitlement enforcement settings with atomic
+  actor/reason audit records. Optional billing hooks let gateway limits and
+  projected execution caps respect account exemptions; absent plugins retain
+  the environment fallback.
+
 ### Changed
 
 - **Breaking API change:** invitation creation, list, and detail responses

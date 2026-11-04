@@ -80,6 +80,13 @@ def account_running_cap(account: Any) -> int:
     Duck-typed on the account row so the CRUD layer can pass whatever it
     already loaded, and tests can pass a stub.
     """
+    # Billing projects plan limits into this metadata. A live exemption must
+    # bypass that projection immediately without rewriting the saved limit.
+    from preloop.plugins import get_plugin_manager
+
+    resolver = get_plugin_manager().get_service("entitlement_enforcement")
+    if callable(resolver) and not resolver(getattr(account, "id", None)):
+        return default_account_cap()
     meta = getattr(account, "meta_data", None)
     override = _coerce(meta.get(ACCOUNT_CAP_KEY)) if isinstance(meta, dict) else None
     if override is None:
