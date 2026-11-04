@@ -20827,8 +20827,11 @@ paths:
       tags:
       - Agent Control
       summary: Request Agent Desktop Install
-      description: Ask the agent's runtime plugin to enable a live desktop on its
+      description: 'Ask the agent''s runtime plugin to enable a live desktop on its
         host.
+
+
+        Returns 404 ``desktop_views_disabled`` when desktop views are disabled.'
       operationId: request_agent_desktop_install_api_v1_agents__agent_id__desktop_install_post
       security:
       - bearerAuth: []
@@ -20875,7 +20878,10 @@ paths:
 
         unsupported (the plugin does not know the command). Sync, so FastAPI
 
-        runs it in the threadpool off the event loop.'
+        runs it in the threadpool off the event loop.
+
+
+        Returns 404 ``desktop_views_disabled`` when desktop views are disabled.'
       operationId: get_agent_desktop_install_api_v1_agents__agent_id__desktop_install__request_id__get
       security:
       - bearerAuth: []

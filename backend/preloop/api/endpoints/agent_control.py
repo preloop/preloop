@@ -2603,8 +2603,10 @@ def _desktop_install_outcome(
         if result.get("ok") is True:
             return "done", None
         error = result.get("error")
+        error = error if isinstance(error, str) else None
         return "failed", error if error in DESKTOP_INSTALL_ERRORS else "desktop_failed"
     error = payload.get("error")
+    error = error if isinstance(error, str) else None
     if errored:
         # Only the kit's own refusal means the plugin predates the command.
         if error == UNKNOWN_COMMAND_ERROR:
@@ -2646,6 +2648,18 @@ def _require_manage_agents(*, current_user: models.User, db: Session) -> None:
     ensure_permission_in_oss(db, current_user, "manage_agents")
 
 
+def _require_desktop_install_enabled() -> None:
+    """Apply the desktop feature flag to installation and status requests."""
+    if not settings.desktop_views_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "desktop_views_disabled",
+                "message": "Desktop views are not enabled",
+            },
+        )
+
+
 @router.post(
     "/agents/{agent_id}/desktop/install",
     status_code=status.HTTP_202_ACCEPTED,
@@ -2663,7 +2677,11 @@ async def request_agent_desktop_install(
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Ask the agent's runtime plugin to enable a live desktop on its host."""
+    """Ask the agent's runtime plugin to enable a live desktop on its host.
+
+    Returns 404 ``desktop_views_disabled`` when desktop views are disabled.
+    """
+    _require_desktop_install_enabled()
     await run_db_off_loop(
         lambda: _require_manage_agents(current_user=current_user, db=db)
     )
@@ -2732,7 +2750,11 @@ def get_agent_desktop_install(
 ) -> dict[str, Any]:
     """State of one ``desktop.install`` request: pending, done, failed or
     unsupported (the plugin does not know the command). Sync, so FastAPI
-    runs it in the threadpool off the event loop."""
+    runs it in the threadpool off the event loop.
+
+    Returns 404 ``desktop_views_disabled`` when desktop views are disabled.
+    """
+    _require_desktop_install_enabled()
     _require_manage_agents(current_user=current_user, db=db)
     try:
         agent_uuid = uuid.UUID(agent_id)

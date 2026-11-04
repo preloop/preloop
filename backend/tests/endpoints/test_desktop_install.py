@@ -7,12 +7,14 @@ command row.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent
 from preloop.plugins import account_hooks
@@ -21,6 +23,12 @@ from tests.endpoints.test_agent_control import (
     _issue_runtime_token,
     _mark_agent_control_configured,
 )
+
+
+@pytest.fixture(autouse=True)
+def enable_desktop_views(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise installation with the desktop feature enabled by default."""
+    monkeypatch.setattr(settings, "desktop_views_enabled", True)
 
 
 @pytest.fixture
@@ -294,3 +302,62 @@ def test_offline_control_socket_is_the_structured_409(
     detail = response.json()["detail"]
     assert detail["code"] == "desktop_install_unavailable"
     assert detail["command"] == f"preloop desktop enable --agent {agent.id}"
+
+
+@pytest.mark.parametrize("error", [{}, []], ids=["object", "array"])
+@pytest.mark.parametrize(
+    ("name", "nested"),
+    [("command_result", True), ("command_result", False), ("command_error", False)],
+)
+def test_non_string_install_errors_preserve_the_control_socket(
+    nats: MagicMock,
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    error: Any,
+    name: str,
+    nested: bool,
+) -> None:
+    """Malformed error values remain terminal failures and allow heartbeats."""
+    agent, token = _agent(client, db_session, test_user, "openclaw-desk-json-error")
+    base = f"/api/v1/agents/{agent.id}/desktop/install"
+    request_id = client.post(base).json()["request_id"]
+    payload: dict[str, Any] = {"status": "failed"}
+    if nested:
+        payload["desktop_install"] = {"ok": False, "error": error}
+    else:
+        payload["error"] = error
+
+    # _reply requires a heartbeat on the same websocket after the result.
+    _reply(client, token, request_id, name, payload)
+    response = client.get(f"{base}/{request_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["state"], body["error"]) == ("failed", "desktop_failed")
+    audits = _audit(db_session, "desktop.install.failed")
+    assert len(audits) == 1
+    assert audits[0].details["error"] == "desktop_failed"
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+def test_install_routes_honor_disabled_desktop_views(
+    nats: MagicMock,
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    """Disabling desktop views blocks dispatch and polling an existing request."""
+    agent, _ = _agent(client, db_session, test_user, "openclaw-desk-disabled")
+    base = f"/api/v1/agents/{agent.id}/desktop/install"
+    request_id = client.post(base).json()["request_id"]
+    nats.publish.reset_mock()
+    monkeypatch.setattr(settings, "desktop_views_enabled", False)
+
+    url = base if method == "post" else f"{base}/{request_id}"
+    response = client.request(method, url)
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "desktop_views_disabled"
+    nats.publish.assert_not_awaited()
+    assert len(_audit(db_session, "desktop.install.requested")) == 1
