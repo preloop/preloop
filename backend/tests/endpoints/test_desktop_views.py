@@ -1548,6 +1548,9 @@ def test_denied_or_expired_control_request_never_forwards_input(
     denied = h.audit("desktop.control.denied")
     assert len(denied) == 1
     assert denied[0].details["approval_status"] == outcome
+    assert denied[0].details["approver_id"] == (
+        str(colleague.id) if outcome == "declined" else None
+    )
     assert h.audit("desktop.control.granted") == []
 
 

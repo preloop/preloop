@@ -828,13 +828,15 @@ async def apply_control_decision(
         if view is None:
             return None
         status = approval.status
+        # A grant requires an affirmative vote. For non-grants retain the
+        # latest actor for the audit, including the person who declined.
         approver_id = next(
             (
                 vote["user_id"]
                 for vote in reversed(approval.responses or [])
                 if isinstance(vote, dict)
                 and vote.get("user_id")
-                and vote.get("decision") == "approved"
+                and (status != "approved" or vote.get("decision") == "approved")
             ),
             None,
         )

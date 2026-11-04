@@ -280,7 +280,16 @@ async def test_bound_approval_ignores_tampered_arguments(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
-    ["account", "owner", "pending", "anonymous", "self", "inactive", "permission"],
+    [
+        "account",
+        "owner",
+        "pending",
+        "anonymous",
+        "self",
+        "inactive",
+        "permission",
+        "declining_vote",
+    ],
 )
 async def test_grant_callback_rechecks_persisted_binding_and_decision(
     control_rows: dict[str, Any],
@@ -311,6 +320,8 @@ async def test_grant_callback_rechecks_persisted_binding_and_decision(
         request.responses = []
     elif invalid == "self":
         request.responses = [{"user_id": str(test_user.id), "decision": "approved"}]
+    elif invalid == "declining_vote":
+        request.responses = [{"user_id": str(colleague.id), "decision": "declined"}]
     elif invalid == "inactive":
         colleague.is_active = False
     elif invalid == "permission":
