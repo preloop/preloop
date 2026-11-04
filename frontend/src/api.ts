@@ -9374,6 +9374,10 @@ export interface GovernancePolicyDocument extends GovernancePolicyVersion {
 }
 
 export interface GovernanceReviewSettings {
+  model_analysis_override?: boolean | null;
+  model_analysis_default?: boolean;
+  model_analysis_override_available?: boolean;
+  model_analysis_enabled?: boolean;
   mode: GovernanceReviewMode;
   stored_mode?: GovernanceReviewMode;
   effective_reason?: string | null;
@@ -9521,6 +9525,16 @@ export function convertGovernanceLegacyRules(): Promise<GovernancePolicyDocument
 
 export function getGovernanceReviewSettings(): Promise<GovernanceReviewSettings> {
   return governanceJson('/settings', 'Failed to load review settings');
+}
+
+export function updateGovernanceModelAnalysis(
+  override: boolean | null
+): Promise<GovernanceReviewSettings> {
+  return governanceJson(
+    '/model-analysis',
+    'Failed to save model analysis',
+    jsonBody('PUT', { model_analysis_override: override })
+  );
 }
 
 export function updateGovernanceReviewSettings(body: {

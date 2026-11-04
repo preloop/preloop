@@ -493,6 +493,8 @@ class CRUDGovernanceReviewSettings(CRUDBase[GovernanceReviewSettings]):
         settings audit preserves the user's choice through these transitions.
         Missing/ambiguous legacy attribution is deliberately not consent.
         """
+        if row.model_analysis_override is True:
+            return True
         if row.mode_changed_by_id is not None:
             return True
         if row.analysis_model_id is not None:
@@ -571,6 +573,40 @@ class CRUDGovernanceReviewSettings(CRUDBase[GovernanceReviewSettings]):
             set_=updates,
         )
         db.execute(statement)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        row = self.get_for_account(db, account_id=account_id)
+        assert row is not None
+        db.refresh(row)
+        return row
+
+    def set_model_analysis_override(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        enabled: Optional[bool],
+        commit: bool = True,
+    ) -> GovernanceReviewSettings:
+        """Set the account override; None restores the global default."""
+        if enabled is not None and type(enabled) is not bool:
+            raise GovernanceReviewValidationError(
+                "model_analysis_override must be boolean or null"
+            )
+        statement = pg_insert(GovernanceReviewSettings).values(
+            id=uuid4(),
+            account_id=account_id,
+            mode=default_review_mode(),
+            model_analysis_override=enabled,
+        )
+        db.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_governance_review_settings_account",
+                set_={"model_analysis_override": enabled, "updated_at": func.now()},
+            )
+        )
         if commit:
             db.commit()
         else:

@@ -447,7 +447,8 @@ async def run_scheduler_async(
     # run the review after every scheduler restart. The worker tasks no-op
     # unless an Enterprise handler is registered.
     if getattr(settings, "governance_review_enabled", True):
-
+        # Keep the sweep scheduled for account overrides even when the global
+        # default is off. The EE worker admits only enabled accounts.
         async def _publish_governance_session_digest_sweep() -> None:
             try:
                 await event_bus_service.publish_task("governance_session_digest_sweep")
@@ -478,7 +479,7 @@ async def run_scheduler_async(
             misfire_grace_time=3600,
         )
         logger.info(
-            "Scheduled governance review: digest sweep hourly, "
+            "Scheduled governance review (session sweep requires model analysis): "
             "weekly review Monday 07:00 UTC."
         )
 

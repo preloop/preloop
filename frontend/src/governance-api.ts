@@ -73,6 +73,7 @@ export interface FindingEvidence {
   tool?: ToolEvidence;
 }
 export interface GovernanceRun {
+  model_analysis_enabled?: boolean;
   id: string;
   window_start: string;
   window_end: string;

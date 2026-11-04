@@ -1369,10 +1369,18 @@ class Settings(BaseSettings):
     governance_review_enabled: bool = Field(
         True,
         description=(
-            "Schedule the governance session digest sweep hourly and the "
-            "weekly governance review for Monday 07:00 UTC. A scheduler "
+            "Schedule the deterministic weekly governance review and the "
+            "optional hourly session digest sweep. Review: Monday 07:00 UTC. A scheduler "
             "restart does not run either. Both tasks no-op unless an "
             "Enterprise handler is registered."
+        ),
+    )
+    governance_review_model_analysis_enabled: bool = Field(
+        False,
+        description=(
+            "Enable optional session analysis, AI usage policy summaries and "
+            "exception synthesis. Off by default; planned to return in 1.1.0. "
+            "Deterministic weekly reports do not require model analysis."
         ),
     )
     model_gateway_max_preview_chars: int = Field(

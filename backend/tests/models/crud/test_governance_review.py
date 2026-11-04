@@ -1232,3 +1232,28 @@ def test_historical_retirement_preserves_attempts(
             override_reason="Attempt to restart with a stale counter",
             commit=False,
         )
+
+
+@pytest.mark.parametrize("override", [True, False, None])
+def test_model_analysis_override_preserves_review_settings(
+    db_session, test_user, override
+):
+    from preloop.models.crud import crud_governance_review_settings
+
+    account_id = test_user.account_id
+    crud_governance_review_settings.set_thresholds(
+        db_session,
+        account_id=account_id,
+        detector_thresholds={"retry_limit": {"count": 7}},
+    )
+    row = crud_governance_review_settings.set_model_analysis_override(
+        db_session, account_id=account_id, enabled=override
+    )
+    assert row.model_analysis_override is override
+    assert row.detector_thresholds == {"retry_limit": {"count": 7}}
+    assert (
+        crud_governance_review_settings.get_or_default(
+            db_session, account_id=account_id
+        ).model_analysis_override
+        is override
+    )

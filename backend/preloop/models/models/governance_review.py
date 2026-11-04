@@ -246,6 +246,11 @@ class GovernanceReviewSettings(Base):
         nullable=False,
         comment="on_platform | off_over_budget | on_own_model | off",
     )
+    model_analysis_override: Mapped[Optional[bool]] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment="Null inherits the deployment default; true/false override report model analysis.",
+    )
     analysis_model_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("ai_model.id", ondelete="SET NULL"),

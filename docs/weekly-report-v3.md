@@ -1,5 +1,12 @@
 # Weekly report settings
 
+The weekly report is enabled by default and runs deterministic checks for every account, including accounts with no review settings row. Account report opt-outs and recipient preferences still apply. Quiet exception weeks send no email.
+
+Model analysis is off by default in 1.0.0 and is planned to return in 1.1.0. The global `GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED` setting defaults to `false`. Each account's `governance_review_settings.model_analysis_override` is nullable: `true` enables analysis, `false` disables it, and `null` inherits the global default. An account value wins even when the global default differs. Account admins choose **Model analysis for this account** on the review settings page; platform admins use the same selector on the account details page. This permits testing on one account while the global default remains off.
+
+When the effective value is off, no analysis model is resolved, no model budget is reserved, and no session work is queued. Deterministic reports are complete and say “Model analysis is not enabled.” The same gate covers session digests, semantic policy findings and follow-up checks, the AI usage policy summary, and optional exception-email synthesis. The latter retains its separate account opt-in and caps. When analysis is enabled, existing model selection, consent, allowance admission and daily/weekly limits apply; unknown allowances refuse summaries, and exhausted allowances do not prevent deterministic findings.
+
+
 Account settings expose independent switches through
 `GET` and `PUT /api/v1/weekly-report/preferences`:
 
@@ -37,6 +44,17 @@ user's keys or managed agents and requests on which they recorded a vote. Raw
 finding evidence is excluded from personal projections. Adjacent report windows
 are half-open, and replay-validation plus every `governance_` purpose are excluded from customer
 usage totals. Governance cost appears only on its policy-section analysis line.
+
+## Deployment and API reference
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `GOVERNANCE_REVIEW_ENABLED` / Helm `governanceReview.enabled` | `true` | Schedule deterministic weekly review and the account-filtered hourly sweep. |
+| `GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED` / Helm `governanceReview.modelAnalysisEnabled` | `false` | Model analysis default; account override takes precedence. |
+| `COST_DIGEST_ENABLED` | `true` | Monday factual exception-email schedule. |
+| Account `model_analysis_override` | `null` | Inherit; `true` on; `false` off. |
+
+`GET /api/v1/governance-review/settings` returns `model_analysis_override`, `model_analysis_default`, and the effective `model_analysis_enabled`. Account admins write the override with `PUT /api/v1/governance-review/model-analysis`, body `{"model_analysis_override": true}` (or `false` / `null`). The platform-admin GET/PUT path is `/api/v1/admin/accounts/{account_id}/governance-review/settings`. Overrides are audited. These routes are provided by Enterprise.
 
 ## Most valuable work: recorded outcomes
 

@@ -359,6 +359,7 @@ export class GovernanceView extends LitElement {
   @state() private section = '';
   /** The review mode, null when unreadable (no view_policies, old server). */
   @state() private reviewMode: string | null = null;
+  @state() private modelAnalysisEnabled = true;
   @state() private unsubscribe: '' | 'ask' | 'done' = '';
   @state() private acknowledge: '' | 'ask' | 'done' = '';
   private digestDelivery = '';
@@ -495,7 +496,11 @@ export class GovernanceView extends LitElement {
       if (hasPermission(this.permissions, 'view_policies'))
         getGovernanceReviewSettings()
           .then((settings) => {
-            if (generation === this.generation) this.reviewMode = settings.mode;
+            if (generation === this.generation) {
+              this.reviewMode = settings.mode;
+              this.modelAnalysisEnabled =
+                settings.model_analysis_enabled !== false;
+            }
           })
           .catch(() => undefined);
       if (!hasPermission(this.permissions, 'view_policies') && !this.canCost)
@@ -673,7 +678,7 @@ export class GovernanceView extends LitElement {
             </div>`
           : nothing;
     const off =
-      this.reviewMode === 'off'
+      this.modelAnalysisEnabled && this.reviewMode === 'off'
         ? html`<div class="notice" data-review-off>
             <p>
               <strong>The AI usage policy review is off.</strong> No sessions
@@ -706,8 +711,11 @@ export class GovernanceView extends LitElement {
     return html`<div class="summary" data-coverage>
         <p>
           Week of ${day(run.window_start)} to ${day(run.window_end)} (UTC).
-          Reviewed ${run.sessions_summarized} of ${run.sessions_considered}
-          sessions.
+          ${
+            run.model_analysis_enabled === false
+              ? `Deterministic checks cover ${run.sessions_considered} sessions.`
+              : `Reviewed ${run.sessions_summarized} of ${run.sessions_considered} sessions.`
+          }
         </p>
         <sl-badge
           class="chip"
@@ -717,12 +725,13 @@ export class GovernanceView extends LitElement {
         >
         ${this.canCost && run.platform_cost !== undefined ? html`<span>Spend est. ${formatUsdExact(run.platform_cost + (run.account_cost ?? 0))}</span>` : nothing}
       </div>
-      ${run.sessions_summarized === 0 ? html`<p class="muted">Not yet reviewed. Session summaries start with the first hourly sweep after the review is turned on, and next week's review includes them. Findings from usage counts still appear below.</p>` : html`<p class="muted">Findings from summaries cover the ${run.sessions_summarized} reviewed sessions only.</p>`}
+      ${run.model_analysis_enabled === false ? html`<p class="muted">Model analysis is not enabled.</p>` : run.sessions_summarized === 0 ? html`<p class="muted">Not yet reviewed. Session summaries start with the first hourly sweep after the review is turned on, and next week's review includes them. Findings from usage counts still appear below.</p>` : html`<p class="muted">Findings from summaries cover the ${run.sessions_summarized} reviewed sessions only.</p>`}
       ${run.status === 'partial' || run.stop_reason ? html`<sl-alert variant="warning" open class="partial"><sl-icon slot="icon" name="exclamation-triangle"></sl-icon>Partial review: ${run.stop_reason ? stopReason(run.stop_reason) : 'the run did not finish the full week'}. Findings cover only what was reviewed.</sl-alert>` : nothing}
       ${
         // Only the newest run says what the review is doing now.
         this.runOffset === 0 &&
         run.id === this.runs[0]?.id &&
+        run.model_analysis_enabled !== false &&
         run.mode_after === 'off_over_budget' &&
         !this.dismissedBudgetBanner
           ? html`<sl-alert
@@ -771,7 +780,7 @@ export class GovernanceView extends LitElement {
     );
     if (!filtered.length)
       return html`<p class="empty">
-        ${dismissed ? 'No dismissed findings match these filters.' : this.search || this.kind || this.severity || this.userId ? 'No findings match these filters.' : !this.selectedRun || this.selectedRun.sessions_summarized === 0 ? 'Not yet reviewed. No findings from usage counts this week.' : 'No findings in the reviewed data.'}
+        ${dismissed ? 'No dismissed findings match these filters.' : this.search || this.kind || this.severity || this.userId ? 'No findings match these filters.' : this.selectedRun?.model_analysis_enabled === false ? 'No findings from deterministic checks this week.' : !this.selectedRun || this.selectedRun.sessions_summarized === 0 ? 'Not yet reviewed. No findings from usage counts this week.' : 'No findings in the reviewed data.'}
       </p>`;
     return html`<div class="table-scroll finding-table">
         <table
@@ -1274,7 +1283,7 @@ export class GovernanceView extends LitElement {
                         </select></label
                       >
                       <span slot="count"
-                        >${!this.findings.length && (!this.selectedRun || this.selectedRun.sessions_summarized === 0) ? 'Not yet reviewed' : `${this.findings.filter((row) => `${row.title} ${row.rule_ref ?? ''} ${row.suggestion}`.toLowerCase().includes(this.search.toLowerCase())).length} of ${this.findings.length} findings on this page`}${this.offset ? ` · starting at ${this.offset + 1}` : ''}</span
+                        >${!this.findings.length && this.selectedRun?.model_analysis_enabled !== false && (!this.selectedRun || this.selectedRun.sessions_summarized === 0) ? 'Not yet reviewed' : `${this.findings.filter((row) => `${row.title} ${row.rule_ref ?? ''} ${row.suggestion}`.toLowerCase().includes(this.search.toLowerCase())).length} of ${this.findings.length} findings on this page`}${this.offset ? ` · starting at ${this.offset + 1}` : ''}</span
                       >
                     </list-toolbar>
                     ${

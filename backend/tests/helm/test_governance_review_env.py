@@ -13,7 +13,11 @@ TEMPLATES = (
     "templates/spacesync-worker-deployment.yaml",
     "templates/spacesync-scheduler-deployment.yaml",
 )
-ENV_NAMES = ("GOVERNANCE_REVIEW_ENABLED", "PRELOOP_GOVERNANCE_ANALYSIS_MODEL")
+ENV_NAMES = (
+    "GOVERNANCE_REVIEW_ENABLED",
+    "PRELOOP_GOVERNANCE_ANALYSIS_MODEL",
+    "GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED",
+)
 
 
 def _container_envs(rendered: str) -> List[Dict[str, str]]:
@@ -45,11 +49,13 @@ def test_governance_env_absent_when_unset() -> None:
 def test_governance_env_present_when_set() -> None:
     overrides = [
         "governanceReview.enabled=false",
+        "governanceReview.modelAnalysisEnabled=false",
         "governanceReview.analysisModel=example-flash",
     ]
     for template in TEMPLATES:
         for env in _container_envs(helm_template(template, overrides)):
             assert env["GOVERNANCE_REVIEW_ENABLED"] == "false", template
+            assert env["GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED"] == "false", template
             assert env["PRELOOP_GOVERNANCE_ANALYSIS_MODEL"] == "example-flash"
 
 
