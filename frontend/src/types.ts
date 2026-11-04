@@ -2463,7 +2463,6 @@ export interface UserInvitation {
   account_id: string;
   email: string;
   invited_by_user_id: string;
-  token: string;
   status: 'pending' | 'accepted' | 'expired' | 'cancelled';
   expires_at: string;
   accepted_at: string | null;

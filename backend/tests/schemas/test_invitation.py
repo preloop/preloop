@@ -106,7 +106,6 @@ class TestInvitationResponse:
             id=inv_id,
             account_id=acc_id,
             email="u@ex.com",
-            token="t",
             status="pending",
             role_ids=None,
             team_ids=None,
@@ -118,6 +117,7 @@ class TestInvitationResponse:
         dumped = data.model_dump()
         assert dumped["id"] == str(inv_id)
         assert dumped["account_id"] == str(acc_id)
+        assert "token" not in dumped
 
 
 class TestInvitationListResponse:

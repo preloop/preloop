@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking API change:** invitation creation, list, and detail responses
+  no longer include `token`. Clients should use invitation email delivery
+  and the resend endpoint to deliver acceptance links. The invitation
+  acceptance request still takes the token from the emailed link.
+
 - New guide [Your machine as a Preloop runner](docs/guide/runners/your-machine.md)
   with an FAQ: what the runner offered at `preloop login` installs and
   reports, flows and remote sessions on your own seat, presence and sleep,
