@@ -88,6 +88,10 @@ import {
 } from '../../components/token-figures';
 import type { ResourceAction } from '../../components/resource-actions';
 import { actionsFor } from '../../actions';
+import {
+  subscribeNarrowViewport,
+  type NarrowViewportSubscription,
+} from '../../utils/view-mode';
 
 interface FlowExecution {
   id: string;
@@ -183,6 +187,76 @@ export class FlowExecutionsView extends AuthedElement {
       css`
         :host {
           display: block;
+        }
+        .mobile-table-toggle {
+          border: 1px solid var(--sl-color-neutral-300);
+          border-radius: var(--sl-border-radius-medium);
+          background: var(--sl-color-neutral-0);
+          color: var(--sl-color-neutral-700);
+          font: inherit;
+          min-height: 44px;
+          padding: 0 var(--sl-spacing-medium);
+          cursor: pointer;
+        }
+        .mobile-table-toggle:focus-visible {
+          outline: var(--sl-focus-ring);
+          outline-offset: var(--sl-focus-ring-offset);
+        }
+
+        .execution-summaries,
+        .mobile-table-toggle {
+          display: none;
+        }
+
+        @media (max-width: 640px) {
+          .execution-results {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+          }
+          .execution-summaries {
+            display: grid;
+            gap: var(--sl-spacing-medium);
+            margin-top: var(--sl-spacing-medium);
+          }
+          .execution-summary {
+            min-width: 0;
+            padding: var(--sl-spacing-medium) 0;
+            border-top: 1px solid var(--console-hairline);
+            overflow-wrap: anywhere;
+          }
+          .execution-summary-heading {
+            display: flex;
+            align-items: start;
+            gap: var(--sl-spacing-small);
+          }
+          .execution-summary-heading .row-link {
+            flex: 1;
+            min-width: 0;
+            white-space: normal;
+          }
+          .execution-summary resource-actions {
+            flex: 0 0 auto;
+            width: auto;
+          }
+          .execution-summary .status-cell {
+            flex-wrap: wrap;
+            margin: var(--sl-spacing-small) 0;
+          }
+          .execution-summary .execution-subject-text {
+            white-space: normal;
+            -webkit-line-clamp: unset;
+          }
+          .execution-summary-time {
+            margin-top: var(--sl-spacing-small);
+            color: var(--console-meta-color);
+            font-size: var(--console-text-meta);
+          }
+          .mobile-table-toggle {
+            display: block;
+            align-self: start;
+            margin: var(--sl-spacing-small) 0;
+          }
         }
         .table-wrapper {
           overflow-x: auto;
@@ -499,6 +573,24 @@ export class FlowExecutionsView extends AuthedElement {
     getRowId: (execution) => execution.id,
     columns: this.buildColumns(),
   });
+
+  @state() private mobileTableExpanded = false;
+  @state() private narrowViewport = false;
+  private viewportSubscription?: NarrowViewportSubscription;
+
+  constructor() {
+    super();
+    // Keep viewport ownership separate from the execution request lifecycle.
+    this.addController({
+      hostConnected: () => {
+        this.viewportSubscription = subscribeNarrowViewport((narrow) => {
+          this.narrowViewport = narrow;
+        });
+        this.narrowViewport = this.viewportSubscription.matches;
+      },
+      hostDisconnected: () => this.viewportSubscription?.disconnect(),
+    });
+  }
 
   private searchDebounceId?: number;
 
@@ -1465,6 +1557,7 @@ export class FlowExecutionsView extends AuthedElement {
   }
 
   render() {
+    const showTable = !this.narrowViewport || this.mobileTableExpanded;
     return html`
       <view-header headerText="Flow executions" width="wide"></view-header>
       <div class="column-layout wide">
@@ -1481,26 +1574,57 @@ export class FlowExecutionsView extends AuthedElement {
                   nothing
                 : this.renderEmptyState()
               : html`
-                  <div class="table-wrapper">
-                    <div class="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            ${renderListHeaders(this.table)}
-                            <th class="actions-cell">
-                              <div class="table-header-content">
-                                ${renderHeaderColumnPicker(this.table, false)}
+                  <div class="execution-results">
+                    <button
+                      type="button"
+                      class="mobile-table-toggle"
+                      aria-expanded=${String(this.mobileTableExpanded)}
+                      aria-controls="execution-detail-table"
+                      @click=${() => (this.mobileTableExpanded = !this.mobileTableExpanded)}
+                    >
+                      ${this.mobileTableExpanded ? 'Show summaries' : 'Show all columns and sorting'}
+                    </button>
+                    <div
+                      id="execution-detail-table"
+                      class="table-wrapper"
+                      ?hidden=${!showTable}
+                    >
+                      ${
+                        showTable
+                          ? html`
+                              <div class="table-scroll">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      ${renderListHeaders(this.table)}
+                                      <th class="actions-cell">
+                                        <div class="table-header-content">
+                                          ${renderHeaderColumnPicker(this.table, false)}
+                                        </div>
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${this.paginatedExecutions.map((exec) =>
+                                      this.renderRow(exec)
+                                    )}
+                                  </tbody>
+                                </table>
                               </div>
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this.paginatedExecutions.map((exec) =>
-                            this.renderRow(exec)
-                          )}
-                        </tbody>
-                      </table>
+                            `
+                          : nothing
+                      }
                     </div>
+                    ${
+                      !showTable
+                        ? html` <div
+                            class="execution-summaries"
+                            aria-label="Execution summaries"
+                          >
+                            ${this.paginatedExecutions.map((exec) => this.renderMobileSummary(exec))}
+                          </div>`
+                        : nothing
+                    }
                   </div>
 
                   <table-pagination
@@ -1525,6 +1649,27 @@ export class FlowExecutionsView extends AuthedElement {
           }
         </div>
       </div>
+    `;
+  }
+
+  private renderMobileSummary(exec: FlowExecution) {
+    return html`
+      <article class="execution-summary">
+        <div class="execution-summary-heading">
+          <a class="row-link" href=${this.executionUrl(exec)}
+            >${exec.flow_name || 'Unnamed flow'}</a
+          >
+          <resource-actions
+            .actions=${this.getRowActions(exec)}
+            menu-only
+          ></resource-actions>
+        </div>
+        ${this.renderStatusCell(exec)} ${renderExecutionSubject(exec)}
+        <div class="execution-summary-time">
+          Started ${formatUTCDateTime(exec.start_time)} ·
+          ${executionDurationText(exec, this.durationNow) || '-'}
+        </div>
+      </article>
     `;
   }
 
