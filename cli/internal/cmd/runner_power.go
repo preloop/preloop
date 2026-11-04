@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,12 +46,27 @@ const (
 type runnerPowerEvent struct {
 	kind runnerPowerKind
 	done func()
-	// at is when the OS announced the event; a sleep event older than
-	// runnerSleepEventMaxAge was buffered across a suspend and is stale.
+	// at is when the source received the signal, before any bus lookups.
+	// Older observations may have been buffered across a suspend.
 	at time.Time
 	// released closes when the sleep delay is released, including by its
 	// timeout. After that the host may already have suspended and resumed.
 	released <-chan struct{}
+	// epoch spans reconnects; generation identifies the wake preceding
+	// this observation, even if the event itself is constructed later.
+	epoch      *runnerPowerEpoch
+	generation uint64
+}
+
+// runnerPowerEpoch invalidates pending sleep observations across both wake
+// sources, including observations still blocked on a system-bus request.
+type runnerPowerEpoch struct {
+	generation atomic.Uint64
+}
+
+func (p *runnerPowerEpoch) wakeEvent() runnerPowerEvent {
+	p.generation.Add(1)
+	return runnerPowerEvent{kind: runnerPowerWake}
 }
 
 // newRunnerSleepEvent shares expiration across queued copies and releases the
@@ -79,6 +95,9 @@ const runnerSleepEventMaxAge = 10 * time.Second
 func (e runnerPowerEvent) stale(now time.Time) bool {
 	if e.kind != runnerPowerSleep {
 		return false
+	}
+	if e.epoch != nil && e.generation != e.epoch.generation.Load() {
+		return true
 	}
 	select {
 	case <-e.released:
@@ -121,15 +140,16 @@ func runnerClockJumped(prevWall, nowWall time.Time, interval time.Duration) bool
 func startRunnerPowerWatcher() (<-chan runnerPowerEvent, func()) {
 	events := make(chan runnerPowerEvent, 4)
 	stop := make(chan struct{})
-	stopPlatform := startPlatformPowerSource(events, stop)
-	go watchRunnerClockJumps(events, stop)
+	epoch := &runnerPowerEpoch{}
+	stopPlatform := startPlatformPowerSource(events, stop, epoch)
+	go watchRunnerClockJumps(events, stop, epoch)
 	return events, func() {
 		close(stop)
 		stopPlatform()
 	}
 }
 
-func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{}) {
+func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{}, epoch *runnerPowerEpoch) {
 	ticker := time.NewTicker(runnerWakeCheckEvery)
 	defer ticker.Stop()
 	prevWall := time.Now().Round(0)
@@ -140,8 +160,9 @@ func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{})
 		case <-ticker.C:
 			nowWall := time.Now().Round(0)
 			if runnerClockJumped(prevWall, nowWall, runnerWakeCheckEvery) {
+				event := epoch.wakeEvent()
 				select {
-				case events <- runnerPowerEvent{kind: runnerPowerWake}:
+				case events <- event:
 				default:
 				}
 			}

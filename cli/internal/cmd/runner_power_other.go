@@ -6,6 +6,6 @@ package cmd
 // cgo-free build: macOS IOKit power notifications and Windows power
 // broadcasts both need a native callback. Sleep reads as offline; the clock
 // jump detector still reconnects right after wake.
-func startPlatformPowerSource(chan<- runnerPowerEvent, <-chan struct{}) func() {
+func startPlatformPowerSource(chan<- runnerPowerEvent, <-chan struct{}, *runnerPowerEpoch) func() {
 	return func() {}
 }

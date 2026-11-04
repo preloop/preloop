@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"errors"
+	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestLogindPrepareForSleepSignal(t *testing.T) {
@@ -146,5 +149,189 @@ func TestLogindConcurrentOldReleasePreservesWakeInhibitor(t *testing.T) {
 		if closes[1].Load() != 1 {
 			t.Fatal("current inhibitor was not released exactly once")
 		}
+	}
+}
+
+func TestLogindDelayedSleepDoesNotReplayAfterWake(t *testing.T) {
+	for _, lookup := range []string{"owner", "state", "after wake"} {
+		blockedLookup := lookup != "after wake"
+		name := lookup + " lookup returns after wake drain"
+		t.Run(name, func(t *testing.T) {
+			testenv.SetTempHome(t)
+			withHeartbeatEvery(t, 25*time.Millisecond)
+			epoch := &runnerPowerEpoch{}
+			inhibitor := &logindInhibitor{acquire: func() (func(), error) {
+				return func() {}, nil
+			}}
+			inhibitor.take()
+			t.Cleanup(func() { inhibitor.releaser()() })
+			entered := make(chan struct{})
+			unblock := make(chan struct{})
+			var unblockOnce sync.Once
+			resume := func() { unblockOnce.Do(func() { close(unblock) }) }
+			t.Cleanup(resume)
+			var preparing atomic.Bool
+			preparing.Store(blockedLookup)
+			var enterOnce sync.Once
+			source := &logindPowerSource{
+				inhibitor: inhibitor,
+				epoch:     epoch,
+				owner: func() (string, error) {
+					if lookup == "owner" {
+						enterOnce.Do(func() { close(entered) })
+						<-unblock
+					}
+					return ":1.42", nil
+				},
+				preparingForSleep: func(owner string) (bool, error) {
+					if owner != ":1.42" {
+						t.Errorf("state queried from unauthenticated owner %q", owner)
+					}
+					if lookup == "state" {
+						enterOnce.Do(func() { close(entered) })
+						<-unblock
+					}
+					return preparing.Load(), nil
+				},
+			}
+			signal := &dbus.Signal{Sender: ":1.42", Name: logindInterface + ".PrepareForSleep", Body: []any{true}}
+			type result struct {
+				event runnerPowerEvent
+				ok    bool
+			}
+			pending := make(chan result, 1)
+			if blockedLookup {
+				go func() {
+					event, ok := source.event(signal)
+					pending <- result{event, ok}
+				}()
+				select {
+				case <-entered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("bus lookup did not start")
+				}
+			}
+			events := make(chan runnerPowerEvent, 4)
+			jobs := newRunnerJobs(1)
+			jobs.power = events
+			interrupt := make(chan os.Signal, 1)
+			wokeAt := time.Now()
+			events <- epoch.wakeEvent()
+			server, _, _ := jobServer(t, map[string]any{"type": "hello"})
+			conn := dialJobServer(t, server)
+			if err := runRunnerSession(conn, interrupt, io.Discard, jobs); !errors.Is(err, errRunnerWoke) {
+				t.Fatalf("session ended with %v, want errRunnerWoke", err)
+			}
+			_ = conn.Close()
+			if len(events) != 0 {
+				t.Fatal("wake did not finish draining the power queue")
+			}
+			resume()
+			if !blockedLookup {
+				event, ok := source.event(signal)
+				pending <- result{event, ok}
+			}
+			var delayed result
+			select {
+			case delayed = <-pending:
+			case <-time.After(2 * time.Second):
+				t.Fatal("delayed signal handling did not finish")
+			}
+			if blockedLookup {
+				if !delayed.ok {
+					t.Fatal("expected the delayed observation to reach the session")
+				}
+				if delayed.event.at.After(wokeAt) {
+					t.Fatal("sleep timestamp was reset after the blocking lookup")
+				}
+				select {
+				case <-delayed.event.released:
+					t.Fatal("regression must deliver an unreleased sleep event")
+				default:
+				}
+			} else if delayed.ok {
+				t.Error("sleep signal first dequeued while awake was accepted")
+			}
+			if delayed.ok {
+				events <- delayed.event
+			}
+			server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
+			conn = dialJobServer(t, server)
+			stopped := make(chan error, 1)
+			go func() { stopped <- runRunnerSession(conn, interrupt, io.Discard, jobs) }()
+			t.Cleanup(func() {
+				interrupt <- os.Interrupt
+				select {
+				case <-stopped:
+				case <-time.After(2 * time.Second):
+					t.Error("session did not stop")
+				}
+			})
+			deadline := time.After(2 * time.Second)
+			for heartbeats := 0; heartbeats < 3; {
+				select {
+				case message := <-messages:
+					if message["type"] == "going_to_sleep" {
+						t.Fatal("delayed sleep stopped the reconnected session's heartbeats")
+					}
+					if message["type"] == "heartbeat" {
+						heartbeats++
+					}
+				case <-deadline:
+					t.Fatal("heartbeats did not continue after wake")
+				}
+			}
+			// A genuine later suspend belongs to the current generation.
+			preparing.Store(true)
+			next, ok := source.event(signal)
+			if !ok || next.stale(time.Now()) {
+				t.Fatal("a subsequent real suspend was discarded")
+			}
+			events <- next
+			waitForMessageType(t, messages, "going_to_sleep")
+		})
+	}
+}
+
+func TestLogindFailedInhibitorExpiresSleepEvent(t *testing.T) {
+	inhibitor := &logindInhibitor{acquire: func() (func(), error) {
+		return nil, errors.New("delay unavailable")
+	}}
+	event := inhibitor.powerEvent(true)
+	if !event.stale(time.Now()) {
+		t.Fatal("sleep without an inhibitor could be reported after suspend")
+	}
+}
+
+func TestLogindPowerSourceRequiresAuthenticatedSleepState(t *testing.T) {
+	for _, scenario := range []string{"awake", "state unavailable", "forged sender"} {
+		t.Run(scenario, func(t *testing.T) {
+			queries := 0
+			source := &logindPowerSource{
+				epoch: &runnerPowerEpoch{},
+				inhibitor: &logindInhibitor{acquire: func() (func(), error) {
+					t.Fatal("unverified sleep should not acquire a new delay")
+					return nil, nil
+				}},
+				owner: func() (string, error) { return ":1.42", nil },
+				preparingForSleep: func(string) (bool, error) {
+					queries++
+					if scenario == "state unavailable" {
+						return false, errors.New("logind unavailable")
+					}
+					return false, nil
+				},
+			}
+			signal := &dbus.Signal{Sender: ":1.42", Name: logindInterface + ".PrepareForSleep", Body: []any{true}}
+			if scenario == "forged sender" {
+				signal.Sender = ":1.99"
+			}
+			if _, ok := source.event(signal); ok {
+				t.Fatal("unverified sleep signal was accepted")
+			}
+			if scenario == "forged sender" && queries != 0 {
+				t.Fatal("forged signal reached the state lookup")
+			}
+		})
 	}
 }

@@ -19,7 +19,7 @@ const (
 // system bus and holds a "delay" sleep inhibitor so going_to_sleep can go
 // out before the host suspends. Without a system bus or logind (containers,
 // minimal hosts) it does nothing and sleep reads as offline.
-func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct{}) func() {
+func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct{}, epoch *runnerPowerEpoch) func() {
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return func() {}
@@ -47,6 +47,24 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		return func() { _ = syscall.Close(int(fd)) }, nil
 	}}
 	inhibitor.take()
+	source := &logindPowerSource{
+		inhibitor: inhibitor,
+		epoch:     epoch,
+		owner: func() (string, error) {
+			var owner string
+			err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, logindDest).Store(&owner)
+			return owner, err
+		},
+		preparingForSleep: func(owner string) (bool, error) {
+			value, err := conn.Object(owner, logindPath).GetProperty(logindInterface + ".PreparingForSleep")
+			if err != nil {
+				return false, err
+			}
+			var preparing bool
+			err = value.Store(&preparing)
+			return preparing, err
+		},
+	}
 	go func() {
 		for {
 			select {
@@ -59,20 +77,20 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 				// Match rules filter broadcasts, but directed signals can
 				// bypass them. Verify the sender against the bus's current
 				// owner, including after logind restarts.
-				var owner string
-				if err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, logindDest).Store(&owner); err != nil {
+				event, ok := source.event(signal)
+				if !ok {
 					continue
 				}
-				sleeping, isSleep := logindPrepareForSleep(signal, owner)
-				if !isSleep {
-					continue
-				}
-				event := inhibitor.powerEvent(sleeping)
-				if sleeping {
+				if event.kind == runnerPowerSleep {
 					// Never hold the host awake past the bound, even if the
 					// session is between connections. Releasing also expires
 					// the event so it cannot be replayed after a short sleep.
-					time.AfterFunc(runnerSleepReleaseAfter, event.release)
+					remaining := runnerSleepReleaseAfter - time.Now().Round(0).Sub(event.at.Round(0))
+					if remaining <= 0 {
+						event.release()
+					} else {
+						time.AfterFunc(remaining, event.release)
+					}
 				}
 				deliverRunnerPowerEvent(events, event)
 			}
