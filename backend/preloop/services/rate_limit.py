@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Optional, Union
 
 from fastapi import HTTPException, Request, WebSocket, status
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -450,8 +451,8 @@ def _with_fallback(
 def enforce(rule: Rule, identity: Optional[str]) -> None:
     """Count one request for ``identity`` under ``rule``; 429 when over budget.
 
-    Blocking (the Postgres store does I/O); call from sync code or use
-    ``starlette.concurrency.run_in_threadpool`` in an async caller.
+    Blocking (the Postgres store does I/O); call from sync code or through
+    :func:`enforce_async`.
 
     Args:
         rule: The budget to charge.
@@ -506,6 +507,15 @@ def record(rule: Rule, identity: Optional[str]) -> None:
     if limit <= 0:
         return
     _with_fallback(rule, "hit", _key(rule, identity), window_s, _clock())
+
+
+async def enforce_async(rule: Rule, identity: Optional[str]) -> None:
+    """Enforce a budget off the event loop, including Enterprise SAML callbacks.
+
+    The Enterprise SSO plugin awaits this helper before processing a SAML
+    callback. Keep the shared-store I/O in a worker thread for async callers.
+    """
+    await run_in_threadpool(enforce, rule, identity)
 
 
 def login_failure_identity(
@@ -595,6 +605,7 @@ __all__ = [
     "check_without_counting",
     "client_ip_for_rate_limit",
     "enforce",
+    "enforce_async",
     "limit_by_ip",
     "limit_by_path_param_and_ip",
     "login_failure_identity",

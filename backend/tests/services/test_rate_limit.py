@@ -1,5 +1,6 @@
 """Unit tests for the shared request rate limiter (EE #66)."""
 
+import threading
 from typing import Any, Iterator
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -83,6 +84,28 @@ def test_enforce_skips_empty_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     for _ in range(3):
         enforce(rule, "")
         enforce(rule, None)
+
+
+@pytest.mark.asyncio
+async def test_async_enforcement_offloads_store_and_preserves_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_thread = threading.get_ident()
+    store = MemoryStore()
+    original_hit = store.hit
+
+    def hit(key: str, window_s: int, now: float) -> tuple[int, float]:
+        assert threading.get_ident() != loop_thread
+        return original_hit(key, window_s, now)
+
+    monkeypatch.setattr(store, "hit", hit)
+    monkeypatch.setattr(rate_limit, "_primary_store", lambda: store)
+    monkeypatch.setattr(rate_limit, "_clock", lambda: 1_000_020.0)
+    rule = Rule("test.async", 1, 60)
+    await rate_limit.enforce_async(rule, "caller")
+    with pytest.raises(RateLimitExceeded) as exc_info:
+        await rate_limit.enforce_async(rule, "caller")
+    assert exc_info.value.headers == {"Retry-After": "61"}
 
 
 def test_invalid_override_falls_back_to_default(
