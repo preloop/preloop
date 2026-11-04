@@ -1160,7 +1160,7 @@ jobs:
       # artifacthub.io tag carries the repository metadata (ownership claim).
       # The ghcr.io package must be public once (org package settings).
       - name: Set up ORAS
-        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Push Helm chart to GHCR (OCI)
         env:
