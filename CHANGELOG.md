@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Atomic hosted spending can reserve monthly allowance first, then prepaid
+  credit, with FIFO purchase consumption, durable holds and a -$1.00 settlement
+  floor. Existing callers and zero-credit accounts retain the current allowance
+  and exhaustion behavior. The split is inert until credit grants exist and
+  the caller explicitly enables credit accounting.
+
 - The retention purge can also sweep the two high-volume tables it did not
   cover: flow execution log lines (following the account's evidence
   retention, keeping the execution summary row and every line of a held
