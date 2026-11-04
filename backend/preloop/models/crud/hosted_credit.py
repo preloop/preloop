@@ -639,12 +639,17 @@ def hold(
     reservation_id: Any = None,
     price_multiplier: Any = None,
 ) -> models.HostedCreditLedger:
-    """Reserve available credit under the account lock. Same key holds once."""
+    """Reserve available credit under the account lock. Same key holds once.
+
+    A reservation-linked hold must record a multiplier for eventual settlement.
+    """
     amount = _amount(amount)
     operation_key = _operation_key(operation_key, limit=100)
     actor = _actor(actor)
     user_note = _note(note)
     price = multiplier(price_multiplier)
+    if reservation_id is not None and price is None:
+        raise HostedSpendUnavailableError("Hosted credit price is unavailable")
     held_note = HOLD_NOTE if user_note is None else f"{HOLD_NOTE} {user_note}"
     lock_account(db, account_id)
     existing = _entry(db, account_id, operation_key)

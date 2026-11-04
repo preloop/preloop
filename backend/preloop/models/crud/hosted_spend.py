@@ -208,7 +208,11 @@ def reserve(
             remaining = max(money(monthly_limit) - period.spent - period.reserved, ZERO)
             allowance_part = min(amount, remaining)
         credit_part = money((amount - allowance_part) * multiplier)
-        if available <= hosted_credit.CREDIT_FLOOR or credit_part > available:
+        # The floor is an explicit hard stop. Above it, a negative credit
+        # balance cannot block a request covered entirely by its allowance.
+        if available <= hosted_credit.CREDIT_FLOOR or (
+            credit_part > ZERO and credit_part > available
+        ):
             raise HostedSpendExceededError("Prepaid credit is exhausted")
     elif monthly_limit is not None and period.spent + period.reserved + amount > money(
         monthly_limit
@@ -300,7 +304,7 @@ def settle(
     if wallet is None or period is None:
         raise HostedSpendUnavailableError("Hosted reservation balance is unavailable")
     allowance_actual = actual
-    if row.price_multiplier is not None:
+    if row.price_multiplier is not None or row.credit_reserved > ZERO:
         from preloop.models.crud import hosted_credit
 
         allowance_actual = min(actual, row.reserved)

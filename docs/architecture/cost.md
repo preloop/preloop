@@ -487,6 +487,11 @@ The next grant clears negative balance first. Account totals reconcile to ledger
 movements, and purchase remainders sum to the balance whenever it is nonnegative.
 New credit-funded requests stop when available credit cannot cover them; provider
 calls already in progress are never interrupted for balance exhaustion.
+Above the floor, negative credit does not block a request fully covered by its
+allowance. At or below the floor, the explicit hard stop still applies, including
+after the monthly allowance resets. Reservation-linked credit holds require a
+recorded multiplier; a legacy unpriced hold refuses settlement and stays held for
+recovery instead of being silently stranded by a terminal reservation status.
 
 CRUD only flushes. The caller commits reserve and dispatch marking before
 provider I/O, then commits settlement in a separate transaction, or rolls back

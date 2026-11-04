@@ -220,6 +220,74 @@ def test_fractional_fifo_costs_sum_exactly(db_engine: Engine, account_id: UUID) 
         assert_reconciled(db, account_id)
 
 
+@pytest.mark.parametrize("actual,at_floor", [("3.5", False), ("6", True)])
+def test_negative_credit_and_fresh_allowance_obey_the_floor(
+    db_engine: Engine,
+    account_id: UUID,
+    actual: str,
+    at_floor: bool,
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id, "1.1")
+        row = reserve(db, account_id)
+        spend.settle(db, account_id=account_id, reservation_id=row.id, actual=actual)
+        db.commit()
+        new_month = datetime(2026, 12, 1, tzinfo=UTC)
+        if at_floor:
+            # The explicit credit-floor hard stop survives an allowance reset.
+            with pytest.raises(spend.HostedSpendExceededError):
+                reserve(db, account_id, amount="1", now=new_month)
+        else:
+            # Above the floor, debt only prevents requests that need credit.
+            next_row = reserve(db, account_id, amount="1", now=new_month)
+            assert next_row.credit_reserved == 0
+            spend.settle(
+                db, account_id=account_id, reservation_id=next_row.id, actual="1"
+            )
+            assert credit.balance(db, account_id=account_id)["balance"] == Decimal(
+                "-0.55"
+            )
+        assert_reconciled(db, account_id)
+
+
+def test_linked_credit_hold_requires_a_price(
+    db_engine: Engine, account_id: UUID
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id, amount="1", credit_available=None)
+        with pytest.raises(spend.HostedSpendUnavailableError, match="price"):
+            credit.hold(
+                db,
+                account_id=account_id,
+                amount="1",
+                operation_key="unpriced-hold",
+                actor="system",
+                reservation_id=row.id,
+            )
+        db.commit()
+        assert row.credit_reserved == 0
+        assert credit.balance(db, account_id=account_id)["reserved"] == 0
+        assert_reconciled(db, account_id)
+
+
+def test_legacy_unpriced_hold_cannot_be_silently_settled(
+    db_engine: Engine, account_id: UUID
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id)
+        row.price_multiplier = None  # Simulate a legacy unpriced linked hold.
+        db.commit()
+        with pytest.raises(spend.HostedSpendUnavailableError, match="price"):
+            spend.settle(db, account_id=account_id, reservation_id=row.id, actual="1")
+        db.rollback()
+        assert row.status == "reserved"
+        assert row.credit_reserved == Decimal("1.1")
+        assert credit.balance(db, account_id=account_id)["reserved"] == Decimal("1.1")
+        assert_reconciled(db, account_id)
+
+
 def test_fifo_ties_and_metadata_on_each_lot(
     db_engine: Engine, account_id: UUID
 ) -> None:
