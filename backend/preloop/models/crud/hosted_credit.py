@@ -547,12 +547,46 @@ def settle_reservation(
     if price is None:
         raise HostedSpendUnavailableError("Hosted credit price is unavailable")
     if reservation.credit_reserved > ZERO:
-        release(
-            db,
-            account_id=account_id,
-            operation_key=f"hosted-hold:{reservation.id}",
-            actor="system",
-        )
+        standard_key = f"hosted-hold:{reservation.id}"
+        standard = _entry(db, account_id, standard_key)
+        if (
+            standard is not None
+            and standard.amount == reservation.credit_reserved
+            and _entry(db, account_id, f"credit-release:{standard_key}") is None
+        ):
+            # The normal reserve path needs only indexed operation-key lookups.
+            live = [standard]
+        else:
+            holds = list(
+                db.scalars(
+                    select(models.HostedCreditLedger).where(
+                        models.HostedCreditLedger.account_id == account_id,
+                        models.HostedCreditLedger.reservation_id == reservation.id,
+                        models.HostedCreditLedger.kind == "adjustment",
+                        models.HostedCreditLedger.note.startswith(HOLD_NOTE),
+                    )
+                )
+            )
+            live = [
+                held
+                for held in holds
+                if _entry(db, account_id, f"credit-release:{held.operation_key}")
+                is None
+            ]
+        if sum((held.amount for held in live), ZERO) != reservation.credit_reserved:
+            raise HostedSpendUnavailableError(
+                "Hosted credit reservation is unavailable"
+            )
+        # Public hold() permits caller-chosen keys and multiple holds per
+        # reservation. Release every live marker, including those older callers
+        # created, without releasing any other reservation's credit.
+        for held in live:
+            release(
+                db,
+                account_id=account_id,
+                operation_key=held.operation_key,
+                actor="system",
+            )
     amount = money(cost * price)
     if amount == ZERO:
         return
@@ -613,6 +647,8 @@ def _touch_reservation(
     ).scalar_one_or_none()
     if row is None:
         raise HostedSpendUnavailableError("Hosted reservation is unavailable")
+    if not release and row.status in {"settled", "released"}:
+        raise HostedSpendUnavailableError("Hosted reservation is terminal")
     if multiplier is not None:
         if row.price_multiplier is None:
             row.price_multiplier = multiplier

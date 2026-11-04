@@ -271,6 +271,41 @@ def test_linked_credit_hold_requires_a_price(
         assert_reconciled(db, account_id)
 
 
+def test_settlement_releases_all_live_linked_holds(
+    db_engine: Engine,
+    account_id: UUID,
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id, amount="1", credit_available=None)
+        for key, amount in (
+            ("already-released", "0.2"),
+            ("custom-first", "1.1"),
+            ("custom-second", "0.55"),
+        ):
+            credit.hold(
+                db,
+                account_id=account_id,
+                amount=amount,
+                operation_key=key,
+                actor="system",
+                reservation_id=row.id,
+                price_multiplier="1.1",
+            )
+        credit.release(
+            db, account_id=account_id, operation_key="already-released", actor="system"
+        )
+        assert row.credit_reserved == Decimal("1.65")
+        db.commit()
+        spend.settle(db, account_id=account_id, reservation_id=row.id, actual="2")
+        db.commit()
+        assert row.credit_reserved == 0
+        wallet = credit.balance(db, account_id=account_id)
+        assert wallet["reserved"] == 0
+        assert wallet["consumed"] == Decimal("1.1")
+        assert_reconciled(db, account_id)
+
+
 def test_legacy_unpriced_hold_cannot_be_silently_settled(
     db_engine: Engine, account_id: UUID
 ) -> None:
@@ -285,6 +320,31 @@ def test_legacy_unpriced_hold_cannot_be_silently_settled(
         assert row.status == "reserved"
         assert row.credit_reserved == Decimal("1.1")
         assert credit.balance(db, account_id=account_id)["reserved"] == Decimal("1.1")
+        assert_reconciled(db, account_id)
+
+
+def test_terminal_reservation_cannot_acquire_more_credit(
+    db_engine: Engine,
+    account_id: UUID,
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id)
+        spend.settle(db, account_id=account_id, reservation_id=row.id, actual="1")
+        db.commit()
+        with pytest.raises(spend.HostedSpendUnavailableError, match="terminal"):
+            credit.hold(
+                db,
+                account_id=account_id,
+                amount="1",
+                operation_key="late-hold",
+                actor="system",
+                reservation_id=row.id,
+                price_multiplier="1.1",
+            )
+        db.commit()
+        assert row.credit_reserved == 0
+        assert credit.balance(db, account_id=account_id)["reserved"] == 0
         assert_reconciled(db, account_id)
 
 
