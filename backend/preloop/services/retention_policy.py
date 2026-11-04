@@ -93,8 +93,8 @@ RECORD_CLASS_LABELS: dict[str, str] = {
 #: ``RETENTION_PURGE_HIGH_VOLUME_ENABLED`` is on (EE #46). They are not record
 #: classes: an account does not set their retention directly, each follows
 #: the record class it belongs to, so it inherits that class's account value,
-#: deployment default and six month floor. Kept out of RECORD_CLASSES so the
-#: settings API, the export and the console list stay what they were.
+#: deployment default and six month floor. Kept out of RECORD_CLASSES so
+#: editable settings and period exports remain based on their governing classes.
 #:
 #: Flow execution log lines. The ``flow_execution`` summary row is kept.
 SWEEP_EXECUTION_LOGS = "execution_logs"
@@ -102,6 +102,11 @@ SWEEP_EXECUTION_LOGS = "execution_logs"
 SWEEP_EVENTS = "events"
 
 HIGH_VOLUME_SWEEPS: tuple[str, ...] = (SWEEP_EXECUTION_LOGS, SWEEP_EVENTS)
+
+SWEEP_LABELS: dict[str, str] = {
+    SWEEP_EXECUTION_LOGS: "Flow execution log lines",
+    SWEEP_EVENTS: "Account events",
+}
 
 #: The record class whose retention each sweep follows.
 SWEEP_GOVERNING_CLASS: dict[str, str] = {

@@ -363,6 +363,10 @@ Two high-volume tables are not record classes of their own and are swept
 only when `RETENTION_PURGE_HIGH_VOLUME_ENABLED=true` as well. It is a second
 switch so a deployment that already runs the purge does not start deleting
 them on upgrade, and `RETENTION_PURGE_DRY_RUN` previews them like any class.
+When high-volume sweeps are enabled, `GET /api/v1/retention/purge-preview` and the
+console's **Preview purge** table include separate flow-log and account-event
+counts, using their governing retention periods and the purge's legal-hold
+filters. When it is disabled, those two sweeps are omitted from the preview.
 
 | Sweep | Table | Follows | What stays |
 | --- | --- | --- | --- |
