@@ -267,3 +267,46 @@ export function desktopViewerSocketUrl(
   url.searchParams.set('token', token);
   return url.toString();
 }
+
+/** State of one console "Enable desktop" request (#1566). */
+export type DesktopInstallState = 'pending' | 'done' | 'failed' | 'unsupported';
+
+export interface DesktopInstallStatus {
+  request_id: string;
+  state: DesktopInstallState;
+  error: string | null;
+  command: string;
+}
+
+/** The one-line command that enables a desktop on the agent's host. */
+export function desktopEnableCommand(agentId: string): string {
+  return `preloop desktop enable --agent ${agentId}`;
+}
+
+/**
+ * Asks the agent's runtime plugin to enable a desktop over Agent Control.
+ * A 409 `desktop_install_unavailable` means there is no control channel and
+ * nothing was sent; the caller shows the one-line command instead.
+ */
+export async function requestDesktopInstall(
+  agentId: string
+): Promise<{ request_id: string; state: DesktopInstallState }> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/desktop/install`,
+    { method: 'POST' }
+  );
+  if (!response.ok) throw await errorFrom(response);
+  return await response.json();
+}
+
+export async function getDesktopInstall(
+  agentId: string,
+  requestId: string
+): Promise<DesktopInstallStatus> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/desktop/install/${encodeURIComponent(requestId)}`,
+    { cache: 'no-store' }
+  );
+  if (!response.ok) throw await errorFrom(response);
+  return (await response.json()) as DesktopInstallStatus;
+}

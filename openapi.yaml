@@ -20822,6 +20822,99 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/desktop/install:
+    post:
+      tags:
+      - Agent Control
+      summary: Request Agent Desktop Install
+      description: Ask the agent's runtime plugin to enable a live desktop on its
+        host.
+      operationId: request_agent_desktop_install_api_v1_agents__agent_id__desktop_install_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Request Agent Desktop Install Api V1 Agents  Agent
+                  Id  Desktop Install Post
+        '409':
+          description: No Agent Control channel; ``detail.command`` is the one-line
+            command to run on the host
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/desktop/install/{request_id}:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Agent Desktop Install
+      description: 'State of one ``desktop.install`` request: pending, done, failed
+        or
+
+        unsupported (the plugin does not know the command). Sync, so FastAPI
+
+        runs it in the threadpool off the event loop.'
+      operationId: get_agent_desktop_install_api_v1_agents__agent_id__desktop_install__request_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Agent Desktop Install Api V1 Agents  Agent Id  Desktop
+                  Install  Request Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/desktop/endpoints:
     get:
       tags:

@@ -67,6 +67,26 @@ migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 *   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Interactive TUI sessions are observe-and-approve, not steerable mid-turn; targeting one resumes it headlessly. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
 *   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `<workspace_root>/<repository_slug>` when `metadata.workspace.mode` is `persistent_checkout`, otherwise in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
 
+### Desktop install (`desktop.install`)
+
+`POST /api/v1/agents/{agent_id}/desktop/install` (`manage_agents`) persists and
+delivers a `desktop.install` command whose `message_id` is the returned
+`request_id`, with payload `{request_id, managed_agent_id}`. An agent with no
+Agent Control config, or no delivery channel, gets 409
+`desktop_install_unavailable` with the one-line `command` and nothing is sent.
+The plugin answers with the usual `command_result`, carrying
+`desktop_install: {ok, error?}` where `error` is `desktop_unsupported_os`,
+`desktop_unsupported_distro`, `desktop_privilege_required` or
+`desktop_failed`. `GET .../desktop/install/{request_id}` maps the stored row to
+`pending`, `done`, `failed` (with `error`) or `unsupported`: a plugin that
+predates the command answers `command_error` "unsupported agent-control
+command" (Python kit) or a `command_result` without `desktop_install` (older
+OpenClaw), and both read as `unsupported` so the console falls back to the
+command. The Python kit (`HookedDesktopInstaller`, `run_desktop_enable`, on by
+default for Hermes) and the OpenClaw plugin run `preloop desktop enable --agent
+<id>` locally. Runners do not implement it yet; the runner page has no
+Enable desktop action.
+
 ### Runtime support
 
 | Kind | Channel | New session | Notes |

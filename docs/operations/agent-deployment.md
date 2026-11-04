@@ -174,6 +174,19 @@ agent key with `--agent-key` or `PRELOOP_DESKTOP_TOKEN`. `--dry-run` prints
 the steps. Check the tunnel with `systemctl --user status
 preloop-desktop-tunnel`.
 
+**From the console.** An active agent with no online desktop shows **Live
+desktop: none** under its summary to users with `manage_agents`. When the agent
+has a live Agent Control connection, **Enable desktop** sends `desktop.install`
+over that channel and the runtime plugin (Hermes, OpenClaw) runs `preloop
+desktop enable --agent <id>` on its host with the CLI login it already has; the
+Desktop tab appears once the tunnel registers. An unsupported OS or distro, or
+missing root or passwordless sudo, is shown with a link here and leaves the
+agent untouched. Without a control channel, or with a plugin that does not
+know the command, the console shows the one-line command to run on the host
+instead and sends nothing. Requests are audited as
+`desktop.install.requested`, `desktop.install.succeeded` and
+`desktop.install.failed`.
+
 **Sessions on the same host.** The installer also exports
 `PRELOOP_DESKTOP_ENDPOINT_ID` (the endpoint id from `~/.preloop/desktop.json`)
 next to `DISPLAY=:99` in the runtime environment. CLI hooks, the Hermes

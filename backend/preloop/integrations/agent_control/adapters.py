@@ -18,7 +18,9 @@ from preloop.integrations.agent_control.core import (
     AgentControlClient,
     AgentControlConfig,
     AgentControlResult,
+    HookedDesktopInstaller,
     OperatorCommand,
+    run_desktop_enable,
 )
 
 SendMessageHook = Callable[[OperatorCommand], Awaitable[AgentControlResult]]
@@ -32,6 +34,8 @@ class HookedAgentControlAdapter:
     send_message: SendMessageHook
     capabilities_value: AgentControlCapabilities
     interrupt_session: InterruptHook | None = None
+    #: Handles ``desktop.install`` (#1566). None answers it as unsupported.
+    desktop_installer: HookedDesktopInstaller | None = None
 
     @classmethod
     def with_hooks(
@@ -199,16 +203,22 @@ def create_hermes_agent_control_client(
     supports_interrupt: bool = False,
     supports_voice: bool = False,
     supports_tool_approval: bool = False,
+    desktop_installer: HookedDesktopInstaller | None = None,
 ) -> AgentControlClient:
-    """Create an always-open Hermes Agent Control client."""
+    """Create an always-open Hermes Agent Control client.
 
-    return AgentControlClient(
-        load_hermes_control_config(config_path),
-        HermesAgentControlAdapter.with_hooks(
-            send_message=send_message,
-            interrupt_session=interrupt_session,
-            supports_interrupt=supports_interrupt,
-            supports_voice=supports_voice,
-            supports_tool_approval=supports_tool_approval,
-        ),
+    ``desktop.install`` runs ``preloop desktop enable`` on the host unless a
+    different ``desktop_installer`` is given.
+    """
+
+    adapter = HermesAgentControlAdapter.with_hooks(
+        send_message=send_message,
+        interrupt_session=interrupt_session,
+        supports_interrupt=supports_interrupt,
+        supports_voice=supports_voice,
+        supports_tool_approval=supports_tool_approval,
     )
+    adapter.desktop_installer = desktop_installer or HookedDesktopInstaller(
+        run_desktop_enable
+    )
+    return AgentControlClient(load_hermes_control_config(config_path), adapter)
