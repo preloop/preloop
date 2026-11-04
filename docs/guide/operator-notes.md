@@ -505,6 +505,13 @@ guarantee that every runtime mode emits it: the Cursor headless limit is
 documented below. The Claude Code input and output shapes for these events are
 pinned in `cli/internal/cmd/testdata/operator-notes/claude-code-lifecycle.json`.
 
+A Stop block is only spent when `stop_hook_active` is false, which Claude Code
+sets on the stop that follows a block. A headless `claude -p` run therefore
+continues for at most one extra model step per stop, and a note that arrives
+during that step waits for `SessionEnd`. If the hook names a run the caller's
+credential never registered, `session-end` changes nothing. There is still no
+path that pushes into a process that is not asking Preloop anything.
+
 ### Cursor headless runs have no stop rescue
 
 Cursor CLI `2026.10.01-e373342` in headless `--print` mode (default and ask
@@ -520,13 +527,6 @@ tested and this evidence does not cover other Cursor versions.
 `preloop agents discover` and `preloop agents status` print this limit on an
 `Operator notes:` line for Cursor. The reproduction is in the
 [verification guide](operator-notes-smoke.md#cursor-headless-stop-boundary).
-
-A Stop block is only spent when `stop_hook_active` is false, which Claude Code
-sets on the stop that follows a block. A headless `claude -p` run therefore
-continues for at most one extra model step per stop, and a note that arrives
-during that step waits for `SessionEnd`. If the hook names a run the caller's
-credential never registered, `session-end` changes nothing. There is still no path that pushes into a process that is
-not asking Preloop anything.
 
 ## Delivery receipts
 

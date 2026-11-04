@@ -200,16 +200,18 @@ Install the wrapped hooks:
 }
 ```
 
-Count the events afterwards with `jq -r .event /tmp/cursor-hooks.log | sort | uniq -c`.
-
 Queue one synthetic note for startup that asks the model to print a fresh
 marker after the file read, and a second synthetic note for the `stop` event.
-Then run:
+Clear the event log immediately before each run so the counts include only
+that run:
 
 ```sh
+: > /tmp/cursor-hooks.log
 cursor-agent --print --trust --model auto --output-format stream-json \
   'Read fixture.txt using one file-read tool, then print only the marker supplied by operator-note context. Do not use shell or other tools.'
 ```
+
+Count the events afterwards with `jq -r .event /tmp/cursor-hooks.log | sort | uniq -c`.
 
 Observed on `2026.10.01-e373342`, for a no-tool run and a one-file-read run,
 both exiting 0: one `sessionStart`, one `sessionEnd` and zero `stop`
