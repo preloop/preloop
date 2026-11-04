@@ -1421,7 +1421,14 @@ export class FlowExecutionView extends LitElement {
   private logBuffer: FlowExecutionUpdate[] = [];
   private bufferFlushInterval?: number;
   private readonly BUFFER_FLUSH_INTERVAL_MS = 500;
-  private readonly MAX_LINES_PER_FLUSH = 5;
+  // Bound each task, then yield and continue until caught up. The periodic
+  // timer batches quiet streams; it is not a fixed lines/second limit.
+  private readonly MAX_LINES_PER_FLUSH = 250;
+  private bufferDrainTimer?: number;
+  private logIdentitySource?: FlowExecutionUpdate[];
+  private logIdentities = new Set<string>();
+  private readonly LOG_WINDOW_SIZE = 1000;
+  @state() private logWindowStart = 0;
 
   connectedCallback() {
     super.connectedCallback();
@@ -1441,6 +1448,12 @@ export class FlowExecutionView extends LitElement {
       clearInterval(this.bufferFlushInterval);
       this.bufferFlushInterval = undefined;
     }
+    if (this.bufferDrainTimer !== undefined) {
+      clearTimeout(this.bufferDrainTimer);
+      this.bufferDrainTimer = undefined;
+    }
+    // A detached view will reload persisted history if visited again.
+    this.logBuffer = [];
     // Stop the elapsed-duration ticker
     this.stopDurationTicker();
     // Unsubscribe from WebSocket, messages and connection state alike
@@ -1657,6 +1670,8 @@ export class FlowExecutionView extends LitElement {
           return true;
         });
         this.logs = [...older, ...this.logs];
+        this.logWindowStart += older.length;
+        this.isAutoScroll = false;
         this.hydrateToolActivityLogs();
         // `logsSkip` counts the newest rows already read, so the next page
         // starts where this one ended whatever size the first read was.
@@ -1948,8 +1963,7 @@ export class FlowExecutionView extends LitElement {
   }
 
   startBufferFlush() {
-    // Clear any existing interval
-    this.stopBufferFlush();
+    if (this.bufferFlushInterval) clearInterval(this.bufferFlushInterval);
 
     // Flush buffer periodically
     this.bufferFlushInterval = window.setInterval(() => {
@@ -1963,24 +1977,36 @@ export class FlowExecutionView extends LitElement {
       this.bufferFlushInterval = undefined;
     }
     // Drain through the same recovery-aware deduplication as periodic flushes.
-    this.flushLogBuffer(this.logBuffer.length);
+    this.flushLogBuffer();
   }
 
   flushLogBuffer(limit = this.MAX_LINES_PER_FLUSH) {
-    if (this.logBuffer.length === 0) return;
+    if (this.bufferDrainTimer !== undefined) {
+      clearTimeout(this.bufferDrainTimer);
+      this.bufferDrainTimer = undefined;
+    }
+    if (!this.isConnected || this.logBuffer.length === 0) return;
 
     // A late live event may already be in an initial/recovery persisted page.
     // Deduplicate at flush time because recovery can finish after enqueueing.
     const key = executionLogIdentity;
-    const seen = new Set(this.logs.map(key));
+    if (this.logIdentitySource !== this.logs) {
+      this.logIdentities = new Set(this.logs.map(key));
+      this.logIdentitySource = this.logs;
+    }
+    const seen = this.logIdentities;
     const linesToAdd = this.logBuffer.splice(0, limit).filter((log) => {
       const id = key(log);
       if (seen.has(id)) return false;
       seen.add(id);
       return true;
     });
+    if (this.logBuffer.length > 0) {
+      this.bufferDrainTimer = window.setTimeout(() => this.flushLogBuffer(), 0);
+    }
     if (linesToAdd.length === 0) return;
     this.logs = [...this.logs, ...linesToAdd];
+    this.logIdentitySource = this.logs;
 
     // Scroll after adding lines
     if (this.isAutoScroll) {
@@ -2011,8 +2037,17 @@ export class FlowExecutionView extends LitElement {
 
     // Disable auto-scroll when user manually scrolls away from bottom
     if (!isAtBottom && this.isAutoScroll) {
+      this.logWindowStart = Math.max(
+        0,
+        this.getFilteredLogs().length - this.LOG_WINDOW_SIZE
+      );
       this.isAutoScroll = false;
-    } else if (isAtBottom && !this.isAutoScroll) {
+    } else if (
+      isAtBottom &&
+      !this.isAutoScroll &&
+      this.logWindowStart + this.LOG_WINDOW_SIZE >=
+        this.getFilteredLogs().length
+    ) {
       // Re-enable auto-scroll when user scrolls back to bottom
       this.isAutoScroll = true;
       // Restart the checker if execution is still running
@@ -3727,6 +3762,11 @@ ${execution.model_output_summary}</pre>
 
   private renderLogsPanel(running: boolean) {
     const filtered = this.getFilteredLogs();
+    const lastStart = Math.max(0, filtered.length - this.LOG_WINDOW_SIZE);
+    const start = this.isAutoScroll
+      ? lastStart
+      : Math.min(this.logWindowStart, lastStart);
+    const visible = filtered.slice(start, start + this.LOG_WINDOW_SIZE);
     const query = this.logSearchQuery.trim();
     return html`
       <div class="logs-panel">
@@ -3768,7 +3808,10 @@ ${execution.model_output_summary}</pre>
                     size="small"
                     variant="text"
                     data-testid="follow-logs"
-                    @click=${() => (this.isAutoScroll = !this.isAutoScroll)}
+                    @click=${() => {
+                      this.logWindowStart = start;
+                      this.isAutoScroll = !this.isAutoScroll;
+                    }}
                   >
                     <sl-icon
                       slot="prefix"
@@ -3780,6 +3823,42 @@ ${execution.model_output_summary}</pre>
             }
           </div>
         </div>
+        ${
+          filtered.length > this.LOG_WINDOW_SIZE
+            ? html` <div class="logs-toolbar" aria-label="Log pages">
+                <sl-button
+                  size="small"
+                  ?disabled=${start === 0}
+                  @click=${() => {
+                    this.isAutoScroll = false;
+                    this.logWindowStart = Math.max(
+                      0,
+                      start - this.LOG_WINDOW_SIZE
+                    );
+                  }}
+                >
+                  Earlier lines
+                </sl-button>
+                <span
+                  >Lines ${start + 1}–${start + visible.length} of
+                  ${filtered.length}</span
+                >
+                <sl-button
+                  size="small"
+                  ?disabled=${start >= lastStart}
+                  @click=${() => {
+                    this.isAutoScroll = false;
+                    this.logWindowStart = Math.min(
+                      lastStart,
+                      start + this.LOG_WINDOW_SIZE
+                    );
+                  }}
+                >
+                  Later lines
+                </sl-button>
+              </div>`
+            : ''
+        }
         <div class="log-container">
           ${
             this.hasMoreLogs && !query
@@ -3810,7 +3889,7 @@ ${execution.model_output_summary}</pre>
                     }
                   </p>
                 </div>`
-              : filtered.map((log) => this.renderLogEntry(log))
+              : visible.map((log) => this.renderLogEntry(log))
           }
         </div>
       </div>
