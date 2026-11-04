@@ -139,3 +139,10 @@ def test_principal_totals_plan_is_index_only(
         )
     )
     assert f"Index Scan using {SUBSCRIPTION_INDEX}" in generic_plan, generic_plan
+
+
+def test_subscription_price_reuses_numeric_filter(db_session: Session) -> None:
+    """Coverage and sum need two JSON reads, without a third type-check read."""
+    statement, _ = _captured_usage_select(db_session)
+    assert statement.count("jsonb_path_query_first(") == 2
+    assert "jsonb_typeof(" not in statement
