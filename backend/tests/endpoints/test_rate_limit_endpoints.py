@@ -55,6 +55,17 @@ def client(db_session: Session) -> Iterator[TestClient]:
         yield TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def frozen_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the limiter clock mid-window.
+
+    Fixed windows roll over on the minute; a slow runner crossing a boundary
+    halfway through a test would reset the budget and the next request would
+    not be refused.
+    """
+    monkeypatch.setattr(rate_limit, "_clock", lambda: 1_800_000_030.0)
+
+
 def _ip(n: int) -> dict[str, str]:
     """A distinct public client address per ``n`` (TEST-NET-3)."""
     return {"X-Forwarded-For": f"203.0.113.{n}"}

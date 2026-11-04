@@ -65,7 +65,7 @@ def test_enforce_denies_at_limit_with_retry_after(
 ) -> None:
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
     rule = Rule("test.unit", 2, 60)
-    monkeypatch.setattr(rate_limit.time, "time", lambda: 1_000_020.0)
+    monkeypatch.setattr(rate_limit, "_clock", lambda: 1_000_020.0)
     enforce(rule, "a")
     enforce(rule, "a")
     with pytest.raises(RateLimitExceeded) as exc_info:

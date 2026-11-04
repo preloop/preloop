@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 RATE_LIMITED_CODE = "rate_limited"
 
 
+def _clock() -> float:
+    """Wall clock for window arithmetic; a seam for tests."""
+    return time.time()
+
+
 @dataclass(frozen=True)
 class Rule:
     """One named budget.
@@ -457,7 +462,7 @@ def enforce(rule: Rule, identity: Optional[str]) -> None:
     limit, window_s = rule.effective()
     if limit <= 0:
         return
-    now = time.time()
+    now = _clock()
     key = _key(rule, identity)
     count, window_end = _with_fallback(rule, "hit", key, window_s, now)
     if count > limit:
@@ -480,7 +485,7 @@ def check_without_counting(rule: Rule, identity: Optional[str]) -> None:
     limit, window_s = rule.effective()
     if limit <= 0:
         return
-    now = time.time()
+    now = _clock()
     key = _key(rule, identity)
     count, window_end = _with_fallback(rule, "peek", key, window_s, now)
     if count >= limit:
@@ -496,7 +501,7 @@ def record(rule: Rule, identity: Optional[str]) -> None:
     limit, window_s = rule.effective()
     if limit <= 0:
         return
-    _with_fallback(rule, "hit", _key(rule, identity), window_s, time.time())
+    _with_fallback(rule, "hit", _key(rule, identity), window_s, _clock())
 
 
 async def enforce_async(rule: Rule, identity: Optional[str]) -> None:
