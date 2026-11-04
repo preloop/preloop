@@ -23,6 +23,7 @@ function sharing(overrides: Record<string, unknown> = {}) {
       account_setting: 'required',
     },
     can_share: true,
+    approval_modes_available: true,
     can_set_policy: false,
     grants: [
       {
@@ -155,6 +156,60 @@ describe('runner sharing panel', () => {
     ).to.deep.equal({ owner_consent: 'not_required' });
   });
 
+  it('confirms revocation before calling the API', async () => {
+    api = mockApi({
+      routes: [
+        { path: `/api/v1/runners/${RUNNER}/shares`, body: sharing() },
+        {
+          method: 'DELETE',
+          path: `/api/v1/runners/${RUNNER}/shares/grant-1`,
+          body: {},
+        },
+      ],
+    });
+    const el = await mount();
+    (
+      el.shadowRoot!.querySelector(
+        '[data-testid="revoke-share"]'
+      ) as HTMLElement
+    ).click();
+    let button: HTMLElement | undefined;
+    await waitUntil(() => {
+      button = [
+        ...(document
+          .querySelector('confirm-dialog')
+          ?.shadowRoot?.querySelectorAll('sl-button') ?? []),
+      ].find((b) => b.textContent?.trim() === 'Revoke') as HTMLElement;
+      return Boolean(button);
+    });
+    expect(
+      api.callsTo(`/api/v1/runners/${RUNNER}/shares/grant-1`, 'DELETE')
+    ).to.have.lengthOf(0);
+    button!.click();
+    await waitUntil(
+      () =>
+        api.callsTo(`/api/v1/runners/${RUNNER}/shares/grant-1`, 'DELETE')
+          .length === 1
+    );
+  });
+
+  it('keeps the mode selector hidden on an older sharing backend', async () => {
+    api = mockApi({
+      routes: [
+        {
+          path: `/api/v1/runners/${RUNNER}/shares`,
+          body: sharing({
+            approval_modes_available: false,
+            grantees: [{ type: 'user', id: 'member', label: 'Jane Doe' }],
+          }),
+        },
+      ],
+    });
+    const el = await mount();
+    expect(el.shadowRoot!.querySelector('[data-testid="approval"]')).to.be.null;
+    expect(el.shadowRoot!.querySelector('[data-testid="share-form"]')).to.exist;
+  });
+
   it('creates a scoped share', async () => {
     api = mockApi({
       routes: [
@@ -175,6 +230,13 @@ describe('runner sharing panel', () => {
       ],
     });
     const el = await mount();
+    expect(el.shadowRoot!.querySelector('sl-dialog')).to.exist;
+    const approval = el.shadowRoot!.querySelector(
+      '[data-testid="approval"]'
+    ) as HTMLSelectElement;
+    expect(approval.value).to.equal('per_request');
+    approval.value = 'none';
+    approval.dispatchEvent(new CustomEvent('sl-change'));
     expect(el.shadowRoot!.textContent).to.contain('Not shared.');
     const root = el.shadowRoot!;
     const grantee = root.querySelector(
@@ -208,6 +270,7 @@ describe('runner sharing panel', () => {
       scopes: ['sessions'],
       harnesses: ['claude_code'],
       directory_ids: ['dir_d'],
+      approval: 'none',
     });
   });
 });
@@ -232,7 +295,7 @@ describe('runner sharing panel edge cases', () => {
     ) as HTMLSelectElement;
     select.value = RUNNER;
     select.dispatchEvent(new CustomEvent('sl-change'));
-    await waitUntil(() => !el.shadowRoot!.querySelector('h3'));
+    await waitUntil(() => !el.shadowRoot!.querySelector('sl-dialog'));
     expect(el.shadowRoot!.querySelector('[role="alert"]')).to.be.null;
   });
 

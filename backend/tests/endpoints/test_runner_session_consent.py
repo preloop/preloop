@@ -257,7 +257,9 @@ async def test_consent_does_not_require_a_second_worker_token(
         registered_by_user_id=uuid4(),
         name="Example runner",
     )
-    user = SimpleNamespace(id=uuid4(), account_id=runner.account_id)
+    user = SimpleNamespace(
+        id=uuid4(), account_id=runner.account_id, username="requester"
+    )
     body = runner_sessions.RunnerSessionStartRequest(
         consent_request_id=uuid4(),
         harness="claude_code",

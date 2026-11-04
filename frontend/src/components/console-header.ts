@@ -111,9 +111,34 @@ export class ConsoleHeader extends LitElement {
   @state()
   private _user: UserDetails | null = null;
 
+  private runnerNoticeTimer?: ReturnType<typeof setInterval>;
+  private runnerNoticesEnabled = false;
+  private runnerNoticeGeneration = 0;
+  private async refreshRunnerNotices(): Promise<void> {
+    if (!this.runnerNoticesEnabled || !this.isConnected) return;
+    const generation = this.runnerNoticeGeneration;
+    try {
+      const notices = await api.getRunnerOwnerNotices();
+      if (!this.isConnected || generation !== this.runnerNoticeGeneration)
+        return;
+      const known = new Set(this._userNotifications.map((n) => n.id));
+      this._userNotifications = [
+        ...notices
+          .filter((n) => !known.has(n.id))
+          .map((n) => ({ ...n, type: 'system' as const, read: false })),
+        ...this._userNotifications,
+      ].slice(0, 100);
+    } catch {
+      /* Keep prior notices during a transient connection failure. */
+    }
+  }
+
   private userRequestVersion = 0;
   private handleIdentityChange = (): void => {
     this._user = null;
+    this.runnerNoticeGeneration += 1;
+    this._userNotifications = [];
+    void this.refreshRunnerNotices();
     void this.fetchUserDetails();
   };
 
@@ -512,6 +537,14 @@ export class ConsoleHeader extends LitElement {
       .then((features) => {
         this.serverVersion = features.server_version || '';
         this.cloudSupport = features.features.cloud_support === true;
+        this.runnerNoticesEnabled = features.features.runner_sharing === true;
+        void this.refreshRunnerNotices();
+        if (this.runnerNoticesEnabled && this.isConnected) {
+          this.runnerNoticeTimer = setInterval(
+            () => void this.refreshRunnerNotices(),
+            15000
+          );
+        }
       })
       .catch(() => {});
     this.connectToFlowUpdates();
@@ -527,6 +560,8 @@ export class ConsoleHeader extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.userRequestVersion += 1;
+    this.runnerNoticeGeneration += 1;
+    clearInterval(this.runnerNoticeTimer);
     window.removeEventListener('auth-change', this.handleIdentityChange);
     window.removeEventListener(
       ATTENTION_SUMMARY_EVENT,

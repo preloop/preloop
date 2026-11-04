@@ -306,6 +306,28 @@ def _to_response(
         user = crud_user.get(db, id=row.registered_by_user_id)
         if user is not None:
             data.registered_by_email = user.email
+            data.owner_name = user.full_name or user.username
+    if db is not None and viewer is not None and row.account_id == viewer.account_id:
+        from preloop.api.endpoints.runner_sessions import _is_account_admin
+        from preloop.plugins.account_hooks import (
+            AuthorizationContext,
+            may_start_runner_session,
+        )
+
+        if str(row.registered_by_user_id) != str(viewer.id):
+            decision = may_start_runner_session(
+                AuthorizationContext(
+                    db=db,
+                    user=viewer,
+                    account_id=viewer.account_id,
+                    attributes={"operation": "options"},
+                ),
+                row,
+                is_account_admin=bool(viewer_is_admin)
+                if viewer_is_admin is not None
+                else _is_account_admin(db, viewer),
+            )
+            data.shared_with_me = decision.allowed and bool(decision.rule_ids)
     if row.harness_inventory is not None:
         # Version and account host are for the owner and account admins.
         visible = (
@@ -462,6 +484,18 @@ def register_runner_model(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/runner-notices")
+@require_permission("view_flows")
+def runner_owner_notices(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[Dict[str, Any]]:
+    """Owner-only notices for the console bell, including missed events."""
+    from preloop.models.crud.runner_notice import recent
+
+    return recent(db, account_id=current_user.account_id, owner_user_id=current_user.id)
+
+
 @router.get("/runners", response_model=List[schemas.RunnerResponse])
 @require_permission("view_flows")
 def list_runners(
@@ -469,6 +503,7 @@ def list_runners(
     current_user: User = Depends(get_current_active_user),
     skip: int = 0,
     limit: int = 100,
+    purpose: Optional[str] = None,
 ):
     # The Runners page is where a phantom would be visible, so reap lapsed
     # one-shot rows on the way in rather than showing them offline forever.
@@ -485,6 +520,29 @@ def list_runners(
         if any(row.harness_inventory is not None for row in rows)
         else False
     )
+    if purpose == "sessions":
+        from preloop.api.endpoints.runner_sessions import _is_account_admin
+        from preloop.plugins.account_hooks import (
+            AuthorizationContext,
+            may_start_runner_session,
+        )
+
+        is_admin = _is_account_admin(db, current_user)
+        rows = [
+            row
+            for row in rows
+            if may_start_runner_session(
+                AuthorizationContext(
+                    db=db,
+                    user=current_user,
+                    account_id=current_user.account_id,
+                    attributes={"operation": "options"},
+                ),
+                row,
+                is_account_admin=is_admin,
+            ).allowed
+            and not row.ephemeral
+        ]
     can_manage_fingerprints = (
         _can_manage_runner_fingerprints(db, current_user)
         if any(row.workstation_fingerprint for row in rows)
@@ -1207,6 +1265,16 @@ async def runner_ws(
                 presence_changed = _refresh_presence(db, runner)
                 evaluate_fleet_findings(db, account_id=runner.account_id)
                 reply: Dict[str, Any] = {"type": "ack", "concurrency": runner.capacity}
+                if runner.registered_by_user_id:
+                    from preloop.models.crud.runner_notice import recent
+
+                    reply["owner_notices"] = recent(
+                        db,
+                        account_id=runner.account_id,
+                        owner_user_id=runner.registered_by_user_id,
+                        runner_id=runner.id,
+                        host_only=True,
+                    )
                 if inventory_wanted:
                     reply["inventory_wanted"] = True
                 if inventory_changed or presence_changed:

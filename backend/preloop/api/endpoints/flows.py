@@ -762,15 +762,30 @@ def get_flow_harness_options(
             is_admin=False,
         )
 
-    return HarnessOptionsResponse.model_validate(
-        harness_options(
-            db,
-            runners,
-            account_id=current_user.account_id,
-            usable=usable,
-            usable_harness=usable_harness,
-        )
+    result = harness_options(
+        db,
+        runners,
+        account_id=current_user.account_id,
+        usable=usable,
+        usable_harness=usable_harness,
     )
+    from preloop.models.crud import crud_user
+
+    by_id = {str(r.id): r for r in runners}
+    owners = {}
+    for option in result["harnesses"]:
+        for item in option["runners"]:
+            runner = by_id[str(item["id"])]
+            item["shared_with_me"] = not owns(runner) and not is_admin()
+            if item["shared_with_me"] and runner.registered_by_user_id:
+                owner_id = runner.registered_by_user_id
+                if owner_id not in owners:
+                    owner = crud_user.get(db, id=owner_id)
+                    owners[owner_id] = (
+                        (owner.full_name or owner.username) if owner else None
+                    )
+                item["owner_name"] = owners[owner_id]
+    return HarnessOptionsResponse.model_validate(result)
 
 
 @router.get("/flows/presets", response_model=List[schemas.FlowResponse])

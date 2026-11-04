@@ -3,6 +3,9 @@ import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -63,93 +66,127 @@ function parseIds(text: string): string[] | null {
  */
 @customElement('runner-sharing-panel')
 export class RunnerSharingPanel extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      margin-top: var(--sl-spacing-large);
-      font-size: var(--console-text-body, 0.875rem);
-    }
-    h3 {
-      font-size: var(--console-text-card-title, 0.9375rem);
-      font-weight: 600;
-      margin: 0 0 var(--sl-spacing-x-small);
-    }
-    .meta {
-      color: var(--console-meta-color, var(--sl-color-neutral-600));
-      font-size: var(--console-text-meta, 0.8125rem);
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-      padding: var(--sl-spacing-x-small) 0;
-      border-bottom: 1px solid
-        var(--console-hairline, var(--sl-color-neutral-200));
-    }
-    .row .who {
-      font-weight: 500;
-      min-width: 10rem;
-    }
-    .form {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      gap: var(--sl-spacing-small);
-      margin-top: var(--sl-spacing-medium);
-    }
-    .policy {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-      margin: var(--sl-spacing-small) 0;
-    }
-    sl-badge::part(base) {
-      font-size: 0.75rem;
-      font-weight: 500;
-      padding: 2px 8px;
-      border: none;
-      color: var(--sl-color-neutral-800);
-      background: color-mix(
-        in srgb,
-        var(--sl-color-neutral-500) 16%,
-        transparent
-      );
-    }
-    sl-badge[variant='success']::part(base) {
-      color: var(--sl-color-success-800);
-      background: color-mix(
-        in srgb,
-        var(--sl-color-success-500) 16%,
-        transparent
-      );
-    }
-    sl-badge[variant='warning']::part(base) {
-      color: var(--sl-color-warning-800);
-      background: color-mix(
-        in srgb,
-        var(--sl-color-warning-500) 16%,
-        transparent
-      );
-    }
-    sl-badge[variant='danger']::part(base) {
-      color: var(--sl-color-danger-800);
-      background: color-mix(
-        in srgb,
-        var(--sl-color-danger-500) 16%,
-        transparent
-      );
-    }
-    .error {
-      color: var(--sl-color-danger-700);
-      margin-top: var(--sl-spacing-x-small);
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-dialog::part(panel) {
+        width: min(60rem, 96vw);
+      }
+      .revoke {
+        margin-left: var(--sl-spacing-large);
+      }
+      :host {
+        display: block;
+        margin-top: var(--sl-spacing-large);
+        font-size: var(--console-text-body, 0.875rem);
+      }
+      h3 {
+        font-size: var(--console-text-card-title, 0.9375rem);
+        font-weight: 600;
+        margin: 0 0 var(--sl-spacing-x-small);
+      }
+      .meta {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--console-text-meta, 0.8125rem);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) 0;
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+      }
+      .row .who {
+        font-weight: 500;
+        min-width: 10rem;
+      }
+      .form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+        gap: var(--sl-spacing-medium);
+        margin-top: var(--sl-spacing-medium);
+      }
+      .form > sl-button {
+        justify-self: start;
+        align-self: end;
+      }
+      .scope-fields {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
+      .scope-fields > div {
+        display: flex;
+        gap: var(--sl-spacing-medium);
+      }
+      @media (max-width: 600px) {
+        .form {
+          grid-template-columns: 1fr;
+        }
+        sl-select,
+        sl-input,
+        sl-button {
+          --sl-input-height-small: 44px;
+        }
+      }
+      .policy {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        margin: var(--sl-spacing-small) 0;
+      }
+      sl-badge::part(base) {
+        font-size: 0.75rem;
+        font-weight: 500;
+        padding: 2px 8px;
+        border: none;
+        color: var(--sl-color-neutral-800);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-neutral-500) 16%,
+          transparent
+        );
+      }
+      sl-badge[variant='success']::part(base) {
+        color: var(--sl-color-success-800);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 16%,
+          transparent
+        );
+      }
+      sl-badge[variant='warning']::part(base) {
+        color: var(--sl-color-warning-800);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 16%,
+          transparent
+        );
+      }
+      sl-badge[variant='danger']::part(base) {
+        color: var(--sl-color-danger-800);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-danger-500) 16%,
+          transparent
+        );
+      }
+      .error {
+        color: var(--sl-color-danger-700);
+        margin-top: var(--sl-spacing-x-small);
+      }
+    `,
+  ];
 
   @property({ attribute: false }) context: Record<string, unknown> = {};
   @property({ attribute: false }) capabilities: CapabilitySet = NO_CAPABILITIES;
 
+  @state() private dialogOpen = false;
+  @state() private approval: 'none' | 'per_request' = 'per_request';
   @state() private runnerId = '';
   @state() private sharing: RunnerSharing | null = null;
   @state() private grantees: Grantee[] = [];
@@ -178,6 +215,14 @@ export class RunnerSharingPanel extends LitElement {
   }
 
   protected updated(changed: PropertyValues): void {
+    if (
+      changed.has('context') &&
+      typeof this.context.runnerId === 'string' &&
+      this.context.runnerId !== this.runnerId
+    ) {
+      this.runnerId = this.context.runnerId;
+      this.dialogOpen = true;
+    }
     if (changed.has('runnerId') && this.runnerId) void this.load();
   }
 
@@ -188,6 +233,7 @@ export class RunnerSharingPanel extends LitElement {
       getUsers().catch(() => null),
     ]);
     this.me = profile?.id ?? '';
+    if (this.sharing?.grantees) return;
     this.peopleUnavailable = teams === null && users === null;
     this.grantees = [
       ...(teams?.teams ?? []).map((t) => ({
@@ -214,6 +260,13 @@ export class RunnerSharingPanel extends LitElement {
       const sharing = await getRunnerSharing(runnerId);
       if (generation !== this.generation || runnerId !== this.runnerId) return;
       this.sharing = sharing;
+      if (sharing.grantees) {
+        this.grantees = sharing.grantees.map((g) => ({
+          ...g,
+          key: `${g.type}:${g.id}`,
+        }));
+        this.peopleUnavailable = false;
+      }
     } catch (error) {
       if (generation !== this.generation) return;
       if (isCapabilityOff(error)) {
@@ -331,6 +384,9 @@ export class RunnerSharingPanel extends LitElement {
         >Harnesses: ${share.harnesses?.join(', ') ?? 'all'} · Directories:
         ${share.directory_ids?.join(', ') ?? 'all'}</span
       >
+      <span class="meta"
+        >${share.approval === 'none' ? 'No per-start approval' : 'Approve each session'}</span
+      >
       ${this.stateChip(share)}
       ${
         live && isOwner && share.consent_state === 'pending_owner_consent'
@@ -362,14 +418,30 @@ export class RunnerSharingPanel extends LitElement {
           ? html`<sl-button
               size="small"
               data-testid="revoke-share"
+              class="revoke"
+              variant="danger"
+              outline
               ?disabled=${this.busy}
-              @click=${() =>
-                this.act(() => revokeRunnerShare(share.runner_id, share.id))}
+              @click=${() => this.revoke(share)}
               >Revoke</sl-button
             >`
           : nothing
       }
     </div>`;
+  }
+
+  private async revoke(share: RunnerShare): Promise<void> {
+    if (
+      await confirmDialog({
+        title: 'Revoke runner share?',
+        message:
+          'New starts will be refused and running sessions covered only by this share will stop.',
+        confirmLabel: 'Revoke',
+        variant: 'danger',
+      })
+    ) {
+      await this.act(() => revokeRunnerShare(share.runner_id, share.id));
+    }
   }
 
   private toggleScope(scope: ShareScope, on: boolean): void {
@@ -392,6 +464,9 @@ export class RunnerSharingPanel extends LitElement {
         scopes: this.scopes,
         harnesses: parseIds(this.harnesses),
         directory_ids: parseIds(this.directories),
+        ...(this.sharing?.approval_modes_available
+          ? { approval: this.approval }
+          : {}),
       });
       this.granteeKey = '';
       this.harnesses = '';
@@ -419,17 +494,25 @@ export class RunnerSharingPanel extends LitElement {
           (g) => html`<sl-option value=${g.key}>${g.label}</sl-option>`
         )}
       </sl-select>
-      ${(['sessions', 'flows'] as ShareScope[]).map(
-        (scope) =>
-          html`<sl-checkbox
-            size="small"
-            data-testid=${`scope-${scope}`}
-            ?checked=${this.scopes.includes(scope)}
-            @sl-change=${(e: Event) =>
-              this.toggleScope(scope, (e.target as HTMLInputElement).checked)}
-            >${scope === 'sessions' ? 'Sessions' : 'Flows'}</sl-checkbox
-          >`
-      )}
+      <div class="scope-fields" role="group" aria-label="Share scope">
+        <span>Scope</span>
+        <div>
+          ${(['sessions', 'flows'] as ShareScope[]).map(
+            (scope) =>
+              html`<sl-checkbox
+                size="small"
+                data-testid=${`scope-${scope}`}
+                ?checked=${this.scopes.includes(scope)}
+                @sl-change=${(e: Event) =>
+                  this.toggleScope(
+                    scope,
+                    (e.target as HTMLInputElement).checked
+                  )}
+                >${scope === 'sessions' ? 'Sessions' : 'Flows'}</sl-checkbox
+              >`
+          )}
+        </div>
+      </div>
       <sl-input
         size="small"
         label="Harnesses (blank: all)"
@@ -447,6 +530,20 @@ export class RunnerSharingPanel extends LitElement {
         @sl-input=${(e: Event) =>
           (this.directories = (e.target as HTMLInputElement).value)}
       ></sl-input>
+      ${
+        this.sharing?.approval_modes_available
+          ? html`<sl-select
+              size="small"
+              label="Session approval"
+              data-testid="approval"
+              .value=${this.approval}
+              @sl-change=${(e: Event) => (this.approval = (e.target as HTMLSelectElement).value as 'none' | 'per_request')}
+            >
+              <sl-option value="per_request">Ask for each session</sl-option>
+              <sl-option value="none">Allow without asking</sl-option>
+            </sl-select>`
+          : nothing
+      }
       <sl-button
         size="small"
         variant="primary"
@@ -462,31 +559,50 @@ export class RunnerSharingPanel extends LitElement {
     const runners = this.runners();
     if (runners.length === 0 || this.off) return nothing;
     const sharing = this.sharing;
-    return html`<h3>Runner sharing</h3>
-      <sl-select
-        size="small"
-        label="Runner"
-        data-testid="sharing-runner"
-        .value=${this.runnerId}
-        @sl-change=${(e: Event) =>
-          (this.runnerId = (e.target as HTMLSelectElement).value)}
+    return html`<sl-button
+        data-testid="open-sharing"
+        @click=${() => {
+          this.dialogOpen = true;
+          if (!this.runnerId) this.runnerId = runners[0]?.id ?? '';
+          else void this.load();
+        }}
+        >Share runner</sl-button
       >
-        ${runners.map((r) => html`<sl-option value=${r.id}>${r.name}</sl-option>`)}
-      </sl-select>
-      ${
-        sharing
-          ? html`${this.renderPolicy(sharing)}
-            ${
-              sharing.grants.length
-                ? sharing.grants.map((share) =>
-                    this.renderShare(sharing, share)
-                  )
-                : html`<div class="meta">Not shared.</div>`
-            }
-            ${sharing.can_share ? this.renderForm() : nothing}`
-          : nothing
-      }
-      ${this.error ? html`<div class="error" role="alert">${this.error}</div>` : nothing}`;
+      <sl-dialog
+        label="Runner sharing"
+        ?open=${this.dialogOpen}
+        @sl-hide=${(e: Event) => {
+          if (e.target === e.currentTarget) this.dialogOpen = false;
+        }}
+      >
+        <sl-select
+          size="small"
+          label="Runner"
+          data-testid="sharing-runner"
+          .value=${this.runnerId}
+          @sl-change=${(e: Event) =>
+            (this.runnerId = (e.target as HTMLSelectElement).value)}
+        >
+          ${runners.map((r) => html`<sl-option value=${r.id}>${r.name}</sl-option>`)}
+        </sl-select>
+        ${
+          sharing
+            ? html`${this.renderPolicy(sharing)}
+              ${
+                sharing.grants.length
+                  ? sharing.grants.map((share) =>
+                      this.renderShare(sharing, share)
+                    )
+                  : html`<div class="meta">Not shared.</div>`
+              }
+              ${sharing.can_share ? this.renderForm() : nothing}`
+            : nothing
+        }
+        ${this.error ? html`<div class="error" role="alert">${this.error}</div>` : nothing}
+        <sl-button slot="footer" @click=${() => (this.dialogOpen = false)}
+          >Done</sl-button
+        >
+      </sl-dialog>`;
   }
 }
 

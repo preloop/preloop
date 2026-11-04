@@ -2972,7 +2972,7 @@ export class PreloopFlowForm extends LitElement {
                   ${(option?.runners || []).map(
                     (runner) =>
                       html`<sl-option .value=${runner.id}
-                        >${runner.name}
+                        >${runner.name}${runner.shared_with_me ? ` · Shared with me · ${runner.owner_name || 'Runner owner'}` : ''}
                         (${
                           runner.eligible
                             ? 'ready'
