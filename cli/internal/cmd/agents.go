@@ -1041,6 +1041,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     Runtime: %s\n", runtimeLabel)
 		}
 		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
+		if label := agentNoteDeliveryLabel(agent); label != "" {
+			fmt.Printf("     Operator notes: %s\n", label)
+		}
 		fmt.Printf("     %s\n", inventoryRouteSummary(inventoryDiscoveryRoutes(agent)))
 		if label := claudeDesktopModelRouteLabel(agent.ModelRoute); label != "" {
 			fmt.Printf("     Model route: %s\n", label)

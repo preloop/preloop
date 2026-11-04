@@ -426,7 +426,7 @@ unclaimed and already finished ids are silently ignored.
 | Claude Code (channels) | An MCP channel server you run | `POST /agents/notes/pending`, then push `channel_event` as `notifications/claude/channel`. The harness wraps our block in its own `<channel source= severity=>` tag |
 | Claude Code (cross-session messaging) | A bridge process holding `CLAUDE_CODE_MESSAGING_TOKEN`, with `crossSessionInbound: accept` on headless `-p` workers | `POST /agents/notes/pending`, then post `text` to the session inbox socket. The harness delivers it between tool calls |
 | Codex CLI | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `Stop`, `SessionEnd` | `operator_note` on the permission-check response, written into the `PreToolUse` `hookSpecificOutput.additionalContext`. `PermissionRequest` has no field for it, so a note claimed there rides the next `PreToolUse`. Codex 0.162.1 supports the same startup context, bounded Stop continuation and SessionEnd receipt shapes as Claude Code |
-| Cursor CLI | `sessionStart`, `beforeSubmitPrompt`, `beforeShellExecution`, `beforeMCPExecution`, `preToolUse`, `stop`, `sessionEnd` | `operator_note` on the permission-check response, written into the `preToolUse` `additional_context` on allow and deny. The two `before*` hooks have no field for it, and on this build `preToolUse` collects `additional_context` only on allow and deny, so a note claimed on `ask` also rides the next carrying call. Startup uses `additional_context`; stop uses `followup_message` on completed turns with a maximum of three continuations, respecting `loop_count`. `beforeSubmitPrompt` registers the session without claiming notes; `sessionEnd` reports the native session id |
+| Cursor CLI | `sessionStart`, `beforeSubmitPrompt`, `beforeShellExecution`, `beforeMCPExecution`, `preToolUse`, `stop`, `sessionEnd` | `operator_note` on the permission-check response, written into the `preToolUse` `additional_context` on allow and deny. The two `before*` hooks have no field for it, and on this build `preToolUse` collects `additional_context` only on allow and deny, so a note claimed on `ask` also rides the next carrying call. Startup uses `additional_context`; stop uses `followup_message` on completed turns with a maximum of three continuations, respecting `loop_count`. Headless `--print` runs fire no `stop` (see [Cursor headless runs](#cursor-headless-runs-have-no-stop-rescue)). `beforeSubmitPrompt` registers the session without claiming notes; `sessionEnd` reports the native session id |
 | OpenCode | `experimental.chat.system.transform`, `session.deleted`, via `@preloop-ai/opencode-plugin` | OpenCode 1.18.32 supplies a session id and mutable `system` array before each model request. The plugin registers the session, claims with `defer_delivery=true`, appends the rendered block and acknowledges its `note_id` values only after append succeeds. Failed acknowledgments are retried before another pull. `session.deleted` reports an end; `session.idle` remains resumable |
 | Copilot CLI | `sessionStart`, `sessionEnd`; native `preToolUse` is non-carrying | Session lifecycle commands register native `sessionId` and report its end alongside usage hooks. Native tool checks leave notes pending; no verified model-visible context or continuation field is installed |
 | Devin CLI | `SessionStart`, `UserPromptSubmit`, native permission hooks | Session registration only. Permission hooks have no verified note carrier; notes stay pending. Managed runner termination supplies end receipts |
@@ -504,6 +504,22 @@ The lifecycle hooks are installed for Claude Code only. Codex CLI 0.162 has
 `PreToolUse` and, if the session ends first, expires after 24h. Cursor CLI is
 unchanged. The Claude Code input and output shapes for these events are pinned
 in `cli/internal/cmd/testdata/operator-notes/claude-code-lifecycle.json`.
+
+### Cursor headless runs have no stop rescue
+
+Cursor CLI `2026.10.01-e373342` in headless `--print` mode (default and ask
+mode) emitted `sessionStart` and `sessionEnd` but never invoked the configured
+`stop` hook (#1684). In headless runs a Cursor note therefore reaches the model
+at startup or at a tool call, and the session end is reported authoritatively,
+but there is no verified stop rescue: a session note that arrives after the
+last tool call stays pending until `sessionEnd`, which marks it `undeliverable`
+with reason `session_ended`. It is never reported as delivered. Notes addressed
+to the agent rather than the session wait for its next run. Onboarding still
+installs the `stop` hook, because Cursor documents it; interactive mode was not
+tested and this evidence does not cover other Cursor versions.
+`preloop agents discover` and `preloop agents status` print this limit on an
+`Operator notes:` line for Cursor. The reproduction is in the
+[verification guide](operator-notes-smoke.md#cursor-headless-stop-boundary).
 
 A Stop block is only spent when `stop_hook_active` is false, which Claude Code
 sets on the stop that follows a block. A headless `claude -p` run therefore

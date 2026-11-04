@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as open source, and `SECURITY.md` names the latest release line instead of
   a fixed minor. Refs #1486.
 
+- `preloop agents discover` and `preloop agents status` print an
+  `Operator notes:` line for Cursor: headless `--print` runs of Cursor CLI
+  `2026.10.01-e373342` fire no `stop` hook, so a session note queued after the
+  last tool call is marked undeliverable at session end instead of being
+  rescued. The operator-note guide and verification guide record the evidence
+  (#1684).
 - `ARCHITECTURE.md` is a short map again. Subsystem notes that had grown
   in it moved, unchanged, into chapters under `docs/architecture/`, with six
   new chapters (runners, identity, chat, discovery, telemetry, operations).
