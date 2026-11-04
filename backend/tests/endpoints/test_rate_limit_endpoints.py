@@ -308,6 +308,29 @@ def test_disabled_limiter_never_refuses(
         assert _login(client, f"u{i}@example.com", _ip(12)).status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [("RATE_LIMIT_ENABLED", "false"), ("RATE_LIMIT_AUTH_LOGIN_USER", "0/60")],
+)
+@pytest.mark.parametrize("correct_password", [False, True])
+def test_disabled_login_rule_skips_identity_lookup(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str,
+    value: str,
+    correct_password: bool,
+) -> None:
+    user = _password_user(db_session)
+    monkeypatch.setenv(setting, value)
+    with patch("preloop.api.auth.router._resolve_login_person_id") as resolve:
+        response = _login_with(
+            client, user.username, PASSWORD if correct_password else "wrong", 14
+        )
+    assert response.status_code == (200 if correct_password else 401)
+    resolve.assert_not_called()
+
+
 def test_rule_override_from_env(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

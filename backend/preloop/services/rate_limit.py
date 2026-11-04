@@ -36,7 +36,6 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Optional, Union
 
 from fastapi import HTTPException, Request, WebSocket, status
-from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +65,10 @@ class Rule:
     def env_name(self) -> str:
         """Environment variable that overrides this rule."""
         return "RATE_LIMIT_" + self.name.upper().replace(".", "_")
+
+    def is_enabled(self) -> bool:
+        """Whether this rule needs an identity under the current configuration."""
+        return _enabled() and self.effective()[0] > 0
 
     def effective(self) -> tuple[int, int]:
         """Return ``(limit, window_s)`` after applying the env override."""
@@ -447,8 +450,8 @@ def _with_fallback(
 def enforce(rule: Rule, identity: Optional[str]) -> None:
     """Count one request for ``identity`` under ``rule``; 429 when over budget.
 
-    Blocking (the Postgres store does I/O); call from sync code or through
-    :func:`enforce_async`.
+    Blocking (the Postgres store does I/O); call from sync code or use
+    ``starlette.concurrency.run_in_threadpool`` in an async caller.
 
     Args:
         rule: The budget to charge.
@@ -503,11 +506,6 @@ def record(rule: Rule, identity: Optional[str]) -> None:
     if limit <= 0:
         return
     _with_fallback(rule, "hit", _key(rule, identity), window_s, _clock())
-
-
-async def enforce_async(rule: Rule, identity: Optional[str]) -> None:
-    """:func:`enforce` off the event loop."""
-    await run_in_threadpool(enforce, rule, identity)
 
 
 def login_failure_identity(
@@ -597,7 +595,6 @@ __all__ = [
     "check_without_counting",
     "client_ip_for_rate_limit",
     "enforce",
-    "enforce_async",
     "limit_by_ip",
     "limit_by_path_param_and_ip",
     "login_failure_identity",

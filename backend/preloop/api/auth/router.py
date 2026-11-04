@@ -1137,8 +1137,15 @@ async def _audited_password_login(
             _resolve_login_person_id(db, username), username, rate_limit_ip
         )
 
-    limited_identity = await run_in_threadpool(failure_key)
-    await run_in_threadpool(check_without_counting, AUTH_LOGIN_USER, limited_identity)
+    limited_identity = None
+    if AUTH_LOGIN_USER.is_enabled():
+        # This best-effort lookup supplies only the limiter key. Authentication
+        # deliberately resolves again with its own identity/error handling;
+        # skipping the preflight when disabled avoids paying for an unused key.
+        limited_identity = await run_in_threadpool(failure_key)
+        await run_in_threadpool(
+            check_without_counting, AUTH_LOGIN_USER, limited_identity
+        )
 
     user = None
     auth_context: dict[str, Any] = {}
