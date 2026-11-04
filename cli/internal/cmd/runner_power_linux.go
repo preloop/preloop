@@ -11,9 +11,6 @@ import (
 )
 
 const (
-	logindDest      = "org.freedesktop.login1"
-	logindPath      = "/org/freedesktop/login1"
-	logindInterface = "org.freedesktop.login1.Manager"
 	// runnerSleepReleaseAfter bounds how long the runner holds a sleep
 	// delay, well under logind's default InhibitDelayMaxSec (5 s).
 	runnerSleepReleaseAfter = 3 * time.Second
@@ -29,6 +26,7 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		return func() {}
 	}
 	if err := conn.AddMatchSignal(
+		dbus.WithMatchSender(logindDest),
 		dbus.WithMatchInterface(logindInterface),
 		dbus.WithMatchMember("PrepareForSleep"),
 		dbus.WithMatchObjectPath(logindPath),
@@ -49,7 +47,14 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 				if !ok {
 					return
 				}
-				sleeping, isSleep := logindPrepareForSleep(signal)
+				// Match rules filter broadcasts, but directed signals can
+				// bypass them. Verify the sender against the bus's current
+				// owner, including after logind restarts.
+				var owner string
+				if err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, logindDest).Store(&owner); err != nil {
+					continue
+				}
+				sleeping, isSleep := logindPrepareForSleep(signal, owner)
 				if !isSleep {
 					continue
 				}
@@ -71,16 +76,6 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		inhibitor.releaser()()
 		_ = conn.Close()
 	}
-}
-
-// logindPrepareForSleep reads a PrepareForSleep signal: (true, true) before
-// sleep, (false, true) after wake, (_, false) for anything else.
-func logindPrepareForSleep(signal *dbus.Signal) (sleeping, ok bool) {
-	if signal == nil || signal.Name != logindInterface+".PrepareForSleep" || len(signal.Body) != 1 {
-		return false, false
-	}
-	value, isBool := signal.Body[0].(bool)
-	return value, isBool
 }
 
 func deliverRunnerPowerEvent(events chan<- runnerPowerEvent, event runnerPowerEvent) {
