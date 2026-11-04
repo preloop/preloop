@@ -62,6 +62,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The run reached a default token, USD or turn ceiling the flow did not set. Set agent_config.limits on the flow to raise it.',
   },
+  repeated_upstream_failure: {
+    label: 'repeated upstream failure',
+    tooltip:
+      'The same model call kept failing the same way, so the gateway stopped the run instead of retrying it. Fix the key, model or provider first.',
+  },
   /**
    * Superseded by `provider_billing`, which the server writes now. Kept so
    * runs classified before it still read as something.

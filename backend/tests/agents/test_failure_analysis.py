@@ -614,3 +614,16 @@ def test_verification_check_cause_takes_precedence() -> None:
     assert analysis.message == (
         "Verification failed: git-diff-check: trailing whitespace at example.pm:17"
     )
+
+
+def test_repeated_upstream_failure_refusal_is_not_transient() -> None:
+    """#1336: the breaker names the HTTP 500 it saw; that is not a retry cue."""
+    from preloop.agents.failure_analysis import analyze_agent_failure
+
+    analysis = analyze_agent_failure(
+        "ERROR: unexpected status 424 Failed Dependency: Repeated upstream "
+        "failure: 3 identical upstream_error (HTTP 500) failures in a row\n"
+        "stream error: retrying 5/5 in 10s"
+    )
+    assert analysis.transient is False
+    assert "Repeated upstream failure" in analysis.message

@@ -39,6 +39,13 @@ it*, not about severity:
 ``model_quota``
     Superseded by ``provider_billing``, which is written instead. Kept in the
     vocabulary so executions classified before it still read as something.
+``repeated_upstream_failure``
+    The gateway stopped the run because its model calls kept failing the same
+    way: the same request, error class and status several times in a row
+    (``agent_config.limits.max_consecutive_identical_upstream_failures``,
+    default 3; 2 for a class that can never succeed on retry). Retrying the
+    run only helps once the cause (a key, a model config, a provider outage)
+    has changed.
 ``model_config``
     The model rejected the request as configured (unsupported parameters,
     model not bound to the caller's credentials), or the gateway refused it
@@ -146,6 +153,8 @@ FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
 FAILURE_CATEGORY_BUDGET_EXCEEDED = "budget_exceeded"
 #: A run stopped by a default per-execution ceiling the flow did not set.
 FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED = "default_limit_reached"
+#: The gateway stopped a run whose model calls kept failing identically (#1336).
+FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE = "repeated_upstream_failure"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
@@ -181,6 +190,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_PROVIDER_BILLING,
     FAILURE_CATEGORY_BUDGET_EXCEEDED,
     FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+    FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
@@ -447,6 +457,12 @@ _RESULT_SCHEMA_INVALID_RE = re.compile(
     r"^Result document does not match the flow result schema\b"
 )
 
+# The gateway's breaker for identical failing model calls (#1336); see
+# flow_execution_limits.repeated_failure_message.
+_REPEATED_UPSTREAM_FAILURE_RE = re.compile(
+    r"repeated upstream failure:|repeated_upstream_failure", re.IGNORECASE
+)
+
 # The completion handler's bypass refusal (host_exec_gateway) and the
 # hosted Codex hook setup refusal both lead with their category.
 _GATEWAY_BYPASSED_RE = re.compile(r"^gateway_bypassed:", re.IGNORECASE)
@@ -468,6 +484,7 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_REPEATED_UPSTREAM_FAILURE_RE, FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE),
     (_DEFAULT_LIMIT_RE, FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED),
     (_EXECUTION_BUDGET_RE, FAILURE_CATEGORY_BUDGET_EXCEEDED),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),

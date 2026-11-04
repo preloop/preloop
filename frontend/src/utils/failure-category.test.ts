@@ -22,6 +22,7 @@ describe('failure-category', () => {
       'provider_billing',
       'budget_exceeded',
       'default_limit_reached',
+      'repeated_upstream_failure',
       'model_quota',
       'model_config',
       'no_confirmation',

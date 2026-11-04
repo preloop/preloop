@@ -539,3 +539,375 @@ async def test_prose_failure_without_a_spent_ceiling_stays_unknown(
     await orch._update_execution_log(status="FAILED", error_message="some prose")
     db_session.refresh(execution)
     assert execution.failure_category == "unknown"
+
+
+# --- repeated identical upstream failures (#1336) ---------------------------
+
+
+def _outcome(status_code=500, error_class="upstream_error", fingerprint="fp-a"):
+    from preloop.services.flow_execution_limits import GatewayAttemptOutcome
+
+    return GatewayAttemptOutcome(
+        status_code=status_code,
+        error_class=error_class,
+        request_fingerprint=fingerprint,
+    )
+
+
+def test_failure_streak_threshold_defaults_and_ignores_junk():
+    from preloop.services.flow_execution_limits import (
+        DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES,
+        parse_failure_streak_threshold,
+    )
+
+    key = "max_consecutive_identical_upstream_failures"
+    assert DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES == 3
+    assert parse_failure_streak_threshold(None) == 3
+    assert parse_failure_streak_threshold({}) == 3
+    assert parse_failure_streak_threshold({"limits": {key: 5}}) == 5
+    assert parse_failure_streak_threshold({"limits": {key: "4"}}) == 4
+    # Malformed values fall back to the default; they never disable the breaker.
+    for junk in (0, -2, "many", None, True, 2.5, [], 1):
+        assert parse_failure_streak_threshold({"limits": {key: junk}}) == 3, junk
+
+
+def test_failure_streak_trips_after_n_identical_failures():
+    from preloop.services.flow_execution_limits import evaluate_failure_streak
+
+    assert evaluate_failure_streak([_outcome()] * 2, threshold=3) is None
+    streak = evaluate_failure_streak([_outcome()] * 3, threshold=3)
+    assert streak is not None
+    assert (streak.error_class, streak.status_code, streak.count) == (
+        "upstream_error",
+        500,
+        3,
+    )
+
+
+def test_terminal_error_class_trips_on_its_first_repeat():
+    from preloop.services.flow_execution_limits import evaluate_failure_streak
+
+    terminal = _outcome(status_code=500, error_class="gateway_translation_error")
+    assert evaluate_failure_streak([terminal], threshold=3) is None
+    streak = evaluate_failure_streak([terminal, terminal], threshold=3)
+    assert streak is not None and streak.count == 2
+
+
+@pytest.mark.parametrize(
+    "older",
+    [
+        _outcome(status_code=502),
+        _outcome(error_class="network"),
+        _outcome(fingerprint="fp-b"),
+        _outcome(status_code=200, error_class=None),
+    ],
+    ids=["status", "class", "fingerprint", "success"],
+)
+def test_differing_failure_or_success_resets_the_streak(older):
+    from preloop.services.flow_execution_limits import evaluate_failure_streak
+
+    # Newest first: two identical failures, then something different.
+    outcomes = [_outcome(), _outcome(), older, _outcome(), _outcome()]
+    assert evaluate_failure_streak(outcomes, threshold=3) is None
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    ["upstream_rate_limited", "upstream_overloaded", "client_cancelled", None],
+)
+def test_transient_or_non_upstream_failures_never_trip(error_class):
+    from preloop.services.flow_execution_limits import evaluate_failure_streak
+
+    outcomes = [_outcome(status_code=429, error_class=error_class)] * 10
+    assert evaluate_failure_streak(outcomes, threshold=3) is None
+
+
+def test_unfingerprinted_failures_never_trip():
+    from preloop.services.flow_execution_limits import evaluate_failure_streak
+
+    assert (
+        evaluate_failure_streak([_outcome(fingerprint=None)] * 5, threshold=3) is None
+    )
+
+
+def _log_failure(
+    db_session: Session,
+    test_user,
+    flow,
+    execution,
+    *,
+    status_code=500,
+    error_class="upstream_error",
+    fingerprint="fp-a",
+):
+    return crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=status_code,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        flow_id=str(flow.id),
+        flow_execution_id=str(execution.id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        error_class=error_class,
+        meta_data={"request_fingerprint": fingerprint, "error_class": error_class},
+    )
+
+
+def _milestones(db_session: Session, execution):
+    from preloop.models.models import FlowExecutionLog
+
+    return (
+        db_session.query(FlowExecutionLog)
+        .filter(
+            FlowExecutionLog.execution_id == execution.id,
+            FlowExecutionLog.log_type == "milestone",
+        )
+        .all()
+    )
+
+
+def test_repeated_identical_failures_fail_the_execution_once(
+    db_session: Session, test_user
+):
+    from preloop.services.flow_execution_limits import (
+        RepeatedUpstreamFailureError,
+        enforce_failure_streak_for_id,
+    )
+    from preloop.services.flow_failure_category import (
+        FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+    )
+
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    for _ in range(2):
+        _log_failure(db_session, test_user, flow, execution)
+    db_session.flush()
+    # Two identical failures are under the default of three.
+    enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+
+    _log_failure(db_session, test_user, flow, execution)
+    db_session.flush()
+    with pytest.raises(RepeatedUpstreamFailureError) as excinfo:
+        enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    assert "upstream_error" in str(excinfo.value)
+    assert "3" in str(excinfo.value)
+
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.failure_category == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+    assert "upstream_error" in execution.error_message
+
+    # Still refused on the terminal row, but no second milestone.
+    with pytest.raises(RepeatedUpstreamFailureError):
+        enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    milestones = _milestones(db_session, execution)
+    assert len(milestones) == 1
+    meta = milestones[0].metadata_
+    assert meta["milestone"] == "repeated_upstream_failure"
+    assert meta["error_class"] == "upstream_error"
+    assert meta["attempts"] == 3
+
+
+def test_failure_streak_reads_the_flow_threshold(db_session: Session, test_user):
+    from preloop.services.flow_execution_limits import enforce_failure_streak_for_id
+
+    flow = _create_flow(
+        db_session,
+        test_user,
+        limits={"max_consecutive_identical_upstream_failures": 5},
+    )
+    execution = _create_execution(db_session, flow)
+    for _ in range(4):
+        _log_failure(db_session, test_user, flow, execution)
+    db_session.flush()
+    enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.status == "RUNNING"
+
+
+def test_interleaved_success_keeps_the_execution_running(
+    db_session: Session, test_user
+):
+    from preloop.services.flow_execution_limits import enforce_failure_streak_for_id
+
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    _log_failure(db_session, test_user, flow, execution)
+    _log_failure(db_session, test_user, flow, execution)
+    _log_usage(db_session, test_user, flow, execution)
+    _log_failure(db_session, test_user, flow, execution)
+    _log_failure(db_session, test_user, flow, execution)
+    db_session.flush()
+    enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.status == "RUNNING"
+    assert _milestones(db_session, execution) == []
+
+
+def test_repeated_upstream_failure_message_classifies():
+    from preloop.services.flow_failure_category import (
+        FAILURE_CATEGORIES,
+        FAILURE_CATEGORY_MAX_LENGTH,
+        FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+    )
+
+    assert FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE in FAILURE_CATEGORIES
+    assert len(FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE) <= (
+        FAILURE_CATEGORY_MAX_LENGTH
+    )
+    message = (
+        "OpenAI error: Repeated upstream failure: 3 identical upstream_error "
+        "(HTTP 500) failures in a row"
+    )
+    assert (
+        derive_failure_category(status="FAILED", error_message=message)
+        == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+    )
+
+
+def test_flow_schema_accepts_the_failure_streak_threshold(test_user):
+    from preloop.models.schemas.flow import FlowExecutionLimits
+
+    limits = FlowExecutionLimits(max_consecutive_identical_upstream_failures=4)
+    assert limits.max_consecutive_identical_upstream_failures == 4
+    with pytest.raises(ValueError):
+        FlowExecutionLimits(max_consecutive_identical_upstream_failures=1)
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "failed_requests"),
+    [
+        # upstream_auth is terminal: the breaker trips on its first repeat.
+        (
+            lambda: __import__("litellm").AuthenticationError(
+                message="invalid api key", llm_provider="openai", model="x"
+            ),
+            2,
+        ),
+        # A plain upstream 500 trips after the default of three.
+        (
+            lambda: __import__("litellm").InternalServerError(
+                message="boom", llm_provider="openai", model="x"
+            ),
+            3,
+        ),
+    ],
+    ids=["terminal-auth", "upstream-500"],
+)
+def test_gateway_stops_calling_upstream_after_repeated_identical_failures(
+    db_session: Session, test_user, monkeypatch, error_factory, failed_requests
+):
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from preloop.api.app import create_app
+    from preloop.api.deps import get_budget_enforcer
+    from preloop.api.endpoints.openai_gateway import get_model_gateway_auth_context
+    from preloop.config import settings
+    from preloop.models.crud import crud_ai_model
+    from preloop.models.db.session import get_db_session
+    from preloop.plugins.base import PluginManager
+    from preloop.services.flow_failure_category import (
+        FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+    )
+    from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+
+    monkeypatch.setenv("PRELOOP_SERVICE_ROLE", "gateway")
+    monkeypatch.setattr(settings, "disable_rbac", True)
+    monkeypatch.setattr("preloop.plugins.get_plugin_manager", PluginManager)
+    monkeypatch.setattr("preloop.plugins.base._plugin_manager", None)
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway._sleep_before_upstream_retry",
+        lambda *a, **k: None,
+    )
+
+    ai_model = crud_ai_model.create_with_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "name": "Failing Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "synthetic-failing-model",
+            "api_key": "unused-synthetic-key",
+            "meta_data": {"gateway": {"enabled": True}, "pricing": {}},
+        },
+    )
+    requested_alias = resolve_ai_model_runtime(ai_model).model_gateway_model_alias
+    from preloop.models.crud import crud_api_key
+    from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    # A real runtime key: recorded usage rows reference it.
+    runtime_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Flow Execution synthetic",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"flow_execution_id": str(execution.id)},
+    )
+    db_session.commit()
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="synthetic", user=test_user, api_key=runtime_key)
+    )
+    app.dependency_overrides[get_budget_enforcer] = lambda: None
+
+    statuses = []
+    calls_after = []
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            side_effect=lambda **_: (_ for _ in ()).throw(error_factory()),
+        ) as provider,
+        TestClient(app) as client,
+    ):
+        for _ in range(6):
+            response = client.post(
+                "/openai/v1/chat/completions",
+                json={
+                    "model": requested_alias,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+            statuses.append(response.status_code)
+            calls_after.append(provider.call_count)
+
+    # The failing requests reached the provider; every later one was refused
+    # before any upstream call.
+    assert all(code != 424 for code in statuses[:failed_requests]), statuses
+    assert all(code == 424 for code in statuses[failed_requests:]), statuses
+    assert calls_after[failed_requests - 1] > 0
+    assert len(set(calls_after[failed_requests - 1 :])) == 1, calls_after
+    assert response.json()["error"]["code"] == "repeated_upstream_failure"
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.failure_category == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+    assert len(_milestones(db_session, execution)) == 1
+
+
+def test_fail_if_active_moves_a_running_execution_exactly_once(
+    db_session: Session, test_user
+):
+    """The conditional update is what makes the breaker's milestone single."""
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    kwargs = dict(
+        execution_id=execution.id,
+        error_message="Repeated upstream failure: synthetic",
+        failure_category="repeated_upstream_failure",
+    )
+    assert crud_flow_execution.fail_if_active(db_session, **kwargs) is True
+    assert crud_flow_execution.fail_if_active(db_session, **kwargs) is False
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"

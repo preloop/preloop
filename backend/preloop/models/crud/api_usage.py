@@ -1110,6 +1110,55 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "first_api_usage_id": str(rows[0].id) if rows else None,
         }
 
+    def get_recent_gateway_outcomes(
+        self,
+        db: Session,
+        *,
+        execution_id: Union[uuid.UUID, str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Return the newest gateway attempts of one execution, newest first.
+
+        Feeds the repeated-upstream-failure breaker (#1336), which only needs
+        the trailing run of outcomes, so the read is bounded by ``limit`` and
+        served by the ``flow_execution_id`` index.
+
+        Args:
+            db: Database session.
+            execution_id: The flow execution whose attempts to read.
+            limit: Maximum number of rows to return.
+
+        Returns:
+            Dicts with ``status_code``, ``error_class`` and
+            ``request_fingerprint`` (``None`` when the row has none).
+        """
+        if not execution_id or limit <= 0:
+            return []
+        rows = (
+            db.query(
+                ApiUsage.status_code,
+                ApiUsage.error_class,
+                ApiUsage.meta_data["request_fingerprint"].astext.label(
+                    "request_fingerprint"
+                ),
+            )
+            .filter(
+                ApiUsage.flow_execution_id == execution_id,
+                ApiUsage.action_type == "model_gateway",
+            )
+            .order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "status_code": row.status_code,
+                "error_class": row.error_class,
+                "request_fingerprint": row.request_fingerprint,
+            }
+            for row in rows
+        ]
+
     def get_user_usage(
         self,
         db: Session,

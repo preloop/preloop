@@ -661,6 +661,15 @@ def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
     if prompt_failure is not None:
         return prompt_failure
 
+    # The gateway's breaker (#1336) stopped the run after identical failing
+    # calls. Its sentence names the HTTP status it saw, which must not read as
+    # a transient upstream blip worth another attempt.
+    for line in reversed(lines):
+        if "repeated upstream failure:" in line.lower():
+            return AgentFailureAnalysis(
+                message=_finalize(line), transient=False, evidence=_finalize(line)
+            )
+
     already_analyzed = _reanalyze_generated_message(logs_text)
     if already_analyzed is not None:
         return already_analyzed
