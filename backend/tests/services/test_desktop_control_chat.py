@@ -1,6 +1,7 @@
 """Desktop approvals reach eligible colleagues through the real chat queue."""
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Any, Iterator
 from unittest.mock import AsyncMock
 
@@ -51,12 +52,35 @@ def desktop_chat(
     )
     db_session.add(tool)
     db_session.flush()
+    endpoint = models.DesktopEndpoint(
+        account_id=test_user.account_id,
+        endpoint_id="synthetic-desktop",
+        hostname="example.com",
+    )
+    db_session.add(endpoint)
+    db_session.flush()
+    view = models.DesktopView(
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        endpoint_pk=endpoint.id,
+        state="live",
+        mode="view_only",
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+    )
+    db_session.add(view)
+    db_session.flush()
     request = models.ApprovalRequest(
         account_id=test_user.account_id,
         tool_configuration_id=tool.id,
         approval_workflow_id=workflow.id,
         tool_name="desktop_control",
         tool_args={"requested_by": str(test_user.id)},
+        rule_context={
+            "desktop_control": {
+                "view_id": str(view.id),
+                "requester_id": str(test_user.id),
+            }
+        },
         status="pending",
     )
     db_session.add(request)
@@ -139,7 +163,7 @@ def test_desktop_chat_eligibility_rechecks_decision_policy(
     elif blocked == "settled":
         request.status = "approved"
     elif blocked == "missing_requester":
-        request.tool_args = {}
+        request.rule_context = {}
     elif blocked == "other_account":
         account = models.Account(organization_name="Another account")
         db_session.add(account)
@@ -147,6 +171,16 @@ def test_desktop_chat_eligibility_rechecks_decision_policy(
         user.account_id = account.id
     db_session.flush()
     assert not crud_chat.eligible_approver(db_session, user, request.id)
+
+
+def test_desktop_chat_eligibility_ignores_spoofed_tool_args(
+    desktop_chat: dict[str, Any], db_session: Session, test_user: models.User
+) -> None:
+    request, colleague = desktop_chat["request"], desktop_chat["colleague"]
+    request.tool_args = {"requested_by": str(colleague.id)}
+    db_session.flush()
+    assert not crud_chat.eligible_approver(db_session, test_user, request.id)
+    assert crud_chat.eligible_approver(db_session, colleague, request.id)
 
 
 def test_regular_chat_approvals_keep_workflow_eligibility(

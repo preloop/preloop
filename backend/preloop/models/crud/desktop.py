@@ -399,6 +399,40 @@ class CRUDDesktop:
 
     # Control approvals (#1567) ------------------------------------------
 
+    def owned_control_view(
+        self, db: Session, *, account_id: Any, view_id: Any, requester_id: Any
+    ) -> Optional[DesktopView]:
+        """Resolve a control target only within its requester's account and ownership."""
+        view = self.get_view(db, view_id=view_id, account_id=account_id)
+        if view is None or view.user_id != _as_uuid(requester_id):
+            return None
+        return view
+
+    def control_approval_view(
+        self, db: Session, approval: models.ApprovalRequest
+    ) -> Optional[DesktopView]:
+        """Resolve the server-owned binding, never caller-provided tool arguments.
+
+        ApprovalService reserves this name and stamps this context only for
+        the authenticated desktop endpoint. Unbound older rows fail closed.
+        """
+        context = approval.rule_context or {}
+        if not isinstance(context, dict):
+            return None
+        binding = context.get("desktop_control")
+        if (
+            approval.tool_name != "desktop_control"
+            or not isinstance(binding, dict)
+            or not _as_uuid(binding.get("requester_id"))
+        ):
+            return None
+        return self.owned_control_view(
+            db,
+            account_id=approval.account_id,
+            view_id=binding.get("view_id"),
+            requester_id=binding["requester_id"],
+        )
+
     def control_tool_configuration(
         self, db: Session, *, account_id: Any, tool_name: str
     ) -> models.ToolConfiguration:
@@ -436,7 +470,10 @@ class CRUDDesktop:
                 models.ApprovalRequest.account_id == account_id,
                 models.ApprovalRequest.tool_name == tool_name,
                 models.ApprovalRequest.status == "pending",
-                models.ApprovalRequest.tool_args["view_id"].as_string() == str(view_id),
+                models.ApprovalRequest.rule_context["desktop_control"][
+                    "view_id"
+                ].as_string()
+                == str(view_id),
             )
             .order_by(models.ApprovalRequest.requested_at.desc())
             .first()
@@ -466,7 +503,10 @@ class CRUDDesktop:
                 models.ApprovalRequest.account_id == account_id,
                 models.ApprovalRequest.tool_name == tool_name,
                 models.ApprovalRequest.status == "pending",
-                models.ApprovalRequest.tool_args["view_id"].as_string() == str(view_id),
+                models.ApprovalRequest.rule_context["desktop_control"][
+                    "view_id"
+                ].as_string()
+                == str(view_id),
             )
             .order_by(models.ApprovalRequest.requested_at.desc())
             .limit(1)

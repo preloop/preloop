@@ -308,12 +308,13 @@ class CRUDChat:
             # of the default workflow's saved approvers. Apply the same rule
             # when queueing, delivering and acting on a private-chat prompt.
             from preloop.utils.permissions import user_holds_permission
+            from .desktop import crud_desktop
 
-            requester = (request.tool_args or {}).get("requested_by")
+            view = crud_desktop.control_approval_view(db, request)
             return bool(
                 user.is_active
-                and requester
-                and str(user.id) != str(requester)
+                and view is not None
+                and user.id != view.user_id
                 and user_holds_permission(db, user, "decide_approvals")
             )
         workflow = (

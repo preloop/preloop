@@ -784,6 +784,8 @@ async def _request_control_approval(
                 approval_workflow_id=workflow.id,
                 tool_name=_control_tool(),
                 tool_args=create["tool_args"],
+                desktop_view_id=uuid.UUID(view_pk),
+                desktop_requester_id=user.id,
                 agent_reasoning=reason,
                 managed_agent_id=uuid.UUID(agent_id) if agent_id else None,
                 runtime_session_id=uuid.UUID(session_id) if session_id else None,
@@ -808,23 +810,47 @@ async def _request_control_approval(
 async def apply_control_decision(
     *,
     approval_id: str,
-    status: str,
-    tool_args: dict[str, Any],
-    approver_id: Optional[str],
+    account_id: str,
 ) -> None:
     """Grant control on approval, audit a denial otherwise.
 
     Called by the approvals service after the decision is committed, on
     whichever pod made it. A view that has ended stays ended.
     """
-    view_id = tool_args.get("view_id")
-    if not view_id:
-        return
 
     def work(db: Session) -> Optional[dict]:
-        view = crud_desktop.get_view(db, view_id=view_id)
+        from preloop.models.crud import crud_approval_request, crud_user
+
+        approval = crud_approval_request.get(db, id=approval_id, account_id=account_id)
+        if approval is None:
+            return None
+        view = crud_desktop.control_approval_view(db, approval)
         if view is None:
             return None
+        status = approval.status
+        approver_id = next(
+            (
+                vote["user_id"]
+                for vote in reversed(approval.responses or [])
+                if isinstance(vote, dict)
+                and vote.get("user_id")
+                and vote.get("decision") == "approved"
+            ),
+            None,
+        )
+        if status == "approved":
+            approver = (
+                crud_user.get(db, id=approver_id, account_id=account_id)
+                if approver_id
+                else None
+            )
+            if (
+                approver is None
+                or approver.id == view.user_id
+                or not approver.is_active
+                or not user_holds_permission(db, approver, "decide_approvals")
+            ):
+                return None
         endpoint = crud_desktop.get_endpoint_by_pk(db, view.endpoint_pk)
         if endpoint is None:
             return None
@@ -833,7 +859,7 @@ async def apply_control_decision(
             "approval_id": approval_id,
             "approval_status": status,
             "approver_id": approver_id,
-            "reason": tool_args.get("reason"),
+            "reason": approval.agent_reasoning,
         }
         now = _now()
         if status != "approved" or view.state == "closed" or view.expires_at <= now:
@@ -956,7 +982,34 @@ async def _release_control(user: models.User, view_id: str, *, reason: str) -> N
         )
 
 
-@router.get("/desktop/views/{view_id}")
+class DesktopControlRequestState(BaseModel):
+    """A control request waiting for another admin (#1567)."""
+
+    approval_id: str
+    state: str
+
+
+class DesktopViewResponse(BaseModel):
+    """One desktop view, as every view route returns it."""
+
+    view_id: str
+    endpoint_id: str
+    managed_agent_id: Optional[str] = None
+    runtime_session_id: Optional[str] = None
+    user_id: str
+    state: str
+    mode: str
+    ws_url: str
+    created_at: Optional[str] = None
+    live_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    closed_reason: Optional[str] = None
+    control_expires_at: Optional[str] = None
+    control_request: Optional[DesktopControlRequestState] = None
+
+
+@router.get("/desktop/views/{view_id}", response_model=DesktopViewResponse)
 async def get_desktop_view(
     view_id: str,
     current_user: models.User = Depends(get_current_active_user),
@@ -965,7 +1018,9 @@ async def get_desktop_view(
     return await _get_view(current_user, view_id)
 
 
-@router.get("/agents/{agent_id}/desktop-views/{view_id}")
+@router.get(
+    "/agents/{agent_id}/desktop-views/{view_id}", response_model=DesktopViewResponse
+)
 async def get_agent_desktop_view(
     agent_id: str,
     view_id: str,
@@ -992,33 +1047,6 @@ async def delete_agent_desktop_view(
 ) -> None:
     """Agent-scoped alias of ``DELETE /desktop/views/{view_id}``."""
     await _delete_view(current_user, view_id)
-
-
-class DesktopControlRequestState(BaseModel):
-    """A control request waiting for another admin (#1567)."""
-
-    approval_id: str
-    state: str
-
-
-class DesktopViewResponse(BaseModel):
-    """One desktop view, as every view route returns it."""
-
-    view_id: str
-    endpoint_id: str
-    managed_agent_id: Optional[str] = None
-    runtime_session_id: Optional[str] = None
-    user_id: str
-    state: str
-    mode: str
-    ws_url: str
-    created_at: Optional[str] = None
-    live_at: Optional[str] = None
-    expires_at: Optional[str] = None
-    closed_at: Optional[str] = None
-    closed_reason: Optional[str] = None
-    control_expires_at: Optional[str] = None
-    control_request: Optional[DesktopControlRequestState] = None
 
 
 _CONTROL_RESPONSES: dict[int | str, dict[str, Any]] = {

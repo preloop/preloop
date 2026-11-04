@@ -713,6 +713,8 @@ class ApprovalService:
         server_name: Optional[str] = None,
         request_id: Optional[uuid.UUID] = None,
         broadcast_created: bool = True,
+        desktop_view_id: Optional[uuid.UUID] = None,
+        desktop_requester_id: Optional[uuid.UUID] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -748,10 +750,58 @@ class ApprovalService:
                 past approval was asked for. None when no rule was evaluated
                 (e.g. the request_approval builtin), in which case surfaces
                 omit the explanation rather than invent one.
+            desktop_view_id: Trusted desktop endpoint target. Reserved for
+                desktop control; never populated from generic tool arguments.
+            desktop_requester_id: Authenticated desktop requester. The target
+                must belong to this user in the request's account.
 
         Returns:
             Created approval request
         """
+        # Generic tool gates may supply arbitrary names, arguments and policy
+        # context. Only the desktop endpoint supplies these separate, trusted
+        # identifiers; no public tool argument can establish this binding.
+        from fastapi import HTTPException
+        from preloop.models.crud import crud_desktop
+
+        if rule_context and "desktop_control" in rule_context:
+            raise HTTPException(403, "Desktop control provenance is server-owned")
+        if tool_name == DESKTOP_CONTROL_TOOL:
+            if desktop_view_id is None or desktop_requester_id is None:
+                raise HTTPException(
+                    403, "desktop_control is reserved for desktop views"
+                )
+            view = await self.db.run_sync(
+                lambda db: crud_desktop.owned_control_view(
+                    db,
+                    account_id=account_id,
+                    view_id=desktop_view_id,
+                    requester_id=desktop_requester_id,
+                )
+            )
+            if view is None or view.state == "closed":
+                raise HTTPException(
+                    403, "Desktop control target does not belong to requester"
+                )
+            from preloop.services.approval_rule_context import (
+                SOURCE_TOOL_DEFAULT_WORKFLOW,
+                build_rule_context,
+            )
+
+            rule_context = build_rule_context(
+                source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                decision="require_approval",
+                rule_name="Desktop control",
+                explanation="Another admin must approve control of this desktop view.",
+                tool_configuration_id=tool_configuration_id,
+            )
+            rule_context["desktop_control"] = {
+                "view_id": str(view.id),
+                "requester_id": str(view.user_id),
+            }
+        elif desktop_view_id is not None or desktop_requester_id is not None:
+            raise HTTPException(403, "Desktop control provenance is server-owned")
+
         # Calculate expiration time. The window is resolved in one place
         # (services/approval_window.py) from the tool argument, the flow, the
         # workflow and the deployment default, in that order, capped per
@@ -1019,17 +1069,10 @@ class ApprovalService:
         """
         from preloop.api.endpoints.desktop import apply_control_decision
 
-        approver = None
-        for vote in reversed(list(approval_request.responses or [])):
-            if isinstance(vote, dict) and vote.get("user_id"):
-                approver = str(vote["user_id"])
-                break
         try:
             await apply_control_decision(
                 approval_id=str(approval_request.id),
-                status=str(approval_request.status),
-                tool_args=dict(approval_request.tool_args or {}),
-                approver_id=approver,
+                account_id=str(approval_request.account_id),
             )
         except Exception:  # noqa: BLE001 - the decision itself is committed
             logger.exception(
@@ -1234,9 +1277,8 @@ class ApprovalService:
                 status_code=403, detail="Only the owner can decide this request"
             )
 
-    @staticmethod
-    def _require_desktop_control_approver(
-        approval_request: ApprovalRequest, user_id: Optional[uuid.UUID]
+    async def _require_desktop_control_approver(
+        self, approval_request: ApprovalRequest, user_id: Optional[uuid.UUID]
     ) -> None:
         """Desktop control needs a named human other than the requester (#1567).
 
@@ -1248,9 +1290,23 @@ class ApprovalService:
             return
         from fastapi import HTTPException
 
-        args = approval_request.tool_args or {}
-        requester = str(args.get("requested_by") or "")
-        if user_id is None or not requester or str(user_id) == requester:
+        from preloop.models.crud import crud_desktop, crud_user
+        from preloop.utils.permissions import user_holds_permission
+
+        def eligible(db: Any) -> bool:
+            view = crud_desktop.control_approval_view(db, approval_request)
+            if view is None or user_id is None or view.user_id == user_id:
+                return False
+            user = crud_user.get(
+                db, id=user_id, account_id=str(approval_request.account_id)
+            )
+            return bool(
+                user is not None
+                and user.is_active
+                and user_holds_permission(db, user, "decide_approvals")
+            )
+
+        if not await self.db.run_sync(eligible):
             raise HTTPException(
                 status_code=403,
                 detail="Desktop control must be approved by another admin",
@@ -1292,7 +1348,7 @@ class ApprovalService:
             return None
 
         await self._require_consent_owner(approval_request, user_id)
-        self._require_desktop_control_approver(approval_request, user_id)
+        await self._require_desktop_control_approver(approval_request, user_id)
 
         # Do not re-decide an already-resolved or expired request.
         guarded = await self._reject_if_not_actionable(approval_request)
@@ -1856,7 +1912,7 @@ class ApprovalService:
             The updated, approved approval request.
         """
         await self._require_consent_owner(approval_request, None)
-        self._require_desktop_control_approver(approval_request, None)
+        await self._require_desktop_control_approver(approval_request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -1923,7 +1979,7 @@ class ApprovalService:
         request = await self.get_approval_request(request_id)
         if request is not None:
             await self._require_consent_owner(request, None)
-            self._require_desktop_control_approver(request, None)
+            await self._require_desktop_control_approver(request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,

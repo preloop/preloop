@@ -21002,9 +21002,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Desktop View Api V1 Desktop Views  View Id  Get
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -21077,10 +21075,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Agent Desktop View Api V1 Agents  Agent Id  Desktop
-                  Views  View Id  Get
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
