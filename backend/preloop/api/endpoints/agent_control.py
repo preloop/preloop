@@ -1079,7 +1079,7 @@ def _persist_agent_control_result(
         and crud_agent_control_command.command_result_payload(command) is None
     ):
         _audit_desktop_install_result(
-            db, command=command, inbound_name=inbound.name, payload=inbound.payload
+            db, command=command, failed=failed, payload=inbound.payload
         )
     crud_agent_control_command.mark_terminal_result(
         db,
@@ -2619,12 +2619,10 @@ def _audit_desktop_install_result(
     db: Session,
     *,
     command: Any,
-    inbound_name: str,
+    failed: bool,
     payload: dict[str, Any],
 ) -> None:
-    state, error = _desktop_install_outcome(
-        payload, errored=inbound_name == "command_error"
-    )
+    state, error = _desktop_install_outcome(payload, errored=failed)
     if state == "unsupported":
         return
     crud_audit_log.log_action(

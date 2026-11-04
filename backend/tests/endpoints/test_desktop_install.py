@@ -10,6 +10,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent
@@ -238,6 +240,43 @@ def test_a_repeated_result_is_audited_once(nats, client, db_session, test_user):
     assert client.get(f"{base}/{request_id}").json()["state"] == "done"
     assert len(_audit(db_session, "desktop.install.succeeded")) == 1
     assert _audit(db_session, "desktop.install.failed") == []
+
+
+@pytest.mark.parametrize("status", ["failed", "error"])
+@pytest.mark.parametrize("error", ["desktop_unsupported_os", "command_failed", None])
+def test_failed_command_results_are_audited_once(
+    nats: MagicMock,
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    status: str,
+    error: str | None,
+) -> None:
+    """Status failures without desktop_install agree with the polled outcome."""
+    agent, token = _agent(client, db_session, test_user, "openclaw-desk-status-failure")
+    base = f"/api/v1/agents/{agent.id}/desktop/install"
+    request_id = client.post(base).json()["request_id"]
+    payload = {"status": status}
+    if error is not None:
+        payload["error"] = error
+    expected_error = (
+        "desktop_unsupported_os"
+        if error == "desktop_unsupported_os"
+        else "desktop_failed"
+    )
+
+    for _ in range(2):
+        _reply(client, token, request_id, "command_result", payload)
+        body = client.get(f"{base}/{request_id}").json()
+        assert (body["state"], body["error"]) == ("failed", expected_error)
+        audits = _audit(db_session, "desktop.install.failed")
+        assert len(audits) == 1
+        assert audits[0].status == "failure"
+        assert audits[0].details == {
+            "request_id": request_id,
+            "error": expected_error,
+        }
+        assert _audit(db_session, "desktop.install.succeeded") == []
 
 
 def test_malformed_agent_id_is_404(nats, client):
