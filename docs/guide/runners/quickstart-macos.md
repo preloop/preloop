@@ -220,6 +220,16 @@ completion, injection rejection, process-group halt). macOS specifics:
   and the execution page shows "Not gateway metered". The Preloop usage
   hooks record the session lifecycle.
 
+## Sleep and wake
+
+A sleeping Mac shows `offline` in the console once heartbeats are 45
+seconds old: this build has no pre-sleep signal on macOS. After wake the
+runner reconnects at once and shows `online` again. While the runner is
+connected, heartbeats report the Mac's idle time, so it shows `idle` after 5
+minutes without input. See
+[Runner presence](quickstart-linux.md#runner-presence) for every state and
+the per-OS table.
+
 ## Troubleshooting
 
 | Symptom | Fix |

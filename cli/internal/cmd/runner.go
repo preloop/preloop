@@ -814,7 +814,9 @@ func runRunnerSession(
 				event.release()
 				return errRunnerWoke
 			}
-			if !sleeping {
+			if event.stale(time.Now()) {
+				event.release()
+			} else if !sleeping {
 				sleeping = true
 				err := writeRunnerJSON(conn, map[string]any{"type": "going_to_sleep"})
 				event.release()

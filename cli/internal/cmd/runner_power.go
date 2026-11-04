@@ -10,10 +10,12 @@ package cmd
 //   - Before sleep, where the OS announces it (Linux logind PrepareForSleep),
 //     the session sends going_to_sleep and stops heartbeating, because any
 //     later heartbeat clears the flag on the server.
-//   - On wake, detected from the OS signal or from the wall clock jumping
-//     ahead of the monotonic clock (both stop during sleep on macOS, Linux
-//     and Windows), the runner drops the stale socket and reconnects at once
-//     with the backoff reset.
+//   - On wake, detected from the OS signal or from a gap in wall-clock time
+//     between two detector samples far larger than the sample interval, the
+//     runner drops the stale socket and reconnects at once with the backoff
+//     reset. The wall clock keeps running through sleep on every OS; whether
+//     the monotonic clock does differs (it stops on macOS and Linux, and may
+//     not on Windows), so only the wall-clock gap is used.
 //
 // Hosts without a pre-sleep signal (macOS and Windows in this build) fall
 // back to offline, then return to online right after wake.
@@ -42,6 +44,18 @@ const (
 type runnerPowerEvent struct {
 	kind runnerPowerKind
 	done func()
+	// at is when the OS announced the event; a sleep event older than
+	// runnerSleepEventMaxAge was buffered across a suspend and is stale.
+	at time.Time
+}
+
+// runnerSleepEventMaxAge bounds how old a sleep event may be when the
+// session handles it. Older ones were delivered after the wake they
+// preceded and must not mark a running host asleep.
+const runnerSleepEventMaxAge = 10 * time.Second
+
+func (e runnerPowerEvent) stale(now time.Time) bool {
+	return e.kind == runnerPowerSleep && (e.at.IsZero() || now.Round(0).Sub(e.at.Round(0)) > runnerSleepEventMaxAge)
 }
 
 func (e runnerPowerEvent) release() {
@@ -59,14 +73,15 @@ var (
 	runnerWakeCheckEvery = 5 * time.Second
 )
 
-// runnerWakeJumpThreshold is how far the wall clock must run ahead of the
-// monotonic clock between two samples to count as a sleep.
+// runnerWakeJumpThreshold is how much longer than the sample interval the
+// wall-clock gap between two samples must be to count as a sleep.
 const runnerWakeJumpThreshold = 20 * time.Second
 
-// runnerClockJumped reports whether the wall clock advanced more than the
-// monotonic clock by at least the threshold: the host was suspended.
-func runnerClockJumped(prevWall, nowWall time.Time, monotonic time.Duration) bool {
-	return nowWall.Sub(prevWall)-monotonic >= runnerWakeJumpThreshold
+// runnerClockJumped reports whether the wall clock advanced at least the
+// threshold beyond the expected sample interval: the host was suspended.
+// It holds whether or not the monotonic clock ran during the suspend.
+func runnerClockJumped(prevWall, nowWall time.Time, interval time.Duration) bool {
+	return nowWall.Sub(prevWall)-interval >= runnerWakeJumpThreshold
 }
 
 // startRunnerPowerWatcher starts the platform sleep source and the clock
@@ -86,21 +101,19 @@ func watchRunnerClockJumps(events chan<- runnerPowerEvent, stop <-chan struct{})
 	ticker := time.NewTicker(runnerWakeCheckEvery)
 	defer ticker.Stop()
 	prevWall := time.Now().Round(0)
-	prevMono := time.Now()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
 			nowWall := time.Now().Round(0)
-			nowMono := time.Now()
-			if runnerClockJumped(prevWall, nowWall, nowMono.Sub(prevMono)) {
+			if runnerClockJumped(prevWall, nowWall, runnerWakeCheckEvery) {
 				select {
 				case events <- runnerPowerEvent{kind: runnerPowerWake}:
 				default:
 				}
 			}
-			prevWall, prevMono = nowWall, nowMono
+			prevWall = nowWall
 		}
 	}
 }

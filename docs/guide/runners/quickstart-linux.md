@@ -307,9 +307,9 @@ Windows (`GetLastInputInfo`); Linux runners do not report it and show
 | Windows | No signal in this build, for the same reason. Shows `offline`. | Reconnects at once. |
 | Linux without logind (containers, minimal hosts) | No signal. Shows `offline`. | Reconnects at once. |
 
-The runner detects wake on every host: during sleep the wall clock moves on
-while the monotonic clock does not, so a gap of 20 seconds or more between
-two 5 second samples means the host slept. It then drops the socket left
+The runner detects wake on every host: the wall clock keeps running through
+sleep, so a wall-clock gap 20 seconds or more longer than the 5 second sample
+interval means the host slept. It then drops the socket left
 over from before sleep and reconnects with the backoff reset, so the runner
 is back to `online` within seconds of the network coming up instead of
 waiting out a read timeout. A runner that wakes up and reconnects returns to `online` on

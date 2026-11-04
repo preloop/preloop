@@ -12,20 +12,22 @@ import (
 
 func TestClockJumpDetectsSleepGap(t *testing.T) {
 	base := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	interval := 5 * time.Second
 	cases := []struct {
 		name     string
 		wall     time.Duration
-		mono     time.Duration
 		expected bool
 	}{
-		{"steady tick", 5 * time.Second, 5 * time.Second, false},
-		{"small drift", 6 * time.Second, 5 * time.Second, false},
-		{"slept ten minutes", 10*time.Minute + 5*time.Second, 5 * time.Second, true},
-		{"clock set back", -time.Hour, 5 * time.Second, false},
+		{"steady tick", 5 * time.Second, false},
+		{"small drift", 6 * time.Second, false},
+		// Holds whether or not the monotonic clock ran during the suspend
+		// (Windows), because only the wall-clock gap is used.
+		{"slept ten minutes", 10*time.Minute + 5*time.Second, true},
+		{"clock set back", -time.Hour, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runnerClockJumped(base, base.Add(tc.wall), tc.mono)
+			got := runnerClockJumped(base, base.Add(tc.wall), interval)
 			if got != tc.expected {
 				t.Fatalf("runnerClockJumped = %v, want %v", got, tc.expected)
 			}
@@ -63,7 +65,7 @@ func TestSleepSignalSendsGoingToSleepAndStopsHeartbeats(t *testing.T) {
 	// Initial heartbeat first.
 	waitForMessageType(t, messages, "heartbeat")
 	released := make(chan struct{})
-	events <- runnerPowerEvent{kind: runnerPowerSleep, done: func() { close(released) }}
+	events <- runnerPowerEvent{kind: runnerPowerSleep, done: func() { close(released) }, at: time.Now()}
 	waitForMessageType(t, messages, "going_to_sleep")
 	select {
 	case <-released:
@@ -174,5 +176,54 @@ func TestParseHIDIdleSeconds(t *testing.T) {
 	}
 	if _, ok := parseHIDIdleSeconds("no such key"); ok {
 		t.Fatal("missing key must not parse")
+	}
+}
+
+func TestStaleSleepEventAfterWakeIsIgnored(t *testing.T) {
+	testenv.SetTempHome(t)
+	withHeartbeatEvery(t, 50*time.Millisecond)
+	events := make(chan runnerPowerEvent, 4)
+	server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
+
+	interrupt := make(chan os.Signal, 1)
+	jobs := newRunnerJobs(1)
+	jobs.power = events
+	go func() { _ = runRunnerSession(dialJobServer(t, server), interrupt, io.Discard, jobs) }()
+	t.Cleanup(func() {
+		select {
+		case interrupt <- os.Interrupt:
+		default:
+		}
+	})
+	waitForMessageType(t, messages, "heartbeat")
+	released := make(chan struct{})
+	// Announced before a suspend, handled only after the wake.
+	events <- runnerPowerEvent{
+		kind: runnerPowerSleep,
+		done: func() { close(released) },
+		at:   time.Now().Add(-10 * time.Minute),
+	}
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale sleep event was not released")
+	}
+	deadline := time.After(400 * time.Millisecond)
+	sawHeartbeat := false
+	for {
+		select {
+		case message := <-messages:
+			if message["type"] == "going_to_sleep" {
+				t.Fatal("stale sleep event re-sent going_to_sleep")
+			}
+			if message["type"] == "heartbeat" {
+				sawHeartbeat = true
+			}
+		case <-deadline:
+			if !sawHeartbeat {
+				t.Fatal("heartbeats stopped after a stale sleep event")
+			}
+			return
+		}
 	}
 }
