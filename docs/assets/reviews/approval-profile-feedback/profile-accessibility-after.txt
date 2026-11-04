@@ -1,0 +1,23 @@
+- heading "Profile" [level=1]
+- img "Jane Doe": JD
+- button "Upload photo"
+- paragraph: Your username, email, name and avatar are shared across your accounts. Changing email ends all sessions and requires verification.
+- text: Username *
+- textbox "Username *":
+  - /placeholder: ""
+  - text: already.used
+- text: Email *
+- textbox "Email *":
+  - /placeholder: ""
+  - text: jane@example.com
+- paragraph:
+  - text: "Email status:"
+  - strong: Verified
+- status
+- text: Full name
+- textbox "Full name":
+  - /placeholder: ""
+  - text: Jane Doe
+- button "Update profile"
+- status: That username is already in use.
+- status: Profile ready.
