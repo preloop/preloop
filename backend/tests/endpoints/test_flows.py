@@ -1445,7 +1445,7 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
     }
     execution.evidence_receipt = None
     execution.evidence_archive = None
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     result = await maybe_await(
         flows.get_flow_execution_result(
@@ -1459,7 +1459,7 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
     assert result["evidence"]["status"] == "missing"
     assert result["evidence"]["kind"] == "evidence"
     assert result["evidence"]["integrity_verified"] is False
-    mock_crud_flow_execution.get.assert_called_once_with(
+    mock_crud_flow_execution.get_without_workspace.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
 
@@ -1507,7 +1507,7 @@ async def test_get_flow_execution_result_reports_schema_validation(
     execution.evidence_receipt = None
     execution.evidence_archive = None
     execution.result_schema_validation = stored
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     result = await maybe_await(
         flows.get_flow_execution_result(
@@ -1542,7 +1542,7 @@ async def test_get_flow_execution_result_uses_persisted_receipt_not_inspect(
         "sha256": "abc",
         "artifact_id": str(artifact_id),
     }
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
     inspect = mocker.patch("preloop.services.flow_artifacts.inspect_evidence")
     load = mocker.patch("preloop.api.endpoints.flows.load_evidence")
 
@@ -1574,7 +1574,7 @@ async def test_get_flow_execution_result_no_artifact(
     execution = MagicMock()
     execution.id = execution_id
     execution.result = None
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(
@@ -1823,7 +1823,7 @@ async def test_get_flow_execution_result_execution_not_found(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = None
+    mock_crud_flow_execution.get_without_workspace.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(

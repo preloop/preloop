@@ -1766,7 +1766,7 @@ def get_execution_tool_evidence(
             db, current_user, execution_id, CiAction.READ_EVIDENCE
         )
     else:
-        execution = crud_flow_execution.get(
+        execution = crud_flow_execution.get_without_workspace(
             db=db, id=execution_id, account_id=current_user.account_id
         )
         if execution is None:
@@ -1836,7 +1836,7 @@ def get_flow_execution_result(
                 execution, messages=not withheld
             ),
         }
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2405,7 +2405,7 @@ def get_flow_execution_host_sessions(
         and the Copilot premium requests the CLI reported. None of it is
         gateway traffic.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:

@@ -33,7 +33,10 @@ def saved_execution(db_session: Session) -> tuple:
     db_session.add(flow)
     db_session.flush()
     execution = models.FlowExecution(
-        flow_id=flow.id, status="SUCCEEDED", workspace_snapshot=os.urandom(1024 * 1024)
+        flow_id=flow.id,
+        status="SUCCEEDED",
+        result={"review": "synthetic result"},
+        workspace_snapshot=os.urandom(1024 * 1024),
     )
     db_session.add(execution)
     db_session.flush()
@@ -143,6 +146,9 @@ async def test_logs_hide_other_accounts(
     "name",
     [
         "get_flow_execution_metrics",
+        "get_flow_execution_result",
+        "get_execution_tool_evidence",
+        "get_flow_execution_host_sessions",
         "get_flow_execution_gateway_events",
         "get_flow_execution_gateway_event",
         "get_flow_execution_evidence_status",
@@ -154,11 +160,13 @@ def test_subresources_do_not_reload_workspace(
     db_session: Session, saved_execution: tuple, name: str
 ) -> None:
     execution_id, account_id, _ = saved_execution
-    arguments = {}
+    arguments: dict[str, Any] = {}
     if name == "get_flow_execution_gateway_event":
         arguments["event_id"] = crud_flow_execution_log.get_by_execution_id(
             db_session, execution_id, limit=1
         )[0].id
+    if name == "get_execution_tool_evidence":
+        arguments.update(skip=0, limit=10)
     statements = []
 
     def capture(
