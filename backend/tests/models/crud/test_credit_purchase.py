@@ -304,3 +304,61 @@ def test_stripe_key_underscores_cannot_be_used_as_debit_wildcards(db_session, lo
             actor="system",
         )
     assert credit.balance(db_session, account_id=lot.account_id)["balance"] == 10
+
+
+@pytest.mark.parametrize("seconds,blocked", [(59, True), (60, False), (61, False)])
+def test_pending_window_boundary(db_session, create_account, seconds, blocked):
+    account = create_account()
+    purchase.create_pending(
+        db_session,
+        account_id=account.id,
+        pack_id="hosted_credits_10",
+        amount="10",
+        now=NOW,
+    )
+    args = dict(
+        account_id=account.id,
+        pack_id="hosted_credits_10",
+        amount="10",
+        now=NOW + timedelta(seconds=seconds),
+    )
+    if blocked:
+        with pytest.raises(purchase.PendingPurchaseError):
+            purchase.create_pending(db_session, **args)
+    else:
+        assert purchase.create_pending(db_session, **args).status == "pending"
+
+
+def test_purchase_lookup_and_binding_are_account_scoped(
+    db_session, lot, create_account
+):
+    other = create_account()
+    assert purchase.get(db_session, purchase_id=lot.id, account_id=other.id) is None
+    with pytest.raises(ValueError, match="not found"):
+        purchase.bind_session(
+            db_session, purchase_id=lot.id, account_id=other.id, session_id="cs_other"
+        )
+    assert (
+        purchase.get(
+            db_session, purchase_id=lot.id, account_id=lot.account_id
+        ).stripe_checkout_session_id
+        is None
+    )
+
+
+@pytest.mark.parametrize("pack_id", [None, "", " ", "x" * 65, " pack"])
+def test_invalid_pack_identifier_refused_before_writing(
+    db_session, create_account, pack_id
+):
+    account = create_account()
+    with pytest.raises(ValueError, match="pack"):
+        purchase.create_pending(
+            db_session, account_id=account.id, pack_id=pack_id, amount="10", now=NOW
+        )
+    assert not list(
+        db_session.scalars(
+            select(models.HostedCreditPurchase).where(
+                models.HostedCreditPurchase.account_id == account.id
+            )
+        )
+    )

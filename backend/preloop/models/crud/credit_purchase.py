@@ -31,7 +31,18 @@ def create_pending(
     amount: Any,
     now: datetime | None = None,
 ) -> models.HostedCreditPurchase:
-    """Persist a purchase attempt, serializing the 60-second duplicate check."""
+    """Persist a purchase attempt, serializing the 60-second duplicate check.
+
+    The caller resolves pack_id and amount from its trusted server-side catalog,
+    never from client-supplied monetary values. Core owns accounting, not pricing.
+    """
+    if (
+        not isinstance(pack_id, str)
+        or not pack_id
+        or len(pack_id) > 64
+        or pack_id != pack_id.strip()
+    ):
+        raise ValueError("Invalid credit pack identifier.")
     stamp = credit._aware(now) if now is not None else datetime.now(UTC)
     amount = credit._amount(amount)
     lock_account(db, account_id)
@@ -138,6 +149,7 @@ def _reversed(db: Session, row: models.HostedCreditPurchase) -> Decimal:
             entry.amount
             for entry in db.scalars(
                 select(models.HostedCreditLedger).where(
+                    models.HostedCreditLedger.account_id == row.account_id,
                     models.HostedCreditLedger.purchase_id == row.id,
                     models.HostedCreditLedger.kind.in_(("refund", "chargeback")),
                 )
