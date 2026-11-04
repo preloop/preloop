@@ -46,8 +46,21 @@ retry. A runner can handle four local generations concurrently. Requests over
 1 MiB, SSE lines or nonstream completions over 64 KiB, responses over 16 MiB,
 60 seconds without progress, or ten minutes total fail with a bounded error.
 Canceling a gateway stream cancels its local request. Partial generations do not
-resume after a disconnect. Chat completions support streaming and tools;
-embeddings, audio and provider-specific APIs are outside this release.
+resume after a disconnect.
+
+Chat-completions clients and Responses clients such as Codex CLI can use the same
+registered gateway alias. For a Codex flow, select the runner model with its
+gateway enabled; no direct connection from the backend to the local model server
+is needed. Both streaming and nonstreaming `/openai/v1/responses` requests are
+translated to chat completions, including Codex MCP namespace tools and freeform
+tools. The gateway translates the reply back to Responses events or JSON and
+records usage. The local model must support tool calling for agent workflows.
+
+This is a protocol translation, so native Responses passthrough, Responses-only
+hosted tools and server-side conversation state are not supported. Embeddings,
+audio and provider-specific APIs remain unsupported. Runner routes use chat
+translation even if the model's Responses mode is set to `native`. Existing
+runner installations need no CLI protocol upgrade for this gateway change.
 
 See the [transport design](../architecture/runner-local-models.md) for routing,
 security and failure handling.

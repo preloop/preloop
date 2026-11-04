@@ -323,6 +323,10 @@ Responses API; chat-only custom models must enable `meta_data.gateway.enabled`
 to use the gateway translation. Flow saves reject incompatible bindings with
 remediation, and legacy incompatible runs fail with `model_config` before launch.
 Direct providers explicitly configured for Responses remain supported.
+Runner-bound local models use the same Responses-to-chat translation, including
+Codex tool restoration and usage accounting, over the bounded runner transport.
+They never probe native Responses or fall back to backend HTTP access; see
+[runner-proxied local models](docs/architecture/runner-local-models.md).
 Codex uses JSON events: only the last assistant message in a completed turn
 can provide a plaintext completion marker. Prompt echoes, tool output and
 diagnostics stay escaped in the log. The completion grace timeout captures
