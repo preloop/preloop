@@ -252,6 +252,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Production incident 2026-11-04: the review publication gate (EE #202) is a
+  per-flow opt-in again. `git_clone_config.review_publication.required` is
+  read from the flow only and is no longer inherited from its source preset,
+  so the deploy-time preset catalog refresh cannot switch a fail-closed gate
+  on for existing reviewer flows. Every flow derived from the Pull Request
+  Reviewer preset had failed with `review_publication_incomplete: no_receipt`
+  after delivering its review, because the API still ran a build without the
+  receipt-writing MCP tool while the workers already enforced the receipt.
+  The `preset_lookup_failed` reason is gone with the lookup.
+
 - The Responses gateway accepts more than one output for the same tool call
   within a tool turn, as Codex records when an `exec` cell yields and later
   calls `notify()`. Later outputs are appended to that call's tool result in

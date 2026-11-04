@@ -5415,9 +5415,18 @@ class TestReviewPublicationGate:
         assert "review_publication" not in (orch.execution_log.result or {})
 
     @pytest.mark.asyncio
-    async def test_stored_source_preset_requires_receipt(
+    async def test_stored_source_preset_does_not_gate_the_flow(
         self, db_session, review_flow, mock_nats_client, pr_event
     ) -> None:
+        """Incident 2026-11-04: the requirement is a per-flow opt-in.
+
+        The deploy-time preset sync set ``required: true`` on the stored
+        Pull Request Reviewer preset while the API still ran a build without
+        the receipt-writing MCP tool; every flow derived from the preset
+        inherited the gate and failed with ``no_receipt`` although its review
+        was delivered. A flow with no ``review_publication`` block of its own
+        must stay ungated whatever its source preset says.
+        """
         from preloop.models import schemas
 
         preset = crud_flow.create(
@@ -5448,16 +5457,11 @@ class TestReviewPublicationGate:
             pr_event,
             {"status": "success", "review_posted": True},
         )
-        assert orch.execution_log.status == "FAILED"
-        assert orch.execution_log.result["review_publication"] == {
-            "status": "not_published",
-            "reason": "no_receipt",
-        }
+        assert orch.execution_log.status == "SUCCEEDED"
+        assert "review_publication" not in (orch.execution_log.result or {})
 
-    @pytest.mark.parametrize("lookup", ["error", "missing", "not_preset"])
-    def test_source_preset_lookup_failure_fails_closed(self, lookup: str) -> None:
-        from sqlalchemy.exc import OperationalError
-
+    def test_gate_never_reads_the_source_preset(self) -> None:
+        """A flow without its own block is ungated without a preset lookup."""
         orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
         orch.db = MagicMock()
         orch.flow = SimpleNamespace(
@@ -5468,30 +5472,16 @@ class TestReviewPublicationGate:
         orch.execution_logger = MagicMock()
         artifact = {"review_posted": True, "findings_count": 2}
         with patch("preloop.services.flow_orchestrator.crud_flow.get") as get:
-            if lookup == "error":
-                get.side_effect = OperationalError(
-                    "SELECT", {}, Exception("unavailable")
-                )
-            else:
-                get.return_value = (
-                    None if lookup == "missing" else SimpleNamespace(is_preset=False)
-                )
             status, result, merged = orch._apply_review_publication_gate(
                 "SUCCEEDED",
                 {"status": "SUCCEEDED"},
                 dict(artifact),
             )
-        assert status == "FAILED"
-        assert (
-            result["error_message"]
-            == "review_publication_incomplete: preset_lookup_failed"
-        )
-        assert merged["findings_count"] == 2
-        assert merged["review_publication"] == {
-            "status": "not_published",
-            "reason": "preset_lookup_failed",
-        }
-        orch.db.rollback.assert_called_once()
+        assert status == "SUCCEEDED"
+        assert result == {"status": "SUCCEEDED"}
+        assert merged == artifact
+        get.assert_not_called()
+        orch.db.rollback.assert_not_called()
 
     def test_explicit_opt_out_does_not_read_source_preset(self) -> None:
         orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
