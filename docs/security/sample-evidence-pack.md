@@ -3,89 +3,75 @@
 Editions: OSS, Cloud, Enterprise.
 
 This is a signed evidence pack you can check yourself, without an account
-and without asking us. It was produced by the Release Security Audit preset
-(`backend/presets/006-release-security-audit.yaml`) on a local Preloop
-0.17.1 stack, auditing the public release
-[v0.17.1](https://github.com/preloop/preloop/releases/tag/v0.17.1) of this
-repository (commit `b46315580acb3b45cfad7590ca6829d0cef9374d`). The inputs
-were the three CycloneDX SBOMs and the frontend OpenVEX document attached to
-that release, each matching the release `SHA256SUMS`.
+and without asking us. We pointed our own Release Security Audit at our own
+release on Preloop Cloud, in our own account, and published what it wrote.
 
-The account that signed it was created for this sample. Its public key is
-published here, next to this page:
+| | |
+| --- | --- |
+| Preset | Release Security Audit (`backend/presets/006-release-security-audit.yaml`) |
+| Target | Public release [v0.17.1](https://github.com/preloop/preloop/releases/tag/v0.17.1), commit `b46315580acb3b45cfad7590ca6829d0cef9374d` |
+| Inputs | The three CycloneDX SBOMs (backend, frontend, CLI) and the frontend OpenVEX document attached to that release, each matching the release `SHA256SUMS`. The flow's setup step checked each SBOM's sha256 before the agent started |
+| Run | Execution `122c43aa-cfae-46d5-a96e-d494875fa61a`, 2026-11-04 02:10:14Z to 02:27:15Z UTC (17 minutes), DeepSeek Flash model |
+| Signing key | `psk_e6630dfe7a76b604`, the Ed25519 key of the account that ran it |
 
-- [`account-key.pub`](sample-evidence-pack/account-key.pub): the Ed25519
-  public key, base64
-- [`signing-keys.json`](sample-evidence-pack/signing-keys.json): the same key
-  as `GET /api/v1/signing/keys` served it, with key id
-  `psk_05756458866da20e`
+## What the audit found
 
-## What is in the bundle
+The verdict is **fail**, and that is the useful part of the sample. The
+severity gate failed on two unwaived findings with CVSS 9.0 or higher in
+the v0.17.1 backend: Authlib 1.8.0
+([GHSA-6v38-4h7w-rj9h](https://osv.dev/vulnerability/GHSA-6v38-4h7w-rj9h))
+and litellm 1.101.0
+([GHSA-7hp6-4w63-5g45](https://osv.dev/vulnerability/GHSA-7hp6-4w63-5g45)).
+Both are pinned to fixed versions on `main` (Authlib 1.9.1, litellm
+1.103.9).
+
+Across 576 components the run reported 71 findings (2 critical, 24 high,
+38 medium, 7 low). None is listed in CISA KEV. The OpenVEX document was
+applied before the gate. The SBOM audit itself (validity and minimum
+elements) passed with findings. No repository checkout and no previous
+result were attached, so the gap register and drift were skipped, and the
+report says so.
+
+## The files
+
+All four sit next to this page:
 
 | File | What it is |
 | --- | --- |
-| `evidence.tar.gz` | The evidence pack the audit wrote: `manifest.json`, `result.json`, and `evidence/` with the report, findings, source matrix, waivers and gap register |
-| `evidence-signature.json` | The detached signature Preloop made over the pack when it was captured |
-| `period-export.tar.gz` | A signed period export of the same account: audit rows, approvals, and the evidence receipts that name the pack's sha256. It carries its own `manifest.json` and `signature.json` |
-| `account-key.pub` | The public key above |
+| [`evidence.tar.gz`](sample-evidence-pack/evidence.tar.gz) | The pack the audit wrote, 58801 bytes: `manifest.json`, `result.json`, and `evidence/` with the report, findings, the per-source coverage matrix and the setup log |
+| [`evidence-signature.json`](sample-evidence-pack/evidence-signature.json) | The signature Preloop made over the pack when it was captured |
+| [`account-key.pub`](sample-evidence-pack/account-key.pub) | The account's Ed25519 public key, base64 |
+| [`signing-keys.json`](sample-evidence-pack/signing-keys.json) | The same key as `GET /api/v1/signing/keys` served it |
 
-The format of both archives is described in
+The pack format is described in
 [Evidence storage and retention](../guide/flows/evidence-storage.md#what-is-in-a-pack)
 and [Signed records](../guide/flows/evidence-storage.md#signed-records).
 
 ## Check it
 
-**1. The period export, offline, with the published key.** This needs the
-`preloop` CLI and nothing else. `--offline` makes sure it never contacts a
-server.
-
-```bash
-preloop evidence verify period-export.tar.gz --public-key ./account-key.pub --offline
-```
-
-Expected output:
-
-```
-File:   period-export.tar.gz
-sha256: fbc5a3f5ad91374634e07444cca666c5c90768a2c833e475e6357166ad650c10
-  approvals/approval_request.jsonl                0 bytes  ok
-  artifacts/manifest.json                         2 bytes  ok
-  audit/audit_log.jsonl                      261919 bytes  ok
-  evidence/receipts.jsonl                      2476 bytes  ok
-  holds/legal_hold.jsonl                          0 bytes  ok
-  member list digest: ok
-
-Signature verified with key psk_05756458866da20e
-Signed at 2026-11-03T22:17:34Z
-
-What this shows: the archive is the one Preloop built and nothing in it has moved since. Not that the records were true when written.
-```
-
-The exit status is 0. Change one byte of any member and the same command
-names the member as `ALTERED` and exits 1.
-
-**2. The pack is the one the signed export names.** The receipts in the
-verified export list the sha256 of every evidence pack captured in the
-period. Hash the pack and find it there:
+**1. Hash the pack.**
 
 ```bash
 shasum -a 256 evidence.tar.gz
-tar xzf period-export.tar.gz -O evidence/receipts.jsonl | grep "$(shasum -a 256 evidence.tar.gz | cut -d' ' -f1)"
 ```
 
-**3. The pack's own signature, by hand.** `preloop evidence verify
---execution` reads the pack signature from the API, so it cannot run
-offline. The signature document in the bundle can be checked with a few
-lines of Python and the `cryptography` package:
+Expected: `e41de880b9e961d07239afe355023f18eec30d12c2b9083964268f7a92876624`.
+That is the `archive_sha256` inside the signed payload of
+`evidence-signature.json`.
+
+**2. Check the signature, offline.** This needs Python and the
+`cryptography` package, and nothing from us:
 
 ```python
-import base64, hashlib, json, sys
+import base64, hashlib, json
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 doc = json.load(open("evidence-signature.json"))
 archive = hashlib.sha256(open("evidence.tar.gz", "rb").read()).hexdigest()
 assert doc["payload"]["archive_sha256"] == archive, "pack does not match"
-canonical = json.dumps(doc["payload"], sort_keys=True, separators=(",", ":"))
+canonical = json.dumps(
+    doc["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+)
 digest = hashlib.sha256(canonical.encode()).hexdigest()
 assert digest == doc["digest"], "payload does not match"
 signed = f"preloop.signature/v1\n{doc['payload_type']}\n{digest}\n{doc['signed_at']}"
@@ -96,13 +82,46 @@ key.verify(base64.b64decode(doc["signature"]), signed.encode())  # raises if for
 print("ok", archive, doc["key_id"], doc["signed_at"])
 ```
 
+Expected output:
+
+```
+ok e41de880b9e961d07239afe355023f18eec30d12c2b9083964268f7a92876624 psk_e6630dfe7a76b604 2026-11-04T02:27:08Z
+```
+
+Append one byte to the pack and the first assertion fails.
+
+**3. With the CLI, as the account holder.** The `preloop` CLI reads the
+pack's signature from the execution's receipt, so this step needs access to
+the account that ran it. `--public-key` pins the key instead of trusting
+the one the server serves today:
+
+```bash
+preloop evidence verify evidence.tar.gz \
+  --execution 122c43aa-cfae-46d5-a96e-d494875fa61a \
+  --public-key ./account-key.pub
+```
+
+```
+File:   evidence.tar.gz
+sha256: e41de880b9e961d07239afe355023f18eec30d12c2b9083964268f7a92876624
+
+Signature verified with key psk_e6630dfe7a76b604
+Signed at 2026-11-04T02:27:08Z
+
+What this shows: this archive is the evidence pack Preloop captured for that execution. Not that its contents were true when captured.
+```
+
+The exit status is 0. With one byte appended, the same command prints
+`SIGNATURE NOT VERIFIED`, names both digests, and exits 1.
+
 ## What this proves and what it does not
 
-A pass shows that these bytes are the ones Preloop signed with this key and
-that nothing has changed since. It does not show that the audit's
-conclusions are right: read `result.json` and the report for that, and see
+A pass shows that these bytes are the ones Preloop signed with this key at
+capture and that nothing has changed since. It does not show that the
+audit's conclusions are right: read `result.json` and
+`evidence/audit-report.md` for that, and see
 [What this proves and what it does not](../guide/flows/evidence-storage.md#what-this-proves-and-what-it-does-not).
-The key was made on the same stack that wrote the records, so it shows
+The key lives on the same platform that wrote the records, so it shows
 integrity after signing, not honesty before it.
 
 The audit output is machine-generated evidence for conformity assessment
