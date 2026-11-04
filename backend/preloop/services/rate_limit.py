@@ -211,8 +211,9 @@ class MemoryStore:
 
     Finished windows are swept at most every ``PRUNE_INTERVAL_S``. When the
     cap is reached with every window still active, the entries closest to
-    expiry are evicted (a tenth of the map at a time), so a hit stays O(1)
-    amortized and the map never exceeds the cap.
+    expiry are evicted (a tenth of the map at a time), keeping the map within
+    the cap. Ordinary hits are O(1); periodic sweeps are O(n), and eviction
+    sorts the active entries in O(n log n) while holding the store lock.
     """
 
     MAX_KEYS = 50_000
