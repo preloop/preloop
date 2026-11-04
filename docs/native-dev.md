@@ -59,8 +59,10 @@ Each process in its own terminal (or tmux session):
 without propagating template changes to account flows. If you apply migrations
 without running that initializer, run
 `python scripts/sync_flow_presets.py --no-propagate` before starting the service.
-Existing reviewer flows inherit the review publication requirement from this
-stored catalog.
+The review publication requirement is a per-flow opt-in: an existing reviewer
+flow without its own `git_clone_config.review_publication` block is never
+gated by the stored catalog. Set `review_publication.required: true` on the
+flow once the API build that writes receipts is serving.
 
 PostgreSQL data (schema, migrations, seeded rows) lives on the host. After
 the first boot you normally only restart processes, not reinstall or
