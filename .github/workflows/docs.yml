@@ -13,12 +13,16 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'ARCHITECTURE.md'
+      - 'backend/tests/test_architecture_docs_map.py'
       - 'mkdocs.yml'
       - 'requirements/docs.txt'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
+      - 'ARCHITECTURE.md'
+      - 'backend/tests/test_architecture_docs_map.py'
       - 'mkdocs.yml'
       - 'requirements/docs.txt'
       - '.github/workflows/docs.yml'
@@ -52,6 +56,11 @@ jobs:
 
       - name: Install the documentation toolchain
         run: python -m pip install --require-hashes -r requirements/docs.txt
+
+      # This guard needs only PyYAML from the documentation toolchain.
+      # Run it directly to avoid importing backend pytest conftest fixtures.
+      - name: Check the architecture map and chapter navigation
+        run: python backend/tests/test_architecture_docs_map.py
 
       - name: Build the site
         run: mkdocs build --strict
