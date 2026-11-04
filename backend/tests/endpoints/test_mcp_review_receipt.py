@@ -259,3 +259,93 @@ async def test_gitlab_approval_records_receipt_without_head(db_session, test_use
     assert receipt.provider == "gitlab"
     assert receipt.head_sha is None
     assert receipt.provider_review_id == "9"
+
+
+@pytest.mark.asyncio
+async def test_real_github_tracker_shape_binds_the_head(db_session, test_user):
+    """The tracker's own return value, not a mock dict, carries commit_id."""
+    from preloop.sync.trackers.github import GitHubTracker
+
+    _project(db_session, test_user)
+    execution_id = _execution(db_session, test_user)
+    tracker = GitHubTracker(
+        str(uuid4()), "k", {"owner": "example-org", "repo": "example-repo"}
+    )
+    tracker._request = AsyncMock(
+        return_value={
+            "id": 77,
+            "state": "APPROVED",
+            "user": {"login": "bot"},
+            "commit_id": HEAD,
+        }
+    )
+    await _call(
+        db_session,
+        test_user,
+        tracker,
+        execution_id,
+        review_action="approve",
+        review_body="LGTM",
+    )
+    [receipt] = _receipts(db_session, test_user, execution_id)
+    assert receipt.head_sha == HEAD
+    assert receipt.provider_review_id == "77"
+
+
+def test_prior_receipt_lookup_needs_the_same_head(db_session, test_user):
+    """A headless receipt cannot prove this head was already reviewed."""
+    first = _execution(db_session, test_user)
+    second = _execution(db_session, test_user)
+    common = dict(
+        account_id=test_user.account_id,
+        provider="gitlab",
+        repository="example-org/example-repo",
+        pull_request="7",
+        review_action="approve",
+    )
+    crud_review_publication_receipt.record(
+        db_session, execution_id=first, head_sha=None, **common
+    )
+    lookup = dict(
+        account_id=test_user.account_id,
+        repository="example-org/example-repo",
+        pull_request="7",
+        head_sha=HEAD,
+    )
+    assert crud_review_publication_receipt.find_for_target(db_session, **lookup) is None
+    crud_review_publication_receipt.record(
+        db_session, execution_id=second, head_sha=HEAD.upper(), **common
+    )
+    found = crud_review_publication_receipt.find_for_target(db_session, **lookup)
+    assert found is not None and str(found.execution_id) == second
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("posted", "expected"), [("c-42", "c-42"), ("7", None)])
+async def test_bitbucket_receipt_records_the_summary_comment_id(
+    db_session, test_user, posted, expected
+):
+    from preloop.schemas.mcp import UpdatePullRequestResponse
+
+    _project(db_session, test_user, tracker_type="bitbucket")
+    execution_id = _execution(db_session, test_user)
+    tracker = MagicMock()
+    tracker.tracker_type = "bitbucket"
+    with patch(
+        "preloop.api.endpoints.mcp.mcp_bitbucket.update_pull_request",
+        new_callable=AsyncMock,
+        return_value=UpdatePullRequestResponse(
+            pull_request_id=posted, status="updated", message="ok", url="https://x"
+        ),
+    ):
+        await _call(
+            db_session,
+            test_user,
+            tracker,
+            execution_id,
+            review_action="approve",
+            review_body="LGTM",
+        )
+    [receipt] = _receipts(db_session, test_user, execution_id)
+    assert receipt.provider == "bitbucket"
+    assert receipt.provider_review_id == expected

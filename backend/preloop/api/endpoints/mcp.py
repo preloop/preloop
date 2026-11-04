@@ -2627,7 +2627,14 @@ async def update_pull_request(
             ),
         )
         if (review_action or "").lower() in REVIEW_RECEIPT_ACTIONS:
-            record_receipt("bitbucket", None, getattr(bitbucket_result, "id", None))
+            # ``pull_request_id`` carries the summary comment id when one was
+            # posted, else the PR number itself, which is not a review id.
+            posted_id = getattr(bitbucket_result, "pull_request_id", None)
+            record_receipt(
+                "bitbucket",
+                None,
+                posted_id if str(posted_id) != str(pr_number) else None,
+            )
         return bitbucket_result
 
     # Determine platform from tracker if not yet known

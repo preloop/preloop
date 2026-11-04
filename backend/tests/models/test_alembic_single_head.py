@@ -540,4 +540,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert redaction.down_revision == "20261123_secret_rotation"
     runner_share = script.get_revision("20261125_runner_share_grant")
     assert runner_share.down_revision == "20261124_audit_row_redaction"
-    assert script.get_heads() == ["20261125_runner_share_grant"]
+    review_receipt = script.get_revision("20261126_review_receipt")
+    assert review_receipt.down_revision == "20261125_runner_share_grant"
+    assert script.get_heads() == ["20261126_review_receipt"]

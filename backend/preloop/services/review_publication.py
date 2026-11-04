@@ -9,7 +9,13 @@ receipt is the evidence.
 
 A deliberate no-post run (``review_action`` explicitly null, no
 ``blocker``) passes only when an earlier run of the account already holds a
-receipt for the same pull request and head commit.
+receipt for the same pull request and the same head commit. Receipts with no
+head (GitLab and Bitbucket do not report one) never satisfy a skip: they
+cannot show that this head was reviewed, so on those providers the reviewer
+must post again.
+
+When the trigger names no pull request the gate accepts any receipt of this
+execution; it still requires a review the code host accepted.
 """
 
 from __future__ import annotations
@@ -96,10 +102,24 @@ def trigger_pull_request(
     pull = payload.get("pull_request")
     if isinstance(pull, Mapping):
         candidates.append(pull.get("html_url"))
+    # Bitbucket Cloud and Data Center send ``pullrequest``.
+    bitbucket = payload.get("pullrequest")
+    if isinstance(bitbucket, Mapping):
+        links = bitbucket.get("links")
+        html = links.get("html") if isinstance(links, Mapping) else None
+        if isinstance(html, Mapping):
+            candidates.append(html.get("href"))
+        elif isinstance(html, list) and html and isinstance(html[0], Mapping):
+            candidates.append(html[0].get("href"))
     for url in candidates:
         repository, number = parse_pull_request_url(url)
         if repository and number:
             return repository, number
+    if isinstance(bitbucket, Mapping) and bitbucket.get("id") is not None:
+        repo = payload.get("repository")
+        full_name = repo.get("full_name") if isinstance(repo, Mapping) else None
+        if isinstance(full_name, str) and full_name.strip():
+            return normalize_repository(full_name), str(bitbucket["id"])
     return None, None
 
 

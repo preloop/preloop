@@ -182,3 +182,39 @@ def test_trigger_reads_object_attributes_then_pull_request() -> None:
     assert trigger_pull_request(gitlab) == ("g/p", "4")
     assert trigger_pull_request(github) == (REPO, "7")
     assert trigger_pull_request({"payload": "x"}) == (None, None)
+
+
+def test_trigger_reads_raw_bitbucket_events() -> None:
+    linked = {
+        "payload": {
+            "repository": {"full_name": "Example-WS/Example-Repo"},
+            "pullrequest": {
+                "id": 7,
+                "links": {
+                    "html": {
+                        "href": "https://bitbucket.org/example-ws/example-repo/pull-requests/7"
+                    }
+                },
+            },
+        }
+    }
+    bare = {
+        "payload": {
+            "repository": {"full_name": "ws/repo"},
+            "pullrequest": {"id": 7, "source": {"commit": {"hash": "head"}}},
+        }
+    }
+    assert trigger_pull_request(linked) == ("example-ws/example-repo", "7")
+    assert trigger_pull_request(bare) == ("ws/repo", "7")
+
+
+def test_bitbucket_trigger_rejects_a_receipt_for_another_pull_request() -> None:
+    target = trigger_pull_request(
+        {"payload": {"repository": {"full_name": REPO}, "pullrequest": {"id": 7}}}
+    )
+    outcome = _evaluate(
+        [_receipt(pull_request="8", head_sha=None)],
+        repository=target[0],
+        pull_request=target[1],
+    )
+    assert outcome["status"] == STATUS_NOT_PUBLISHED
