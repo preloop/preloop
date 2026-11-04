@@ -13,8 +13,9 @@ held credit is not expirable, and a second expiry key is not used.
 """
 
 from calendar import monthrange
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
 from uuid import uuid4
 
@@ -32,6 +33,7 @@ from preloop.models.crud.hosted_spend import (
 )
 
 ZERO = Decimal(0)
+CREDIT_FLOOR = Decimal("-1.00")
 HOLD_NOTE = "credit-hold"
 RELEASE_NOTE = "credit-release"
 RECOMPUTE_PREFIX = "recompute:"
@@ -102,7 +104,8 @@ def _add_months(value: datetime, months: int) -> datetime:
     return value.replace(year=year, month=month, day=day)
 
 
-def _multiplier(value: Any) -> Decimal | None:
+def multiplier(value: Any) -> Decimal | None:
+    """Validate the exact four-decimal multiplier stored on reservations."""
     if value is None:
         return None
     try:
@@ -111,7 +114,10 @@ def _multiplier(value: Any) -> Decimal | None:
         raise HostedSpendUnavailableError("Hosted cost is unavailable") from exc
     if not amount.is_finite() or amount <= ZERO or amount >= Decimal("100"):
         raise HostedSpendUnavailableError("Hosted cost is invalid")
-    return amount.quantize(_MULTIPLIER_QUANTUM)
+    stored = amount.quantize(_MULTIPLIER_QUANTUM)
+    if stored <= ZERO or stored != amount:
+        raise HostedSpendUnavailableError("Hosted credit price is invalid")
+    return stored
 
 
 def _provider_cost(value: Any) -> Decimal | None:
@@ -154,6 +160,19 @@ def _require_credit(db: Session, account_id: Any) -> models.HostedCreditAccount:
         db.add(row)
         db.flush()
     return row
+
+
+def reservation_available(db: Session, *, account_id: Any) -> Decimal | None:
+    """Refresh available credit after the account lock, never create a wallet.
+
+    Missing or empty wallets keep the legacy allowance path, including overages.
+    The caller's pre-lock balance must never authorize a stale reservation.
+    """
+    lock_account(db, account_id)
+    row = _credit_row(db, account_id, lock=True)
+    if row is None or (row.balance == ZERO and row.reserved == ZERO):
+        return None
+    return row.balance - row.reserved
 
 
 def _entry(
@@ -356,6 +375,7 @@ def _lots_for_update(db: Session, account_id: Any) -> list[models.HostedCreditPu
                 models.HostedCreditPurchase.id.asc(),
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     )
 
@@ -414,7 +434,7 @@ def debit(
     actor = _actor(actor)
     note = _note(note)
     cost = _provider_cost(provider_cost)
-    multiplier = _multiplier(price_multiplier)
+    price = multiplier(price_multiplier)
     lock_account(db, account_id)
     existing = _debit_entries(db, account_id, operation_key)
     if existing:
@@ -440,9 +460,50 @@ def debit(
             break
     if left > ZERO:
         raise HostedSpendExceededError("Prepaid credit is exhausted")
+    return _consume(
+        db,
+        account,
+        plan=plan,
+        operation_key=operation_key,
+        actor=actor,
+        reservation_id=reservation_id,
+        provider_cost=cost,
+        price_multiplier=price,
+        note=note,
+    )
+
+
+def _consume(
+    db: Session,
+    account: models.HostedCreditAccount,
+    *,
+    plan: Sequence[tuple[models.HostedCreditPurchase | None, Decimal]],
+    operation_key: str,
+    actor: str,
+    reservation_id: Any,
+    provider_cost: Decimal | None,
+    price_multiplier: Decimal | None,
+    note: str | None = None,
+) -> list[models.HostedCreditLedger]:
+    """Write each FIFO movement with its share of cost, including lotless debt."""
     written: list[models.HostedCreditLedger] = []
+    total = sum((take for _, take in plan), ZERO)
+    cost_left = provider_cost if provider_cost is not None else ZERO
     for index, (lot, take) in enumerate(plan):
-        lot.remaining_usd -= take
+        cost = None
+        if provider_cost is not None:
+            # Round intermediate shares down and put the residual on the last
+            # entry so provider costs sum exactly even across tiny lots.
+            cost = (
+                cost_left
+                if index == len(plan) - 1
+                else (provider_cost * take / total).quantize(
+                    Decimal("0.0000000001"), rounding=ROUND_DOWN
+                )
+            )
+            cost_left -= cost
+        if lot is not None:
+            lot.remaining_usd -= take
         account.consumed += take
         _rebalance(account)
         written.append(
@@ -451,16 +512,85 @@ def debit(
                 account,
                 kind="consumption",
                 amount=take,
-                operation_key=f"{operation_key}/{index:04d}/{lot.id}",
+                operation_key=f"{operation_key}/{index:04d}/{lot.id if lot else 'overage'}",
                 actor=actor,
-                purchase_id=lot.id,
+                purchase_id=lot.id if lot else None,
                 reservation_id=reservation_id,
-                provider_cost=cost if index == 0 else None,
-                price_multiplier=multiplier if index == 0 else None,
+                provider_cost=cost,
+                price_multiplier=price_multiplier,
                 note=note,
             )
         )
     return written
+
+
+def settle_reservation(
+    db: Session,
+    *,
+    reservation: models.HostedSpendReservation,
+    provider_cost: Decimal,
+) -> None:
+    """Settle credit under hosted_spend's lock and transaction, without commit.
+
+    Only hosted_spend.settle calls this, after its status/idempotency checks.
+    A final provider charge consumes FIFO even when other requests still hold
+    credit. Those holds remain intact; debt has no purchase lot. The full charge
+    and any floor compensation are both recorded before the transaction commits.
+    """
+    account_id = reservation.account_id
+    lock_account(db, account_id)
+    account = _credit_row(db, account_id, lock=True)
+    if account is None:
+        raise HostedSpendUnavailableError("Hosted credit balance is unavailable")
+    cost = money(provider_cost)
+    price = multiplier(reservation.price_multiplier)
+    if price is None:
+        raise HostedSpendUnavailableError("Hosted credit price is unavailable")
+    if reservation.credit_reserved > ZERO:
+        release(
+            db,
+            account_id=account_id,
+            operation_key=f"hosted-hold:{reservation.id}",
+            actor="system",
+        )
+    amount = money(cost * price)
+    if amount == ZERO:
+        return
+    plan: list[tuple[models.HostedCreditPurchase | None, Decimal]] = []
+    left = amount
+    for lot in _lots_for_update(db, account_id):
+        take = min(lot.remaining_usd, left)
+        plan.append((lot, take))
+        left -= take
+        if left == ZERO:
+            break
+    if left > ZERO:
+        plan.append((None, left))
+    _consume(
+        db,
+        account,
+        plan=plan,
+        operation_key=f"hosted-settle:{reservation.id}",
+        actor="system",
+        reservation_id=reservation.id,
+        provider_cost=cost,
+        price_multiplier=price,
+    )
+    if account.balance < CREDIT_FLOOR:
+        absorbed = CREDIT_FLOOR - account.balance
+        # This compensation clears debt, so it creates no spendable purchase lot.
+        account.purchased += absorbed
+        _rebalance(account)
+        _append(
+            db,
+            account,
+            kind="adjustment",
+            amount=absorbed,
+            operation_key=f"hosted-floor:{reservation.id}",
+            actor="system",
+            reservation_id=reservation.id,
+            note="below credit floor, absorbed",
+        )
 
 
 def _touch_reservation(
@@ -514,7 +644,7 @@ def hold(
     operation_key = _operation_key(operation_key, limit=100)
     actor = _actor(actor)
     user_note = _note(note)
-    multiplier = _multiplier(price_multiplier)
+    price = multiplier(price_multiplier)
     held_note = HOLD_NOTE if user_note is None else f"{HOLD_NOTE} {user_note}"
     lock_account(db, account_id)
     existing = _entry(db, account_id, operation_key)
@@ -536,7 +666,7 @@ def hold(
             account_id=account_id,
             reservation_id=reservation_id,
             delta=amount,
-            multiplier=multiplier,
+            multiplier=price,
             release=False,
         )
     account.reserved += amount
@@ -548,7 +678,7 @@ def hold(
         operation_key=operation_key,
         actor=actor,
         reservation_id=reservation_id,
-        price_multiplier=multiplier,
+        price_multiplier=price,
         note=held_note,
     )
 
