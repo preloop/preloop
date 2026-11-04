@@ -19,15 +19,17 @@ The default private-runner job is still `docker run` of the flow image (or a cus
 
 ## Review publication receipts
 
-A pull request review flow can require that its review was delivered (EE #202): `git_clone_config.review_publication.required: true` (the Pull Request Reviewer preset sets it, and a flow with no `review_publication` block inherits it from its source preset). The MCP `update_pull_request` tool writes a `review_publication_receipt` row only after the code host accepted a review (`approve`, `request_changes` or `comment`), bound to the account, the execution named by the calling credential, provider, repository, PR number, the reviewed head SHA when the provider reports one (GitHub `commit_id`), action and provider review id. Reactions and metadata edits write nothing. At the end of the run `FlowExecutionOrchestrator._apply_review_publication_gate` looks for a receipt for this execution and the triggering PR and head, and stores the outcome in `result.review_publication` (`published`, `already_reviewed` or `not_published` with a reason). A SUCCEEDED run with `not_published` becomes FAILED with `review_publication_incomplete: <reason>` and the `publication_missing` category; the agent's report and blocker stay in the result. The agent's `review_posted` claim, the success sentinel and a zero exit code never satisfy the gate. A deliberate no-post run (`review_action: null`, no `blocker`) passes as `already_reviewed` only when an earlier run of the account holds a receipt for the same PR and head. A receipt that fails to persist is logged at error level and the run fails for want of it.
+A pull request review flow can require that its review was delivered (EE #202): `git_clone_config.review_publication.required: true` on the flow itself (the Pull Request Reviewer preset carries the block for flows created from it; an existing flow without the block is never gated, whatever its source preset says). The MCP `update_pull_request` tool writes a `review_publication_receipt` row only after the code host accepted a review (`approve`, `request_changes` or `comment`), bound to the account, the execution named by the calling credential, provider, repository, PR number, the reviewed head SHA when the provider reports one (GitHub `commit_id`), action and provider review id. Reactions and metadata edits write nothing. At the end of the run `FlowExecutionOrchestrator._apply_review_publication_gate` looks for a receipt for this execution and the triggering PR and head, and stores the outcome in `result.review_publication` (`published`, `already_reviewed` or `not_published` with a reason). A SUCCEEDED run with `not_published` becomes FAILED with `review_publication_incomplete: <reason>` and the `publication_missing` category; the agent's report and blocker stay in the result. The agent's `review_posted` claim, the success sentinel and a zero exit code never satisfy the gate. A deliberate no-post run (`review_action: null`, no `blocker`) passes as `already_reviewed` only when an earlier run of the account holds a receipt for the same PR and head. A receipt that fails to persist is logged at error level and the run fails for want of it.
 
 `scripts/init_db.py` refreshes the global preset catalog after migrations on
 native, Compose and Helm deployments, without propagating prompt or tool
-changes to account flows. Upgrades that bypass this initializer must run
-`python scripts/sync_flow_presets.py --no-propagate` so stored reviewer presets
-carry the publication requirement. An explicit `review_publication.required:
-false` on a derived flow still opts out. If an inherited source preset cannot
-be read, the run fails closed with `preset_lookup_failed`.
+changes to account flows. The requirement is a per-flow opt-in: a catalog
+refresh never gates existing derived flows (production incident 2026-11-04,
+where a refresh switched the gate on for every derived flow while the API
+still ran a build without the receipt-writing tool, and every run failed with
+`no_receipt` after delivering its review). To require publication on an
+existing flow, set `review_publication.required: true` on that flow once the
+API build that writes receipts is serving; `required: false` opts out.
 
 Manual preset and CLI PR runs carry the fetched head in the same provider
 fields as webhook events. A trigger naming a PR without its head fails with

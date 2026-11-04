@@ -133,23 +133,30 @@ def test_unknown_target_accepts_any_receipt_of_the_run() -> None:
 
 
 @pytest.mark.parametrize(
-    ("own", "preset", "required"),
+    ("own", "required"),
     [
-        ({"review_publication": {"required": True}}, None, True),
-        (
-            {"review_publication": {"required": False}},
-            {"review_publication": {"required": True}},
-            False,
-        ),
-        ({"enabled": True}, {"review_publication": {"required": True}}, True),
-        (None, {"review_publication": {"required": True}}, True),
-        ({"enabled": True}, {"enabled": True}, False),
-        (None, None, False),
-        ("garbage", None, False),
+        ({"review_publication": {"required": True}}, True),
+        ({"review_publication": {"required": False}}, False),
+        ({"review_publication": {"required": "yes"}}, False),
+        ({"enabled": True}, False),
+        (None, False),
+        ("garbage", False),
     ],
 )
-def test_requirement_comes_from_flow_then_preset(own, preset, required) -> None:
-    assert review_publication_required(own, preset) is required
+def test_requirement_comes_from_the_flow_alone(own, required) -> None:
+    assert review_publication_required(own) is required
+
+
+def test_requirement_is_never_inherited_from_a_preset() -> None:
+    """Incident 2026-11-04: a preset sync must not gate existing flows.
+
+    The requirement is a per-flow opt-in. A flow saved without the block stays
+    ungated even when its source preset requires publication, so a catalog
+    refresh at deploy time cannot switch the contract on for runs whose
+    control plane does not yet record receipts.
+    """
+    assert review_publication_required(None) is False
+    assert review_publication_required({"enabled": True}) is False
 
 
 @pytest.mark.parametrize(

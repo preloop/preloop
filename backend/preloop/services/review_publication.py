@@ -1,11 +1,19 @@
 """Review publication gate: a review flow succeeds only with a delivered review.
 
-EE #202. A pull request review flow whose ``git_clone_config`` sets
+EE #202. A pull request review flow whose own ``git_clone_config`` sets
 ``review_publication.required`` finishes SUCCEEDED only when the MCP
 ``update_pull_request`` tool recorded a receipt for a review the code host
 accepted, for this execution and the triggering pull request. The agent's
 exit code, success sentinel and ``review_posted`` field are claims; the
 receipt is the evidence.
+
+The requirement is a per-flow opt-in and is never inherited from the flow's
+source preset. Production incident 2026-11-04: the deploy-time preset sync
+switched the requirement on for every flow derived from the Pull Request
+Reviewer preset while the API still ran a build without the receipt-writing
+tool, so each of those runs delivered its review and was then failed with
+``no_receipt``. A stored catalog row must not be able to enable a fail-closed
+gate for flows nobody opted in.
 
 A deliberate no-post run (``review_action`` explicitly null, no
 ``blocker``) passes only when an earlier run of the account already holds a
@@ -39,7 +47,6 @@ REASON_NO_RECEIPT = "no_receipt"
 REASON_OTHER_TARGET = "receipt_for_other_pull_request"
 REASON_OTHER_HEAD = "receipt_for_other_head"
 REASON_LOOKUP_FAILED = "receipt_lookup_failed"
-REASON_PRESET_LOOKUP_FAILED = "preset_lookup_failed"
 REASON_TRIGGER_HEAD_MISSING = "trigger_head_missing"
 
 _GITHUB_PR = re.compile(r"^/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
@@ -54,21 +61,15 @@ def _config_block(git_clone_config: Any) -> Optional[Mapping[str, Any]]:
     return block if isinstance(block, Mapping) else None
 
 
-def review_publication_required(
-    git_clone_config: Any, preset_git_clone_config: Any = None
-) -> bool:
+def review_publication_required(git_clone_config: Any) -> bool:
     """Whether the flow requires a delivered review.
 
-    The flow's own ``review_publication`` block decides when it has one, so
-    an owner can opt out with ``required: false``. A flow saved before the
-    block existed inherits it from its source preset, which is how existing
-    reviewer flows receive the contract without a data migration.
+    Only the flow's own ``review_publication`` block decides: ``required`` must
+    be exactly ``True``. A flow without the block is not gated, whatever its
+    source preset says, so a preset catalog refresh cannot opt flows in.
     """
     own = _config_block(git_clone_config)
-    if own is not None:
-        return own.get("required") is True
-    inherited = _config_block(preset_git_clone_config)
-    return inherited is not None and inherited.get("required") is True
+    return own is not None and own.get("required") is True
 
 
 def normalize_repository(value: Any) -> str:
