@@ -995,6 +995,7 @@ def _register_control_plane_routes(
         runners,
         runtime_session_artifacts,
         runtime_session_browser_steps,
+        runtime_session_desktop,
     )
     from preloop.api.endpoints import search as search_router
     from preloop.api.endpoints import delivery_report_policy
@@ -1418,6 +1419,12 @@ def _register_control_plane_routes(
     # A console-user dependency would reject the runtime key this exists for.
     app.include_router(
         runtime_session_browser_steps.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+    )
+    # Same agent-bearer authentication as browser steps (#1568).
+    app.include_router(
+        runtime_session_desktop.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
     )

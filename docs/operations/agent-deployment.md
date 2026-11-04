@@ -174,6 +174,15 @@ agent key with `--agent-key` or `PRELOOP_DESKTOP_TOKEN`. `--dry-run` prints
 the steps. Check the tunnel with `systemctl --user status
 preloop-desktop-tunnel`.
 
+**Sessions on the same host.** The installer also exports
+`PRELOOP_DESKTOP_ENDPOINT_ID` (the endpoint id from `~/.preloop/desktop.json`)
+next to `DISPLAY=:99` in the runtime environment. CLI hooks, the Hermes
+plugin and the Browser Use reporter send it when they create or report on a
+runtime session (`desktop_endpoint_id` on `POST /auth/runtime-sessions/token`,
+or `PUT /runtime-sessions/{id}/desktop-endpoint`), so that session gets the
+**Live desktop** button even when it runs with a different credential than the
+tunnel. The value only matches desktops in the session's own account.
+
 **Console.** An agent with an online desktop shows a **Desktop** tab, and its
 live sessions show a **Live desktop** button. A view is view only: keyboard,
 mouse and clipboard input are dropped by the API, not just by the browser.

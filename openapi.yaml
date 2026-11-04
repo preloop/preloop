@@ -22686,6 +22686,67 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/desktop-endpoint:
+    put:
+      tags:
+      - Runtime Sessions
+      summary: Set Runtime Session Desktop Endpoint
+      description: "Record the desktop endpoint a runtime session runs next to.\n\n\
+        The value is stored as given; it only links endpoints in the session's\nown\
+        \ account, so naming another account's endpoint links nothing and\n``linked``\
+        \ is false. An endpoint that registers later is picked up then.\n\nArgs:\n\
+        \    runtime_session_id: Session to link.\n    body: Endpoint id (host ``endpoint_id``\
+        \ or row id), or null to clear.\n    db: Database session.\n    auth: Agent\
+        \ credential from the bearer token.\n\nReturns:\n    The stored value and\
+        \ whether it currently matches an endpoint.\n\nRaises:\n    HTTPException:\
+        \ 403 when the credential is pinned to another session,\n        404 when\
+        \ the session is not in the credential's account."
+      operationId: set_runtime_session_desktop_endpoint_api_v1_runtime_sessions__runtime_session_id__desktop_endpoint_put
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSessionDesktopLink'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionDesktopLinkOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/artifacts:
     post:
       tags:
@@ -48403,6 +48464,37 @@ components:
         set to this session. Otherwise ``mode`` is ``note`` and ``reason`` says
 
         why, in words fit to show the operator.'
+    RuntimeSessionDesktopLink:
+      properties:
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Desktop Endpoint Id
+      type: object
+      title: RuntimeSessionDesktopLink
+      description: Desktop endpoint named by the adapter; null clears the link.
+    RuntimeSessionDesktopLinkOut:
+      properties:
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Desktop Endpoint Id
+        linked:
+          type: boolean
+          title: Linked
+      type: object
+      required:
+      - runtime_session_id
+      - desktop_endpoint_id
+      - linked
+      title: RuntimeSessionDesktopLinkOut
+      description: Stored link and whether it matches an endpoint in the account now.
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -49464,6 +49556,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/PrincipalIdentity'
           - type: 'null'
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Desktop Endpoint Id
       type: object
       required:
       - session_source_type

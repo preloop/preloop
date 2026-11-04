@@ -1910,6 +1910,12 @@ async def create_runtime_session_token(
         started_at=now,
         reopen_if_ended=True,
     )
+    if session_data.desktop_endpoint_id is not None:
+        crud_runtime_session.set_desktop_endpoint(
+            db,
+            runtime_session=runtime_session,
+            desktop_endpoint_id=session_data.desktop_endpoint_id,
+        )
     identity = session_data.principal_identity
     managed_agent = crud_managed_agent.upsert_from_runtime_session(
         db,

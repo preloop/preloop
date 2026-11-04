@@ -1182,3 +1182,193 @@ def test_list_endpoints_is_not_n_plus_one(harness, db_session):
         event.remove(engine, "before_cursor_execute", count)
     assert len([r for r in rows if r["active_view"]]) == 6
     assert len(statements) <= 2, statements
+
+
+# ---------------------------------------------------------------------------
+# Explicit session -> desktop link via PRELOOP_DESKTOP_ENDPOINT_ID (#1568)
+
+
+def _plain_session(db_session, account_id) -> models.RuntimeSession:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    session = models.RuntimeSession(
+        account_id=account_id,
+        session_source_type="custom",
+        session_source_id=f"s-{uuid.uuid4().hex[:8]}",
+        started_at=now,
+    )
+    db_session.add(session)
+    db_session.commit()
+    return session
+
+
+def _runtime_key(db_session, user, *, runtime_session_id=None) -> str:
+    context = None
+    if runtime_session_id is not None:
+        context = {"runtime_session_id": str(runtime_session_id)}
+    _key, token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Adapter key",
+        account_id=user.account_id,
+        user_id=user.id,
+        context_data=context,
+    )
+    return token
+
+
+def test_session_named_endpoint_shows_live_desktop(harness, db_session):
+    """A session run with a different credential than the tunnel is linked
+    once the adapter names the endpoint (PRELOOP_DESKTOP_ENDPOINT_ID)."""
+    h = harness
+    agent = _make_agent(db_session, h.user)
+    session = _plain_session(db_session, h.user.account_id)
+    tunnel_key = h.endpoint_key(managed_agent_id=str(agent.id))
+    adapter_key = _runtime_key(db_session, h.user, runtime_session_id=session.id)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint = FakeEndpoint(h.base_ws, tunnel_key, vnc.port)
+            await endpoint.connect()
+            eid = endpoint.registered["endpoint_id"]
+            params = {"runtime_session_id": str(session.id)}
+            async with h.http() as client:
+                before = await client.get("/api/v1/desktop/endpoints", params=params)
+                linked = await client.put(
+                    f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint",
+                    json={"desktop_endpoint_id": eid},
+                    headers={"Authorization": f"Bearer {adapter_key}"},
+                )
+                after = await client.get("/api/v1/desktop/endpoints", params=params)
+                created = await client.post(
+                    f"/api/v1/desktop/endpoints/{eid}/views",
+                    json={"runtime_session_id": str(session.id)},
+                )
+            assert before.json()["endpoints"] == []
+            assert linked.status_code == 200, linked.text
+            assert linked.json() == {
+                "runtime_session_id": str(session.id),
+                "desktop_endpoint_id": eid,
+                "linked": True,
+            }
+            assert [r["endpoint_id"] for r in after.json()["endpoints"]] == [eid]
+            assert created.status_code == 201, created.text
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_session_naming_another_accounts_endpoint_is_ignored(harness, db_session):
+    h = harness
+    outsider = _make_user(db_session, username="desk-outsider")
+    session = _plain_session(db_session, h.user.account_id)
+    adapter_key = _runtime_key(db_session, h.user)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            foreign = FakeEndpoint(h.base_ws, h.endpoint_key(outsider), vnc.port)
+            await foreign.connect()
+            eid = foreign.registered["endpoint_id"]
+            foreign_pk = str(
+                db_session.query(models.DesktopEndpoint)
+                .filter(models.DesktopEndpoint.endpoint_id == eid)
+                .one()
+                .id
+            )
+            async with h.http() as client:
+                results = [
+                    await client.put(
+                        f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint",
+                        json={"desktop_endpoint_id": ident},
+                        headers={"Authorization": f"Bearer {adapter_key}"},
+                    )
+                    for ident in (eid, foreign_pk)
+                ]
+                listed = await client.get(
+                    "/api/v1/desktop/endpoints",
+                    params={"runtime_session_id": str(session.id)},
+                )
+            for result in results:
+                assert result.status_code == 200, result.text
+                assert result.json()["linked"] is False
+            assert listed.json()["endpoints"] == []
+            await foreign.close()
+
+    asyncio.run(scenario())
+
+
+def test_desktop_endpoint_link_rejects_other_sessions_and_accounts(
+    client, db_session, test_user
+):
+    session = _plain_session(db_session, test_user.account_id)
+    other = _plain_session(db_session, test_user.account_id)
+    outsider = _make_user(db_session, username="desk-outsider-2")
+    pinned = _runtime_key(db_session, test_user, runtime_session_id=other.id)
+    foreign = _runtime_key(db_session, outsider)
+    url = f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint"
+    body = {"desktop_endpoint_id": "dep_abc"}
+
+    assert client.put(url, json=body).status_code == 401
+    wrong_session = client.put(
+        url, json=body, headers={"Authorization": f"Bearer {pinned}"}
+    )
+    assert wrong_session.status_code == 403
+    wrong_account = client.put(
+        url, json=body, headers={"Authorization": f"Bearer {foreign}"}
+    )
+    assert wrong_account.status_code == 404
+    db_session.refresh(session)
+    assert session.desktop_endpoint_id is None
+
+
+def test_clearing_the_link_and_sessions_without_it(client, db_session, test_user):
+    session = _plain_session(db_session, test_user.account_id)
+    key = _runtime_key(db_session, test_user, runtime_session_id=session.id)
+    url = f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint"
+    headers = {"Authorization": f"Bearer {key}"}
+
+    assert crud_desktop_filters(db_session, test_user, session) == {
+        "managed_agent_ids": [],
+        "api_key_ids": [crud_api_key.get_by_key(db_session, key=key).id],
+    }
+    set_ = client.put(url, json={"desktop_endpoint_id": "dep_abc"}, headers=headers)
+    assert set_.status_code == 200, set_.text
+    assert crud_desktop_filters(db_session, test_user, session)["endpoint_idents"] == [
+        "dep_abc"
+    ]
+    cleared = client.put(url, json={"desktop_endpoint_id": None}, headers=headers)
+    assert cleared.status_code == 200
+    assert cleared.json()["desktop_endpoint_id"] is None
+    assert "endpoint_idents" not in crud_desktop_filters(db_session, test_user, session)
+
+
+def crud_desktop_filters(db_session, user, session):
+    from preloop.models.crud import crud_desktop
+
+    db_session.expire_all()
+    return crud_desktop.session_link_filters(
+        db_session, account_id=user.account_id, runtime_session_id=session.id
+    )
+
+
+def test_runtime_session_token_records_the_desktop_endpoint(
+    client, db_session, test_user
+):
+    """Hooks and plugins name the endpoint when they mint the session token."""
+    from preloop.api.auth import get_current_active_user
+
+    client.app.dependency_overrides[get_current_active_user] = lambda: test_user
+    try:
+        response = client.post(
+            "/api/v1/auth/runtime-sessions/token",
+            json={
+                "session_source_type": "custom",
+                "session_source_id": f"hook-{uuid.uuid4().hex[:8]}",
+                "desktop_endpoint_id": "dep_from_hook",
+            },
+        )
+    finally:
+        client.app.dependency_overrides.pop(get_current_active_user, None)
+    assert response.status_code == 201, response.text
+    session = db_session.get(
+        models.RuntimeSession, uuid.UUID(response.json()["runtime_session_id"])
+    )
+    assert session.desktop_endpoint_id == "dep_from_hook"

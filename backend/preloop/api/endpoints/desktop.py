@@ -469,6 +469,8 @@ async def list_desktop_endpoints(
                 linked["managed_agent_ids"]
             )
             filters["api_key_ids"] = linked["api_key_ids"]
+            if "endpoint_idents" in linked:
+                filters["endpoint_idents"] = linked["endpoint_idents"]
         now = _now()
         endpoints = crud_desktop.list_endpoints(db, account_id=account_id, **filters)
         holders = _active_holders(db, endpoints)

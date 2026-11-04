@@ -473,6 +473,7 @@ type runtimeSessionTokenRequest struct {
 	Scopes               []string                  `json:"scopes,omitempty"`
 	AllowedMCPServers    []string                  `json:"allowed_mcp_servers,omitempty"`
 	PrincipalIdentity    *principalIdentityPayload `json:"principal_identity,omitempty"`
+	DesktopEndpointID    string                    `json:"desktop_endpoint_id,omitempty"`
 }
 
 type principalIdentityPayload struct {
@@ -3148,6 +3149,7 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 		Scopes:               []string{"mcp:read", "mcp:write"},
 		AllowedMCPServers:    serverNames,
 		PrincipalIdentity:    principalIdentityForAgent(agent),
+		DesktopEndpointID:    localDesktopEndpointID(),
 	}
 
 	var result runtimeSessionTokenResponse

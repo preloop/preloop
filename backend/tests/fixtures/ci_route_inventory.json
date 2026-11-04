@@ -562,6 +562,7 @@
   "PUT /api/v1/projects/{project_id}/readiness-policy": "deny",
   "PUT /api/v1/retention/settings": "deny",
   "PUT /api/v1/runtime-sessions/settings/embedding": "deny",
+  "PUT /api/v1/runtime-sessions/{runtime_session_id}/desktop-endpoint": "deny",
   "PUT /api/v1/tool-configurations/{config_id}": "deny",
   "PUT /api/v1/tool-configurations/{config_id}/approval-condition": "deny",
   "PUT /api/v1/tool-configurations/{config_id}/condition": "deny",

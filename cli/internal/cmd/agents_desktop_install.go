@@ -107,7 +107,13 @@ func installDesktop(ctx context.Context, opts desktopInstallOptions) error {
 	if err := writeDesktopManifest(home, browser, opts.now()); err != nil {
 		return err
 	}
-	if err := applyDesktopDisplay(home, opts.Runtime); err != nil {
+	// The endpoint id is fixed here, not on the first `desktop serve`, so the
+	// runtime environment can carry it from the start (#1568).
+	endpointID, err := loadOrCreateDesktopEndpointID(filepath.Join(home, ".preloop", "desktop.json"))
+	if err != nil {
+		return err
+	}
+	if err := applyDesktopEnv(home, opts.Runtime, endpointID); err != nil {
 		return err
 	}
 	fmt.Fprintf( //nolint:errcheck
@@ -508,35 +514,51 @@ func writeDesktopManifest(home, browser string, now time.Time) error {
 	return writeDesktopFile(path, string(data), 0o600)
 }
 
-// applyDesktopDisplay exports DISPLAY=:99 where this CLI already persists
-// runtime environment. PRELOOP_MODEL_GATEWAY and cli/internal/agents are not
-// in this tree. The nearest writer is renderManagedRuntimeEnv, which emits
-// export lines under ~/.preloop/agents/runtime. Hermes also reads
-// ~/.hermes/.env (hermesEnvFile). OpenClaw reads an env block from its JSON
-// config (resolveOpenClawEnvVar) when that file is strict JSON.
-func applyDesktopDisplay(home, runtime string) error {
+// desktopEndpointEnv names the host's desktop endpoint for agent processes,
+// so adapters and hooks can link their runtime session to it (#1568).
+const desktopEndpointEnv = "PRELOOP_DESKTOP_ENDPOINT_ID"
+
+// applyDesktopEnv exports DISPLAY=:99 and PRELOOP_DESKTOP_ENDPOINT_ID where
+// this CLI already persists runtime environment. PRELOOP_MODEL_GATEWAY and
+// cli/internal/agents are not in this tree. The nearest writer is
+// renderManagedRuntimeEnv, which emits export lines under
+// ~/.preloop/agents/runtime. Hermes also reads ~/.hermes/.env
+// (hermesEnvFile). OpenClaw reads an env block from its JSON config
+// (resolveOpenClawEnvVar) when that file is strict JSON.
+func applyDesktopEnv(home, runtime, endpointID string) error {
 	runtime = strings.ToLower(strings.TrimSpace(runtime))
 	if runtime == "" {
 		runtime = "runtime"
 	}
-	envPath := filepath.Join(home, ".preloop", "agents", "runtime", runtime+".env")
-	if err := upsertShellExport(envPath, "DISPLAY", desktopDisplay, 0o600); err != nil {
-		return err
+	vars := [][2]string{{"DISPLAY", desktopDisplay}}
+	if endpointID = strings.TrimSpace(endpointID); endpointID != "" {
+		vars = append(vars, [2]string{desktopEndpointEnv, endpointID})
 	}
-	switch runtime {
-	case "hermes":
-		if err := upsertShellExport(filepath.Join(home, ".hermes", ".env"), "DISPLAY", desktopDisplay, 0o600); err != nil {
+	files := []string{filepath.Join(home, ".preloop", "agents", "runtime", runtime+".env")}
+	if runtime == "hermes" {
+		files = append(files, filepath.Join(home, ".hermes", ".env"))
+	}
+	for _, path := range files {
+		for _, kv := range vars {
+			if err := upsertShellExport(path, kv[0], kv[1], 0o600); err != nil {
+				return err
+			}
+		}
+	}
+	if runtime == "openclaw" {
+		if err := setOpenClawEnv(home, vars); err != nil {
 			return err
 		}
-	case "openclaw":
-		if err := setOpenClawDisplay(home); err != nil {
+	}
+	for _, kv := range vars {
+		if err := os.Setenv(kv[0], kv[1]); err != nil {
 			return err
 		}
 	}
-	return os.Setenv("DISPLAY", desktopDisplay)
+	return nil
 }
 
-func setOpenClawDisplay(home string) error {
+func setOpenClawEnv(home string, vars [][2]string) error {
 	path := filepath.Join(home, ".openclaw", "openclaw.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -563,8 +585,29 @@ func setOpenClawDisplay(home string) error {
 		envBlock = map[string]interface{}{}
 		doc["env"] = envBlock
 	}
-	envBlock["DISPLAY"] = desktopDisplay
+	for _, kv := range vars {
+		envBlock[kv[0]] = kv[1]
+	}
 	return writeJSONDocument(path, doc)
+}
+
+// localDesktopEndpointID is the desktop endpoint on this host: the
+// PRELOOP_DESKTOP_ENDPOINT_ID env var, else ~/.preloop/desktop.json. Empty
+// when the host has no desktop.
+func localDesktopEndpointID() string {
+	if id := strings.TrimSpace(os.Getenv(desktopEndpointEnv)); id != "" {
+		return id
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	doc, err := readDesktopState(home)
+	if err != nil {
+		return ""
+	}
+	id, _ := doc["endpoint_id"].(string)
+	return strings.TrimSpace(id)
 }
 
 func upsertShellExport(path, key, value string, mode os.FileMode) error {

@@ -165,6 +165,14 @@ func TestInstallDesktopWritesManifestAndKeepsPassword(t *testing.T) {
 	if !strings.Contains(string(runtimeEnv), "export DISPLAY=':99'\n") {
 		t.Fatalf("runtime env = %q", runtimeEnv)
 	}
+	endpointID, err := loadOrCreateDesktopEndpointID(filepath.Join(home, ".preloop", "desktop.json"))
+	if err != nil || !strings.HasPrefix(endpointID, "dep_") {
+		t.Fatalf("install did not keep an endpoint id: %q %v", endpointID, err)
+	}
+	wantEndpoint := "export PRELOOP_DESKTOP_ENDPOINT_ID='" + endpointID + "'\n"
+	if !strings.Contains(string(runtimeEnv), wantEndpoint) || !strings.Contains(string(hermesEnv), wantEndpoint) {
+		t.Fatalf("endpoint id not exported (#1568): runtime=%q hermes=%q", runtimeEnv, hermesEnv)
+	}
 
 	before, err := os.ReadFile(filepath.Join(home, ".preloop", "desktop", "vncpasswd"))
 	if err != nil {
@@ -199,6 +207,9 @@ func TestInstallDesktopWritesManifestAndKeepsPassword(t *testing.T) {
 	}
 	if !strings.Contains(string(hermesEnv), "OPENAI_API_KEY='kept'") || !strings.Contains(string(hermesEnv), "DISPLAY=':99'") {
 		t.Fatalf("hermes env was not merged: %q", hermesEnv)
+	}
+	if !strings.Contains(string(hermesEnv), wantEndpoint) {
+		t.Fatalf("re-run changed or dropped the endpoint id: %q", hermesEnv)
 	}
 	joined := strings.Join(calls, "\n")
 	if !strings.Contains(joined, "systemctl --user restart "+desktopService) {
@@ -262,7 +273,7 @@ func TestInstallDesktopFallsBackToChromiumBrowserAndNohup(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("{\"env\":{\"OPENAI_API_KEY\":\"kept\"}}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := setOpenClawDisplay(home); err != nil {
+	if err := setOpenClawEnv(home, [][2]string{{"DISPLAY", desktopDisplay}}); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := os.ReadFile(configPath)

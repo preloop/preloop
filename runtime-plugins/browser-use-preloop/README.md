@@ -41,6 +41,7 @@ reporter.close()
 | `PRELOOP_AGENT_KEY` | The agent key (falls back to `PRELOOP_API_KEY`). The same bearer the model gateway accepts. |
 | `PRELOOP_SESSION_ID` | The session key your LLM client sends the model gateway as `X-Preloop-Session-Id`. The reporter resolves it to the runtime session with `GET /api/v1/runtime-sessions/resolve?create=true`, so steps and model turns share one session. |
 | `PRELOOP_RUNTIME_SESSION_ID` | Optional. A known runtime session id; wins over `PRELOOP_SESSION_ID`. |
+| `PRELOOP_DESKTOP_ENDPOINT_ID` | Optional. Set by `preloop desktop enable`; when present (or when `~/.preloop/desktop.json` has an `endpoint_id`) the reporter links the session to this host's live desktop once per run. |
 
 If your LLM client already goes through the gateway, `RuntimeSessionCapture`
 is an `httpx` response hook that records the `X-Preloop-Runtime-Session-Id`

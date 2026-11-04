@@ -61,6 +61,7 @@ class PreloopBrowserUseReporter:
         self._started_at: datetime | None = None
         self._steps: list[dict[str, Any]] = []
         self.recording_uploaded = False
+        self._desktop_linked = False
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> PreloopBrowserUseReporter:
@@ -142,6 +143,10 @@ class PreloopBrowserUseReporter:
         """Worker thread: read deferred screenshot files, then post."""
         if self._poster is None:
             return []
+        if not self._desktop_linked:
+            # One try per run: a failed link only hides the Live desktop button.
+            self._desktop_linked = True
+            self._poster.link_desktop()
         return self._poster.post([resolve_screenshot_path(step) for step in batch])
 
     def close(self) -> None:

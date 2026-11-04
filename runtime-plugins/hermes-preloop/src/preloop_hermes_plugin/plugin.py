@@ -694,14 +694,19 @@ class HermesPreloopPlugin:
         if not access_token:
             raise ValueError("Preloop did not return an access token")
 
+        session_request: dict[str, Any] = {
+            "session_source_type": "hermes",
+            "session_source_id": runtime_principal_id,
+            "session_reference": str(config_path),
+            "runtime_principal_name": "Hermes",
+        }
+        desktop_endpoint_id = read_desktop_endpoint_id()
+        if desktop_endpoint_id:
+            # Links the session to this host's live desktop (#1568).
+            session_request["desktop_endpoint_id"] = desktop_endpoint_id
         runtime_session = _post_json(
             _build_url(base_url, "/api/v1/auth/runtime-sessions/token"),
-            {
-                "session_source_type": "hermes",
-                "session_source_id": runtime_principal_id,
-                "session_reference": str(config_path),
-                "runtime_principal_name": "Hermes",
-            },
+            session_request,
             access_token,
         )
         runtime_token = str(runtime_session.get("token") or "")
@@ -783,6 +788,31 @@ def read_desktop_capability() -> tuple[Literal["vnc", "none"], str | None]:
     display = document.get("display")
     desktop_display = display if isinstance(display, str) and display else None
     return "vnc", desktop_display
+
+
+def read_desktop_endpoint_id() -> str | None:
+    """This host's desktop endpoint id, or ``None`` without a desktop.
+
+    ``PRELOOP_DESKTOP_ENDPOINT_ID`` (exported by ``preloop desktop enable``)
+    wins; else ``endpoint_id`` from ``$PRELOOP_DESKTOP_FILE`` or
+    ``~/.preloop/desktop.json``.
+
+    Returns:
+        The endpoint id, or ``None``.
+    """
+    value = os.environ.get("PRELOOP_DESKTOP_ENDPOINT_ID", "").strip()
+    if value:
+        return value
+    override = os.environ.get("PRELOOP_DESKTOP_FILE", "").strip()
+    path = Path(override) if override else Path.home() / ".preloop" / "desktop.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    found = document.get("endpoint_id") if isinstance(document, dict) else None
+    if isinstance(found, str) and found.strip():
+        return found.strip()
+    return None
 
 
 def _env_presence(name: str) -> str:

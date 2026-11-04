@@ -182,8 +182,12 @@ class CRUDDesktop:
         """Linkage filters that tie a runtime session to desktop endpoints.
 
         A session is linked to the endpoints of the managed agent that owns it
-        (its identity session, or sessions whose principal is the agent) and
-        to endpoints registered with an API key bound to that session.
+        (its identity session, or sessions whose principal is the agent), to
+        endpoints registered with an API key bound to that session, and to the
+        endpoint the session names itself (``desktop_endpoint_id``, from the
+        adapter's ``PRELOOP_DESKTOP_ENDPOINT_ID``, #1568). The named endpoint
+        is matched inside ``account_id`` only, so a value pointing at another
+        account's endpoint links nothing.
         Returns None when the session is not in the account.
         """
         session_pk = _as_uuid(runtime_session_id)
@@ -221,7 +225,13 @@ class CRUDDesktop:
                 )
             )
         )
-        return {"managed_agent_ids": agent_ids, "api_key_ids": key_ids}
+        filters: dict[str, list[Any]] = {
+            "managed_agent_ids": agent_ids,
+            "api_key_ids": key_ids,
+        }
+        if runtime_session.desktop_endpoint_id:
+            filters["endpoint_idents"] = [runtime_session.desktop_endpoint_id]
+        return filters
 
     # Views ---------------------------------------------------------------
 
