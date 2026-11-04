@@ -47,6 +47,8 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from preloop.services.artifact_access import audited_search, search_document_conditions
+
 from preloop.config import settings
 
 from ..models.api_usage import ApiUsage
@@ -734,6 +736,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
     @staticmethod
     def _search_filters(
         *,
+        db: Session,
         account_id: Any,
         query: Optional[str] = None,
         runtime_session_id: Optional[Any] = None,
@@ -748,7 +751,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         and start matching a wider set of rows than the query it is meant to
         be the safe version of.
         """
-        clauses: List[Any] = [SessionSearchDocument.account_id == account_id]
+        clauses: List[Any] = [
+            SessionSearchDocument.account_id == account_id,
+            *search_document_conditions(db, account_id),
+        ]
         if runtime_session_id is not None:
             clauses.append(
                 SessionSearchDocument.runtime_session_id == runtime_session_id
@@ -771,6 +777,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             )
         return clauses
 
+    @audited_search
     def search_account_chunks(
         self,
         db: Session,
@@ -799,6 +806,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             db.query(SessionSearchDocument)
             .filter(
                 *self._search_filters(
+                    db=db,
                     account_id=account_id,
                     query=query,
                     runtime_session_id=runtime_session_id,
@@ -817,6 +825,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             .all()
         )
 
+    @audited_search
     def search_account_hits(
         self,
         db: Session,
@@ -871,6 +880,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             )
             .where(
                 *self._search_filters(
+                    db=db,
                     account_id=account_id,
                     query=query,
                     runtime_session_id=runtime_session_id,
@@ -912,6 +922,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
     def _scoped_conditions(
         self,
         *,
+        db: Session,
         account_id: Any,
         filters: Optional[SessionSearchFilters],
     ) -> List[ColumnElement[bool]]:
@@ -925,6 +936,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         """
         conditions: List[ColumnElement[bool]] = [
             SessionSearchDocument.account_id == account_id,
+            *search_document_conditions(db, account_id),
         ]
         active = filters or SessionSearchFilters()
         if active.start_date is not None:
@@ -961,12 +973,15 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
     def _match_conditions(
         self,
         *,
+        db: Session,
         account_id: Any,
         tsquery: ColumnElement[Any],
         filters: Optional[SessionSearchFilters],
     ) -> List[ColumnElement[bool]]:
         """The scoped conditions plus the full text match term."""
-        conditions = self._scoped_conditions(account_id=account_id, filters=filters)
+        conditions = self._scoped_conditions(
+            db=db, account_id=account_id, filters=filters
+        )
         conditions.insert(1, SessionSearchDocument.search_vector.op("@@")(tsquery))
         return conditions
 
@@ -979,11 +994,17 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         """
         marker = (
             db.query(func.max(SessionSearchDocument.occurred_at))
-            .filter(SessionSearchDocument.account_id == account_id)
+            .filter(
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                )
+            )
             .scalar()
         )
         return marker if isinstance(marker, datetime) else None
 
+    @audited_search
     def search_sessions_ranked(
         self,
         db: Session,
@@ -1030,7 +1051,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
 
         tsquery = func.websearch_to_tsquery(SEARCH_CONFIG, normalized)
         conditions = self._match_conditions(
-            account_id=account_id, tsquery=tsquery, filters=filters
+            db=db, account_id=account_id, tsquery=tsquery, filters=filters
         )
 
         total = int(
@@ -1251,7 +1272,12 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         """
         return (
             db.query(func.min(SessionSearchDocument.occurred_at))
-            .filter(SessionSearchDocument.account_id == account_id)
+            .filter(
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                )
+            )
             .scalar()
         )
 
@@ -1283,7 +1309,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         return self._snippets_for_sessions(
             db,
             conditions=self._match_conditions(
-                account_id=account_id, tsquery=tsquery, filters=filters
+                db=db, account_id=account_id, tsquery=tsquery, filters=filters
             ),
             tsquery=tsquery,
             session_ids=wanted,
@@ -1291,6 +1317,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             include_text=include_text,
         )
 
+    @audited_search
     def search_vector_chunks(
         self,
         db: Session,
@@ -1342,7 +1369,9 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         db.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
         distance = SessionSearchDocument.embedding.cosine_distance(list(embedding))
         similarity = (literal(1.0) - distance).label("similarity")
-        conditions = self._scoped_conditions(account_id=account_id, filters=filters)
+        conditions = self._scoped_conditions(
+            db=db, account_id=account_id, filters=filters
+        )
         conditions.extend(
             [
                 SessionSearchDocument.embedding.isnot(None),
@@ -1421,7 +1450,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                     SEARCH_CONFIG, guarded_content, tsquery, HEADLINE_OPTIONS
                 ).label("snippet"),
             ).where(
-                SessionSearchDocument.account_id == account_id,
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                ),
                 SessionSearchDocument.id.in_(wanted),
             )
         ).all()
@@ -1519,7 +1551,12 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 func.max(SessionSearchDocument.occurred_at)
                 .filter(same_model)
                 .label("embedded_through"),
-            ).where(SessionSearchDocument.account_id == account_id)
+            ).where(
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                )
+            )
         ).one()
         return EmbeddingCoverage(
             vectors=int(row.vectors or 0),
@@ -1552,7 +1589,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         on the model identity, so the choice is the same on every request.
         """
         scope = [
-            SessionSearchDocument.account_id == account_id,
+            and_(
+                SessionSearchDocument.account_id == account_id,
+                *search_document_conditions(db, account_id),
+            ),
             SessionSearchDocument.runtime_session_id == runtime_session_id,
         ]
         totals = db.execute(
@@ -1605,6 +1645,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             models=len(by_model),
         )
 
+    @audited_search
     def session_probe_chunks(
         self,
         db: Session,
@@ -1629,7 +1670,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         """
         budget = max(1, min(int(limit), SIMILAR_PROBE_CHUNKS))
         conditions = [
-            SessionSearchDocument.account_id == account_id,
+            and_(
+                SessionSearchDocument.account_id == account_id,
+                *search_document_conditions(db, account_id),
+            ),
             SessionSearchDocument.runtime_session_id == runtime_session_id,
             SessionSearchDocument.embedding.isnot(None),
             SessionSearchDocument.embedding_model == embedding_model,
@@ -1689,6 +1733,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             for row in rows
         ]
 
+    @audited_search
     def similar_chunks(
         self,
         db: Session,
@@ -1736,7 +1781,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 list(probe.embedding)
             )
             conditions = [
-                SessionSearchDocument.account_id == account_id,
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                ),
                 SessionSearchDocument.runtime_session_id != exclude_session_id,
                 SessionSearchDocument.embedding.isnot(None),
                 SessionSearchDocument.embedding_model == probe.embedding_model,
@@ -1817,7 +1865,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                     else_=null(),
                 ).label("preview"),
             ).where(
-                SessionSearchDocument.account_id == account_id,
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                ),
                 SessionSearchDocument.id.in_(wanted),
             )
         ).all()
@@ -1837,7 +1888,10 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         return int(
             db.query(func.count(SessionSearchDocument.id))
             .filter(
-                SessionSearchDocument.account_id == account_id,
+                and_(
+                    SessionSearchDocument.account_id == account_id,
+                    *search_document_conditions(db, account_id),
+                ),
                 SessionSearchDocument.runtime_session_id == runtime_session_id,
             )
             .scalar()
@@ -2182,6 +2236,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             )
             .where(
                 SessionSearchDocument.account_id == account_id,
+                *search_document_conditions(db, account_id),
                 SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
                 SessionSearchDocument.source_id.in_(ids),
                 SessionSearchDocument.redaction_state.in_(

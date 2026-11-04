@@ -145,6 +145,7 @@ class Caller:
     #: identity "own" spans across runs.
     flow_execution_id: Optional[str] = None
     user_id: Optional[str] = None
+    runtime_session_id: Optional[str] = None
 
     @classmethod
     def from_user_context(cls, user_context: Any) -> "Caller":
@@ -158,6 +159,7 @@ class Caller:
             api_key_id=getattr(user_context, "api_key_id", None),
             managed_agent_id=getattr(user_context, "managed_agent_id", None),
             flow_execution_id=getattr(user_context, "flow_execution_id", None),
+            runtime_session_id=getattr(user_context, "runtime_session_id", None),
         )
 
     def flow_id(self, db: Session) -> Optional[UUID]:
@@ -189,6 +191,9 @@ class Caller:
         return {
             "api_key_id": self.api_key_id,
             "managed_agent_id": self.managed_agent_id,
+            "runtime_principal_id": self.runtime_principal_id,
+            "flow_execution_id": self.flow_execution_id,
+            "runtime_session_id": self.runtime_session_id,
         }
 
 

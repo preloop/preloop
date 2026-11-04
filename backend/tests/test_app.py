@@ -211,6 +211,22 @@ def test_create_app_configuration():
         assert "http://localhost:5173" in cors_middleware[0].kwargs["allow_origins"]
 
 
+@pytest.mark.parametrize("role", ["api", "gateway"])
+def test_plugin_request_guard_is_installed(monkeypatch, role):
+    from preloop.plugins.base import get_plugin_manager
+
+    class Guard:
+        pass
+
+    plugin = MagicMock()
+    plugin.get_dependencies.return_value = {}
+    plugin.get_middlewares.return_value = [Guard]
+    plugin.get_routers.return_value = []
+    monkeypatch.setenv("PRELOOP_SERVICE_ROLE", role)
+    monkeypatch.setattr(get_plugin_manager(), "_plugins", {"guard": plugin})
+    assert Guard in [entry.cls for entry in create_app().user_middleware]
+
+
 @patch.dict(os.environ, {"PRELOOP_SERVICE_ROLE": "gateway"}, clear=False)
 def test_gateway_role_mounts_only_gateway_surface():
     """Gateway role should not expose the core control-plane API routes."""

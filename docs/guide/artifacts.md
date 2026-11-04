@@ -578,7 +578,16 @@ capture region and retention policy accordingly.
 
 An installed access-control plugin can narrow artifact reads with exact label
 and kind allow-lists. Core applies these restrictions before pagination and
-facets, and on direct reads, so excluded artifacts do not appear in search and
+facets, on direct reads, and on artifact text in the session-search corpus,
+so excluded artifacts do not appear in search and
 return the same not-found response as missing IDs. Existing own-session and
 account boundaries still apply. Without an installed policy, access is unchanged.
 Grant management and account enablement belong to the plugin.
+
+The internal resolver returns `None` only for an unassigned subject, an empty
+list to deny all, or a list of intersecting scopes. Each scope must have both
+nonempty `labels` and `kinds`, for example
+`{"labels": {"site": ["north"]}, "kinds": ["transcript"]}`. Label keys intersect;
+values within one key are alternatives. Values must be exact, case-sensitive
+scalar strings. Array labels such as `tags`, wildcards, kind-only and label-only
+scopes are not supported. Malformed scopes deny all.

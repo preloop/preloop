@@ -3,6 +3,8 @@
 Readers bind only authenticated identity, never request filters. The policy is
 resolved afresh for every CRUD read; SQL predicates run before limits/facets.
 The extension owns assignment and audit, core owns predicate semantics.
+Resolvers return None for an unassigned subject, [] for deny-all, or a nonempty
+list of intersecting scopes. Missing or malformed assigned scopes deny all.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 from functools import wraps
 from typing import Any, Callable
 
-from sqlalchemy import and_, false, or_
+from sqlalchemy import String, and_, false, or_, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -37,11 +39,26 @@ def bind_user(db: Session, user: Any) -> None:
     bind_reader(db, account_id=user.account_id, user_id=user.id, **context)
 
 
+def bind_gateway(db: Session, auth: Any) -> None:
+    """Bind validated gateway identity before a deposit reads existing bytes."""
+    from preloop.services.model_gateway_auth import resolve_managed_agent_id_for_context
+    from preloop.services.subject_governance import build_subject_context_from_api_key
+
+    context = (
+        build_subject_context_from_api_key(auth.api_key)
+        if auth.api_key is not None
+        else {}
+    )
+    context["managed_agent_id"] = resolve_managed_agent_id_for_context(db, auth)
+    bind_reader(db, account_id=auth.account_id, user_id=auth.user.id, **context)
+
+
 def _policy(db: Session, account_id: Any) -> tuple[Any, dict]:
     subject = db.info.get(_SUBJECT_KEY, {})
-    if subject and subject["account_id"] != str(account_id):
+    policy = get_plugin_manager().get_service("artifact_read_policy")
+    if policy is not None and subject and subject["account_id"] != str(account_id):
         raise ValueError("Artifact reader account mismatch")
-    return get_plugin_manager().get_service("artifact_read_policy"), subject
+    return policy, subject
 
 
 def predicate(scope: Any) -> Any:
@@ -93,7 +110,7 @@ def read_conditions(db: Session, account_id: Any) -> list[Any]:
     scopes = policy.resolve(db, account_id=account_id, subject=subject)
     if scopes is None:
         return []
-    if not isinstance(scopes, list):
+    if not isinstance(scopes, list) or not scopes:
         return [false()]
     return [predicate(scope) for scope in scopes]
 
@@ -120,6 +137,54 @@ def audited_read(func: Callable) -> Callable:
                     subject=subject,
                     artifacts=artifacts,
                 )
+        return result
+
+    return read
+
+
+def search_document_conditions(db: Session, account_id: Any) -> list[Any]:
+    """Apply the same predicate to artifact text in the session-search corpus."""
+    conditions = read_conditions(db, account_id)
+    if not conditions:
+        return []
+    document = models.SessionSearchDocument
+    artifact = models.RuntimeSessionArtifact
+    allowed = select(artifact.id.cast(String)).where(
+        artifact.account_id == account_id,
+        *conditions,
+    )
+    return [(document.source_kind != "artifact") | document.source_id.in_(allowed)]
+
+
+def audited_search(func: Callable) -> Callable:
+    """Audit artifact sources whose text or metadata was read through search."""
+
+    @wraps(func)
+    def read(self: Any, db: Session, *args: Any, **kwargs: Any) -> Any:
+        result = func(self, db, *args, **kwargs)
+        account_id = kwargs["account_id"]
+        policy, subject = _policy(db, account_id)
+        if policy is None or not policy.resolve(
+            db, account_id=account_id, subject=subject
+        ):
+            return result
+        rows = result[0] if isinstance(result, tuple) else result
+        ids = set()
+        for row in rows:
+            for hit in getattr(row, "snippets", [row]):
+                if getattr(hit, "source_kind", None) == "artifact":
+                    ids.add(hit.source_id)
+        if ids:
+            from preloop.models.crud.runtime_session_artifact import metadata_for_audit
+
+            policy.audit(
+                db,
+                account_id=account_id,
+                subject=subject,
+                artifacts=metadata_for_audit(
+                    db, account_id=account_id, artifact_ids=ids
+                ),
+            )
         return result
 
     return read

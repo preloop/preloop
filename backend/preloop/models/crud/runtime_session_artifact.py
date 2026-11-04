@@ -1113,3 +1113,24 @@ def export_rows(
     if runtime_session_id is not None:
         stmt = stmt.where(table.runtime_session_id == runtime_session_id)
     return [(row, bool(has)) for row, has in db.execute(stmt.limit(limit)).all()]
+
+
+def metadata_for_audit(
+    db: Session, *, account_id: Any, artifact_ids: set[str]
+) -> list[models.RuntimeSessionArtifact]:
+    """Metadata for already authorized search hits, never an access-granting read.
+
+    Audit the in-flight read even if permission is revoked after its query.
+    """
+    from sqlalchemy.orm import defer
+
+    table = models.RuntimeSessionArtifact
+    return list(
+        db.query(table)
+        .options(defer(table.ciphertext))
+        .filter(
+            table.account_id == account_id,
+            table.id.in_(artifact_ids),
+        )
+        .all()
+    )

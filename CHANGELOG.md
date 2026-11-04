@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - An internal artifact read-policy hook applies exact label and kind predicates
-  before search, pagination, facets, counts, byte reads, media reads and exports.
+  before search, pagination, facets, counts, byte reads, media reads and exports,
+  including artifact snippets in the session-search corpus.
   Optional plugin request guards can impose read-only roles across transports.
   Without a policy, existing artifact access behavior is unchanged.
 
