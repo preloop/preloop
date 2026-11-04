@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
 from preloop.models.crud.runtime_session import (
@@ -109,6 +109,10 @@ def test_listing_preserves_legacy_attribution_and_pagination(
     assert direct["cache_read_tokens"] == 4
     assert direct["latest_model_alias"] == "a-latest"
     assert empty["total_requests"] == 0
+    # Equal last-request times use descending session IDs as a stable tie-break.
+    assert [item["id"] for item in result["items"][:2]] == sorted(
+        [direct["id"], legacy["id"]], reverse=True
+    )
     page = crud_runtime_session.list_account_sessions(
         db_session, **kwargs, limit=1, offset=2
     )
@@ -329,10 +333,12 @@ def test_model_page_past_the_end_does_not_invent_a_total(
     assert page["total"] is None
 
 
+@pytest.mark.parametrize("small_session_limit", [0, 500])
 def test_recent_window_ranking_matches_the_full_history(
     db_session: Session,
     session_listing_data: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
+    small_session_limit: int,
 ) -> None:
     """Ranking from recent usage first must return the full-history page (#1584).
 
@@ -431,17 +437,24 @@ def test_recent_window_ranking_matches_the_full_history(
 
     windows = runtime_session_crud._RANKING_WINDOWS
     for name, kwargs in filters.items():
+        monkeypatch.setattr(
+            runtime_session_crud, "_RANKING_SMALL_SESSION_LIMIT", small_session_limit
+        )
         monkeypatch.setattr(runtime_session_crud, "_RANKING_WINDOWS", windows)
         full_calls.clear()
         windowed = pages_for(**kwargs)
         fell_back = list(full_calls)
         monkeypatch.setattr(runtime_session_crud, "_RANKING_WINDOWS", ())
+        monkeypatch.setattr(runtime_session_crud, "_RANKING_SMALL_SESSION_LIMIT", 0)
         assert pages_for(**kwargs) == windowed, name
-        if name == "account":
+        if name == "account" and small_session_limit == 0:
             # The recent windows must actually answer the shallow pages.
             assert len(fell_back) < 20
             assert (1, 0) not in fell_back
     monkeypatch.setattr(runtime_session_crud, "_RANKING_WINDOWS", windows)
+    monkeypatch.setattr(
+        runtime_session_crud, "_RANKING_SMALL_SESSION_LIMIT", small_session_limit
+    )
     windowed = pages_for()
     # The recently active session ranks by its 3-day-old request.
     assert windowed[(20, 0)].index("two-days") < windowed[(20, 0)].index(
@@ -552,3 +565,146 @@ def test_listing_carries_the_hook_reported_cwd(
     by_id = {item["id"]: item for item in unscoped["items"]}
     assert by_id[str(data["sessions"]["direct"].id)]["cwd"] == "/work/example"
     assert by_id[str(data["sessions"]["empty"].id)]["cwd"] is None
+
+
+@pytest.mark.parametrize("limit", [1, 20])
+def test_sparse_principal_ranking_scopes_usage_before_aggregation(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    limit: int,
+) -> None:
+    """A short principal page must not rank unrelated account usage."""
+    data = session_listing_data
+    target = data["sessions"]["direct"]
+    target.runtime_principal_type = "managed_agent"
+    target.runtime_principal_id = "sparse-agent"
+    db_session.flush()
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        result = crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(data["account"].id),
+            runtime_principal_type="managed_agent",
+            runtime_principal_id="sparse-agent",
+            min_requests=1,
+            limit=limit,
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    assert result["total"] == 1
+    assert result["has_more"] is False
+    assert [item["id"] for item in result["items"]] == [str(target.id)]
+    assert result["items"][0]["total_requests"] == 4
+    ranking_name = "session_recent_request" if limit == 1 else "session_last_request"
+    rankings = [sql for sql in statements if ranking_name in sql]
+    assert len(rankings) == 1
+    assert "api_usage.runtime_session_id IN (" in rankings[0]
+    if limit == 20:
+        assert not any("session_recent_request" in sql for sql in statements)
+
+
+def test_empty_principal_skips_usage_ranking(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+) -> None:
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        result = crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(session_listing_data["account"].id),
+            runtime_principal_id="missing-agent",
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    assert result == {"total": 0, "has_more": False, "items": []}
+    assert not any(
+        "session_recent_request" in sql or "session_last_request" in sql
+        for sql in statements
+    )
+
+
+def test_candidate_growth_falls_back_without_truncating_sessions(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session arriving after the count must not turn the bound into a cap."""
+    from preloop.models.crud import runtime_session as runtime_session_crud
+
+    data = session_listing_data
+    monkeypatch.setattr(runtime_session_crud, "_RANKING_SMALL_SESSION_LIMIT", 3)
+    original_count = Query.count
+    added = False
+
+    def count_then_grow(query: Query) -> int:
+        nonlocal added
+        total = original_count(query)
+        if not added:
+            added = True
+            db_session.add(
+                models.RuntimeSession(
+                    account_id=data["account"].id,
+                    session_source_type="custom",
+                    session_source_id="arrived-after-count",
+                    started_at=data["now"],
+                )
+            )
+            db_session.flush()
+        return total
+
+    monkeypatch.setattr(Query, "count", count_then_grow)
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        result = crud_runtime_session.list_account_sessions(
+            db_session, account_id=str(data["account"].id), limit=20
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    assert result["total"] == 3  # Count predates the new session, as before.
+    assert {item["session_source_id"] for item in result["items"]} == {
+        data["sessions"][name].session_source_id
+        for name in ("direct", "legacy", "empty")
+    } | {"arrived-after-count"}
+    rankings = [
+        sql
+        for sql in statements
+        if "session_recent_request" in sql or "session_last_request" in sql
+    ]
+    assert rankings
+    assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)

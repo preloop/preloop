@@ -209,6 +209,8 @@ _RANKING_WINDOW_MAX_ROWS = 200
 # handed to the next window or the full ranking rather than materialized.
 _RANKING_WINDOW_MAX_CANDIDATES = 5000
 _RANKING_WINDOW_MAX_UNRESOLVED = 500
+# Small eligible lists are cheaper to rank through session-index probes.
+_RANKING_SMALL_SESSION_LIMIT = 500
 
 
 class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
@@ -1211,6 +1213,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             page_ids = model_page_ids or []
         else:
             total = session_query.count()
+            if total == 0:
+                return {"total": 0, "has_more": False, "items": []}
             page_ids = None
         link_filters = {
             "account_id": account_id,
@@ -1218,6 +1222,23 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "end_date": end_date,
             "ai_model_id": ai_model_id,
         }
+        ranking_filters = link_filters
+        bounded_ranking = False
+        if not use_model_page and total <= _RANKING_SMALL_SESSION_LIMIT:
+            # The count already bounds this list. Probe only eligible sessions'
+            # usage, including their legacy flow links, rather than repeatedly
+            # grouping the account's history for a page that may never fill.
+            # The extra row handles growth between count and candidate reads
+            # without truncating the candidates or creating an unbounded list.
+            candidate_ids = [
+                row.id
+                for row in session_query.with_entities(self.model.id)
+                .limit(_RANKING_SMALL_SESSION_LIMIT + 1)
+                .all()
+            ]
+            if len(candidate_ids) <= _RANKING_SMALL_SESSION_LIMIT:
+                ranking_filters = {**link_filters, "session_ids": candidate_ids}
+                bounded_ranking = True
         # Pick the page on a narrow (session, last request) ranking first,
         # then aggregate usage for those sessions only. Aggregating every
         # session's full usage before the LIMIT took 30 s on a busy model
@@ -1226,10 +1247,11 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         # window cannot decide the page.
         # Deep pages almost never fit a recent window; go straight to the
         # full ranking instead of paying for two windows first. A model
-        # detail page already has its ids from the bounded probe.
+        # detail page already has its ids from the bounded probe. A small
+        # list that cannot fill the page goes straight to its scoped history.
         windows = (
             ()
-            if use_model_page
+            if page_ids is not None or (bounded_ranking and total < offset + limit)
             else _RANKING_WINDOWS
             if offset + limit <= _RANKING_WINDOW_MAX_ROWS
             else ()
@@ -1238,7 +1260,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             page_ids = self._rank_page_from_recent_usage(
                 db,
                 session_query=session_query,
-                link_filters=link_filters,
+                link_filters=ranking_filters,
                 window=window,
                 limit=limit,
                 offset=offset,
@@ -1249,7 +1271,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             page_ids = self._rank_page_from_all_usage(
                 db,
                 session_query=session_query,
-                link_filters=link_filters,
+                link_filters=ranking_filters,
                 limit=limit,
                 offset=offset,
             )
@@ -1424,8 +1446,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             older_links = self._account_usage_links(
                 db,
                 narrow=True,
-                session_ids=[row.id for row in unresolved],
-                **link_filters,
+                **{**link_filters, "session_ids": [row.id for row in unresolved]},
             )
             older = dict(
                 db.query(
