@@ -1054,6 +1054,8 @@ def test_subscription_numeric_filter_preserves_metadata_types_and_attribution(
         {"api_equivalent_cost": True},
         {"api_equivalent_cost": None},
         {"api_equivalent_cost": []},
+        {"api_equivalent_cost": [1.5]},
+        [{"api_equivalent_cost": 1.5}],
         {"api_equivalent_cost": {}},
         {},
         None,
@@ -1103,12 +1105,12 @@ def test_subscription_numeric_filter_preserves_metadata_types_and_attribution(
     finally:
         event.remove(connection, "before_cursor_execute", capture)
     block = result["subscription_usage"]
-    assert block["request_count"] == 24
-    assert block["prompt_tokens"] == 2400
-    assert block["completion_tokens"] == 240
-    assert block["total_tokens"] == 2640
+    assert block["request_count"] == 28
+    assert block["prompt_tokens"] == 2800
+    assert block["completion_tokens"] == 280
+    assert block["total_tokens"] == 3080
     assert block["covered_requests"] == 6
-    assert block["coverage"] == 0.25
+    assert block["coverage"] == 6 / 28
     assert block["api_equivalent_cost"] == 0.5
     assert result["estimated_cost"] == pytest.approx(0.16)
     assert len(statements) == 2
