@@ -224,9 +224,9 @@ completion, injection rejection, process-group halt). macOS specifics:
 
 A sleeping Mac shows `offline` in the console once heartbeats are 45
 seconds old: this build has no pre-sleep signal on macOS. After wake the
-runner reconnects at once and shows `online` again. While the runner is
-connected, heartbeats report the Mac's idle time, so it shows `idle` after 5
-minutes without input. See
+runner reconnects at once. Heartbeats report the Mac's idle time: the runner
+shows `online` when that time is under 5 minutes and `idle` otherwise,
+including on the first heartbeat after wake. See
 [Runner presence](quickstart-linux.md#runner-presence) for every state and
 the per-OS table.
 
