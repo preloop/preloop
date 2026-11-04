@@ -98,7 +98,11 @@ class MCPConfigService:
                     config["allowed_tools"][server_name] = []
                 config["allowed_tools"][server_name].append(tool_name)
 
-        logger.debug(f"Generated MCP config: {json.dumps(config, indent=2)}")
+        logger.debug(
+            "Generated MCP config: %d servers, %d allowed tools",
+            len(config["mcpServers"]),
+            sum(len(tools) for tools in config["allowed_tools"].values()),
+        )
         return config
 
     @staticmethod
