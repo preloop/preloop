@@ -32,7 +32,6 @@ describe('realtime lifecycle regressions', () => {
         });
       return json({ total: 0, tools: [] });
     });
-    const counts = [];
     for (let i = 0; i < 30; i++) {
       finish = undefined;
       const el: any = document.createElement('approvals-view');
@@ -53,17 +52,16 @@ describe('realtime lifecycle regressions', () => {
         ])
       );
       await aTimeout(10);
-      counts.push(subscriptions.size);
+      expect(subscriptions.size).to.equal(0);
       expect(el.approvalRequests).to.have.length(0);
       expect(el.tickTimer).to.equal(undefined);
     }
-    document.body.dataset.approvalSubscriptionCounts = JSON.stringify(counts);
     expect(
       subscriptions.size,
       'Detached views must not remain subscribed after late responses'
     ).to.equal(0);
   });
-  it('keeps execution logs near live after a 30-second stream at 50 lines/second', async () => {
+  it('keeps execution logs current across 60 scheduled 25-line batches', async () => {
     sinon.stub(unifiedWebSocketManager, 'subscribe').returns(() => {});
     sinon.stub(unifiedWebSocketManager, 'onStateChange').returns(() => {});
     sinon.stub(window, 'fetch').resolves(json({}));
@@ -83,36 +81,43 @@ describe('realtime lifecycle regressions', () => {
     });
     el.activeTab = 'logs';
     el.isAutoScroll = false;
-    el.startBufferFlush();
-    const samples = [];
-    let sent = 0;
-    for (let tick = 0; tick < 60; tick++) {
-      for (let j = 0; j < 25; j++)
-        el.handleWebSocketMessage({
-          execution_id: 'stream',
-          timestamp: new Date().toISOString(),
-          type: 'agent_log_line',
-          log_id: `row-${sent + 1}`,
-          payload: { line: `Synthetic line ${++sent}` },
-        });
-      await aTimeout(500);
-      expect(el.logBuffer.length).to.be.at.most(25);
-      if ((tick + 1) % 20 === 0)
-        samples.push({
-          elapsedSeconds: (tick + 1) / 2,
-          sent,
-          rendered: el.logs.length,
-          queued: el.logBuffer.length,
-        });
+    const clock = sinon.useFakeTimers({
+      toFake: [
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
+        'Date',
+      ],
+    });
+    try {
+      el.startBufferFlush();
+      let sent = 0;
+      for (let tick = 0; tick < 60; tick++) {
+        for (let j = 0; j < 25; j++)
+          el.handleWebSocketMessage({
+            execution_id: 'stream',
+            timestamp: new Date().toISOString(),
+            type: 'agent_log_line',
+            log_id: `row-${sent + 1}`,
+            payload: { line: `Synthetic line ${++sent}` },
+          });
+        await clock.tickAsync(500);
+        expect(el.logBuffer.length).to.equal(0);
+      }
+      await waitUntil(() => el.logBuffer.length === 0);
+      expect(el.logs.length).to.equal(1500);
+      expect(new Set(el.logs.map((log: any) => log.log_id)).size).to.equal(
+        1500
+      );
+      await el.updateComplete;
+      expect(
+        el.shadowRoot.querySelectorAll('.log-container .log-entry').length
+      ).to.equal(1000);
+    } finally {
+      el.remove();
+      clock.restore();
     }
-    document.body.dataset.executionStream = JSON.stringify(samples);
-    await waitUntil(() => el.logBuffer.length === 0);
-    expect(el.logs.length).to.equal(1500);
-    expect(new Set(el.logs.map((log: any) => log.log_id)).size).to.equal(1500);
-    await el.updateComplete;
-    expect(
-      el.shadowRoot.querySelectorAll('.log-container .log-entry').length
-    ).to.equal(1000);
   });
 });
 
@@ -301,5 +306,100 @@ describe('realtime remount, filter races and burst recovery', () => {
     expect(el.logBuffer).to.have.length(0);
     expect(el.bufferDrainTimer).to.equal(undefined);
     expect(el.bufferFlushInterval).to.equal(undefined);
+  });
+});
+
+describe('execution navigation isolation', () => {
+  let el: any;
+  const line = (id: string, index: number) => ({
+    execution_id: id,
+    log_id: `${id}-${index}`,
+    timestamp: '2026-01-01T00:00:00Z',
+    type: 'agent_log_line',
+    payload: { line: `${id} line ${index}` },
+  });
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'synthetic');
+    sinon.stub(unifiedWebSocketManager, 'subscribe').returns(() => {});
+    sinon.stub(unifiedWebSocketManager, 'onStateChange').returns(() => {});
+    sinon.stub(window, 'fetch').callsFake(async () => json({}));
+    el = document.createElement('flow-execution-view');
+    sinon.stub(el, 'fetchExecution').callsFake(async () => {
+      el.execution = {
+        id: el.executionId,
+        status: 'SUCCEEDED',
+        start_time: '2026-01-01T00:00:00Z',
+      };
+      el.logs = [line(el.executionId, 0)];
+    });
+    document.body.append(el);
+    el.executionId = 'A';
+    await el.updateComplete;
+    await waitUntil(() => el.logs.length === 1);
+  });
+  afterEach(() => {
+    el?.remove();
+    sinon.restore();
+    localStorage.clear();
+  });
+
+  it('drops queued lines and timers when the router reuses the view', async () => {
+    el.logWindowStart = 2000;
+    el.isAutoScroll = false;
+    el.logBuffer = Array.from({ length: 1000 }, (_, index) =>
+      line('A', index + 1)
+    );
+    el.startBufferFlush();
+    el.startAutoScrollChecker();
+    el.flushLogBuffer();
+    expect(el.bufferDrainTimer).not.to.equal(undefined);
+    el.executionId = 'B';
+    await el.updateComplete;
+    await aTimeout(20);
+    expect(el.logs.map((log: any) => log.execution_id)).to.deep.equal(['B']);
+    expect(el.logBuffer).to.have.length(0);
+    expect(el.bufferFlushInterval).to.equal(undefined);
+    expect(el.bufferDrainTimer).to.equal(undefined);
+    expect(el.autoScrollInterval).to.equal(undefined);
+    expect(el.logWindowStart).to.equal(0);
+    expect(el.isAutoScroll).to.equal(true);
+    el.logBuffer = [line('A', 2000), line('B', 1)];
+    el.flushLogBuffer();
+    expect(el.logs.map((log: any) => log.execution_id)).to.deep.equal([
+      'B',
+      'B',
+    ]);
+  });
+
+  it('ignores a late older page after A-to-B-to-A navigation without clearing a newer loader', async () => {
+    const pending: ((response: Response) => void)[] = [];
+    (window.fetch as sinon.SinonStub).callsFake(async (input) =>
+      String(input).includes('/logs?')
+        ? new Promise<Response>((resolve) => pending.push(resolve))
+        : json({})
+    );
+    el.hasMoreLogs = true;
+    const oldPage = el.loadPreviousLogs();
+    await waitUntil(() => pending.length === 1);
+    el.executionId = 'B';
+    await el.updateComplete;
+    el.executionId = 'A';
+    await el.updateComplete;
+    el.hasMoreLogs = true;
+    // A distinct page keeps the fetch coalescer from joining the old request.
+    el.logsSkip = 1;
+    const currentPage = el.loadPreviousLogs();
+    await waitUntil(() => pending.length === 2);
+    pending[0](json({ logs: [line('A', -99)], has_more: false }));
+    await oldPage;
+    expect(el.logs.map((log: any) => log.log_id)).to.deep.equal(['A-0']);
+    expect(el.isFetchingMoreLogs).to.equal(true);
+    pending[1](json({ logs: [line('A', -1)], has_more: false }));
+    await currentPage;
+    expect(el.logs.map((log: any) => log.log_id)).to.deep.equal([
+      'A--1',
+      'A-0',
+    ]);
+    expect(el.isFetchingMoreLogs).to.equal(false);
   });
 });

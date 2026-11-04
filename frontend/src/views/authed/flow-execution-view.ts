@@ -1339,6 +1339,7 @@ export class FlowExecutionView extends LitElement {
   }
 
   private invalidateExecutionRequests() {
+    this.resetLogStream();
     this.executionGeneration++;
     this.realtimeSequence = new ExecutionSequence();
     this.activitySequences.clear();
@@ -1441,19 +1442,6 @@ export class FlowExecutionView extends LitElement {
     super.disconnectedCallback();
     this.invalidateExecutionRequests();
     this.wsConnected = false;
-    // Clean up the auto-scroll interval and its scroll listener
-    this.stopAutoScrollChecker();
-    // Clean up buffer flush interval
-    if (this.bufferFlushInterval) {
-      clearInterval(this.bufferFlushInterval);
-      this.bufferFlushInterval = undefined;
-    }
-    if (this.bufferDrainTimer !== undefined) {
-      clearTimeout(this.bufferDrainTimer);
-      this.bufferDrainTimer = undefined;
-    }
-    // A detached view will reload persisted history if visited again.
-    this.logBuffer = [];
     // Stop the elapsed-duration ticker
     this.stopDurationTicker();
     // Unsubscribe from WebSocket, messages and connection state alike
@@ -1633,6 +1621,12 @@ export class FlowExecutionView extends LitElement {
     if (!this.executionId || !this.hasMoreLogs || this.isFetchingMoreLogs)
       return;
 
+    const executionId = this.executionId;
+    const generation = this.executionGeneration;
+    const current = () =>
+      this.isConnected &&
+      this.executionId === executionId &&
+      this.executionGeneration === generation;
     this.isFetchingMoreLogs = true;
     const FETCH_LIMIT = 500;
 
@@ -1648,12 +1642,13 @@ export class FlowExecutionView extends LitElement {
         prevScrollTop = scrollElement.scrollTop;
       }
 
-      const logsResult = await getFlowExecutionLogs(this.executionId, {
+      const logsResult = await getFlowExecutionLogs(executionId, {
         tail: FETCH_LIMIT,
         skip: this.logsSkip,
         excludeModelCalls: true,
       });
 
+      if (!current()) return;
       if (
         logsResult &&
         Array.isArray(logsResult.logs) &&
@@ -1682,6 +1677,7 @@ export class FlowExecutionView extends LitElement {
         if (scrollElement) {
           // Wait for render cycle to complete
           this.updateComplete.then(() => {
+            if (!current()) return;
             const newScrollHeight = scrollElement.scrollHeight;
             scrollElement.scrollTop =
               prevScrollTop + (newScrollHeight - prevScrollHeight);
@@ -1692,10 +1688,12 @@ export class FlowExecutionView extends LitElement {
         this.hasMoreLogs = false;
       }
     } catch (error) {
-      console.error('Failed to load previous logs:', error);
+      if (current()) console.error('Failed to load previous logs:', error);
     } finally {
-      this.isFetchingMoreLogs = false;
-      this.requestUpdate();
+      if (current()) {
+        this.isFetchingMoreLogs = false;
+        this.requestUpdate();
+      }
     }
   }
 
@@ -1963,6 +1961,23 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
+  /** A router id change and a detach both end ownership of queued logs. */
+  private resetLogStream() {
+    this.stopAutoScrollChecker();
+    if (this.bufferFlushInterval !== undefined)
+      clearInterval(this.bufferFlushInterval);
+    if (this.bufferDrainTimer !== undefined)
+      clearTimeout(this.bufferDrainTimer);
+    this.bufferFlushInterval = undefined;
+    this.bufferDrainTimer = undefined;
+    this.logBuffer = [];
+    this.logIdentitySource = undefined;
+    this.logIdentities.clear();
+    this.logWindowStart = 0;
+    this.isAutoScroll = true;
+    this.isFetchingMoreLogs = false;
+  }
+
   startBufferFlush() {
     if (this.bufferFlushInterval) clearInterval(this.bufferFlushInterval);
 
@@ -1997,6 +2012,7 @@ export class FlowExecutionView extends LitElement {
     }
     const seen = this.logIdentities;
     const linesToAdd = this.logBuffer.splice(0, limit).filter((log) => {
+      if (log.execution_id !== this.executionId) return false;
       const id = key(log);
       if (seen.has(id)) return false;
       seen.add(id);

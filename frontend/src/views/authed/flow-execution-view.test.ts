@@ -2925,12 +2925,14 @@ describe('FlowExecutionView', () => {
       const element = await load('exec-running');
       const state = element as any;
       const retained = {
+        execution_id: element.executionId,
         log_id: 'row-a',
         type: 'agent_log_line',
         timestamp: '2026-10-28T10:00:01Z',
         payload: { message: 'retained' },
       };
       const late = {
+        execution_id: element.executionId,
         log_id: 'row-a',
         type: 'agent_log_line',
         timestamp: '2026-10-28T10:00:02Z',
@@ -2938,6 +2940,7 @@ describe('FlowExecutionView', () => {
         seq: 9,
       };
       const fresh = {
+        execution_id: element.executionId,
         log_id: 'row-b',
         type: 'agent_log_line',
         timestamp: '2026-10-28T10:00:02Z',
