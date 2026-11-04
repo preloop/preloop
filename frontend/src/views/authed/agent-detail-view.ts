@@ -125,6 +125,8 @@ import {
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
 import '../../components/desktop-view';
+import '../../components/desktop-enable';
+import { hasPermission } from '../../permissions';
 import {
   type DesktopEndpoint,
   canTakeDesktopControl,
@@ -255,6 +257,8 @@ export class AgentDetailView extends LitElement {
    */
   @state() private desktopEndpoints: DesktopEndpoint[] = [];
   @state() private canControlDesktop = false;
+  /** `manage_agents`: may enable a desktop on the agent's host (#1566). */
+  @state() private canEnableDesktop = false;
 
   @state()
   private associatedFlows: any[] = [];
@@ -1941,10 +1945,55 @@ export class AgentDetailView extends LitElement {
     if (generation !== this.detailLoadGeneration) return;
     this.desktopEndpoints = endpoints;
     this.canControlDesktop = canTakeDesktopControl(profile);
+    this.canEnableDesktop =
+      !!profile && hasPermission(profile.permissions, 'manage_agents');
     this.currentUserId = profile?.id ?? null;
     if (this.activeTab === 'desktop' && endpoints.length === 0) {
       this.activeTab = 'sessions';
     }
+  }
+
+  /**
+   * "Enable desktop" (#1566) for an active agent with no online desktop,
+   * when the server has desktop views on and the caller may manage agents.
+   * Once the endpoint registers the Desktop tab replaces it.
+   */
+  private renderDesktopEnable(): TemplateResult | typeof nothing {
+    if (
+      !this.agent ||
+      this.agent.is_shared ||
+      this.agent.lifecycle_state !== 'active' ||
+      this.featureFlags?.desktop_views !== true ||
+      !this.canEnableDesktop ||
+      this.desktopEndpoints.length > 0
+    ) {
+      return nothing;
+    }
+    return html`<details class="agent-settings" data-testid="desktop-enable">
+      <summary>Live desktop: none</summary>
+      <desktop-enable
+        .agentId=${this.agent.id}
+        ?controlOnline=${this.agent.control_online === true}
+        @desktop-installed=${() => this.followDesktopRegistration()}
+      ></desktop-enable>
+    </details>`;
+  }
+
+  /** The tunnel registers a few seconds after the install; look a few times. */
+  private followDesktopRegistration(attempt = 0): void {
+    const generation = this.detailLoadGeneration;
+    void this.loadDesktopEndpoints(generation).then(() => {
+      if (
+        generation === this.detailLoadGeneration &&
+        this.desktopEndpoints.length === 0 &&
+        attempt < 10
+      ) {
+        window.setTimeout(
+          () => this.followDesktopRegistration(attempt + 1),
+          3000
+        );
+      }
+    });
   }
 
   private renderDesktopTab(): TemplateResult {
@@ -3898,7 +3947,7 @@ export class AgentDetailView extends LitElement {
         </div>
       </view-header>
       <div class="page" style="padding-top: 0;">
-        ${this.renderSummaryStrip(aggregate)}
+        ${this.renderSummaryStrip(aggregate)} ${this.renderDesktopEnable()}
         <details class="agent-settings">
           <summary>
             ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}

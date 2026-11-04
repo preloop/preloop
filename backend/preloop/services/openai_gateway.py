@@ -934,6 +934,24 @@ def _bounded_codex_routing_headers(
     return routing
 
 
+#: Response header naming the runtime session a gateway request was
+#: attributed to, so an adapter can post browser steps and artifacts to the
+#: same session as its model turns (#1358).
+RUNTIME_SESSION_ID_HEADER = "X-Preloop-Runtime-Session-Id"
+
+
+def runtime_session_response_headers(service: Any) -> Dict[str, str]:
+    """Return the attributed-session header for a served gateway request.
+
+    Empty when the request was not attributed to a runtime session, so the
+    header only appears on session-attributed responses.
+    """
+    value = getattr(service, "resolved_runtime_session_id", None)
+    if isinstance(value, str) and value:
+        return {RUNTIME_SESSION_ID_HEADER: value}
+    return {}
+
+
 #: Validate and normalize a client-supplied per-run session id: the trimmed id
 #: when it is non-empty, within the length cap and on the safe charset,
 #: otherwise ``None`` (caller falls back to the existing source-keyed
@@ -1767,6 +1785,78 @@ class OpenAIGatewayService:
 
         self._resolved_runtime_session_id = runtime_session_id
         return runtime_session_id
+
+    @property
+    def resolved_runtime_session_id(self) -> Optional[str]:
+        """Runtime session this request was attributed to, if resolved yet.
+
+        Reading it never triggers resolution: a route that did not attribute
+        the request to a session (``count_tokens``, model listing) reports
+        ``None``. The gateway routes return it as
+        ``X-Preloop-Runtime-Session-Id`` (#1358).
+        """
+        return self._resolved_runtime_session_id
+
+    def _lookup_client_runtime_session(self) -> Optional[str]:
+        """Find the session the gateway would use for this client key.
+
+        Same keying as :meth:`_resolve_runtime_session` for an explicit
+        client session id, without creating, reopening or closing anything:
+        a session-pinned key returns its pinned session; a principal key
+        looks up ``<principal>:<client id>``; a plain key looks up
+        ``<api key id>:<client id>``. Idle generations are keyed without a
+        client id and are therefore never matched. Every lookup is scoped
+        to the caller's account.
+        """
+        api_key = self.auth_context.api_key
+        if api_key is None or self._client_session_id is None:
+            return None
+        context = api_key.context_data or {}
+        pinned = context.get("runtime_session_id")
+        if pinned:
+            return str(pinned)
+        principal = context.get("runtime_principal") or {}
+        if principal:
+            source_type = principal.get("type")
+            source_id = principal.get("id")
+            if not (source_type and source_id):
+                return None
+            source_id = f"{source_id}:{self._client_session_id}"
+        else:
+            source_type = "api_key"
+            source_id = f"{api_key.id}:{self._client_session_id}"
+        row = crud_runtime_session.get_by_source(
+            self.db,
+            account_id=str(self.auth_context.account_id),
+            session_source_type=source_type,
+            session_source_id=source_id,
+        )
+        return str(row.id) if row is not None else None
+
+    def resolve_client_runtime_session(
+        self, *, create: bool
+    ) -> Tuple[Optional[str], bool]:
+        """Resolve the client session key to a runtime session id (#1358).
+
+        Lets an adapter learn the session UUID before its first model call,
+        so its browser steps and the gateway's model turns share one row.
+
+        Args:
+            create: Create the row exactly as the gateway would when no
+                session exists yet.
+
+        Returns:
+            ``(runtime_session_id, created)``; the id is ``None`` when no
+            session exists and ``create`` is false, or when the credential
+            cannot own a session.
+        """
+        found = self._lookup_client_runtime_session()
+        if found is not None or not create:
+            return found, False
+        if not self._client_session_id_is_explicit:
+            return None, False
+        created_id = self._resolve_runtime_session()
+        return created_id, created_id is not None
 
     def _resolve_managed_agent_id(self) -> Optional[str]:
         return resolve_managed_agent_id_for_context(self.db, self.auth_context)

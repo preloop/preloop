@@ -1,5 +1,9 @@
 """Guard image-independent tools used by the documentation workflow."""
 
+import fnmatch
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -47,3 +51,78 @@ def test_docs_install_pinned_powershell_before_inventory_parse() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Parse Windows inventory template (no execution)"
     )
+
+
+def test_docs_runs_architecture_guard_for_documentation_changes() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    guard = "backend/tests/test_architecture_docs_map.py"
+    for event in ("push", "pull_request"):
+        paths = workflow["on"][event]["paths"]
+        for changed in (
+            "ARCHITECTURE.md",
+            "mkdocs.yml",
+            "docs/architecture/example.md",
+            guard,
+            "backend/tests/test_docs_workflow_toolchain.py",
+            ".github/workflows/docs.yml",
+        ):
+            assert any(fnmatch.fnmatchcase(changed, path) for path in paths), (
+                f"{event} does not run the architecture guard for {changed}"
+            )
+    job = workflow["jobs"]["build"]
+    assert "if" not in job
+    assert job["env"]["PRELOOP_DISABLE_TELEMETRY"] == "true"
+    for script in (guard, "backend/tests/test_docs_workflow_toolchain.py"):
+        step = next(
+            step for step in job["steps"] if step.get("run") == f"python {script}"
+        )
+        assert "if" not in step
+        assert "continue-on-error" not in step
+
+
+def test_standalone_architecture_guard_rejects_oversized_map(tmp_path: Path) -> None:
+    root = WORKFLOW.parents[2]
+    guard = Path("backend/tests/test_architecture_docs_map.py")
+    (tmp_path / guard.parent).mkdir(parents=True)
+    shutil.copyfile(root / guard, tmp_path / guard)
+    shutil.copyfile(root / "mkdocs.yml", tmp_path / "mkdocs.yml")
+    shutil.copytree(root / "docs/architecture", tmp_path / "docs/architecture")
+    architecture = tmp_path / "ARCHITECTURE.md"
+    shutil.copyfile(root / "ARCHITECTURE.md", architecture)
+    command = [sys.executable, str(tmp_path / guard)]
+    valid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert valid.returncode == 0, valid.stderr
+    architecture.write_text(architecture.read_text() + "\n" * 151)
+    invalid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert invalid.returncode != 0, "standalone guard accepted an oversized map"
+    assert "move subsystem detail" in invalid.stderr
+
+
+def test_standalone_workflow_guard_rejects_missing_architecture_step(
+    tmp_path: Path,
+) -> None:
+    """The Docs command actually enforces the wiring without backend fixtures."""
+    guard = Path("backend/tests/test_docs_workflow_toolchain.py")
+    (tmp_path / guard.parent).mkdir(parents=True)
+    shutil.copyfile(WORKFLOW.parents[2] / guard, tmp_path / guard)
+    workflow = tmp_path / ".github/workflows/docs.yml"
+    workflow.parent.mkdir(parents=True)
+    shutil.copyfile(WORKFLOW, workflow)
+    command = [sys.executable, str(tmp_path / guard)]
+    valid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert valid.returncode == 0, valid.stderr
+    workflow.write_text(
+        workflow.read_text().replace(
+            "python backend/tests/test_architecture_docs_map.py", "echo skipped"
+        )
+    )
+    invalid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert invalid.returncode != 0, (
+        "standalone guard accepted a missing architecture step"
+    )
+
+
+if __name__ == "__main__":
+    test_docs_install_pinned_shellcheck_before_mdm_recipes()
+    test_docs_install_pinned_powershell_before_inventory_parse()
+    test_docs_runs_architecture_guard_for_documentation_changes()

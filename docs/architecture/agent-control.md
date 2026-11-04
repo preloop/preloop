@@ -67,6 +67,26 @@ migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 *   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Interactive TUI sessions are observe-and-approve, not steerable mid-turn; targeting one resumes it headlessly. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
 *   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `<workspace_root>/<repository_slug>` when `metadata.workspace.mode` is `persistent_checkout`, otherwise in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
 
+### Desktop install (`desktop.install`)
+
+`POST /api/v1/agents/{agent_id}/desktop/install` (`manage_agents`) persists and
+delivers a `desktop.install` command whose `message_id` is the returned
+`request_id`, with payload `{request_id, managed_agent_id}`. An agent with no
+Agent Control config, or no delivery channel, gets 409
+`desktop_install_unavailable` with the one-line `command` and nothing is sent.
+The plugin answers with the usual `command_result`, carrying
+`desktop_install: {ok, error?}` where `error` is `desktop_unsupported_os`,
+`desktop_unsupported_distro`, `desktop_privilege_required` or
+`desktop_failed`. `GET .../desktop/install/{request_id}` maps the stored row to
+`pending`, `done`, `failed` (with `error`) or `unsupported`: a plugin that
+predates the command answers `command_error` "unsupported agent-control
+command" (Python kit) or a `command_result` without `desktop_install` (older
+OpenClaw), and both read as `unsupported` so the console falls back to the
+command. The Python kit (`HookedDesktopInstaller`, `run_desktop_enable`, on by
+default for Hermes) and the OpenClaw plugin run `preloop desktop enable --agent
+<id>` locally. Runners do not implement it yet; the runner page has no
+Enable desktop action.
+
 ### Runtime support
 
 | Kind | Channel | New session | Notes |
@@ -312,3 +332,143 @@ plus a final duration/usage summary. The server checks the authenticated agent's
 command ownership and attaches progress to the command's tracking session.
 Tool starts are normalized as tool-call activities, with replay deduplication by
 command and call ID; arguments and tool results are excluded.
+
+## Session start consent
+
+Managed agents default `others_may_start_sessions` to `ask_me`. Agent Control checks new-session intents before dispatch, while commands for existing sessions keep their existing behavior. An approved request is consumed once, scoped to its requester and exact intent. Owner consent uses the existing notification preferences and mobile push, and does not inherit tool approval bypasses or administrator decision exemptions. Notification delivery uses a short delivery lease to prevent concurrent workers from sending the same pending request; abandoned leases expire, and failed delivery releases the claim. Persistent flows also queue owner consent before starting a new agent session; automated triggers do not infer a human owner exemption. An executor recovered without its temporary launch credentials fails closed and asks for a flow restart rather than persisting credentials. Authorized nonowners starting a fresh runner-hosted harness session need the same single-use owner approval before checkout credentials are minted.
+
+## Operator-note receipts
+
+Operator-note receipts distinguish a deferred claim from delivery at a supported
+model or hook boundary. Native session-end signals settle pending and claimed
+notes targeted at that session. The minute runner sweeper also reconciles notes
+against authoritatively ended `RuntimeSession` rows in bounded batches, with
+guarded transitions and once-only audit/webhook emission. It does not infer
+termination from inactivity alone, and standing agent-targeted notes remain
+available for a later session. The [operator-note guide](../guide/operator-notes.md)
+lists harness capabilities; the [verification guide](../guide/operator-notes-smoke.md)
+provides isolated receipt and lifecycle checks.
+
+## Agent note governance
+
+`send_note` resolves its target and validates the hook's caller session against
+its credential principal before evaluating standard tool access rules. Seeded,
+editable rules allow self and descendants, request human approval for other runs
+the sender's owner can control, and deny the rest. Scope facts are recorded with
+the approval; async polling executes the approved call against its resolved
+target. Request tokens authorize decisions by the bound human, while automatic
+approval bypasses leave these requests pending for that human. Pending note
+approvals have a separate per-sender/target cap, checked under the account's
+approval admission lock. Startup seeds unconfigured accounts independently,
+preserving progress and logging each failure for a later retry.
+`preloop spawn` passes the registered conductor session and worker alias to
+child processes and drops the conductor's harness identity variables. See
+[Spawning workers](../guide/spawning-workers.md).
+
+## Remote agent deployment
+
+The optional agent-deployment API authorizes account owners and administrators,
+then runs CLI installation and live onboarding through a host-key-pinned SSH
+connection. The GCP adapter creates a uniquely named VM without cloud identity,
+reads its host key through the authenticated Compute API, and removes resources
+on failure. Before returning success, the API checks the account's registered
+agent and selected model binding through CRUD. Credentials stay in request
+memory; audit events contain deployment identifiers and outcomes. See
+[operator configuration](../operations/agent-deployment.md).
+
+Cost digest consumers use full-window CRUD aggregates for model and agent
+request rankings. SQL window totals preserve unknown activity and remaining
+known groups while returning at most three named entries plus a bucket row.
+Agent attribution prefers the account-owned direct managed principal, then
+an account-owned session's managed agent, then a named principal. Account
+constraints and scalar session association prevent cross-account labels and
+join fan-out. Console exact-period links preserve UTC microseconds and use
+normal authenticated account scoping; URL account context grants no access.
+
+Console agent spend (Agents list, Agent detail, the Overview Inventory and the
+user page, the last two via the opt-in `breakdown=agents` section of
+`GET /api/v1/account/gateway-usage/summary`, which returns `usage_by_agent`
+for the whole account and is empty when `runtime_principal_id` is set) reads
+one CRUD aggregate. A
+gateway row belongs to an agent when its runtime principal is the agent's base
+source id, or when it ran in a session the agent owns: the bound session, a
+session whose runtime principal is `managed_agent:<id>`, or a per-run session
+whose source or principal id is `<base>:<run>` or `<base>-<run>` (longest base
+wins). A row whose principal names another agent's base id stays with that
+agent, so no row counts twice. Only the window differs between surfaces (all
+time, the detail range, the Overview range). Subscription-routed rows
+(`cost_source='subscription'`) count in an agent's requests and tokens and add
+$0 to its spend; each surface also reports the agent's subscription block
+(the Cost page's `SubscriptionUsageSummary`: requests, tokens, the summed
+`meta_data.api_equivalent_cost` estimate and its coverage) and shows "without
+subscriptions" as spend plus that estimate, a lower bound when coverage is
+partial and no figure when nothing is covered.
+
+The Agents list reads all-time figures from `agent_usage_total`, grouped by
+account, source principal and runtime session. PostgreSQL triggers apply
+transactional deltas on usage insert, update and delete, so corrections and
+rollbacks affect requests, tokens, metered cost and subscription pricing
+together. Statement triggers group transition rows by scope before updating
+counters, so bulk imports, repricing and deletes do not rewrite a shared counter
+once per request. Monetary counters use decimal arithmetic. Agent ownership is resolved
+at read time from these source dimensions, so reassigning a session does not
+require rewriting historical usage or counters. Date-window detail and Overview
+readers retain their existing source aggregates.
+
+The migration installs capture before an online backfill. `agent_usage_counted`
+records which source IDs contributed; bounded batches lock source rows and claim
+IDs once, making retries and concurrent writes safe. `agent_usage_backfill`
+persists progress and enables stored reads only after completion. During an
+incomplete backfill the list uses its metered-cost fallback and reports
+`subscription_usage_computed=false`. Once ready, the without-subscriptions
+estimate appears in a separate column immediately after metered estimated spend.
+
+Managed tracker OAuth persistence uses the [provider-neutral storage contract](managed-oauth-storage.md),
+with tenant-bound connection transactions and serialized token-pair rotation.
+The console creates a managed tracker at consent completion, before scope is
+saved. Subsequent Bitbucket repository and Jira project discovery carries that
+tracker's id so the backend can recover its server-held grant even when the
+browser has no token. Bitbucket repository choices load for the selected
+workspace; changing workspaces clears stale choices and failures require an
+explicit retry. Managed detail headers use the grant state rather than the
+tracker's historical validation flag.
+Consumption is the resolver contract in `preloop.services.managed_credentials`:
+a tracker with `auth_type == "managed_oauth"` stores no token, and every
+caller (tracker factory and scanner clients, `api.common.get_tracker_client`
+behind MCP and REST, connection/scope testing, feedback reads, flow clone
+credentials, and the execution-bound publication credential endpoint) asks the
+plugin service `managed_oauth_resolver:<provider>` for a fresh credential
+right before network I/O, after the usual account/project authorization. The
+Bitbucket Cloud client pins the API origin, follows at most three validated GET
+redirects within the HTTPS API namespace (including canonical diff/diffstat
+commit-range URLs), refuses write or unsafe redirects, and forces exactly
+one refresh on a 401 and has no Basic or stale-key fallback; typed
+unavailable/reconnect-required/permission failures propagate instead of an
+anonymous clone or a GitHub fallback. Late publication reuses the GitHub App
+refresh wrapper: the runner's execution-bound capability is exchanged for the
+current access token plus its git username (`x-token-auth`) only while the
+execution is running and the destination lies inside the tracker's workspace
+binding; refresh tokens and consumer secrets never enter containers.
+
+Managed Jira connections sharing one Atlassian user may share its required
+callback URL. Registration retries that URL only after validating the configured
+HTTPS origin and persisted ownership under the same Jira cloud and OAuth user.
+Signed deliveries route by exact stored callback URL and returned webhook IDs,
+with active grants, current project scope, and subscriptions checked for each
+receiving tracker. Verified cloud/user namespace metadata is retained on webhook
+rows and backfilled on a successful refresh, so disconnecting the original
+connection does not revoke another active connection's registered delivery.
+Legacy rows require a live anchor grant until that reconciliation. They never
+fan out by site alone. Registration failures count
+as scanner errors even when issue synchronization succeeds. Managed repository
+URL lookup permits an empty stored key; credentials still arrive through the
+orchestrator's managed resolver.
+
+## Nanobot managed runtime
+
+The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot
+Python SDK and reuses Agent Control, runtime enrollment, the model gateway and
+MCP firewall. It owns persisted session references and bounds turns, duration and
+token/context consumption. Native and MCP tool execution require explicit
+Preloop permission decisions; background subagents and outbound channel tools
+are disabled. See its README for supported limits and installation.

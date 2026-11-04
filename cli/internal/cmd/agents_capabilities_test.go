@@ -175,7 +175,7 @@ func TestControlDisclosureDiscoveryAndStatusOutput(t *testing.T) {
 		return runAgentsStatus(agentsStatusCmd, []string{"Cursor"})
 	})
 	for _, output := range []string{discovery, status} {
-		for _, fragment := range []string{"Model routing: unsupported by current adapter", "native action gate: supported", "managed MCP: supported", "application behavior unverified"} {
+		for _, fragment := range []string{"Model routing: unsupported by current adapter", "native action gate: supported", "managed MCP: supported", "application behavior unverified", "Operator notes: ", "no stop hook"} {
 			if !strings.Contains(output, fragment) {
 				t.Fatalf("captured command output missing %q: %s", fragment, output)
 			}

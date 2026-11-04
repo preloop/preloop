@@ -1,4 +1,4 @@
-"""``preloop-skyvern-import --task <id> --session <id>``."""
+"""``preloop-skyvern-import --task <id> --session <id>`` (or ``--client-session-id``)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,11 @@ import os
 import sys
 
 from preloop_skyvern.importer import import_task
-from preloop_skyvern.preloop_api import PreloopClient, PreloopTarget
+from preloop_skyvern.preloop_api import (
+    PreloopClient,
+    PreloopTarget,
+    resolve_runtime_session_id,
+)
 from preloop_skyvern.skyvern_api import DEFAULT_BASE_URL, SkyvernClient, SkyvernError
 from preloop_skyvern.webhook import summarize
 
@@ -21,7 +25,13 @@ def _parser() -> argparse.ArgumentParser:
         "and recording into a Preloop runtime session.",
     )
     p.add_argument("--task", required=True, help="Skyvern task id (tsk_...)")
-    p.add_argument("--session", required=True, help="Preloop runtime session id")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--session", help="Preloop runtime session id")
+    target.add_argument(
+        "--client-session-id",
+        help="The agent's gateway session key (X-Preloop-Session-Id); "
+        "resolved to the runtime session, created if needed",
+    )
     p.add_argument(
         "--skyvern-url",
         default=os.environ.get("SKYVERN_BASE_URL", DEFAULT_BASE_URL),
@@ -63,7 +73,18 @@ def main(argv: list[str] | None = None) -> int:
         print("missing: " + ", ".join(missing), file=sys.stderr)
         return 2
     skyvern = SkyvernClient(skyvern_key, base_url=args.skyvern_url)
-    preloop = PreloopClient(PreloopTarget(args.preloop_url, agent_key, args.session))
+    session = args.session
+    if session is None:
+        session = resolve_runtime_session_id(
+            args.preloop_url, agent_key, args.client_session_id
+        )
+        if session is None:
+            print(
+                "preloop: could not resolve --client-session-id to a session",
+                file=sys.stderr,
+            )
+            return 1
+    preloop = PreloopClient(PreloopTarget(args.preloop_url, agent_key, session))
     try:
         report = import_task(
             args.task, skyvern=skyvern, preloop=preloop, include_files=not args.no_files

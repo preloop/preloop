@@ -1939,6 +1939,30 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             .first()
         )
 
+    def set_desktop_endpoint(
+        self,
+        db: Session,
+        *,
+        runtime_session: RuntimeSession,
+        desktop_endpoint_id: Optional[str],
+    ) -> RuntimeSession:
+        """Record (or clear) the desktop endpoint a session names (#1568).
+
+        Args:
+            db: Database session.
+            runtime_session: Session row, already scoped to the caller.
+            desktop_endpoint_id: Host ``endpoint_id`` or endpoint row id;
+                blank or None clears the link.
+
+        Returns:
+            The refreshed session row.
+        """
+        value = (desktop_endpoint_id or "").strip() or None
+        runtime_session.desktop_endpoint_id = value
+        db.commit()
+        db.refresh(runtime_session)
+        return runtime_session
+
     def count_active_sessions(self, db: Session, *, account_id: str) -> int:
         """Count active (non-ended) runtime sessions for an account."""
         return (

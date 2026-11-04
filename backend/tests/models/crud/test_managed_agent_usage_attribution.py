@@ -1038,3 +1038,82 @@ def test_stored_latest_model_keeps_the_live_tie_break(
     assert stored["latest_model_alias"] == live["latest_model_alias"]
     assert stored["latest_provider_name"] == live["latest_provider_name"]
     assert stored["last_request_at"] == live["last_request_at"]
+
+
+def test_subscription_numeric_filter_preserves_metadata_types_and_attribution(
+    db_session: Session, test_user: Any, fleet: dict[str, Any]
+) -> None:
+    """Direct and session prices retain numeric-only coverage after filtering."""
+    from sqlalchemy import event
+
+    metadata = [
+        {"api_equivalent_cost": 0.5},
+        {"api_equivalent_cost": 0},
+        {"api_equivalent_cost": -0.25},
+        {"api_equivalent_cost": "1.5"},
+        {"api_equivalent_cost": True},
+        {"api_equivalent_cost": None},
+        {"api_equivalent_cost": []},
+        {"api_equivalent_cost": [1.5]},
+        [{"api_equivalent_cost": 1.5}],
+        {"api_equivalent_cost": {}},
+        {},
+        None,
+        [],
+        "scalar",
+    ]
+    base = fleet["a"].session_source_id
+    for principal_id in (base, f"{base}:run-1"):
+        for value in metadata:
+            db_session.add(
+                models.ApiUsage(
+                    account_id=test_user.account_id,
+                    runtime_session_id=fleet["run_colon"].id,
+                    runtime_principal_type="claude_code",
+                    runtime_principal_id=principal_id,
+                    endpoint="/synthetic/subscription",
+                    method="POST",
+                    status_code=200,
+                    duration=0.1,
+                    action_type="model_gateway",
+                    timestamp=NOW,
+                    cost_source="subscription",
+                    estimated_cost=0.0,
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                    total_tokens=110,
+                    meta_data=value,
+                )
+            )
+    db_session.flush()
+    statements: list[tuple[str, dict[str, Any]]] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        if "sub_equivalent" in statement:
+            statements.append((statement, parameters))
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        result = crud_managed_agent.get_usage_aggregate_for_account(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(fleet["a"].id),
+            start_date=NOW - timedelta(days=30),
+            end_date=NOW,
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    block = result["subscription_usage"]
+    assert block["request_count"] == 28
+    assert block["prompt_tokens"] == 2800
+    assert block["completion_tokens"] == 280
+    assert block["total_tokens"] == 3080
+    assert block["covered_requests"] == 6
+    assert block["coverage"] == 6 / 28
+    assert block["api_equivalent_cost"] == 0.5
+    assert result["estimated_cost"] == pytest.approx(0.16)
+    assert len(statements) == 2
+    for statement, _ in statements:
+        assert statement.count("jsonb_path_query_first(") == 2
+        assert "jsonb_typeof(" not in statement

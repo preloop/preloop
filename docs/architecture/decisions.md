@@ -32,3 +32,15 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 *   **Health monitoring:** The Helm chart ships an optional in-cluster health-monitor deployment (`healthMonitor.*`, enabled by default) that polls `/api/v1/health` and logs alert lines after consecutive failures.
 *   **Release verification:** `scripts/release_smoke_test.sh` boots the release compose file with tagged images and verifies HTTP health, first-user sign-up/login, and restart-loop-free stability; the release workflow runs it as the `verify-oss-install` gate before publishing a GitHub release.
 *   **OSS installer `.env`:** `scripts/install-oss.sh` writes Compose `.env` values with `$` escaped as `$$` so secrets are not interpolated (and partial secrets are not leaked via compose WARNs). Hand-edits of `~/.preloop-oss/.env` need the same escaping.
+
+## Public routes and versioning
+
+Public route and versioning boundaries are defined in
+[ADR 0001](decisions/0001-api-versioning.md) and the
+[compatibility policy](../compatibility.md#api-versioning): REST uses
+`/api/v1`, while OAuth discovery/operations, MCP, and provider gateway
+prefixes follow their respective protocol contracts. REST responses, including
+errors, carry the diagnostics-only `Preloop-Server-Version` software release
+header. The header wraps the complete FastAPI middleware stack so early
+rejections and unhandled errors retain it. CLI and console REST URL builders
+share a prefix within each client; they do not negotiate versions by header.

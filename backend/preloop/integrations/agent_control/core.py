@@ -14,7 +14,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 from uuid import uuid4
 
 import aiohttp
@@ -452,6 +452,95 @@ class AgentControlClient:
         }
 
 
+DESKTOP_INSTALL_COMMAND = "desktop.install"
+DESKTOP_INSTALL_ERRORS = (
+    "desktop_unsupported_os",
+    "desktop_unsupported_distro",
+    "desktop_privilege_required",
+)
+#: ``(argv) -> (exit code, combined output)``; tests inject a fake.
+CommandRunner = Callable[[list[str]], Awaitable[tuple[int, str]]]
+
+
+async def _run_command(argv: list[str]) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=900)
+    except asyncio.TimeoutError:
+        process.kill()
+        return 1, "desktop_failed: timed out"
+    return int(process.returncode or 0), output.decode("utf-8", "replace")
+
+
+async def run_desktop_enable(
+    agent_id: str,
+    *,
+    run: CommandRunner = _run_command,
+    executable: str = "preloop",
+) -> dict[str, Any]:
+    """Run ``preloop desktop enable --agent <id>`` on this host (#1566).
+
+    The CLI on the host is already logged in, so it mints the desktop
+    credential itself. Returns ``{"ok": True}`` or ``{"ok": False, "error":
+    code}`` with a code from DESKTOP_INSTALL_ERRORS, else ``desktop_failed``.
+    The CLI output is not returned: it stays in the runtime's own log.
+    """
+    try:
+        code, output = await run(
+            [executable, "desktop", "enable", "--agent", str(agent_id)]
+        )
+    except OSError as exc:
+        logger.warning("preloop desktop enable could not start: %s", exc)
+        return {"ok": False, "error": "desktop_failed"}
+    if code == 0:
+        return {"ok": True}
+    logger.warning("preloop desktop enable failed: %s", output[-2000:])
+    for error in DESKTOP_INSTALL_ERRORS:
+        if error in output:
+            return {"ok": False, "error": error}
+    return {"ok": False, "error": "desktop_failed"}
+
+
+@dataclass(frozen=True)
+class HookedDesktopInstaller:
+    """Runtime hook behind the ``desktop.install`` command."""
+
+    install: Callable[[str], Awaitable[dict[str, Any]]]
+
+
+async def _dispatch_desktop_install(
+    installer: HookedDesktopInstaller, envelope: dict[str, Any]
+) -> list[OutboundEnvelope]:
+    message_id = str(envelope.get("message_id") or uuid4())
+    payload = envelope.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    agent_id = payload.get("managed_agent_id") or envelope.get("managed_agent_id")
+    if not agent_id:
+        return [_error_envelope(message_id, "desktop_failed", {})]
+    try:
+        result = await installer.install(str(agent_id))
+    except Exception as exc:  # noqa: BLE001 - report, never crash the loop
+        logger.warning("desktop.install failed: %s", exc)
+        result = {"ok": False, "error": "desktop_failed"}
+    return [
+        {
+            "type": "status",
+            "name": "command_result",
+            "message_id": message_id,
+            "payload": {
+                "command_id": message_id,
+                "status": "completed",
+                "command": DESKTOP_INSTALL_COMMAND,
+                "desktop_install": result,
+            },
+        }
+    ]
+
+
 async def dispatch_operator_command(
     hooks: AgentControlRuntimeHooks, envelope: dict[str, Any]
 ) -> list[OutboundEnvelope]:
@@ -459,6 +548,10 @@ async def dispatch_operator_command(
 
     if envelope.get("type") != "command":
         return []
+
+    installer = getattr(hooks, "desktop_installer", None)
+    if envelope.get("name") == DESKTOP_INSTALL_COMMAND and installer is not None:
+        return await _dispatch_desktop_install(installer, envelope)
 
     try:
         command = OperatorCommand.from_envelope(envelope)

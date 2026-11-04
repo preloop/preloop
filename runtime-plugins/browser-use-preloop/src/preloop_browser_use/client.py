@@ -23,6 +23,13 @@ ENV_URL = "PRELOOP_URL"
 ENV_AGENT_KEY = "PRELOOP_AGENT_KEY"
 ENV_API_KEY = "PRELOOP_API_KEY"
 ENV_SESSION_ID = "PRELOOP_RUNTIME_SESSION_ID"
+#: The key the agent sends the gateway as ``X-Preloop-Session-Id``. When the
+#: runtime session id is unset, it is resolved from this key (#1358).
+ENV_CLIENT_SESSION_ID = "PRELOOP_SESSION_ID"
+#: Gateway response header naming the attributed runtime session.
+RUNTIME_SESSION_HEADER = "X-Preloop-Runtime-Session-Id"
+#: Written into the runtime environment by ``preloop desktop enable`` (#1568).
+ENV_DESKTOP_ENDPOINT = "PRELOOP_DESKTOP_ENDPOINT_ID"
 
 MAX_BATCH = 200
 #: Status codes worth retrying; anything else in 4xx is a caller error.
@@ -31,37 +38,174 @@ RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 IMAGE_ERRORS = frozenset({"screenshot_too_large", "screenshot_invalid"})
 
 
+def local_desktop_endpoint_id(
+    env: dict[str, str] | None = None, *, home: Path | None = None
+) -> str | None:
+    """The host's desktop endpoint id, or ``None`` when it has no desktop.
+
+    ``PRELOOP_DESKTOP_ENDPOINT_ID`` wins; else ``endpoint_id`` from
+    ``~/.preloop/desktop.json``. Unreadable state is treated as no desktop.
+    """
+    env = os.environ if env is None else env
+    value = (env.get(ENV_DESKTOP_ENDPOINT) or "").strip()
+    if value:
+        return value
+    path = (home or Path.home()) / ".preloop" / "desktop.json"
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    found = doc.get("endpoint_id") if isinstance(doc, dict) else None
+    return found.strip() or None if isinstance(found, str) else None
+
+
 @dataclass(frozen=True)
 class PreloopTarget:
-    """Where steps go: base URL, agent key and runtime session id."""
+    """Where steps go: base URL, agent key and runtime session id.
+
+    ``desktop_endpoint_id`` names the live desktop on this host so the
+    session links to it whatever key the desktop tunnel uses.
+    """
 
     base_url: str
     agent_key: str
     runtime_session_id: str
+    desktop_endpoint_id: str | None = None
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> PreloopTarget | None:
+    def from_env(
+        cls,
+        env: dict[str, str] | None = None,
+        *,
+        client: httpx.Client | None = None,
+    ) -> PreloopTarget | None:
         """Read ``PRELOOP_URL``, ``PRELOOP_AGENT_KEY`` and the session id.
 
         ``PRELOOP_API_KEY`` is accepted when ``PRELOOP_AGENT_KEY`` is unset.
-        Returns ``None`` when any value is missing so the caller can run
-        the agent without reporting.
+        ``PRELOOP_RUNTIME_SESSION_ID`` wins when set; otherwise the session
+        is resolved (and created if needed) from ``PRELOOP_SESSION_ID``, the
+        key the agent sends the gateway, so steps and model turns share one
+        session. Returns ``None`` when the target cannot be determined so
+        the caller can run the agent without reporting.
+
+        Args:
+            env: Environment mapping; defaults to ``os.environ``.
+            client: Optional ``httpx.Client`` for the resolve call (tests).
         """
         env = os.environ if env is None else env
         url = (env.get(ENV_URL) or "").strip()
         key = (env.get(ENV_AGENT_KEY) or env.get(ENV_API_KEY) or "").strip()
         sid = (env.get(ENV_SESSION_ID) or "").strip()
+        if url and key and not sid:
+            client_sid = (env.get(ENV_CLIENT_SESSION_ID) or "").strip()
+            if client_sid:
+                sid = resolve_runtime_session_id(url, key, client_sid, client=client)
         if not (url and key and sid):
             return None
-        return cls(base_url=url, agent_key=key, runtime_session_id=sid)
+        return cls(
+            base_url=url,
+            agent_key=key,
+            runtime_session_id=sid,
+            desktop_endpoint_id=local_desktop_endpoint_id(env),
+        )
+
+    @property
+    def session_url(self) -> str:
+        """REST route of this runtime session."""
+        return f"{_api_base(self.base_url)}/runtime-sessions/{self.runtime_session_id}"
 
     @property
     def steps_url(self) -> str:
         """Browser step batch route for this session."""
-        base = self.base_url.rstrip("/")
-        if not base.endswith("/api/v1"):
-            base += "/api/v1"
-        return f"{base}/runtime-sessions/{self.runtime_session_id}/browser-steps"
+        return f"{self.session_url}/browser-steps"
+
+
+def _api_base(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if not base.endswith("/api/v1"):
+        base += "/api/v1"
+    return base
+
+
+def resolve_runtime_session_id(
+    base_url: str,
+    agent_key: str,
+    client_session_id: str,
+    *,
+    client: httpx.Client | None = None,
+    create: bool = True,
+    timeout: float = 3.0,
+) -> str:
+    """Resolve the gateway session key to a runtime session id.
+
+    Calls ``GET /api/v1/runtime-sessions/resolve`` with the same key the
+    agent sends the gateway as ``X-Preloop-Session-Id``. Never raises.
+
+    Args:
+        base_url: Preloop base URL, with or without ``/api/v1``.
+        agent_key: Bearer the gateway accepts.
+        client_session_id: The gateway session key.
+        client: Optional ``httpx.Client`` (tests).
+        create: Create the session as the gateway would when missing.
+        timeout: Request timeout in seconds. Short on purpose: this runs
+            before the agent starts, and an unreachable Preloop must not
+            hold it up.
+
+    Returns:
+        The runtime session id, or ``""`` when it could not be resolved.
+    """
+    owns = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{_api_base(base_url)}/runtime-sessions/resolve",
+            params={
+                "client_session_id": client_session_id,
+                "create": "true" if create else "false",
+            },
+            headers={"Authorization": f"Bearer {agent_key}"},
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "Preloop session resolve returned HTTP %s", response.status_code
+            )
+            return ""
+        value = response.json().get("runtime_session_id")
+        return value if isinstance(value, str) else ""
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError) as exc:
+        logger.warning("Preloop session resolve failed: %s", type(exc).__name__)
+        return ""
+    finally:
+        if owns:
+            http.close()
+
+
+class RuntimeSessionCapture:
+    """``httpx`` response hook that records the gateway's session header.
+
+    Register it on the LLM client that talks to the Preloop gateway
+    (``httpx.Client(event_hooks={"response": [capture]})``); after the first
+    model call, :meth:`target` returns where steps should go.
+    """
+
+    def __init__(self) -> None:
+        self.runtime_session_id: str | None = None
+
+    def __call__(self, response: httpx.Response) -> None:
+        value = response.headers.get(RUNTIME_SESSION_HEADER)
+        if value:
+            self.runtime_session_id = value.strip()
+
+    def target(self, base_url: str, agent_key: str) -> PreloopTarget | None:
+        """The step target once a session header was seen, else ``None``."""
+        if not self.runtime_session_id:
+            return None
+        return PreloopTarget(
+            base_url,
+            agent_key,
+            self.runtime_session_id,
+            local_desktop_endpoint_id(),
+        )
 
 
 @dataclass
@@ -103,6 +247,32 @@ class StepPoster:
         self.attempts = max(1, attempts)
         self.backoff = backoff
         self._sleep = sleep
+
+    def link_desktop(self) -> bool:
+        """Name this host's desktop endpoint on the session, once; never raises.
+
+        Returns:
+            True when the request was accepted (or there is nothing to link).
+        """
+        endpoint_id = self.target.desktop_endpoint_id
+        if not endpoint_id:
+            return True
+        try:
+            response = self._client.put(
+                f"{self.target.session_url}/desktop-endpoint",
+                json={"desktop_endpoint_id": endpoint_id},
+                headers={"Authorization": f"Bearer {self.target.agent_key}"},
+            )
+        except Exception as exc:  # noqa: BLE001 - never break the agent
+            logger.warning("Preloop could not link the live desktop: %s", exc)
+            return False
+        if response.status_code != 200:
+            logger.warning(
+                "Preloop could not link the live desktop: HTTP %s",
+                response.status_code,
+            )
+            return False
+        return True
 
     def post(self, steps: Sequence[dict[str, Any]]) -> list[BatchResult]:
         """Post ``steps`` in chunks of at most 200; never raises."""

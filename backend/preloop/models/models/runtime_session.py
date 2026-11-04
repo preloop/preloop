@@ -100,6 +100,13 @@ class RuntimeSession(Base):
     #: started in the same second can be told apart. NULL until a hook that
     #: sends ``cwd`` makes a permission check for the session.
     cwd: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    #: Desktop endpoint the agent process runs next to, as named by the
+    #: adapter from ``PRELOOP_DESKTOP_ENDPOINT_ID`` (#1568). Either the host's
+    #: ``endpoint_id`` or the endpoint row id. Not trusted: the desktop link
+    #: only matches endpoints in the session's own account.
+    desktop_endpoint_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     title_request_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

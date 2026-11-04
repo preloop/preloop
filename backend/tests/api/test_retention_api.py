@@ -190,6 +190,61 @@ def test_purge_preview_counts_without_deleting(client, db_session, account):
     assert db_session.get(AuditLog, old.id) is not None
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_preview_includes_enabled_operational_sweeps(
+    client, db_session, account, pack, monkeypatch, enabled: bool
+) -> None:
+    monkeypatch.setattr(settings, "retention_purge_high_volume_enabled", enabled)
+    account.meta_data = {"retention": {"evidence": 400, "usage": 250}}
+    old = datetime.now(UTC) - timedelta(days=500)
+    execution, _ = pack
+    execution.created_at = old.replace(tzinfo=None)
+    held = models.FlowExecution(
+        flow_id=execution.flow_id,
+        status="COMPLETED",
+        created_at=old.replace(tzinfo=None),
+        legal_hold=True,
+    )
+    db_session.add(held)
+    db_session.flush()
+    logs = [
+        models.FlowExecutionLog(
+            execution_id=row.id, timestamp=old, log_type="log", message="old line"
+        )
+        for row in (execution, held)
+    ]
+    events = [
+        models.Event(
+            account_id=account.id,
+            event_type="flow_execution_completed",
+            timestamp=old,
+            event_data={"execution_id": str(row.id)},
+        )
+        for row in (execution, held)
+    ]
+    db_session.add_all([*logs, *events])
+    db_session.flush()
+
+    response = client.get(f"{BASE}/purge-preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    rows = {row["record_class"]: row for row in body["classes"]}
+    if enabled:
+        assert rows["execution_logs"]["purgeable"] == 1
+        assert rows["execution_logs"]["retention_days"] == 400
+        assert rows["events"]["purgeable"] == 1
+        assert rows["events"]["retention_days"] == 250
+        assert rows["execution_logs"]["label"] == "Flow execution log lines"
+        assert rows["events"]["label"] == "Account events"
+    else:
+        assert "execution_logs" not in rows
+        assert "events" not in rows
+    assert body["total"] == sum(row["purgeable"] for row in rows.values())
+    assert all(db_session.get(models.FlowExecutionLog, row.id) for row in logs)
+    assert all(db_session.get(models.Event, row.id) for row in events)
+
+
 # --- holds -----------------------------------------------------------------
 
 

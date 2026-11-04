@@ -1,0 +1,18 @@
+{
+ "schema": "preloop.signature/v1",
+ "algorithm": "ed25519",
+ "key_id": "psk_e6630dfe7a76b604",
+ "payload_type": "preloop.cra.evidence_manifest/v1",
+ "digest": "4dfea0a69a6e7cafc213108c743bf0c1e8892cbe34623260ed84cb62c7dbba20",
+ "signed_at": "2026-11-04T02:27:08Z",
+ "signature": "4b9sZrS9jxJX4vdEfJt/KICC9VTMukABJjKvV67U4d3/JPOzQVnzxHy1K/QXvl/va4TXfk4dj+lOVu8czbpWAg==",
+ "payload": {
+  "schema": "preloop.cra.evidence_manifest/v1",
+  "account_id": "bfb6f270-b793-41c3-a117-04ed83320d3b",
+  "created_at": "2026-11-04T02:27:08Z",
+  "size_bytes": 58801,
+  "artifact_id": "589778df-a209-4f9e-9abe-e93d90650115",
+  "execution_id": "122c43aa-cfae-46d5-a96e-d494875fa61a",
+  "archive_sha256": "e41de880b9e961d07239afe355023f18eec30d12c2b9083964268f7a92876624"
+ }
+}

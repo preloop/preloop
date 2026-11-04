@@ -416,6 +416,10 @@ class RuntimeSessionTokenCreate(BaseModel):
     allowed_mcp_tools: List[Any] = Field(default_factory=list)
     allowed_mcp_servers: List[str] = Field(default_factory=list)
     principal_identity: Optional[PrincipalIdentity] = None
+    #: Desktop endpoint on this host (``PRELOOP_DESKTOP_ENDPOINT_ID``), so
+    #: the session links to the live desktop whatever key the tunnel used.
+    #: Only matches endpoints in the caller's account (#1568).
+    desktop_endpoint_id: Optional[str] = Field(None, max_length=128)
 
 
 class RuntimeSessionTokenResponse(BaseModel):

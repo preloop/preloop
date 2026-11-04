@@ -174,11 +174,39 @@ agent key with `--agent-key` or `PRELOOP_DESKTOP_TOKEN`. `--dry-run` prints
 the steps. Check the tunnel with `systemctl --user status
 preloop-desktop-tunnel`.
 
+**From the console.** An active agent with no online desktop shows **Live
+desktop: none** under its summary to users with `manage_agents`. When the agent
+has a live Agent Control connection, **Enable desktop** sends `desktop.install`
+over that channel and the runtime plugin (Hermes, OpenClaw) runs `preloop
+desktop enable --agent <id>` on its host with the CLI login it already has; the
+Desktop tab appears once the tunnel registers. An unsupported OS or distro, or
+missing root or passwordless sudo, is shown with a link here and leaves the
+agent untouched. Without a control channel, or with a plugin that does not
+know the command, the console shows the one-line command to run on the host
+instead and sends nothing. Requests are audited as
+`desktop.install.requested`, `desktop.install.succeeded` and
+`desktop.install.failed`.
+
+**Sessions on the same host.** The installer also exports
+`PRELOOP_DESKTOP_ENDPOINT_ID` (the endpoint id from `~/.preloop/desktop.json`)
+next to `DISPLAY=:99` in the runtime environment. CLI hooks, the Hermes
+plugin and the Browser Use reporter send it when they create or report on a
+runtime session (`desktop_endpoint_id` on `POST /auth/runtime-sessions/token`,
+or `PUT /runtime-sessions/{id}/desktop-endpoint`), so that session gets the
+**Live desktop** button even when it runs with a different credential than the
+tunnel. The value only matches desktops in the session's own account.
+
 **Console.** An agent with an online desktop shows a **Desktop** tab, and its
 live sessions show a **Live desktop** button. A view is view only: keyboard,
 mouse and clipboard input are dropped by the API, not just by the browser.
 "Request control" (if you have the permission) forwards input for at most 10
-minutes after you confirm with a reason. One viewer per desktop at a time; a
+minutes. You give a reason; when the account has another admin who can decide
+approvals, the request becomes a `desktop_control` approval that someone other
+than you must approve (the viewer shows "Waiting for another admin to approve
+control" and stays view only until then). With no one else to ask, your reason
+is the confirmation. A refused or expired request writes
+`desktop.control.denied`; an approved one writes `desktop.control.granted`
+with the approver. One viewer per desktop at a time; a
 second operator is told who holds it. Views last 15 minutes by default
 (`PRELOOP_DESKTOP_VIEW_MAX_SECONDS` caps them, default 60 minutes) and close
 after 120 seconds without viewer traffic. Opening, ending, and taking or

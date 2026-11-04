@@ -43,6 +43,10 @@ from preloop.services.event_webhooks.events import (
 
 logger = logging.getLogger(__name__)
 
+#: ``tool_name`` of approval requests raised to take control of a live
+#: desktop view (#1567). Not a callable tool; it names the policy.
+DESKTOP_CONTROL_TOOL = "desktop_control"
+
 _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
 
 
@@ -709,6 +713,8 @@ class ApprovalService:
         server_name: Optional[str] = None,
         request_id: Optional[uuid.UUID] = None,
         broadcast_created: bool = True,
+        desktop_view_id: Optional[uuid.UUID] = None,
+        desktop_requester_id: Optional[uuid.UUID] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -744,10 +750,58 @@ class ApprovalService:
                 past approval was asked for. None when no rule was evaluated
                 (e.g. the request_approval builtin), in which case surfaces
                 omit the explanation rather than invent one.
+            desktop_view_id: Trusted desktop endpoint target. Reserved for
+                desktop control; never populated from generic tool arguments.
+            desktop_requester_id: Authenticated desktop requester. The target
+                must belong to this user in the request's account.
 
         Returns:
             Created approval request
         """
+        # Generic tool gates may supply arbitrary names, arguments and policy
+        # context. Only the desktop endpoint supplies these separate, trusted
+        # identifiers; no public tool argument can establish this binding.
+        from fastapi import HTTPException
+        from preloop.models.crud import crud_desktop
+
+        if rule_context and "desktop_control" in rule_context:
+            raise HTTPException(403, "Desktop control provenance is server-owned")
+        if tool_name == DESKTOP_CONTROL_TOOL:
+            if desktop_view_id is None or desktop_requester_id is None:
+                raise HTTPException(
+                    403, "desktop_control is reserved for desktop views"
+                )
+            view = await self.db.run_sync(
+                lambda db: crud_desktop.owned_control_view(
+                    db,
+                    account_id=account_id,
+                    view_id=desktop_view_id,
+                    requester_id=desktop_requester_id,
+                )
+            )
+            if view is None or view.state == "closed":
+                raise HTTPException(
+                    403, "Desktop control target does not belong to requester"
+                )
+            from preloop.services.approval_rule_context import (
+                SOURCE_TOOL_DEFAULT_WORKFLOW,
+                build_rule_context,
+            )
+
+            rule_context = build_rule_context(
+                source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                decision="require_approval",
+                rule_name="Desktop control",
+                explanation="Another admin must approve control of this desktop view.",
+                tool_configuration_id=tool_configuration_id,
+            )
+            rule_context["desktop_control"] = {
+                "view_id": str(view.id),
+                "requester_id": str(view.user_id),
+            }
+        elif desktop_view_id is not None or desktop_requester_id is not None:
+            raise HTTPException(403, "Desktop control provenance is server-owned")
+
         # Calculate expiration time. The window is resolved in one place
         # (services/approval_window.py) from the tool argument, the flow, the
         # workflow and the deployment default, in that order, capped per
@@ -1001,8 +1055,30 @@ class ApprovalService:
         # conditional UPDATE), so a duplicate decision is harmless.
         if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
             await self._release_parked_executions(approval_request)
+            if approval_request.tool_name == DESKTOP_CONTROL_TOOL:
+                await self._apply_desktop_control(approval_request)
 
         return approval_request
+
+    async def _apply_desktop_control(self, approval_request: ApprovalRequest) -> None:
+        """Grant or refuse the desktop control this request was raised for.
+
+        Runs after the decision is committed, from every resolution path.
+        A failure is logged: the view then stays view only, which is the
+        safe side.
+        """
+        from preloop.api.endpoints.desktop import apply_control_decision
+
+        try:
+            await apply_control_decision(
+                approval_id=str(approval_request.id),
+                account_id=str(approval_request.account_id),
+            )
+        except Exception:  # noqa: BLE001 - the decision itself is committed
+            logger.exception(
+                "Desktop control decision %s could not be applied",
+                approval_request.id,
+            )
 
     async def _enqueue_lifecycle(self, **fields: Any) -> None:
         """Flush the lifecycle intent in this session; never commit or detach it."""
@@ -1201,6 +1277,41 @@ class ApprovalService:
                 status_code=403, detail="Only the owner can decide this request"
             )
 
+    async def _require_desktop_control_approver(
+        self, approval_request: ApprovalRequest, user_id: Optional[uuid.UUID]
+    ) -> None:
+        """Desktop control needs a named human other than the requester (#1567).
+
+        The request only exists when the account has another admin, so a
+        token, AI or bypass approval and the requester's own vote are refused.
+        Declining stays open to every decider.
+        """
+        if approval_request.tool_name != DESKTOP_CONTROL_TOOL:
+            return
+        from fastapi import HTTPException
+
+        from preloop.models.crud import crud_desktop, crud_user
+        from preloop.utils.permissions import user_holds_permission
+
+        def eligible(db: Any) -> bool:
+            view = crud_desktop.control_approval_view(db, approval_request)
+            if view is None or user_id is None or view.user_id == user_id:
+                return False
+            user = crud_user.get(
+                db, id=user_id, account_id=str(approval_request.account_id)
+            )
+            return bool(
+                user is not None
+                and user.is_active
+                and user_holds_permission(db, user, "decide_approvals")
+            )
+
+        if not await self.db.run_sync(eligible):
+            raise HTTPException(
+                status_code=403,
+                detail="Desktop control must be approved by another admin",
+            )
+
     async def approve_request(
         self,
         request_id: uuid.UUID,
@@ -1237,6 +1348,7 @@ class ApprovalService:
             return None
 
         await self._require_consent_owner(approval_request, user_id)
+        await self._require_desktop_control_approver(approval_request, user_id)
 
         # Do not re-decide an already-resolved or expired request.
         guarded = await self._reject_if_not_actionable(approval_request)
@@ -1666,6 +1778,8 @@ class ApprovalService:
         account_id: str,
         managed_agent_id: Optional[uuid.UUID],
         required_mode: str,
+        *,
+        recipient_user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Optional[ApprovalBypass]:
         """Return an active bypass covering *every* approver, or None.
 
@@ -1688,12 +1802,17 @@ class ApprovalService:
             managed_agent_id: Agent raising the request, if known.
             required_mode: Minimum strength; ``auto_approve`` matches only
                 auto-approve bypasses, ``mute_notifications`` matches either.
+            recipient_user_ids: Explicit recipients for notification mute checks.
 
         Returns:
             The bypass to attribute the decision to, or None.
         """
         try:
-            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            approver_user_ids = (
+                list(recipient_user_ids)
+                if recipient_user_ids is not None
+                else await self._get_all_approver_user_ids(approval_workflow)
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
                 "Could not resolve approvers for bypass check on workflow %s: %s; "
@@ -1793,6 +1912,7 @@ class ApprovalService:
             The updated, approved approval request.
         """
         await self._require_consent_owner(approval_request, None)
+        await self._require_desktop_control_approver(approval_request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -1859,6 +1979,7 @@ class ApprovalService:
         request = await self.get_approval_request(request_id)
         if request is not None:
             await self._require_consent_owner(request, None)
+            await self._require_desktop_control_approver(request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -2640,6 +2761,8 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        *,
+        recipient_user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send notifications for an approval request based on user preferences.
 
@@ -2656,7 +2779,10 @@ class ApprovalService:
 
         Args:
             approval_request: The approval request to notify about
-            approval_workflow: The approval workflow with approver configuration
+            approval_workflow: The persistent workflow with channel configuration
+            recipient_user_ids: Override per-user recipients without changing the
+                saved workflow. None uses workflow approvers; an empty list sends
+                no per-user notifications. Webhooks keep the workflow destination.
 
         Returns:
             Dict with results per notification channel
@@ -2691,6 +2817,7 @@ class ApprovalService:
                 str(approval_request.account_id),
                 approval_request.managed_agent_id,
                 required_mode=ApprovalBypassMode.MUTE_NOTIFICATIONS,
+                recipient_user_ids=recipient_user_ids,
             )
         except Exception as mute_error:  # pragma: no cover - defensive
             logger.warning(
@@ -2724,7 +2851,11 @@ class ApprovalService:
         notification_audits: list[dict[str, Any]] = []
         approver_user_ids: List[uuid.UUID] = []
         try:
-            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            approver_user_ids = (
+                list(recipient_user_ids)
+                if recipient_user_ids is not None
+                else await self._get_all_approver_user_ids(approval_workflow)
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
@@ -2753,7 +2884,7 @@ class ApprovalService:
         # Push first so watch/mobile get the head start.
         try:
             push_result = await self._send_push_notification(
-                approval_request, approval_workflow
+                approval_request, approval_workflow, user_ids=approver_user_ids
             )
             results["mobile_push"] = push_result
         except Exception as e:
@@ -2789,7 +2920,7 @@ class ApprovalService:
         if send_immediate_email:
             if immediate_email_ids:
                 email_user_ids: Optional[List[uuid.UUID]] = immediate_email_ids
-            elif approver_user_ids:
+            elif approver_user_ids or recipient_user_ids is not None:
                 # Approvers exist but none are due immediate email (e.g. push-only).
                 email_user_ids = []
             else:
@@ -3336,6 +3467,8 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        *,
+        user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send mobile push notification for approval request.
 
@@ -3346,6 +3479,7 @@ class ApprovalService:
         Args:
             approval_request: The approval request
             approval_workflow: The approval workflow
+            user_ids: Explicit recipients; None resolves the workflow approvers.
 
         Returns:
             Dict with send result
@@ -3382,8 +3516,12 @@ class ApprovalService:
             sync_db = next(get_db_session())
             try:
                 # Get all approver user IDs (including team members)
-                approver_user_ids = self._get_all_approver_user_ids_sync(
-                    approval_workflow, sync_db
+                approver_user_ids = (
+                    list(user_ids)
+                    if user_ids is not None
+                    else self._get_all_approver_user_ids_sync(
+                        approval_workflow, sync_db
+                    )
                 )
 
                 if not approver_user_ids:

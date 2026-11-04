@@ -38,7 +38,10 @@ from preloop.services.model_gateway_auth import (
     authenticate_bearer_token,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.openai_gateway import OpenAIGatewayService
+from preloop.services.openai_gateway import (
+    OpenAIGatewayService,
+    runtime_session_response_headers,
+)
 
 router = APIRouter(include_in_schema=False)
 
@@ -175,10 +178,18 @@ def _run(
         raise error from exc
 
 
+def _response_headers(service: OpenAIGatewayService) -> Dict[str, str]:
+    """Relayable upstream headers plus the attributed runtime session."""
+    headers = dict(service.upstream_response_headers or {})
+    headers.update(runtime_session_response_headers(service))
+    return headers
+
+
 def _with_upstream_headers(result: Any, service: OpenAIGatewayService) -> Any:
     """Attach relayable upstream response headers to a JSON result."""
-    if service.upstream_response_headers and isinstance(result, dict):
-        return JSONResponse(content=result, headers=service.upstream_response_headers)
+    headers = _response_headers(service)
+    if headers and isinstance(result, dict):
+        return JSONResponse(content=result, headers=headers)
     return result
 
 
@@ -259,7 +270,7 @@ def create_message(
         return GatewayStreamingResponse(
             events,
             media_type="text/event-stream",
-            headers=service.upstream_response_headers or None,
+            headers=_response_headers(service) or None,
             on_complete=service.flush_deferred_stream_record,
         )
     result = _run(

@@ -158,3 +158,65 @@ The focused follow-up for versioned installed-harness evidence is
 [#1637](https://github.com/preloop/preloop/issues/1637). The broader runner
 adapter conformance suite is tracked separately in
 [#1494](https://github.com/preloop/preloop/issues/1494).
+
+## Cursor headless stop boundary
+
+Versioned evidence for #1684. Captured 2026-10-14 with Cursor CLI
+`2026.10.01-e373342` and Preloop source `f79d80eb471ff48098417882e473883e6374ce2f`,
+against a real Cursor Auto provider and a loopback synthetic note API. This is
+real model output with a simulated note API, not production receipt
+validation, and it needs a Cursor credential, so it is not part of the default
+tests.
+
+Use a fresh temporary `HOME`, fresh Cursor config and data directories and a
+disposable workspace that holds only a synthetic `fixture.txt`. Pass the
+provider credential through the subprocess environment only, with
+`AGENT_CLI_CREDENTIAL_STORE=memory`, and set `PRELOOP_DISABLE_TELEMETRY=true`.
+Wrap each hook so the wrapper records only the event name and the status or
+loop-count fields, never credentials or transcripts, and then hands the
+unchanged payload to the Preloop hook. A minimal wrapper, saved as
+`/path/to/record-hook` and made executable (needs `jq`):
+
+```sh
+#!/bin/sh
+# Usage: record-hook <log file> <preloop hook command...>
+log="$1"; shift
+payload=$(cat)
+printf '%s\n' "$payload" |
+  jq -c '{event: .hook_event_name, status: .status, loop_count: .loop_count}' >>"$log"
+printf '%s\n' "$payload" | "$@"
+```
+
+Install the wrapped hooks:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook session --source cursor"}],
+    "stop": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook stop --source cursor"}],
+    "sessionEnd": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook session-end --source cursor"}]
+  }
+}
+```
+
+Queue one synthetic note for startup that asks the model to print a fresh
+marker after the file read, and a second synthetic note for the `stop` event.
+Clear the event log immediately before each run so the counts include only
+that run:
+
+```sh
+: > /tmp/cursor-hooks.log
+cursor-agent --print --trust --model auto --output-format stream-json \
+  'Read fixture.txt using one file-read tool, then print only the marker supplied by operator-note context. Do not use shell or other tools.'
+```
+
+Count the events afterwards with `jq -r .event /tmp/cursor-hooks.log | sort | uniq -c`.
+
+Observed on `2026.10.01-e373342`, for a no-tool run and a one-file-read run,
+both exiting 0: one `sessionStart`, one `sessionEnd` and zero `stop`
+invocations; one startup note pull, zero stop note pulls and one session-end
+POST. The startup marker appeared in the result output; the stop marker never
+did. Ask mode also had no `stop` invocation. Interactive mode was not tested.
+Repeat the run on a new Cursor build before changing the disclosure in the
+[operator-note guide](operator-notes.md#cursor-headless-runs-have-no-stop-rescue).
