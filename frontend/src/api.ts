@@ -5183,6 +5183,7 @@ export async function getFlowExecutionsPage(options?: {
   status?: string | string[];
   search?: string;
   startedAfter?: string;
+  signal?: AbortSignal;
 }): Promise<FlowExecutionsPage> {
   const params = new URLSearchParams();
   if (options?.limit !== undefined) {
@@ -5210,7 +5211,7 @@ export async function getFlowExecutionsPage(options?: {
   }
   const queryString = params.toString();
   const url = `${REST_API_PREFIX}/flows/executions${queryString ? `?${queryString}` : ''}`;
-  const response = await fetchWithAuth(url);
+  const response = await fetchWithAuth(url, { signal: options?.signal });
   if (!response.ok) {
     throw new Error('Failed to fetch flow executions');
   }
