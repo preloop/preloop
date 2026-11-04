@@ -659,32 +659,62 @@ def _control_request_json(
     return {"approval_id": str(approval.id), "state": "pending"}
 
 
-def _has_other_approver(db: Session, user: models.User) -> bool:
-    """Whether someone other than ``user`` may decide approvals here.
+def _other_approver_ids(
+    db: Session, user: models.User, *, limit: int = 20
+) -> list[uuid.UUID]:
+    """Up to ``limit`` active members other than ``user`` who may decide.
 
     Walks every active member (keyset pages), not a fixed window, so a large
-    account cannot drop its second admin and fall back to self-confirm.
-    Without the RBAC plugin every member holds every permission, so one
-    other active member is enough and no per-member check runs.
+    account cannot drop its second admin and fall back to self-confirm. The
+    check per member is ``user_holds_permission``, the single resolver for
+    roles, teams, the system owner and the RBAC plugin overlay. Without the
+    RBAC plugin every member holds every permission, so no per-member check
+    runs.
     """
     from preloop.utils.permissions import members_have_full_access
 
+    found: list[uuid.UUID] = []
     after = None
-    while True:
+    while len(found) < limit:
         ids = crud_desktop.active_member_ids(
             db, account_id=user.account_id, exclude=user.id, after=after, limit=200
         )
         if not ids:
-            return False
+            break
         if members_have_full_access():
-            return True
-        for member_id in ids:
-            member = db.get(models.User, member_id)
-            if member is not None and user_holds_permission(
-                db, member, "decide_approvals"
-            ):
-                return True
+            found.extend(ids)
+        else:
+            for member_id in ids:
+                member = db.get(models.User, member_id)
+                if member is not None and user_holds_permission(
+                    db, member, "decide_approvals"
+                ):
+                    found.append(member_id)
         after = ids[-1]
+    return found[:limit]
+
+
+def _has_other_approver(db: Session, user: models.User) -> bool:
+    """Whether someone other than ``user`` may decide approvals here."""
+    return bool(_other_approver_ids(db, user, limit=1))
+
+
+def _notify_workflow(workflow: Any, approver_ids: list[uuid.UUID]) -> Any:
+    """The workflow to notify with, never addressed only to the requester.
+
+    The account default workflow usually names the owner, who may be the
+    requester. A transient copy (never added to a session) addressed to the
+    other admins makes sure someone who can decide hears about it.
+    """
+    copy = models.ApprovalWorkflow(
+        **{
+            column.name: getattr(workflow, column.name)
+            for column in models.ApprovalWorkflow.__table__.columns
+        }
+    )
+    copy.approver_user_ids = list(approver_ids)
+    copy.approver_team_ids = None
+    return copy
 
 
 async def _request_control_approval(
@@ -701,7 +731,8 @@ async def _request_control_approval(
         view, endpoint = _own_view(db, user, view_id)
         if view.state == "closed":
             raise _error(409, "desktop_view_closed", "The desktop view has ended")
-        if not _has_other_approver(db, user):
+        approvers = _other_approver_ids(db, user)
+        if not approvers:
             return None
         pending = _pending_control(db, view)
         if pending is not None:
@@ -712,6 +743,7 @@ async def _request_control_approval(
         facts = _audit_facts(view, endpoint).__dict__
         _audit(db, view, "desktop.control.requested", {**facts, "reason": reason})
         create = {
+            "approver_ids": [str(a) for a in approvers],
             "tool_configuration_id": str(tool.id),
             "managed_agent_id": _str(view.managed_agent_id),
             "runtime_session_id": _str(view.runtime_session_id),
@@ -740,7 +772,12 @@ async def _request_control_approval(
             # Lock the view, then look again: a concurrent request for the
             # same view waits here and reuses the approval this one creates.
             view_pk = create["tool_args"]["view_id"]
-            await crud_desktop.lock_view_async(db, view_id=view_pk)
+            state = await crud_desktop.lock_view_async(db, view_id=view_pk)
+            if state in (None, "closed"):
+                # Closed after the first check: close_view has already
+                # settled this view, so a new approval would never be.
+                await db.rollback()
+                raise _error(409, "desktop_view_closed", "The desktop view has ended")
             existing = await crud_desktop.pending_control_approval_id_async(
                 db,
                 account_id=user.account_id,
@@ -774,7 +811,12 @@ async def _request_control_approval(
                 "state": "pending",
             }
             try:
-                await service.send_notifications(approval, workflow)
+                await service.send_notifications(
+                    approval,
+                    _notify_workflow(
+                        workflow, [uuid.UUID(a) for a in create["approver_ids"]]
+                    ),
+                )
             except Exception:  # noqa: BLE001 - the request is visible anyway
                 logger.warning(
                     "Desktop control approval %s created without notify", approval.id

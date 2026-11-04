@@ -1586,38 +1586,6 @@ def test_single_admin_still_self_confirms(harness, db_session):
     assert granted[0].details["approval"] == "self_confirmed"
 
 
-def test_a_second_request_reuses_the_pending_approval_under_the_view_lock(
-    harness, two_admins
-):
-    """The create path re-checks under a row lock on the view. The harness
-    runs every request on one shared session, so real concurrency cannot be
-    exercised here; this pins the re-check itself."""
-    h = harness
-
-    async def scenario() -> None:
-        async with serving(h) as vnc:
-            endpoint, view = await _live_viewer(h, vnc)
-            url = f"/api/v1/desktop/views/{view['view_id']}/control"
-            seen = []
-            real = desktop.crud_desktop.pending_control_approval_id_async
-
-            async def spy(db, **kw):
-                found = await real(db, **kw)
-                seen.append(found)
-                return found
-
-            h.monkeypatch.setattr(
-                desktop.crud_desktop, "pending_control_approval_id_async", spy
-            )
-            async with h.http() as client:
-                first = await client.post(url, json={"reason": "fix the dialog"})
-            assert seen == [None]
-            assert first.status_code == 202
-            await endpoint.close()
-
-    asyncio.run(scenario())
-
-
 def test_closing_the_view_settles_its_control_request(harness, two_admins):
     h = harness
 
@@ -1726,3 +1694,95 @@ def test_second_admin_found_beyond_the_first_page(harness, db_session, monkeypat
     assert desktop._has_other_approver(db_session, h.user)
     monkeypatch.setattr(desktop, "user_holds_permission", lambda db, u, n: False)
     assert not desktop._has_other_approver(db_session, h.user)
+
+
+def test_control_request_notifies_the_other_admins_not_the_requester(
+    harness, two_admins, monkeypatch
+):
+    from preloop.services.approval_service import ApprovalService
+
+    h = harness
+    colleague = two_admins
+    notified = []
+
+    async def capture(self, approval, workflow):
+        notified.append(list(workflow.approver_user_ids or []))
+        return {}
+
+    monkeypatch.setattr(ApprovalService, "send_notifications", capture)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert asked.status_code == 202
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert notified == [[colleague.id]]
+
+
+def test_existing_approval_found_under_the_lock_is_reused(harness, two_admins):
+    """The branch the view lock exists for: the pre-lock check missed a
+    pending approval that another request created."""
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            url = f"/api/v1/desktop/views/{view['view_id']}/control"
+            async with h.http() as client:
+                first = await client.post(url, json={"reason": "fix the dialog"})
+                h.monkeypatch.setattr(desktop, "_pending_control", lambda db, v: None)
+                second = await client.post(url, json={"reason": "fix the dialog"})
+            assert second.status_code == 202
+            assert (
+                second.json()["control_request"]["approval_id"]
+                == first.json()["control_request"]["approval_id"]
+            )
+            assert (
+                h.db.query(models.ApprovalRequest)
+                .filter(models.ApprovalRequest.tool_name == "desktop_control")
+                .count()
+                == 1
+            )
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_view_closed_before_the_lock_gets_no_approval(harness, two_admins):
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            real = desktop.crud_desktop.lock_view_async
+
+            async def close_first(db, *, view_id):
+                row = h.view(view["view_id"])
+                row.state = "closed"
+                h.db.commit()
+                return await real(db, view_id=view_id)
+
+            h.monkeypatch.setattr(desktop.crud_desktop, "lock_view_async", close_first)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the dialog"},
+                )
+            assert asked.status_code == 409
+            assert asked.json()["detail"]["code"] == "desktop_view_closed"
+            assert (
+                h.db.query(models.ApprovalRequest)
+                .filter(models.ApprovalRequest.tool_name == "desktop_control")
+                .count()
+                == 0
+            )
+            await endpoint.close()
+
+    asyncio.run(scenario())

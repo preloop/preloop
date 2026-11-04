@@ -442,17 +442,19 @@ class CRUDDesktop:
             .first()
         )
 
-    async def lock_view_async(self, db: Any, *, view_id: Any) -> None:
-        """Row lock on a view in an approvals-service session.
+    async def lock_view_async(self, db: Any, *, view_id: Any) -> Optional[str]:
+        """Row lock on a view in an approvals-service session; its state.
 
         Serializes control requests for one view so a double submit reuses
-        one approval instead of raising two.
+        one approval instead of raising two, and lets the caller see a view
+        that closed after its first check. None when the view is gone.
         """
-        await db.execute(
-            select(DesktopView.id)
+        result = await db.execute(
+            select(DesktopView.state)
             .where(DesktopView.id == _as_uuid(view_id))
             .with_for_update()
         )
+        return result.scalars().first()
 
     async def pending_control_approval_id_async(
         self, db: Any, *, account_id: Any, view_id: Any, tool_name: str
