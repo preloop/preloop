@@ -181,6 +181,12 @@ def test_without_a_control_channel_nothing_is_sent(nats, client, db_session, tes
 
 def test_install_needs_manage_agents(nats, client, db_session, test_user):
     agent, _ = _agent(client, db_session, test_user, "openclaw-desk-perm")
+    base = f"/api/v1/agents/{agent.id}/desktop/install"
+    created = client.post(base)
+    assert created.status_code == 202
+    request_id = created.json()["request_id"]
+    assert client.get(f"{base}/{request_id}").status_code == 200
+    nats.publish.reset_mock()
 
     def deny(ctx, action, resource):
         if action == "manage_agents":
@@ -189,10 +195,12 @@ def test_install_needs_manage_agents(nats, client, db_session, test_user):
 
     account_hooks.register_authorizer(deny)
     try:
-        response = client.post(f"/api/v1/agents/{agent.id}/desktop/install")
+        response = client.post(base)
+        status_response = client.get(f"{base}/{request_id}")
     finally:
         account_hooks.reset_account_hooks()
     assert response.status_code == 403
+    assert status_response.status_code == 403
     nats.publish.assert_not_awaited()
 
 

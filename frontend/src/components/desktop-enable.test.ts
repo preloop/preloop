@@ -15,6 +15,7 @@ import {
 } from './desktop-enable';
 
 describe('desktop-enable', () => {
+  const originalFetch = window.fetch.bind(window);
   let fetchStub: sinon.SinonStub;
   let calls: Array<{ url: string; method: string }> = [];
 
@@ -23,6 +24,8 @@ describe('desktop-enable', () => {
     localStorage.setItem('accessToken', 'test-token');
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input, init) => {
       const url = String(input);
+      // Upgraded Shoelace controls fetch their bundled icons as data URLs.
+      if (url.startsWith('data:')) return originalFetch(input, init);
       const method = String(init?.method || 'GET').toUpperCase();
       calls.push({ url, method });
       if (method === 'POST' && url.endsWith('/desktop/install')) return post();
@@ -65,6 +68,7 @@ describe('desktop-enable', () => {
     expect((row.querySelector('sl-copy-button') as any).value).to.equal(
       'preloop desktop enable --agent agent-1'
     );
+    expect(row.querySelector('sl-copy-button')!.shadowRoot).to.exist;
     expect(el.shadowRoot!.querySelector('sl-button.enable')).to.not.exist;
     expect(calls).to.deep.equal([]);
   });
@@ -87,8 +91,12 @@ describe('desktop-enable', () => {
     const installed = new Promise((resolve) =>
       el.addEventListener('desktop-installed', resolve)
     );
+    expect(el.shadowRoot!.querySelector('sl-button.enable')!.shadowRoot).to
+      .exist;
+    expect(el.shadowRoot!.querySelector('sl-icon')!.shadowRoot).to.exist;
     el.shadowRoot!.querySelector<HTMLElement>('sl-button.enable')!.click();
     await waitUntil(() => text(el).includes(DESKTOP_ENABLE_STRINGS.installing));
+    expect(el.shadowRoot!.querySelector('sl-spinner')!.shadowRoot).to.exist;
     state = 'done';
     await installed;
     await waitUntil(() => text(el).includes(DESKTOP_ENABLE_STRINGS.done));
