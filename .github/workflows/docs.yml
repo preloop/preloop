@@ -15,6 +15,7 @@ on:
       - 'docs/**'
       - 'ARCHITECTURE.md'
       - 'backend/tests/test_architecture_docs_map.py'
+      - 'backend/tests/test_docs_workflow_toolchain.py'
       - 'mkdocs.yml'
       - 'requirements/docs.txt'
       - '.github/workflows/docs.yml'
@@ -23,6 +24,7 @@ on:
       - 'docs/**'
       - 'ARCHITECTURE.md'
       - 'backend/tests/test_architecture_docs_map.py'
+      - 'backend/tests/test_docs_workflow_toolchain.py'
       - 'mkdocs.yml'
       - 'requirements/docs.txt'
       - '.github/workflows/docs.yml'
@@ -57,8 +59,11 @@ jobs:
       - name: Install the documentation toolchain
         run: python -m pip install --require-hashes -r requirements/docs.txt
 
-      # This guard needs only PyYAML from the documentation toolchain.
-      # Run it directly to avoid importing backend pytest conftest fixtures.
+      # These guards need only PyYAML from the documentation toolchain.
+      # Run them directly to avoid importing backend pytest conftest fixtures.
+      - name: Check documentation workflow wiring and toolchain
+        run: python backend/tests/test_docs_workflow_toolchain.py
+
       - name: Check the architecture map and chapter navigation
         run: python backend/tests/test_architecture_docs_map.py
 
