@@ -1132,3 +1132,33 @@ class TestPullRequestEngagement(IsolatedAsyncioTestCase):
                 max_pages=2,
             ),
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry", [False, True])
+async def test_submit_review_returns_the_reviewed_commit(retry):
+    """EE #202: the review receipt binds the head the provider reviewed."""
+    review = {
+        "id": 1,
+        "state": "APPROVED",
+        "user": {"login": "reviewer"},
+        "commit_id": "f" * 40,
+    }
+    tracker = GitHubTracker(
+        str(uuid4()), "api-key", {"owner": "testowner", "repo": "testrepo"}
+    )
+    if retry:
+        tracker._request = AsyncMock(
+            side_effect=[
+                TrackerResponseError("422 Line could not be resolved"),
+                review,
+            ]
+        )
+        comments = [{"path": "a.py", "line": 1, "body": "x"}]
+    else:
+        tracker._request = AsyncMock(return_value=review)
+        comments = None
+    result = await tracker.submit_pull_request_review(
+        pr_number="1", body="ok", event="APPROVE", comments=comments
+    )
+    assert result["commit_id"] == "f" * 40

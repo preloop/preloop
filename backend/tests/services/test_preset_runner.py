@@ -1698,3 +1698,48 @@ async def test_dc_preset_fetch_refused_before_provider_io():
                 number=1,
             )
         create.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["github", "gitlab", "bitbucket"])
+@pytest.mark.asyncio
+async def test_manual_pr_trigger_preserves_fetched_head(provider: str) -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+    from preloop.services.preset_runner import _fetch_pull_request_detail
+
+    head = "a" * 40
+    project, tracker = _github_project_tracker()
+    tracker.tracker_type = provider
+    tracker.url = f"https://{provider}.example.com"
+    client = MagicMock()
+    if provider == "bitbucket":
+        # Bitbucket returns the raw provider object; the manual runner normalizes it.
+        detail = {
+            "id": 12,
+            "title": "Review change",
+            "source": {"branch": {"name": "feature"}, "commit": {"hash": head}},
+            "destination": {"branch": {"name": "main"}},
+            "links": {
+                "html": {"href": "https://bitbucket.org/example/repo/pull-requests/12"}
+            },
+        }
+    else:
+        detail = {"number": 12, "iid": 12, "head_sha": head}
+    client.get_pull_request = AsyncMock(return_value=detail)
+    client.get_merge_request = AsyncMock(return_value=detail)
+    with patch(
+        "preloop.api.common.get_tracker_client",
+        new_callable=AsyncMock,
+        return_value=client,
+    ):
+        fetched = await _fetch_pull_request_detail(
+            MagicMock(),
+            current_user=_user(tracker.account_id),
+            project=project,
+            tracker=tracker,
+            organization=MagicMock(),
+            number=12,
+        )
+    event = build_pull_request_trigger_payload(fetched, project, tracker)
+    orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orch.trigger_event_data = event
+    assert orch._extract_commit_sha() == head

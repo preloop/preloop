@@ -232,6 +232,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the RBAC plugin every member is an account admin, so this changes routing
   only when roles are enabled (#2176).
 
+- **A pull request review that was not delivered fails the run.** The Pull
+  Request Reviewer preset now sets `git_clone_config.review_publication.required`,
+  and reviewer flows created from it inherit the setting. Such a run
+  succeeds only when the MCP `update_pull_request` tool recorded a
+  `review_publication_receipt` for a review the code host accepted on the
+  triggering pull request and head commit. The agent's `review_posted`
+  claim, the success line and a zero exit code no longer turn an
+  undelivered review green; the run fails with
+  `review_publication_incomplete` and keeps its report. `result.review_publication`
+  records `published`, `already_reviewed` or `not_published`. A flow can opt
+  out with `review_publication: {required: false}`. New
+  `review_publication_receipt` table (EE #202).
+
 ### Fixed
 
 - The Responses gateway accepts more than one output for the same tool call

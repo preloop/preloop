@@ -275,3 +275,72 @@ def test_bootstrap_preserves_legacy_duplicate_aliases(db_session):
                 current.meta_data["gateway"]["model_alias"]
                 == "openai/same-legacy-model"
             )
+
+
+def test_init_db_refreshes_stored_presets_without_changing_derived_flows(
+    db_session: Session, monkeypatch
+) -> None:
+    import importlib
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from click.testing import CliRunner
+    from preloop.models import schemas
+    from preloop.models.crud import crud_flow
+    from scripts import sync_flow_presets
+
+    init_module = importlib.import_module("scripts.init_db")
+    definition = next(
+        preset
+        for preset in sync_flow_presets.FLOW_PRESETS
+        if preset["name"] == "Pull Request Reviewer"
+    )
+    stale = dict(definition, git_clone_config={"enabled": False})
+    preset = crud_flow.create(
+        db=db_session,
+        account_id=None,
+        flow_in=sync_flow_presets.build_preset_flow_create(stale),
+    )
+    account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Example organization"},
+    )
+    derived = crud_flow.create(
+        db=db_session,
+        account_id=account.id,
+        flow_in=schemas.FlowCreate(
+            name="Customized reviewer",
+            prompt_template="Keep my prompt",
+            agent_config={},
+            source_preset_id=preset.id,
+            git_clone_config={"enabled": False},
+        ),
+    )
+    original_config = dict(derived.git_clone_config)
+    monkeypatch.setattr(sync_flow_presets, "FLOW_PRESETS", [definition])
+    monkeypatch.setitem(sys.modules, "sync_flow_presets", sync_flow_presets)
+    monkeypatch.setitem(
+        sys.modules,
+        "init_system_roles",
+        SimpleNamespace(initialize_system_roles=lambda _: True),
+    )
+    monkeypatch.setattr(init_module, "load_dotenv", lambda: None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        init_module.subprocess,
+        "run",
+        MagicMock(return_value=SimpleNamespace(returncode=0)),
+    )
+    monkeypatch.setattr(init_module, "get_engine", MagicMock())
+    monkeypatch.setattr(init_module, "get_db_session", lambda: iter([db_session]))
+    monkeypatch.setattr(init_module, "seed_plan_catalog", MagicMock())
+    monkeypatch.setattr(init_module, "reconcile_ai_model_gateway_settings", lambda _: 0)
+    for _ in range(2):
+        result = CliRunner().invoke(init_module.init_db, ["--force"])
+        assert result.exit_code == 0, result.output
+        db_session.refresh(preset)
+        db_session.refresh(derived)
+        assert preset.git_clone_config["review_publication"] == {"required": True}
+        assert derived.prompt_template == "Keep my prompt"
+        assert derived.git_clone_config == original_config

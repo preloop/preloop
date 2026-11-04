@@ -227,6 +227,13 @@ def init_db(force: bool):
         else:
             click.echo("WARNING: Failed to initialize system roles and permissions")
 
+        # Refresh the catalog on every deployment path, including native and
+        # Compose upgrades. Do not propagate template changes to account flows.
+        from sync_flow_presets import sync_global_presets
+
+        click.echo("Synchronizing global flow presets...")
+        sync_global_presets(db_session)
+
         # Embedding model setup
         provider = os.getenv("EMBEDDING_PROVIDER", "openai")
         model_name = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")

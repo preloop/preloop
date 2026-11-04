@@ -39628,6 +39628,12 @@ components:
           - type: 'null'
           description: Publish the document this run generated as a pull request,
             after the agent has exited and without giving it write tools
+        review_publication:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewPublication'
+          - type: 'null'
+          description: Require a server-recorded, delivered pull request review before
+            the run can succeed
         follow_up_filing:
           anyOf:
           - $ref: '#/components/schemas/FollowUpFiling-Input'
@@ -39771,6 +39777,12 @@ components:
           - type: 'null'
           description: Publish the document this run generated as a pull request,
             after the agent has exited and without giving it write tools
+        review_publication:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewPublication'
+          - type: 'null'
+          description: Require a server-recorded, delivered pull request review before
+            the run can succeed
         follow_up_filing:
           anyOf:
           - $ref: '#/components/schemas/FollowUpFiling-Output'
@@ -46895,6 +46907,34 @@ components:
       type: object
       title: RetentionSettingsUpdate
       description: Full desired state. An omitted class falls back to the default.
+    ReviewPublication:
+      properties:
+        required:
+          type: boolean
+          title: Required
+          description: Fail the run unless a review the code host accepted is on record
+            for the triggering pull request
+          default: false
+      additionalProperties: false
+      type: object
+      title: ReviewPublication
+      description: 'Require a delivered pull request review for the run to succeed
+        (EE #202).
+
+
+        When ``required`` is true the run finishes SUCCEEDED only if the MCP
+
+        ``update_pull_request`` tool recorded a server-owned receipt for a review
+
+        the code host accepted on the triggering pull request (and head commit,
+
+        when the provider reports one). The agent''s own ``review_posted`` claim,
+
+        a success sentinel or a zero exit code never satisfy it. A deliberate
+
+        no-post run (``review_action: null``, no ``blocker``) passes only when an
+
+        earlier run already holds a receipt for the same pull request and head.'
     RollbackRequest:
       properties:
         preview_only:

@@ -1141,8 +1141,14 @@ prompt_template: |
   submitted (review_posted: true, Step 4.4) or you deliberately decided not
   to post one (review_posted: false, review_action: null). If you hit an
   unrecoverable error and could not complete the review, write
-  "status": "error" instead and add a "reason" field. Be honest: never
-  report success for work you did not do.
+  "status": "error" instead and add a "reason" field. A review you wrote
+  but could not post (the `update_pull_request` call with a review_action
+  failed, for example on a 401) is not complete: write "status": "error",
+  "review_posted": false, keep your review_action and findings, and put the
+  failure in "blocker". Do not print a success line for it. Preloop checks
+  its own record of the submitted review: a run whose review the code host
+  did not accept fails whatever this file says. Be honest: never report
+  success for work you did not do.
 
   ═══════════════════════════════════════════════════════════
   CRITICAL GUIDELINES
@@ -1279,6 +1285,11 @@ git_clone_config:
   source_branch: null
   target_branch: null
   create_pull_request: false
+  # The run succeeds only when the code host accepted the review: the MCP
+  # tool records a server-owned receipt, the agent's claim is not enough
+  # (EE #202).
+  review_publication:
+    required: true
 trigger_config: null
 # A review of a head that is no longer the PR's head is wasted: its findings
 # are about code the author already replaced. When the flow also triggers on

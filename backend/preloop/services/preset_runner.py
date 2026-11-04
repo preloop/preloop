@@ -631,6 +631,7 @@ def build_pull_request_trigger_payload(
     author = _pr_detail_author(pr)
     source_branch = pr.get("source_branch") or ""
     target_branch = pr.get("target_branch") or ""
+    head_sha = pr.get("head_sha")
     state = pr.get("state") or "open"
     draft = bool(pr.get("draft") or pr.get("is_draft") or pr.get("work_in_progress"))
     payload: Dict[str, Any] = {
@@ -655,6 +656,7 @@ def build_pull_request_trigger_payload(
             "target_branch": target_branch,
             "state": state,
             "author": author,
+            "last_commit": {"id": head_sha},
         }
         payload["project"] = {
             "id": gitlab_id,
@@ -676,7 +678,7 @@ def build_pull_request_trigger_payload(
             "state": str(state or "open").upper(),
             "draft": draft,
             "author": {"nickname": author},
-            "source": {"branch": {"name": source_branch}},
+            "source": {"branch": {"name": source_branch}, "commit": {"hash": head_sha}},
             "destination": {"branch": {"name": target_branch}},
             "links": {"html": {"href": url}},
         }
@@ -690,7 +692,7 @@ def build_pull_request_trigger_payload(
             "state": state,
             "draft": draft,
             "user": {"login": author},
-            "head": {"ref": source_branch},
+            "head": {"ref": source_branch, "sha": head_sha},
             "base": {"ref": target_branch},
         }
         source = "github"

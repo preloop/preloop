@@ -2853,6 +2853,8 @@ class GitHubTracker(BaseTracker):
                 "user": review_data["user"]["login"],
                 "submitted_at": review_data.get("submitted_at"),
                 "html_url": review_data.get("html_url"),
+                # The commit the review is on; the review receipt binds it.
+                "commit_id": review_data.get("commit_id"),
             }
 
         except TrackerResponseError as e:
@@ -2886,6 +2888,7 @@ class GitHubTracker(BaseTracker):
                             "user": review_data["user"]["login"],
                             "submitted_at": review_data.get("submitted_at"),
                             "html_url": review_data.get("html_url"),
+                            "commit_id": review_data.get("commit_id"),
                             "warning": (
                                 f"Submitted without {len(formatted_comments)} inline "
                                 "comment(s) due to invalid line references"

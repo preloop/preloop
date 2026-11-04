@@ -253,6 +253,29 @@ class ReportPublication(BaseModel):
         return self
 
 
+class ReviewPublication(BaseModel):
+    """Require a delivered pull request review for the run to succeed (EE #202).
+
+    When ``required`` is true the run finishes SUCCEEDED only if the MCP
+    ``update_pull_request`` tool recorded a server-owned receipt for a review
+    the code host accepted on the triggering pull request (and head commit,
+    when the provider reports one). The agent's own ``review_posted`` claim,
+    a success sentinel or a zero exit code never satisfy it. A deliberate
+    no-post run (``review_action: null``, no ``blocker``) passes only when an
+    earlier run already holds a receipt for the same pull request and head.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    required: bool = Field(
+        default=False,
+        description=(
+            "Fail the run unless a review the code host accepted is on record "
+            "for the triggering pull request"
+        ),
+    )
+
+
 class FollowUpFiling(BaseModel):
     """File the follow ups a human approved as issues in the tracker.
 
@@ -527,6 +550,14 @@ class GitCloneConfig(BaseModel):
         description=(
             "Publish the document this run generated as a pull request, "
             "after the agent has exited and without giving it write tools"
+        ),
+    )
+
+    review_publication: Optional[ReviewPublication] = Field(
+        default=None,
+        description=(
+            "Require a server-recorded, delivered pull request review before "
+            "the run can succeed"
         ),
     )
 

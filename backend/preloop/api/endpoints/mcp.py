@@ -752,6 +752,86 @@ async def _read_triage_context(
         ) from exc
 
 
+#: Review actions that deliver a review; reactions and metadata do not.
+REVIEW_RECEIPT_ACTIONS = frozenset({"approve", "request_changes", "comment"})
+
+
+def _review_receipt_execution_id(db: Session, current_user: Any) -> str | None:
+    """The flow run behind this credential, for a review receipt (EE #202).
+
+    Read from the authenticated credential and the request context, never
+    from tool arguments. A credential and context that name different runs
+    record nothing, so the run's publication gate fails closed.
+    """
+    from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+    context = get_current_user_context()
+    key = getattr(current_user, "_auth_api_key", None)
+    credential = getattr(key, "context_data", None)
+    from_credential = (
+        credential.get("flow_execution_id") if isinstance(credential, dict) else None
+    )
+    from_context = getattr(context, "flow_execution_id", None)
+    if from_credential and from_context and str(from_credential) != str(from_context):
+        return None
+    execution_id = from_credential or from_context
+    if not execution_id:
+        return None
+    try:
+        execution = crud_flow_execution.get(
+            db, id=str(execution_id), account_id=current_user.account_id
+        )
+    except (ValueError, SQLAlchemyError):
+        return None
+    return str(execution_id) if execution is not None else None
+
+
+def _record_review_receipt(
+    db: Session,
+    *,
+    account_id: Any,
+    execution_id: str | None,
+    provider: str,
+    repository: str | None,
+    pull_request: Any,
+    review_action: str,
+    head_sha: Any = None,
+    provider_review_id: Any = None,
+) -> None:
+    """Persist the receipt for a review the code host accepted (EE #202).
+
+    Called only after the provider call returned. A failure is logged at
+    error level and not raised: the review is already on the pull request,
+    and the run's publication gate fails the run for want of a receipt.
+    """
+    if execution_id is None or not repository:
+        return
+    from preloop.models.crud import crud_review_publication_receipt
+
+    try:
+        crud_review_publication_receipt.record(
+            db,
+            account_id=account_id,
+            execution_id=execution_id,
+            provider=provider,
+            repository=repository,
+            pull_request=pull_request,
+            review_action=review_action,
+            head_sha=head_sha if isinstance(head_sha, str) else None,
+            provider_review_id=provider_review_id,
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error(
+            "Could not record the review publication receipt for execution %s",
+            execution_id,
+            exc_info=True,
+        )
+
+
 def _delivery_report_execution_id(db: Session, current_user: Any) -> str | None:
     """The Delivery Report run behind this credential, or None.
 
@@ -2500,11 +2580,34 @@ async def update_pull_request(
     tracker_client = await get_tracker_client(
         project_obj.organization_id, project_obj.id, db, current_user
     )
+    receipt_execution_id = (
+        _review_receipt_execution_id(db, current_user) if review_action else None
+    )
+    receipt_repository = (
+        project_path
+        or (f"{owner}/{repo}" if owner and repo else None)
+        or getattr(project_obj, "slug", None)
+    )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
 
+    def record_receipt(provider: str, head_sha: Any, review_id: Any) -> None:
+        if not review_action:
+            return
+        _record_review_receipt(
+            db,
+            account_id=current_user.account_id,
+            execution_id=receipt_execution_id,
+            provider=provider,
+            repository=receipt_repository,
+            pull_request=pr_number,
+            review_action=review_action,
+            head_sha=head_sha,
+            provider_review_id=review_id,
+        )
+
     if (tracker_client.tracker_type or "").lower() == "bitbucket":
-        return await _run_bitbucket(
+        bitbucket_result = await _run_bitbucket(
             f"update pull request {pr_number}",
             mcp_bitbucket.update_pull_request(
                 tracker_client,
@@ -2523,6 +2626,16 @@ async def update_pull_request(
                 remove_reaction=remove_reaction,
             ),
         )
+        if (review_action or "").lower() in REVIEW_RECEIPT_ACTIONS:
+            # ``pull_request_id`` carries the summary comment id when one was
+            # posted, else the PR number itself, which is not a review id.
+            posted_id = getattr(bitbucket_result, "pull_request_id", None)
+            record_receipt(
+                "bitbucket",
+                None,
+                posted_id if str(posted_id) != str(pr_number) else None,
+            )
+        return bitbucket_result
 
     # Determine platform from tracker if not yet known
     if platform is None:
@@ -2616,6 +2729,7 @@ async def update_pull_request(
                 result_id = review_result.get("id")
                 result_url = review_result.get("html_url")
                 logger.info(f"Successfully submitted review for PR {pr_number}")
+                record_receipt("github", review_result.get("commit_id"), result_id)
 
             else:  # GitLab
                 if review_action_lower == "approve":
@@ -2668,6 +2782,7 @@ async def update_pull_request(
                     )
 
                 # Handle inline review comments for GitLab
+                gitlab_review_id = result_id
                 if review_comments:
                     # Validate review_comments structure
                     for idx, comment in enumerate(review_comments):
@@ -2705,6 +2820,7 @@ async def update_pull_request(
                             body=f"**{comment['path']}:{comment['line']}**\n\n"
                             f"{comment['body']}",
                         )
+                record_receipt("gitlab", None, gitlab_review_id)
 
         # Handle PR/MR metadata updates
         # Use 'is not None' checks to allow clearing fields with empty values
