@@ -498,12 +498,12 @@ its 24h expiry and look like the agent ignored it. A note addressed to the
 *agent* with no session is untouched by a session ending: it keeps waiting for
 the agent's next run.
 
-The lifecycle hooks are installed for Claude Code only. Codex CLI 0.162 has
-`Stop`, `SessionStart` and `SessionEnd` hook events too, but `onboard
---approvals` does not wire them yet, so a Codex note still relies on
-`PreToolUse` and, if the session ends first, expires after 24h. Cursor CLI is
-unchanged. The Claude Code input and output shapes for these events are pinned
-in `cli/internal/cmd/testdata/operator-notes/claude-code-lifecycle.json`.
+`onboard --approvals` installs lifecycle hooks for Claude Code, Codex CLI and
+Cursor CLI. Claude Code and Codex use `Stop`, `SessionStart` and `SessionEnd`;
+Cursor uses `stop`, `sessionStart` and `sessionEnd`. Installing a hook does not
+guarantee that every runtime mode emits it: the Cursor headless limit is
+documented below. The Claude Code input and output shapes for these events are
+pinned in `cli/internal/cmd/testdata/operator-notes/claude-code-lifecycle.json`.
 
 ### Cursor headless runs have no stop rescue
 
