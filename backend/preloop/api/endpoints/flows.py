@@ -2,7 +2,7 @@ import asyncio
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from typing import Annotated, Any, Dict, List, NoReturn, Optional, cast
+from typing import Annotated, Any, Dict, List, Literal, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
@@ -65,6 +65,10 @@ from preloop.services.ci_execution import (
 from preloop.services.execution_metrics import (
     project_execution_totals,
     project_resume_lineage,
+)
+from preloop.services.gateway_event_history import (
+    elide_replayed_history,
+    reduce_requests_to_new_tool_results,
 )
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
@@ -2376,6 +2380,9 @@ async def get_flow_execution_logs(
 # The row type the gateway writes for each model request of an execution.
 MODEL_GATEWAY_CALL_LOG_TYPE = "model_gateway_call"
 
+# Most model calls one transcript page carries with their payloads (#1208).
+TRANSCRIPT_PAGE_LIMIT = 100
+
 
 @router.get(
     "/flows/executions/{execution_id}/host-sessions",
@@ -2420,22 +2427,63 @@ def get_flow_execution_gateway_events(
     tail: Annotated[int | None, Query(ge=1)] = None,
     metadata_only: bool = False,
     model_calls_only: bool = False,
+    history: Annotated[
+        Literal["full", "delta"],
+        Query(
+            description=(
+                "`delta` is the transcript's page read: messages, tool entries "
+                "and request tool results an older event on the page already "
+                "carried are left out, the request keeps only its tool "
+                "results, response bodies and stream events are dropped, and "
+                f"`tail` is capped at {TRANSCRIPT_PAGE_LIMIT}. The event "
+                "detail endpoint still returns the full payload."
+            )
+        ),
+    ] = "full",
+    history_window: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=500,
+            description=(
+                "With `history=delta`, each event keeps at most its last N "
+                "messages and tool entries."
+            ),
+        ),
+    ] = None,
+    before: Annotated[
+        uuid.UUID | None,
+        Query(
+            description=(
+                "Keyset cursor: return only rows older than the event with "
+                "this id. Pass `pagination.next_cursor` from the previous page."
+            )
+        ),
+    ] = None,
 ) -> Dict[str, Any]:
     """Get normalized model gateway events for a flow execution.
 
     Args:
         execution_id: ID of the execution.
-        tail: Most recent rows to return (default 5000).
+        tail: Most recent rows to return (default 5000; with
+            ``history=delta`` at most ``TRANSCRIPT_PAGE_LIMIT``).
         metadata_only: Drop the large payload fields (conversation preview,
             tools, result, stream events).
         model_calls_only: Return only ``model_gateway_call`` rows. Without it
             every log row of the execution is returned, including the agent
             log lines the logs endpoint already serves, and on a long run
             those crowd the model calls out of ``tail``.
+        history: ``delta`` returns a bounded transcript page (#1208): on a
+            long run every call replays the whole conversation, so a full
+            read of every call is tens of megabytes of the same history.
+        history_window: Per-event message window for ``history=delta``.
+        before: Keyset cursor for older pages.
 
     Returns:
-        ``logs`` (newest first), ``source``, and ``has_more``: whether rows
-        older than the returned ``tail`` exist.
+        ``logs`` (newest first), ``source``, ``has_more``: whether rows older
+        than the returned ``tail`` exist, and ``pagination`` (``limit``,
+        ``has_more``, ``next_cursor``, and ``total`` model calls when
+        ``model_calls_only`` is set).
     """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -2443,14 +2491,27 @@ def get_flow_execution_gateway_events(
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
 
+    delta = history == "delta" and not metadata_only
     actual_tail = tail if tail is not None else 5000
+    if delta:
+        actual_tail = min(actual_tail, TRANSCRIPT_PAGE_LIMIT)
+    cursor = None
+    if before is not None:
+        anchor = crud_flow_execution_log.get_event_by_id(db, execution_id, before)
+        if anchor is None or anchor.timestamp is None:
+            raise HTTPException(
+                status_code=404, detail="Gateway event not found in this execution"
+            )
+        cursor = (anchor.timestamp, anchor.id)
+    log_types = [MODEL_GATEWAY_CALL_LOG_TYPE] if model_calls_only else None
     # One extra row answers has_more without a count query.
     rows = crud_flow_execution_log.get_by_execution_id(
         db,
         execution_id,
         tail=actual_tail + 1,
         desc=True,
-        log_types=[MODEL_GATEWAY_CALL_LOG_TYPE] if model_calls_only else None,
+        log_types=log_types,
+        before=cursor,
     )
     has_more = len(rows) > actual_tail
     if has_more:
@@ -2475,6 +2536,16 @@ def get_flow_execution_gateway_events(
             payload.pop("request", None)
             payload.pop("response", None)
             payload.pop("tool_activity", None)
+        elif delta:
+            # The transcript reads none of these; opening a call fetches
+            # the full row.
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in ("response", "result", "stream_events")
+            }
+            if row.message:
+                payload["message"] = row.message
         else:
             payload = {**payload, "message": row.message}
 
@@ -2487,7 +2558,29 @@ def get_flow_execution_gateway_events(
                 "payload": payload,
             }
         )
-    return {"logs": events, "source": "database", "has_more": has_more}
+    if delta:
+        events = elide_replayed_history(events, window=history_window)
+        events = reduce_requests_to_new_tool_results(events)
+    # `rows` is oldest first here: its first row is the oldest on the page,
+    # the one to pass as `before` for the next one.
+    pagination: Dict[str, Any] = {
+        "limit": actual_tail,
+        # Keyset only: present so the shape matches the session read's.
+        "offset": None,
+        "next_offset": None,
+        "has_more": has_more,
+        "next_cursor": str(rows[0].id) if has_more and rows else None,
+    }
+    if model_calls_only:
+        pagination["total"] = crud_flow_execution_log.count_by_execution_id(
+            db, execution_id, log_types=[MODEL_GATEWAY_CALL_LOG_TYPE]
+        )
+    return {
+        "logs": events,
+        "source": "database",
+        "has_more": has_more,
+        "pagination": pagination,
+    }
 
 
 @router.get("/flows/executions/{execution_id}/gateway-events/{event_id}")

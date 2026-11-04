@@ -1771,7 +1771,7 @@ describe('FlowExecutionView', () => {
       ).to.equal(2);
     });
 
-    it('loads full gateway payloads when the transcript is opened', async () => {
+    it('reads a bounded transcript page when the transcript is opened', async () => {
       const element = await load('exec-1');
       const gatewayCalls = () =>
         fetchStub
@@ -1782,24 +1782,23 @@ describe('FlowExecutionView', () => {
       // The first paint asks for metadata only: it just feeds the timeline.
       expect(gatewayCalls()).to.have.length(1);
       expect(gatewayCalls()[0]).to.contain('metadata_only=true');
+      // Until the transcript is opened it reads as loading, not as
+      // "nothing was captured".
+      expect(
+        (element.shadowRoot!.querySelector('session-chat-view') as any).loading
+      ).to.equal(true);
 
       (element as any).handleTabShow({ detail: { name: 'transcript' } });
       await waitUntil(
         () => gatewayCalls().length === 2,
-        'Transcript did not reload the events with full payloads'
+        'Opening the transcript did not read its first page'
       );
+      // A delta page of model calls, never every call's full payload (#1208).
       expect(gatewayCalls()[1]).to.not.contain('metadata_only');
-
-      // The upgrade reads as loading, not as "nothing was captured".
-      (element as any).isLoadingGatewayEvents = true;
-      (element as any).gatewayEventsFullLoaded = false;
-      await element.updateComplete;
-      expect(
-        (element.shadowRoot!.querySelector('session-chat-view') as any).loading
-      ).to.equal(true);
-      (element as any).isLoadingGatewayEvents = false;
-      (element as any).gatewayEventsFullLoaded = true;
-      await element.updateComplete;
+      expect(gatewayCalls()[1]).to.contain('history=delta');
+      expect(gatewayCalls()[1]).to.contain('tail=');
+      expect(gatewayCalls()[1]).to.contain('model_calls_only=true');
+      await waitUntil(() => !(element as any).transcriptLoading);
 
       // Reopening it does not refetch.
       (element as any).handleTabShow({ detail: { name: 'timeline' } });
@@ -1830,6 +1829,9 @@ describe('FlowExecutionView', () => {
 
     it('reads the conversation through the shared session view', async () => {
       const element = await load('exec-1');
+      (element as any).handleTabShow({ detail: { name: 'transcript' } });
+      await waitUntil(() => (element as any).transcriptEvents.length > 0);
+      await element.updateComplete;
       const transcript = element.shadowRoot!.querySelector(
         'session-chat-view'
       ) as any;
@@ -2343,7 +2345,7 @@ describe('FlowExecutionView', () => {
       }
     });
 
-    it('upgrades the events when the transcript is opened mid-fetch', async () => {
+    it('reads the transcript page when it is opened mid-fetch', async () => {
       let openGate: () => void = () => {};
       gatewayEventsGate = new Promise<void>((resolve) => {
         openGate = resolve;
@@ -2366,21 +2368,25 @@ describe('FlowExecutionView', () => {
         'The metadata fetch never started'
       );
 
-      // The switch lands while the metadata fetch is still in flight, which
-      // handleTabShow declines to act on.
+      // The switch lands while the metadata fetch is still in flight. The
+      // transcript reads its own page, so it does not wait for that one.
       (element as any).handleTabShow({ detail: { name: 'transcript' } });
-      expect(gatewayCalls()).to.have.length(1);
+      await waitUntil(
+        () => gatewayCalls().length === 2,
+        'The transcript did not read its page'
+      );
 
       openGate();
       await waitUntil(
-        () => (element as any).gatewayEventsFullLoaded === true,
-        'The transcript was left on metadata-only events'
+        () => (element as any).transcriptEvents.length > 0,
+        'The transcript page never landed'
       );
 
       const calls = gatewayCalls();
       expect(calls).to.have.length(2);
       expect(calls[0]).to.contain('metadata_only=true');
       expect(calls[1]).to.not.contain('metadata_only');
+      expect(calls[1]).to.contain('history=delta');
     });
 
     for (const status of ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN']) {

@@ -5487,12 +5487,28 @@ export async function getFlowExecutionGatewayEvents(
   executionId: string,
   tail?: number,
   metadataOnly: boolean = false,
-  modelCallsOnly: boolean = false
+  modelCallsOnly: boolean = false,
+  page: {
+    /**
+     * `delta`: the transcript's bounded page. History an older call on the
+     * page already carried is left out and bodies the transcript never reads
+     * are dropped (#1208).
+     */
+    history?: 'full' | 'delta';
+    /** With `history: 'delta'`, keep at most the last N messages per call. */
+    historyWindow?: number;
+    /** Keyset cursor: only rows older than this event id. */
+    before?: string;
+  } = {}
 ): Promise<FlowGatewayEventsResponse> {
   const params = new URLSearchParams();
   if (tail !== undefined) params.append('tail', tail.toString());
   if (metadataOnly) params.append('metadata_only', 'true');
   if (modelCallsOnly) params.append('model_calls_only', 'true');
+  if (page.history === 'delta') params.append('history', 'delta');
+  if (page.historyWindow !== undefined)
+    params.append('history_window', page.historyWindow.toString());
+  if (page.before) params.append('before', page.before);
   const paramsStr = params.toString() ? `?${params.toString()}` : '';
 
   const response = await fetchWithAuth(

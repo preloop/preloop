@@ -17926,13 +17926,20 @@ paths:
       summary: Get Flow Execution Gateway Events
       description: "Get normalized model gateway events for a flow execution.\n\n\
         Args:\n    execution_id: ID of the execution.\n    tail: Most recent rows\
-        \ to return (default 5000).\n    metadata_only: Drop the large payload fields\
-        \ (conversation preview,\n        tools, result, stream events).\n    model_calls_only:\
-        \ Return only ``model_gateway_call`` rows. Without it\n        every log row\
-        \ of the execution is returned, including the agent\n        log lines the\
-        \ logs endpoint already serves, and on a long run\n        those crowd the\
-        \ model calls out of ``tail``.\n\nReturns:\n    ``logs`` (newest first), ``source``,\
-        \ and ``has_more``: whether rows\n    older than the returned ``tail`` exist."
+        \ to return (default 5000; with\n        ``history=delta`` at most ``TRANSCRIPT_PAGE_LIMIT``).\n\
+        \    metadata_only: Drop the large payload fields (conversation preview,\n\
+        \        tools, result, stream events).\n    model_calls_only: Return only\
+        \ ``model_gateway_call`` rows. Without it\n        every log row of the execution\
+        \ is returned, including the agent\n        log lines the logs endpoint already\
+        \ serves, and on a long run\n        those crowd the model calls out of ``tail``.\n\
+        \    history: ``delta`` returns a bounded transcript page (#1208): on a\n\
+        \        long run every call replays the whole conversation, so a full\n \
+        \       read of every call is tens of megabytes of the same history.\n   \
+        \ history_window: Per-event message window for ``history=delta``.\n    before:\
+        \ Keyset cursor for older pages.\n\nReturns:\n    ``logs`` (newest first),\
+        \ ``source``, ``has_more``: whether rows older\n    than the returned ``tail``\
+        \ exist, and ``pagination`` (``limit``,\n    ``has_more``, ``next_cursor``,\
+        \ and ``total`` model calls when\n    ``model_calls_only`` is set)."
       operationId: get_flow_execution_gateway_events_api_v1_flows_executions__execution_id__gateway_events_get
       security:
       - bearerAuth: []
@@ -17967,6 +17974,53 @@ paths:
           type: boolean
           default: false
           title: Model Calls Only
+      - name: history
+        in: query
+        required: false
+        schema:
+          enum:
+          - full
+          - delta
+          type: string
+          description: '`delta` is the transcript''s page read: messages, tool entries
+            and request tool results an older event on the page already carried are
+            left out, the request keeps only its tool results, response bodies and
+            stream events are dropped, and `tail` is capped at 100. The event detail
+            endpoint still returns the full payload.'
+          default: full
+          title: History
+        description: '`delta` is the transcript''s page read: messages, tool entries
+          and request tool results an older event on the page already carried are
+          left out, the request keeps only its tool results, response bodies and stream
+          events are dropped, and `tail` is capped at 100. The event detail endpoint
+          still returns the full payload.'
+      - name: history_window
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 500
+            minimum: 1
+          - type: 'null'
+          description: With `history=delta`, each event keeps at most its last N messages
+            and tool entries.
+          title: History Window
+        description: With `history=delta`, each event keeps at most its last N messages
+          and tool entries.
+      - name: before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: 'Keyset cursor: return only rows older than the event with
+            this id. Pass `pagination.next_cursor` from the previous page.'
+          title: Before
+        description: 'Keyset cursor: return only rows older than the event with this
+          id. Pass `pagination.next_cursor` from the previous page.'
       responses:
         '200':
           description: Successful Response

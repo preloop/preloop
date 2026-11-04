@@ -390,8 +390,9 @@ export interface FlowGatewayEventsResponse {
     offset: number | null;
     next_offset: number | null;
     /**
-     * Session reads only: the oldest event id on this page, to pass as
-     * `before` for the next older page. Null when there is none.
+     * The oldest event id on this page, to pass as `before` for the next
+     * older page. Null when there is none. Execution reads send it from
+     * #1208 on; their `offset` and `next_offset` are always null.
      */
     next_cursor?: string | null;
     total: number;

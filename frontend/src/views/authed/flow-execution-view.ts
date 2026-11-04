@@ -395,6 +395,17 @@ const INITIAL_LOGS_TAIL = 200;
  */
 export const INITIAL_GATEWAY_EVENTS_TAIL = 200;
 
+/**
+ * Model calls one transcript page reads (#1208). A long run replays its whole
+ * conversation in every call, so the transcript reads the newest calls with
+ * replayed history elided and fetches older ones on request, rather than
+ * every call's full payload at once.
+ */
+export const TRANSCRIPT_PAGE_SIZE = 25;
+
+/** Messages each call keeps on a transcript page; matches Talk. */
+export const TRANSCRIPT_HISTORY_WINDOW = 40;
+
 /** Timeline rows drawn at first, and how many more each "earlier" click adds. */
 export const TIMELINE_ROWS_SHOWN = 60;
 const TIMELINE_ROWS_STEP = 100;
@@ -938,6 +949,11 @@ export class FlowExecutionView extends LitElement {
       .transcript-panel {
         min-height: 240px;
       }
+      .transcript-page-note {
+        padding: 6px 0 10px;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
       .log-container {
         background-color: #1e1e1e;
         color: #d4d4d4;
@@ -1083,6 +1099,50 @@ export class FlowExecutionView extends LitElement {
   private gatewayEventsBounded = false;
 
   /**
+   * The transcript's own pages of model calls, newest first as read. Kept
+   * apart from `gatewayEvents`: those are metadata for the timeline and the
+   * strip, these carry the conversation and are read a page at a time.
+   */
+  @state()
+  private transcriptEvents: FlowGatewayEvent[] = [];
+
+  @state()
+  private transcriptLoading = false;
+
+  @state()
+  private transcriptLoadingMore = false;
+
+  @state()
+  private transcriptError: string | null = null;
+
+  /** Model calls the run made, from the first page's pagination. */
+  @state()
+  private transcriptTotal: number | null = null;
+
+  /** Cursor for the next older page; null once the first call is read. */
+  @state()
+  private transcriptNextCursor: string | null = null;
+
+  /** The first transcript page was read (or attempted) for this execution. */
+  private transcriptRequested = false;
+
+  /**
+   * A newest page has landed, so `transcriptNextCursor` belongs to the older
+   * pages and a later newest-page refresh must not move it.
+   */
+  private transcriptPageLoaded = false;
+
+  /** The failed read was an older page, so Retry replays that one. */
+  private transcriptFailedOlder = false;
+
+  /**
+   * Keys of the calls read through pages, contiguous from the newest page
+   * down to `transcriptNextCursor`. Live calls are not in it: one can land
+   * after a gap the pages have not covered yet.
+   */
+  private transcriptPagedKeys = new Set<string>();
+
+  /**
    * The first page of logs is in flight. The page itself is already painted
    * from the detail row; only the logs panel and the timeline wait.
    */
@@ -1225,6 +1285,9 @@ export class FlowExecutionView extends LitElement {
     if (gateway.status === 'fulfilled' && Array.isArray(gateway.value?.logs)) {
       for (const event of gateway.value.logs) this.appendGatewayEvent(event);
     }
+    // Calls made during the gap reach the transcript through its own page:
+    // the metadata above carries no conversation.
+    if (this.transcriptRequested) void this.loadTranscript();
     if (
       persisted.status === 'fulfilled' &&
       Array.isArray(persisted.value?.logs)
@@ -1663,6 +1726,7 @@ export class FlowExecutionView extends LitElement {
     if (message.execution_id === this.executionId) {
       if (message.type === 'model_gateway_call') {
         this.appendGatewayEvent(message as FlowGatewayEvent);
+        this.appendTranscriptEvent(message as FlowGatewayEvent);
         return;
       }
 
@@ -1961,20 +2025,14 @@ export class FlowExecutionView extends LitElement {
   gatewayEventsLoaded = false;
 
   /**
-   * True once the events were fetched with full payloads. The metadata-only
-   * fetch drops `conversation_preview`, which is exactly what the transcript
-   * is built from, so the transcript tab has to ask for the full payloads.
-   */
-  gatewayEventsFullLoaded = false;
-
-  /**
    * Read the execution's gateway events.
    *
-   * @param metadataOnly Drop the large payloads; the transcript needs them.
+   * @param metadataOnly Drop the large payloads. The transcript reads its
+   *   own pages (`loadTranscript`), so every caller passes true.
    * @param bounded Ask only for the newest `INITIAL_GATEWAY_EVENTS_TAIL`
    *   model calls. This is the page's first read: without it the endpoint
    *   returns every log row of the run, agent log lines included. Unbounded
-   *   is the older read, kept for the transcript and "load earlier calls".
+   *   is the older read, kept for "load earlier calls".
    */
   async loadGatewayEvents(
     metadataOnly: boolean = false,
@@ -1995,7 +2053,7 @@ export class FlowExecutionView extends LitElement {
     try {
       // Every metadata read feeds only model-call consumers (timeline cards,
       // the strip, the model list, the error line), so it asks for model
-      // calls alone. The transcript's full read stays as it always was.
+      // calls alone.
       const modelCallsOnly = metadataOnly;
       const tail = bounded ? INITIAL_GATEWAY_EVENTS_TAIL : undefined;
       const response = await getFlowExecutionGatewayEvents(
@@ -2008,7 +2066,6 @@ export class FlowExecutionView extends LitElement {
       this.gatewayEvents = response.logs || [];
       this.gatewayEventsSource = response.source;
       this.gatewayEventsLoaded = true;
-      this.gatewayEventsFullLoaded = !metadataOnly;
       this.gatewayEventsBounded = bounded;
       this.gatewayEventsTruncated = !!response.has_more;
       this.applyGatewayMetricsFromEvents();
@@ -2022,22 +2079,106 @@ export class FlowExecutionView extends LitElement {
     } finally {
       if (current()) this.isLoadingGatewayEvents = false;
     }
-    if (!current()) return;
+  }
 
-    // A switch to the transcript while this fetch was in flight was dropped by
-    // `handleTabShow`, which leaves the transcript reading the metadata-only
-    // events — and `conversation_preview`, the only thing it is built from, is
-    // exactly what those leave out. Deferred, not dropped: the upgrade runs as
-    // soon as the metadata lands. A full load never re-enters here, so this
-    // cannot loop.
-    if (
-      metadataOnly &&
-      this.activeTab === 'transcript' &&
-      !this.gatewayEventsFullLoaded &&
-      !this.gatewayEventsError
-    ) {
-      await this.loadGatewayEvents(false);
+  /**
+   * Read the newest transcript page, or with `older` the page before the
+   * oldest call already shown (#1208). Each page is a bounded delta read:
+   * history an older call on the page carried is left out, so a page costs
+   * what its calls add, not what they replay.
+   */
+  async loadTranscript(older: boolean = false) {
+    const executionId = this.executionId;
+    const generation = this.executionGeneration;
+    if (!executionId) return;
+    if (this.transcriptLoading || this.transcriptLoadingMore) return;
+    const before = older ? this.transcriptNextCursor : null;
+    if (older && !before) return;
+    const current = () =>
+      this.isConnected &&
+      this.executionId === executionId &&
+      this.executionGeneration === generation;
+    this.transcriptRequested = true;
+    if (older) this.transcriptLoadingMore = true;
+    else this.transcriptLoading = true;
+    this.transcriptError = null;
+    try {
+      const response = await getFlowExecutionGatewayEvents(
+        executionId,
+        TRANSCRIPT_PAGE_SIZE,
+        false,
+        true,
+        {
+          history: 'delta',
+          historyWindow: TRANSCRIPT_HISTORY_WINDOW,
+          before: before ?? undefined,
+        }
+      );
+      if (!current()) return;
+      // Keyed like the timeline: a live call has no row id, only its usage
+      // id, and the stored row of the same call must replace it, not join it.
+      const byKey = new Map<string, FlowGatewayEvent>();
+      for (const event of this.transcriptEvents)
+        byKey.set(this.getGatewayEventKey(event), event);
+      // A refreshed newest page that shares no call with the paged calls
+      // is newer than all of them, and calls between may be unread. A live
+      // call does not count: the one that revealed a gap is on this page.
+      const pageKeys = (response.logs || []).map((event) =>
+        this.getGatewayEventKey(event)
+      );
+      const overlaps = pageKeys.some((key) =>
+        this.transcriptPagedKeys.has(key)
+      );
+      for (const key of pageKeys) this.transcriptPagedKeys.add(key);
+      for (const event of response.logs || [])
+        byKey.set(this.getGatewayEventKey(event), event);
+      this.transcriptEvents = Array.from(byKey.values());
+      const pagination = response.pagination;
+      this.transcriptTotal =
+        typeof pagination?.total === 'number' ? pagination.total : null;
+      // A newest-page refresh (realtime recovery) that overlaps the paged
+      // calls cannot change what is older than them: keep their cursor.
+      // One that does not overlap may have skipped a gap longer than a
+      // page, so paging back starts from it and walks through the gap.
+      if (older || !this.transcriptPageLoaded || !overlaps) {
+        this.transcriptNextCursor =
+          (pagination?.has_more ?? response.has_more)
+            ? (pagination?.next_cursor ?? null)
+            : null;
+      }
+      if (!older) this.transcriptPageLoaded = true;
+    } catch (error) {
+      if (!current()) return;
+      console.error('Failed to fetch the transcript:', error);
+      // A failed first page is retried by reopening the tab or the retry
+      // action; a failed older page keeps its cursor for the button.
+      if (!older && !this.transcriptPageLoaded)
+        this.transcriptRequested = false;
+      this.transcriptFailedOlder = older;
+      this.transcriptError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load the transcript';
+    } finally {
+      if (current()) {
+        this.transcriptLoading = false;
+        this.transcriptLoadingMore = false;
+      }
     }
+  }
+
+  /** A live model call joins the transcript once its first page is read. */
+  private appendTranscriptEvent(event: FlowGatewayEvent) {
+    if (!this.transcriptRequested) return;
+    const key = this.getGatewayEventKey(event);
+    if (
+      this.transcriptEvents.some(
+        (existing) => this.getGatewayEventKey(existing) === key
+      )
+    )
+      return;
+    this.transcriptEvents = [event, ...this.transcriptEvents];
+    if (this.transcriptTotal !== null) this.transcriptTotal += 1;
   }
 
   async handleGatewayEventExpand(eventId: string) {
@@ -2090,9 +2231,18 @@ export class FlowExecutionView extends LitElement {
     this.gatewayEvents = [];
     this.gatewayEventsSource = null;
     this.gatewayEventsLoaded = false;
-    this.gatewayEventsFullLoaded = false;
     this.gatewayEventsTruncated = false;
     this.gatewayEventsBounded = false;
+    this.transcriptEvents = [];
+    this.transcriptLoading = false;
+    this.transcriptLoadingMore = false;
+    this.transcriptError = null;
+    this.transcriptTotal = null;
+    this.transcriptNextCursor = null;
+    this.transcriptRequested = false;
+    this.transcriptPageLoaded = false;
+    this.transcriptFailedOlder = false;
+    this.transcriptPagedKeys = new Set();
     this.liveToolActivityEvents = [];
     // Sessions belong to one execution; a refresh of the same one keeps
     // them so the panel does not flicker, a new execution starts empty.
@@ -2123,12 +2273,11 @@ export class FlowExecutionView extends LitElement {
     void this.loadEvidenceStatus(executionId);
 
     // The timeline is the default tab and merges model calls, so their first
-    // read starts with the page rather than on tab open. A deep link straight
-    // to the transcript needs the full payloads, so it asks for those.
-    void this.loadGatewayEvents(
-      this.activeTab !== 'transcript',
-      this.activeTab !== 'transcript'
-    );
+    // read starts with the page rather than on tab open. The strip and the
+    // error line read the same metadata, so a deep link to the transcript
+    // asks for it too, and for the transcript's own first page.
+    void this.loadGatewayEvents(true, true);
+    if (this.activeTab === 'transcript') void this.loadTranscript();
     void this.loadFlowForExecution(execution, current);
     void this.loadMetricsForExecution(executionId, current);
     await this.loadInitialLogs(executionId, current);
@@ -2924,13 +3073,12 @@ export class FlowExecutionView extends LitElement {
     if (!isExecutionTab(name)) return;
     this.activeTab = name;
     this.rememberTab(name);
-    if (this.isLoadingGatewayEvents) return;
-    if (name === 'transcript' && !this.gatewayEventsFullLoaded) {
-      // The transcript needs conversation_preview, which the metadata-only
-      // fetch strips, so opening it upgrades the events to full payloads once.
-      this.loadGatewayEvents(false);
+    if (name === 'transcript' && !this.transcriptRequested) {
+      // The transcript reads its own bounded pages, once per execution.
+      void this.loadTranscript();
       return;
     }
+    if (this.isLoadingGatewayEvents) return;
     if (name === 'timeline' && !this.gatewayEventsLoaded) {
       this.loadGatewayEvents(true, true);
     }
@@ -3529,20 +3677,52 @@ ${execution.model_output_summary}</pre>
   private renderTranscriptPanel(running: boolean) {
     return html`
       <div class="transcript-panel">
+        ${this.renderTranscriptPageNote()}
         <session-chat-view
-          .events=${this.gatewayEvents}
+          .events=${this.transcriptEvents}
           .loading=${
-            // While the events are being upgraded to full payloads there is
-            // no conversation to build yet, and claiming "nothing captured"
-            // in that gap would be a lie.
-            this.isLoadingGatewayEvents && !this.gatewayEventsFullLoaded
+            // Until the first page lands there is no conversation to build,
+            // and claiming "nothing captured" in that gap would be a lie.
+            this.transcriptLoading || !this.transcriptRequested
           }
+          .hasMoreEvents=${this.transcriptNextCursor !== null}
+          .loadingMoreEvents=${this.transcriptLoadingMore}
+          @session-events-page-requested=${() => void this.loadTranscript(true)}
           .followLive=${running && this.followLive}
           ?scrollable=${running}
           emptyText="No model conversation was captured for this run."
         ></session-chat-view>
       </div>
     `;
+  }
+
+  /** "Showing N of M" while older calls are left unread, and read errors. */
+  private renderTranscriptPageNote() {
+    if (this.transcriptError) {
+      const older = this.transcriptFailedOlder;
+      return html`<div class="transcript-page-note" role="alert">
+        Failed to load the transcript: ${this.transcriptError}
+        <sl-button
+          size="small"
+          variant="default"
+          data-testid="transcript-retry"
+          @click=${() => void this.loadTranscript(older)}
+        >
+          Retry
+        </sl-button>
+      </div>`;
+    }
+    const shown = this.transcriptEvents.length;
+    const total = this.transcriptTotal;
+    if (this.transcriptNextCursor === null || total === null || shown >= total)
+      return nothing;
+    return html`<div
+      class="transcript-page-note"
+      role="note"
+      data-testid="transcript-page-note"
+    >
+      Showing the latest ${shown} of ${total} model calls.
+    </div>`;
   }
 
   private renderLogsPanel(running: boolean) {
