@@ -1590,6 +1590,39 @@ def test_single_admin_still_self_confirms(harness, db_session):
     assert granted[0].details["approval"] == "self_confirmed"
 
 
+def test_single_admin_cannot_self_confirm_an_expired_view(
+    harness: Any, db_session: Any
+) -> None:
+    """The self-confirm path must reject expiry before the sweeper runs."""
+    h = harness
+    grant_permission(db_session, h.user, "decide_approvals")
+    grant_permission(db_session, h.user, "control_managed_agent")
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.viewer(view) as sock:
+                await RfbViewer(sock).handshake()
+                row = h.view(view["view_id"])
+                assert row.state == "live"
+                row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                    seconds=1
+                )
+                h.db.commit()
+                async with h.http() as client:
+                    response = await client.post(
+                        f"/api/v1/desktop/views/{view['view_id']}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                assert response.status_code == 409, response.text
+                assert response.json()["detail"]["code"] == "desktop_view_closed"
+                assert h.view(view["view_id"]).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert h.audit("desktop.control.granted") == []
+
+
 def test_closing_the_view_settles_its_control_request(harness, two_admins):
     h = harness
 

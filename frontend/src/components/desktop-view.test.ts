@@ -396,8 +396,8 @@ describe('desktop-view', () => {
     expect(el.shadowRoot!.querySelector('sl-button.release-control')).to.exist;
   });
 
-  it('says so when the control request is not approved', async () => {
-    const viewId = `live-denied-${Date.now()}`;
+  it('shows a denied control request only until the view is reopened', async () => {
+    let viewId = `live-denied-${Date.now()}`;
     const pending = { approval_id: 'appr-2', state: 'pending' };
     let decided = false;
     install({
@@ -429,6 +429,15 @@ describe('desktop-view', () => {
       )
     );
     expect(el.shadowRoot!.querySelector('sl-button.request-control')).to.exist;
+    await el.end();
+    viewId = `live-reopened-${Date.now()}`;
+    await el.open();
+    await waitUntil(() => stateOf(el) === 'live', 'reopened', {
+      timeout: 10000,
+    });
+    expect(el.shadowRoot!.textContent).to.not.contain(
+      DESKTOP_VIEW_STRINGS.controlNotApproved
+    );
   });
 });
 

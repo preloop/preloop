@@ -915,9 +915,9 @@ async def _grant_control(
     def work(db: Session) -> tuple[dict, str]:
         _authorize_operator(db, user)
         view, endpoint = _own_view(db, user, view_id)
-        if view.state == "closed":
-            raise _error(409, "desktop_view_closed", "The desktop view has ended")
         now = _now()
+        if view.state == "closed" or view.expires_at <= now:
+            raise _error(409, "desktop_view_closed", "The desktop view has ended")
         until = min(
             view.expires_at, now + timedelta(seconds=broker.CONTROL_MAX_SECONDS)
         )

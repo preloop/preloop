@@ -267,6 +267,7 @@ export class DesktopViewElement extends LitElement {
     this.closedReason = null;
     this.holder = null;
     this.errorText = '';
+    this.controlNote = '';
     let view: DesktopView;
     try {
       view = await createDesktopView(this.endpointId, {
