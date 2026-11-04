@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import (
     Session,
     contains_eager,
+    defer,
     joinedload,
     load_only,
     with_expression,
@@ -443,6 +444,26 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
+
+    def get_without_workspace(
+        self, db: Session, id: Any, *, account_id: Any
+    ) -> Optional[models.FlowExecution]:
+        """Read an owned execution without transferring its workspace archive.
+
+        Subresources still need legacy logs, evidence and relationships. Only
+        the unrelated workspace BYTEA is excluded; accidental lazy access raises
+        instead of silently adding a large query. Workspace download uses get.
+        """
+        return (
+            db.query(models.FlowExecution)
+            .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == id,
+                models.Flow.account_id == account_id,
+            )
+            .first()
+        )
 
     def get_status(
         self, db: Session, *, execution_id: Any, account_id: Any

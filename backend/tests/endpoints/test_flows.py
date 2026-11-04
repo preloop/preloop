@@ -368,7 +368,7 @@ async def test_get_flow_execution_gateway_events(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = mock_execution
+    mock_crud_flow_execution.get_without_workspace.return_value = mock_execution
 
     row = MagicMock()
     row.execution_id = execution_id
@@ -411,7 +411,7 @@ async def test_get_flow_execution_gateway_events_not_found(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = None
+    mock_crud_flow_execution.get_without_workspace.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(
@@ -1381,7 +1381,7 @@ def test_get_flow_execution_metrics_includes_limits_and_limit_status(
     )
     execution = MagicMock()
     execution.id = execution_id
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     mock_metrics_service = mocker.patch(
         "preloop.services.execution_metrics.ExecutionMetricsService"
@@ -1607,7 +1607,7 @@ async def test_get_flow_execution_evidence_status_uses_persisted_receipt(
         "sha256": "abc",
         "artifact_id": str(uuid.uuid4()),
     }
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
     inspect = mocker.patch("preloop.services.flow_artifacts.inspect_evidence")
 
     status = await maybe_await(
@@ -1620,7 +1620,7 @@ async def test_get_flow_execution_evidence_status_uses_persisted_receipt(
     assert status["status"] == "available"
     assert status["kind"] == "evidence"
     assert status["integrity_verified"] is False
-    mock_crud_flow_execution.get.assert_called_once_with(
+    mock_crud_flow_execution.get_without_workspace.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
 
@@ -1639,7 +1639,7 @@ async def test_get_flow_execution_evidence(
     execution = MagicMock()
     execution.id = execution_id
     execution.evidence_archive = b"\x1f\x8b-fake-gzip-bytes"
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
     mocker.patch(
         "preloop.api.endpoints.flows.load_evidence",
         return_value=(
@@ -1669,7 +1669,7 @@ async def test_get_flow_execution_evidence(
     assert response.headers["x-preloop-evidence-status"] == "available"
     assert response.headers["x-preloop-evidence-kind"] == "evidence"
     assert response.headers["x-preloop-evidence-integrity"] == "verified"
-    mock_crud_flow_execution.get.assert_called_once_with(
+    mock_crud_flow_execution.get_without_workspace.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
 
@@ -1688,7 +1688,7 @@ async def test_get_flow_execution_evidence_none_captured(
     execution = MagicMock()
     execution.id = execution_id
     execution.evidence_archive = None
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
     mocker.patch(
         "preloop.api.endpoints.flows.load_evidence",
         side_effect=flows.EvidenceUnavailableError(
@@ -1717,7 +1717,7 @@ async def test_get_flow_execution_evidence_execution_not_found(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = None
+    mock_crud_flow_execution.get_without_workspace.return_value = None
 
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(
@@ -2210,7 +2210,7 @@ async def test_get_flow_execution_logs_runner_backed_reads_database(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = mock_execution
+    mock_crud_flow_execution.get_without_workspace.return_value = mock_execution
 
     mock_log_crud = mocker.patch(
         "preloop.api.endpoints.flows.crud_flow_execution_log",
@@ -2263,7 +2263,7 @@ async def test_get_flow_execution_logs_queued_runner_reads_database(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = mock_execution
+    mock_crud_flow_execution.get_without_workspace.return_value = mock_execution
 
     mock_log_crud = mocker.patch(
         "preloop.api.endpoints.flows.crud_flow_execution_log",
@@ -3849,7 +3849,9 @@ async def test_control_execution_logs_use_bound_executor(mock_account, mocker) -
     execution = MagicMock()
     execution.status = "RUNNING"
     execution.agent_session_reference = f"control:{uuid.uuid4()}:example-command"
-    mocker.patch.object(flows.crud_flow_execution, "get", return_value=execution)
+    mocker.patch.object(
+        flows.crud_flow_execution, "get_without_workspace", return_value=execution
+    )
     executor_class = mocker.patch("preloop.agents.agent_control.AgentControlExecutor")
     executor_class.return_value.get_logs = AsyncMock(
         return_value=["[agent_control] Read file"]
@@ -3876,7 +3878,9 @@ async def test_control_execution_log_tail_pagination_has_no_overlap(
     execution = MagicMock()
     execution.status = "RUNNING"
     execution.agent_session_reference = f"control:{uuid.uuid4()}:example-command"
-    mocker.patch.object(flows.crud_flow_execution, "get", return_value=execution)
+    mocker.patch.object(
+        flows.crud_flow_execution, "get_without_workspace", return_value=execution
+    )
     executor_class = mocker.patch("preloop.agents.agent_control.AgentControlExecutor")
     lines = [f"line-{index}" for index in range(450)]
     executor_class.return_value.get_logs = AsyncMock(return_value=lines)
