@@ -243,7 +243,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
 
-> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add fine-grained RBAC/ABAC, audit export/retention and organizational controls. Audit logging is available in every edition. Contact sales@preloop.ai for more information.
+> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add fine-grained RBAC/ABAC and organizational controls. Audit logging, the audit hash chain, retention, legal holds and signed exports are available in every edition. Contact sales@preloop.ai for more information.
 
 ## Redaction Policy
 

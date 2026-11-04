@@ -45,7 +45,7 @@ and does not drift with the release schedule.
 
 | Release line | Security fixes | Notes |
 | --- | --- | --- |
-| Latest minor (currently `0.15.x`) | Yes, until the support period ends | Fixes land here first |
+| The latest release line (from 1.0.0: `1.0.x`, then each later minor) | Yes, until the support period ends | Fixes land here first |
 | Previous minor | Yes, for 90 days after the next minor ships | A bounded upgrade window for self-hosted operators, not an indefinite branch |
 | Anything older | No | Upgrade to a supported line |
 

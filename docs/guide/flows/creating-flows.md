@@ -274,6 +274,15 @@ Flows need an AI agent to execute the automation tasks.
    - Lightweight multi-provider agentic coding CLI
    - Best for: Quick code tasks, scripting, automation
 
+**Agent CLIs on your own machines.** A flow can also run Copilot CLI,
+Cursor CLI, Claude Code or Devin CLI on a private runner that reports the
+harness as signed in. Turn on **Route by harness**, pick the model, and
+choose what happens when no runner is eligible (`harness_fallback`:
+`queue`, `fallback_server` or `fail`). Those runs use the runner user's own
+login and seat; Copilot, Cursor and Devin runs are not gateway metered. See
+[Your machine as a Preloop runner](../runners/your-machine.md#flows-on-your-machine)
+and [Model routing](model-routing.md).
+
 #### Configure AI Model
 
 Each flow needs an AI model (LLM) to power the agent.

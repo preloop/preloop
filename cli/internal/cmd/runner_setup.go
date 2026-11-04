@@ -30,6 +30,10 @@ const (
 	// note (#1485). The CLI links it even before that page is live.
 	personalRunnersConsentURL = "https://docs.preloop.ai/security/personal-runners/"
 
+	// personalRunnerGuideURL is the user guide for a runner installed on
+	// a developer's own machine, with its FAQ (#1486).
+	personalRunnerGuideURL = "https://docs.preloop.ai/guide/runners/your-machine/"
+
 	runnerRequiredDefault  = "Your organisation requires a Preloop runner on member machines."
 	runnerForbiddenDefault = "A Preloop runner is not allowed for this account."
 )
@@ -400,7 +404,8 @@ It can run flow executions on this machine.
 It reports installed agent harnesses (names, versions, and whether each one is signed in). It never reads or forwards harness credentials.
 Remote sessions stay off until you enable them for a harness.
 Remove it with: preloop runner disable
-What the runner is allowed to do: %s`, target, personalRunnersConsentURL)
+What the runner is allowed to do: %s
+Guide and FAQ: %s`, target, personalRunnersConsentURL, personalRunnerGuideURL)
 }
 
 func runnerRequiredNotice(policy *runnerPolicy) string {

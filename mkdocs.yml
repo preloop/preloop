@@ -273,6 +273,7 @@ nav:
           - Jira repository binding: guide/flows/jira-repository-binding.md
 
   - Runners:
+      - Your machine as a runner: guide/runners/your-machine.md
       - Local models through a runner: guide/runner-local-models.md
       - Account runner requirements: guide/runners/policy.md
       - Linux quickstart: guide/runners/quickstart-linux.md

@@ -81,6 +81,7 @@ Pick the quick start that matches what you want to do first:
 - **[Onboard local agents with the CLI (60s)](guide/quickstart-cli.md)**: One-line install that discovers and rewires the agents already installed on your machine through Preloop. Recommended if you have Claude Code, Codex CLI, Gemini CLI, Hermes, OpenClaw, or OpenCode running locally.
 - **[Part 1: Safety Layer (5 min)](guide/quickstart.md)**: Create your account, connect an MCP server, define layered allow / deny / approval rules, and test them with Claude Code.
 - **[Part 2: Agentic Flows (5 min)](guide/quickstart-flows.md)**: Build an event-driven workflow that calls your protected tools through an AI model.
+- **[Your machine as a Preloop runner](guide/runners/your-machine.md)**: What the runner offered at login installs, what it reports, running flows and remote sessions with your own agent CLI and seat, and how to undo it.
 
 Once agents are onboarded, the [Cost Analytics](guide/concepts/cost-analytics.md) and [Runtime Sessions](guide/concepts/runtime-sessions.md) areas show what they did and what it cost.
 

@@ -2,6 +2,14 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+Installed the runner from the `preloop login` prompt on your own laptop? Start with
+[Your machine as a Preloop runner](your-machine.md), which covers what it
+reports, what it can run and how to remove it. This page is for setting up
+and tuning a runner by hand. Copilot CLI, Cursor CLI, Claude Code and Devin
+CLI get generated host profiles, so a hand-written profile for them is an
+advanced override. Codex, OpenCode and DeepSeek native flows still need a
+hand-written profile ([details](quickstart-linux.md#codex-opencode-and-deepseek-native-profiles)).
+
 The Preloop CLI **is** the self-hosted runner on Windows too: it registers
 with your control plane, holds an outbound WebSocket, leases flow executions,
 and runs them locally. On a Windows developer laptop the primary execution

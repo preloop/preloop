@@ -177,6 +177,9 @@ func TestPerformRunnerSetupDeclineThenSecondLoginSkips(t *testing.T) {
 	if !strings.Contains(first.String(), personalRunnersConsentURL) {
 		t.Fatal("prompt did not link the consent page")
 	}
+	if !strings.Contains(first.String(), personalRunnerGuideURL) {
+		t.Fatal("prompt did not link the personal runner guide")
+	}
 	if !strings.Contains(first.String(), "[y/N]") {
 		t.Fatal("prompt default is not no")
 	}

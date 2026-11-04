@@ -109,7 +109,9 @@ console:
 - `POST /api/v1/runner-sessions/{session_id}/stop`
 
 See [Remote sessions on your runners](../runners/remote-sessions.md) for the
-request shapes, who may start a session and why a start can be refused.
+request shapes, who may start a session and why a start can be refused, and
+[Your machine as a Preloop runner](../runners/your-machine.md) for what the
+host user enables and how to turn it off.
 
 ---
 
