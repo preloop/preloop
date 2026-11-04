@@ -427,7 +427,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         return (
             db.query(FlowRunner)
             .filter(_runner_visibility_clause(db, account_id))
-            .order_by(FlowRunner.last_heartbeat.desc().nullslast())
+            .order_by(FlowRunner.last_heartbeat.desc().nullslast(), FlowRunner.id)
             .offset(skip)
             .limit(limit)
             .all()

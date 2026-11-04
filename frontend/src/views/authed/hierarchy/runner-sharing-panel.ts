@@ -223,7 +223,10 @@ export class RunnerSharingPanel extends LitElement {
       this.runnerId = this.context.runnerId;
       this.dialogOpen = true;
     }
-    if (changed.has('runnerId') && this.runnerId) void this.load();
+    if (changed.has('runnerId') && this.runnerId) {
+      this.approval = 'per_request';
+      void this.load();
+    }
   }
 
   private async loadPeople(): Promise<void> {
@@ -468,6 +471,7 @@ export class RunnerSharingPanel extends LitElement {
           ? { approval: this.approval }
           : {}),
       });
+      this.approval = 'per_request';
       this.granteeKey = '';
       this.harnesses = '';
       this.directories = '';

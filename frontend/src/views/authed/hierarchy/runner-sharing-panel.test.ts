@@ -272,6 +272,61 @@ describe('runner sharing panel', () => {
       directory_ids: ['dir_d'],
       approval: 'none',
     });
+    await waitUntil(() => !(el as unknown as { busy: boolean }).busy);
+    const nextGrantee = root.querySelector(
+      '[data-testid="grantee"]'
+    ) as HTMLSelectElement;
+    nextGrantee.value = 'user:user-2';
+    nextGrantee.dispatchEvent(new CustomEvent('sl-change'));
+    await el.updateComplete;
+    (root.querySelector('[data-testid="share-submit"]') as HTMLElement).click();
+    await waitUntil(
+      () => api.callsTo(`/api/v1/runners/${RUNNER}/shares`, 'POST').length === 2
+    );
+    expect(
+      api.callsTo(`/api/v1/runners/${RUNNER}/shares`, 'POST')[1].body.approval
+    ).to.equal('per_request');
+  });
+
+  it('resets approval when switching runners', async () => {
+    api = mockApi({
+      routes: [
+        {
+          path: `/api/v1/runners/${RUNNER}/shares`,
+          body: sharing({ grantees: [] }),
+        },
+        {
+          path: '/api/v1/runners/runner-2/shares',
+          body: sharing({ runner_id: 'runner-2', grantees: [] }),
+        },
+      ],
+    });
+    const el = await mount();
+    const approval = el.shadowRoot!.querySelector(
+      '[data-testid="approval"]'
+    ) as HTMLSelectElement;
+    approval.value = 'none';
+    approval.dispatchEvent(new CustomEvent('sl-change'));
+    el.context = {
+      runners: [
+        { id: RUNNER, name: 'laptop' },
+        { id: 'runner-2', name: 'desktop' },
+      ],
+      runnerId: 'runner-2',
+    };
+    await waitUntil(
+      () => api.callsTo('/api/v1/runners/runner-2/shares', 'GET').length === 1
+    );
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="approval"]')
+    );
+    expect(
+      (
+        el.shadowRoot!.querySelector(
+          '[data-testid="approval"]'
+        ) as HTMLSelectElement
+      ).value
+    ).to.equal('per_request');
   });
 });
 
