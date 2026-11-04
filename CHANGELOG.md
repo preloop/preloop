@@ -49,8 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Personal runners report sleep and wake. On Linux with systemd-logind the
   runner sends `going_to_sleep` before suspend under a short sleep delay and
   stops heartbeating, so the console shows `asleep` and routing skips it. On
-  every host the runner detects wake (the wall clock jumps ahead of the
-  monotonic clock) and reconnects at once with the backoff reset. Heartbeats
+  every host the runner detects wake (a wall-clock gap between two 5 second
+  samples that is 20 seconds or more longer than expected) and reconnects at once with the backoff reset. Heartbeats
   carry `os_idle_seconds` on macOS and Windows, which drives the `idle`
   state. macOS and Windows have no pre-sleep signal in this build and fall
   back to `offline`. Refs #1487, #1507.

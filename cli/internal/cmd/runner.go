@@ -812,6 +812,7 @@ func runRunnerSession(
 		case event := <-jobs.power:
 			if event.kind == runnerPowerWake {
 				event.release()
+				drainRunnerPowerEvents(jobs.power)
 				return errRunnerWoke
 			}
 			if event.stale(time.Now()) {

@@ -136,8 +136,23 @@ func waitForReconnect(
 		case event := <-power:
 			event.release()
 			if event.kind == runnerPowerWake {
+				drainRunnerPowerEvents(power)
 				return true, true
 			}
+		}
+	}
+}
+
+// drainRunnerPowerEvents releases every queued event. Called on wake: a
+// sleep event still queued then belongs to the suspend that just ended,
+// however short it was, and must not mark the woken host asleep.
+func drainRunnerPowerEvents(power <-chan runnerPowerEvent) {
+	for {
+		select {
+		case event := <-power:
+			event.release()
+		default:
+			return
 		}
 	}
 }

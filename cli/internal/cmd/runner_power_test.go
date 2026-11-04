@@ -227,3 +227,38 @@ func TestStaleSleepEventAfterWakeIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+func TestWakeDropsSleepEventQueuedBehindIt(t *testing.T) {
+	testenv.SetTempHome(t)
+	events := make(chan runnerPowerEvent, 4)
+	server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
+	interrupt := make(chan os.Signal, 1)
+	jobs := newRunnerJobs(1)
+	jobs.power = events
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- runRunnerSession(dialJobServer(t, server), interrupt, io.Discard, jobs)
+	}()
+	waitForMessageType(t, messages, "heartbeat")
+	released := make(chan struct{})
+	// A short suspend: the wake is handled first, its sleep event is still
+	// queued and fresh.
+	events <- runnerPowerEvent{kind: runnerPowerWake}
+	events <- runnerPowerEvent{kind: runnerPowerSleep, done: func() { close(released) }, at: time.Now()}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, errRunnerWoke) {
+			t.Fatalf("session ended with %v, want errRunnerWoke", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not end on wake")
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("sleep event queued behind the wake was not drained")
+	}
+	if len(events) != 0 {
+		t.Fatal("events left queued after wake")
+	}
+}
