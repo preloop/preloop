@@ -802,6 +802,9 @@ export class AgentsView extends LitElement {
         .agent-card .tag-chip::part(base) {
           display: block;
         }
+        .agent-card .tag-chip sl-icon {
+          margin-right: 4px;
+        }
         .model-traffic-failing {
           background: var(--sl-color-danger-50);
           border-left: 3px solid var(--sl-color-danger-600);
@@ -1198,9 +1201,6 @@ export class AgentsView extends LitElement {
           }
           .agent-meta {
             display: none;
-          }
-          .title-row {
-            padding-right: 32px;
           }
         }
         .connection-line.exiting {
