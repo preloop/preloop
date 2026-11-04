@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
 from preloop.models.crud.runtime_session import (
@@ -567,9 +567,11 @@ def test_listing_carries_the_hook_reported_cwd(
     assert by_id[str(data["sessions"]["empty"].id)]["cwd"] is None
 
 
+@pytest.mark.parametrize("limit", [1, 20])
 def test_sparse_principal_ranking_scopes_usage_before_aggregation(
     db_session: Session,
     session_listing_data: dict[str, Any],
+    limit: int,
 ) -> None:
     """A short principal page must not rank unrelated account usage."""
     data = session_listing_data
@@ -597,7 +599,7 @@ def test_sparse_principal_ranking_scopes_usage_before_aggregation(
             runtime_principal_type="managed_agent",
             runtime_principal_id="sparse-agent",
             min_requests=1,
-            limit=20,
+            limit=limit,
         )
     finally:
         event.remove(db_session.connection(), "before_cursor_execute", capture)
@@ -605,10 +607,12 @@ def test_sparse_principal_ranking_scopes_usage_before_aggregation(
     assert result["has_more"] is False
     assert [item["id"] for item in result["items"]] == [str(target.id)]
     assert result["items"][0]["total_requests"] == 4
-    rankings = [sql for sql in statements if "session_last_request" in sql]
+    ranking_name = "session_recent_request" if limit == 1 else "session_last_request"
+    rankings = [sql for sql in statements if ranking_name in sql]
     assert len(rankings) == 1
     assert "api_usage.runtime_session_id IN (" in rankings[0]
-    assert not any("session_recent_request" in sql for sql in statements)
+    if limit == 20:
+        assert not any("session_recent_request" in sql for sql in statements)
 
 
 def test_empty_principal_skips_usage_ranking(
@@ -641,3 +645,66 @@ def test_empty_principal_skips_usage_ranking(
         "session_recent_request" in sql or "session_last_request" in sql
         for sql in statements
     )
+
+
+def test_candidate_growth_falls_back_without_truncating_sessions(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session arriving after the count must not turn the bound into a cap."""
+    from preloop.models.crud import runtime_session as runtime_session_crud
+
+    data = session_listing_data
+    monkeypatch.setattr(runtime_session_crud, "_RANKING_SMALL_SESSION_LIMIT", 3)
+    original_count = Query.count
+    added = False
+
+    def count_then_grow(query: Query) -> int:
+        nonlocal added
+        total = original_count(query)
+        if not added:
+            added = True
+            db_session.add(
+                models.RuntimeSession(
+                    account_id=data["account"].id,
+                    session_source_type="custom",
+                    session_source_id="arrived-after-count",
+                    started_at=data["now"],
+                )
+            )
+            db_session.flush()
+        return total
+
+    monkeypatch.setattr(Query, "count", count_then_grow)
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        result = crud_runtime_session.list_account_sessions(
+            db_session, account_id=str(data["account"].id), limit=20
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    assert result["total"] == 3  # Count predates the new session, as before.
+    assert {item["session_source_id"] for item in result["items"]} == {
+        data["sessions"][name].session_source_id
+        for name in ("direct", "legacy", "empty")
+    } | {"arrived-after-count"}
+    rankings = [
+        sql
+        for sql in statements
+        if "session_recent_request" in sql or "session_last_request" in sql
+    ]
+    assert rankings
+    assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)
