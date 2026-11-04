@@ -51,6 +51,9 @@ type runnerJobs struct {
 	// sessions hosts remote harness sessions; nil in one-shot and test
 	// loops that never accept them.
 	sessions *runnerSessionManager
+	// power carries host sleep and wake events (runner_power.go); nil when
+	// no watcher runs, and a nil channel never fires.
+	power <-chan runnerPowerEvent
 }
 
 func newRunnerJobs(concurrency int) *runnerJobs {

@@ -294,7 +294,25 @@ runner picker show it. Hover the state to see the last heartbeat time.
 | `offline` | No heartbeat for 45 seconds and no sleep signal. | No |
 
 `idle` appears only for runners that report OS idle time; older runners show
-`online` instead. A runner that wakes up and reconnects returns to `online` on
+`online` instead. The runner reports it on macOS (`ioreg` HIDIdleTime) and
+Windows (`GetLastInputInfo`); Linux runners do not report it and show
+`online`.
+
+### Sleep and wake
+
+| Host | Before sleep | After wake |
+| --- | --- | --- |
+| Linux with systemd-logind | The runner holds a short logind sleep delay (released after at most 3 seconds), sends `going_to_sleep`, and stops heartbeating, so the runner shows `asleep`. | Reconnects at once on logind's wake signal. |
+| macOS | No signal in this build: IOKit power notifications need a native callback. The runner shows `offline` once heartbeats are 45 seconds old. | Reconnects at once. |
+| Windows | No signal in this build, for the same reason. Shows `offline`. | Reconnects at once. |
+| Linux without logind (containers, minimal hosts) | No signal. Shows `offline`. | Reconnects at once. |
+
+The runner detects wake on every host: during sleep the wall clock moves on
+while the monotonic clock does not, so a gap of 20 seconds or more between
+two 5 second samples means the host slept. It then drops the socket left
+over from before sleep and reconnects with the backoff reset, so the runner
+is back to `online` within seconds of the network coming up instead of
+waiting out a read timeout. A runner that wakes up and reconnects returns to `online` on
 its first heartbeat, and the change is pushed to open console tabs without a
 reload. The thresholds live in one place on the server
 (`backend/preloop/services/runner_presence.py`).

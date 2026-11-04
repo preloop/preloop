@@ -30,18 +30,18 @@ import (
 )
 
 const (
-	runnerStateFile      = "runner.json"
-	runnerHeartbeatEvery = 15 * time.Second
-	runnerPingWait       = 5 * time.Second
+	runnerStateFile = "runner.json"
+	runnerPingWait  = 5 * time.Second
 )
 
 var (
-	runnerReconnectMin = time.Second
-	runnerReconnectMax = 30 * time.Second
-	runnerReadWait     = 45 * time.Second
-	runnerWriteWait    = 5 * time.Second
-	runnerHasDocker    = dockerAvailable
-	newRunnerJobCmd    = defaultNewRunnerJobCmd
+	runnerHeartbeatEvery = 15 * time.Second
+	runnerReconnectMin   = time.Second
+	runnerReconnectMax   = 30 * time.Second
+	runnerReadWait       = 45 * time.Second
+	runnerWriteWait      = 5 * time.Second
+	runnerHasDocker      = dockerAvailable
+	newRunnerJobCmd      = defaultNewRunnerJobCmd
 )
 
 // runnerFatalError stops the process (auth/server rejection). Transport
@@ -619,6 +619,9 @@ func runnerForegroundLoop(
 	jobs := newRunnerJobs(concurrency)
 	jobs.sessions = newRunnerSessionManager(out)
 	defer jobs.sessions.shutdown()
+	powerEvents, stopPower := startRunnerPowerWatcher()
+	defer stopPower()
+	jobs.power = powerEvents
 	backoff := runnerReconnectMin
 	connectedOnce := false
 
@@ -628,11 +631,16 @@ func runnerForegroundLoop(
 		conn, err := dialRunnerWebsocket(wsURL, state.Token)
 		if err != nil {
 			fmt.Fprintf(out, "Connection failed (%v). Retrying in %s...\n", err, backoff)
-			if !waitOrInterrupt(interrupt, backoff) {
+			ok, woke := waitForReconnect(interrupt, jobs.power, backoff)
+			if !ok {
 				stopForegroundOnInterrupt(state, jobs, out)
 				return nil
 			}
-			backoff = nextRunnerBackoff(backoff)
+			if woke {
+				backoff = runnerReconnectMin
+			} else {
+				backoff = nextRunnerBackoff(backoff)
+			}
 			continue
 		}
 		if connectedOnce {
@@ -657,12 +665,23 @@ func runnerForegroundLoop(
 		if errors.As(err, &fatal) {
 			return err
 		}
+		if errors.Is(err, errRunnerWoke) {
+			// The socket from before sleep is dead even if no read has
+			// failed yet. Reconnect now so presence returns to online.
+			fmt.Fprintf(out, "Woke from sleep. Reconnecting...\n")
+			continue
+		}
 		fmt.Fprintf(out, "Connection lost (%v). Reconnecting in %s...\n", err, backoff)
-		if !waitOrInterrupt(interrupt, backoff) {
+		ok, woke := waitForReconnect(interrupt, jobs.power, backoff)
+		if !ok {
 			stopForegroundOnInterrupt(state, jobs, out)
 			return nil
 		}
-		backoff = nextRunnerBackoff(backoff)
+		if woke {
+			backoff = runnerReconnectMin
+		} else {
+			backoff = nextRunnerBackoff(backoff)
+		}
 	}
 }
 
@@ -784,9 +803,27 @@ func runRunnerSession(
 	defer logTicker.Stop()
 	ticker := time.NewTicker(runnerHeartbeatEvery)
 	defer ticker.Stop()
+	// After going_to_sleep no heartbeat may follow: the server clears the
+	// sleep flag on the next one, and the drop would read as offline.
+	sleeping := false
 
 	for {
 		select {
+		case event := <-jobs.power:
+			if event.kind == runnerPowerWake {
+				event.release()
+				return errRunnerWoke
+			}
+			if !sleeping {
+				sleeping = true
+				err := writeRunnerJSON(conn, map[string]any{"type": "going_to_sleep"})
+				event.release()
+				if err != nil {
+					return fmt.Errorf("going_to_sleep: %w", err)
+				}
+			} else {
+				event.release()
+			}
 		case <-interrupt:
 			fmt.Fprintf(out, "Unregistering...\n")
 			jobs.haltAll()
@@ -831,6 +868,9 @@ func runRunnerSession(
 			_ = conn.WriteControl(
 				websocket.PingMessage, nil, time.Now().Add(runnerPingWait),
 			)
+			if sleeping {
+				continue
+			}
 			if err := writeRunnerJSON(conn, runnerHeartbeatMessage(jobs.concurrency)); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}

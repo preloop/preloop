@@ -981,6 +981,7 @@ func runnerHeartbeatMessage(concurrency int) map[string]any {
 	msg["host_exec_profiles"] = hostExecAdvertisements()
 	msg["authorized_directories"] = authorizedDirectoryAdvertisements()
 	runnerInventory.addToHeartbeat(msg)
+	addOSIdleSeconds(msg)
 	// Re-assert ephemeral on every handshake and heartbeat. Registration
 	// already set it, but a row that predates the flag (or a reconnect to a
 	// replica that has not seen the register) must still be deletable when
