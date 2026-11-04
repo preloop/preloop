@@ -2,12 +2,16 @@
 
 This chapter covers the core and plugin split for discovery evidence: observation storage, scoped reads and the console presentation.
 
+## Discovery evidence storage
+
 Optional versioned evidence extends the existing discovery report via the named
 `discovery_evidence` plugin service. Generic immutable observation storage and
 tenant-scoped CRUD live in `preloop.models`; commercial correlation/read policy
 lives in the optional plugin. Candidate deduplication and discovered events
 remain unchanged. Collector assertions preserve provenance and scan gaps, and
 do not establish runtime verification or device attestation.
+
+## Expected-device inventory
 
 Expected-device inventory uses the shared `ExpectedDevice` model and
 `crud_expected_device` persistence boundary. An account-local roster is separate
@@ -17,6 +21,8 @@ receipt history for retained entries and never grants a credential or enrollment
 Latest collection windows remain independent per authenticated reporting source;
 commercial import policy and coverage endpoints are provided by the optional
 fleet service.
+
+## Agents page and agent detail
 
 The Agents page shows managed and discovered agents only. Shared fleet lifecycle
 models, CRUD and lazy console components live in this repository, but fleet routes,
@@ -43,6 +49,8 @@ configuration, and saved flow model selections (default, label routing and enabl
 retry). Gateway auto-registration and historical traffic remain observed usage,
 separate from configuration. Consumer reads stay in the current account and apply
 both resource visibility and the permission to view each consumer kind.
+
+## Fleet map
 
 `GET /api/v1/fleet/map` combines the optional device projection with bounded,
 tenant-owned agent, runner, model and user reads, plus the available hosted model
@@ -81,6 +89,8 @@ approvals travelled (throttled, a state change rather than an animation), and of
 instance administrators a spatial arrangement, with positions stored per user, also
 as an alternative to the Overview inventory table.
 
+## Fleet usage
+
 `GET /api/v1/fleet/usage` adds gateway request, input/output token, optional cache
 read/write token and estimated cost totals keyed by the graph's canonical model
 and provider ids. A bounded visible model configuration mapping applies the same
@@ -97,6 +107,8 @@ Resolved prices take precedence over preflight budget pricing metadata.
 Currency and pricing markers require heap reads through the existing gateway
 window indexes; this endpoint does not claim an index-only scan. Deleted or
 invisible model configurations contribute no node totals.
+
+## Code activity
 
 `GET /api/v1/fleet/code-activity` is the map's code layer: pull and merge requests
 opened, commented on, reviewed and merged in the same window, counted per agent, flow
@@ -118,6 +130,8 @@ while the Overview card lets plain wheel scroll the page. Where the wheel pans
 overflow reachable by panning; on the Overview card, where it does not, Fit
 contains every node (down to the 0.2 zoom-out limit). Code activity toasts sit
 in the free spot nearest the stage's top right that covers no node.
+
+## Work history and classified calls
 
 The optional `work` and `work_truncated` fields seed history with at most 200
 distinct issues and pull requests, newest activity first, in that same bounded
@@ -171,6 +185,8 @@ every sync bumps. `GET /fleet/usage` adds `agents`, `people`, `flows`, `devices`
 and `work` totals keyed by node id: gateway tokens and estimated cost with the
 same honesty rules, tool calls, approvals, PR actions, review comments and
 distinct issues and PRs touched, one grouped, account-scoped query per source.
+
+## Layout and presentation
 
 Spatial (canvas) layout packs measured owner/machine islands first, then flows,
 then providers holding their accounts and models, then work, with block gaps of
@@ -251,6 +267,8 @@ component in its grid, giving Map a bounded full-width row. Embedded sizing excl
 full screen so either host can cover the viewport and restore body scrolling on
 exit. The Show choice remains stored per user and scope.
 
+## Live activity and flow context
+
 Gateway starts light the sender; real completions light the model and show measured
 input/output tokens. Native permission activity identifies its managed agent
 explicitly, without treating a runtime principal ID as a registry ID. Tool activity
@@ -273,5 +291,7 @@ but contributing flows are not a human merger. Richer normalized issue/PR events
 supply titles, label changes, confirmed review states and verified actors. Missing
 fields remain unknown. This in-memory view is not a durable tracker event journal.
 
+
+## Provider callbacks
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.

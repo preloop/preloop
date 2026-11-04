@@ -392,8 +392,6 @@ indexes apply that exclusion in their partial predicate. The older replay-only
 indexes cannot provide an index-only customer read because evaluating the
 additional governance filter requires `meta_data`, which they do not include.
 
-## Reviewed price feeds
-
 [Reviewed price feeds](../guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and
 worker process. Alibaba estimates retain input tiers and distinct implicit,
