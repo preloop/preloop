@@ -453,6 +453,7 @@ deployments only when set. See `https://docs.preloop.ai/guide/governance-review/
 | Name | Description | Value |
 | ---- | ----------- | ----- |
 | `governanceReview.enabled` | `GOVERNANCE_REVIEW_ENABLED`: schedule the hourly digest sweep and the Monday review. Unset keeps the application default, `true` | `null` |
+| `governanceReview.modelAnalysisEnabled` | `GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED`: global model-analysis default; account overrides take precedence. Unset keeps `false` for 1.0.0, with model analysis planned to return in 1.1.0 | `null` |
 | `governanceReview.analysisModel` | `PRELOOP_GOVERNANCE_ANALYSIS_MODEL`: gateway alias of the self-hosted analysis model | `""` |
 
 ### Single sign-on parameters

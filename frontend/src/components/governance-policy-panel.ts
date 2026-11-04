@@ -547,7 +547,8 @@ export class GovernancePolicyPanel extends LitElement {
   }
 
   private async _changeModelAnalysis(event: Event): Promise<void> {
-    const value = (event.target as HTMLInputElement).value;
+    const select = event.target as HTMLInputElement;
+    const value = select.value;
     this._switching = 'model-analysis';
     try {
       this._applySettings(
@@ -557,6 +558,14 @@ export class GovernancePolicyPanel extends LitElement {
       );
       showToast('Model analysis setting saved.', 'success');
     } catch (error) {
+      if (this._settings) {
+        select.value =
+          this._settings.model_analysis_override == null
+            ? 'inherit'
+            : this._settings.model_analysis_override
+              ? 'on'
+              : 'off';
+      }
       showToast(
         error instanceof Error
           ? error.message
@@ -593,6 +602,11 @@ export class GovernancePolicyPanel extends LitElement {
                 <sl-option value="on">On</sl-option>
                 <sl-option value="off">Off</sl-option>
               </sl-select>
+              ${
+                settings.model_analysis_enabled === false
+                  ? html`<p class="meta privacy">${PRIVACY_SENTENCE}</p>`
+                  : nothing
+              }
             </div>`
           : nothing
       }

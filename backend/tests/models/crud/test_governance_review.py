@@ -1257,3 +1257,32 @@ def test_model_analysis_override_preserves_review_settings(
         ).model_analysis_override
         is override
     )
+
+
+def test_inherit_model_analysis_does_not_materialize_default_mode(
+    db_session, test_user, monkeypatch
+):
+    account_id = test_user.account_id
+    assert (
+        crud_governance_review_settings.get_for_account(
+            db_session, account_id=account_id
+        )
+        is None
+    )
+    row = crud_governance_review_settings.set_model_analysis_override(
+        db_session, account_id=account_id, enabled=None
+    )
+    assert row.model_analysis_override is None
+    assert (
+        crud_governance_review_settings.get_for_account(
+            db_session, account_id=account_id
+        )
+        is None
+    )
+    monkeypatch.setenv("PRELOOP_GOVERNANCE_ANALYSIS_MODEL", "analysis-model")
+    assert (
+        crud_governance_review_settings.get_or_default(
+            db_session, account_id=account_id
+        ).mode
+        == "on_own_model"
+    )

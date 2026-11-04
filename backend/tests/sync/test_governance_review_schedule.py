@@ -71,11 +71,13 @@ async def _registered_jobs(mocker: MockerFixture, enabled: bool) -> dict[str, An
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("analysis_enabled", [False, True])
 async def test_both_jobs_are_registered_with_their_triggers(
     mocker: MockerFixture,
+    analysis_enabled: bool,
 ) -> None:
     mocker.patch.object(
-        settings, "governance_review_model_analysis_enabled", True, create=True
+        settings, "governance_review_model_analysis_enabled", analysis_enabled
     )
     jobs = await _registered_jobs(mocker, enabled=True)
     sweep = jobs["governance_session_digest_sweep_job"]
@@ -157,13 +159,3 @@ def test_model_analysis_defaults_off_and_env_override(monkeypatch):
         ).governance_review_model_analysis_enabled
         is True
     )
-
-
-@pytest.mark.asyncio
-async def test_analysis_default_off_keeps_schedule_for_account_overrides(mocker):
-    mocker.patch.object(
-        settings, "governance_review_model_analysis_enabled", False, create=True
-    )
-    jobs = await _registered_jobs(mocker, enabled=True)
-    assert "governance_weekly_review_job" in jobs
-    assert "governance_session_digest_sweep_job" in jobs

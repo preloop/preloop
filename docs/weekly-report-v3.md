@@ -54,7 +54,7 @@ usage totals. Governance cost appears only on its policy-section analysis line.
 | `COST_DIGEST_ENABLED` | `true` | Monday factual exception-email schedule. |
 | Account `model_analysis_override` | `null` | Inherit; `true` on; `false` off. |
 
-`GET /api/v1/governance-review/settings` returns `model_analysis_override`, `model_analysis_default`, and the effective `model_analysis_enabled`. Account admins write the override with `PUT /api/v1/governance-review/model-analysis`, body `{"model_analysis_override": true}` (or `false` / `null`). The platform-admin GET/PUT path is `/api/v1/admin/accounts/{account_id}/governance-review/settings`. Overrides are audited. These routes are provided by Enterprise.
+`GET /api/v1/governance-review/settings` returns `model_analysis_override`, `model_analysis_default`, and the effective `model_analysis_enabled`. It also returns `model_analysis_override_available`: `true` when the core schema supports storing account overrides; `false` on older core versions, where the console hides the selector and overrides cannot be written. Account admins write the override with `PUT /api/v1/governance-review/model-analysis`, body `{"model_analysis_override": true}` (or `false` / `null`). The platform-admin GET/PUT path is `/api/v1/admin/accounts/{account_id}/governance-review/settings`. Overrides are audited. Choosing inherit on an account without saved settings leaves its defaults unsaved. These routes are provided by Enterprise.
 
 ## Most valuable work: recorded outcomes
 

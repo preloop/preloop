@@ -91,6 +91,7 @@ function fakeServer(
     legacyCount?: number;
     watchlistCount?: boolean;
     policyGate?: Promise<void>;
+    analysisSaveFails?: boolean;
   } = {}
 ) {
   let legacyBlocks = options.legacyBlocks ?? 0;
@@ -185,6 +186,8 @@ function fakeServer(
       calls.push({ method, url, body });
       const path = new URL(url, window.location.origin).pathname;
       if (path === '/api/v1/governance-review/model-analysis') {
+        if (options.analysisSaveFails)
+          return json({ detail: 'Save failed' }, 500);
         settings.model_analysis_override = body.model_analysis_override;
         settings.model_analysis_enabled =
           body.model_analysis_override ?? settings.model_analysis_default;
@@ -336,6 +339,25 @@ describe('governance-policy-panel', () => {
     expect(element.shadowRoot!.textContent).not.to.contain(
       'used up its analysis allowance'
     );
+    expect(element.shadowRoot!.textContent).to.contain(PRIVACY_SENTENCE);
+  });
+
+  it('restores the saved analysis option when an update fails', async () => {
+    server = fakeServer('on_platform', 0, { analysisSaveFails: true });
+    server.settings.model_analysis_override = true;
+    const element = await mount(true);
+    const select = element.shadowRoot!.querySelector(
+      '.model-analysis-override'
+    ) as HTMLInputElement;
+    select.value = 'off';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      server.calls.some((c) => c.url.endsWith('/model-analysis'))
+    );
+    await waitUntil(() => !select.disabled);
+    await element.updateComplete;
+    expect(select.value).to.equal('on');
+    expect(server.settings.model_analysis_override).to.equal(true);
   });
 
   it('explains legacy implicit analysis is off until explicit opt-in', async () => {

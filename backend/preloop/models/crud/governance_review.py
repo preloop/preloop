@@ -590,11 +590,17 @@ class CRUDGovernanceReviewSettings(CRUDBase[GovernanceReviewSettings]):
         enabled: Optional[bool],
         commit: bool = True,
     ) -> GovernanceReviewSettings:
-        """Set the account override; None restores the global default."""
+        """Set the override; inheriting on a fresh account leaves defaults unsaved.
+
+        Enabling analysis records consent. The plugin also transitions an off
+        analysis mode when an authenticated account administrator enables it.
+        """
         if enabled is not None and type(enabled) is not bool:
             raise GovernanceReviewValidationError(
                 "model_analysis_override must be boolean or null"
             )
+        if enabled is None and self.get_for_account(db, account_id=account_id) is None:
+            return self.get_or_default(db, account_id=account_id)
         statement = pg_insert(GovernanceReviewSettings).values(
             id=uuid4(),
             account_id=account_id,
