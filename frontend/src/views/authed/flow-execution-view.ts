@@ -1819,19 +1819,20 @@ export class FlowExecutionView extends LitElement {
             this.stopBufferFlush();
 
             // Check if we haven't already added it
-            const hasModelOutput = this.logs.some(
+            const hasModelOutput = [...this.logs, ...this.logBuffer].some(
               (log) => log.type === 'model_output'
             );
             if (!hasModelOutput) {
-              this.logs = [
-                ...this.logs,
-                {
-                  execution_id: this.executionId!,
-                  timestamp: new Date().toISOString(),
-                  type: 'model_output',
-                  payload: { content: this.execution.model_output_summary },
-                },
-              ];
+              const summary: FlowExecutionUpdate = {
+                execution_id: this.executionId!,
+                timestamp: new Date().toISOString(),
+                type: 'model_output',
+                payload: { content: this.execution.model_output_summary },
+              };
+              // The drain yields between batches. Keep the final summary
+              // behind any lines still queued when the run finishes.
+              if (this.logBuffer.length > 0) this.logBuffer.push(summary);
+              else this.logs = [...this.logs, summary];
             }
           }
         }

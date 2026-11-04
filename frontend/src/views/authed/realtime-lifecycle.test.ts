@@ -282,6 +282,16 @@ describe('realtime remount, filter races and burst recovery', () => {
     expect(container.querySelector('.log-entry')?.textContent).to.equal(anchor);
 
     el.logBuffer = Array.from({ length: 2000 }, (_, i) => line(i + 6001));
+    el.handleWebSocketMessage({
+      execution_id: 'stream',
+      timestamp: '2026-01-01T00:01:00Z',
+      type: 'status_update',
+      payload: { status: 'SUCCEEDED', model_output_summary: 'Finished' },
+    });
+    expect(el.logBuffer.length).to.be.greaterThan(0);
+    await waitUntil(() => el.logBuffer.length === 0);
+    expect(el.logs.at(-1).type).to.equal('model_output');
+    el.logBuffer = Array.from({ length: 2000 }, (_, i) => line(i + 9001));
     el.stopBufferFlush();
     expect(el.logBuffer.length).to.be.greaterThan(0);
     el.remove();
