@@ -384,9 +384,10 @@ remaining sweeps and record classes, so one backlog cannot consume their
 entire allowance. Unused time remains available to later classes. The deadline
 is checked between batches; an in-flight batch can finish after its allowance.
 
-A log line goes only when both its run and the line itself are past the
-cutoff, so a run's log is removed as a whole. Each sweep writes the same
-audit row as a class, with `governed_by` naming the class it followed.
+A log line is removed only when both its run and the line itself are past the
+cutoff. Lines newer than the cutoff survive, even when their run is older.
+Each sweep writes the same audit row as a class, with `governed_by` naming
+the class it followed.
 Deleted rows stop the tables growing; the disk space returns only after a
 `VACUUM FULL` or `pg_repack`.
 

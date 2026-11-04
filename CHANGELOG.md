@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cover: flow execution log lines (following the account's evidence
   retention, keeping the execution summary row and every line of a held
   execution) and account events (following usage retention and the plan's
-  history window). Off by default behind its own switch,
+  storage promise). Off by default behind its own switch,
   `RETENTION_PURGE_HIGH_VOLUME_ENABLED`, on top of `RETENTION_PURGE_ENABLED`;
   `RETENTION_PURGE_DRY_RUN` previews it. Refs preloop-ee#46.
 
