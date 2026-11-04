@@ -91,6 +91,9 @@ export class ApprovalView extends AuthedElement {
   @state()
   private loading = true;
 
+  @state() private reconciliationRequired = false;
+  @state() private reconciling = false;
+
   /**
    * Why the request could not be shown. "forbidden" (HTTP 403) blames the
    * viewer's access, "not_found" covers a missing request and one that lives
@@ -433,10 +436,26 @@ export class ApprovalView extends AuthedElement {
         width: 1px;
       }
 
-      /* One line, always: a wrapped "Always allow" label reads as two ideas. */
+      .always-allow {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .always-allow::part(base) {
+        min-height: 44px;
+        align-items: center;
+      }
+
       .always-allow::part(label) {
-        white-space: nowrap;
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
         font-size: var(--sl-font-size-small);
+      }
+
+      .decision-comment::part(base),
+      .decision-buttons sl-button::part(base) {
+        min-height: 44px;
       }
 
       .decision-buttons {
@@ -475,6 +494,11 @@ export class ApprovalView extends AuthedElement {
       }
 
       @media (max-width: 640px) {
+        .decision-comment::part(base),
+        .decision-buttons sl-button::part(base) {
+          min-height: 44px;
+        }
+
         .decision-buttons {
           flex: 1 1 100%;
         }
@@ -649,6 +673,7 @@ export class ApprovalView extends AuthedElement {
    */
   private get canDecide(): boolean {
     return (
+      !this.reconciliationRequired &&
       !!this.approvalRequest &&
       isDecidableRequest(this.approvalRequest, this.nowMs)
     );
@@ -735,6 +760,8 @@ export class ApprovalView extends AuthedElement {
     const generation = ++this.requestGeneration;
     const requestId = this.requestId;
     this.history = [];
+    this.reconciliationRequired = false;
+    this.reconciling = false;
     this.comment = '';
     this.submitting = false;
     this.confirming = false;
@@ -903,7 +930,8 @@ export class ApprovalView extends AuthedElement {
     options: ApprovalDecisionOptions,
     successMessage: string
   ) {
-    if (!this.approvalRequest) return;
+    if (!this.approvalRequest || this.submitting || this.reconciliationRequired)
+      return;
 
     const generation = this.requestGeneration;
     const requestId = this.requestId;
@@ -945,8 +973,17 @@ export class ApprovalView extends AuthedElement {
           }
         );
         if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || `Failed to ${action} request`);
+          const error = await response.json().catch(() => ({}));
+          if (
+            generation !== this.requestGeneration ||
+            requestId !== this.requestId
+          )
+            return;
+          const message = this.decisionErrorMessage(error, action);
+          if (response.status === 400 || response.status === 409) {
+            await this.reconcileDecision();
+          }
+          throw new Error(message);
         }
         const updated = await response.json();
         if (
@@ -1004,7 +1041,11 @@ export class ApprovalView extends AuthedElement {
           requestId !== this.requestId
         )
           return;
-        throw new Error(this.decisionErrorMessage(error, action));
+        const message = this.decisionErrorMessage(error, action);
+        if (response.status === 400 || response.status === 409) {
+          await this.reconcileDecision();
+        }
+        throw new Error(message);
       }
 
       const updated = await response.json();
@@ -1032,6 +1073,53 @@ export class ApprovalView extends AuthedElement {
     } finally {
       if (generation === this.requestGeneration && requestId === this.requestId)
         this.submitting = false;
+    }
+  }
+
+  /** Re-read a rejected decision without discarding comments or form answers. */
+  private async reconcileDecision() {
+    if (this.reconciling) return;
+    const generation = this.requestGeneration;
+    const requestId = this.requestId;
+    this.reconciliationRequired = true;
+    this.reconciling = true;
+    try {
+      let refreshed = false;
+      if (!this.publicOnly) {
+        try {
+          const response = await fetchWithAuth(
+            `${REST_API_PREFIX}/approval-requests/${requestId}`
+          );
+          const data = response.ok ? await response.json() : null;
+          if (
+            generation !== this.requestGeneration ||
+            requestId !== this.requestId
+          )
+            return;
+          if (data) {
+            this.approvalRequest = normalizeApprovalRequest(data);
+            refreshed = true;
+            await this.loadHistory();
+          }
+        } catch {
+          // A token link can still work when the authenticated read fails.
+        }
+      }
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
+      if (!refreshed) {
+        refreshed = await this.loadPublicRequest(generation, requestId);
+      }
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
+      if (refreshed) {
+        this.reconciliationRequired = false;
+        this.nowMs = Date.now();
+        this.startTicking();
+      }
+    } finally {
+      if (generation === this.requestGeneration && requestId === this.requestId)
+        this.reconciling = false;
     }
   }
 
@@ -1388,8 +1476,15 @@ export class ApprovalView extends AuthedElement {
       'expired',
       'cancelled',
     ].includes(request.status);
-    const displayStatus = approvalStatusLabel(request.status);
-    const countdown = isPending ? this.formatCountdown(request) : null;
+    const displayStatus = this.reconciliationRequired
+      ? this.reconciling
+        ? 'Refreshing status'
+        : 'Status unavailable'
+      : approvalStatusLabel(request.status);
+    const countdown =
+      isPending && !this.reconciliationRequired
+        ? this.formatCountdown(request)
+        : null;
     const expiringSoon = isPending && isExpiringSoon(request, this.nowMs);
 
     const toolArgs = this.formatToolArgs(
@@ -1477,7 +1572,7 @@ export class ApprovalView extends AuthedElement {
                     .inputSchema=${request.question_schema ?? null}
                     .items=${request.question_items ?? []}
                     .author=${this.decisionAuthor}
-                    .submitting=${this.submitting}
+                    .submitting=${this.submitting || this.reconciliationRequired}
                     @question-answer=${this.handleQuestionAnswer}
                     @question-dismiss=${this.handleQuestionDismiss}
                   ></question-answer-panel>
@@ -1585,7 +1680,7 @@ export class ApprovalView extends AuthedElement {
                     .schema=${request.question_schema}
                     .items=${request.question_items ?? []}
                     .author=${this.decisionAuthor}
-                    .disabled=${this.submitting}
+                    .disabled=${this.submitting || this.reconciliationRequired}
                   ></answer-form>
                 </div>
               `
@@ -1596,7 +1691,7 @@ export class ApprovalView extends AuthedElement {
         ${
           // Only true while the agent is still waiting: once a request is
           // approved, denied or timed out, "requires human review" misleads.
-          isPending
+          isPending && !this.reconciliationRequired
             ? html`<div class="metadata">
                 <sl-icon name="info-circle"></sl-icon>
                 ${
@@ -1611,9 +1706,29 @@ export class ApprovalView extends AuthedElement {
 
       ${this.decisionTaken ? this.renderPostDecision() : ''}
       ${
-        isDecidableRequest(request, this.nowMs)
-          ? this.renderDecisionBar(request, countdown, expiringSoon)
-          : ''
+        this.reconciliationRequired
+          ? html`<div
+              class="decision-recovery"
+              role="status"
+              aria-live="polite"
+            >
+              <p>
+                ${
+                  this.reconciling
+                    ? 'Checking the latest request status…'
+                    : 'Could not refresh this request after the rejected decision. Retry to see its current status before deciding.'
+                }
+              </p>
+              <sl-button
+                ?disabled=${this.reconciling}
+                ?loading=${this.reconciling}
+                @click=${this.reconcileDecision}
+                >Retry status</sl-button
+              >
+            </div>`
+          : this.canDecide
+            ? this.renderDecisionBar(request, countdown, expiringSoon)
+            : ''
       }
     `;
   }
