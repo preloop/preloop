@@ -1,5 +1,7 @@
 import { aTimeout, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { sendKeys } from '@web/test-runner-commands';
+import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 
 import './agent-talk-view.ts';
 import type { AgentTalkView } from './agent-talk-view';
@@ -99,8 +101,9 @@ describe('agent-talk-view', () => {
     delete (document as unknown as { hidden?: boolean }).hidden;
   });
 
-  async function mount(search = ''): Promise<AgentTalkView> {
+  async function mount(search = '', width?: number): Promise<AgentTalkView> {
     const el = document.createElement('agent-talk-view') as AgentTalkView;
+    if (width) el.style.width = `${width}px`;
     el.onBeforeEnter({ params: { agentId: 'agent-1' }, search });
     document.body.append(el);
     await el.updateComplete;
@@ -108,6 +111,75 @@ describe('agent-talk-view', () => {
       Boolean(el.shadowRoot!.querySelector('[data-testid="talk-agent-name"]'))
     );
     return el;
+  }
+
+  for (const width of [320, 360, 390, 640, 1440]) {
+    it(`keeps responsive Talk identity readable and navigation reachable at ${width}px`, async () => {
+      await loadShoelaceTokens();
+      const el = await mount('', width - 32);
+      try {
+        for (const name of [
+          'Claude Code',
+          'releasevalidationorchestrator'.repeat(4),
+        ]) {
+          (el as any).agent = { ...AGENT, display_name: name };
+          (el as any).sessions = [
+            { ...SESSION, title: 'Reviewdeploymentchanges'.repeat(5) },
+          ];
+          await el.updateComplete;
+          await new Promise(requestAnimationFrame);
+          const header = el.shadowRoot!.querySelector('.talk-header')!;
+          const bounds = header.getBoundingClientRect();
+          const identity = header
+            .querySelector('.identity')!
+            .getBoundingClientRect();
+          for (const selector of [
+            '.name',
+            '.subject',
+            '.chip',
+            'talk-session-picker',
+            '.open-console',
+          ]) {
+            const item = header.querySelector<HTMLElement>(selector)!;
+            const box = item.getBoundingClientRect();
+            expect(box.width, selector).to.be.greaterThan(0);
+            expect(box.left, selector).to.be.at.least(bounds.left);
+            expect(box.right, selector).to.be.at.most(bounds.right);
+            expect(item.scrollWidth, selector).to.be.at.most(
+              item.clientWidth + 1
+            );
+            if (
+              selector === 'talk-session-picker' ||
+              selector === '.open-console'
+            ) {
+              expect(
+                box.top >= identity.bottom || box.left >= identity.right,
+                selector
+              ).to.equal(true);
+            }
+          }
+          if (name === 'Claude Code') {
+            expect(
+              header.querySelector('.name')!.getBoundingClientRect().width
+            ).to.be.greaterThan(70);
+          }
+          expect(el.shadowRoot!.querySelector('talk-composer')).to.exist;
+          if (width === 390 && name === 'Claude Code') {
+            const trigger = header.querySelector<HTMLElement>(
+              '[data-testid="talk-session-picker-trigger"]'
+            )!;
+            expect(trigger.textContent).to.contain('Sessions');
+            trigger.focus();
+            await sendKeys({ press: 'Tab' });
+            expect(el.shadowRoot!.activeElement).to.equal(
+              header.querySelector('.open-console')
+            );
+          }
+        }
+      } finally {
+        el.remove();
+      }
+    });
   }
 
   it('provides a page heading with the current conversation as its accessible description', async () => {
@@ -734,7 +806,7 @@ describe('agent-talk-view session integrity', () => {
     sinon.restore();
   });
 
-  async function mount(search = ''): Promise<AgentTalkView> {
+  async function mount(search = '', width?: number): Promise<AgentTalkView> {
     const el = document.createElement('agent-talk-view') as AgentTalkView;
     el.onBeforeEnter({ params: { agentId: 'agent-1' }, search });
     document.body.append(el);

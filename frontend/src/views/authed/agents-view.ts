@@ -460,7 +460,10 @@ export class AgentsView extends LitElement {
           display: grid;
           /* auto-fill, not auto-fit: two agents should stay two 320px cards, not
            stretch into two half-screen banners. */
-          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          grid-template-columns: repeat(
+            auto-fill,
+            minmax(min(320px, 100%), 1fr)
+          );
           gap: var(--sl-spacing-large);
           /* No side inset of its own: the header band above it has none
            either, because outside the canvas the shell pays it. */
@@ -713,12 +716,28 @@ export class AgentsView extends LitElement {
           align-items: start;
           border-bottom: 1px solid var(--console-hairline);
           padding-bottom: var(--sl-spacing-small);
-          padding-right: 44px;
+          flex-direction: column;
+        }
+        .card-identity {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+          min-width: 0;
+          width: 100%;
+        }
+        .card-buttons {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: flex-end;
+          gap: var(--sl-spacing-small);
+          width: 100%;
         }
         .agent-name {
           font-weight: 700;
           font-size: 1.15rem;
           letter-spacing: -0.01em;
+          overflow-wrap: anywhere;
         }
         /* The card is clickable, but the title is a real anchor so cmd-click
          and middle-click open the agent in a new tab (AG-B). */
@@ -752,10 +771,7 @@ export class AgentsView extends LitElement {
           text-align: right;
         }
         .card-actions {
-          position: absolute;
-          top: -8px;
-          right: -8px;
-          z-index: 2;
+          flex-shrink: 0;
         }
         /* The checkbox is the first thing in the title row, beside the icon,
          the way flow cards do it. It used to float over the card's top-left
@@ -777,6 +793,14 @@ export class AgentsView extends LitElement {
         }
         .identity-badges sl-badge {
           max-width: 100%;
+        }
+        .agent-card .identity-badges sl-badge::part(base) {
+          white-space: normal;
+          overflow-wrap: anywhere;
+          text-align: left;
+        }
+        .agent-card .tag-chip::part(base) {
+          display: block;
         }
         .model-traffic-failing {
           background: var(--sl-color-danger-50);
@@ -3978,24 +4002,8 @@ export class AgentsView extends LitElement {
           this.handleCardKeydown(event, detailUrl)}
       >
         <div class="card-stack">
-          ${
-            actions.length
-              ? html`
-                  <div
-                    class="card-actions"
-                    @click=${(event: Event) => event.stopPropagation()}
-                    @keydown=${(event: Event) => event.stopPropagation()}
-                  >
-                    <resource-actions
-                      .actions=${actions}
-                      menu-only
-                    ></resource-actions>
-                  </div>
-                `
-              : null
-          }
           <div class="title-row">
-            <div style="display: flex; gap: 12px; align-items: flex-start;">
+            <div class="card-identity">
               ${
                 isFlow
                   ? nothing
@@ -4050,7 +4058,7 @@ export class AgentsView extends LitElement {
                 }
               </div>
             </div>
-            <div class="badges">
+            <div class="card-buttons">
               ${
                 !isFlow
                   ? this.renderAgentTalkButton(agent, 'agents-card')
@@ -4079,6 +4087,22 @@ export class AgentsView extends LitElement {
                   ? html`<sl-badge variant="success" pill
                       >Live ${liveTotal}</sl-badge
                     >`
+                  : null
+              }
+              ${
+                actions.length
+                  ? html`
+                      <div
+                        class="card-actions"
+                        @click=${(event: Event) => event.stopPropagation()}
+                        @keydown=${(event: Event) => event.stopPropagation()}
+                      >
+                        <resource-actions
+                          .actions=${actions}
+                          menu-only
+                        ></resource-actions>
+                      </div>
+                    `
                   : null
               }
             </div>

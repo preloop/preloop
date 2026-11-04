@@ -1,6 +1,7 @@
 import { Router } from '../../router';
 import { expect, fixture, html, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { sendKeys } from '@web/test-runner-commands';
 
 import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
@@ -176,6 +177,83 @@ describe('AgentsView', () => {
     };
     fetchStub.callsFake(defaultFetch);
   });
+
+  for (const width of [320, 360, 390, 640, 1440]) {
+    it(`keeps responsive card identity and actions within their card at ${width}px`, async () => {
+      await loadShoelaceTokens();
+      localStorage.setItem('preloop.agents.view_mode', 'cards');
+      agentItems = [
+        {
+          ...makeAgent(
+            'agent-1',
+            'releasevalidationorchestrator'.repeat(3),
+            'claude_code'
+          ),
+          owner_username: 'longownername'.repeat(5),
+          tags: {
+            environment: 'europewestproductionprimary'.repeat(3),
+            ['longtagkey'.repeat(4)]: 'platformoperations'.repeat(3),
+          },
+          control_state: 'plugin_connected',
+          control_enabled: true,
+          control_online: true,
+          control_capabilities: ['send_text_prompt'],
+        },
+      ];
+      const el = await fixture<AgentsView>(
+        html`<agents-view style="width: ${width - 32}px"></agents-view>`
+      );
+      await waitForAgents(el);
+      await nextFrame();
+      const card =
+        el.shadowRoot!.querySelector<HTMLElement>('.cards .agent-card')!;
+      const bounds = card.getBoundingClientRect();
+      expect(bounds.right).to.be.at.most(el.getBoundingClientRect().right + 1);
+      for (const selector of [
+        '.card-select',
+        '.identity-stack',
+        '.identity-badges sl-badge',
+        'talk-button',
+        '.card-actions',
+      ]) {
+        for (const item of card.querySelectorAll<HTMLElement>(selector)) {
+          const box = item.getBoundingClientRect();
+          expect(box.width, selector).to.be.greaterThan(0);
+          expect(box.left, selector).to.be.at.least(bounds.left);
+          expect(box.right, selector).to.be.at.most(bounds.right);
+          expect(item.scrollWidth, selector).to.be.at.most(
+            item.clientWidth + 1
+          );
+        }
+      }
+      const identity = card
+        .querySelector('.identity-stack')!
+        .getBoundingClientRect();
+      const talk = card.querySelector('talk-button')!.getBoundingClientRect();
+      const menu = card.querySelector('.card-actions')!.getBoundingClientRect();
+      expect(talk.top).to.be.at.least(identity.bottom);
+      expect(menu.left).to.be.at.least(talk.right);
+      if (width === 390) {
+        card.focus();
+        await sendKeys({ press: 'Tab' });
+        expect(el.shadowRoot!.activeElement?.tagName).to.equal(
+          'LIST-SELECT-CHECKBOX'
+        );
+        await sendKeys({ press: 'Tab' });
+        expect(el.shadowRoot!.activeElement).to.equal(
+          card.querySelector('a.agent-name')
+        );
+        await sendKeys({ press: 'Tab' });
+        expect(el.shadowRoot!.activeElement).to.equal(
+          card.querySelector('talk-button sl-button')
+        );
+        await sendKeys({ press: 'Tab' });
+        expect(el.shadowRoot!.activeElement).to.equal(
+          card.querySelector('resource-actions')
+        );
+      }
+    });
+  }
 
   it('mounts Copilot inventory gaps only with the extension feature', async () => {
     localStorage.setItem('preloop.agents.view_mode', 'list');

@@ -196,6 +196,7 @@ export class AgentTalkView extends LitElement {
         border-bottom: 1px solid var(--console-hairline);
         display: flex;
         flex-shrink: 0;
+        flex-wrap: wrap;
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-small) var(--sl-spacing-medium);
         padding-top: calc(
@@ -216,6 +217,22 @@ export class AgentTalkView extends LitElement {
         width: 34px;
       }
 
+      .header-agent {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        flex: 1 1 16rem;
+        min-width: 0;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        margin-left: auto;
+      }
+
       .identity {
         display: flex;
         flex-direction: column;
@@ -224,6 +241,7 @@ export class AgentTalkView extends LitElement {
       }
 
       .name-row {
+        flex-wrap: wrap;
         align-items: center;
         display: flex;
         gap: var(--sl-spacing-x-small);
@@ -234,21 +252,13 @@ export class AgentTalkView extends LitElement {
         margin: 0;
         font-size: inherit;
         font-weight: var(--sl-font-weight-semibold);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        overflow-wrap: anywhere;
       }
 
       .subject {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .spacer {
-        flex: 1;
+        overflow-wrap: anywhere;
       }
 
       .open-console {
@@ -1059,51 +1069,54 @@ export class AgentTalkView extends LitElement {
     const subject = this.sessionSubject;
     return html`
       <div class="talk-header">
-        <span class="avatar">
-          ${renderAgentIcon(agent?.agent_kind || agent?.session_source_type)}
-        </span>
-        <div class="identity">
-          <div class="name-row">
-            <h1
-              class="name"
-              data-testid="talk-agent-name"
-              aria-describedby="talk-subject"
-            >
-              ${agent?.display_name || 'Agent'}
-            </h1>
-            ${
-              chip
-                ? html`<sl-badge class="chip" variant=${chip.variant} pill
-                    >${chip.label}</sl-badge
-                  >`
-                : nothing
-            }
-          </div>
-          <span
-            id="talk-subject"
-            class="subject"
-            data-testid="talk-session-subject"
-          >
-            ${subject || 'No session yet'}
+        <div class="header-agent">
+          <span class="avatar">
+            ${renderAgentIcon(agent?.agent_kind || agent?.session_source_type)}
           </span>
+          <div class="identity">
+            <div class="name-row">
+              <h1
+                class="name"
+                data-testid="talk-agent-name"
+                aria-describedby="talk-subject"
+              >
+                ${agent?.display_name || 'Agent'}
+              </h1>
+              ${
+                chip
+                  ? html`<sl-badge class="chip" variant=${chip.variant} pill
+                      >${chip.label}</sl-badge
+                    >`
+                  : nothing
+              }
+            </div>
+            <span
+              id="talk-subject"
+              class="subject"
+              data-testid="talk-session-subject"
+            >
+              ${subject || 'No session yet'}
+            </span>
+          </div>
         </div>
-        <span class="spacer"></span>
-        <talk-session-picker
-          .sessions=${this.sessions}
-          .currentSessionId=${this.sessionId}
-          ?canStartNew=${agent?.supports_new_session !== false}
-        ></talk-session-picker>
-        <a
-          class="open-console"
-          data-testid="open-in-console"
-          href=${`/console/agents/${this.agentId}${
-            this.sessionId ? `?session=${this.sessionId}` : ''
-          }`}
-          target=${this.windowMode ? '_blank' : '_self'}
-          rel="noopener"
-        >
-          Open in console
-        </a>
+        <div class="header-actions">
+          <talk-session-picker
+            .sessions=${this.sessions}
+            .currentSessionId=${this.sessionId}
+            ?canStartNew=${agent?.supports_new_session !== false}
+          ></talk-session-picker>
+          <a
+            class="open-console"
+            data-testid="open-in-console"
+            href=${`/console/agents/${this.agentId}${
+              this.sessionId ? `?session=${this.sessionId}` : ''
+            }`}
+            target=${this.windowMode ? '_blank' : '_self'}
+            rel="noopener"
+          >
+            Open in console
+          </a>
+        </div>
       </div>
     `;
   }
