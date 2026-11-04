@@ -2281,12 +2281,6 @@ class OpenAIGatewayService:
             )
 
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        if getattr(model, "endpoint_type", "direct") == "runner":
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=400,
-                message="Runner models support chat completions only",
-            )
         payload = self._responses_output_budget(model, payload)
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses"
@@ -3719,12 +3713,6 @@ class OpenAIGatewayService:
         self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        if getattr(model, "endpoint_type", "direct") == "runner":
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=400,
-                message="Runner models support chat completions only",
-            )
         payload = self._responses_output_budget(model, payload)
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses_stream"
@@ -4310,6 +4298,9 @@ class OpenAIGatewayService:
                 yield self._responses_stream_error_event(exc, gateway_error)
                 yield self._sse_done()
             finally:
+                # A consumed Responses stream owns the prefetched transport.
+                # Closing it cancels runner work on disconnect or policy denial.
+                self._close_failed_upstream_stream(upstream_stream)
                 # See stream_message: account for tokens consumed before a
                 # client disconnect (GeneratorExit).
                 if not recorded:
@@ -8231,6 +8222,76 @@ class OpenAIGatewayService:
             closes=(upstream_response,),
         )
 
+    def _normalize_completion_parameters(
+        self, payload: Dict[str, Any], *, provider: GatewayProvider
+    ) -> Dict[str, Any]:
+        """Translate portable request controls for direct and runner chat I/O.
+
+        Keep Codex tool aliases on this request so both Responses renderers
+        can restore namespace and freeform calls from chat completions.
+        Routing, credentials and provider-specific options stay with the caller.
+        """
+        kwargs: Dict[str, Any] = {}
+        if payload.get("tools") is not None:
+            if provider == "anthropic":
+                kwargs["tools"] = self._normalize_anthropic_tools(payload["tools"])
+            else:
+                kwargs["tools"] = self._normalize_openai_tools(payload["tools"])
+        if payload.get("tool_choice") is not None:
+            kwargs["tool_choice"] = self._normalize_openai_tool_choice(
+                payload["tool_choice"]
+            )
+        if payload.get("parallel_tool_calls") is not None:
+            kwargs["parallel_tool_calls"] = payload["parallel_tool_calls"]
+
+        for source_key, target_key in (
+            ("temperature", "temperature"),
+            # Match budget preflight's alias precedence exactly.
+            ("max_completion_tokens", "max_tokens"),
+            ("max_output_tokens", "max_tokens"),
+            ("max_tokens", "max_tokens"),
+            ("top_p", "top_p"),
+        ):
+            if payload.get(source_key) is not None and target_key not in kwargs:
+                kwargs[target_key] = payload[source_key]
+        if payload.get("stop") is not None:
+            kwargs["stop"] = payload["stop"]
+        text_config = payload.get("text")
+        native_format = (
+            text_config.get("format") if isinstance(text_config, dict) else None
+        )
+        response_format = payload.get("response_format")
+        if isinstance(native_format, dict) and native_format.get("type") not in (
+            None,
+            "text",
+        ):
+            if native_format.get("type") == "json_schema":
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        key: value
+                        for key, value in native_format.items()
+                        if key != "type"
+                    },
+                }
+            elif native_format.get("type") == "json_object":
+                response_format = {"type": "json_object"}
+            else:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Unsupported structured response format",
+                )
+            if payload.get("response_format") not in (None, response_format):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Conflicting structured response formats",
+                )
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        return kwargs
+
     def _build_completion_kwargs(
         self,
         ai_model: GatewayModel,
@@ -8464,28 +8525,7 @@ class OpenAIGatewayService:
             # unknown "usage" body field.
             extra_body = kwargs.setdefault("extra_body", {})
             extra_body.setdefault("usage", {"include": True})
-        if payload.get("tools") is not None:
-            if provider == "anthropic":
-                kwargs["tools"] = self._normalize_anthropic_tools(payload["tools"])
-            else:
-                kwargs["tools"] = self._normalize_openai_tools(payload["tools"])
-        if payload.get("tool_choice") is not None:
-            kwargs["tool_choice"] = self._normalize_openai_tool_choice(
-                payload["tool_choice"]
-            )
-        if payload.get("parallel_tool_calls") is not None:
-            kwargs["parallel_tool_calls"] = payload["parallel_tool_calls"]
-
-        for source_key, target_key in (
-            ("temperature", "temperature"),
-            # Match budget preflight's alias precedence exactly.
-            ("max_completion_tokens", "max_tokens"),
-            ("max_output_tokens", "max_tokens"),
-            ("max_tokens", "max_tokens"),
-            ("top_p", "top_p"),
-        ):
-            if payload.get(source_key) is not None and target_key not in kwargs:
-                kwargs[target_key] = payload[source_key]
+        kwargs.update(self._normalize_completion_parameters(payload, provider=provider))
         # Codex omits sampling controls. Compatible local servers otherwise
         # receive LiteLLM's defaults instead of the operator's model settings.
         # Request values retain precedence, and only portable sampling fields
@@ -8506,45 +8546,12 @@ class OpenAIGatewayService:
                 if model_parameters.get(key) is not None:
                     kwargs["max_tokens"] = model_parameters[key]
                     break
-        if payload.get("stop") is not None:
-            kwargs["stop"] = payload["stop"]
         # Intentional global default, not zai-only. Matches aux generation.
         # LiteLLM fallback metadata for unlisted models (e.g. zai/glm-5.3)
         # forwards client flags the provider rejects. Drop those instead of
         # failing the whole request.
         kwargs["drop_params"] = True
-        text_config = payload.get("text")
-        native_format = (
-            text_config.get("format") if isinstance(text_config, dict) else None
-        )
-        response_format = payload.get("response_format")
-        if isinstance(native_format, dict) and native_format.get("type") not in (
-            None,
-            "text",
-        ):
-            if native_format.get("type") == "json_schema":
-                response_format = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        key: value
-                        for key, value in native_format.items()
-                        if key != "type"
-                    },
-                }
-            elif native_format.get("type") == "json_object":
-                response_format = {"type": "json_object"}
-            else:
-                raise ModelGatewayAPIError(
-                    provider=provider,
-                    status_code=400,
-                    message="Unsupported structured response format",
-                )
-            if payload.get("response_format") not in (None, response_format):
-                raise ModelGatewayAPIError(
-                    provider=provider,
-                    status_code=400,
-                    message="Conflicting structured response formats",
-                )
+        response_format = kwargs.get("response_format")
         if response_format is not None:
             # drop_params stays True: it is request-global in LiteLLM, and
             # turning it off would make unrelated unsupported options (such as
@@ -8727,26 +8734,24 @@ class OpenAIGatewayService:
                     message="Runner is offline or was deleted",
                 )
             parameters = dict(getattr(ai_model, "model_parameters", None) or {})
+            # A request cap overrides every model-default spelling of the cap.
+            token_keys = ("max_completion_tokens", "max_output_tokens", "max_tokens")
+            if any(payload.get(key) is not None for key in token_keys):
+                for key in token_keys:
+                    parameters.pop(key, None)
             parameters.update(payload)
             body = {
                 key: value
                 for key, value in parameters.items()
-                if key
-                in {
-                    "temperature",
-                    "top_p",
-                    "max_tokens",
-                    "max_completion_tokens",
-                    "stop",
-                    "tools",
-                    "tool_choice",
-                    "parallel_tool_calls",
-                    "response_format",
-                    "seed",
-                    "frequency_penalty",
-                    "presence_penalty",
-                }
+                if key in {"seed", "frequency_penalty", "presence_penalty"}
             }
+            body.update(
+                self._normalize_completion_parameters(parameters, provider=provider)
+            )
+            self._last_upstream_parameters = {}
+            limit = body.get("max_tokens")
+            if isinstance(limit, int) and not isinstance(limit, bool):
+                self._last_upstream_parameters["max_tokens"] = limit
             body.update(
                 model=ai_model.model_identifier, messages=messages, stream=stream
             )
@@ -8826,6 +8831,8 @@ class OpenAIGatewayService:
         self._last_upstream_credential_type = None
         if self._owns_db_session:
             ai_model = self._model_for_credentials(ai_model)
+        if getattr(ai_model, "endpoint_type", "direct") == "runner":
+            checked_model_api_base(ai_model, provider="openai")
         try:
             resolved_credentials = get_secret_service().resolve_ai_model_credentials(
                 ai_model,

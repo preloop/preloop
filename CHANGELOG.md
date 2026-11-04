@@ -317,6 +317,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model. Outputs for unknown calls, or for a call answered in an earlier tool
   turn, are still rejected. Fixes #2173.
 
+- Runner-served local models now accept streaming and nonstreaming Responses
+  requests from clients such as Codex CLI. The gateway reuses chat-completions
+  translation for MCP namespace tools, freeform tools, output limits and usage,
+  and cancels runner work when a Responses client disconnects. Transport limits
+  and the refusal of unsupported non-chat operations remain in place.
+
 - The Delivery Report turns a follow-up proposed for a closed issue whose
   criterion is shown not met into a reopen request at the issue's closing
   merge SHA, so a measured miss is reported as a reopen, not as new work. The
