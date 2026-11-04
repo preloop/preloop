@@ -1202,15 +1202,10 @@ class OpenAIGatewayService:
         # aborts the run on the function shape). Reset per request so a
         # translated turn never leaks into an untranslated one.
         self._codex_freeform_tool_names: Set[str] = set()
-        # Alias -> (namespace, short_name) for tools the client declared
-        # inside ``mcp__*`` namespace containers on THIS request. Set with
-        # the freeform names above, read when response output items are
-        # built: Codex's tool router routes a namespace tool call ONLY as a
-        # ``function_call`` carrying a separate ``namespace`` field plus the
-        # SHORT name, so the model's flat-named call must be rendered back in
-        # that form (staging execution 97c977f8: the flat qualified name is
-        # "unsupported call"). Reset per request alongside the freeform set.
-        self._codex_namespace_tool_aliases: Dict[str, Tuple[str, str]] = {}
+        # Alias -> (namespace or None, call name) from THIS request's MCP
+        # declarations. Namespace clients need namespace + short name; flat
+        # clients keep their declared name. Reset alongside the freeform set.
+        self._codex_namespace_tool_aliases: Dict[str, Tuple[Optional[str], str]] = {}
         # Upstream credential type ("oauth" | "api_key" | "ambient") of the
         # credential used to call the provider on THIS request, captured at
         # resolution time and read into the usage row at log time. Powers
@@ -4028,21 +4023,12 @@ class OpenAIGatewayService:
                                 }
                                 output_items[state["output_index"]] = state["item"]
                             else:
-                                namespace_target = (
-                                    self._codex_namespace_tool_aliases.get(name)
-                                )
-                                if namespace_target is not None:
-                                    # Codex's router routes an MCP namespace
-                                    # tool call ONLY as a function_call with
-                                    # a separate `namespace` field and the
-                                    # SHORT name; the flat name the model was
-                                    # declared is "unsupported call" (staging
-                                    # execution 97c977f8). Same deferral as
-                                    # freeform tools: rewrite before the item
-                                    # is announced.
-                                    namespace, short = namespace_target
-                                    state["item"]["namespace"] = namespace
-                                    state["item"]["name"] = short
+                                # Restore the client's declared MCP shape before
+                                # announcing the item, including dotted aliases.
+                                state["item"] = restore_namespace_tool_calls(
+                                    [state["item"]], self._codex_namespace_tool_aliases
+                                )[0]
+                                output_items[state["output_index"]] = state["item"]
                             state["announced"] = True
                             yield self._sse_event(
                                 {

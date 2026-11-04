@@ -7030,6 +7030,7 @@ trap _preloop_publication_cleanup EXIT
         - GitHub push: payload.head_commit.id or payload.after
         - GitHub PR: payload.pull_request.head.sha
         - GitLab MR: payload.object_attributes.last_commit.id or .sha
+        - GitLab MR note: payload.merge_request.last_commit.id or .sha
         """
         try:
             payload = trigger_data.get("payload", trigger_data)
@@ -7042,15 +7043,17 @@ trap _preloop_publication_cleanup EXIT
                 if sha:
                     return sha
 
-            # GitLab MR
-            obj_attrs = payload.get("object_attributes", {})
-            if isinstance(obj_attrs, dict):
-                if "last_commit" in obj_attrs:
-                    sha = obj_attrs["last_commit"].get("id")
-                    if sha:
-                        return sha
-                if obj_attrs.get("sha"):
-                    return obj_attrs["sha"]
+            # MR hooks carry the head under object_attributes; note hooks
+            # carry it under merge_request. A nullable last_commit must not
+            # prevent the explicit sha fallback from being considered.
+            for mr in (payload.get("merge_request"), payload.get("object_attributes")):
+                if not isinstance(mr, dict):
+                    continue
+                last_commit = mr.get("last_commit")
+                if isinstance(last_commit, dict) and last_commit.get("id"):
+                    return last_commit["id"]
+                if mr.get("sha"):
+                    return mr["sha"]
 
             # GitHub PR
             pr = payload.get("pull_request")

@@ -14,6 +14,9 @@ a prod failure row, not invented:
 """
 
 import json
+from pathlib import Path
+
+import pytest
 
 from preloop.services.codex_tool_compat import (
     namespace_tool_aliases,
@@ -371,3 +374,104 @@ def test_namespace_history_echo_is_flattened_for_upstreams():
         "name": "spawn_agent",
     }
     assert qualify_namespace_call_history_item(internal) == internal
+
+
+@pytest.mark.parametrize("image", ["191dc7e2", "c6f75840"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__preloop__get_pull_request",
+        "mcp__preloop.get_pull_request",
+        "preloop.get_pull_request",
+        "get_pull_request",
+    ],
+)
+def test_captured_hosted_mcp_aliases(image: str, name: str) -> None:
+    """Both image runtimes declare namespaces; model spellings must route."""
+    fixture = Path(__file__).parents[1] / "fixtures" / "codex_mcp"
+    tools = json.loads((fixture / f"{image}-0.153.4-tools.json").read_text())
+    aliases = namespace_tool_aliases(tools)
+    call = {"type": "function_call", "name": name, "arguments": "{}"}
+    restored = restore_namespace_tool_calls([call], aliases)
+    assert restored == [
+        {**call, "namespace": "mcp__preloop", "name": "get_pull_request"}
+    ]
+    assert call["name"] == name
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize(
+    "name", ["mcp__preloop__lookup", "mcp__preloop.lookup", "preloop.lookup", "lookup"]
+)
+def test_flat_mcp_declaration_is_answered_in_kind(wrapped: bool, name: str) -> None:
+    """Flat callers must not receive a namespace field they never declared."""
+    function = {"name": "mcp__preloop__lookup", "parameters": {}}
+    tool = (
+        {"type": "function", "function": function}
+        if wrapped
+        else {"type": "function", **function}
+    )
+    call = {"type": "function_call", "name": name, "arguments": "{}"}
+    assert restore_namespace_tool_calls([call], namespace_tool_aliases([tool])) == [
+        {**call, "name": "mcp__preloop__lookup"}
+    ]
+
+
+@pytest.mark.parametrize("alias", ["mcp__preloop.lookup", "preloop.lookup", "lookup"])
+def test_mcp_alias_never_shadows_declared_top_level_tool(alias: str) -> None:
+    tools = [
+        {
+            "type": "namespace",
+            "name": "mcp__preloop",
+            "tools": [{"type": "function", "name": "lookup"}],
+        },
+        {"type": "function", "name": alias},
+    ]
+    call = {"type": "function_call", "name": alias}
+    assert restore_namespace_tool_calls([call], namespace_tool_aliases(tools)) == [call]
+
+
+def test_explicit_namespace_is_not_reassigned_by_a_bare_alias() -> None:
+    tools = [
+        {
+            "type": "namespace",
+            "name": "mcp__alpha",
+            "tools": [{"type": "function", "name": "lookup"}],
+        }
+    ]
+    call = {"type": "function_call", "namespace": "mcp__beta", "name": "lookup"}
+    assert restore_namespace_tool_calls([call], namespace_tool_aliases(tools)) == [call]
+
+
+def test_bare_alias_does_not_shadow_a_native_namespace_tool() -> None:
+    tools = [
+        {
+            "type": "namespace",
+            "name": name,
+            "tools": [{"type": "function", "name": "spawn_agent"}],
+        }
+        for name in ("multi_agent_v1", "mcp__preloop")
+    ]
+    aliases = namespace_tool_aliases(tools)
+    assert "spawn_agent" not in aliases
+    assert aliases["preloop.spawn_agent"] == ("mcp__preloop", "spawn_agent")
+
+
+def test_colliding_dotted_alias_is_ambiguous_in_either_order() -> None:
+    tools = [
+        {
+            "type": "namespace",
+            "name": "mcp__alpha.beta",
+            "tools": [{"type": "function", "name": "lookup"}],
+        },
+        {
+            "type": "namespace",
+            "name": "mcp__alpha",
+            "tools": [{"type": "function", "name": "beta.lookup"}],
+        },
+    ]
+    for entries in [tools, list(reversed(tools))]:
+        aliases = namespace_tool_aliases(entries)
+        assert "alpha.beta.lookup" not in aliases
+        assert "mcp__alpha.beta.lookup" not in aliases
+        assert aliases["mcp__alpha.beta__lookup"] == ("mcp__alpha.beta", "lookup")

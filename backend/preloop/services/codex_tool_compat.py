@@ -408,35 +408,34 @@ def _nested_tool_name(tool: Any) -> Optional[str]:
     return None
 
 
-def namespace_tool_aliases(tools: Any) -> Dict[str, Tuple[str, str]]:
-    """Map every model-callable alias to its ``(namespace, short_name)`` pair.
+def namespace_tool_aliases(tools: Any) -> Dict[str, Tuple[Optional[str], str]]:
+    """Map MCP spellings to the call shape declared by this client.
 
-    Codex's tool router accepts a call to an MCP namespace tool ONLY as a
-    ``function_call`` item carrying a separate ``namespace`` field and the
-    SHORT nested tool name (verified against the real binary; see
-    :func:`restore_namespace_tool_calls`). The model, however, is declared the
-    flattened ``mcp__<server>__<tool>`` name — and prompt text or older
-    transcripts may steer it to the bare short name instead. Both must route,
-    so both are registered as aliases of the same namespace call:
-
-    * the canonical qualified name (``mcp__preloop__ask_user``), always;
-    * the bare short name (``ask_user``), only while it is unambiguous — a
-      collision with another namespace's tool or with any top-level tool
-      name drops the bare alias rather than guessing.
+    Namespace clients need a separate namespace and short name. Flat clients
+    need their declared function name and no namespace (represented by None).
+    Accept qualified, dotted, server-dotted and bare aliases only when they
+    identify one tool and do not shadow another declared top-level tool.
 
     Args:
-        tools: The ORIGINAL request ``tools`` value, before sanitization.
+        tools: The original request tools, before sanitization.
 
     Returns:
-        Alias name -> ``(namespace, short_name)``. Empty when the request
-        declares no ``mcp__*`` namespace tools.
+        Alias to (namespace or None, declared call name).
     """
     if not isinstance(tools, list):
         return {}
 
-    aliases: Dict[str, Tuple[str, str]] = {}
-    ambiguous_short: Set[str] = set()
+    candidates: Dict[str, Set[Tuple[Optional[str], str]]] = {}
     top_level_names: Set[str] = set()
+
+    def register(namespace: str, short: str, target: Tuple[Optional[str], str]) -> None:
+        for alias in (
+            f"{namespace}__{short}",
+            f"{namespace}.{short}",
+            f"{namespace.removeprefix('mcp__')}.{short}",
+            short,
+        ):
+            candidates.setdefault(alias, set()).add(target)
 
     for tool in tools:
         if not isinstance(tool, dict):
@@ -444,47 +443,46 @@ def namespace_tool_aliases(tools: Any) -> Dict[str, Tuple[str, str]]:
         if tool.get("type") == "namespace":
             namespace = tool.get("name")
             nested = tool.get("tools")
-            if (
-                not isinstance(namespace, str)
-                or not namespace.startswith("mcp__")
-                or not isinstance(nested, list)
-            ):
+            if not isinstance(namespace, str) or not isinstance(nested, list):
+                continue
+            if not namespace.startswith("mcp__"):
+                # Native namespaces are flattened without qualification. Their
+                # names must remain available just like top-level functions.
+                top_level_names.update(
+                    name for entry in nested if (name := _nested_tool_name(entry))
+                )
                 continue
             for nested_tool in nested:
                 short = _nested_tool_name(nested_tool)
-                if not short:
-                    continue
-                prefix = f"{namespace}__"
-                if short.startswith(prefix):
-                    # Defensive: an already-qualified nested name still maps
-                    # to the short name the router expects.
-                    short = short[len(prefix) :]
-                    if not short:
-                        continue
-                qualified = f"{namespace}__{short}"
-                aliases[qualified] = (namespace, short)
-                if short in aliases and aliases[short] != (namespace, short):
-                    ambiguous_short.add(short)
-                # Unambiguous bare alias so a model that calls the short name still routes.
-                aliases.setdefault(short, (namespace, short))
+                if short:
+                    short = short.removeprefix(f"{namespace}__")
+                    if short:
+                        register(namespace, short, (namespace, short))
         else:
             name = _nested_tool_name(tool)
-            if name:
-                top_level_names.add(name)
+            if not name:
+                continue
+            top_level_names.add(name)
+            if tool.get("type") != "function" or not name.startswith("mcp__"):
+                continue
+            server, separator, short = name.removeprefix("mcp__").partition("__")
+            if separator and server and short:
+                register(f"mcp__{server}", short, (None, name))
 
-    for short in ambiguous_short:
-        aliases.pop(short, None)
-    for name in top_level_names:
-        # A top-level tool with the same name wins: Codex's router knows it
-        # as a plain function tool, so rewriting its calls to namespace form
-        # would break it. Never shadow one.
-        aliases.pop(name, None)
+    aliases: Dict[str, Tuple[Optional[str], str]] = {}
+    for alias, targets in candidates.items():
+        if len(targets) != 1:
+            continue
+        target = next(iter(targets))
+        # An exact top-level declaration wins over every inferred alias.
+        if alias not in top_level_names or target == (None, alias):
+            aliases[alias] = target
     return aliases
 
 
 def restore_namespace_tool_calls(
     output_items: List[Dict[str, Any]],
-    namespace_aliases: Dict[str, Tuple[str, str]],
+    namespace_aliases: Dict[str, Tuple[Optional[str], str]],
 ) -> List[Dict[str, Any]]:
     """Render calls to flattened MCP namespace tools in the routable form.
 
@@ -507,8 +505,8 @@ def restore_namespace_tool_calls(
 
     Returns:
         The output items with matching calls rewritten in namespace form.
-        Returns the input unchanged when the request declared no MCP
-        namespace tools.
+        Flat MCP declarations retain their flat call shape. Returns the input
+        unchanged when the request declared no MCP tools.
     """
     if not namespace_aliases or not isinstance(output_items, list):
         return output_items
@@ -518,13 +516,21 @@ def restore_namespace_tool_calls(
         if not isinstance(item, dict) or item.get("type") != "function_call":
             restored.append(item)
             continue
-        target = namespace_aliases.get(item.get("name"))
+        name = item.get("name")
+        declared_namespace = item.get("namespace")
+        # A supplied namespace disambiguates a short name. Never reassign an
+        # unknown namespace merely because its short name matches an alias.
+        alias = f"{declared_namespace}__{name}" if declared_namespace else name
+        target = namespace_aliases.get(alias)
         if target is None:
             restored.append(item)
             continue
         namespace, short = target
         rewritten = dict(item)
-        rewritten["namespace"] = namespace
+        if namespace is None:
+            rewritten.pop("namespace", None)
+        else:
+            rewritten["namespace"] = namespace
         rewritten["name"] = short
         restored.append(rewritten)
     return restored
