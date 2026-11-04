@@ -568,6 +568,9 @@ describe('ApprovalView', () => {
     it('blocks stale decisions and offers a retry when the refresh fails', async () => {
       const element = await renderRequest(pendingRequest());
       const view = element as any;
+      const liveRegion = element.shadowRoot!.querySelector(
+        '[data-console-status]'
+      )!;
       view.comment = 'Keep my explanation';
       fetchStub
         .withArgs('/api/v1/approval-requests/req-1/approve')
@@ -584,6 +587,15 @@ describe('ApprovalView', () => {
       expect(
         element.shadowRoot!.querySelector('.decision-recovery')!.textContent
       ).to.contain('Retry');
+      expect(
+        element.shadowRoot!.querySelector('[data-console-status]')
+      ).to.equal(liveRegion);
+      expect(liveRegion.textContent).to.contain('Use Retry status');
+      expect(
+        element
+          .shadowRoot!.querySelector('.decision-recovery')!
+          .hasAttribute('role')
+      ).to.equal(false);
       fetchStub.resetHistory();
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
       await aTimeout(0);
@@ -591,17 +603,21 @@ describe('ApprovalView', () => {
       fetchStub
         .withArgs('/api/v1/approval-requests/req-1')
         .resolves(json(pendingRequest()));
-      (
-        element.shadowRoot!.querySelector(
-          '.decision-recovery sl-button'
-        ) as HTMLElement
-      ).click();
+      const retry = element.shadowRoot!.querySelector(
+        '.retry-status'
+      ) as HTMLElement;
+      retry.focus();
+      retry.click();
       await waitUntil(() => !view.reconciliationRequired);
       await element.updateComplete;
       expect(
         (element.shadowRoot!.querySelector('.decision-comment') as any).value
       ).to.equal('Keep my explanation');
       expect(view.submitting).to.equal(false);
+      expect(element.shadowRoot!.activeElement).to.equal(
+        element.shadowRoot!.querySelector('.status-badge')
+      );
+      expect(liveRegion.textContent).to.contain('Request status: Pending');
     });
 
     it('ignores a reconciliation result after navigating to another request', async () => {

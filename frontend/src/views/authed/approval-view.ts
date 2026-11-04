@@ -494,11 +494,6 @@ export class ApprovalView extends AuthedElement {
       }
 
       @media (max-width: 640px) {
-        .decision-comment::part(base),
-        .decision-buttons sl-button::part(base) {
-          min-height: 44px;
-        }
-
         .decision-buttons {
           flex: 1 1 100%;
         }
@@ -1079,10 +1074,13 @@ export class ApprovalView extends AuthedElement {
   /** Re-read a rejected decision without discarding comments or form answers. */
   private async reconcileDecision() {
     if (this.reconciling) return;
+    const restoreFocus =
+      this.shadowRoot?.activeElement?.classList.contains('retry-status');
     const generation = this.requestGeneration;
     const requestId = this.requestId;
     this.reconciliationRequired = true;
     this.reconciling = true;
+    this.accessibilityStatus.announce('Checking the latest request status.');
     try {
       let refreshed = false;
       if (!this.publicOnly) {
@@ -1116,6 +1114,21 @@ export class ApprovalView extends AuthedElement {
         this.reconciliationRequired = false;
         this.nowMs = Date.now();
         this.startTicking();
+        this.accessibilityStatus.announce(
+          `Request status: ${approvalStatusLabel(normalizeApprovalRequest(this.approvalRequest!, this.nowMs).status)}.`
+        );
+        await this.updateComplete;
+        if (
+          restoreFocus &&
+          generation === this.requestGeneration &&
+          requestId === this.requestId
+        ) {
+          this.shadowRoot?.querySelector<HTMLElement>('.status-badge')?.focus();
+        }
+      } else {
+        this.accessibilityStatus.announce(
+          'Could not refresh the request status. Use Retry status before deciding.'
+        );
       }
     } finally {
       if (generation === this.requestGeneration && requestId === this.requestId)
@@ -1519,6 +1532,7 @@ export class ApprovalView extends AuthedElement {
           <sl-badge
             pill
             class="chip status-badge"
+            tabindex="-1"
             variant=${this.getStatusVariant(request.status)}
           >
             ${displayStatus}
@@ -1707,11 +1721,7 @@ export class ApprovalView extends AuthedElement {
       ${this.decisionTaken ? this.renderPostDecision() : ''}
       ${
         this.reconciliationRequired
-          ? html`<div
-              class="decision-recovery"
-              role="status"
-              aria-live="polite"
-            >
+          ? html`<div class="decision-recovery">
               <p>
                 ${
                   this.reconciling
@@ -1722,6 +1732,7 @@ export class ApprovalView extends AuthedElement {
               <sl-button
                 ?disabled=${this.reconciling}
                 ?loading=${this.reconciling}
+                class="retry-status"
                 @click=${this.reconcileDecision}
                 >Retry status</sl-button
               >
