@@ -572,3 +572,13 @@ and use that wall time as `started_at`, then PATCH the timing. No VM accuracy
 claim follows from the fixture tests. Captured pixels may contain secrets,
 OTPs or other windows: text redaction does not redact the screen. Choose the
 capture region and retention policy accordingly.
+
+
+### Optional scoped readers
+
+An installed access-control plugin can narrow artifact reads with exact label
+and kind allow-lists. Core applies these restrictions before pagination and
+facets, and on direct reads, so excluded artifacts do not appear in search and
+return the same not-found response as missing IDs. Existing own-session and
+account boundaries still apply. Without an installed policy, access is unchanged.
+Grant management and account enablement belong to the plugin.

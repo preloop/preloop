@@ -13,6 +13,8 @@ from sqlalchemy import String, func, literal_column, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from preloop.services.artifact_access import audited_read, read_conditions
+
 from preloop.config import settings
 from preloop.models import models
 from preloop.services.artifact_media import ARTIFACT_KINDS, check_content
@@ -338,6 +340,7 @@ def store(
     return artifact
 
 
+@audited_read
 def get(
     db: Session, *, account_id: UUID, artifact_id: UUID
 ) -> models.RuntimeSessionArtifact | None:
@@ -356,11 +359,13 @@ def get(
         .filter(
             models.RuntimeSessionArtifact.id == artifact_id,
             models.RuntimeSessionArtifact.account_id == account_id,
+            *read_conditions(db, account_id),
         )
         .one_or_none()
     )
 
 
+@audited_read
 def list_for_session(
     db: Session,
     *,
@@ -386,6 +391,7 @@ def list_for_session(
     """
     query = db.query(models.RuntimeSessionArtifact).filter(
         models.RuntimeSessionArtifact.account_id == account_id,
+        *read_conditions(db, account_id),
         models.RuntimeSessionArtifact.runtime_session_id == runtime_session_id,
     )
     if kind is not None:
@@ -402,6 +408,7 @@ def list_for_session(
     )
 
 
+@audited_read
 def list_page_for_session(
     db: Session,
     *,
@@ -433,6 +440,7 @@ def list_page_for_session(
     table = models.RuntimeSessionArtifact
     query = db.query(table).filter(
         table.account_id == account_id,
+        *read_conditions(db, account_id),
         table.runtime_session_id == runtime_session_id,
     )
     if kind is not None:
@@ -475,6 +483,7 @@ def available_counts_by_session(
         db.query(table.runtime_session_id, table.kind, func.count(table.id))
         .filter(
             table.account_id == account_id,
+            *read_conditions(db, account_id),
             table.runtime_session_id.in_(runtime_session_ids),
             table.availability == "available",
         )
@@ -506,6 +515,7 @@ def sessions_with_available_artifacts(
     # parameter implies it, and the list request would scan the table again.
     query = db.query(table.runtime_session_id).filter(
         table.account_id == account_id,
+        *read_conditions(db, account_id),
         table.availability == literal_column("'available'"),
     )
     if kind is not None:
@@ -539,6 +549,7 @@ def own_session_ids(
     return select(session.id).where(session.account_id == account_id, match)
 
 
+@audited_read
 def search_page(
     db: Session,
     *,
@@ -591,6 +602,7 @@ def search_page(
     chunks = SessionSearchDocument
     q = db.query(table).filter(
         table.account_id == account_id,
+        *read_conditions(db, account_id),
         table.availability == "available",
     )
     if runtime_principal_id is not None:
@@ -972,6 +984,7 @@ def _account_search_conditions(
     return conditions
 
 
+@audited_read
 def search_account(
     db: Session,
     *,
@@ -1014,7 +1027,10 @@ def search_account(
             agent,
             (agent.id == table.agent_id) & (agent.account_id == account_id),
         )
-        .where(*_account_search_conditions(account_id=account_id, **filters))
+        .where(
+            *_account_search_conditions(account_id=account_id, **filters),
+            *read_conditions(db, account_id),
+        )
     )
     if before is not None:
         created_at, artifact_id = before
@@ -1047,7 +1063,10 @@ def search_account_facets(
     matching = (
         select(table.kind.label("kind"), table.labels["site"].astext.label("site"))
         .join(session, session.id == table.runtime_session_id)
-        .where(*_account_search_conditions(account_id=account_id, **filters))
+        .where(
+            *_account_search_conditions(account_id=account_id, **filters),
+            *read_conditions(db, account_id),
+        )
         .order_by(table.created_at.desc(), table.id.desc())
     )
     truncated = db.execute(matching.offset(cap).limit(1)).first() is not None
@@ -1064,3 +1083,33 @@ def search_account_facets(
         if site is not None:
             by_site[site] = by_site.get(site, 0) + int(count)
     return by_kind, by_site, truncated
+
+
+@audited_read
+def export_rows(
+    db: Session,
+    *,
+    account_id: Any,
+    start: datetime,
+    end: datetime,
+    runtime_session_id: Any = None,
+    limit: int,
+) -> list[tuple[models.RuntimeSessionArtifact, bool]]:
+    """Export descriptors without loading ciphertext, subject to read grants."""
+    from sqlalchemy.orm import defer
+
+    table = models.RuntimeSessionArtifact
+    stmt = (
+        select(table, table.ciphertext.is_not(None))
+        .options(defer(table.ciphertext))
+        .where(
+            table.account_id == account_id,
+            table.created_at >= start,
+            table.created_at < end,
+            *read_conditions(db, account_id),
+        )
+        .order_by(table.created_at, table.id)
+    )
+    if runtime_session_id is not None:
+        stmt = stmt.where(table.runtime_session_id == runtime_session_id)
+    return [(row, bool(has)) for row, has in db.execute(stmt.limit(limit)).all()]

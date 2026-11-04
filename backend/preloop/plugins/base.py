@@ -101,6 +101,10 @@ class Plugin(ABC):
         """Return services to register (name -> instance)."""
         return {}
 
+    def get_middlewares(self) -> list[type]:
+        """Optional ASGI request guards, installed on API and gateway apps."""
+        return []
+
     def get_dependencies(self) -> Dict[Any, Any]:
         """Return FastAPI dependencies to override."""
         return {}

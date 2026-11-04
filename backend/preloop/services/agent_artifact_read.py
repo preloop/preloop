@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_account, crud_audit_log
 from preloop.models.crud import runtime_session_artifact as crud_artifact
 from preloop.services import artifact_deposit, session_search_audit
+from preloop.services.artifact_access import bind_reader
 from preloop.services import artifact_shapes as shapes
 from preloop.services.agent_session_search import account_scope_granted
 from preloop.services.artifact_mcp_tools import absolute_uri
@@ -143,12 +144,14 @@ class Caller:
     #: Flow execution the credential belongs to, if any. Its flow is the
     #: identity "own" spans across runs.
     flow_execution_id: Optional[str] = None
+    user_id: Optional[str] = None
 
     @classmethod
     def from_user_context(cls, user_context: Any) -> "Caller":
         principal = getattr(user_context, "runtime_principal_id", None)
         return cls(
             account_id=user_context.account_id,
+            user_id=getattr(user_context, "user_id", None),
             runtime_principal_id=(str(principal).strip() or None)
             if principal
             else None,
@@ -300,6 +303,12 @@ def _limit(value: Any) -> int:
 
 def search(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> ReadOutcome:
     """Run one ``search_artifacts`` call. Never raises for a bad request."""
+    bind_reader(
+        db,
+        account_id=caller.account_id,
+        user_id=caller.user_id,
+        **caller.subject_context(),
+    )
     scope, principal, refusal = _resolve_scope(db, caller, arguments.get("scope"))
     audit_filters: Dict[str, Any] = {
         key: arguments.get(key)
@@ -424,6 +433,12 @@ def _utf8_prefix(data: bytes, limit: int) -> str:
 def get(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> ReadOutcome:
     """Run one ``get_artifact`` call. Never raises for a bad request."""
     raw_id = arguments.get("artifact_id")
+    bind_reader(
+        db,
+        account_id=caller.account_id,
+        user_id=caller.user_id,
+        **caller.subject_context(),
+    )
     scope = ARTIFACT_READ_SCOPE_OWN
 
     def refuse(code: str, detail: Optional[str] = None) -> ReadOutcome:

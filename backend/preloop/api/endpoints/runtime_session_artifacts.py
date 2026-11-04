@@ -42,7 +42,10 @@ from preloop.schemas.runtime_session_artifact import (
 from preloop.services import artifact_deposit
 from preloop.services.analytics_history import require_session_history
 from preloop.services.artifact_deposit import ArtifactDepositError
-from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.model_gateway_auth import (
+    ModelGatewayAuthContext,
+    resolve_managed_agent_id_for_context,
+)
 from preloop.utils.permissions import require_permission
 
 router = APIRouter()
@@ -178,6 +181,15 @@ def list_runtime_session_artifacts(
     A key pinned to this session may list it. Any other credential needs a
     user with ``view_runtime_sessions`` in the session's account.
     """
+    from preloop.services.artifact_access import bind_reader
+
+    bind_reader(
+        db,
+        account_id=auth.account_id,
+        user_id=auth.user.id,
+        api_key_id=auth.api_key_id,
+        managed_agent_id=resolve_managed_agent_id_for_context(db, auth),
+    )
     try:
         session = artifact_deposit.require_session(
             db, auth=auth, runtime_session_id=runtime_session_id
@@ -288,6 +300,15 @@ def update_artifact_media_timing(
     auth: ModelGatewayAuthContext = Depends(get_browser_step_auth_context),
 ) -> RuntimeSessionArtifactOut:
     """Idempotently replace timing using a session-bound key or manage_agents."""
+    from preloop.services.artifact_access import bind_reader
+
+    bind_reader(
+        db,
+        account_id=auth.account_id,
+        user_id=auth.user.id,
+        api_key_id=auth.api_key_id,
+        managed_agent_id=resolve_managed_agent_id_for_context(db, auth),
+    )
     try:
         session = artifact_deposit.require_session(
             db, auth=auth, runtime_session_id=runtime_session_id
@@ -327,6 +348,15 @@ def get_session_media_sync(
     auth: ModelGatewayAuthContext = Depends(_list_auth_context),
 ) -> MediaSyncOut:
     """Resolve recording positions with the artifact read authorization."""
+    from preloop.services.artifact_access import bind_reader
+
+    bind_reader(
+        db,
+        account_id=auth.account_id,
+        user_id=auth.user.id,
+        api_key_id=auth.api_key_id,
+        managed_agent_id=resolve_managed_agent_id_for_context(db, auth),
+    )
     try:
         session = artifact_deposit.require_session(
             db, auth=auth, runtime_session_id=runtime_session_id
