@@ -2127,7 +2127,7 @@ class FlowExecutionOrchestrator:
         resolver_context = ResolverContext(
             db=self.db,
             trigger_event_data=self.trigger_event_data,
-            flow_id=str(self.flow_id),
+            flow_id=(str(self.flow.id) if getattr(self.flow, "id", None) else None),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
             account_id=self._flow_account_id(),
             workspace_mode=workspace_mode(
@@ -2357,7 +2357,9 @@ class FlowExecutionOrchestrator:
                         else None,
                     },
                     runtime_session_id=str(self.runtime_session.id),
-                    flow_id=str(self.flow.id),
+                    flow_id=(
+                        str(self.flow.id) if getattr(self.flow, "id", None) else None
+                    ),
                     execution_id=str(self.execution_log.id),
                 )
             )
@@ -2379,7 +2381,9 @@ class FlowExecutionOrchestrator:
                         "flow_id": str(self.flow.id),
                     },
                     runtime_session_id=str(self.runtime_session.id),
-                    flow_id=str(self.flow.id),
+                    flow_id=(
+                        str(self.flow.id) if getattr(self.flow, "id", None) else None
+                    ),
                     execution_id=str(self.execution_log.id),
                 )
             )
@@ -3693,6 +3697,7 @@ class FlowExecutionOrchestrator:
             model=host_exec_model_identifier(kind, config),
             pool=pool,
             pinned_runner_id=pin,
+            flow_id=(str(self.flow.id) if getattr(self.flow, "id", None) else None),
         )
         if eligible:
             return

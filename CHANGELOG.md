@@ -218,6 +218,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server. `skip_missing_servers` turns it into a warning and keeps the entry
   (#1426).
 
+- **A flow's `runner_pool` no longer reaches another member's personal
+  runner.** A pool naming a runner's id, name or label used to lease work to
+  any runner in the account, gated only by the owner's flow consent. A
+  runner registered by a member who is not an account admin now takes a
+  pool-routed lease only when the flow author is its registrant, an account
+  admin, or holds a `flows` grant through the authorizer (`runner:flow_use`
+  with `operation=lease`), the same rule as pinning `agent_config.runner_id`.
+  Admin-registered and registrant-less runners, the `auto` and `server`
+  pools, and flows with no recorded author (including one whose author was
+  hard deleted) are unchanged. A refused runner counts as unavailable for
+  harness routing, so `harness_fallback: fallback_server` applies. Without
+  the RBAC plugin every member is an account admin, so this changes routing
+  only when roles are enabled (#2176).
+
 ### Fixed
 
 - The Responses gateway accepts more than one output for the same tool call

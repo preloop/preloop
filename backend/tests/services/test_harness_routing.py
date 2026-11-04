@@ -723,3 +723,100 @@ def test_harness_options_counts_two_runners() -> None:
     ]
     # Presence-only harnesses (claude_desktop in the fixture) are not routable.
     assert "claude_desktop" not in json.dumps(result, default=str)
+
+
+# --- flow author gate on explicit pools (#2176) ---------------------------------
+
+
+def _author_world(monkeypatch, account_id, *, author_is_owner: bool):
+    from preloop.models.crud import crud_flow
+
+    runner = _runner(account_id)
+    owner_id = runner.registered_by_user_id
+    member_id = uuid4()
+    flow_id = uuid4()
+    users = {
+        uid: SimpleNamespace(id=uid, account_id=account_id, is_active=True)
+        for uid in (owner_id, member_id)
+    }
+    monkeypatch.setattr(
+        runner_service.crud_user, "get", lambda db, id=None: users.get(id)
+    )
+    monkeypatch.setattr(runner_service, "_user_is_account_admin", lambda db, u: False)
+    author = owner_id if author_is_owner else member_id
+    monkeypatch.setattr(
+        crud_flow,
+        "get",
+        lambda db, id=None, **kw: SimpleNamespace(
+            id=flow_id, created_by_user_id=author
+        ),
+    )
+    monkeypatch.setattr("preloop.plugins.account_hooks._authorizer", None)
+    return runner, flow_id
+
+
+@pytest.mark.parametrize(
+    ("author_is_owner", "expected"),
+    [
+        (True, (1, None)),
+        (False, (0, "owner_has_no_runner")),
+    ],
+)
+def test_routing_reason_applies_the_flow_author_gate(
+    monkeypatch, author_is_owner, expected
+) -> None:
+    account_id = uuid4()
+    runner, flow_id = _author_world(
+        monkeypatch, account_id, author_is_owner=author_is_owner
+    )
+    assert (
+        harness_routing_reason(
+            MagicMock(),
+            [runner],
+            account_id=account_id,
+            harness="copilot_cli",
+            pool=runner.name,
+            flow_id=str(flow_id),
+        )
+        == expected
+    )
+
+
+def test_orchestrator_falls_back_when_author_may_not_use_pooled_runner(
+    monkeypatch,
+) -> None:
+    """Review on #2182: a denied personal runner must not block fallback_server."""
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    account_id = uuid4()
+    runner, flow_id = _author_world(monkeypatch, account_id, author_is_owner=False)
+    model = SimpleNamespace(id=uuid4(), model_identifier="gpt-5.2")
+    monkeypatch.setattr(crud_flow_runner, "find_matching", lambda db, **kw: [runner])
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_ai_model.get_all_for_account",
+        lambda db, **kw: [model],
+    )
+    monkeypatch.setattr(
+        "preloop.services.model_routing.model_usable_for_agent",
+        lambda candidate, agent_type: agent_type == "codex",
+    )
+    orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.agent_type = "copilot"
+    orchestrator.ai_model = None
+    orchestrator.trigger_event_data = {}
+    orchestrator.execution_log = SimpleNamespace(routing_reason=None, billing_mode=None)
+    orchestrator.flow = SimpleNamespace(
+        id=flow_id,
+        agent_type="copilot",
+        runner_pool=runner.name,
+        account_id=account_id,
+        agent_config={
+            "harness": "copilot_cli",
+            "harness_fallback": "fallback_server",
+            "fallback_model_identifier": "gpt-5.2",
+        },
+    )
+    orchestrator._apply_harness_routing_decision()
+    assert orchestrator.agent_type == "codex"
+    assert orchestrator.execution_log.routing_reason == "fell_back_to_server"
