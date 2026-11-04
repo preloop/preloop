@@ -749,7 +749,9 @@ def test_every_class_with_derived_chunks_deletes_them_in_the_purge():
         SWEEP_EXECUTION_LOGS,
     }
     for record_class in corpus_retention.DERIVED_CHUNK_DELETES:
-        assert record_class in purge._CLASS_FILTERS
+        assert purge.class_filters(
+            record_class, datetime.now(UTC), account_id=uuid.uuid4()
+        )
 
 
 def test_delete_derived_chunks_is_a_no_op_for_a_class_with_no_corpus(db_session):

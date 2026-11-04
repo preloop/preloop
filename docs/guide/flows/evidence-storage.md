@@ -367,7 +367,18 @@ them on upgrade, and `RETENTION_PURGE_DRY_RUN` previews them like any class.
 | Sweep | Table | Follows | What stays |
 | --- | --- | --- | --- |
 | `execution_logs` | `flow_execution_log` | evidence retention | The `flow_execution` summary row; every line of a held execution |
-| `events` | `event` (rows with an account) | usage retention, never under the plan's history window | Rows without an account (instance and CLI check-ins) |
+| `events` | `event` (rows with an account) | usage retention, never under the plan's storage promise | Events referencing held executions; rows without an account (instance and CLI check-ins) |
+
+The storage promise is retained history, which can be longer than the history
+window displayed by the plan. Unlimited storage prevents event purging.
+Events whose `event_data.execution_id` names a held execution in the same
+account stay until the hold is released; other account telemetry has no
+independent legal hold.
+
+High-volume sweeps run first. The remaining pass time is divided among the
+remaining sweeps and record classes, so one backlog cannot consume their
+entire allowance. Unused time remains available to later classes. The deadline
+is checked between batches; an in-flight batch can finish after its allowance.
 
 A log line goes only when both its run and the line itself are past the
 cutoff, so a run's log is removed as a whole. Each sweep writes the same

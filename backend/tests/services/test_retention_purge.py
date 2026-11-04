@@ -537,7 +537,9 @@ def test_every_purgeable_class_carries_a_hold_predicate():
         model = purge._CLASS_MODELS[record_class]
         rendered = [
             str(item).lower()
-            for item in purge.class_filters(cutoff=cutoff, record_class=record_class)
+            for item in purge.class_filters(
+                cutoff=cutoff, record_class=record_class, account_id=uuid.uuid4()
+            )
         ]
         if record_class in purge.HOLD_EXEMPT_CLASSES:
             assert not hasattr(model, "legal_hold")
@@ -565,7 +567,7 @@ def test_every_purgeable_class_carries_a_hold_predicate():
 def test_legacy_evidence_drop_routes_through_the_hold_helper():
     """The FlowExecution UPDATE must unpack the helper, not repeat the flag."""
     source = inspect.getsource(purge._drop_legacy_evidence_columns)
-    assert "_hold_filters_for_model(FlowExecution)" in source
+    assert "_hold_filters_for_model(models.FlowExecution)" in source
     assert "legal_hold.is_(False)" not in source
 
 

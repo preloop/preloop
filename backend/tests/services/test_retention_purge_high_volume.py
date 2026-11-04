@@ -2,16 +2,22 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
+from sqlalchemy.sql import visitors
+from sqlalchemy.sql.selectable import Select
 
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.models.audit_log import AuditLog
 from preloop.services import retention_purge as purge
-from preloop.services.legal_hold import place_hold
-from preloop.services.retention_policy import CLASS_EVIDENCE, CLASS_USAGE
+from preloop.services.legal_hold import place_hold, release_hold
+from preloop.services.retention_policy import CLASS_AUDIT, CLASS_EVIDENCE, CLASS_USAGE
 
 
 @pytest.fixture(autouse=True)
@@ -71,11 +77,18 @@ def _log_count(db_session, execution_id) -> int:
     )
 
 
-def _event(db_session, account_id, *, age_days: int):
+def _event(
+    db_session: Session,
+    account_id: uuid.UUID | None,
+    *,
+    age_days: int,
+    event_data: dict[str, Any] | None = None,
+) -> uuid.UUID:
     row = models.Event(
         account_id=account_id,
         event_type="page_view",
         timestamp=datetime.now(UTC) - timedelta(days=age_days),
+        event_data=event_data,
     )
     db_session.add(row)
     db_session.flush()
@@ -171,6 +184,157 @@ def test_events_never_go_below_the_floor(db_session, account):
     _run(db_session, account)
 
     assert _event_exists(db_session, row) is True
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_events_honor_the_longer_storage_promise(
+    db_session: Session,
+    account: models.Account,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    account.meta_data = {"retention": {CLASS_USAGE: 200}}
+    account.subscription_history_retention_days = 730
+    inside = _event(db_session, account.id, age_days=400)
+    outside = _event(db_session, account.id, age_days=800)
+    db_session.commit()
+    monkeypatch.setattr(settings, "retention_purge_dry_run", dry_run)
+
+    result = _run(db_session, account)
+
+    assert result.classes[purge.SWEEP_EVENTS] == 1
+    assert _event_exists(db_session, inside)
+    assert _event_exists(db_session, outside) is dry_run
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_events_honor_unlimited_storage(
+    db_session: Session,
+    account: models.Account,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    account.meta_data = {"retention": {CLASS_USAGE: 200}}
+    account.subscription_history_retention_days = -1
+    old = _event(db_session, account.id, age_days=800)
+    db_session.commit()
+    monkeypatch.setattr(settings, "retention_purge_dry_run", dry_run)
+
+    result = _run(db_session, account)
+
+    assert result.classes[purge.SWEEP_EVENTS] == 0
+    assert _event_exists(db_session, old)
+
+
+def test_every_execution_log_subquery_is_account_scoped() -> None:
+    """Neither the ownership nor eligibility lookup may scan other tenants."""
+    account_id = uuid.uuid4()
+    stmt = purge._candidate_ids_stmt(
+        purge.SWEEP_EXECUTION_LOGS,
+        account_id=account_id,
+        cutoff=datetime.now(UTC),
+        limit=1000,
+    )
+    execution_queries = [
+        item
+        for item in visitors.iterate(stmt)
+        if isinstance(item, Select)
+        and any(
+            column.table is models.FlowExecution.__table__
+            for column in item.selected_columns
+        )
+    ]
+    assert execution_queries
+    for query in execution_queries:
+        sql = str(
+            query.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+        assert f"flow.account_id = '{account_id}'" in sql
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_execution_hold_preserves_its_events_until_released(
+    db_session: Session,
+    account: models.Account,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    execution = _execution(db_session, account.id, age_days=400)
+    held = _event(
+        db_session,
+        account.id,
+        age_days=400,
+        event_data={"execution_id": str(execution.id)},
+    )
+    ordinary = _event(db_session, account.id, age_days=400)
+    malformed = _event(
+        db_session, account.id, age_days=400, event_data={"execution_id": "not-a-uuid"}
+    )
+    null_id = _event(
+        db_session, account.id, age_days=400, event_data={"execution_id": None}
+    )
+    db_session.commit()
+    outcome = place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="execution",
+        resource_id=str(execution.id),
+        reason="preserve execution timeline",
+    )
+    assert outcome is not None
+    db_session.commit()
+    monkeypatch.setattr(settings, "retention_purge_dry_run", dry_run)
+
+    result = _run(db_session, account)
+
+    assert _event_exists(db_session, held)
+    assert result.classes[purge.SWEEP_EVENTS] == 3
+    for event_id in (ordinary, malformed, null_id):
+        assert _event_exists(db_session, event_id) is dry_run
+
+    release_hold(
+        db_session,
+        account_id=account.id,
+        hold_id=outcome.hold.id,
+        reason="timeline hold released",
+    )
+    db_session.commit()
+    monkeypatch.setattr(settings, "retention_purge_dry_run", False)
+    _run(db_session, account)
+    assert not _event_exists(db_session, held)
+
+
+@pytest.mark.parametrize("backlogged_class", [CLASS_AUDIT, purge.SWEEP_EXECUTION_LOGS])
+def test_a_backlog_cannot_spend_the_events_time_budget(
+    db_session: Session,
+    account: models.Account,
+    monkeypatch: pytest.MonkeyPatch,
+    backlogged_class: str,
+) -> None:
+    """A class that uses its full allowance must leave time for both sweeps."""
+    execution = _execution(db_session, account.id, age_days=400)
+    event_id = _event(db_session, account.id, age_days=400)
+    db_session.commit()
+    clock = [0.0]
+    monkeypatch.setattr(purge, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original = purge.purge_class
+
+    def spend_budget(db: Session, **kwargs: Any) -> purge.ClassResult:
+        result = original(db, **kwargs)
+        if kwargs["record_class"] == backlogged_class:
+            clock[0] = kwargs["deadline"]
+            result.more_remaining = True
+        return result
+
+    monkeypatch.setattr(purge, "purge_class", spend_budget)
+    result = _run(db_session, account)
+
+    assert not _event_exists(db_session, event_id)
+    assert _log_count(db_session, execution.id) == 0
+    assert result.budget_exhausted
+    assert clock[0] <= settings.retention_purge_max_seconds
 
 
 def test_another_accounts_logs_and_events_are_untouched(db_session, account, test_user):
@@ -280,11 +444,13 @@ def test_the_log_sweep_is_bounded_by_the_batch_ceiling(
 
 
 def test_every_sweep_states_its_hold_coverage():
-    """Logs carry the execution hold predicate; events say why they have none."""
+    """Logs and execution events carry account-scoped execution hold checks."""
     cutoff = datetime.now(UTC)
     rendered = " ".join(
         str(item).lower()
-        for item in purge.class_filters(purge.SWEEP_EXECUTION_LOGS, cutoff)
+        for item in purge.class_filters(
+            purge.SWEEP_EXECUTION_LOGS, cutoff, account_id=uuid.uuid4()
+        )
     )
     assert "flow_execution.legal_hold is false" in rendered
     assert purge.SWEEP_EVENTS in purge.HOLD_EXEMPT_CLASSES
