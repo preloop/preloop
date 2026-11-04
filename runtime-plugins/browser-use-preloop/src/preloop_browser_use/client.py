@@ -200,7 +200,12 @@ class RuntimeSessionCapture:
         """The step target once a session header was seen, else ``None``."""
         if not self.runtime_session_id:
             return None
-        return PreloopTarget(base_url, agent_key, self.runtime_session_id)
+        return PreloopTarget(
+            base_url,
+            agent_key,
+            self.runtime_session_id,
+            local_desktop_endpoint_id(),
+        )
 
 
 @dataclass

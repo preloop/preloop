@@ -10,7 +10,6 @@ Authentication is the agent bearer, as for browser steps.
 from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -19,6 +18,7 @@ from sqlalchemy.orm import Session
 from preloop.api.gateway_auth_dependency import get_browser_step_auth_context
 from preloop.models.crud import crud_desktop, crud_runtime_session
 from preloop.models.db.session import get_db_session
+from preloop.services.browser_steps import BrowserStepsError, require_writable_session
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 
 router = APIRouter()
@@ -73,17 +73,11 @@ def set_runtime_session_desktop_endpoint(
             404 when the session is not in the credential's account.
     """
     try:
-        canonical = str(UUID(str(runtime_session_id).strip()))
-    except ValueError:
-        raise HTTPException(404, "Runtime session not found") from None
-    pinned = auth.runtime_session_id
-    if pinned is not None and pinned.lower() != canonical.lower():
-        raise HTTPException(403, "Credential is bound to a different runtime session")
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(auth.account_id), runtime_session_id=canonical
-    )
-    if session is None:
-        raise HTTPException(404, "Runtime session not found")
+        session = require_writable_session(
+            db, auth=auth, runtime_session_id=runtime_session_id
+        )
+    except BrowserStepsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     session = crud_runtime_session.set_desktop_endpoint(
         db, runtime_session=session, desktop_endpoint_id=body.desktop_endpoint_id
     )

@@ -664,3 +664,13 @@ def test_no_desktop_means_no_link_request_and_a_failed_link_is_harmless(caplog):
         asyncio.run(reporter.run(FakeAgent(_history()["history"])))
     assert sum(r.accepted for r in reporter.results) == 12
     assert caplog.text.count("desktop") == 1
+
+
+def test_capture_target_carries_the_desktop_endpoint(monkeypatch):
+    from preloop_browser_use import RuntimeSessionCapture
+
+    monkeypatch.setenv("PRELOOP_DESKTOP_ENDPOINT_ID", "dep_capture")
+    capture = RuntimeSessionCapture()
+    capture(httpx.Response(200, headers={"X-Preloop-Runtime-Session-Id": RESOLVED}))
+    target = capture.target("http://preloop.test", "agent-key")
+    assert target.desktop_endpoint_id == "dep_capture"
