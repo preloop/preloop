@@ -307,6 +307,12 @@ A runner is eligible when all of these hold:
 - the flow may use it: the flow pins it with `runner_id`, or names it in
   `runner_pool`, or (for a flow that names no runner) it was registered by
   an account admin. A member's own runner only takes flows that name it;
+- for a flow that names it in `runner_pool` (not pins it), the flow's author
+  may use it: its registrant, an account admin, or a `flows` share grant.
+  A refused runner counts as not eligible (`owner_has_no_runner`), so
+  `harness_fallback` applies, including `fallback_server`. Without the RBAC
+  plugin every member is an account admin, so this only narrows routing
+  when roles are enabled;
 - its inventory has `copilot_cli` enabled, signed in and runnable;
 - the model is listed, or the harness cannot list models. Copilot has no
   model listing, so an unlisted model is allowed and fails fast on the

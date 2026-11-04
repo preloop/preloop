@@ -220,7 +220,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Admin-registered and registrant-less runners, the `auto` and `server`
   pools, and flows with no recorded author (including one whose author was
   hard deleted) are unchanged. A refused runner counts as unavailable for
-  harness routing, so `harness_fallback: fallback_server` applies (#2176).
+  harness routing, so `harness_fallback: fallback_server` applies. Without
+  the RBAC plugin every member is an account admin, so this changes routing
+  only when roles are enabled (#2176).
 
 ### Fixed
 

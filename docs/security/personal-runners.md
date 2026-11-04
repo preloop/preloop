@@ -112,7 +112,10 @@ harnesses and directories it covers, lists and drives only their own
 sessions (`403 not_session_actor` otherwise) and cannot open a dirty work
 tree. Flow pinning and the flow editor's harness options ask
 `runner:flow_use` with the same contract, and the lease passes the pinned
-runner, harness and directory with `runner:accept`.
+runner, harness and directory with `runner:accept`. A lease routed by an
+explicit `runner_pool` that names a personal runner also asks
+`runner:flow_use` for the flow's author (`operation: lease`), and harness
+routing applies the same check (#2176).
 
 The per-start owner approval (T3) stays unless a registered start consent
 waiver returns a reason; the waiver is asked only after authorization and
