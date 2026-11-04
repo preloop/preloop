@@ -21,6 +21,21 @@ The default private-runner job is still `docker run` of the flow image (or a cus
 
 A pull request review flow can require that its review was delivered (EE #202): `git_clone_config.review_publication.required: true` (the Pull Request Reviewer preset sets it, and a flow with no `review_publication` block inherits it from its source preset). The MCP `update_pull_request` tool writes a `review_publication_receipt` row only after the code host accepted a review (`approve`, `request_changes` or `comment`), bound to the account, the execution named by the calling credential, provider, repository, PR number, the reviewed head SHA when the provider reports one (GitHub `commit_id`), action and provider review id. Reactions and metadata edits write nothing. At the end of the run `FlowExecutionOrchestrator._apply_review_publication_gate` looks for a receipt for this execution and the triggering PR and head, and stores the outcome in `result.review_publication` (`published`, `already_reviewed` or `not_published` with a reason). A SUCCEEDED run with `not_published` becomes FAILED with `review_publication_incomplete: <reason>` and the `publication_missing` category; the agent's report and blocker stay in the result. The agent's `review_posted` claim, the success sentinel and a zero exit code never satisfy the gate. A deliberate no-post run (`review_action: null`, no `blocker`) passes as `already_reviewed` only when an earlier run of the account holds a receipt for the same PR and head. A receipt that fails to persist is logged at error level and the run fails for want of it.
 
+`scripts/init_db.py` refreshes the global preset catalog after migrations on
+native, Compose and Helm deployments, without propagating prompt or tool
+changes to account flows. Upgrades that bypass this initializer must run
+`python scripts/sync_flow_presets.py --no-propagate` so stored reviewer presets
+carry the publication requirement. An explicit `review_publication.required:
+false` on a derived flow still opts out. If an inherited source preset cannot
+be read, the run fails closed with `preset_lookup_failed`.
+
+Manual preset and CLI PR runs carry the fetched head in the same provider
+fields as webhook events. A trigger naming a PR without its head fails with
+`trigger_head_missing`; an older-head receipt cannot prove publication for
+that run. Providers that do not report the reviewed head on their receipt
+(GitLab and Bitbucket) can prove delivery for the current execution and PR,
+but cannot satisfy the head-exact `already_reviewed` skip.
+
 ## Ad-hoc preset runs
 
 `POST /api/v1/flows/run-preset` runs a catalog preset on a GitHub or GitLab issue without waiting for a tracker webhook. `confirm_create=false` only resolves the account flow (409 `flow_missing` when none exists). `confirm_create=true` clones the preset on first use, then triggers it. The auto-created flow has empty `trigger_event_types` and no `trigger_event_source`, so tracker events do not start extra runs until the operator edits the flow. Other tracker types (for example Jira) return 400.

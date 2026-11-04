@@ -118,6 +118,15 @@ def test_skip_needs_a_known_head() -> None:
     assert outcome["status"] == STATUS_NOT_PUBLISHED
 
 
+@pytest.mark.parametrize("receipt_head", [HEAD, None])
+def test_named_pull_request_without_trigger_head_fails_closed(receipt_head) -> None:
+    outcome = _evaluate([_receipt(head_sha=receipt_head)], head_sha=None)
+    assert outcome == {
+        "status": STATUS_NOT_PUBLISHED,
+        "reason": "trigger_head_missing",
+    }
+
+
 def test_unknown_target_accepts_any_receipt_of_the_run() -> None:
     outcome = _evaluate([_receipt()], repository=None, pull_request=None)
     assert outcome["status"] == STATUS_PUBLISHED

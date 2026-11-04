@@ -55,6 +55,13 @@ Each process in its own terminal (or tmux session):
 | Backend API (`role=all`) | `source .venv/bin/activate && ./start.sh --init-test-data` | 8000 | `start.sh` loads `.env`, runs `scripts/init_db.py --force`, then `python -m preloop.server`. Omit `--init-test-data` after the first boot. |
 | Frontend (Vite) | `cd frontend && npm run dev -- --host 0.0.0.0` | 5173 | Proxies `/api`, `/mcp`, `/openai`, `/anthropic` to `:8000`. Open the app here. |
 
+`scripts/init_db.py` also refreshes the global flow preset catalog on upgrades,
+without propagating template changes to account flows. If you apply migrations
+without running that initializer, run
+`python scripts/sync_flow_presets.py --no-propagate` before starting the service.
+Existing reviewer flows inherit the review publication requirement from this
+stored catalog.
+
 PostgreSQL data (schema, migrations, seeded rows) lives on the host. After
 the first boot you normally only restart processes, not reinstall or
 re-migrate.

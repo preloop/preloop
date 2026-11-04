@@ -5413,3 +5413,177 @@ class TestReviewPublicationGate:
         )
         assert orch.execution_log.status == "SUCCEEDED"
         assert "review_publication" not in (orch.execution_log.result or {})
+
+    @pytest.mark.asyncio
+    async def test_stored_source_preset_requires_receipt(
+        self, db_session, review_flow, mock_nats_client, pr_event
+    ) -> None:
+        from preloop.models import schemas
+
+        preset = crud_flow.create(
+            db=db_session,
+            flow_in=FlowCreate(
+                name="Stored reviewer preset",
+                prompt_template="Review",
+                agent_type="openhands",
+                agent_config={},
+                is_preset=True,
+                git_clone_config={"review_publication": {"required": True}},
+            ),
+            account_id=None,
+        )
+        crud_flow.update(
+            db_session,
+            db_obj=review_flow,
+            account_id=review_flow.account_id,
+            flow_in=schemas.FlowUpdate(
+                source_preset_id=preset.id,
+                git_clone_config={"enabled": False},
+            ),
+        )
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            {"status": "success", "review_posted": True},
+        )
+        assert orch.execution_log.status == "FAILED"
+        assert orch.execution_log.result["review_publication"] == {
+            "status": "not_published",
+            "reason": "no_receipt",
+        }
+
+    @pytest.mark.parametrize("lookup", ["error", "missing", "not_preset"])
+    def test_source_preset_lookup_failure_fails_closed(self, lookup: str) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orch.db = MagicMock()
+        orch.flow = SimpleNamespace(
+            git_clone_config={"enabled": False},
+            source_preset_id=uuid4(),
+        )
+        orch.execution_log = SimpleNamespace(id=uuid4())
+        orch.execution_logger = MagicMock()
+        artifact = {"review_posted": True, "findings_count": 2}
+        with patch("preloop.services.flow_orchestrator.crud_flow.get") as get:
+            if lookup == "error":
+                get.side_effect = OperationalError(
+                    "SELECT", {}, Exception("unavailable")
+                )
+            else:
+                get.return_value = (
+                    None if lookup == "missing" else SimpleNamespace(is_preset=False)
+                )
+            status, result, merged = orch._apply_review_publication_gate(
+                "SUCCEEDED",
+                {"status": "SUCCEEDED"},
+                dict(artifact),
+            )
+        assert status == "FAILED"
+        assert (
+            result["error_message"]
+            == "review_publication_incomplete: preset_lookup_failed"
+        )
+        assert merged["findings_count"] == 2
+        assert merged["review_publication"] == {
+            "status": "not_published",
+            "reason": "preset_lookup_failed",
+        }
+        orch.db.rollback.assert_called_once()
+
+    def test_explicit_opt_out_does_not_read_source_preset(self) -> None:
+        orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orch.db = MagicMock()
+        orch.flow = SimpleNamespace(
+            git_clone_config={"review_publication": {"required": False}},
+            source_preset_id=uuid4(),
+        )
+        with patch("preloop.services.flow_orchestrator.crud_flow.get") as get:
+            assert orch._apply_review_publication_gate("SUCCEEDED", {}, {}) == (
+                "SUCCEEDED",
+                {},
+                {},
+            )
+            get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_rejects_older_head_receipt(
+        self, db_session, review_flow, mock_nats_client
+    ) -> None:
+        from preloop.services.preset_runner import build_pull_request_trigger_payload
+
+        event = build_pull_request_trigger_payload(
+            {"number": 7, "url": self.PR_URL, "head_sha": self.HEAD},
+            SimpleNamespace(
+                id=uuid4(),
+                name="example-repo",
+                slug="example-org/example-repo",
+                settings={},
+                meta_data={},
+            ),
+            SimpleNamespace(
+                id=uuid4(),
+                account_id=review_flow.account_id,
+                tracker_type="github",
+                url="https://github.com",
+            ),
+        )
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            event,
+            {"status": "success", "review_posted": True},
+            receipt=self._receipt(head_sha="b" * 40),
+        )
+        assert orch.execution_log.status == "FAILED"
+        assert (
+            orch.execution_log.result["review_publication"]["reason"]
+            == "receipt_for_other_head"
+        )
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_can_skip_already_reviewed_head(
+        self, db_session, review_flow, mock_nats_client, pr_event
+    ) -> None:
+        from preloop.services.preset_runner import build_pull_request_trigger_payload
+
+        prior = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            {"status": "success", "review_posted": True},
+            receipt=self._receipt(),
+        )
+        assert prior.execution_log.status == "SUCCEEDED"
+        event = build_pull_request_trigger_payload(
+            {"number": 7, "url": self.PR_URL, "head_sha": self.HEAD},
+            SimpleNamespace(
+                id=uuid4(),
+                name="example-repo",
+                slug="example-org/example-repo",
+                settings={},
+                meta_data={},
+            ),
+            SimpleNamespace(
+                id=uuid4(),
+                account_id=review_flow.account_id,
+                tracker_type="github",
+                url="https://github.com",
+            ),
+        )
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            event,
+            {"status": "success", "review_action": None, "review_posted": False},
+        )
+        assert orch.execution_log.status == "SUCCEEDED"
+        assert (
+            orch.execution_log.result["review_publication"]["status"]
+            == "already_reviewed"
+        )

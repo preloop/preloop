@@ -951,6 +951,7 @@ class BitbucketTracker(BaseTracker):
             "author": attributes["author"] or "",
             "source_branch": attributes["source_branch"] or "",
             "target_branch": attributes["target_branch"] or "",
+            "head_sha": attributes["last_commit"]["id"],
             "state": attributes["state"] or "open",
             "draft": attributes["draft"],
             "created_at": pr.get("created_on"),

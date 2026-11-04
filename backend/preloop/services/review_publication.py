@@ -16,6 +16,8 @@ must post again.
 
 When the trigger names no pull request the gate accepts any receipt of this
 execution; it still requires a review the code host accepted.
+A trigger that names a pull request must also identify its head; otherwise
+the gate fails closed instead of accepting a receipt for an unknown revision.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ REASON_NO_RECEIPT = "no_receipt"
 REASON_OTHER_TARGET = "receipt_for_other_pull_request"
 REASON_OTHER_HEAD = "receipt_for_other_head"
 REASON_LOOKUP_FAILED = "receipt_lookup_failed"
+REASON_PRESET_LOOKUP_FAILED = "preset_lookup_failed"
+REASON_TRIGGER_HEAD_MISSING = "trigger_head_missing"
 
 _GITHUB_PR = re.compile(r"^/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
 _GITLAB_MR = re.compile(r"^/(.+?)/-/merge_requests/(\d+)(?:/.*)?$")
@@ -159,6 +163,8 @@ def evaluate_review_publication(
         ``{"status": ..., "reason": ..., ...}`` for the stored result.
     """
     head = (head_sha or "").lower() or None
+    if repository and pull_request and not head:
+        return {"status": STATUS_NOT_PUBLISHED, "reason": REASON_TRIGGER_HEAD_MISSING}
     reason = REASON_NO_RECEIPT
     for receipt in receipts:
         same_target = repository is None or (

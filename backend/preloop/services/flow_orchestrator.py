@@ -6646,18 +6646,11 @@ class FlowExecutionOrchestrator:
         preset_config = None
         preset_id = getattr(flow, "source_preset_id", None)
         own_block = own.get("review_publication") if isinstance(own, dict) else None
-        if own_block is None and preset_id is not None:
-            try:
-                preset = crud_flow.get(self.db, id=preset_id)
-            except Exception:
-                logger.warning(
-                    "Could not read source preset %s for the review gate",
-                    preset_id,
-                    exc_info=True,
-                )
-                preset = None
-            if preset is not None and getattr(preset, "is_preset", False):
-                preset_config = getattr(preset, "git_clone_config", None)
+        if not isinstance(own_block, dict) and preset_id is not None:
+            preset = crud_flow.get(self.db, id=preset_id)
+            if preset is None or not getattr(preset, "is_preset", False):
+                raise ValueError(f"Source preset {preset_id} is unavailable")
+            preset_config = getattr(preset, "git_clone_config", None)
         return review_publication_required(own, preset_config)
 
     def _apply_review_publication_gate(
@@ -6670,11 +6663,12 @@ class FlowExecutionOrchestrator:
         from review delivery. Only a SUCCEEDED run is overridden; the report
         and the agent's blocker stay in the result for recovery.
         """
-        if final_status in PARKED_STATUSES or not self._review_publication_required():
+        if final_status in PARKED_STATUSES:
             return final_status, agent_result, merged_result
         from preloop.models.crud import crud_review_publication_receipt
         from preloop.services.review_publication import (
             REASON_LOOKUP_FAILED,
+            REASON_PRESET_LOOKUP_FAILED,
             REVIEW_PUBLICATION_INCOMPLETE,
             REVIEW_PUBLICATION_RESULT_KEY,
             STATUS_NOT_PUBLISHED,
@@ -6682,10 +6676,14 @@ class FlowExecutionOrchestrator:
             trigger_pull_request,
         )
 
-        account_id = getattr(self.flow, "account_id", None)
-        repository, pull_request = trigger_pull_request(self.trigger_event_data)
-        head_sha = getattr(self, "_commit_sha", None) or self._extract_commit_sha()
+        lookup_failure_reason = REASON_PRESET_LOOKUP_FAILED
         try:
+            if not self._review_publication_required():
+                return final_status, agent_result, merged_result
+            lookup_failure_reason = REASON_LOOKUP_FAILED
+            account_id = getattr(self.flow, "account_id", None)
+            repository, pull_request = trigger_pull_request(self.trigger_event_data)
+            head_sha = getattr(self, "_commit_sha", None) or self._extract_commit_sha()
             receipts = crud_review_publication_receipt.list_for_execution(
                 self.db, account_id=account_id, execution_id=self.execution_log.id
             )
@@ -6709,15 +6707,16 @@ class FlowExecutionOrchestrator:
             )
         except Exception:
             logger.error(
-                "Could not read review publication receipts for execution %s",
+                "Could not verify review publication for execution %s: %s",
                 getattr(self.execution_log, "id", None),
+                lookup_failure_reason,
                 exc_info=True,
             )
             try:
                 self.db.rollback()
             except Exception:
                 pass
-            outcome = {"status": STATUS_NOT_PUBLISHED, "reason": REASON_LOOKUP_FAILED}
+            outcome = {"status": STATUS_NOT_PUBLISHED, "reason": lookup_failure_reason}
         if not isinstance(merged_result, dict):
             merged_result = {}
         merged_result[REVIEW_PUBLICATION_RESULT_KEY] = outcome
