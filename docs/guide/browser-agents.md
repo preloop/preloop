@@ -77,9 +77,12 @@ curl -G "https://preloop.example.com/api/v1/runtime-sessions/resolve" \
 would, so the steps and the model turns share one session whichever comes
 first. Without it, an unknown key is a 404, as is a key from another account.
 Every gateway response for a session-attributed request also carries the id
-as `X-Preloop-Runtime-Session-Id`. `PRELOOP_RUNTIME_SESSION_ID`, when set,
-still wins in both adapters. Resolve authenticates exactly like the model
-gateway, so a key pinned to a session that has ended is refused there.
+as `X-Preloop-Runtime-Session-Id`. In Browser Use,
+`PRELOOP_RUNTIME_SESSION_ID`, when set, takes precedence over resolving
+`PRELOOP_SESSION_ID`. In Skyvern, pass `--session` to supply the runtime
+session id directly instead of using `--client-session-id`. Resolve
+authenticates exactly like the model gateway, so a key pinned to a session
+that has ended is refused there.
 
 ### Step post errors
 

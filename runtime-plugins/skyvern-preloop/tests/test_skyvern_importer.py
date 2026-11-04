@@ -527,3 +527,34 @@ def test_cli_needs_session_or_client_session_id(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cli.main(["--task", TASK])
     capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "malformed_url", ["https://example.com:invalid-port", "https://exa\nmple.com"]
+)
+def test_invalid_resolve_url_returns_failure(
+    malformed_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    from preloop_skyvern.preloop_api import resolve_runtime_session_id
+
+    def unexpected_request(request: httpx.Request) -> httpx.Response:
+        pytest.fail("Invalid URL must fail before reaching the transport")
+
+    with httpx.Client(transport=httpx.MockTransport(unexpected_request)) as client:
+        session = resolve_runtime_session_id(
+            malformed_url, "agent-key", "run-42", client=client
+        )
+    assert session is None
+    assert "Preloop session resolve failed: InvalidURL" in caplog.text
+
+
+def test_cli_invalid_resolve_url_exits_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("SKYVERN_API_KEY", "skyvern-key")
+    monkeypatch.setenv("PRELOOP_AGENT_KEY", "agent-key")
+    monkeypatch.setenv("PRELOOP_URL", "https://example.com:invalid-port")
+    # Resolution fails before the importer uses its Skyvern client.
+    monkeypatch.setattr(cli, "SkyvernClient", lambda *args, **kwargs: None)
+    assert cli.main(["--task", TASK, "--client-session-id", "run-42"]) == 1
+    assert "could not resolve --client-session-id" in capsys.readouterr().err

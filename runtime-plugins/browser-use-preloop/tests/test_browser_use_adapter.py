@@ -579,3 +579,23 @@ def test_resolve_timeout_is_short_by_default():
 
     default = inspect.signature(resolve_runtime_session_id).parameters["timeout"]
     assert default.default <= 3.0
+
+
+@pytest.mark.parametrize(
+    "malformed_url", ["https://example.com:invalid-port", "https://exa\nmple.com"]
+)
+def test_invalid_resolve_url_disables_reporting(
+    malformed_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list = []
+    env = {
+        "PRELOOP_URL": malformed_url,
+        "PRELOOP_AGENT_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    # Keep httpx's URL parsing intact: invalid URLs fail before transport.
+    with _resolve_transport(calls) as client:
+        target = PreloopTarget.from_env(env, client=client)
+    assert target is None
+    assert calls == []
+    assert "Preloop session resolve failed: InvalidURL" in caplog.text

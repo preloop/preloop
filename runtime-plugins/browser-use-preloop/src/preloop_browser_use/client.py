@@ -135,7 +135,7 @@ def resolve_runtime_session_id(
             return ""
         value = response.json().get("runtime_session_id")
         return value if isinstance(value, str) else ""
-    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError) as exc:
         logger.warning("Preloop session resolve failed: %s", type(exc).__name__)
         return ""
     finally:
