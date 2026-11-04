@@ -474,16 +474,24 @@ def _subscription_columns() -> list[Any]:
     but not covered, so coverage says how much of the workload the sum
     describes instead of reading a missing estimate as $0.
     """
-    equivalent = ApiUsage.meta_data["api_equivalent_cost"]
-    is_covered = func.jsonb_typeof(equivalent) == "number"
+    # Strict mode does not unwrap arrays; silent mode treats absent keys and
+    # non-object metadata like the original JSON key lookup. The type filter
+    # yields SQL NULL for every nonnumeric price, so count and sum can use the
+    # same expression without a separate coverage CASE and third extraction.
+    equivalent = func.jsonb_path_query_first(
+        ApiUsage.meta_data,
+        'strict $.api_equivalent_cost ? (@.type() == "number")',
+        "{}",
+        True,
+    )
     return [
         func.count(ApiUsage.id).label("sub_requests"),
         func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("sub_prompt"),
         func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label("sub_completion"),
         func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("sub_total"),
-        func.coalesce(func.sum(case((is_covered, 1), else_=0)), 0).label("sub_covered"),
+        func.count(equivalent).label("sub_covered"),
         func.coalesce(
-            func.sum(case((is_covered, cast(equivalent.astext, Float)), else_=None)),
+            func.sum(cast(equivalent, Float)),
             0.0,
         ).label("sub_equivalent"),
     ]
