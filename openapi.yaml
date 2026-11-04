@@ -40598,9 +40598,6 @@ components:
           type: string
           format: email
           title: Email
-        token:
-          type: string
-          title: Token
         status:
           type: string
           title: Status
@@ -40638,7 +40635,6 @@ components:
       - id
       - account_id
       - email
-      - token
       - status
       - role_ids
       - team_ids
@@ -40647,7 +40643,7 @@ components:
       - accepted_at
       - expires_at
       title: InvitationResponse
-      description: Response schema for invitation data.
+      description: Invitation metadata; redemption credentials are delivered by email.
     IssueCostExecutionRow:
       properties:
         execution_id:

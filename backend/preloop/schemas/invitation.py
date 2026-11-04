@@ -34,12 +34,11 @@ class InvitationAccept(BaseModel):
 
 
 class InvitationResponse(BaseModel):
-    """Response schema for invitation data."""
+    """Invitation metadata; redemption credentials are delivered by email."""
 
     id: UUID
     account_id: UUID
     email: EmailStr
-    token: str
     status: str
     role_ids: Optional[str]  # Comma-separated UUIDs
     team_ids: Optional[str]  # Comma-separated UUIDs
