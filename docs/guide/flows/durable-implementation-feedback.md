@@ -209,6 +209,7 @@ log text (a trace is untrusted task data and cannot request a repair):
 | GitLab timeout reasons, GitHub `timed_out` without a more specific failed-step reason | infrastructure: bounded wait, then `ci_timeout` |
 | Quota, archived project, blocked user, protected environment, upstream permission reasons | `ci_permission_required`, a human must act |
 | `unknown_failure`, an unrecognised reason, or a failing check with no readable job | `ci_failure_unclassified` |
+| GitHub: every failing check also failed on the pull request's base commit | `ci_failure_base_branch`, not a CI repair |
 | A retried attempt whose newer attempt decided the check | ignored |
 
 Infrastructure failures never consume a repair turn. They are retried for
@@ -216,6 +217,28 @@ Infrastructure failures never consume a repair turn. They are retried for
 `ci_infrastructure_failure_retry`/`ci_timeout_retry`), then the thread blocks with
 the reason above. A new head or a recovered rerun clears that allowance. Review
 feedback that arrives while CI infrastructure is broken still repairs normally.
+
+A red base branch is not the change's defect (#1207). On GitHub, when CI on
+the head fails without a platform or permission explanation, reading the base
+commit's check runs and statuses decides it: if every failing check also failed there,
+the thread blocks with `ci_failure_base_branch` and those failures are never
+handed to a repair. A check that passed or never ran on the base stays the
+change's own. Under `ci_failure_base_branch` or `ci_failure_unclassified`,
+pending review findings (reviews, comments, inline comments on the current
+head) are still repaired within the usual turn, cost and no-progress budgets;
+the repair's task data carries `ci_blocked_reason` so the agent can say the CI
+failure is unrelated. With no review findings pending, the thread stays parked.
+
+A parked thread says so on the pull request (GitHub). Entering `blocked` posts
+one comment with the stop reason, the pending review findings count, and how
+it resumes (re-run CI so it passes on the current head, or push a commit). A
+new park reason edits the same comment, and leaving `blocked` edits it once
+more to say the continuation resumed (or ended when the pull request closes or
+the subscription expires; a stop says so and is edited again if the thread is
+revived). The comment id is kept in the thread
+cursor (`park_notice`); a failed write is recorded and not retried every tick,
+and the comment is never read back as feedback. GitLab and Bitbucket threads
+park silently as before.
 
 Flows without durable feedback still use the legacy webhook resume path. That
 path ignores `startup_failure`, `timed_out`, and `action_required` rather than

@@ -352,3 +352,227 @@ async def test_provider_lifecycle_coalesces_recovers_and_waits_for_human_merge(
         assert (await tick(217)).state == "closed"
         dispatch.assert_awaited_once()
     assert all("/123/" in path or path == "/graphql" for path in remote.reads)
+
+
+class BaseRedLifecycle(ProviderLifecycle):
+    """A pull request whose CI fails because its base commit is already red."""
+
+    def __init__(self) -> None:
+        super().__init__("github")
+        self.comments = []
+        self.base_red = True
+        self.writes: list[tuple[str, str, Any]] = []
+        self.notice: dict[str, Any] | None = None
+
+    async def github(self, method: str, path: str, data: Any = None) -> Any:
+        if method in {"POST", "PATCH"} and path != "/graphql":
+            self.writes.append((method, path, data))
+            if method == "POST":
+                self.notice = {
+                    "id": 700,
+                    "body": data["body"],
+                    "user": {"id": 77, "type": "User"},
+                }
+            else:
+                assert self.notice is not None
+                self.notice["body"] = data["body"]
+            return {"id": 700}
+        if path.endswith("/pulls/7"):
+            return {
+                "node_id": "PR_local",
+                "state": "closed" if self.closed else "open",
+                "head": {"sha": self.head},
+                "base": {"ref": "main", "sha": "base-head", "repo": {"id": 123}},
+            }
+        if "/commits/base-head/check-runs?" in path:
+            self.reads.append(path)
+            return {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 11,
+                        "name": "tests",
+                        "status": "completed",
+                        "conclusion": "failure" if self.base_red else "success",
+                    }
+                ],
+            }
+        if "/commits/base-head/status?" in path:
+            self.reads.append(path)
+            return {"statuses": []}
+        if "/issues/" in path and "/comments" in path:
+            self.reads.append(path)
+            # The notice is read back with every discussion read and must never
+            # become feedback.
+            return [self.notice] if self.notice else []
+        return await super().github(method, path, data)
+
+
+@pytest.mark.asyncio
+async def test_red_base_parks_with_one_pr_comment_and_unparks_it(
+    database: Engine,
+) -> None:
+    remote = BaseRedLifecycle()
+    with Session(database) as db:
+        thread = create_thread(db)
+        thread.provider = "github"
+        thread.pr_url = "https://example.com/repo/pull/7"
+        thread.context = {
+            "trigger": {"source": "github"},
+            "repository": {"id": 123},
+            "original_issue": {"number": 99, "title": "Boundary case"},
+        }
+        flow = db.get(models.Flow, thread.flow_id)
+        flow.agent_config = {
+            "feedback": {
+                "enabled": True,
+                "debounce_seconds": 0,
+                "required_checks": ["tests"],
+                "trusted_reviewer_ids": [42],
+                "implementer_actor_ids": [43],
+            }
+        }
+        db.commit()
+        thread_id = thread.id
+
+    async def provider_for_thread(db: Session, thread: Any) -> FeedbackProvider:
+        return remote.adapter(thread)
+
+    async def tick(seconds: int) -> models.FlowThread:
+        with Session(database, expire_on_commit=False) as db:
+            assert (
+                await run_feedback_tick(db, now=NOW + timedelta(seconds=seconds)) == 1
+            )
+            return db.get(models.FlowThread, thread_id)
+
+    with (
+        patch(
+            "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+            side_effect=provider_for_thread,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            AsyncMock(return_value=False),
+        ) as dispatch,
+    ):
+        parked = await tick(0)
+        assert (parked.state, parked.stop_reason) == (
+            "blocked",
+            "ci_failure_base_branch",
+        )
+        assert parked.cursor["park_notice"]["id"] == "700"
+        with Session(database) as db:
+            stored = db.get(models.FlowThread, thread_id).cursor
+            assert stored["park_notice"]["id"] == "700"
+        assert [w[0] for w in remote.writes] == ["POST"]
+        assert "ci_failure_base_branch" in remote.writes[0][2]["body"]
+        dispatch.assert_not_called()
+
+        # Still parked: the comment is not written again, nor read as feedback.
+        assert (await tick(31)).state == "blocked"
+        assert len(remote.writes) == 1
+        with Session(database) as db:
+            assert crud_flow_feedback.pending(db, thread_id) == []
+
+        # The base is fixed and CI re-run on the same head: the thread
+        # leaves blocked and the same comment says so.
+        remote.base_red = False
+        remote.ci = "success"
+        resumed = await tick(62)
+        assert resumed.state != "blocked"
+        assert [w[0] for w in remote.writes] == ["POST", "PATCH"]
+        assert remote.writes[1][1].endswith("/issues/comments/700")
+        assert "resumed" in remote.writes[1][2]["body"].lower()
+        assert resumed.cursor["park_notice"]["state"] == "resumed"
+
+
+@pytest.mark.asyncio
+async def test_red_base_repairs_review_then_parks_and_close_ends_the_notice(
+    database: Engine,
+) -> None:
+    remote = BaseRedLifecycle()
+    remote.comments = [remote.comment(1, "Regenerate openapi.yaml")]
+    with Session(database) as db:
+        thread = create_thread(db)
+        thread.provider = "github"
+        thread.pr_url = "https://example.com/repo/pull/7"
+        thread.context = {
+            "trigger": {"source": "github"},
+            "repository": {"id": 123},
+            "original_issue": {"number": 99, "title": "Boundary case"},
+        }
+        flow = db.get(models.Flow, thread.flow_id)
+        flow.agent_config = {
+            "feedback": {
+                "enabled": True,
+                "debounce_seconds": 0,
+                "required_checks": ["tests"],
+                "trusted_reviewer_ids": [42],
+                "implementer_actor_ids": [43],
+            }
+        }
+        db.commit()
+        thread_id = thread.id
+
+    async def provider_for_thread(db: Session, thread: Any) -> FeedbackProvider:
+        return remote.adapter(thread)
+
+    async def tick(seconds: int) -> models.FlowThread:
+        with Session(database, expire_on_commit=False) as db:
+            assert (
+                await run_feedback_tick(db, now=NOW + timedelta(seconds=seconds)) == 1
+            )
+            return db.get(models.FlowThread, thread_id)
+
+    with (
+        patch(
+            "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+            side_effect=provider_for_thread,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            AsyncMock(return_value=False),
+        ) as dispatch,
+    ):
+        # Red base, review pending: the review is repaired, CI is not.
+        repairing = await tick(0)
+        assert repairing.turns == 1
+        repair_id = repairing.active_execution_id
+        dispatch.assert_awaited_once_with(repair_id)
+        with Session(database) as db:
+            details = db.get(models.FlowExecution, repair_id).trigger_event_details
+            assert details["_feedback"]["ci_blocked_reason"] == (
+                "ci_failure_base_branch"
+            )
+            assert {item["kind"] for item in details["_feedback"]["items"]} == {
+                "inline_comment"
+            }
+            db.get(models.FlowExecution, repair_id).status = "SUCCEEDED"
+            db.commit()
+        assert remote.writes == []
+
+        # Review answered, base still red: the thread parks and says so.
+        remote.comments = []
+        remote.head = "repair-head"
+        parked = await tick(31)
+        assert (parked.state, parked.stop_reason) == (
+            "blocked",
+            "ci_failure_base_branch",
+        )
+        assert [w[0] for w in remote.writes] == ["POST"]
+
+        # The pull request is closed while parked: the notice says it ended.
+        remote.closed = True
+        closed = await tick(62)
+        assert closed.state == "closed"
+        assert [w[0] for w in remote.writes] == ["POST", "PATCH"]
+        assert "ended" in remote.writes[1][2]["body"].lower()
+        assert "resumes" not in remote.writes[1][2]["body"].lower()

@@ -570,6 +570,25 @@ GOLDEN: list[tuple[str, Any, FeedbackState, list[Any], str, Any, Any]] = [
         "waiting",
         "review_or_ci_pending",
         "review_or_ci_pending",
+    ),  # #1207: CI red for a reason not shown to be the change's still repairs
+    # pending review findings (the reason before #1207 was the block).
+    (
+        "review-despite-unclassified-ci",
+        thread(),
+        gate(blocked_reason="ci_failure_unclassified"),
+        [item("review")],
+        "repair",
+        None,
+        None,
+    ),
+    (
+        "review-despite-base-branch-ci",
+        thread(),
+        gate(blocked_reason="ci_failure_base_branch"),
+        [item("inline_comment")],
+        "repair",
+        None,
+        None,
     ),
 ]
 # Provider gate failures pass through decide unchanged. Keep their complete
@@ -578,6 +597,7 @@ PROVIDER_STOP_REASONS = (
     "required_checks_missing",
     "ci_permission_required",
     "ci_failure_unclassified",
+    "ci_failure_base_branch",
     "ci_unknown_outcome",
     "ci_cancelled",
     "ci_canceled",
