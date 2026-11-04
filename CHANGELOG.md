@@ -49,11 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Personal runners report sleep and wake. On Linux with systemd-logind the
   runner sends `going_to_sleep` before suspend under a short sleep delay and
   stops heartbeating, so the console shows `asleep` and routing skips it. On
-  every host the runner detects wake (a wall-clock gap between two 5 second
-  samples that is 20 seconds or more longer than expected) and reconnects at once with the backoff reset. Heartbeats
-  carry `os_idle_seconds` on macOS and Windows, which drives the `idle`
-  state. macOS and Windows have no pre-sleep signal in this build and fall
-  back to `offline`. Refs #1487, #1507.
+  every host the runner detects wake from a wall-clock gap between samples
+  (at least 25 seconds between checks scheduled every 5 seconds) and
+  reconnects at once with the backoff reset. Sleep notifications expire when
+  their sleep delay is released, so a short suspend cannot replay them on
+  the new connection. Heartbeats carry `os_idle_seconds` on macOS and
+  Windows, which drives the `idle` state. macOS and Windows have no
+  pre-sleep signal in this build and fall back to `offline`. Refs #1487, #1507.
 - Browser adapters find their runtime session without
   `PRELOOP_RUNTIME_SESSION_ID`. Gateway model responses (OpenAI, Anthropic,
   Gemini; streaming too) carry `X-Preloop-Runtime-Session-Id` when the request

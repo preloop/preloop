@@ -25,6 +25,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,27 @@ type runnerPowerEvent struct {
 	// at is when the OS announced the event; a sleep event older than
 	// runnerSleepEventMaxAge was buffered across a suspend and is stale.
 	at time.Time
+	// released closes when the sleep delay is released, including by its
+	// timeout. After that the host may already have suspended and resumed.
+	released <-chan struct{}
+}
+
+// newRunnerSleepEvent shares expiration across queued copies and releases the
+// inhibitor only once, whether the session or the timeout gets there first.
+func newRunnerSleepEvent(release func()) runnerPowerEvent {
+	released := make(chan struct{})
+	var once sync.Once
+	return runnerPowerEvent{
+		kind: runnerPowerSleep,
+		at:   time.Now(),
+		done: func() {
+			once.Do(func() {
+				close(released)
+				release()
+			})
+		},
+		released: released,
+	}
 }
 
 // runnerSleepEventMaxAge bounds how old a sleep event may be when the
@@ -55,7 +77,17 @@ type runnerPowerEvent struct {
 const runnerSleepEventMaxAge = 10 * time.Second
 
 func (e runnerPowerEvent) stale(now time.Time) bool {
-	return e.kind == runnerPowerSleep && (e.at.IsZero() || now.Round(0).Sub(e.at.Round(0)) > runnerSleepEventMaxAge)
+	if e.kind != runnerPowerSleep {
+		return false
+	}
+	select {
+	case <-e.released:
+		// Even a short suspend can finish inside the age limit. Once the
+		// delay is gone, this notification can no longer precede sleep.
+		return true
+	default:
+		return e.at.IsZero() || now.Round(0).Sub(e.at.Round(0)) > runnerSleepEventMaxAge
+	}
 }
 
 func (e runnerPowerEvent) release() {

@@ -54,11 +54,12 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 					continue
 				}
 				if sleeping {
-					release := inhibitor.releaser()
+					event := newRunnerSleepEvent(inhibitor.releaser())
 					// Never hold the host awake past the bound, even if the
-					// session is between connections and drops the event.
-					time.AfterFunc(runnerSleepReleaseAfter, release)
-					deliverRunnerPowerEvent(events, runnerPowerEvent{kind: runnerPowerSleep, done: release, at: time.Now()})
+					// session is between connections. Releasing also expires
+					// the event so it cannot be replayed after a short sleep.
+					time.AfterFunc(runnerSleepReleaseAfter, event.release)
+					deliverRunnerPowerEvent(events, event)
 				} else {
 					inhibitor.take()
 					deliverRunnerPowerEvent(events, runnerPowerEvent{kind: runnerPowerWake})

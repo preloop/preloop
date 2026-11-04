@@ -65,7 +65,7 @@ func TestSleepSignalSendsGoingToSleepAndStopsHeartbeats(t *testing.T) {
 	// Initial heartbeat first.
 	waitForMessageType(t, messages, "heartbeat")
 	released := make(chan struct{})
-	events <- runnerPowerEvent{kind: runnerPowerSleep, done: func() { close(released) }, at: time.Now()}
+	events <- newRunnerSleepEvent(func() { close(released) })
 	waitForMessageType(t, messages, "going_to_sleep")
 	select {
 	case <-released:
@@ -228,37 +228,113 @@ func TestStaleSleepEventAfterWakeIsIgnored(t *testing.T) {
 	}
 }
 
-func TestWakeDropsSleepEventQueuedBehindIt(t *testing.T) {
-	testenv.SetTempHome(t)
+func TestShortSuspendDoesNotReplaySleep(t *testing.T) {
+	for _, order := range []string{"sleep then wake", "wake then sleep", "sleep delivered after wake drain"} {
+		t.Run(order, func(t *testing.T) {
+			testenv.SetTempHome(t)
+			withHeartbeatEvery(t, 50*time.Millisecond)
+			events := make(chan runnerPowerEvent, 4)
+			jobs := newRunnerJobs(1)
+			jobs.power = events
+			interrupt := make(chan os.Signal, 1)
+			releases := 0
+			sleep := newRunnerSleepEvent(func() { releases++ })
+			sleep.at = time.Now().Add(-5 * time.Second)
+			// Simulate the 3 s inhibitor deadline firing while the session
+			// is blocked, followed by a wake inside the 10 s age limit.
+			// Keep one event unreleased to also verify the wake drain
+			// releases pending inhibitors instead of relying on expiration.
+			if order != "wake then sleep" {
+				sleep.release()
+			}
+			wake := runnerPowerEvent{kind: runnerPowerWake}
+			switch order {
+			case "sleep then wake":
+				events <- sleep
+				events <- wake
+			case "wake then sleep":
+				events <- wake
+				events <- sleep
+			default:
+				events <- wake
+			}
+
+			// Queue notifications before starting the session, so the
+			// test does not depend on scheduling between channel sends.
+			server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
+			conn := dialJobServer(t, server)
+			if err := runRunnerSession(conn, interrupt, io.Discard, jobs); !errors.Is(err, errRunnerWoke) {
+				t.Fatalf("session ended with %v, want errRunnerWoke", err)
+			}
+			_ = conn.Close()
+			if len(events) != 0 {
+				t.Fatal("events left queued after wake")
+			}
+			// Closing the client does not guarantee that the server has
+			// finished reading its frames; use a separate server below.
+			waitForMessageType(t, messages, "heartbeat")
+
+			if order == "sleep delivered after wake drain" {
+				events <- sleep
+			}
+			server, messages, _ = jobServer(t, map[string]any{"type": "hello"})
+			conn = dialJobServer(t, server)
+			stopped := make(chan error, 1)
+			go func() { stopped <- runRunnerSession(conn, interrupt, io.Discard, jobs) }()
+			t.Cleanup(func() {
+				interrupt <- os.Interrupt
+				select {
+				case err := <-stopped:
+					if err != nil {
+						t.Errorf("reconnected session ended with %v", err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Error("reconnected session did not stop")
+				}
+			})
+			// Observe the initial heartbeat and two periodic ones. A stale
+			// going_to_sleep would suppress those periodic heartbeats.
+			deadline := time.After(2 * time.Second)
+			for heartbeats := 0; heartbeats < 3; {
+				select {
+				case message := <-messages:
+					switch message["type"] {
+					case "going_to_sleep":
+						t.Fatal("short suspend replayed going_to_sleep after reconnect")
+					case "heartbeat":
+						heartbeats++
+					}
+				case <-deadline:
+					t.Fatal("heartbeats did not continue after reconnect")
+				}
+			}
+			if releases != 1 {
+				t.Fatalf("sleep inhibitor released %d times, want 1", releases)
+			}
+		})
+	}
+}
+
+func TestSleepEventExpiresWhenInhibitorIsReleased(t *testing.T) {
+	event := newRunnerSleepEvent(func() {})
+	if event.stale(time.Now()) {
+		t.Fatal("sleep event expired before the inhibitor was released")
+	}
+	event.release()
+	if !event.stale(time.Now()) {
+		t.Fatal("released sleep event can be replayed inside the age limit")
+	}
+}
+
+func TestReconnectWakeDrainsQueuedSleep(t *testing.T) {
 	events := make(chan runnerPowerEvent, 4)
-	server, messages, _ := jobServer(t, map[string]any{"type": "hello"})
-	interrupt := make(chan os.Signal, 1)
-	jobs := newRunnerJobs(1)
-	jobs.power = events
-	stopped := make(chan error, 1)
-	go func() {
-		stopped <- runRunnerSession(dialJobServer(t, server), interrupt, io.Discard, jobs)
-	}()
-	waitForMessageType(t, messages, "heartbeat")
-	released := make(chan struct{})
-	// A short suspend: the wake is handled first, its sleep event is still
-	// queued and fresh.
 	events <- runnerPowerEvent{kind: runnerPowerWake}
-	events <- runnerPowerEvent{kind: runnerPowerSleep, done: func() { close(released) }, at: time.Now()}
-	select {
-	case err := <-stopped:
-		if !errors.Is(err, errRunnerWoke) {
-			t.Fatalf("session ended with %v, want errRunnerWoke", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("session did not end on wake")
+	released := false
+	events <- newRunnerSleepEvent(func() { released = true })
+	if ok, woke := waitForReconnect(nil, events, time.Minute); !ok || !woke {
+		t.Fatalf("waitForReconnect = (%v, %v), want (true, true)", ok, woke)
 	}
-	select {
-	case <-released:
-	case <-time.After(time.Second):
-		t.Fatal("sleep event queued behind the wake was not drained")
-	}
-	if len(events) != 0 {
-		t.Fatal("events left queued after wake")
+	if !released || len(events) != 0 {
+		t.Fatal("wake must drain queued sleep events and release their inhibitors")
 	}
 }
