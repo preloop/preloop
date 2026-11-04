@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"sync"
 	"syscall"
 	"time"
 
@@ -36,7 +35,17 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 	}
 	signals := make(chan *dbus.Signal, 4)
 	conn.Signal(signals)
-	inhibitor := &logindInhibitor{conn: conn}
+	inhibitor := &logindInhibitor{acquire: func() (func(), error) {
+		var fd dbus.UnixFD
+		err := conn.Object(logindDest, logindPath).Call(
+			logindInterface+".Inhibit", 0,
+			"sleep", "Preloop runner", "Report sleep to Preloop before suspending", "delay",
+		).Store(&fd)
+		if err != nil {
+			return nil, err
+		}
+		return func() { _ = syscall.Close(int(fd)) }, nil
+	}}
 	inhibitor.take()
 	go func() {
 		for {
@@ -58,17 +67,14 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 				if !isSleep {
 					continue
 				}
+				event := inhibitor.powerEvent(sleeping)
 				if sleeping {
-					event := newRunnerSleepEvent(inhibitor.releaser())
 					// Never hold the host awake past the bound, even if the
 					// session is between connections. Releasing also expires
 					// the event so it cannot be replayed after a short sleep.
 					time.AfterFunc(runnerSleepReleaseAfter, event.release)
-					deliverRunnerPowerEvent(events, event)
-				} else {
-					inhibitor.take()
-					deliverRunnerPowerEvent(events, runnerPowerEvent{kind: runnerPowerWake})
 				}
+				deliverRunnerPowerEvent(events, event)
 			}
 		}
 	}()
@@ -83,51 +89,5 @@ func deliverRunnerPowerEvent(events chan<- runnerPowerEvent, event runnerPowerEv
 	case events <- event:
 	default:
 		event.release()
-	}
-}
-
-type logindInhibitor struct {
-	conn *dbus.Conn
-	mu   sync.Mutex
-	fd   int
-	held bool
-	// gen counts takes, so a release armed for one sleep never drops the
-	// delay taken again after the following wake.
-	gen int
-}
-
-func (l *logindInhibitor) take() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.held {
-		return
-	}
-	var fd dbus.UnixFD
-	err := l.conn.Object(logindDest, logindPath).Call(
-		logindInterface+".Inhibit", 0,
-		"sleep", "Preloop runner", "Report sleep to Preloop before suspending", "delay",
-	).Store(&fd)
-	if err != nil {
-		return
-	}
-	l.fd, l.held = int(fd), true
-	l.gen++
-}
-
-// releaser returns an idempotent function that drops the current delay.
-func (l *logindInhibitor) releaser() func() {
-	l.mu.Lock()
-	gen := l.gen
-	l.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			l.mu.Lock()
-			defer l.mu.Unlock()
-			if l.held && l.gen == gen {
-				_ = syscall.Close(l.fd)
-				l.held = false
-			}
-		})
 	}
 }
