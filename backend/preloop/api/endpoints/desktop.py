@@ -23,11 +23,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, AsyncIterator, Callable, Optional, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -36,11 +39,20 @@ from preloop.api.auth import get_current_active_user
 from preloop.api.managed_credentials import is_managed_execution_credential
 from preloop.config import settings
 from preloop.models import models
-from preloop.models.crud import crud_audit_log, crud_desktop, crud_managed_agent
+from preloop.models.crud import (
+    crud_audit_log,
+    crud_desktop,
+    crud_managed_agent,
+    crud_user,
+)
 from preloop.models.crud.desktop import endpoint_is_online
 from preloop.services import desktop_broker as broker
 from preloop.services.db_executor import run_db_async
-from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+from preloop.utils.permissions import (
+    ensure_permission_in_oss,
+    require_permission,
+    user_holds_permission,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,7 +120,11 @@ def _authorize_operator(db: Session, user: models.User) -> None:
 # Serialization
 
 
-def _view_json(view: models.DesktopView, endpoint: models.DesktopEndpoint) -> dict:
+def _view_json(
+    view: models.DesktopView,
+    endpoint: models.DesktopEndpoint,
+    control_request: Optional[dict] = None,
+) -> dict:
     return {
         "view_id": str(view.id),
         "endpoint_id": endpoint.endpoint_id,
@@ -124,6 +140,9 @@ def _view_json(view: models.DesktopView, endpoint: models.DesktopEndpoint) -> di
         "closed_at": _iso(view.closed_at),
         "closed_reason": view.closed_reason,
         "control_expires_at": _iso(view.control_expires_at),
+        #: ``{approval_id, state: "pending"}`` while another admin has to
+        #: approve a control request (#1567), else null.
+        "control_request": control_request,
     }
 
 
@@ -523,12 +542,35 @@ async def create_agent_desktop_view(
 async def _get_view(user: models.User, view_id: str) -> dict:
     _require_enabled()
 
-    def work(db: Session) -> dict:
+    def work(db: Session) -> tuple[dict, Optional[str]]:
         _authorize_operator(db, user)
         view, endpoint = _own_view(db, user, view_id)
-        return _view_json(view, endpoint)
+        pending = _pending_control(db, view)
+        overdue = None
+        if pending is not None and pending.expires_at is not None:
+            if pending.expires_at <= _now():
+                overdue = str(pending.id)
+        return _view_json(view, endpoint, _control_request_json(pending)), overdue
 
-    return await _run_db(work)
+    payload, overdue = await _run_db(work)
+    if overdue is None:
+        return payload
+    # Approvals expire lazily; the requester's poll settles an overdue one
+    # so the console stops waiting and the denial is audited.
+    async with _approval_db() as db:
+        await _approval_service(db).expire_request(
+            uuid.UUID(overdue),
+            reason="approval_window",
+            detail="Desktop control request expired without a decision",
+        )
+
+    def reread(db: Session) -> dict:
+        view, endpoint = _own_view(db, user, view_id)
+        return _view_json(
+            view, endpoint, _control_request_json(_pending_control(db, view))
+        )
+
+    return await _run_db(reread)
 
 
 async def _delete_view(user: models.User, view_id: str) -> None:
@@ -542,9 +584,222 @@ async def _delete_view(user: models.User, view_id: str) -> None:
     await close_view(view_id, "user_closed")
 
 
-async def _grant_control(user: models.User, view_id: str, reason: str) -> dict:
-    """OSS v1: self-confirm with a reason (EE adds an approver policy)."""
+# ---------------------------------------------------------------------------
+# Control approvals (#1567)
+#
+# With another admin in the account, control is an approval request (policy
+# ``desktop_control``) that someone other than the requester decides; the
+# approvals service calls ``apply_control_decision`` once it is settled. With
+# nobody else to ask, the requester self-confirms with a reason (OSS v1).
+
+
+@asynccontextmanager
+async def _approval_db() -> AsyncIterator[Any]:
+    """Session for the approvals service. Tests pin it to their session."""
+    from preloop.models.db.session import get_async_db_session
+
+    async with get_async_db_session() as db:
+        yield db
+
+
+def _approval_service(db: Any) -> Any:
+    from preloop.services.approval_service import ApprovalService
+
+    return ApprovalService(db, os.getenv("PRELOOP_URL", "http://localhost"))
+
+
+def _control_tool() -> str:
+    from preloop.services.approval_service import DESKTOP_CONTROL_TOOL
+
+    return DESKTOP_CONTROL_TOOL
+
+
+def _pending_control(
+    db: Session, view: models.DesktopView
+) -> Optional[models.ApprovalRequest]:
+    if view.state == "closed" or view.mode == "control":
+        return None
+    return crud_desktop.pending_control_approval(
+        db, account_id=view.account_id, view_id=view.id, tool_name=_control_tool()
+    )
+
+
+def _control_request_json(
+    approval: Optional[models.ApprovalRequest],
+) -> Optional[dict]:
+    if approval is None:
+        return None
+    return {"approval_id": str(approval.id), "state": "pending"}
+
+
+def _has_other_approver(db: Session, user: models.User) -> bool:
+    """Whether someone other than ``user`` may decide approvals here."""
+    for member in crud_user.get_active_by_account(
+        db, account_id=user.account_id, limit=500
+    ):
+        if member.id == user.id:
+            continue
+        if user_holds_permission(db, member, "decide_approvals"):
+            return True
+    return False
+
+
+async def _request_control_approval(
+    user: models.User, view_id: str, reason: str
+) -> Optional[JSONResponse]:
+    """Raise (or reuse) the approval when another admin must decide.
+
+    Returns None when the requester is the only possible approver, so the
+    caller self-confirms as before.
+    """
+
+    def work(db: Session) -> Optional[tuple[dict, Optional[dict]]]:
+        _authorize_operator(db, user)
+        view, endpoint = _own_view(db, user, view_id)
+        if view.state == "closed":
+            raise _error(409, "desktop_view_closed", "The desktop view has ended")
+        if not _has_other_approver(db, user):
+            return None
+        pending = _pending_control(db, view)
+        if pending is not None:
+            return _view_json(view, endpoint, _control_request_json(pending)), None
+        tool = crud_desktop.control_tool_configuration(
+            db, account_id=user.account_id, tool_name=_control_tool()
+        )
+        facts = _audit_facts(view, endpoint).__dict__
+        _audit(db, view, "desktop.control.requested", {**facts, "reason": reason})
+        create = {
+            "tool_configuration_id": str(tool.id),
+            "managed_agent_id": _str(view.managed_agent_id),
+            "runtime_session_id": _str(view.runtime_session_id),
+            "tool_args": {
+                "view_id": str(view.id),
+                "endpoint_id": endpoint.endpoint_id,
+                "hostname": endpoint.hostname,
+                "managed_agent_id": _str(view.managed_agent_id),
+                "runtime_session_id": _str(view.runtime_session_id),
+                "requested_by": str(user.id),
+                "requested_by_username": user.username,
+                "reason": reason,
+            },
+        }
+        return _view_json(view, endpoint), create
+
+    outcome = await _run_db(work)
+    if outcome is None:
+        return None
+    payload, create = outcome
+    if create is not None:
+        from preloop.services.agent_permission_service import resolve_workflow
+
+        async with _approval_db() as db:
+            service = _approval_service(db)
+            workflow = await resolve_workflow(db, str(user.account_id), user.id)
+            agent_id = create["managed_agent_id"]
+            session_id = create["runtime_session_id"]
+            # Not create_and_notify: an AI or bypass decision must never stand
+            # in for the second admin this request exists for.
+            approval = await service.create_approval_request(
+                account_id=str(user.account_id),
+                tool_configuration_id=uuid.UUID(create["tool_configuration_id"]),
+                approval_workflow_id=workflow.id,
+                tool_name=_control_tool(),
+                tool_args=create["tool_args"],
+                agent_reasoning=reason,
+                managed_agent_id=uuid.UUID(agent_id) if agent_id else None,
+                runtime_session_id=uuid.UUID(session_id) if session_id else None,
+            )
+            payload["control_request"] = {
+                "approval_id": str(approval.id),
+                "state": "pending",
+            }
+            try:
+                await service.send_notifications(approval, workflow)
+            except Exception:  # noqa: BLE001 - the request is visible anyway
+                logger.warning(
+                    "Desktop control approval %s created without notify", approval.id
+                )
+    return JSONResponse(status_code=202, content=payload)
+
+
+async def apply_control_decision(
+    *,
+    approval_id: str,
+    status: str,
+    tool_args: dict[str, Any],
+    approver_id: Optional[str],
+) -> None:
+    """Grant control on approval, audit a denial otherwise.
+
+    Called by the approvals service after the decision is committed, on
+    whichever pod made it. A view that has ended stays ended.
+    """
+    view_id = tool_args.get("view_id")
+    if not view_id:
+        return
+
+    def work(db: Session) -> Optional[dict]:
+        view = crud_desktop.get_view(db, view_id=view_id)
+        if view is None:
+            return None
+        endpoint = crud_desktop.get_endpoint_by_pk(db, view.endpoint_pk)
+        if endpoint is None:
+            return None
+        facts = _audit_facts(view, endpoint).__dict__
+        decision = {
+            "approval_id": approval_id,
+            "approval_status": status,
+            "approver_id": approver_id,
+            "reason": tool_args.get("reason"),
+        }
+        if status != "approved" or view.state == "closed":
+            _audit(db, view, "desktop.control.denied", {**facts, **decision})
+            return None
+        now = _now()
+        until = min(
+            view.expires_at, now + timedelta(seconds=broker.CONTROL_MAX_SECONDS)
+        )
+        if not crud_desktop.set_mode(
+            db, view_id=view.id, mode="control", control_expires_at=until
+        ):
+            return None
+        _audit(
+            db,
+            view,
+            "desktop.control.granted",
+            {
+                **facts,
+                **decision,
+                "mode": "control",
+                "approval": "approved",
+                "control_expires_at": _iso(until),
+            },
+        )
+        return {"view_id": str(view.id), "control_expires_at": _iso(until)}
+
+    granted = await _run_db(work)
+    if granted is None:
+        return
+    bus = await broker.get_desktop_bus()
+    await broker.publish_json(
+        bus,
+        broker.view_subject(granted["view_id"], "ctl"),
+        {
+            "type": "mode",
+            "mode": "control",
+            "control_expires_at": granted["control_expires_at"],
+        },
+    )
+
+
+async def _grant_control(
+    user: models.User, view_id: str, reason: str
+) -> dict | JSONResponse:
+    """Approval by another admin when there is one, else self-confirm."""
     _require_enabled()
+    pending = await _request_control_approval(user, view_id, reason)
+    if pending is not None:
+        return pending
 
     def work(db: Session) -> tuple[dict, str]:
         _authorize_operator(db, user)
@@ -656,23 +911,41 @@ async def delete_agent_desktop_view(
     await _delete_view(current_user, view_id)
 
 
-@router.post("/desktop/views/{view_id}/control")
+_CONTROL_RESPONSES: dict[int | str, dict[str, Any]] = {
+    202: {
+        "description": (
+            "Another admin must approve: the view stays view only and "
+            "``control_request`` names the pending approval"
+        )
+    }
+}
+
+
+@router.post("/desktop/views/{view_id}/control", responses=_CONTROL_RESPONSES)
 async def request_desktop_control(
     view_id: str,
     body: DesktopControlRequest,
     current_user: models.User = Depends(get_current_active_user),
-) -> dict:
-    """Take control of the desktop (self-confirmed with a reason)."""
+) -> Any:
+    """Take control of the desktop.
+
+    When the account has another admin who may decide approvals, this raises
+    a ``desktop_control`` approval that someone other than the caller must
+    approve (202). Otherwise the caller self-confirms with the reason (200).
+    """
     return await _grant_control(current_user, view_id, body.reason)
 
 
-@router.post("/agents/{agent_id}/desktop-views/{view_id}/control")
+@router.post(
+    "/agents/{agent_id}/desktop-views/{view_id}/control",
+    responses=_CONTROL_RESPONSES,
+)
 async def request_agent_desktop_control(
     agent_id: str,
     view_id: str,
     body: DesktopControlRequest,
     current_user: models.User = Depends(get_current_active_user),
-) -> dict:
+) -> Any:
     """Agent-scoped alias of ``POST /desktop/views/{view_id}/control``."""
     return await _grant_control(current_user, view_id, body.reason)
 

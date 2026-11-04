@@ -1372,3 +1372,213 @@ def test_runtime_session_token_records_the_desktop_endpoint(
         models.RuntimeSession, uuid.UUID(response.json()["runtime_session_id"])
     )
     assert session.desktop_endpoint_id == "dep_from_hook"
+
+
+# ---------------------------------------------------------------------------
+# Take control through the approvals service (#1567)
+
+
+def _approvals(h: Harness):
+    """Approval service on the shared test session, as the route would use."""
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services.approval_service import ApprovalService
+
+    return ApprovalService(SyncApprovalSession(h.db), "http://localhost")
+
+
+@pytest.fixture
+def two_admins(harness, db_session):
+    h = harness
+    colleague = _make_user(
+        db_session, account_id=h.user.account_id, username="desk-colleague"
+    )
+    for user in (h.user, colleague):
+        grant_permission(db_session, user, "control_managed_agent")
+        grant_permission(db_session, user, "decide_approvals")
+
+    @asynccontextmanager
+    async def approval_db():
+        from preloop.models.db.session import SyncApprovalSession
+
+        yield SyncApprovalSession(db_session)
+
+    h.monkeypatch.setattr(desktop, "_approval_db", approval_db)
+    return colleague
+
+
+async def _live_viewer(h: Harness, vnc: FakeVncServer):
+    endpoint = FakeEndpoint(h.base_ws, h.endpoint_key(), vnc.port)
+    await endpoint.connect()
+    view = await open_view(h, endpoint)
+    return endpoint, view
+
+
+async def _input_reaches_display(viewer: RfbViewer, vnc: FakeVncServer) -> bool:
+    before = len(vnc.received_types)
+    await viewer.send_input()
+    await viewer.request_frame()
+    return bool({4, 5, 6} & set(vnc.received_types[before:]))
+
+
+def test_multi_admin_control_waits_for_another_admin(harness, two_admins):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            view_id = view["view_id"]
+            async with h.viewer(view) as ws:
+                viewer = RfbViewer(ws)
+                await viewer.handshake()
+                async with h.http() as client:
+                    asked = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                    again = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                    waiting = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert asked.status_code == 202, asked.text
+                body = asked.json()
+                assert body["mode"] == "view_only"
+                assert body["control_request"]["state"] == "pending"
+                approval_id = body["control_request"]["approval_id"]
+                assert again.status_code == 202
+                assert again.json()["control_request"]["approval_id"] == approval_id
+                assert waiting.json()["control_request"] == {
+                    "approval_id": approval_id,
+                    "state": "pending",
+                }
+                assert not await _input_reaches_display(viewer, vnc)
+
+                service = _approvals(h)
+                from fastapi import HTTPException
+
+                with pytest.raises(HTTPException) as own:
+                    await service.approve_request(
+                        uuid.UUID(approval_id), "ok", user_id=h.user.id
+                    )
+                assert own.value.status_code == 403
+                with pytest.raises(HTTPException) as anonymous:
+                    await service.approve_request(uuid.UUID(approval_id), "ok")
+                assert anonymous.value.status_code == 403
+                assert h.view(view_id).mode == "view_only"
+                assert not await _input_reaches_display(viewer, vnc)
+
+                await service.approve_request(
+                    uuid.UUID(approval_id), "go ahead", user_id=colleague.id
+                )
+                assert h.view(view_id).mode == "control"
+                await asyncio.sleep(0.1)
+                assert await _input_reaches_display(viewer, vnc)
+                async with h.http() as client:
+                    granted = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert granted.json()["mode"] == "control"
+                assert granted.json()["control_request"] is None
+                expires = datetime.fromisoformat(
+                    granted.json()["control_expires_at"].rstrip("Z")
+                )
+                now = datetime.now(UTC).replace(tzinfo=None)
+                assert expires <= now + timedelta(seconds=601)
+
+                async with h.http() as client:
+                    released = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control/release"
+                    )
+                assert released.status_code == 204
+                await asyncio.sleep(0.1)
+                assert not await _input_reaches_display(viewer, vnc)
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    granted = h.audit("desktop.control.granted")
+    assert len(granted) == 1
+    assert granted[0].details["approval"] == "approved"
+    assert granted[0].details["approver_id"] == str(colleague.id)
+    assert len(h.audit("desktop.control.requested")) == 1
+    assert h.audit("desktop.control.denied") == []
+
+
+@pytest.mark.parametrize("outcome", ["declined", "expired"])
+def test_denied_or_expired_control_request_never_forwards_input(
+    harness, two_admins, outcome
+):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            view_id = view["view_id"]
+            async with h.viewer(view) as ws:
+                viewer = RfbViewer(ws)
+                await viewer.handshake()
+                async with h.http() as client:
+                    asked = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+                service = _approvals(h)
+                if outcome == "declined":
+                    await service.decline_request(
+                        approval_id, "not now", user_id=colleague.id
+                    )
+                else:
+                    row = h.db.get(models.ApprovalRequest, approval_id)
+                    row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                        seconds=5
+                    )
+                    h.db.commit()
+                async with h.http() as client:
+                    after = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert after.json()["mode"] == "view_only"
+                assert after.json()["control_request"] is None
+                assert not await _input_reaches_display(viewer, vnc)
+                # A late approval of a settled request changes nothing.
+                await service.approve_request(approval_id, "late", user_id=colleague.id)
+                assert h.view(view_id).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    denied = h.audit("desktop.control.denied")
+    assert len(denied) == 1
+    assert denied[0].details["approval_status"] == outcome
+    assert h.audit("desktop.control.granted") == []
+
+
+def test_single_admin_still_self_confirms(harness, db_session):
+    """With nobody else to decide, the OSS v1 self-confirm stays."""
+    h = harness
+    grant_permission(db_session, h.user, "decide_approvals")
+    # A member without decide_approvals is not a second admin.
+    _make_user(db_session, account_id=h.user.account_id, username="desk-member")
+    from preloop.utils import permissions
+
+    real = permissions.user_holds_permission
+
+    def holds(db, user, name):
+        if getattr(user, "username", "") == "desk-member":
+            return False
+        return real(db, user, name)
+
+    h.monkeypatch.setattr(desktop, "user_holds_permission", holds)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                granted = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["mode"] == "control"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    granted = h.audit("desktop.control.granted")
+    assert granted[0].details["approval"] == "self_confirmed"

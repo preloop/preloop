@@ -187,7 +187,13 @@ tunnel. The value only matches desktops in the session's own account.
 live sessions show a **Live desktop** button. A view is view only: keyboard,
 mouse and clipboard input are dropped by the API, not just by the browser.
 "Request control" (if you have the permission) forwards input for at most 10
-minutes after you confirm with a reason. One viewer per desktop at a time; a
+minutes. You give a reason; when the account has another admin who can decide
+approvals, the request becomes a `desktop_control` approval that someone other
+than you must approve (the viewer shows "Waiting for another admin to approve
+control" and stays view only until then). With no one else to ask, your reason
+is the confirmation. A refused or expired request writes
+`desktop.control.denied`; an approved one writes `desktop.control.granted`
+with the approver. One viewer per desktop at a time; a
 second operator is told who holds it. Views last 15 minutes by default
 (`PRELOOP_DESKTOP_VIEW_MAX_SECONDS` caps them, default 60 minutes) and close
 after 120 seconds without viewer traffic. Opening, ending, and taking or

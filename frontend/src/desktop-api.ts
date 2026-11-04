@@ -67,6 +67,11 @@ export interface DesktopView {
   closed_at: string | null;
   closed_reason: string | null;
   control_expires_at: string | null;
+  /**
+   * Set while another admin has to approve a control request (#1567). Older
+   * servers omit it; null once the request is settled.
+   */
+  control_request?: { approval_id: string; state: 'pending' } | null;
 }
 
 /** A REST error from the desktop routes, carrying the contract's code. */
@@ -206,6 +211,11 @@ export async function endDesktopView(viewId: string): Promise<void> {
   if (!response.ok && response.status !== 404) throw await errorFrom(response);
 }
 
+/**
+ * Asks for control. A single-admin account self-confirms (200, `mode` is
+ * `control`); otherwise the server answers 202 with `control_request` set
+ * and the view stays view only until another admin approves.
+ */
 export async function requestDesktopControl(
   viewId: string,
   reason: string

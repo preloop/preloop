@@ -21136,7 +21136,14 @@ paths:
       tags:
       - Desktop Views
       summary: Request Desktop Control
-      description: Take control of the desktop (self-confirmed with a reason).
+      description: 'Take control of the desktop.
+
+
+        When the account has another admin who may decide approvals, this raises
+
+        a ``desktop_control`` approval that someone other than the caller must
+
+        approve (202). Otherwise the caller self-confirms with the reason (200).'
       operationId: request_desktop_control_api_v1_desktop_views__view_id__control_post
       security:
       - bearerAuth: []
@@ -21159,10 +21166,11 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
                 title: Response Request Desktop Control Api V1 Desktop Views  View
                   Id  Control Post
+        '202':
+          description: 'Another admin must approve: the view stays view only and ``control_request``
+            names the pending approval'
         '422':
           description: Validation Error
           content:
@@ -21210,10 +21218,11 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
                 title: Response Request Agent Desktop Control Api V1 Agents  Agent
                   Id  Desktop Views  View Id  Control Post
+        '202':
+          description: 'Another admin must approve: the view stays view only and ``control_request``
+            names the pending approval'
         '422':
           description: Validation Error
           content:

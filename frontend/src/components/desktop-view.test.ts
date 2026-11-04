@@ -59,6 +59,7 @@ describe('desktop-view', () => {
       | Promise<{ status: number; body: unknown }>;
     get?: (viewId: string) => unknown;
     control?: (viewId: string) => unknown;
+    controlStatus?: number;
   }) {
     calls.length = 0;
     localStorage.setItem('accessToken', 'test-token');
@@ -83,7 +84,7 @@ describe('desktop-view', () => {
       }
       const control = url.match(/\/desktop\/views\/([^/]+)\/control$/);
       if (method === 'POST' && control && options.control) {
-        return json(options.control(control[1]));
+        return json(options.control(control[1]), options.controlStatus ?? 200);
       }
       const view = url.match(/\/desktop\/views\/([^/?]+)$/);
       if (view && method === 'DELETE')
@@ -327,6 +328,107 @@ describe('desktop-view', () => {
     const control = calls.find((c) => c.url.endsWith('/control'))!;
     expect(control.body).to.deep.equal({ reason: 'fix a stuck dialog' });
     expect(el.shadowRoot!.querySelector('sl-button.release-control')).to.exist;
+  });
+
+  async function askForControl(el: DesktopViewElement) {
+    await waitUntil(() => stateOf(el) === 'live', 'live', { timeout: 10000 });
+    el.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button.request-control'
+    )!.click();
+    await el.updateComplete;
+    el.shadowRoot!.querySelector<HTMLInputElement>(
+      'sl-input.control-reason'
+    )!.value = 'fix a stuck dialog';
+    [...el.shadowRoot!.querySelectorAll<HTMLElement>('.reason sl-button')]
+      .find((b) =>
+        b.textContent!.includes(DESKTOP_VIEW_STRINGS.controlConfirm)
+      )!
+      .click();
+  }
+
+  it('waits for another admin, then switches when the view enters control', async () => {
+    const viewId = `live-approval-${Date.now()}`;
+    const pending = { approval_id: 'appr-1', state: 'pending' };
+    let approved = false;
+    install({
+      create: () => ({ status: 201, body: viewRow(viewId) }),
+      controlStatus: 202,
+      control: (id) => viewRow(id, { state: 'live', control_request: pending }),
+      get: (id) =>
+        approved
+          ? viewRow(id, {
+              state: 'live',
+              mode: 'control',
+              control_request: null,
+              control_expires_at: new Date(Date.now() + 600000).toISOString(),
+            })
+          : viewRow(id, { state: 'live', control_request: pending }),
+    });
+    const el = await fixture<DesktopViewElement>(
+      html`<desktop-view
+        endpointId="ep-1"
+        autoStart
+        canControl
+        .controlPollMs=${50}
+      ></desktop-view>`
+    );
+    await askForControl(el);
+    await waitUntil(() =>
+      el
+        .shadowRoot!.querySelector('[data-testid="desktop-control-waiting"]')
+        ?.textContent!.includes(DESKTOP_VIEW_STRINGS.waitingForApproval)
+    );
+    expect(el.shadowRoot!.querySelector('sl-button.request-control')).to.not
+      .exist;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="desktop-banner"]')!
+        .textContent
+    ).to.include('View only');
+    approved = true;
+    await waitUntil(() =>
+      el
+        .shadowRoot!.querySelector('[data-testid="desktop-banner"]')!
+        .textContent!.includes('You have control')
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="desktop-control-waiting"]')
+    ).to.not.exist;
+    expect(el.shadowRoot!.querySelector('sl-button.release-control')).to.exist;
+  });
+
+  it('says so when the control request is not approved', async () => {
+    const viewId = `live-denied-${Date.now()}`;
+    const pending = { approval_id: 'appr-2', state: 'pending' };
+    let decided = false;
+    install({
+      create: () => ({ status: 201, body: viewRow(viewId) }),
+      controlStatus: 202,
+      control: (id) => viewRow(id, { state: 'live', control_request: pending }),
+      get: (id) =>
+        viewRow(id, {
+          state: 'live',
+          control_request: decided ? null : pending,
+        }),
+    });
+    const el = await fixture<DesktopViewElement>(
+      html`<desktop-view
+        endpointId="ep-1"
+        autoStart
+        canControl
+        .controlPollMs=${50}
+      ></desktop-view>`
+    );
+    await askForControl(el);
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="desktop-control-waiting"]')
+    );
+    decided = true;
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes(
+        DESKTOP_VIEW_STRINGS.controlNotApproved
+      )
+    );
+    expect(el.shadowRoot!.querySelector('sl-button.request-control')).to.exist;
   });
 });
 

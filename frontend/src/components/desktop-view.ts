@@ -52,6 +52,8 @@ export const DESKTOP_VIEW_STRINGS = {
   cancel: 'Cancel',
   bannerViewOnly: 'View only. Nothing is recorded.',
   bannerControl: 'You have control of this desktop. Nothing is recorded.',
+  waitingForApproval: 'Waiting for another admin to approve control',
+  controlNotApproved: 'Control was not approved. The view stays view only.',
   connecting: 'Connecting to the desktop...',
   unreachable:
     'The desktop host did not answer. Check that preloop-desktop-tunnel.service is running on the host.',
@@ -161,6 +163,9 @@ export class DesktopViewElement extends LitElement {
   /** Opens a view as soon as the element connects (the side panel case). */
   @property({ type: Boolean }) autoStart = false;
 
+  /** How often a pending control approval is re-checked. */
+  @property({ attribute: false }) controlPollMs = 3000;
+
   @state() viewerState: DesktopViewerState = 'idle';
   @state() private view: DesktopView | null = null;
   @state() private closedReason: string | null = null;
@@ -169,12 +174,15 @@ export class DesktopViewElement extends LitElement {
   @state() private remaining = '';
   @state() private askingReason = false;
   @state() private controlBusy = false;
+  /** Neutral note after a control request was not approved. */
+  @state() private controlNote = '';
 
   @query('.screen') private screen?: HTMLDivElement;
 
   private rfb: RFB | null = null;
   private socket: WebSocket | null = null;
   private ticker: number | null = null;
+  private controlPoll: number | null = null;
   /** Bumped on every open/teardown so late callbacks from an old view no-op. */
   private generation = 0;
 
@@ -193,6 +201,13 @@ export class DesktopViewElement extends LitElement {
     }
     .banner {
       flex: 1 1 auto;
+      font-size: var(--sl-font-size-small);
+      color: var(--sl-color-neutral-700);
+    }
+    .control-waiting {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--sl-spacing-2x-small);
       font-size: var(--sl-font-size-small);
       color: var(--sl-color-neutral-700);
     }
@@ -398,6 +413,7 @@ export class DesktopViewElement extends LitElement {
       window.clearInterval(this.ticker);
       this.ticker = null;
     }
+    this.stopControlPoll();
     const rfb = this.rfb;
     this.rfb = null;
     this.socket = null;
@@ -424,6 +440,47 @@ export class DesktopViewElement extends LitElement {
     return this.view?.mode === 'control';
   }
 
+  private get awaitingApproval(): boolean {
+    return !this.isControl && !!this.view?.control_request;
+  }
+
+  /** Applies a fresh view row: mode, input gate and the approval wait. */
+  private applyView(view: DesktopView): void {
+    const wasWaiting = this.awaitingApproval;
+    this.view = view;
+    if (this.rfb) this.rfb.viewOnly = view.mode !== 'control';
+    if (this.awaitingApproval) {
+      this.startControlPoll();
+      return;
+    }
+    this.stopControlPoll();
+    this.controlNote =
+      wasWaiting && view.mode !== 'control'
+        ? DESKTOP_VIEW_STRINGS.controlNotApproved
+        : '';
+  }
+
+  private startControlPoll(): void {
+    if (this.controlPoll !== null) return;
+    const generation = this.generation;
+    this.controlPoll = window.setInterval(async () => {
+      if (!this.view || generation !== this.generation) return;
+      try {
+        const view = await getDesktopView(this.view.view_id);
+        if (generation === this.generation) this.applyView(view);
+      } catch {
+        // Transient: the next tick asks again.
+      }
+    }, this.controlPollMs);
+  }
+
+  private stopControlPoll(): void {
+    if (this.controlPoll !== null) {
+      window.clearInterval(this.controlPoll);
+      this.controlPoll = null;
+    }
+  }
+
   private async submitControlRequest(): Promise<void> {
     const input = this.renderRoot.querySelector<HTMLInputElement>(
       'sl-input.control-reason'
@@ -436,8 +493,9 @@ export class DesktopViewElement extends LitElement {
     this.controlBusy = true;
     try {
       const view = await requestDesktopControl(this.view.view_id, reason);
-      this.view = view;
-      if (this.rfb) this.rfb.viewOnly = view.mode !== 'control';
+      this.errorText = '';
+      this.controlNote = '';
+      this.applyView(view);
       this.askingReason = false;
     } catch (error) {
       this.errorText =
@@ -543,13 +601,20 @@ export class DesktopViewElement extends LitElement {
                   @click=${() => void this.releaseControl()}
                   >${s.releaseControl}</sl-button
                 >`
-              : html`<sl-button
-                  class="request-control"
-                  size="small"
-                  ?disabled=${this.askingReason}
-                  @click=${() => (this.askingReason = true)}
-                  >${s.requestControl}</sl-button
-                >`
+              : this.awaitingApproval
+                ? html`<span
+                    class="control-waiting"
+                    data-testid="desktop-control-waiting"
+                    role="status"
+                    ><sl-spinner></sl-spinner>${s.waitingForApproval}</span
+                  >`
+                : html`<sl-button
+                    class="request-control"
+                    size="small"
+                    ?disabled=${this.askingReason}
+                    @click=${() => (this.askingReason = true)}
+                    >${s.requestControl}</sl-button
+                  >`
             : nothing
         }
         <sl-button
@@ -584,6 +649,13 @@ export class DesktopViewElement extends LitElement {
                 >${s.cancel}</sl-button
               >
             </div>`
+          : nothing
+      }
+      ${
+        this.controlNote && this.viewerState === 'live'
+          ? html`<span class="control-waiting" role="status"
+              >${this.controlNote}</span
+            >`
           : nothing
       }
       ${

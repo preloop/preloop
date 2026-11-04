@@ -43,6 +43,10 @@ from preloop.services.event_webhooks.events import (
 
 logger = logging.getLogger(__name__)
 
+#: ``tool_name`` of approval requests raised to take control of a live
+#: desktop view (#1567). Not a callable tool; it names the policy.
+DESKTOP_CONTROL_TOOL = "desktop_control"
+
 _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
 
 
@@ -1001,8 +1005,37 @@ class ApprovalService:
         # conditional UPDATE), so a duplicate decision is harmless.
         if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
             await self._release_parked_executions(approval_request)
+            if approval_request.tool_name == DESKTOP_CONTROL_TOOL:
+                await self._apply_desktop_control(approval_request)
 
         return approval_request
+
+    async def _apply_desktop_control(self, approval_request: ApprovalRequest) -> None:
+        """Grant or refuse the desktop control this request was raised for.
+
+        Runs after the decision is committed, from every resolution path.
+        A failure is logged: the view then stays view only, which is the
+        safe side.
+        """
+        from preloop.api.endpoints.desktop import apply_control_decision
+
+        approver = None
+        for vote in reversed(list(approval_request.responses or [])):
+            if isinstance(vote, dict) and vote.get("user_id"):
+                approver = str(vote["user_id"])
+                break
+        try:
+            await apply_control_decision(
+                approval_id=str(approval_request.id),
+                status=str(approval_request.status),
+                tool_args=dict(approval_request.tool_args or {}),
+                approver_id=approver,
+            )
+        except Exception:  # noqa: BLE001 - the decision itself is committed
+            logger.exception(
+                "Desktop control decision %s could not be applied",
+                approval_request.id,
+            )
 
     async def _enqueue_lifecycle(self, **fields: Any) -> None:
         """Flush the lifecycle intent in this session; never commit or detach it."""
@@ -1201,6 +1234,28 @@ class ApprovalService:
                 status_code=403, detail="Only the owner can decide this request"
             )
 
+    @staticmethod
+    def _require_desktop_control_approver(
+        approval_request: ApprovalRequest, user_id: Optional[uuid.UUID]
+    ) -> None:
+        """Desktop control needs a named human other than the requester (#1567).
+
+        The request only exists when the account has another admin, so a
+        token, AI or bypass approval and the requester's own vote are refused.
+        Declining stays open to every decider.
+        """
+        if approval_request.tool_name != DESKTOP_CONTROL_TOOL:
+            return
+        from fastapi import HTTPException
+
+        args = approval_request.tool_args or {}
+        requester = str(args.get("requested_by") or "")
+        if user_id is None or not requester or str(user_id) == requester:
+            raise HTTPException(
+                status_code=403,
+                detail="Desktop control must be approved by another admin",
+            )
+
     async def approve_request(
         self,
         request_id: uuid.UUID,
@@ -1237,6 +1292,7 @@ class ApprovalService:
             return None
 
         await self._require_consent_owner(approval_request, user_id)
+        self._require_desktop_control_approver(approval_request, user_id)
 
         # Do not re-decide an already-resolved or expired request.
         guarded = await self._reject_if_not_actionable(approval_request)
@@ -1793,6 +1849,7 @@ class ApprovalService:
             The updated, approved approval request.
         """
         await self._require_consent_owner(approval_request, None)
+        self._require_desktop_control_approver(approval_request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -1859,6 +1916,7 @@ class ApprovalService:
         request = await self.get_approval_request(request_id)
         if request is not None:
             await self._require_consent_owner(request, None)
+            self._require_desktop_control_approver(request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,

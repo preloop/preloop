@@ -397,6 +397,51 @@ class CRUDDesktop:
         db.commit()
         return bool(result.rowcount)
 
+    # Control approvals (#1567) ------------------------------------------
+
+    def control_tool_configuration(
+        self, db: Session, *, account_id: Any, tool_name: str
+    ) -> models.ToolConfiguration:
+        """The account's tool row that desktop control approvals point at."""
+        from .tool_configuration import get_or_create_tool_configuration_sync
+
+        row = (
+            db.query(models.ToolConfiguration)
+            .filter(
+                models.ToolConfiguration.account_id == account_id,
+                models.ToolConfiguration.tool_name == tool_name,
+                models.ToolConfiguration.managed_agent_id.is_(None),
+            )
+            .first()
+        )
+        if row is None:
+            row, _ = get_or_create_tool_configuration_sync(
+                db,
+                values={
+                    "account_id": account_id,
+                    "tool_name": tool_name,
+                    "tool_source": "builtin",
+                },
+            )
+            db.commit()
+        return row
+
+    def pending_control_approval(
+        self, db: Session, *, account_id: Any, view_id: Any, tool_name: str
+    ) -> Optional[models.ApprovalRequest]:
+        """Newest pending control approval raised for one view."""
+        return (
+            db.query(models.ApprovalRequest)
+            .filter(
+                models.ApprovalRequest.account_id == account_id,
+                models.ApprovalRequest.tool_name == tool_name,
+                models.ApprovalRequest.status == "pending",
+                models.ApprovalRequest.tool_args["view_id"].as_string() == str(view_id),
+            )
+            .order_by(models.ApprovalRequest.requested_at.desc())
+            .first()
+        )
+
     def views_to_sweep(self, db: Session, *, now: datetime) -> List[tuple[Any, str]]:
         """(view_id, reason) for views a live relay should already have closed."""
         pending = db.query(DesktopView.id).filter(
