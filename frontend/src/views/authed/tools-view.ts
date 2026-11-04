@@ -262,7 +262,7 @@ export class ToolsView extends LitElement {
         background: var(--sl-color-neutral-0);
         color: var(--sl-color-neutral-700);
         font: inherit;
-        min-height: 40px;
+        min-height: 44px;
         padding: 0 var(--sl-spacing-medium);
         cursor: pointer;
       }

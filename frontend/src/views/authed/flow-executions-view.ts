@@ -88,6 +88,10 @@ import {
 } from '../../components/token-figures';
 import type { ResourceAction } from '../../components/resource-actions';
 import { actionsFor } from '../../actions';
+import {
+  subscribeNarrowViewport,
+  type NarrowViewportSubscription,
+} from '../../utils/view-mode';
 
 interface FlowExecution {
   id: string;
@@ -190,7 +194,7 @@ export class FlowExecutionsView extends AuthedElement {
           background: var(--sl-color-neutral-0);
           color: var(--sl-color-neutral-700);
           font: inherit;
-          min-height: 40px;
+          min-height: 44px;
           padding: 0 var(--sl-spacing-medium);
           cursor: pointer;
         }
@@ -213,7 +217,6 @@ export class FlowExecutionsView extends AuthedElement {
           .execution-summaries {
             display: grid;
             gap: var(--sl-spacing-medium);
-            order: -2;
             margin-top: var(--sl-spacing-medium);
           }
           .execution-summary {
@@ -252,14 +255,7 @@ export class FlowExecutionsView extends AuthedElement {
           .mobile-table-toggle {
             display: block;
             align-self: start;
-            order: -3;
             margin: var(--sl-spacing-small) 0;
-          }
-          .execution-results.table-expanded .execution-summaries {
-            display: none;
-          }
-          .execution-results .table-wrapper:not(.mobile-expanded) {
-            display: none;
           }
         }
         .table-wrapper {
@@ -579,6 +575,22 @@ export class FlowExecutionsView extends AuthedElement {
   });
 
   @state() private mobileTableExpanded = false;
+  @state() private narrowViewport = false;
+  private viewportSubscription?: NarrowViewportSubscription;
+
+  constructor() {
+    super();
+    // Keep viewport ownership separate from the execution request lifecycle.
+    this.addController({
+      hostConnected: () => {
+        this.viewportSubscription = subscribeNarrowViewport((narrow) => {
+          this.narrowViewport = narrow;
+        });
+        this.narrowViewport = this.viewportSubscription.matches;
+      },
+      hostDisconnected: () => this.viewportSubscription?.disconnect(),
+    });
+  }
 
   private searchDebounceId?: number;
 
@@ -1501,6 +1513,7 @@ export class FlowExecutionsView extends AuthedElement {
   }
 
   render() {
+    const showTable = !this.narrowViewport || this.mobileTableExpanded;
     return html`
       <view-header headerText="Flow executions" width="wide"></view-header>
       <div class="column-layout wide">
@@ -1517,40 +1530,7 @@ export class FlowExecutionsView extends AuthedElement {
                   nothing
                 : this.renderEmptyState()
               : html`
-                  <div
-                    class="execution-results ${this.mobileTableExpanded ? 'table-expanded' : ''}"
-                  >
-                    <div
-                      id="execution-detail-table"
-                      class="table-wrapper ${this.mobileTableExpanded ? 'mobile-expanded' : ''}"
-                    >
-                      <div class="table-scroll">
-                        <table>
-                          <thead>
-                            <tr>
-                              ${renderListHeaders(this.table)}
-                              <th class="actions-cell">
-                                <div class="table-header-content">
-                                  ${renderHeaderColumnPicker(this.table, false)}
-                                </div>
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${this.paginatedExecutions.map((exec) =>
-                              this.renderRow(exec)
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <div
-                      class="execution-summaries"
-                      aria-label="Execution summaries"
-                    >
-                      ${this.paginatedExecutions.map((exec) => this.renderMobileSummary(exec))}
-                    </div>
+                  <div class="execution-results">
                     <button
                       type="button"
                       class="mobile-table-toggle"
@@ -1560,6 +1540,47 @@ export class FlowExecutionsView extends AuthedElement {
                     >
                       ${this.mobileTableExpanded ? 'Show summaries' : 'Show all columns and sorting'}
                     </button>
+                    <div
+                      id="execution-detail-table"
+                      class="table-wrapper"
+                      ?hidden=${!showTable}
+                    >
+                      ${
+                        showTable
+                          ? html`
+                              <div class="table-scroll">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      ${renderListHeaders(this.table)}
+                                      <th class="actions-cell">
+                                        <div class="table-header-content">
+                                          ${renderHeaderColumnPicker(this.table, false)}
+                                        </div>
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${this.paginatedExecutions.map((exec) =>
+                                      this.renderRow(exec)
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            `
+                          : nothing
+                      }
+                    </div>
+                    ${
+                      !showTable
+                        ? html` <div
+                            class="execution-summaries"
+                            aria-label="Execution summaries"
+                          >
+                            ${this.paginatedExecutions.map((exec) => this.renderMobileSummary(exec))}
+                          </div>`
+                        : nothing
+                    }
                   </div>
 
                   <table-pagination

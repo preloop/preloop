@@ -76,6 +76,7 @@ describe('Mobile tools and execution lists', () => {
         expect(getComputedStyle(controls).display).to.equal('none');
         expect(editor.getBoundingClientRect().top).to.be.lessThan(650);
         expect(toggle.getAttribute('aria-expanded')).to.equal('false');
+        expect(toggle.getBoundingClientRect().height).to.be.at.least(44);
         toggle.focus();
         await sendKeys({ press: 'Enter' });
         await el.updateComplete;
@@ -125,7 +126,10 @@ describe('Mobile tools and execution lists', () => {
         html`<flow-executions-view></flow-executions-view>`
       );
       await waitUntil(
-        () => el.shadowRoot!.querySelectorAll('.execution-summary').length === 3
+        () =>
+          el.shadowRoot!.querySelectorAll(
+            width <= 640 ? '.execution-summary' : 'tbody tr'
+          ).length === 3
       );
       await nextFrame();
       const root = el.shadowRoot!;
@@ -133,8 +137,19 @@ describe('Mobile tools and execution lists', () => {
         ...root.querySelectorAll<HTMLElement>('.execution-summary'),
       ];
       const wrapper = root.querySelector<HTMLElement>('.table-wrapper')!;
+      expect(root.querySelectorAll('resource-actions')).to.have.length(3);
       if (width <= 640) {
         expect(getComputedStyle(wrapper).display).to.equal('none');
+        expect(root.querySelector('table')).to.not.exist;
+        const disclosure = root.querySelector<HTMLButtonElement>(
+          '.mobile-table-toggle'
+        )!;
+        expect(disclosure.getBoundingClientRect().height).to.be.at.least(44);
+        disclosure.focus();
+        await sendKeys({ press: 'Tab' });
+        expect(root.activeElement).to.equal(
+          cards[0].querySelector('.row-link')
+        );
         for (const card of cards) {
           for (const selector of [
             '.row-link',
@@ -209,16 +224,25 @@ describe('Mobile tools and execution lists', () => {
         await el.updateComplete;
         expect(getComputedStyle(wrapper).display).to.not.equal('none');
         expect(toggle.getAttribute('aria-expanded')).to.equal('true');
-        expect(
-          getComputedStyle(root.querySelector('.execution-summaries')!).display
-        ).to.equal('none');
+        expect(root.querySelector('.execution-summaries')).to.not.exist;
+        expect(root.querySelectorAll('resource-actions')).to.have.length(3);
+        await sendKeys({ press: 'Tab' });
+        expect(wrapper.contains(root.activeElement)).to.equal(true);
         expect(root.querySelector('column-picker')).to.exist;
         expect(root.querySelectorAll('tbody tr')).to.have.length(3);
       } else {
-        expect(
-          getComputedStyle(root.querySelector('.execution-summaries')!).display
-        ).to.equal('none');
+        expect(root.querySelector('.execution-summaries')).to.not.exist;
         expect(getComputedStyle(wrapper).display).to.not.equal('none');
+        await setViewport({ width: 390, height: 844 });
+        await waitUntil(
+          () => root.querySelectorAll('.execution-summary').length === 3
+        );
+        expect(root.querySelector('table')).to.not.exist;
+        expect(root.querySelectorAll('resource-actions')).to.have.length(3);
+        await setViewport({ width: 1440, height: 844 });
+        await waitUntil(() => root.querySelectorAll('tbody tr').length === 3);
+        expect(root.querySelector('.execution-summaries')).to.not.exist;
+        expect(root.querySelectorAll('resource-actions')).to.have.length(3);
       }
     });
   }
