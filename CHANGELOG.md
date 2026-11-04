@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as open source, and `SECURITY.md` names the latest release line instead of
   a fixed minor. Refs #1486.
 
+- `ARCHITECTURE.md` is a short map again. Subsystem notes that had grown
+  in it moved, unchanged, into chapters under `docs/architecture/`, with six
+  new chapters (runners, identity, chat, discovery, telemetry, operations).
+  Every chapter is in the docs.preloop.ai navigation, and a test keeps the
+  map short and every chapter linked from it and the navigation (EE #83).
 - The Overview Usage box no longer shows the paragraph on how budget usage
   is counted. A small info icon next to the first budget number shows it in
   a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere

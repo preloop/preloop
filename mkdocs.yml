@@ -358,6 +358,19 @@ nav:
       - Security considerations: architecture/security.md
       - Similar sessions: architecture/similar-sessions.md
       - Preloop Sync: architecture/sync.md
+      - Account access rules: architecture/account-access-rules.md
+      - MCP tool integration: architecture/mcp.md
+      - MCP protocol compatibility: architecture/mcp-protocol-compatibility.md
+      - MCP dispatch provenance: architecture/mcp-dispatch-provenance.md
+      - Upstream MCP OAuth: architecture/upstream-mcp-oauth.md
+      - Managed tracker OAuth storage: architecture/managed-oauth-storage.md
+      - Runners and remote sessions: architecture/runners.md
+      - Runner-proxied local models: architecture/runner-local-models.md
+      - Identity, membership and SSO: architecture/identity.md
+      - Chat connections: architecture/chat.md
+      - Discovery source observations: architecture/discovery.md
+      - Telemetry and activity: architecture/telemetry.md
+      - Platform operations: architecture/operations.md
 
 validation:
   nav:

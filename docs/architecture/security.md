@@ -311,3 +311,82 @@ secret: receivers should accept both during their bounded rotation overlap and
 deduplicate by event ID. Endpoint deletion removes its durable delivery history;
 authority-denied queued machine deliveries are marked dead without POST. The
 migration does not backfill and refuses downgrade while retained snapshots exist.
+
+## Account kill switch
+
+The [account kill switch](../guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
+
+## Audit collection and authentication audit
+
+Audit collection, the account-scoped query API, and the console are core features
+available in every edition. Core owns the audit service, bounded writer and
+optional durable outbox; Enterprise uses the same implementation and adds its
+RBAC permission checks and events from organizational features.
+
+Audit rows are sealed into a per-account hash chain with signed checkpoints.
+Period exports and evidence packs carry detached Ed25519 signatures.
+`preloop audit verify` and `preloop evidence verify` recompute both on the
+caller's machine. See [Evidence storage and signed records](../guide/flows/evidence-storage.md).
+The chain proves order and non-deletion in the range it names, not that the
+records were true when written; the signing key lives beside the records.
+
+Password and passkey sign-in record one final `auth.login.succeeded` or
+`auth.login.failed` outcome through `preloop.services.auth_audit`. Identity
+plugins use the same helper for social sign-in and SSO/SCIM lifecycle events.
+Payloads retain bounded identity metadata, known changed-field names and
+UUID-only owner lists; tokens, assertions and nested
+provider payloads are excluded. Known identities route to their account audit
+trail and period exports; attempts without a trustworthy account emit a
+content-free service security log, never a caller-selected tenant row. Existing
+`user.login` activity events remain available for cohort metrics. SSO labels
+retain their schema bounds (name 255, domain 253, group/issuer/entity 512 characters);
+secret-looking identifier labels remain intentional identifiers. Identity URLs
+drop userinfo, query strings and fragments. Owner lists retain at most 100 UUIDs
+and report the original total when truncated; nested values never survive.
+
+Authentication audit volume is intentionally one outcome per attempt, without
+sampling or deduplication. Password login is throttled per client address
+and per username (failed attempts only) by the shared request limiter
+([docs/operations/rate-limiting.md](../operations/rate-limiting.md)), which
+keys on the first address outside the trusted proxy ranges, never on a
+client-written forwarded header. Passkey verification has no built-in attempt
+limiter yet, so operators should enforce an ingress limit on
+`/api/v1/auth/webauthn/authenticate/verify`.
+A known-account failure adds one audit row; sustained attempts therefore grow
+the account's retained audit history and period exports linearly. The ordinary
+audit retention policy applies, and the period export row cap requires smaller
+periods for high-volume accounts. Unknown-account failures grow service logs;
+apply the same ingress limits and log rotation there. Limit attempts before
+authentication, rather than suppressing required compliance events afterward.
+
+## Restricted external runtime authority
+
+The default-disabled restricted runtime primitive reuses SecretReference policy
+metadata and hashed ApiKey/runtime-session rows. A trusted provider adapter
+supplies verified account/binding/session/creator identity. Core issuance locks
+the account-owned reference, checks its static resource/scope ceiling, current
+agent, validated enrollment and active policy snapshot, and atomically records a
+single secret delivery with permanent session replay state. Revocation locks the
+same reference and records a tombstone before deactivating the existing key.
+Policy updates preserve that state and increment the generation.
+
+Machine markers prevent fallback to the key owner's ordinary authority. Only
+the DynamicFastMCP transport opts into restricted authentication. Invocation
+resolves an immutable server UUID and original upstream tool; the fresh dispatch
+gate rechecks current core state before policy/approval and after approval and
+connection waits. Unsupported routes, builtin tools and asynchronous approval
+replay deny. Legacy authentication and upstream grant introspection keep their
+existing behavior. Real concurrency regressions use independent transactions and
+private schemas in the isolated CI PostgreSQL database.
+
+Devin CLI host execution uses bounded ATIF exports for completion and stores the
+CLI-created session id before subsequent remote turns. Model inference stays on
+Cognition; managed MCP and permission hooks use Preloop.
+
+Optional deployments may register `analytics_detail_policy` to reduce derived
+gateway analytics after a monthly quota is exhausted. The post-response path
+keeps token/cost accounting, audit and session activity, marks affected rows
+with `meta_data.ingest_degraded`, and omits content search, content-derived
+summaries and tool enrichment. LLM session optimization falls back to its
+deterministic analyzers. With no registered policy, OSS retains full detail.
+The policy never changes forwarded requests or governance decisions.

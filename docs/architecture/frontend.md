@@ -192,3 +192,96 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 *   **Session Value:** LLM-generated summaries that explain what happened in a session, whether the outcome appears worth the spend, and which expensive attempts failed or retried.
 *   **Optimization:** Recommendations for cheaper model routing, prompt compaction, caching, batching, retry suppression, or policy changes.
 *   **Forecasting & Anomalies:** Burn-rate forecasts, unusual spend detection, alerts, chargeback/showback, and export workflows.
+
+## Live session supervision
+
+Live session supervision uses shared Lit state and tool/approval cards across
+Talk, Conversation and Transcript. Gateway starts and accounting completions
+share a per-request identity; captured OpenAI, Responses and Anthropic tool
+metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
+Agent detail uses independent identity, session-page and spend reads; Talk uses
+bounded delta history and coalesced refreshes. Sidecars stream the open turn's
+reply as numbered `session_progress` deltas (merged to four a second, throttled
+per session on the server, scoped to the owning account and runtime session);
+Talk appends them to a live bubble and re-reads the thread only on a sequence
+gap or turn end. Sidecars that send no deltas keep the refresh path. See [frontend read contracts](#route-loading-and-refreshes).
+Approval REST queries combine account and runtime-session scope, and websocket
+approval payloads pass the same permission boundary before delivery. See
+[Runtime sessions](../guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
+
+## Console edit permissions
+
+Edit controls use the cached user profile with three distinct states: a null
+permission list means no access control applies (core, or disabled checks),
+an RBAC list grants only named actions,
+and an unresolved or failed profile disables edits. Budget components also accept
+`readOnly` to display limits without add/edit/delete actions. Models use separate
+create/edit/delete grants; user actions use `manage_users`, invitations use
+`invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
+permissions. Backend authorization remains the enforcement boundary.
+
+## Console list defaults
+
+At 1440x900, the default content of the five remaining list pages in #1585
+fits within three viewports. Audit requests 25 events per page, retaining
+explicit URL and saved size choices. Tools shows ten tool rows or collapsed/empty server
+headers per page across MCP and native groups. New Flow shows five catalog
+presets and ten searchable allowed tools per page, preserving selections
+across pages. Its allowed-tool section starts closed. Gateway session usage,
+provider headroom snapshots, and the Plan feature comparison open on request;
+the Gateway and Plan disclosures remember the reader's choice.
+
+## Console list filter URLs
+
+Sessions, Audit, Approvals, and Tools apply filter changes as they are committed;
+text searches debounce typing. Filters use `replaceState` while preserving
+unrelated deep-link parameters and the URL hash. Sessions stores `source_type`,
+`status`, `has_artifacts`, `range`, `from`, and `to` beside its existing search
+and session selection fields. Audit repeats `event_type`/`outcome` for multiple
+values and stores tool/date/cost fields under their API names. Approvals stores
+`status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
+Date strings from shared links are validated before timestamp conversion.
+
+Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
+`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
+`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
+discarding either filter set. Successful initial loads, including empty catalogs,
+retain mounted content during subsequent background refreshes.
+
+## Console accessibility
+
+Console metadata uses the shared `--console-meta-color` token, whose contrast
+against the console surfaces is tested in both themes. The frontend test command
+checks source text colors and programmatic names on native and Shoelace controls.
+Placeholder text alone does not name an input.
+
+The console sidebar uses native navigation lists, links with `aria-current`, and
+expandable `details` groups. After a successful route change, the shell focuses
+the new view heading and announces its title; initial page load does not move
+focus. The shared `ConsoleStatus` controller supplies hidden polite status regions
+for asynchronous authenticated views, and the approvals view announces new live
+requests without moving keyboard focus. Empty capability-gated views stay silent.
+
+Resource detail headers use the shared `resource-access-panel` for compact Access
+and Tags controls. Sharing requires the server's `resource_sharing` capability
+and a supported model, MCP server, or managed-agent kind; hierarchy alone never
+advertises sharing. Flows, policy baselines, and runner pools retain independent
+`abac_rules` tag controls. Editors use persisted drafts with explicit Save/Cancel,
+an anchored desktop popover in the browser top layer, and a phone dialog. Model
+metadata controls mount only after ownership is known; global provider models
+without an account do not expose unsupported Access or Tags endpoints. Account defaults describe policy
+configuration, and sharing summaries describe intent rather than effective access.
+Sharing targets reference existing sharing permits. The independent
+`resource_access` capability adds People & teams, applied-rule provenance and
+conditional explanations on supported resources, including accounts without
+subaccounts. Local action gates and their designated UUID-targeted permits use
+server preview tokens and document versions before Save; drafts survive conflicts
+and rebase only on an explicit reload. Sharing saves remain a separate operation.
+The shared visual rule form preserves advanced selectors/conditions as complete
+YAML and keeps inherited rules read-only. The account-wide builder uses per-rule
+versions and distinguishes additive permits from restrictive gates; account-mode
+changes use their separate policy-only preview API. Explanations identify RBAC
+and runtime ceilings rather than promising final effective access.
+
+
+The optional ticket-readiness observer uses account-scoped immutable policy and gate-evidence records, historical first-ready series, durable per-PR leases and round-robin reconciliation. Its credentialed fetch and offline object-only Git probe run in separate constrained containers. Reporting labels configured-policy coverage explicitly and preserves existing cycle-time intervals; see [sampled ticket readiness](../guide/ticket-readiness.md).

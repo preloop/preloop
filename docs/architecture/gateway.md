@@ -262,3 +262,15 @@ This avoids relying on an upstream default that can run out while producing only
 reasoning. A reasoning-only stream ending with `finish_reason=length` fails with
 `output_budget_exhausted`, without confirming task completion. It does not retry
 with a larger allowance or submit a review on the agent's behalf.
+
+## Gateway database units and subscription recovery
+
+HTTP model gateways use immutable execution values and fresh worker-owned database
+units for authentication, preparation and accounting. Provider waits and stream
+pulls retain no Session. See [Gateway database ownership](#gateway-database-ownership)
+for protocol boundaries, cancellation and the serialized OAuth rotation exception.
+
+Claude/Codex subscription recovery preserves agent enrollment through
+`preloop agents reconnect`. Credential imports serialize with rotation and reject
+recently consumed refresh tokens; provider-declared invalid grants require fresh
+authorization. See [OAuth credential recovery](#gateway-database-ownership).
