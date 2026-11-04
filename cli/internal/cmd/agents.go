@@ -473,6 +473,7 @@ type runtimeSessionTokenRequest struct {
 	Scopes               []string                  `json:"scopes,omitempty"`
 	AllowedMCPServers    []string                  `json:"allowed_mcp_servers,omitempty"`
 	PrincipalIdentity    *principalIdentityPayload `json:"principal_identity,omitempty"`
+	DesktopEndpointID    string                    `json:"desktop_endpoint_id,omitempty"`
 }
 
 type principalIdentityPayload struct {
@@ -1041,6 +1042,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     Runtime: %s\n", runtimeLabel)
 		}
 		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
+		if label := agentNoteDeliveryLabel(agent); label != "" {
+			fmt.Printf("     Operator notes: %s\n", label)
+		}
 		fmt.Printf("     %s\n", inventoryRouteSummary(inventoryDiscoveryRoutes(agent)))
 		if label := claudeDesktopModelRouteLabel(agent.ModelRoute); label != "" {
 			fmt.Printf("     Model route: %s\n", label)
@@ -3145,6 +3149,7 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 		Scopes:               []string{"mcp:read", "mcp:write"},
 		AllowedMCPServers:    serverNames,
 		PrincipalIdentity:    principalIdentityForAgent(agent),
+		DesktopEndpointID:    localDesktopEndpointID(),
 	}
 
 	var result runtimeSessionTokenResponse

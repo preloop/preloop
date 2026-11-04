@@ -1905,6 +1905,74 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/runtime-sessions/resolve:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Resolve Runtime Session
+      description: "Return the runtime session id for a client session key.\n\nArgs:\n\
+        \    client_session_id: Key the client sends as ``X-Preloop-Session-Id``.\n\
+        \    create: Create the row when missing, with the gateway's keying.\n   \
+        \ db: Database session.\n    auth: Gateway credential from the bearer token.\n\
+        \nReturns:\n    The runtime session id and whether this call created it.\n\
+        \nRaises:\n    HTTPException: 422 for a malformed key, 404 when no session\
+        \ exists\n        in the caller's account and ``create`` is false (or the\n\
+        \        credential cannot own a session)."
+      operationId: resolve_runtime_session_api_v1_runtime_sessions_resolve_get
+      parameters:
+      - name: client_session_id
+        in: query
+        required: true
+        schema:
+          type: string
+          description: The value the client sends as X-Preloop-Session-Id
+          title: Client Session Id
+        description: The value the client sends as X-Preloop-Session-Id
+      - name: create
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Create the session exactly as the gateway would
+          default: false
+          title: Create
+        description: Create the session exactly as the gateway would
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: x-preloop-execution
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Preloop-Execution
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionResolveOut'
+        '401':
+          description: Missing or invalid bearer token
+        '404':
+          description: No runtime session for this key in your account
+        '422':
+          description: client_session_id is not a valid session id
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/details:
     get:
       tags:
@@ -20754,6 +20822,105 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/desktop/install:
+    post:
+      tags:
+      - Agent Control
+      summary: Request Agent Desktop Install
+      description: 'Ask the agent''s runtime plugin to enable a live desktop on its
+        host.
+
+
+        Returns 404 ``desktop_views_disabled`` when desktop views are disabled.'
+      operationId: request_agent_desktop_install_api_v1_agents__agent_id__desktop_install_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Request Agent Desktop Install Api V1 Agents  Agent
+                  Id  Desktop Install Post
+        '409':
+          description: No Agent Control channel; ``detail.command`` is the one-line
+            command to run on the host
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/desktop/install/{request_id}:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Agent Desktop Install
+      description: 'State of one ``desktop.install`` request: pending, done, failed
+        or
+
+        unsupported (the plugin does not know the command). Sync, so FastAPI
+
+        runs it in the threadpool off the event loop.
+
+
+        Returns 404 ``desktop_views_disabled`` when desktop views are disabled.'
+      operationId: get_agent_desktop_install_api_v1_agents__agent_id__desktop_install__request_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Agent Desktop Install Api V1 Agents  Agent Id  Desktop
+                  Install  Request Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/desktop/endpoints:
     get:
       tags:
@@ -20934,9 +21101,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Desktop View Api V1 Desktop Views  View Id  Get
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -21009,10 +21174,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Agent Desktop View Api V1 Agents  Agent Id  Desktop
-                  Views  View Id  Get
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -21068,7 +21230,14 @@ paths:
       tags:
       - Desktop Views
       summary: Request Desktop Control
-      description: Take control of the desktop (self-confirmed with a reason).
+      description: 'Take control of the desktop.
+
+
+        When the account has another admin who may decide approvals, this raises
+
+        a ``desktop_control`` approval that someone other than the caller must
+
+        approve (202). Otherwise the caller self-confirms with the reason (200).'
       operationId: request_desktop_control_api_v1_desktop_views__view_id__control_post
       security:
       - bearerAuth: []
@@ -21091,10 +21260,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Request Desktop Control Api V1 Desktop Views  View
-                  Id  Control Post
+                $ref: '#/components/schemas/DesktopViewResponse'
+        '202':
+          description: 'Another admin must approve: the view stays view only and ``control_request``
+            names the pending approval'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -21142,10 +21315,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Request Agent Desktop Control Api V1 Agents  Agent
-                  Id  Desktop Views  View Id  Control Post
+                $ref: '#/components/schemas/DesktopViewResponse'
+        '202':
+          description: 'Another admin must approve: the view stays view only and ``control_request``
+            names the pending approval'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -22601,6 +22778,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BrowserStepBatchOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/desktop-endpoint:
+    put:
+      tags:
+      - Runtime Sessions
+      summary: Set Runtime Session Desktop Endpoint
+      description: "Record the desktop endpoint a runtime session runs next to.\n\n\
+        The value is stored as given; it only links endpoints in the session's\nown\
+        \ account, so naming another account's endpoint links nothing and\n``linked``\
+        \ is false. An endpoint that registers later is picked up then.\n\nArgs:\n\
+        \    runtime_session_id: Session to link.\n    body: Endpoint id (host ``endpoint_id``\
+        \ or row id), or null to clear.\n    db: Database session.\n    auth: Agent\
+        \ credential from the bearer token.\n\nReturns:\n    The stored value and\
+        \ whether it currently matches an endpoint.\n\nRaises:\n    HTTPException:\
+        \ 403 when the credential is pinned to another session,\n        404 when\
+        \ the session is not in the credential's account."
+      operationId: set_runtime_session_desktop_endpoint_api_v1_runtime_sessions__runtime_session_id__desktop_endpoint_put
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSessionDesktopLink'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionDesktopLinkOut'
         '401':
           description: Missing or invalid bearer token
         '403':
@@ -34315,6 +34553,20 @@ components:
       required:
       - reason
       title: DesktopControlRequest
+    DesktopControlRequestState:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        state:
+          type: string
+          title: State
+      type: object
+      required:
+      - approval_id
+      - state
+      title: DesktopControlRequestState
+      description: A control request waiting for another admin (#1567).
     DesktopViewCreate:
       properties:
         duration_seconds:
@@ -34331,6 +34583,80 @@ components:
           title: Runtime Session Id
       type: object
       title: DesktopViewCreate
+    DesktopViewResponse:
+      properties:
+        view_id:
+          type: string
+          title: View Id
+        endpoint_id:
+          type: string
+          title: Endpoint Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        user_id:
+          type: string
+          title: User Id
+        state:
+          type: string
+          title: State
+        mode:
+          type: string
+          title: Mode
+        ws_url:
+          type: string
+          title: Ws Url
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        live_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Live At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        closed_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closed At
+        closed_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closed Reason
+        control_expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Control Expires At
+        control_request:
+          anyOf:
+          - $ref: '#/components/schemas/DesktopControlRequestState'
+          - type: 'null'
+      type: object
+      required:
+      - view_id
+      - endpoint_id
+      - user_id
+      - state
+      - mode
+      - ws_url
+      title: DesktopViewResponse
+      description: One desktop view, as every view route returns it.
     DetectorTimeoutFailMode:
       type: string
       enum:
@@ -48335,6 +48661,37 @@ components:
         set to this session. Otherwise ``mode`` is ``note`` and ``reason`` says
 
         why, in words fit to show the operator.'
+    RuntimeSessionDesktopLink:
+      properties:
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Desktop Endpoint Id
+      type: object
+      title: RuntimeSessionDesktopLink
+      description: Desktop endpoint named by the adapter; null clears the link.
+    RuntimeSessionDesktopLinkOut:
+      properties:
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Desktop Endpoint Id
+        linked:
+          type: boolean
+          title: Linked
+      type: object
+      required:
+      - runtime_session_id
+      - desktop_endpoint_id
+      - linked
+      title: RuntimeSessionDesktopLinkOut
+      description: Stored link and whether it matches an endpoint in the account now.
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -49015,6 +49372,20 @@ components:
       type: object
       title: RuntimeSessionRequestTool
       description: One tool carried by a single gateway request.
+    RuntimeSessionResolveOut:
+      properties:
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        created:
+          type: boolean
+          title: Created
+      type: object
+      required:
+      - runtime_session_id
+      - created
+      title: RuntimeSessionResolveOut
+      description: The runtime session a client session key maps to.
     RuntimeSessionSummary:
       properties:
         id:
@@ -49382,6 +49753,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/PrincipalIdentity'
           - type: 'null'
+        desktop_endpoint_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Desktop Endpoint Id
       type: object
       required:
       - session_source_type

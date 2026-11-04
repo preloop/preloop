@@ -94,6 +94,27 @@ const directGatewayProbeEvidence = "direct gateway route/accounting probe passed
 func printAgentStatusDisclosure(writer io.Writer, agent AgentConfig) {
 	fmt.Fprintf(writer, "Adapter support: %s\n", agentSupportListingLabel(agent))                                                                                                 //nolint:errcheck
 	fmt.Fprintln(writer, "Enrollment and config records describe configuration; application behavior unverified. Only calls routed through the managed MCP entry reach Preloop.") //nolint:errcheck
+	if label := agentNoteDeliveryLabel(agent); label != "" {
+		fmt.Fprintf(writer, "Operator notes: %s\n", label) //nolint:errcheck
+	}
+}
+
+// cursorHeadlessStopEvidenceVersion is the cursor-agent build on which a
+// headless --print run was observed to emit sessionStart and sessionEnd but no
+// stop hook (#1684).
+const cursorHeadlessStopEvidenceVersion = "2026.10.01-e373342"
+
+// agentNoteDeliveryLabel discloses operator-note delivery limits that the
+// adapter support line cannot express. It is empty when there is nothing to
+// add beyond the operator-note guide.
+func agentNoteDeliveryLabel(agent AgentConfig) string {
+	if permissionSourceForAgent(agent) != permissionSourceCursor {
+		return ""
+	}
+	return "delivered at startup and tool calls; headless --print runs fire no stop hook " +
+		"(cursor-agent " + cursorHeadlessStopEvidenceVersion + "), so a session note queued " +
+		"after the last tool call is not rescued at stop and is marked undeliverable at " +
+		"session end; interactive mode unverified."
 }
 
 func gatewayProbeStatusLabel(status string) string {

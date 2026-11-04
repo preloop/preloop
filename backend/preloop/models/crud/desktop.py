@@ -182,8 +182,12 @@ class CRUDDesktop:
         """Linkage filters that tie a runtime session to desktop endpoints.
 
         A session is linked to the endpoints of the managed agent that owns it
-        (its identity session, or sessions whose principal is the agent) and
-        to endpoints registered with an API key bound to that session.
+        (its identity session, or sessions whose principal is the agent), to
+        endpoints registered with an API key bound to that session, and to the
+        endpoint the session names itself (``desktop_endpoint_id``, from the
+        adapter's ``PRELOOP_DESKTOP_ENDPOINT_ID``, #1568). The named endpoint
+        is matched inside ``account_id`` only, so a value pointing at another
+        account's endpoint links nothing.
         Returns None when the session is not in the account.
         """
         session_pk = _as_uuid(runtime_session_id)
@@ -221,7 +225,13 @@ class CRUDDesktop:
                 )
             )
         )
-        return {"managed_agent_ids": agent_ids, "api_key_ids": key_ids}
+        filters: dict[str, list[Any]] = {
+            "managed_agent_ids": agent_ids,
+            "api_key_ids": key_ids,
+        }
+        if runtime_session.desktop_endpoint_id:
+            filters["endpoint_idents"] = [runtime_session.desktop_endpoint_id]
+        return filters
 
     # Views ---------------------------------------------------------------
 
@@ -386,6 +396,135 @@ class CRUDDesktop:
         )
         db.commit()
         return bool(result.rowcount)
+
+    # Control approvals (#1567) ------------------------------------------
+
+    def owned_control_view(
+        self, db: Session, *, account_id: Any, view_id: Any, requester_id: Any
+    ) -> Optional[DesktopView]:
+        """Resolve a control target only within its requester's account and ownership."""
+        view = self.get_view(db, view_id=view_id, account_id=account_id)
+        if view is None or view.user_id != _as_uuid(requester_id):
+            return None
+        return view
+
+    def control_approval_view(
+        self, db: Session, approval: models.ApprovalRequest
+    ) -> Optional[DesktopView]:
+        """Resolve the server-owned binding, never caller-provided tool arguments.
+
+        ApprovalService reserves this name and stamps this context only for
+        the authenticated desktop endpoint. Unbound older rows fail closed.
+        """
+        context = approval.rule_context or {}
+        if not isinstance(context, dict):
+            return None
+        binding = context.get("desktop_control")
+        if (
+            approval.tool_name != "desktop_control"
+            or not isinstance(binding, dict)
+            or not _as_uuid(binding.get("requester_id"))
+        ):
+            return None
+        return self.owned_control_view(
+            db,
+            account_id=approval.account_id,
+            view_id=binding.get("view_id"),
+            requester_id=binding["requester_id"],
+        )
+
+    def control_tool_configuration(
+        self, db: Session, *, account_id: Any, tool_name: str
+    ) -> models.ToolConfiguration:
+        """The account's tool row that desktop control approvals point at."""
+        from .tool_configuration import get_or_create_tool_configuration_sync
+
+        row = (
+            db.query(models.ToolConfiguration)
+            .filter(
+                models.ToolConfiguration.account_id == account_id,
+                models.ToolConfiguration.tool_name == tool_name,
+                models.ToolConfiguration.managed_agent_id.is_(None),
+            )
+            .first()
+        )
+        if row is None:
+            row, _ = get_or_create_tool_configuration_sync(
+                db,
+                values={
+                    "account_id": account_id,
+                    "tool_name": tool_name,
+                    "tool_source": "builtin",
+                },
+            )
+            db.commit()
+        return row
+
+    def pending_control_approval(
+        self, db: Session, *, account_id: Any, view_id: Any, tool_name: str
+    ) -> Optional[models.ApprovalRequest]:
+        """Newest pending control approval raised for one view."""
+        return (
+            db.query(models.ApprovalRequest)
+            .filter(
+                models.ApprovalRequest.account_id == account_id,
+                models.ApprovalRequest.tool_name == tool_name,
+                models.ApprovalRequest.status == "pending",
+                models.ApprovalRequest.rule_context["desktop_control"][
+                    "view_id"
+                ].as_string()
+                == str(view_id),
+            )
+            .order_by(models.ApprovalRequest.requested_at.desc())
+            .first()
+        )
+
+    async def lock_view_async(self, db: Any, *, view_id: Any) -> Optional[str]:
+        """Row lock on a view in an approvals-service session; its state.
+
+        Serializes control requests for one view so a double submit reuses
+        one approval instead of raising two, and lets the caller see a view
+        that closed after its first check. None when the view is gone.
+        """
+        result = await db.execute(
+            select(DesktopView.state)
+            .where(DesktopView.id == _as_uuid(view_id))
+            .with_for_update()
+        )
+        return result.scalars().first()
+
+    async def pending_control_approval_id_async(
+        self, db: Any, *, account_id: Any, view_id: Any, tool_name: str
+    ) -> Optional[uuid.UUID]:
+        """Id of the newest pending control approval for a view, if any."""
+        result = await db.execute(
+            select(models.ApprovalRequest.id)
+            .where(
+                models.ApprovalRequest.account_id == account_id,
+                models.ApprovalRequest.tool_name == tool_name,
+                models.ApprovalRequest.status == "pending",
+                models.ApprovalRequest.rule_context["desktop_control"][
+                    "view_id"
+                ].as_string()
+                == str(view_id),
+            )
+            .order_by(models.ApprovalRequest.requested_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
+    def active_member_ids(
+        self, db: Session, *, account_id: Any, exclude: Any, after: Any, limit: int
+    ) -> List[uuid.UUID]:
+        """Active users in the account other than ``exclude``, keyset paged."""
+        query = db.query(models.User.id).filter(
+            models.User.account_id == account_id,
+            models.User.is_active.is_(True),
+            models.User.id != exclude,
+        )
+        if after is not None:
+            query = query.filter(models.User.id > after)
+        return [row.id for row in query.order_by(models.User.id).limit(limit)]
 
     def views_to_sweep(self, db: Session, *, now: datetime) -> List[tuple[Any, str]]:
         """(view_id, reason) for views a live relay should already have closed."""

@@ -53,10 +53,23 @@ class FakePreloop:
         self.artifacts: dict[str, dict] = {}
         self.deposit_route = deposit_route
         self.auth: set[str] = set()
+        self.paths: list[str] = []
+        #: client_session_id -> runtime session id for the resolve route.
+        self.sessions: dict[str, str] = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.auth.add(request.headers.get("authorization", ""))
         path = request.url.path
+        self.paths.append(path)
+        if path.endswith("/runtime-sessions/resolve"):
+            key = request.url.params["client_session_id"]
+            created = key not in self.sessions
+            if created and request.url.params.get("create") != "true":
+                return httpx.Response(404, json={"detail": "Not Found"})
+            sid = self.sessions.setdefault(key, f"rs-{len(self.sessions) + 1}")
+            return httpx.Response(
+                200, json={"runtime_session_id": sid, "created": created}
+            )
         if path.endswith("/browser-steps"):
             accepted = duplicates = 0
             for step in json.loads(request.content)["steps"]:

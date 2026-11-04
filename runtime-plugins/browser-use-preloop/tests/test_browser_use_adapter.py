@@ -499,3 +499,178 @@ def test_history_gif_without_timing_is_plain(tmp_path: Any) -> None:
     path = tmp_path / "plain.gif"
     assert history_gif(steps, None, path) is None
     assert path.read_bytes().startswith(b"GIF")
+
+
+# --- Runtime session discovery without PRELOOP_RUNTIME_SESSION_ID (#1358) ---
+
+RESOLVED = "00000000-0000-4000-8000-0000000000bb"
+
+
+def _resolve_transport(calls: list, status: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if status != 200:
+            return httpx.Response(status, json={"detail": "nope"})
+        return httpx.Response(
+            200, json={"runtime_session_id": RESOLVED, "created": True}
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_from_env_resolves_session_from_client_session_key():
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    target = PreloopTarget.from_env(env, client=_resolve_transport(calls))
+    assert target is not None and target.runtime_session_id == RESOLVED
+    (request,) = calls
+    assert request.url.path == "/api/v1/runtime-sessions/resolve"
+    assert request.url.params["client_session_id"] == "run-42"
+    assert request.url.params["create"] == "true"
+    assert request.headers["Authorization"] == "Bearer agent-key"
+
+
+def test_explicit_runtime_session_id_keeps_priority():
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+        "PRELOOP_RUNTIME_SESSION_ID": "sess-1",
+    }
+    target = PreloopTarget.from_env(env, client=_resolve_transport(calls))
+    assert target is not None and target.runtime_session_id == "sess-1"
+    assert calls == []
+
+
+def test_resolve_failure_disables_reporting_without_raising(caplog):
+    calls: list = []
+    env = {
+        "PRELOOP_URL": "http://preloop.test",
+        "PRELOOP_API_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    with caplog.at_level(logging.WARNING, logger="preloop_browser_use"):
+        target = PreloopTarget.from_env(env, client=_resolve_transport(calls, 404))
+    assert target is None and len(calls) == 1
+    assert "resolve" in caplog.text
+
+
+def test_gateway_response_hook_captures_session_header():
+    from preloop_browser_use import RuntimeSessionCapture
+
+    capture = RuntimeSessionCapture()
+    capture(httpx.Response(200, headers={"X-Preloop-Runtime-Session-Id": RESOLVED}))
+    capture(httpx.Response(200))
+    assert capture.runtime_session_id == RESOLVED
+    target = capture.target("http://preloop.test", "agent-key")
+    assert target is not None and target.runtime_session_id == RESOLVED
+    assert RuntimeSessionCapture().target("http://preloop.test", "k") is None
+
+
+def test_resolve_timeout_is_short_by_default():
+    import inspect
+
+    from preloop_browser_use import resolve_runtime_session_id
+
+    default = inspect.signature(resolve_runtime_session_id).parameters["timeout"]
+    assert default.default <= 3.0
+
+
+@pytest.mark.parametrize(
+    "malformed_url", ["https://example.com:invalid-port", "https://exa\nmple.com"]
+)
+def test_invalid_resolve_url_disables_reporting(
+    malformed_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list = []
+    env = {
+        "PRELOOP_URL": malformed_url,
+        "PRELOOP_AGENT_KEY": "agent-key",
+        "PRELOOP_SESSION_ID": "run-42",
+    }
+    # Keep httpx's URL parsing intact: invalid URLs fail before transport.
+    with _resolve_transport(calls) as client:
+        target = PreloopTarget.from_env(env, client=client)
+    assert target is None
+    assert calls == []
+    assert "Preloop session resolve failed: InvalidURL" in caplog.text
+
+
+# --- #1568: name the host's desktop endpoint on the session ----------------
+
+
+def test_desktop_endpoint_comes_from_env_then_desktop_json(tmp_path):
+    from preloop_browser_use.client import local_desktop_endpoint_id
+
+    (tmp_path / ".preloop").mkdir()
+    state = tmp_path / ".preloop" / "desktop.json"
+    assert local_desktop_endpoint_id({}, home=tmp_path) is None
+    state.write_text('{"endpoint_id": "dep_file"}')
+    assert local_desktop_endpoint_id({}, home=tmp_path) == "dep_file"
+    env = {"PRELOOP_DESKTOP_ENDPOINT_ID": " dep_env "}
+    assert local_desktop_endpoint_id(env, home=tmp_path) == "dep_env"
+    state.write_text("not json")
+    assert local_desktop_endpoint_id({}, home=tmp_path) is None
+
+
+def test_reporter_links_the_session_to_the_desktop_once():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, json.loads(request.content)))
+        if request.method == "PUT":
+            return httpx.Response(200, json={"linked": True})
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"accepted": len(body["steps"])})
+
+    target = PreloopTarget(
+        "http://preloop.test", "agent-key", "sess-1", desktop_endpoint_id="dep_abc"
+    )
+    reporter = PreloopBrowserUseReporter(target, batch_size=5, client=_client(handler))
+    asyncio.run(reporter.run(FakeAgent(_history()["history"])))
+
+    puts = [c for c in calls if c[0] == "PUT"]
+    assert puts == [
+        (
+            "PUT",
+            "/api/v1/runtime-sessions/sess-1/desktop-endpoint",
+            {"desktop_endpoint_id": "dep_abc"},
+        )
+    ]
+    assert calls[0][0] == "PUT"
+    assert len([c for c in calls if c[0] == "POST"]) == 3
+
+
+def test_no_desktop_means_no_link_request_and_a_failed_link_is_harmless(caplog):
+    rec = Recorder()
+    reporter = PreloopBrowserUseReporter(TARGET, batch_size=5, client=_client(rec))
+    asyncio.run(reporter.run(FakeAgent(_history()["history"])))
+    assert len(rec.bodies) == 3  # steps only
+
+    def down(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT":
+            raise httpx.ConnectError("down")
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"accepted": len(body["steps"])})
+
+    target = PreloopTarget("http://preloop.test", "k", "sess-1", "dep_abc")
+    reporter = PreloopBrowserUseReporter(target, batch_size=5, client=_client(down))
+    with caplog.at_level(logging.WARNING, logger="preloop_browser_use"):
+        asyncio.run(reporter.run(FakeAgent(_history()["history"])))
+    assert sum(r.accepted for r in reporter.results) == 12
+    assert caplog.text.count("desktop") == 1
+
+
+def test_capture_target_carries_the_desktop_endpoint(monkeypatch):
+    from preloop_browser_use import RuntimeSessionCapture
+
+    monkeypatch.setenv("PRELOOP_DESKTOP_ENDPOINT_ID", "dep_capture")
+    capture = RuntimeSessionCapture()
+    capture(httpx.Response(200, headers={"X-Preloop-Runtime-Session-Id": RESOLVED}))
+    target = capture.target("http://preloop.test", "agent-key")
+    assert target.desktop_endpoint_id == "dep_capture"

@@ -200,6 +200,8 @@ class ApprovalRequest(Base):
     # evaluation (the request_approval builtin) and for rows created before
     # this column existed; surfaces omit the block rather than guess.
     # Shape is built by services/approval_rule_context.py.
+    # Internal workflows may append server-owned bindings (desktop_control,
+    # note_facts). These are stamped by the service, never from tool arguments.
     rule_context: Mapped[Optional[dict]] = mapped_column(
         JSONB,
         nullable=True,

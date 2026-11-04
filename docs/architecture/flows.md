@@ -441,3 +441,251 @@ items by harness call ID. Stream starts and their completed message count once;
 restoring an execution also restores recorded call IDs before replay. Tool
 arguments and results are excluded from these metric entries. Legacy text MCP
 markers remain supported for harnesses without structured output.
+
+## Employee event intake
+
+[Employee event intake](../guide/virtual-employees.md) authenticates provider events, verifies Flow/account/source scope, reserves the existing delivery-keyed execution before dispatch, and reuses Flow worker claims and recovery. Managed-agent control commands carry encrypted execution credentials; Codex/Nanobot tasks use independent bounded conversations and command-owned interruption.
+
+## Implementation feedback and forge state
+
+Implementation PRs can use [durable feedback subscriptions](../guide/flows/durable-implementation-feedback.md): PostgreSQL threads and inbox leases coordinate new execution turns, while native conversation artifacts remain isolated from workspace checkpoints. Repository events and bounded reconciliation advance CI/review gates without idle agent containers. Bitbucket review feedback requires a current changes-requested participant state and excludes automated summary comments; metadata updates skip successful reviews of the same pull request head. Feedback opt-in applies to future executions; a preview-and-adopt API binds one older publication explicitly. Live policy changes are checked again at atomic repair reservation. Missing native checkpoints fail closed unless the operator explicitly selected a source-only published-branch handoff. Unreadable repository requirements prevent readiness while fully verified feedback can still authorize bounded repairs.
+
+Forge reconciliation keeps one forge truth for pull request state. Feedback reads split merged from closed (`pr_merged`, `pr_closed`) on GitHub, GitLab and Bitbucket, and a throttled read waits out the provider's `Retry-After` instead of blocking. `services/pull_request_refresh.py` refreshes `IssueCostPullRequest.head_sha`, `state` and `merged_at` for open or not-yet-observed pull requests: at most 25 records and 25 API reads per one-minute tick, including fallback trackers and Bitbucket commit lookups, each open record re-armed after five minutes. Reads use `If-None-Match` when the forge supplies an ETag; Bitbucket Cloud PR reads explicitly fall back to plain GETs without a validator (see [forge reconciliation](../guide/forge-reconciliation.md)). A pull request webhook only marks its record due; a merge is never reverted by a later read. Webhook ingress claims each `X-GitHub-Delivery`, `X-Gitlab-Event-UUID` or Bitbucket `X-Request-UUID` in `forge_webhook_delivery` before queueing, answers a redelivery as a duplicate, and releases the claim when publication is not acknowledged. An unpublished claim can be taken over after two minutes; publication and release match the claim timestamp so a late holder cannot mutate its replacement. Copilot records follow the same bounded refresh and ingress dedupe paths.
+
+## Delivery reports
+
+Delivery Report console reads go through account-scoped CRUD. Attention includes
+only pending or unconfirmed proposals, with a fingerprint that changes when the
+pending decisions change. Execution detail projects forge state from
+`IssueCostPullRequest` and the newest assessment at its current head SHA.
+Project reruns use the existing manual flow trigger, narrow the report policy's
+scope for that execution, and recheck the policy before running. They preserve
+the account's assessment budgets and tracker-write rules.
+
+The account report policy shows recipient roles only when the Enterprise plugin
+advertises `delivery_report_recipients`. Its roster, role overrides, sponsoring
+lead and per-person opt-outs use the plugin recipient API and policy permissions,
+independently of budget editing. Budget saves retain the current recipient
+settings; each person retains the shared self-subscription control.
+
+## Restricted CI and read-only review publication
+
+[Restricted CI administration](../guide/flows/restricted-ci.md) is an OSS human-only API, Lit console and CLI over core CRUD. It separates immutable principal/resource ownership from rotating credential lifetime, gates issuance on complete backend contracts, and offers safe expiry/revocation recovery. The OSS owner authority can be narrowed or delegated by EE through current account-local permission hooks; a fresh scalar CRUD permission read avoids cached role authority. No human role can widen the machine's explicit route ceiling. Console secrets are ephemeral and CLI secrets go to exclusive private files. The disposable release gate validates real-resource admission/ownership and callback controls; the generic operator workflow verifies persisted exact-head correlation and a separate publication receipt.
+
+Restricted GitHub App review flows can opt into `publication_mode: read_only`. The principal snapshots that capability; startup reauthorizes ownership and mints only an exact-repository `contents:read` lease. No normal tracker token reaches the clone, no MCP or general REST authority reaches the model, and completion cannot select a writer or publication path. Local result persistence and owned signed callbacks remain available; the separate publisher holds write authority. The executor is either hosted Codex on the server pool or a Codex `host_exec_profile` on a named private runner pool: the lease travels only in the transient delivered checkout plan, the runner clones with host git config and credential helpers disabled, verifies the admitted SHA, revokes the lease before starting `codex exec --sandbox read-only`, and returns a receipt the control plane requires for success; the control plane revokes delivered leases again at completion. Legacy and isolated publication retain their existing contracts.
+
+## Isolated publication
+
+[Isolated publication](../guide/flows/automated-issue-implementation.md#isolated-publication-rollout-and-repair) verifies immutable bundles in fresh credential-free runtimes before acquiring a write lease. Controller-owned evidence reuse binds the execution, bundle, base, profile, pinned image and runtime; sandbox-written evidence cannot populate it. Failed durable repairs retain their latest workspace and native session while recovering only the prior published branch binding from authenticated thread ancestry.
+
+## Harness context and output settings
+
+Agent harnesses receive supported [context and output settings](../guide/model-context-limits.md)
+from model-row parameters and the vendored catalog. Hosted Codex adds a
+version-pinned local catalog for unknown custom models, preserving its generic
+instructions and labeling an unknown context as a CLI fallback. The model
+gateway controls Codex's upstream output allowance when enabled; direct provider
+runs retain provider defaults. Native Codex profiles stay intact. No provider capacity is inferred from an unknown model name.
+
+## Subscription models in flow routing
+
+Flow routing admission rejects agent-bound subscription models for ordinary
+ephemeral execution credentials before creating executions, unless the
+subscription's owner opted in ("Use from my flows",
+`ai_model.owner_flow_use_user_id`) and also owns the flow
+(`flow.created_by_user_id`). The gateway applies the same rule to the
+execution's runtime credential (`services/subscription_flow_use.py`) without
+touching agent bindings; refreshes stay serialized on the credential row, so
+the onboarded agent and hosted runs share one token lineage. Matrix admission
+validates all cells before writing the batch. Authoritative orchestrator startup
+rechecks legacy queued rows before runtime launch and records incompatible
+subscription selections as terminal `model_config` failures. Persistent agents, private host
+profiles and persistent employee identities keep their existing admission
+and gateway ownership checks. See [model routing](../guide/flows/model-routing.md#subscription-credentials-and-execution-identity).
+
+## Execution environments and hosted publication
+
+Execution environment profiles and hosted checkpoint recovery are documented in
+[Environments and recovery](../guide/flows/environments-and-recovery.md).
+What enforces browser network access for a flow agent is
+[Browser access](../guide/flows/browser-access.md).
+Workspace checkpoint capture streams individual files and enforces its
+compressed size cap during packing. Dependency directories and caches are
+excluded; oversized captures leave the last complete checkpoint available.
+Hosted legacy GitHub App publication refreshes repository-scoped credentials on
+the controller immediately before push or PR creation. A signed runner capability
+binds the execution, account, tracker and startup repository; issuance requires an
+active execution. App signing keys remain on the controller. The runtime replaces
+stale git credentials and uses the fresh token for PR REST calls as well.
+The sandboxed-browser allowlist sidecar lives in
+[`environments/egress-proxy`](https://github.com/preloop/preloop/blob/main/environments/egress-proxy/README.md).
+Hosted Codex defaults to the digest-pinned universal image
+(`ghcr.io/preloop/preloop-codex-universal`), which includes the distro Perl
+toolchain. Private runners can still build
+[`environments/perl`](https://github.com/preloop/preloop/blob/main/environments/perl/README.md) and select it with
+`agent_config.image`. Native host profiles use no image. Hosted Codex uses the
+Responses API; chat-only custom models must enable `meta_data.gateway.enabled`
+to use the gateway translation. Flow saves reject incompatible bindings with
+remediation, and legacy incompatible runs fail with `model_config` before launch.
+Direct providers explicitly configured for Responses remain supported.
+Codex uses JSON events: only the last assistant message in a completed turn
+can provide a plaintext completion marker. Prompt echoes, tool output and
+diagnostics stay escaped in the log. The completion grace timeout captures
+artifacts and stops the runtime before reporting terminal success.
+
+## Release backport
+
+A flow with an enabled `git_clone_config.backport` block runs in a
+control-plane mode: the orchestrator cherry-picks the merge commit onto each
+target branch in a scratch repository and opens one pull request per target,
+with no agent container. See
+[Release backport](../guide/flows/release-backport.md).
+
+## Flow delegation and execution trees
+
+A flow execution can start another flow of the same account as a child of
+itself through the default-off `run_flow` tool, gated by both the flow's
+`allowed_mcp_tools` and its `callable_flows` allowlist. `FlowExecution` carries
+`parent_execution_id`, `root_execution_id` and `delegation_depth`, so a subtree
+is one query and rows that predate the columns read back as roots.
+`GET /api/v1/flows/executions/{id}/tree` returns an execution, its descendants
+and a rollup in the same shape the batch listing uses. `run_flow(wait=true)`
+waits in process briefly and then parks the parent on `WAITING_FOR_CHILDREN`,
+releasing the container, the runner and the runtime token exactly as a park on
+a human decision does; the parent resumes as a new execution that natively
+continues the same agent session. Depth, fan-out and subtree cost are bounded
+by `FLOW_DELEGATION_MAX_DEPTH`, `FLOW_DELEGATION_MAX_CHILDREN` and
+`FLOW_DELEGATION_MAX_TREE_USD`. See
+[Flow delegation](../guide/flows/flow-delegation.md).
+
+## Agent launch payload (custom images and runners)
+
+Linux caps one `execve` string (a single argv element or a single
+`NAME=value` environment entry) at `MAX_ARG_STRLEN`, 131072 bytes. The
+control plane therefore does not put an unbounded prompt or Kubernetes
+inner script in one string.
+
+The rendered prompt travels as `PRELOOP_AGENT_PROMPT_0..N` (plus
+`PRELOOP_AGENT_PROMPT_CHUNKS` and `PRELOOP_AGENT_PROMPT_BYTES`), is
+reassembled into `/tmp/preloop/prompt.txt`, and is advertised as
+`AGENT_PROMPT_FILE`. `AGENT_PROMPT` is set only when the prompt is 64 KiB
+or less. The Kubernetes inner script uses the same pattern:
+`PRELOOP_INNER_SCRIPT_0..N` into `/tmp/preloop/agent-script.sh`, with a
+legacy whole-value `PRELOOP_INNER_SCRIPT` still honoured so old and new
+images interoperate.
+
+Custom images and private runners should read `AGENT_PROMPT_FILE` (or
+reassemble the chunks) and must not require `AGENT_PROMPT` for large
+prompts. The full contract is in
+[Agent launch payload (container environment)](#agent-launch-payload-container-environment).
+Private Docker launch shape is in the
+[runner image contract](../guide/runners/quickstart-linux.md#what-the-runner-executes).
+
+## Issue lifecycle controller
+
+`services/issue_lifecycle.py` coordinates structured readiness, one authorized
+implementation pickup, and independent merge/deployment acceptance audits.
+`IssueLifecycle` records live scope revisions, immutable merge references,
+execution bindings, evidence and follow-up identities through the CRUD layer.
+Transaction locks serialize each tenant/issue; provider markers recover external
+writes after local rollback. The trigger service prepares lifecycle executions
+before ordinary dispatch, and the orchestrator consumes durable structured output
+at completion. The GitHub adapter revalidates closing-commit/merged-PR authority;
+manual completion alone does not start an audit. Readiness consumes approved
+execution-environment capabilities rather than implementing test setup. See
+[Issue readiness and completion audits](../guide/flows/issue-lifecycle.md) for
+policy, API and recovery configuration.
+
+`services/issue_triage_controller.py` reuses this ledger for durable issue-revision
+claims across manual and automatic triage. Dedicated advisory-lock connections
+serialize local applies while provider-write intents commit durably. Execution
+credentials bind managed writes to their issue/revision; successful bounded
+assessment packets retain input/output revision and policy/context identity.
+Readiness consumes only applicable server-loaded packets as evidence, preserving
+its separate implementation authorization. Provider writes remain optimistic;
+local serialization cannot make external APIs support compare-and-swap. See
+[Issue triage](../guide/flows/issue-triage.md) for recovery and tool boundaries.
+
+## Security maintenance controller
+
+`services/security_maintenance.py` coordinates opt-in supported-release
+inventory, one work item per product/release/advisory/component, and
+fail-closed completion. Inventory is API-configured. Implementation uses the
+existing flow dispatcher and isolated publication receipts (`head_sha`).
+After approval, a rebuilt SBOM must be submitted for the published commit;
+recheck does not reuse the original inventory. Removal is derived from
+identities in those submitted bytes, not from model inventory omission.
+Initial baseline acceptance requires the controller envelope `release_id` and
+the digest of the supplied SBOM. Tests and baselines require
+controller-owned verification and the contracts CRA validator; caller-supplied
+evidence ids and agent `finding_absent` fields do not grant. Platform
+`ApprovalRequest` rows carry human decisions. Dispatch claims expire so a
+crash between claim and enqueue cannot strand a still-`PENDING` execution.
+Audit/recheck completion observes frozen Git bundles from evidence when the
+flow names repository URLs and the pin is an exact git SHA; `HEAD.txt` is
+not checkout proof.
+See [Supported-release vulnerability maintenance](../guide/flows/security-maintenance.md).
+
+Session search writes one `session_search_document` chunk per source row
+(gateway interaction, transcript, tool call, operator note, summary). Keyword
+indexing is gated by `SESSION_SEARCH_INDEX_ENABLED`. Optional vectors are a
+separate per-account opt-in (`session_embedding_setting`, `summaries_only` by
+default so an opt-in embeds the session's title and summary chunk unless the
+account asks for `full`) plus the
+deployment kill switch `SESSION_EMBEDDING_ENABLED`; a bounded worker posts
+batches to an OpenAI-compatible endpoint or a local model, caps spend, and
+records purpose-tagged usage. The shared API key is allow-listed.
+`POST /api/v1/runtime-sessions/search` reads it in `keyword`, `semantic` or
+`hybrid` mode, fusing the two candidate lists by rank; a half that cannot run
+is reported in a degraded block with keyword results, never as an error.
+`GET /api/v1/runtime-sessions/{id}/similar` reads the same vectors with no
+query at all: a session is compared by a stride sample of its own chunks, in
+its own model's space, and spends nothing.
+See [Similar sessions](similar-sessions.md).
+A question worth repeating can be saved under a name in `session_saved_search`
+and re-run from `/runtime-sessions/search/saved`; a saved search stores the
+question and never the answer, is private until its author shares it with the
+account, and a run says which of its filters no longer resolve.
+Personal saved-search writes use `view_runtime_sessions`; creating or changing
+a search to account visibility also requires `share_session_searches`.
+Optimization submissions require `run_session_optimizations`, while replay
+requires `edit_ai_models`. The sharing and analysis permissions are granted to
+owner, admin, editor and executor by the system-role initializer and an Alembic
+data migration for existing databases.
+The same ranked search is reachable as the built-in `search_sessions` tool
+(default off, own-sessions scope unless an operator grants `account`) and from
+`preloop sessions search`. Every content search writes one audit row through
+the ordinary audit path, with the mode, the filters, the result count and a
+stable hash of the query; the query text itself is stored only when the account
+opts in.
+Operator knobs: [Session search](../operations/session-search.md) (coverage,
+the history backfill, who may search) and
+[Session embedding](../operations/session-embedding.md) (the vector worker).
+Saved searches: [Saved session searches](../guide/session-saved-searches.md).
+Search auditing: [Auditing session content search](../guide/session-search-audit.md).
+The agent-facing tool: [search_sessions](../guide/agent-session-search.md).
+
+Audit collection also offers a durable delivery path behind the default-off
+`PRELOOP_AUDIT_OUTBOX_ENABLED` flag. Committed sanitized intents are relayed into
+audit rows transactionally; failed deliveries back off and park after a finite
+retry budget. Approval transitions, policy evaluation, MCP activity outcomes and
+model-content policy hits enqueue in their owning database transactions, bypassing
+bounded audit admission. Async callers await only local database work; the relay
+owns its sessions on a separate thread. Due lag, failed attempts and parked rows
+have opt-in Helm alert rules; drop alerts remain for best-effort callers. Local operators can preview and replay a bounded failed batch for
+one account with `python -m preloop.services.audit.replay`. See
+[Audit outbox operations](../operations/audit-outbox.md) for activation,
+admission limits, metrics and recovery.
+
+## Pi and DeepSeek Harness adapters
+
+The `pi` and `deepseek` kinds share `ExtensionHarnessAgent` for hosted and private
+Docker launches. `runtime-plugins/harness-preloop` supplies Pi extensions and
+DeepSeek Cordis plugins for MCP, fail-closed native approvals, lifecycle ingest,
+and authenticated active-session control. CLI enrollment owns a separate
+`preloop.json`, preserving native configuration, and registers only its own
+loader or marked patch nodes. DeepSeek's released headless startup is replaced
+with a stdin provider to keep prompts outside argv. Execution-scoped credentials
+can request native approvals only for their own active flow session. See the
+[adapter guide](https://github.com/preloop/preloop/blob/main/runtime-plugins/harness-preloop/README.md) for version pins,
+capability limits, and publication order.

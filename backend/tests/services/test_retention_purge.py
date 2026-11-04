@@ -19,6 +19,7 @@ from preloop.services.legal_hold import place_hold
 from preloop.services.retention_policy import (
     CLASS_AUDIT,
     CLASS_RUNTIME_SESSIONS,
+    HIGH_VOLUME_SWEEPS,
     RECORD_CLASSES,
 )
 
@@ -536,7 +537,9 @@ def test_every_purgeable_class_carries_a_hold_predicate():
         model = purge._CLASS_MODELS[record_class]
         rendered = [
             str(item).lower()
-            for item in purge.class_filters(cutoff=cutoff, record_class=record_class)
+            for item in purge.class_filters(
+                cutoff=cutoff, record_class=record_class, account_id=uuid.uuid4()
+            )
         ]
         if record_class in purge.HOLD_EXEMPT_CLASSES:
             assert not hasattr(model, "legal_hold")
@@ -564,7 +567,7 @@ def test_every_purgeable_class_carries_a_hold_predicate():
 def test_legacy_evidence_drop_routes_through_the_hold_helper():
     """The FlowExecution UPDATE must unpack the helper, not repeat the flag."""
     source = inspect.getsource(purge._drop_legacy_evidence_columns)
-    assert "_hold_filters_for_model(FlowExecution)" in source
+    assert "_hold_filters_for_model(models.FlowExecution)" in source
     assert "legal_hold.is_(False)" not in source
 
 
@@ -585,7 +588,9 @@ def test_hold_filters_always_returns_a_list_of_clauses():
 
 def test_a_class_purged_without_a_hold_check_has_to_say_why():
     """An exemption is a written decision, not a forgotten predicate."""
-    assert set(purge.HOLD_EXEMPT_CLASSES) <= set(RECORD_CLASSES)
+    assert set(purge.HOLD_EXEMPT_CLASSES) <= set(RECORD_CLASSES) | set(
+        HIGH_VOLUME_SWEEPS
+    )
     for record_class, reason in purge.HOLD_EXEMPT_CLASSES.items():
         assert len(reason.strip()) >= 20
         assert not hasattr(purge._CLASS_MODELS[record_class], "legal_hold")

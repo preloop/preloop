@@ -183,6 +183,7 @@ tracked as follow-up work.
 | `provider_billing_snapshot.cache_creation_tokens` | Not a secret: count, type or timestamp | `20260712_add_provider_billing` |
 | `provider_billing_snapshot.output_tokens` | Not a secret: count, type or timestamp | `20260712_add_provider_billing` |
 | `provider_billing_snapshot.dedup_key` | Not a secret: identifier, dedupe or lookup key | `20260712_add_provider_billing` |
+| `rate_limit_bucket.key` | Not a secret: rule name plus a SHA-256 of the limited identity (client address, account id) | `20261127_rate_limit_bucket` |
 | `readiness_job.lease_token` | Not a secret: lease ownership marker | `20261010_ticket_readiness` |
 | `record_signature.signing_key_id` | Not a secret: identifier, dedupe or lookup key | `20260910_audit_chain_signing` |
 | `registration_token.token` | **Plaintext, deferred**: one-time registration token looked up by equality; needs a lookup hash | `20251116_add_registration_token_table` |

@@ -67,6 +67,11 @@ export interface DesktopView {
   closed_at: string | null;
   closed_reason: string | null;
   control_expires_at: string | null;
+  /**
+   * Set while another admin has to approve a control request (#1567). Older
+   * servers omit it; null once the request is settled.
+   */
+  control_request?: { approval_id: string; state: 'pending' } | null;
 }
 
 /** A REST error from the desktop routes, carrying the contract's code. */
@@ -206,6 +211,11 @@ export async function endDesktopView(viewId: string): Promise<void> {
   if (!response.ok && response.status !== 404) throw await errorFrom(response);
 }
 
+/**
+ * Asks for control. A single-admin account self-confirms (200, `mode` is
+ * `control`); otherwise the server answers 202 with `control_request` set
+ * and the view stays view only until another admin approves.
+ */
 export async function requestDesktopControl(
   viewId: string,
   reason: string
@@ -256,4 +266,47 @@ export function desktopViewerSocketUrl(
   }
   url.searchParams.set('token', token);
   return url.toString();
+}
+
+/** State of one console "Enable desktop" request (#1566). */
+export type DesktopInstallState = 'pending' | 'done' | 'failed' | 'unsupported';
+
+export interface DesktopInstallStatus {
+  request_id: string;
+  state: DesktopInstallState;
+  error: string | null;
+  command: string;
+}
+
+/** The one-line command that enables a desktop on the agent's host. */
+export function desktopEnableCommand(agentId: string): string {
+  return `preloop desktop enable --agent ${agentId}`;
+}
+
+/**
+ * Asks the agent's runtime plugin to enable a desktop over Agent Control.
+ * A 409 `desktop_install_unavailable` means there is no control channel and
+ * nothing was sent; the caller shows the one-line command instead.
+ */
+export async function requestDesktopInstall(
+  agentId: string
+): Promise<{ request_id: string; state: DesktopInstallState }> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/desktop/install`,
+    { method: 'POST' }
+  );
+  if (!response.ok) throw await errorFrom(response);
+  return await response.json();
+}
+
+export async function getDesktopInstall(
+  agentId: string,
+  requestId: string
+): Promise<DesktopInstallStatus> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/desktop/install/${encodeURIComponent(requestId)}`,
+    { cache: 'no-store' }
+  );
+  if (!response.ok) throw await errorFrom(response);
+  return (await response.json()) as DesktopInstallStatus;
 }

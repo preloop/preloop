@@ -21,7 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now lists the audit hash chain, retention, legal holds and signed exports
   as open source, and `SECURITY.md` names the latest release line instead of
   a fixed minor. Refs #1486.
+- Taking control of a desktop view requires another admin's approval when
+  another active member can decide approvals. Single-admin accounts still
+  self-confirm with a reason (#1567).
 
+- `preloop agents discover` and `preloop agents status` print an
+  `Operator notes:` line for Cursor: headless `--print` runs of Cursor CLI
+  `2026.10.01-e373342` fire no `stop` hook, so a session note queued after the
+  last tool call is marked undeliverable at session end instead of being
+  rescued. The operator-note guide and verification guide record the evidence
+  (#1684).
+- `ARCHITECTURE.md` is a short map again. Subsystem notes that had grown
+  in it moved, unchanged, into chapters under `docs/architecture/`, with six
+  new chapters (runners, identity, chat, discovery, telemetry, operations).
+  Every chapter is in the docs.preloop.ai navigation, and a test keeps the
+  map short and every chapter linked from it and the navigation (EE #83).
 - The Overview Usage box no longer shows the paragraph on how budget usage
   is counted. A small info icon next to the first budget number shows it in
   a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere
@@ -29,6 +43,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The retention purge can also sweep the two high-volume tables it did not
+  cover: flow execution log lines (following the account's evidence
+  retention, keeping the execution summary row and every line of a held
+  execution) and account events (following usage retention and the plan's
+  storage promise). Off by default behind its own switch,
+  `RETENTION_PURGE_HIGH_VOLUME_ENABLED`, on top of `RETENTION_PURGE_ENABLED`;
+  `RETENTION_PURGE_DRY_RUN` previews it. Refs preloop-ee#46.
+
+- Shared request rate limiting for password login, token refresh, password
+  reset, registration, the OAuth token, register and authorize endpoints and
+  public approval links. Counters live in the new `rate_limit_bucket` table
+  so every API replica shares one budget; refusals are 429 with
+  `Retry-After` and code `rate_limited`. Configure with `RATE_LIMIT_*`
+  variables, see docs/operations/rate-limiting.md.
+- Personal runners report sleep and wake. On Linux with systemd-logind the
+  runner sends `going_to_sleep` before suspend under a short sleep delay and
+  stops heartbeating, so the console shows `asleep` and routing skips it. On
+  every host the runner detects wake from a wall-clock gap between samples
+  (at least 25 seconds between checks scheduled every 5 seconds) and
+  reconnects at once with the backoff reset. Sleep notifications expire when
+  their sleep delay is released, so a short suspend cannot replay them on
+  the new connection. Heartbeats carry `os_idle_seconds` on macOS and
+  Windows, which drives the `idle` state. macOS and Windows have no
+  pre-sleep signal in this build and fall back to `offline`. Refs #1487, #1507.
+- Browser adapters find their runtime session without
+  `PRELOOP_RUNTIME_SESSION_ID`. Gateway model responses (OpenAI, Anthropic,
+  Gemini; streaming too) carry `X-Preloop-Runtime-Session-Id` when the request
+  was attributed to a session, and the new
+  `GET /api/v1/runtime-sessions/resolve?client_session_id=<key>` maps the
+  `X-Preloop-Session-Id` key to the session with the gateway's keying, scoped
+  to the caller's account; `create=true` creates it as the gateway would. The
+  Browser Use reporter resolves `PRELOOP_SESSION_ID` and offers an `httpx`
+  hook for the header; the Skyvern importer takes `--client-session-id`.
+  The old variable keeps priority. Refs #1358.
 - Extension points for runner sharing. The runner session API passes the
   requested harness, workspace and operation to the account authorizer; a
   caller admitted through a grant sees only the harnesses and directories

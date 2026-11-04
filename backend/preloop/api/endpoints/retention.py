@@ -249,7 +249,14 @@ def preview_retention_purge(
     total = 0
     from preloop.services.retention_purge import purge_class
 
-    for record_class in retention_policy.RECORD_CLASSES:
+    record_classes = retention_policy.RECORD_CLASSES
+    if settings.retention_purge_high_volume_enabled:
+        record_classes = (*retention_policy.HIGH_VOLUME_SWEEPS, *record_classes)
+    labels = {
+        **retention_policy.RECORD_CLASS_LABELS,
+        **retention_policy.SWEEP_LABELS,
+    }
+    for record_class in record_classes:
         result = purge_class(
             db,
             account=account,
@@ -263,7 +270,7 @@ def preview_retention_purge(
         rows.append(
             {
                 "record_class": record_class,
-                "label": retention_policy.RECORD_CLASS_LABELS[record_class],
+                "label": labels[record_class],
                 "retention_days": result.retention_days,
                 "unlimited": result.retention_days == -1,
                 "cutoff": result.cutoff.isoformat()

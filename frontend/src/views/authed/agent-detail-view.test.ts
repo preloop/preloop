@@ -541,6 +541,140 @@ describe('AgentDetailView', () => {
     const desktopTab = (el: AgentDetailView) =>
       el.shadowRoot!.querySelector('sl-tab[panel="desktop"]');
 
+    describe('Enable desktop (#1566)', () => {
+      const disclosure = (el: AgentDetailView) =>
+        el.shadowRoot!.querySelector('[data-testid="desktop-enable"]');
+
+      function withDesktopEnable({
+        shared = false,
+        lifecycle = 'active',
+        enabled = true,
+        permissions = ['manage_agents'],
+        endpoints = () => [] as (typeof endpoint)[],
+      } = {}) {
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        fetchStub.callsFake(
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = input.toString();
+            if (url === '/api/v1/features') {
+              return json({ features: { desktop_views: enabled } });
+            }
+            if (url === '/api/v1/auth/users/me') {
+              return json({ id: 'user-1', permissions });
+            }
+            if (url.startsWith('/api/v1/desktop/endpoints?')) {
+              return json({ endpoints: endpoints() });
+            }
+            const response = await defaultFetch(input, init);
+            if (
+              url.startsWith('/api/v1/agents/agent-1') &&
+              !url.includes('/governance')
+            ) {
+              const body = await response.json();
+              body.agent.is_shared = shared;
+              body.agent.lifecycle_state = lifecycle;
+              return json(body);
+            }
+            return response;
+          }
+        );
+      }
+
+      async function loadedView(): Promise<AgentDetailView> {
+        const el = await fixture<AgentDetailView>(
+          html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+        );
+        await waitUntil(
+          () => !(el as any).loading && (el as any).currentUserId === 'user-1',
+          'agent, feature flags and desktop permissions loaded'
+        );
+        await el.updateComplete;
+        return el;
+      }
+
+      for (const { name, config, visible } of [
+        {
+          name: 'active non-shared agent with permission and no endpoint',
+          config: {},
+          visible: true,
+        },
+        { name: 'shared agent', config: { shared: true }, visible: false },
+        {
+          name: 'inactive agent',
+          config: { lifecycle: 'inactive' },
+          visible: false,
+        },
+        {
+          name: 'desktop feature disabled',
+          config: { enabled: false },
+          visible: false,
+        },
+        {
+          name: 'manage_agents permission missing',
+          config: { permissions: [] },
+          visible: false,
+        },
+        {
+          name: 'online endpoint already registered',
+          config: { endpoints: () => [endpoint] },
+          visible: false,
+        },
+      ]) {
+        it(`${visible ? 'shows' : 'hides'} the disclosure for an ${name}`, async () => {
+          withDesktopEnable(config);
+          const el = await loadedView();
+          expect(disclosure(el) !== null).to.equal(visible);
+          if (visible) {
+            const installer = disclosure(el)!.querySelector(
+              'desktop-enable'
+            ) as any;
+            expect(installer).to.exist;
+            expect(installer.agentId).to.equal('agent-1');
+          }
+        });
+      }
+
+      it('retries endpoint discovery after desktop-installed until the Desktop tab appears', async () => {
+        let online = false;
+        const endpoints = sinon.spy(() => (online ? [endpoint] : []));
+        withDesktopEnable({ endpoints });
+        const el = await loadedView();
+        expect(endpoints.callCount).to.equal(1);
+        expect(desktopTab(el)).to.be.null;
+        const clock = sinon.useFakeTimers({
+          toFake: ['setTimeout', 'clearTimeout'],
+        });
+        try {
+          disclosure(el)!
+            .querySelector('desktop-enable')!
+            .dispatchEvent(
+              new CustomEvent('desktop-installed', {
+                bubbles: true,
+                composed: true,
+              })
+            );
+          await clock.tickAsync(0);
+          expect(endpoints.callCount).to.equal(2);
+          expect(disclosure(el)).to.exist;
+          online = true;
+          await clock.tickAsync(3000);
+          await el.updateComplete;
+          expect(endpoints.callCount).to.equal(3);
+          expect(desktopTab(el)).to.exist;
+          expect(disclosure(el)).to.be.null;
+          await clock.tickAsync(10000);
+          expect(endpoints.callCount).to.equal(3);
+        } finally {
+          el.remove();
+          clock.restore();
+        }
+      });
+    });
+
     it('shows a Desktop tab with the viewer when an online endpoint is linked', async () => {
       withEndpoints(
         () =>

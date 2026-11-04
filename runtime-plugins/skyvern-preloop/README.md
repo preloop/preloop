@@ -21,12 +21,15 @@ pip install ./runtime-plugins/skyvern-preloop
 export SKYVERN_API_KEY=...            # Skyvern key
 export SKYVERN_BASE_URL=https://api.skyvern.com   # or your self-hosted URL
 export PRELOOP_URL=https://preloop.example.com
-export PRELOOP_AGENT_KEY=...          # session-bound agent key
-preloop-skyvern-import --task tsk_123 --session <runtime_session_id>
+export PRELOOP_AGENT_KEY=...          # the key the agent uses on the gateway
+preloop-skyvern-import --task tsk_123 --client-session-id <X-Preloop-Session-Id value>
 ```
 
-Mint `PRELOOP_AGENT_KEY` and the session id with
-`POST /api/v1/auth/runtime-sessions/token` (see the
+`--client-session-id` takes the key the agent sends the model gateway as
+`X-Preloop-Session-Id` and resolves it to the runtime session (created if
+needed), so the import lands next to the agent's model turns. Pass
+`--session <runtime_session_id>` instead when you already have the id, for
+example from `POST /api/v1/auth/runtime-sessions/token` (see the
 [artifacts guide](../../docs/guide/artifacts.md#get-a-session-bound-key)).
 The command prints a JSON summary and exits 1 if any step was refused.
 `--no-files` imports steps and screenshots only.

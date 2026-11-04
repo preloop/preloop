@@ -153,6 +153,8 @@ class FlowExecution(Base):
     __table_args__ = (
         # Backward scans satisfy default start_time DESC, id DESC pagination.
         Index("ix_flow_execution_start_time_id", "start_time", "id"),
+        # Account-scoped retention looks up old executions through their flows.
+        Index("ix_flow_execution_flow_created", "flow_id", "created_at"),
         # Failure monitoring orders by completion and counts recent endings.
         # PostgreSQL needs the explicit NULLS LAST order to avoid a sort.
         Index(

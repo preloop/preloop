@@ -1097,6 +1097,18 @@ class Settings(BaseSettings):
             "'retention_purge_preview' (RETENTION_PURGE_DRY_RUN)."
         ),
     )
+    retention_purge_high_volume_enabled: bool = Field(
+        False,
+        description=(
+            "Also purge the high-volume operational tables that are not a "
+            "record class of their own: flow execution log lines (governed by "
+            "the account's evidence retention; the execution summary row is "
+            "kept) and account events (governed by usage retention). Needs "
+            "RETENTION_PURGE_ENABLED as well. A separate switch so a "
+            "deployment that already runs the purge does not start deleting "
+            "these on upgrade (RETENTION_PURGE_HIGH_VOLUME_ENABLED)."
+        ),
+    )
     retention_purge_interval_seconds: int = Field(
         3600,
         ge=60,

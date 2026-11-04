@@ -37,9 +37,12 @@ PASSWORD = "query-budget-pass-1"
 #: account, gates the identity, writes last_login, audits the login, then
 #: the landing row selects and gates the membership again. Authentication
 #: outcomes add one final audit INSERT and one membership reload after commit.
-#: The audit row is not re-read: no caller needs it. Measured at 15 for one
-#: active membership; the two audit INSERTs and zero loop SQL are asserted below.
-LOGIN_STATEMENTS = 15
+#: The audit row is not re-read: no caller needs it. The failed-login rate
+#: limit (EE #66) adds one person lookup before the password check, so a
+#: username and an email of one person share one failure budget. Measured at
+#: 16 for one active membership; the two audit INSERTs and zero loop SQL are
+#: asserted below.
+LOGIN_STATEMENTS = 16
 #: Statements issued by one warm, priced chat completion without policies.
 #: 24 on the base without the hooks (main at 179298d7): the three price
 #: override lookups each start with a ``has_table`` check.

@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -113,7 +114,10 @@ type OperatorCommand = {
   message_id?: string;
   type?: string;
   name?: string;
+  managed_agent_id?: string;
   payload?: {
+    request_id?: string;
+    managed_agent_id?: string;
     text?: string;
     message?: string;
     input_mode?: string;
@@ -355,6 +359,10 @@ export class PreloopOpenClawPlugin {
             },
           }),
         );
+        return;
+      }
+      if (command.type === "command" && command.name === DESKTOP_INSTALL_COMMAND) {
+        socket.send(JSON.stringify(await this.desktopInstallEnvelope(command)));
         return;
       }
       try {
@@ -717,6 +725,37 @@ export class PreloopOpenClawPlugin {
     }
   }
 
+  /**
+   * Answers `desktop.install` (#1566): runs `preloop desktop enable --agent
+   * <id>` on this host with the CLI login it already has and reports
+   * `desktop_install: {ok, error?}` on a `command_result`.
+   */
+  async desktopInstallEnvelope(
+    command: OperatorCommand,
+    run: CommandRunner = runCommand,
+  ): Promise<Record<string, unknown>> {
+    const messageId = command.message_id ?? randomUUID();
+    const agentId =
+      command.payload?.managed_agent_id ?? command.managed_agent_id ?? "";
+    const result = agentId
+      ? await runDesktopEnable(agentId, run)
+      : { ok: false, error: "desktop_failed" };
+    if (!result.ok) {
+      this.log(`Agent Control: desktop.install failed (${result.error})`);
+    }
+    return {
+      type: "status",
+      name: "command_result",
+      message_id: messageId,
+      payload: {
+        command_id: messageId,
+        status: "completed",
+        command: DESKTOP_INSTALL_COMMAND,
+        desktop_install: result,
+      },
+    };
+  }
+
   async dispatch(
     openclawRuntime: OpenClawRuntime | undefined,
     command: OperatorCommand,
@@ -809,6 +848,57 @@ export {
   fetchGatewayModels,
   type GatewayModel,
 } from "./models.js";
+
+const DESKTOP_INSTALL_COMMAND = "desktop.install";
+const DESKTOP_INSTALL_ERRORS = [
+  "desktop_unsupported_os",
+  "desktop_unsupported_distro",
+  "desktop_privilege_required",
+];
+
+/** `(argv) -> {code, output}`; tests inject a fake. */
+export type CommandRunner = (
+  argv: string[],
+) => Promise<{ code: number; output: string }>;
+
+const runCommand: CommandRunner = (argv) =>
+  new Promise((resolve) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      { timeout: 900_000, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const output = `${stdout ?? ""}${stderr ?? ""}`;
+        if (!error) {
+          resolve({ code: 0, output });
+          return;
+        }
+        const code = typeof error.code === "number" ? error.code : 1;
+        resolve({ code, output: output || error.message });
+      },
+    );
+  });
+
+/**
+ * Runs `preloop desktop enable --agent <id>` and maps the outcome to
+ * `{ok: true}` or `{ok: false, error}` with a code from the contract.
+ */
+export async function runDesktopEnable(
+  agentId: string,
+  run: CommandRunner = runCommand,
+): Promise<{ ok: boolean; error?: string }> {
+  let outcome: { code: number; output: string };
+  try {
+    outcome = await run(["preloop", "desktop", "enable", "--agent", agentId]);
+  } catch {
+    return { ok: false, error: "desktop_failed" };
+  }
+  if (outcome.code === 0) return { ok: true };
+  const error = DESKTOP_INSTALL_ERRORS.find((code) =>
+    outcome.output.includes(code),
+  );
+  return { ok: false, error: error ?? "desktop_failed" };
+}
 
 export const plugin = new PreloopOpenClawPlugin();
 

@@ -245,3 +245,23 @@ def test_custom_openapi_schema(client):
     assert "bearerAuth" in schema["components"]["securitySchemes"]
     # Check that a protected route has the security requirement
     assert "security" in schema["paths"]["/api/v1/trackers"]["get"]
+
+
+def test_runtime_session_resolve_is_matched_before_session_detail():
+    """The account router's ``/runtime-sessions/{id}`` must not capture
+    ``/runtime-sessions/resolve`` (#1358), and browser adapters can read
+    the attributed session header across origins."""
+    app = create_app()
+    from fastapi.routing import iter_route_contexts
+
+    paths = [
+        context.path
+        for context in iter_route_contexts(app.routes)
+        if "GET" in (getattr(context, "methods", None) or {"GET"})
+    ]
+    resolve = paths.index("/api/v1/runtime-sessions/resolve")
+    detail = paths.index("/api/v1/runtime-sessions/{runtime_session_id}")
+    assert resolve < detail
+
+    cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert "X-Preloop-Runtime-Session-Id" in cors[0].kwargs["expose_headers"]

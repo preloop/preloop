@@ -318,6 +318,16 @@ completion, injection rejection). Windows specifics:
   by an older onboarding never runs on Windows and does not count, so
   re-run approval onboarding after upgrading.
 
+## Sleep and wake
+
+A sleeping Windows PC shows `offline` in the console once heartbeats are 45
+seconds old: this build has no pre-sleep signal on Windows. After wake the
+runner reconnects at once. Heartbeats report the idle time of the signed-in
+session: the runner shows `online` when that time is under 5 minutes and
+`idle` otherwise, including on the first heartbeat after wake. See
+[Runner presence](quickstart-linux.md#runner-presence) for every state and
+the per-OS table.
+
 ## What is and is not metered
 
 - **Codex and Claude Code profiles** onboarded through Preloop

@@ -10,7 +10,7 @@ Preloop is open source under [Apache 2.0](https://github.com/preloop/preloop/blo
 
 **Self-hosted (open source or Enterprise):** your tool calls, model traffic and audit records stay in your network. The only thing sent to us is an optional daily version check (instance id, version, edition and instance metadata, listed in full under [Self-Hosted](#self-hosted-open-source)), and `PRELOOP_DISABLE_TELEMETRY=true` turns it off.
 
-**Preloop Cloud:** we store your sessions to give you search, audit trails, cost reports and policy enforcement. We use them for nothing else. We do not train models on them, and we do not sell or share them.
+**Preloop Cloud:** we store your sessions to give you search, audit trails, cost reports and policy enforcement. We use them for nothing else. We do not train models on them, and we do not sell or share them. Where Preloop Cloud runs and which subprocessors handle your data: [Hosting and subprocessors](hosting.md).
 
 **You decide what is stored.** Message content is stored with [pattern redaction](redaction.md#pattern-redaction), or not at all if you turn content capture off ([Reducing what Preloop stores](#reducing-what-preloop-stores)). Retention is yours to set ([Data Retention](#data-retention)), and [legal holds](../guide/artifacts.md#retention-legal-hold-budget-and-eviction) keep records longer only when you place them.
 
