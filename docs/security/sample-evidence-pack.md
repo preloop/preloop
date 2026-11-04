@@ -27,7 +27,10 @@ Both are pinned to fixed versions on `main` (Authlib 1.9.1, litellm
 
 Across 576 components the run reported 71 findings (2 critical, 24 high,
 38 medium, 7 low). None is listed in CISA KEV. The OpenVEX document was
-applied before the gate. The SBOM audit itself (validity and minimum
+applied before the gate and suppressed 25 findings, matched by package and
+vulnerability id. Its statement ids still name frontend `0.16.0`, although
+the file ships in the v0.17.1 `SHA256SUMS`, so the suppressions rest on a
+human confirming the document was meant for this release. The SBOM audit itself (validity and minimum
 elements) passed with findings. No repository checkout and no previous
 result were attached, so the gap register and drift were skipped, and the
 report says so.
