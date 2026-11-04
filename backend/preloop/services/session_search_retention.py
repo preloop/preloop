@@ -39,9 +39,14 @@ from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.models.models.session_search_document import (
+    SOURCE_KIND_FLOW_LOG,
     SOURCE_KIND_GATEWAY_INTERACTION,
 )
-from preloop.services.retention_policy import CLASS_RUNTIME_SESSIONS, CLASS_USAGE
+from preloop.services.retention_policy import (
+    CLASS_RUNTIME_SESSIONS,
+    CLASS_USAGE,
+    SWEEP_EXECUTION_LOGS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +130,23 @@ def delete_chunks_for_usage(
     return deleted
 
 
+def delete_chunks_for_flow_logs(db: Session, *, ids: Sequence[Any]) -> int:
+    """Remove flow log chunks quoting log lines this batch is about to delete.
+
+    Same shape as the usage case: a ``flow_log`` chunk names its
+    ``flow_execution_log`` row by id in a text column, so nothing cascades.
+    Chunks of a held session are kept for the reason given there.
+    """
+    if not ids:
+        return 0
+    return crud_session_search_document.delete_for_sources(
+        db,
+        source_kind=SOURCE_KIND_FLOW_LOG,
+        source_ids=list(ids),
+        excluding_held_sessions=True,
+    )
+
+
 #: Per record class, the function that removes the corpus rows derived from a
 #: batch of that class's ids. A class that is absent derives no chunks. The
 #: purge consults this mapping instead of naming the corpus per class, so
@@ -133,6 +155,7 @@ def delete_chunks_for_usage(
 DERIVED_CHUNK_DELETES: dict[str, Callable[..., int]] = {
     CLASS_RUNTIME_SESSIONS: delete_chunks_for_sessions,
     CLASS_USAGE: delete_chunks_for_usage,
+    SWEEP_EXECUTION_LOGS: delete_chunks_for_flow_logs,
 }
 
 

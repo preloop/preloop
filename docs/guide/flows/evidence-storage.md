@@ -348,6 +348,7 @@ operator enables it, retention is a stated policy that nothing enforces, and
 | `RETENTION_PURGE_BATCH_SIZE` | `1000` | Rows per DELETE |
 | `RETENTION_PURGE_MAX_BATCHES` | `50` | Batch ceiling per class per pass |
 | `RETENTION_PURGE_MAX_SECONDS` | `300` | Wall-clock budget per pass |
+| `RETENTION_PURGE_HIGH_VOLUME_ENABLED` | `false` | Also sweep flow execution log lines and account events (below) |
 
 A pass that hits a bound stops and resumes next time rather than running long.
 Every pass that removed anything writes an audit row per record class with the
@@ -357,6 +358,22 @@ records, counted separately so a report says how many sessions went without
 inflating the number by their search chunks. A runtime-session purge also
 names `runtime_session_artifact`, the artifact rows the session delete
 cascades.
+
+Two high-volume tables are not record classes of their own and are swept
+only when `RETENTION_PURGE_HIGH_VOLUME_ENABLED=true` as well. It is a second
+switch so a deployment that already runs the purge does not start deleting
+them on upgrade, and `RETENTION_PURGE_DRY_RUN` previews them like any class.
+
+| Sweep | Table | Follows | What stays |
+| --- | --- | --- | --- |
+| `execution_logs` | `flow_execution_log` | evidence retention | The `flow_execution` summary row; every line of a held execution |
+| `events` | `event` (rows with an account) | usage retention, never under the plan's history window | Rows without an account (instance and CLI check-ins) |
+
+A log line goes only when both its run and the line itself are past the
+cutoff, so a run's log is removed as a whole. Each sweep writes the same
+audit row as a class, with `governed_by` naming the class it followed.
+Deleted rows stop the tables growing; the disk space returns only after a
+`VACUUM FULL` or `pg_repack`.
 
 ### Legal hold
 

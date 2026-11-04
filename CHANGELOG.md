@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The retention purge can also sweep the two high-volume tables it did not
+  cover: flow execution log lines (following the account's evidence
+  retention, keeping the execution summary row and every line of a held
+  execution) and account events (following usage retention and the plan's
+  history window). Off by default behind its own switch,
+  `RETENTION_PURGE_HIGH_VOLUME_ENABLED`, on top of `RETENTION_PURGE_ENABLED`;
+  `RETENTION_PURGE_DRY_RUN` previews it. Refs preloop-ee#46.
+
 - Shared request rate limiting for password login, token refresh, password
   reset, registration, the OAuth token, register and authorize endpoints and
   public approval links. Counters live in the new `rate_limit_bucket` table

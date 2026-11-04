@@ -63,8 +63,10 @@ from preloop.models.models.account import Account
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.audit_log import AuditLog
+from preloop.models.models.event import Event
 from preloop.models.models.flow_artifact import FlowArtifact
 from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.models.flow_execution_log import FlowExecutionLog
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.services.analytics_history import storage_history_days
@@ -74,7 +76,11 @@ from preloop.services.retention_policy import (
     CLASS_EVIDENCE,
     CLASS_RUNTIME_SESSIONS,
     CLASS_USAGE,
+    HIGH_VOLUME_SWEEPS,
     RECORD_CLASSES,
+    SWEEP_EVENTS,
+    SWEEP_EXECUTION_LOGS,
+    governing_class,
     resolve_retention,
 )
 from preloop.services.service_roles import (
@@ -119,7 +125,13 @@ class ClassResult:
 
     def as_details(self) -> dict[str, Any]:
         """Audit-row shape."""
+        details: dict[str, Any] = {}
+        governed_by = governing_class(self.record_class)
+        if governed_by != self.record_class:
+            # A high-volume sweep: say which class's retention it applied.
+            details["governed_by"] = governed_by
         return {
+            **details,
             "record_class": self.record_class,
             "retention_days": self.retention_days,
             "applied_cutoffs": list(self.applied_cutoffs),
@@ -231,12 +243,34 @@ def _usage_cutoff_filters(cutoff: datetime):
     return (ApiUsage.timestamp < cutoff,)
 
 
+def _execution_log_cutoff_filters(cutoff: datetime):
+    # Both dates: the run must be past the cutoff, so one run's log goes as a
+    # whole rather than its first half, and so must the line itself, so a
+    # line written late by a run that started long ago is not taken early.
+    # The hold lives on the execution; a held run keeps every line.
+    return (
+        FlowExecutionLog.timestamp < cutoff,
+        FlowExecutionLog.execution_id.in_(
+            select(FlowExecution.id).where(
+                FlowExecution.created_at < cutoff,
+                *_hold_filters_for_model(FlowExecution),
+            )
+        ),
+    )
+
+
+def _event_cutoff_filters(cutoff: datetime):
+    return (Event.timestamp < cutoff,)
+
+
 _CLASS_MODELS: dict[str, Any] = {
     CLASS_AUDIT: AuditLog,
     CLASS_APPROVALS: ApprovalRequest,
     CLASS_EVIDENCE: FlowArtifact,
     CLASS_RUNTIME_SESSIONS: RuntimeSession,
     CLASS_USAGE: ApiUsage,
+    SWEEP_EXECUTION_LOGS: FlowExecutionLog,
+    SWEEP_EVENTS: Event,
 }
 
 _CLASS_FILTERS = {
@@ -245,6 +279,8 @@ _CLASS_FILTERS = {
     CLASS_EVIDENCE: _evidence_cutoff_filters,
     CLASS_RUNTIME_SESSIONS: _runtime_session_cutoff_filters,
     CLASS_USAGE: _usage_cutoff_filters,
+    SWEEP_EXECUTION_LOGS: _execution_log_cutoff_filters,
+    SWEEP_EVENTS: _event_cutoff_filters,
 }
 
 #: Classes whose model carries no legal hold flag, and why. A class may only
@@ -263,6 +299,11 @@ HOLD_EXEMPT_CLASSES: dict[str, str] = {
     CLASS_USAGE: (
         "usage rows carry no hold flag yet; holds over usage are a separate "
         "gap, deliberately out of scope here"
+    ),
+    SWEEP_EVENTS: (
+        "event rows are account telemetry (sessions, page views, system "
+        "events), not a governed record; no hold resource type targets them "
+        "and the runs they mention are held through their execution"
     ),
 }
 
@@ -311,17 +352,33 @@ def class_filters(record_class: str, cutoff: datetime):
     return (*_CLASS_FILTERS[record_class](cutoff), *_hold_filters(record_class))
 
 
+def _account_filter(record_class: str, account_id: Any):
+    """Ownership predicate. Log lines belong to an account through their run."""
+    if record_class == SWEEP_EXECUTION_LOGS:
+        return FlowExecutionLog.execution_id.in_(
+            select(FlowExecution.id).where(execution_in_account(account_id))
+        )
+    return _CLASS_MODELS[record_class].account_id == account_id
+
+
 def _candidate_ids_stmt(
     record_class: str, *, account_id: Any, cutoff: datetime, limit: int
 ):
     """Ids of the next batch to remove for one class, account scoped."""
     model = _CLASS_MODELS[record_class]
-    return (
-        select(model.id)
-        .where(model.account_id == account_id, *class_filters(record_class, cutoff))
-        .order_by(model.id)
-        .limit(limit)
+    stmt = select(model.id).where(
+        _account_filter(record_class, account_id),
+        *class_filters(record_class, cutoff),
     )
+    if record_class == SWEEP_EVENTS:
+        # Walks ix_event_account_timestamp oldest first instead of sorting
+        # the account's whole history by a random uuid on every batch.
+        stmt = stmt.order_by(Event.timestamp)
+    elif record_class != SWEEP_EXECUTION_LOGS:
+        stmt = stmt.order_by(model.id)
+    # Execution logs are not ordered: every matching line goes, and sorting a
+    # multi-gigabyte backlog per batch would cost more than the delete.
+    return stmt.limit(limit)
 
 
 def count_purgeable(
@@ -334,7 +391,7 @@ def count_purgeable(
             select(func.count())
             .select_from(model)
             .where(
-                model.account_id == account_id,
+                _account_filter(record_class, account_id),
                 *class_filters(record_class, cutoff),
             )
         ).scalar_one()
@@ -433,11 +490,12 @@ def purge_class(
     account_id = account.id
 
     def effective_policy(current_account: Account) -> tuple[int, datetime]:
+        policy_class = governing_class(record_class)
         setting = resolve_retention(
-            current_account.meta_data, record_class=record_class
+            current_account.meta_data, record_class=policy_class
         )
         retained_days = setting.days
-        if record_class in (CLASS_RUNTIME_SESSIONS, CLASS_USAGE):
+        if policy_class in (CLASS_RUNTIME_SESSIONS, CLASS_USAGE):
             history_days = storage_history_days(db, account=current_account)
             if history_days is None:
                 return -1, datetime.min.replace(tzinfo=UTC)
@@ -702,6 +760,9 @@ def run_retention_purge(
     batch_size = max(1, int(settings.retention_purge_batch_size))
     max_batches = max(1, int(settings.retention_purge_max_batches))
     deadline = time.monotonic() + max(1, int(settings.retention_purge_max_seconds))
+    record_classes: tuple[str, ...] = RECORD_CLASSES
+    if settings.retention_purge_high_volume_enabled:
+        record_classes = (*RECORD_CLASSES, *HIGH_VOLUME_SWEEPS)
 
     stmt = select(Account).where(Account.is_active.is_(True)).order_by(Account.id)
     if account_ids:
@@ -720,6 +781,7 @@ def run_retention_purge(
             max_batches=max_batches,
             dry_run=dry_run,
             deadline=deadline,
+            record_classes=record_classes,
         ):
             summary.record(result)
             if result.more_remaining:

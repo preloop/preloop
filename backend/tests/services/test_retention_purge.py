@@ -19,6 +19,7 @@ from preloop.services.legal_hold import place_hold
 from preloop.services.retention_policy import (
     CLASS_AUDIT,
     CLASS_RUNTIME_SESSIONS,
+    HIGH_VOLUME_SWEEPS,
     RECORD_CLASSES,
 )
 
@@ -585,7 +586,9 @@ def test_hold_filters_always_returns_a_list_of_clauses():
 
 def test_a_class_purged_without_a_hold_check_has_to_say_why():
     """An exemption is a written decision, not a forgotten predicate."""
-    assert set(purge.HOLD_EXEMPT_CLASSES) <= set(RECORD_CLASSES)
+    assert set(purge.HOLD_EXEMPT_CLASSES) <= set(RECORD_CLASSES) | set(
+        HIGH_VOLUME_SWEEPS
+    )
     for record_class, reason in purge.HOLD_EXEMPT_CLASSES.items():
         assert len(reason.strip()) >= 20
         assert not hasattr(purge._CLASS_MODELS[record_class], "legal_hold")

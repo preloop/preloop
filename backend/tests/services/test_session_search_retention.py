@@ -30,7 +30,11 @@ from preloop.services import retention_purge as purge
 from preloop.services import session_search_index as index
 from preloop.services import session_search_retention as corpus_retention
 from preloop.services.legal_hold import place_hold, release_hold
-from preloop.services.retention_policy import CLASS_RUNTIME_SESSIONS, CLASS_USAGE
+from preloop.services.retention_policy import (
+    CLASS_RUNTIME_SESSIONS,
+    CLASS_USAGE,
+    SWEEP_EXECUTION_LOGS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -734,13 +738,15 @@ def test_every_redaction_state_is_decided_returnable_or_not():
 def test_every_class_with_derived_chunks_deletes_them_in_the_purge():
     """The mapping the purge consults is the mapping the corpus is written by.
 
-    Only two source kinds name a row outside the session: the gateway kind
-    names an ``api_usage`` row. Everything else is session content and goes
-    with the session, so the classes that need an entry are these two.
+    Two source kinds name a row outside the session: the gateway kind names
+    an ``api_usage`` row and the flow log kind a ``flow_execution_log`` row.
+    Everything else is session content and goes with the session, so the
+    classes and sweeps that need an entry are these three.
     """
     assert set(corpus_retention.DERIVED_CHUNK_DELETES) == {
         CLASS_RUNTIME_SESSIONS,
         CLASS_USAGE,
+        SWEEP_EXECUTION_LOGS,
     }
     for record_class in corpus_retention.DERIVED_CHUNK_DELETES:
         assert record_class in purge._CLASS_FILTERS
