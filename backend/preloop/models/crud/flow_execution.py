@@ -1464,6 +1464,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db: Session,
         batch_id: uuid.UUID,
         account_id: Optional[str] = None,
+        *,
+        without_workspace: bool = False,
     ) -> List[FlowExecution]:
         """Get all executions created by one matrix/batch trigger.
 
@@ -1473,7 +1475,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         recorded matrix index, as the batch listing endpoint does. Batches are
         capped at trigger time, so no pagination is needed. The flow
         relationship is eagerly loaded because callers render flow names per
-        row.
+        row. Set without_workspace for response projections that never read
+        the saved archive; default callers retain the full row.
         """
         query = (
             db.query(FlowExecution)
@@ -1481,6 +1484,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .filter(FlowExecution.batch_id == batch_id)
             .order_by(FlowExecution.created_at.asc(), FlowExecution.id.asc())
         )
+        if without_workspace:
+            query = query.options(
+                defer(FlowExecution.workspace_snapshot, raiseload=True)
+            )
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.all()

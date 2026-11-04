@@ -1053,7 +1053,7 @@ async def test_read_flow_execution(mock_account: Account, mocker: MockerFixture)
 
     execution = MagicMock()
     execution.id = execution_id
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     # Act
     result = await maybe_await(
@@ -1064,7 +1064,7 @@ async def test_read_flow_execution(mock_account: Account, mocker: MockerFixture)
 
     # Assert
     assert result == execution
-    mock_crud_flow_execution.get.assert_called_once_with(
+    mock_crud_flow_execution.get_without_workspace.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
 
@@ -1087,7 +1087,7 @@ async def test_read_flow_execution_hydrates_mcp_usage_logs_from_activity(
     execution = MagicMock()
     execution.id = execution_id
     execution.mcp_usage_logs = None
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     row = MagicMock()
     row.timestamp = datetime.now(ZoneInfo("UTC"))
@@ -1149,7 +1149,7 @@ async def test_read_flow_execution_surfaces_recorded_outcome_over_detected(
             "result_summary": None,
         }
     ]
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     row = MagicMock()
     row.timestamp = datetime(2026, 9, 18, 10, 18, tzinfo=ZoneInfo("UTC"))
@@ -1204,7 +1204,7 @@ async def test_read_flow_execution_marks_a_successful_outcome(
     execution = MagicMock()
     execution.id = execution_id
     execution.mcp_usage_logs = None
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     row = MagicMock()
     row.timestamp = datetime(2026, 9, 18, 10, 19, tzinfo=ZoneInfo("UTC"))
@@ -1268,7 +1268,7 @@ async def test_read_flow_execution_matches_one_recorded_to_one_parsed(
             "status": "detected",
         },
     ]
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     row = MagicMock()
     row.timestamp = datetime(2026, 9, 18, 10, 18, tzinfo=ZoneInfo("UTC"))
@@ -1323,7 +1323,7 @@ async def test_read_flow_execution_matches_marker_across_a_long_call(
             "status": "detected",
         }
     ]
-    mock_crud_flow_execution.get.return_value = execution
+    mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     row = MagicMock()
     row.timestamp = datetime(2026, 9, 18, 10, 19, tzinfo=ZoneInfo("UTC"))
@@ -1356,7 +1356,7 @@ async def test_read_flow_execution_not_found(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
-    mock_crud_flow_execution.get.return_value = None
+    mock_crud_flow_execution.get_without_workspace.return_value = None
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:

@@ -1175,7 +1175,10 @@ def read_batch_executions(
     from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
 
     executions = crud_flow_execution.get_by_batch(
-        db, batch_id=batch_id, account_id=current_user.account_id
+        db,
+        batch_id=batch_id,
+        account_id=current_user.account_id,
+        without_workspace=True,
     )
     if not executions:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -1296,7 +1299,7 @@ def read_execution_tree(
     cost and tokens come back on ``execution``, so the console can show "this
     run cost X, what it started cost Y" without adding the two numbers.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -1385,7 +1388,7 @@ def read_flow_execution(
             db, current_user, execution_id, CiAction.READ_EXECUTION
         )
         return CiExecutionResponse(**execution_projection(execution))
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
