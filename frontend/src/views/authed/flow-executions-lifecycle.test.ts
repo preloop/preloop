@@ -19,7 +19,11 @@ const json = (rows: unknown[]) =>
 
 describe('execution request lifecycle', () => {
   let el: FlowExecutionsView;
-  let reads: Array<{ url: URL; finish: (response: Response) => void }>;
+  let reads: Array<{
+    url: URL;
+    signal?: AbortSignal | null;
+    finish: (response: Response) => void;
+  }>;
   let listeners: Set<(state: ConnectionState) => void>;
   let subscriptions: Set<(message: unknown) => void>;
 
