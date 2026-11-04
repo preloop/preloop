@@ -172,19 +172,35 @@ Use a fresh temporary `HOME`, fresh Cursor config and data directories and a
 disposable workspace that holds only a synthetic `fixture.txt`. Pass the
 provider credential through the subprocess environment only, with
 `AGENT_CLI_CREDENTIAL_STORE=memory`, and set `PRELOOP_DISABLE_TELEMETRY=true`.
-Install these hooks, each wrapped so the wrapper records only the event name
-and status or loop-count fields, never credentials or transcripts:
+Wrap each hook so the wrapper records only the event name and the status or
+loop-count fields, never credentials or transcripts, and then hands the
+unchanged payload to the Preloop hook. A minimal wrapper, saved as
+`/path/to/record-hook` and made executable (needs `jq`):
+
+```sh
+#!/bin/sh
+# Usage: record-hook <log file> <preloop hook command...>
+log="$1"; shift
+payload=$(cat)
+printf '%s\n' "$payload" |
+  jq -c '{event: .hook_event_name, status: .status, loop_count: .loop_count}' >>"$log"
+printf '%s\n' "$payload" | "$@"
+```
+
+Install the wrapped hooks:
 
 ```json
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [{"command": "/path/to/preloop agents permission-hook session --source cursor"}],
-    "stop": [{"command": "/path/to/preloop agents permission-hook stop --source cursor"}],
-    "sessionEnd": [{"command": "/path/to/preloop agents permission-hook session-end --source cursor"}]
+    "sessionStart": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook session --source cursor"}],
+    "stop": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook stop --source cursor"}],
+    "sessionEnd": [{"command": "/path/to/record-hook /tmp/cursor-hooks.log /path/to/preloop agents permission-hook session-end --source cursor"}]
   }
 }
 ```
+
+Count the events afterwards with `jq -r .event /tmp/cursor-hooks.log | sort | uniq -c`.
 
 Queue one synthetic note for startup that asks the model to print a fresh
 marker after the file read, and a second synthetic note for the `stop` event.
