@@ -521,10 +521,10 @@ def purge_class(
             .all()
         )
         if not ids:
-            if record_class == CLASS_USAGE:
-                # Held sessions keep gateway chunks after their usage rows go.
-                # Those usage ids never appear in a later batch, so an empty
-                # usage pass still reclaims released-hold orphans.
+            if record_class in (CLASS_USAGE, SWEEP_EXECUTION_LOGS):
+                # Held sessions keep chunks after their source rows go.
+                # Those ids never appear in a later batch, so an empty
+                # source-class pass still reclaims released-hold orphans.
                 result.derived_deleted += delete_derived_chunks(
                     db,
                     record_class=record_class,

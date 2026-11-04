@@ -15,14 +15,11 @@ deletes its chunks, and what preserves a session preserves them. The purge
 calls in here per batch of ids rather than repeating chunk SQL per class, and
 :func:`orphan_chunk_report` is how the rule is checked instead of assumed.
 
-The one deliberate asymmetry is usage. Gateway chunks quote an ``api_usage``
-row, so purging the usage class takes them too, except where the chunk's
-session is under legal hold: a hold is an instruction to preserve the record
-and it outranks a retention cutoff. The held session's chunks then outlive the
-usage row they quote for as long as the hold lasts. Once the hold is released,
-the next usage pass reclaims those orphans: the original usage ids cannot
-appear in a later batch, so the pass sweeps gateway chunks whose source row
-is gone and whose session is no longer held.
+Gateway and flow log chunks also follow their source rows, except where the
+chunk's session is under legal hold: a hold preserves the record and outranks
+a retention cutoff. Held chunks may outlive their usage or flow log source
+for as long as the hold lasts. Once it is released, the next source-class pass
+reclaims those orphans, including when there are no source rows left to purge.
 """
 
 from __future__ import annotations
@@ -34,10 +31,8 @@ from typing import Any, Callable, Optional, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import crud_session_search_document
-from preloop.models.models.api_usage import ApiUsage
-from preloop.models.models.runtime_session import RuntimeSession
-from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.models.models.session_search_document import (
     SOURCE_KIND_FLOW_LOG,
     SOURCE_KIND_GATEWAY_INTERACTION,
@@ -59,10 +54,12 @@ class OrphanChunkReport:
     orphaned_sessions: int = 0
     #: Gateway chunks whose ``api_usage`` row no longer exists.
     orphaned_usage: int = 0
+    #: Flow log chunks whose ``flow_execution_log`` row no longer exists.
+    orphaned_flow_logs: int = 0
 
     @property
     def total(self) -> int:
-        return self.orphaned_sessions + self.orphaned_usage
+        return self.orphaned_sessions + self.orphaned_usage + self.orphaned_flow_logs
 
     @property
     def clean(self) -> bool:
@@ -73,6 +70,7 @@ class OrphanChunkReport:
         return {
             "orphaned_sessions": self.orphaned_sessions,
             "orphaned_usage": self.orphaned_usage,
+            "orphaned_flow_logs": self.orphaned_flow_logs,
             "total": self.total,
         }
 
@@ -123,28 +121,38 @@ def delete_chunks_for_usage(
     deleted += crud_session_search_document.delete_orphans_for_sources(
         db,
         source_kind=SOURCE_KIND_GATEWAY_INTERACTION,
-        source_model=ApiUsage,
+        source_model=models.ApiUsage,
         excluding_held_sessions=True,
         account_id=account_id,
     )
     return deleted
 
 
-def delete_chunks_for_flow_logs(db: Session, *, ids: Sequence[Any]) -> int:
-    """Remove flow log chunks quoting log lines this batch is about to delete.
+def delete_chunks_for_flow_logs(
+    db: Session, *, ids: Sequence[Any], account_id: Optional[Any] = None
+) -> int:
+    """Remove chunks of expired flow logs and released-hold source orphans.
 
-    Same shape as the usage case: a ``flow_log`` chunk names its
-    ``flow_execution_log`` row by id in a text column, so nothing cascades.
-    Chunks of a held session are kept for the reason given there.
+    A ``flow_log`` chunk names its source row by id in a text column, so
+    nothing cascades. A session hold preserves its chunks even when the log
+    is purged; after release, reclaim them in this account's next pass.
     """
-    if not ids:
-        return 0
-    return crud_session_search_document.delete_for_sources(
+    deleted = 0
+    if ids:
+        deleted += crud_session_search_document.delete_for_sources(
+            db,
+            source_kind=SOURCE_KIND_FLOW_LOG,
+            source_ids=list(ids),
+            excluding_held_sessions=True,
+        )
+    deleted += crud_session_search_document.delete_orphans_for_sources(
         db,
         source_kind=SOURCE_KIND_FLOW_LOG,
-        source_ids=list(ids),
+        source_model=models.FlowExecutionLog,
         excluding_held_sessions=True,
+        account_id=account_id,
     )
+    return deleted
 
 
 #: Per record class, the function that removes the corpus rows derived from a
@@ -170,7 +178,7 @@ def delete_derived_chunks(
     handler = DERIVED_CHUNK_DELETES.get(record_class)
     if handler is None:
         return 0
-    if record_class == CLASS_USAGE:
+    if record_class in (CLASS_USAGE, SWEEP_EXECUTION_LOGS):
         return handler(db, ids=list(ids), account_id=account_id)
     if not ids:
         return 0
@@ -185,18 +193,23 @@ def orphan_chunk_report(db: Session) -> OrphanChunkReport:
     account, and scoping the check to the account under test would hide a
     cross-account mistake, which is the mistake worth catching.
 
-    Usage orphans share the hold exclusion with
-    :func:`delete_chunks_for_usage`. A held session's gateway chunk that
-    outlives the usage row it quotes is the hold working, not a purge bug,
-    so it does not count. After the hold is released, the next usage pass
-    reclaims that chunk and this check is clean again.
+    Usage and flow log orphans share the hold exclusions of their cleanup
+    handlers. A held session's chunk that outlives its source is preserved
+    intentionally, so it does not count. After the hold is released, the
+    next source-class pass reclaims it and this check is clean again.
     """
     return OrphanChunkReport(
         orphaned_sessions=crud_session_search_document.count_orphans_for_sessions(db),
         orphaned_usage=crud_session_search_document.count_orphans_for_sources(
             db,
             source_kind=SOURCE_KIND_GATEWAY_INTERACTION,
-            source_model=ApiUsage,
+            source_model=models.ApiUsage,
+            excluding_held_sessions=True,
+        ),
+        orphaned_flow_logs=crud_session_search_document.count_orphans_for_sources(
+            db,
+            source_kind=SOURCE_KIND_FLOW_LOG,
+            source_model=models.FlowExecutionLog,
             excluding_held_sessions=True,
         ),
     )
@@ -218,10 +231,13 @@ def orphan_session_artifact_count(db: Session) -> int:
     return int(
         db.execute(
             select(func.count())
-            .select_from(RuntimeSessionArtifact)
+            .select_from(models.RuntimeSessionArtifact)
             .where(
-                ~select(RuntimeSession.id)
-                .where(RuntimeSession.id == RuntimeSessionArtifact.runtime_session_id)
+                ~select(models.RuntimeSession.id)
+                .where(
+                    models.RuntimeSession.id
+                    == models.RuntimeSessionArtifact.runtime_session_id
+                )
                 .exists()
             )
         ).scalar_one()
