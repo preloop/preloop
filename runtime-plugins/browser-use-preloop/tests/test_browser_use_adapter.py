@@ -570,3 +570,12 @@ def test_gateway_response_hook_captures_session_header():
     target = capture.target("http://preloop.test", "agent-key")
     assert target is not None and target.runtime_session_id == RESOLVED
     assert RuntimeSessionCapture().target("http://preloop.test", "k") is None
+
+
+def test_resolve_timeout_is_short_by_default():
+    import inspect
+
+    from preloop_browser_use import resolve_runtime_session_id
+
+    default = inspect.signature(resolve_runtime_session_id).parameters["timeout"]
+    assert default.default <= 3.0

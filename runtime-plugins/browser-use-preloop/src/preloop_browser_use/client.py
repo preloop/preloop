@@ -97,7 +97,7 @@ def resolve_runtime_session_id(
     *,
     client: httpx.Client | None = None,
     create: bool = True,
-    timeout: float = 10.0,
+    timeout: float = 3.0,
 ) -> str:
     """Resolve the gateway session key to a runtime session id.
 
@@ -110,7 +110,9 @@ def resolve_runtime_session_id(
         client_session_id: The gateway session key.
         client: Optional ``httpx.Client`` (tests).
         create: Create the session as the gateway would when missing.
-        timeout: Request timeout in seconds.
+        timeout: Request timeout in seconds. Short on purpose: this runs
+            before the agent starts, and an unreachable Preloop must not
+            hold it up.
 
     Returns:
         The runtime session id, or ``""`` when it could not be resolved.
