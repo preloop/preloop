@@ -113,12 +113,11 @@ export class DesktopEnableElement extends LitElement {
     let requestId: string;
     try {
       requestId = (await requestDesktopInstall(this.agentId)).request_id;
-    } catch (error) {
-      // 409: no control channel after all. Anything else: still offer the
-      // command, which works whatever the plugin supports.
-      this.unsupported =
-        !(error instanceof DesktopApiError) ||
-        error.code !== 'desktop_install_unavailable';
+    } catch {
+      // No control channel (409) or the request failed: the command works
+      // whatever the plugin supports. "Unsupported plugin" is only said
+      // when the plugin itself answered that way.
+      this.unsupported = false;
       this.phase = 'command';
       return;
     }

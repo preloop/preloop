@@ -230,3 +230,33 @@ describe('desktop-enable follow limits', () => {
     );
   });
 });
+
+describe('desktop-enable request failures', () => {
+  let fetchStub: sinon.SinonStub;
+  afterEach(() => {
+    fixtureCleanup();
+    fetchStub?.restore();
+  });
+
+  it('a failed request offers the command without blaming the plugin', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(
+        async () => new Response('{"detail":"boom"}', { status: 500 })
+      );
+    const el = await fixture<DesktopEnableElement>(
+      html`<desktop-enable agentId="a" controlOnline></desktop-enable>`
+    );
+    el.shadowRoot!.querySelector<HTMLElement>('sl-button.enable')!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="desktop-enable-command"]')
+    );
+    expect(el.shadowRoot!.textContent).to.include(
+      DESKTOP_ENABLE_STRINGS.runOnHost
+    );
+    expect(el.shadowRoot!.textContent).to.not.include(
+      DESKTOP_ENABLE_STRINGS.unsupportedPlugin
+    );
+  });
+});

@@ -2669,6 +2669,10 @@ async def request_agent_desktop_install(
     await run_db_off_loop(
         lambda: _require_manage_agents(current_user=current_user, db=db)
     )
+    try:
+        uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Managed agent not found") from None
     agent = crud_managed_agent.get_for_account(
         db, account_id=str(current_user.account_id), agent_id=agent_id
     )
@@ -2687,11 +2691,15 @@ async def request_agent_desktop_install(
     ):
         raise unavailable
     request_id = str(uuid.uuid4())
-    envelope = _operator_command_envelope(
-        agent,
-        name=DESKTOP_INSTALL_COMMAND,
-        payload={"request_id": request_id, "managed_agent_id": str(agent.id)},
-    )
+    try:
+        # Raises when the control socket is gone (no runtime session).
+        envelope = build_operator_envelope(
+            agent,
+            name=DESKTOP_INSTALL_COMMAND,
+            payload={"request_id": request_id, "managed_agent_id": str(agent.id)},
+        )
+    except AgentControlDispatchError as exc:
+        raise unavailable from exc
     envelope = envelope.model_copy(update={"message_id": request_id})
     try:
         await persist_and_deliver_command(

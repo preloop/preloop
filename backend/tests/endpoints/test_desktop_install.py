@@ -230,3 +230,20 @@ def test_a_repeated_result_is_audited_once(nats, client, db_session, test_user):
     assert client.get(f"{base}/{request_id}").json()["state"] == "done"
     assert len(_audit(db_session, "desktop.install.succeeded")) == 1
     assert _audit(db_session, "desktop.install.failed") == []
+
+
+def test_malformed_agent_id_is_404(nats, client):
+    assert client.post("/api/v1/agents/not-a-uuid/desktop/install").status_code == 404
+
+
+def test_offline_control_socket_is_the_structured_409(
+    nats, client, db_session, test_user
+):
+    agent, _ = _agent(client, db_session, test_user, "openclaw-desk-offline")
+    agent.runtime_session_id = None
+    db_session.commit()
+    response = client.post(f"/api/v1/agents/{agent.id}/desktop/install")
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "desktop_install_unavailable"
+    assert detail["command"] == f"preloop desktop enable --agent {agent.id}"
