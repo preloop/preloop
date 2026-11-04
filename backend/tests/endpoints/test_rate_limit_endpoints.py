@@ -9,6 +9,7 @@ stable ``rate_limited`` code and ``Retry-After``.
 from typing import Any, Iterator
 from unittest.mock import patch
 from uuid import uuid4
+import uuid
 
 import pytest
 from fastapi import FastAPI
@@ -16,6 +17,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import auth_router
+from preloop.api.auth.jwt import get_password_hash
+from preloop.models.crud import crud_account, crud_user
 from preloop.api.endpoints.oauth_server import router as oauth_router
 from preloop.api.endpoints.public_approval import router as approval_router
 from preloop.models.db.session import get_db_session
@@ -42,7 +45,8 @@ def client(db_session: Session) -> Iterator[TestClient]:
     install_rate_limit_handler(app)
     app.include_router(oauth_router)
     app.include_router(auth_router, prefix="/api/v1/auth")
-    app.include_router(approval_router, prefix="/api/v1")
+    # Production mounts the public approval router without /api/v1.
+    app.include_router(approval_router)
     app.dependency_overrides[get_db_session] = lambda: db_session
     with patch(
         "preloop.models.db.session.get_db_session",
@@ -93,13 +97,79 @@ def test_form_login_shares_the_ip_budget(client: TestClient) -> None:
     _assert_limited(_login(client, "x@example.com", _ip(3)))
 
 
-def test_login_failures_are_limited_per_username(client: TestClient) -> None:
+PASSWORD = "Correct-horse-battery-1"
+
+
+def _password_user(db: Session) -> Any:
+    unique = uuid.uuid4().hex[:8]
+    account = crud_account.create(
+        db, obj_in={"organization_name": f"Org {unique}", "is_active": True}
+    )
+    user = crud_user.create(
+        db,
+        obj_in={
+            "account_id": account.id,
+            "username": f"jane{unique}",
+            "email": f"jane{unique}@example.com",
+            "full_name": "Jane Doe",
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": get_password_hash(PASSWORD),
+            "user_source": "local",
+        },
+    )
+    db.flush()
+    return user
+
+
+def _login_with(client: TestClient, username: str, password: str, n: int) -> Any:
+    return client.post(
+        "/api/v1/auth/token/json",
+        json={"username": username, "password": password},
+        headers=_ip(n),
+    )
+
+
+def test_login_failures_are_limited_per_account_and_client(
+    client: TestClient, db_session: Session
+) -> None:
+    user = _password_user(db_session)
+    # Username and email of one person share the budget.
     for i in range(5):
-        assert _login(client, "Victim@Example.com", _ip(10 + i)).status_code == 401
-    # Sixth guess from yet another address, different case: refused.
-    _assert_limited(_login(client, " victim@example.com", _ip(40)))
-    # Other accounts from that address are unaffected.
-    assert _login(client, "other@example.com", _ip(40)).status_code == 401
+        name = user.username if i % 2 else user.email.upper()
+        assert _login_with(client, name, "wrong", 40).status_code == 401
+    # Over budget from that client: refused before the password is checked,
+    # even when it is right.
+    _assert_limited(_login_with(client, user.username, PASSWORD, 40))
+
+
+def test_correct_password_from_another_client_survives_a_spent_budget(
+    client: TestClient, db_session: Session
+) -> None:
+    user = _password_user(db_session)
+    for _ in range(5):
+        assert _login_with(client, user.username, "wrong", 41).status_code == 401
+    _assert_limited(_login_with(client, user.username, "wrong", 41))
+    # The real user, elsewhere, still signs in.
+    assert _login_with(client, user.username, PASSWORD, 42).status_code == 200
+
+
+def test_successful_logins_do_not_spend_the_failure_budget(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_AUTH_LOGIN_IP", "100/60")
+    user = _password_user(db_session)
+    for _ in range(8):
+        assert _login_with(client, user.username, PASSWORD, 43).status_code == 200
+
+
+def test_unknown_identities_are_limited_by_normalized_identifier(
+    client: TestClient,
+) -> None:
+    for _ in range(5):
+        assert _login(client, "Victim@Example.com", _ip(44)).status_code == 401
+    _assert_limited(_login(client, " victim@example.com", _ip(44)))
+    assert _login(client, "other@example.com", _ip(44)).status_code == 401
 
 
 def test_forged_forwarded_prefix_does_not_reset_the_ip_budget(
@@ -163,23 +233,59 @@ def test_oauth_authorize_is_limited_per_ip(client: TestClient) -> None:
     _assert_limited(client.get(url, headers=_ip(9), follow_redirects=False))
 
 
-def test_public_approval_is_limited_per_request(client: TestClient) -> None:
+def test_public_approval_is_limited_per_request_and_client(
+    client: TestClient,
+) -> None:
     request_id = uuid4()
-    url = f"/api/v1/approval/{request_id}/data?token=junk"
+    url = f"/approval/{request_id}/data?token=junk"
+    for _ in range(10):
+        assert client.get(url, headers=_ip(100)).status_code != 429
+    _assert_limited(client.get(url, headers=_ip(100)))
+    # Another approver of the same request is unaffected...
+    assert client.get(url, headers=_ip(101)).status_code != 429
+    # ...and so is another request from the same client.
+    other = f"/approval/{uuid4()}/data?token=junk"
+    assert client.get(other, headers=_ip(100)).status_code != 429
+
+
+def test_public_approval_decision_shares_the_request_budget(
+    client: TestClient,
+) -> None:
+    request_id = uuid4()
+    for _ in range(10):
+        url = f"/approval/{request_id}/approve?token=junk"
+        assert client.post(url, headers=_ip(102)).status_code != 429
+    _assert_limited(
+        client.get(f"/approval/{request_id}/data?token=junk", headers=_ip(102))
+    )
+
+
+def test_register_is_limited_per_ip(client: TestClient) -> None:
     for i in range(10):
-        assert client.get(url, headers=_ip(100 + i)).status_code != 429
-    # Budget is per approval request: a new address does not help...
-    _assert_limited(client.get(url, headers=_ip(150)))
-    # ...and another request is unaffected.
-    other = f"/api/v1/approval/{uuid4()}/data?token=junk"
-    assert client.get(other, headers=_ip(150)).status_code != 429
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"new{i}@example.com",
+                "username": f"new{i}",
+                "password": "x",
+            },
+            headers=_ip(103),
+        )
+        assert response.status_code != 429
+    _assert_limited(
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "z@example.com", "username": "z", "password": "x"},
+            headers=_ip(103),
+        )
+    )
 
 
 def test_public_approval_decision_is_limited_per_ip(client: TestClient) -> None:
     for _ in range(30):
-        url = f"/api/v1/approval/{uuid4()}/approve?token=junk"
+        url = f"/approval/{uuid4()}/approve?token=junk"
         assert client.post(url, headers=_ip(11)).status_code != 429
-    url = f"/api/v1/approval/{uuid4()}/approve?token=junk"
+    url = f"/approval/{uuid4()}/approve?token=junk"
     _assert_limited(client.post(url, headers=_ip(11)))
 
 

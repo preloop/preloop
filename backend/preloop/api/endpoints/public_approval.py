@@ -14,7 +14,7 @@ from preloop.services.rate_limit import (
     APPROVAL_PUBLIC_IP,
     APPROVAL_PUBLIC_REQUEST,
     limit_by_ip,
-    limit_by_path_param,
+    limit_by_path_param_and_ip,
 )
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_approval_event, crud_approval_request
@@ -37,11 +37,11 @@ TOKEN_URL_DECISION_CHANNEL = "token_url"
 
 router = APIRouter(prefix="/approval", tags=["public-approval"])
 
-# EE #66: per client and per approval request, never global, so one noisy
-# caller cannot stop another approver from deciding.
+# EE #66: per client, and per (approval request, client), never per request
+# alone, so a caller who knows the id cannot stop another approver deciding.
 _PUBLIC_LIMITS = [
     Depends(limit_by_ip(APPROVAL_PUBLIC_IP)),
-    Depends(limit_by_path_param(APPROVAL_PUBLIC_REQUEST, "request_id")),
+    Depends(limit_by_path_param_and_ip(APPROVAL_PUBLIC_REQUEST, "request_id")),
 ]
 
 # One fixed sentence for every internal failure on the decision path. The

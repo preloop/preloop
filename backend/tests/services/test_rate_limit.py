@@ -48,6 +48,18 @@ def test_memory_store_stays_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(store._buckets) == {"new"}
 
 
+def test_memory_store_cap_holds_with_every_window_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(MemoryStore, "MAX_KEYS", 100)
+    store = MemoryStore()
+    for i in range(500):
+        store.hit(f"k{i}", 60, 10.0 + i * 0.01)
+        assert len(store._buckets) <= 100
+    # The newest key is always kept.
+    assert "k499" in store._buckets
+
+
 def test_enforce_denies_at_limit_with_retry_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

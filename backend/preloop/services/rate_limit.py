@@ -82,10 +82,10 @@ class Rule:
 
 
 # Defaults: EE #66 design proposal unless noted. Keep in sync with
-# docs/guide/self-hosting/rate-limiting.md.
+# docs/operations/rate-limiting.md.
 AUTH_LOGIN_IP = Rule("auth.login.ip", 10, 60)
-# Counts failed password logins only, so a correct password is never refused
-# because someone else is guessing.
+# Failed password logins per (account, client address); see
+# login_failure_identity. Checked before the password is verified.
 AUTH_LOGIN_USER = Rule("auth.login.user", 5, 60)
 AUTH_REFRESH = Rule("auth.refresh", 60, 60)
 AUTH_RESET_PASSWORD = Rule("auth.reset_password", 10, 600)
@@ -202,35 +202,48 @@ def _window_start(now: float, window_s: int) -> float:
 
 
 class MemoryStore:
-    """In-process fixed windows; bounded so the map cannot grow forever."""
+    """In-process fixed windows, hard-capped at ``MAX_KEYS`` entries.
+
+    Finished windows are swept at most every ``PRUNE_INTERVAL_S``. When the
+    cap is reached with every window still active, the entries closest to
+    expiry are evicted (a tenth of the map at a time), so a hit stays O(1)
+    amortized and the map never exceeds the cap.
+    """
 
     MAX_KEYS = 50_000
+    PRUNE_INTERVAL_S = 30.0
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._buckets: dict[str, tuple[float, int]] = {}
+        self._last_prune = 0.0
 
     def reset(self) -> None:
         """Drop every counter (tests, restart semantics)."""
         with self._lock:
             self._buckets.clear()
+            self._last_prune = 0.0
 
-    def _prune(self, now: float) -> None:
-        if len(self._buckets) < self.MAX_KEYS:
-            return
-        # Entries store (window_end, count); drop every finished window.
-        self._buckets = {k: v for k, v in self._buckets.items() if v[0] > now}
+    def _prune(self, now: float, adding: bool) -> None:
+        if now - self._last_prune >= self.PRUNE_INTERVAL_S:
+            self._last_prune = now
+            # Entries store (window_end, count); drop every finished window.
+            self._buckets = {k: v for k, v in self._buckets.items() if v[0] > now}
+        if adding and len(self._buckets) >= self.MAX_KEYS:
+            evict = max(1, self.MAX_KEYS // 10)
+            for key in sorted(self._buckets, key=lambda k: self._buckets[k][0])[:evict]:
+                del self._buckets[key]
 
     def hit(self, key: str, window_s: int, now: float) -> tuple[int, float]:
         """Count one request; return ``(count, window_end)``."""
         start = _window_start(now, window_s)
         end = start + window_s
         with self._lock:
+            self._prune(now, adding=key not in self._buckets)
             current_end, count = self._buckets.get(key, (end, 0))
             if current_end != end:
                 count = 0
             count += 1
-            self._prune(now)
             self._buckets[key] = (end, count)
             return count, end
 
@@ -491,9 +504,26 @@ async def enforce_async(rule: Rule, identity: Optional[str]) -> None:
     await run_in_threadpool(enforce, rule, identity)
 
 
-def normalize_username(username: Optional[str]) -> str:
-    """Case- and whitespace-insensitive identity for per-account rules."""
-    return (username or "").strip().lower()
+def login_failure_identity(
+    person_id: Optional[str], identifier: Optional[str], client_ip: Optional[str]
+) -> str:
+    """Identity for ``auth.login.user``: the account plus the client address.
+
+    Args:
+        person_id: Resolved person, when the identifier names exactly one.
+        identifier: Submitted username or email, used when no person resolves;
+            normalized like ``person.email_normalized``.
+        client_ip: Rate limit client address.
+
+    Returns:
+        ``person:<id>|<ip>`` or ``ident:<normalized>|<ip>``.
+    """
+    from preloop.models.models.person import normalize_email
+
+    account = (
+        f"person:{person_id}" if person_id else f"ident:{normalize_email(identifier)}"
+    )
+    return f"{account}|{client_ip or 'unknown'}"
 
 
 def limit_by_ip(rule: Rule) -> Callable[[Request], None]:
@@ -510,12 +540,18 @@ def limit_by_ip(rule: Rule) -> Callable[[Request], None]:
     return dependency
 
 
-def limit_by_path_param(rule: Rule, param: str) -> Callable[[Request], None]:
-    """FastAPI dependency charging ``rule`` per value of a path parameter."""
+def limit_by_path_param_and_ip(rule: Rule, param: str) -> Callable[[Request], None]:
+    """FastAPI dependency charging ``rule`` per (path parameter, client IP).
+
+    Keying on the client as well means a caller who knows only the id cannot
+    spend every other caller's budget for that resource.
+    """
 
     def dependency(request: Request) -> None:
         value = request.path_params.get(param)
-        enforce(rule, str(value) if value is not None else None)
+        if value is None:
+            return
+        enforce(rule, f"{value}|{client_ip_for_rate_limit(request)}")
 
     dependency.__name__ = f"rate_limit_{rule.name.replace('.', '_')}"
     return dependency
@@ -557,8 +593,8 @@ __all__ = [
     "enforce",
     "enforce_async",
     "limit_by_ip",
-    "limit_by_path_param",
-    "normalize_username",
+    "limit_by_path_param_and_ip",
+    "login_failure_identity",
     "record",
     "reset_memory_store",
     "set_postgres_session_factory",

@@ -29,8 +29,9 @@ from preloop.services.rate_limit import (
     AUTH_REGISTER,
     AUTH_RESET_PASSWORD,
     check_without_counting,
+    client_ip_for_rate_limit,
     limit_by_ip,
-    normalize_username,
+    login_failure_identity,
     record as record_rate_limit,
 )
 from preloop.api.auth import bootstrap
@@ -1104,8 +1105,13 @@ async def _audited_password_login(
     source_ip: str | None,
     *,
     account_id: UUID | None = None,
+    rate_limit_ip: str | None = None,
 ) -> tuple[UserModel | None, dict[str, Any]]:
-    """Audit the final password result, including landing-policy refusals."""
+    """Audit the final password result, including landing-policy refusals.
+
+    ``rate_limit_ip`` is the trusted-proxy client address
+    (``client_ip_for_rate_limit``); ``source_ip`` is only audited.
+    """
     from preloop.api.loop_safety import run_db_off_loop
     from preloop.services.auth_audit import (
         login_failure_reason,
@@ -1120,11 +1126,19 @@ async def _audited_password_login(
 
     from starlette.concurrency import run_in_threadpool
 
-    # EE #66: refuse before checking the password once this username has used
-    # its failure budget. Only failures count (see the finally block), so a
-    # correct password is never refused because someone else is guessing.
-    limited_username = normalize_username(username)
-    await run_in_threadpool(check_without_counting, AUTH_LOGIN_USER, limited_username)
+    # EE #66: failed passwords are budgeted per (account, client address).
+    # The check runs before the password is verified, so guesses beyond the
+    # budget never reach the hash; keying on the client address as well means
+    # an attacker elsewhere cannot spend the real user's budget and lock them
+    # out. The account is the resolved person, so a username and an email for
+    # the same person share one budget.
+    def failure_key() -> str:
+        return login_failure_identity(
+            _resolve_login_person_id(db, username), username, rate_limit_ip
+        )
+
+    limited_identity = await run_in_threadpool(failure_key)
+    await run_in_threadpool(check_without_counting, AUTH_LOGIN_USER, limited_identity)
 
     user = None
     auth_context: dict[str, Any] = {}
@@ -1155,7 +1169,7 @@ async def _audited_password_login(
         if not succeeded and reason_code == "invalid_credentials":
             try:
                 await run_in_threadpool(
-                    record_rate_limit, AUTH_LOGIN_USER, limited_username
+                    record_rate_limit, AUTH_LOGIN_USER, limited_identity
                 )
             except Exception:
                 logger.warning("Could not count a failed login for rate limiting")
@@ -1181,6 +1195,18 @@ async def _audited_password_login(
             await run_db_off_loop(record)
         except Exception:
             logger.warning("Authentication audit submission failed")
+
+
+def _resolve_login_person_id(db: Session, identifier: str) -> str | None:
+    """Person id for a login identifier, or None when unknown or ambiguous."""
+    try:
+        person = crud_person.resolve_login(db, identifier=identifier)
+    except IdentityConflictError:
+        return None
+    except Exception:
+        logger.warning("Could not resolve a login identifier for rate limiting")
+        return None
+    return str(person.id) if person is not None else None
 
 
 async def _landing_row(user: UserModel, db: Session) -> UserModel:
@@ -1228,6 +1254,7 @@ async def login_form(
         form_data.password,
         db,
         get_client_ip(request),
+        rate_limit_ip=client_ip_for_rate_limit(request),
         account_id=account_id,
     )
     if not user:
@@ -1293,6 +1320,7 @@ async def login_json(
         request.password,
         db,
         get_client_ip(http_request),
+        rate_limit_ip=client_ip_for_rate_limit(http_request),
         account_id=request.account_id,
     )
     if not user:

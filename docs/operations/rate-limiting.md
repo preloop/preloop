@@ -1,5 +1,7 @@
 # Request rate limiting
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop throttles its public and authentication endpoints (EE #66). Every
 rule is a fixed window: at most *limit* requests per *window* seconds for one
 identity. A refused request gets HTTP 429:
@@ -17,20 +19,23 @@ Content-Type: application/json
 | Rule | Endpoints | Counted per | Default |
 |---|---|---|---|
 | `auth.login.ip` | `POST /api/v1/auth/token`, `POST /api/v1/auth/token/json` | client address | 10 / 60 s |
-| `auth.login.user` | same | username, failed attempts only | 5 / 60 s |
+| `auth.login.user` | same | account and client address, failed attempts | 5 / 60 s |
 | `auth.refresh` | `POST /api/v1/auth/refresh` | client address | 60 / 60 s |
 | `auth.reset_password` | `POST /api/v1/auth/reset-password` | client address | 10 / 600 s |
 | `auth.register` | `POST /api/v1/auth/register` | client address | 10 / 3600 s |
 | `oauth.token` | `POST /oauth/token` | client address | 30 / 60 s |
 | `oauth.register` | `POST /oauth/register` | client address | 10 / 3600 s |
 | `oauth.authorize` | `GET /oauth/authorize` | client address | 60 / 60 s |
-| `approval.public.ip` | `GET /api/v1/approval/{id}/data`, `POST /api/v1/approval/{id}/{action}` | client address | 30 / 60 s |
-| `approval.public.request` | same | approval request | 10 / 60 s |
+| `approval.public.ip` | `GET /approval/{id}/data`, `POST /approval/{id}/{action}` | client address | 30 / 60 s |
+| `approval.public.request` | same | approval request and client address | 10 / 60 s |
 
-`auth.login.user` counts only wrong-password attempts, so the right password is
-never refused because someone else is guessing; once the budget is spent,
-password sign-in for that username waits for the window to end. Passkeys and
-single sign-on are not affected. There is no account lockout.
+`auth.login.user` counts wrong-password attempts for one account (a username
+and an email of the same person share it) from one client address, and is
+checked before the password is verified, so guesses beyond the budget never
+reach the password hash. Because the address is part of the key, someone
+guessing from elsewhere cannot lock the real user out; users behind the same
+NAT as the guesser can be throttled for the rest of the window. There is no
+lockout beyond the window. Passkeys and single sign-on are not affected.
 
 Forgot-password, verification resend, passkey challenges and OTLP ingest keep
 their existing limits and settings.

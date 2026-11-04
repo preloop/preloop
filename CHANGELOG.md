@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Shared request rate limiting for password login, token refresh, password
+  reset, registration, the OAuth token, register and authorize endpoints and
+  public approval links. Counters live in the new `rate_limit_bucket` table
+  so every API replica shares one budget; refusals are 429 with
+  `Retry-After` and code `rate_limited`. Configure with `RATE_LIMIT_*`
+  variables, see docs/operations/rate-limiting.md.
 - Extension points for runner sharing. The runner session API passes the
   requested harness, workspace and operation to the account authorizer; a
   caller admitted through a grant sees only the harnesses and directories
