@@ -165,6 +165,7 @@ export class ToolsView extends LitElement {
   @state() private activeTab: ToolsTab = 'mcp';
   @state() private viewMode: ListViewMode = loadViewMode(VIEW_MODE_KEY);
   @state() private filters: ToolsFilters = { ...EMPTY_FILTERS };
+  @state() private mcpFiltersExpanded = false;
   @state() private nativeFilters: NativeFilters = { ...EMPTY_NATIVE_FILTERS };
   @state() private isExporting = false;
   @state() private oauthAlert: 'success' | 'error' | null = null;
@@ -253,6 +254,55 @@ export class ToolsView extends LitElement {
       .toolbar-wrap {
         width: 100%;
         margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .mcp-filter-toggle {
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-0);
+        color: var(--sl-color-neutral-700);
+        font: inherit;
+        min-height: 40px;
+        padding: 0 var(--sl-spacing-medium);
+        cursor: pointer;
+      }
+      .mcp-filter-toggle:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
+      }
+
+      .mcp-filter-toggle {
+        display: none;
+      }
+
+      .mcp-filter-controls {
+        display: contents;
+      }
+
+      .mcp-filter-controls sl-select {
+        min-width: 180px;
+      }
+
+      @media (max-width: 640px) {
+        .mcp-filter-toggle {
+          display: inline-block;
+        }
+
+        .mcp-filter-controls {
+          display: none;
+          flex: 1 1 100%;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: var(--sl-spacing-small);
+        }
+
+        .mcp-filter-controls.expanded {
+          display: grid;
+        }
+
+        .mcp-filter-controls sl-select {
+          min-width: 0;
+          width: 100%;
+        }
       }
 
       sl-select::part(form-control-label) {
@@ -2246,6 +2296,12 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   private _renderMcpToolbar() {
     const filtered = this._getFilteredTools();
     const total = this._mcpTools().length;
+    const activeFilters = [
+      ...this.filters.statuses,
+      ...this.filters.servers,
+      ...this.filters.rules,
+      ...this.filters.workflows,
+    ].length;
     return html`
       <div class="toolbar-wrap">
         <list-toolbar
@@ -2257,57 +2313,71 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           @search-change=${this._handleSearchChange}
           @view-change=${this._handleViewChange}
         >
-          <sl-select
-            class="status-filter"
-            label="Status"
-            clearable
-            placeholder="Any status"
-            .value=${this.filters.statuses[0] || ''}
-            @sl-change=${this._handleStatusFilterChange}
+          <button
+            type="button"
+            class="mcp-filter-toggle"
+            aria-expanded=${String(this.mcpFiltersExpanded)}
+            aria-controls="mcp-filter-controls"
+            @click=${() => (this.mcpFiltersExpanded = !this.mcpFiltersExpanded)}
           >
-            <sl-option value="enabled">Enabled</sl-option>
-            <sl-option value="disabled">Disabled</sl-option>
-            <sl-option value="unavailable">Unavailable</sl-option>
-          </sl-select>
-          <sl-select
-            class="server-filter"
-            label="Server"
-            clearable
-            placeholder="Any server"
-            .value=${this.filters.servers[0] || ''}
-            @sl-change=${this._handleServerFilterChange}
+            Filters${activeFilters ? ` (${activeFilters} active)` : ''}
+          </button>
+          <div
+            id="mcp-filter-controls"
+            class="mcp-filter-controls ${this.mcpFiltersExpanded ? 'expanded' : ''}"
           >
-            <sl-option value="preloop">Preloop</sl-option>
-            ${this.mcpServers.map(
-              (server) =>
-                html`<sl-option value=${server.id}>${server.name}</sl-option>`
-            )}
-          </sl-select>
-          <sl-select
-            class="rules-filter"
-            label="Rules"
-            clearable
-            placeholder="Any rules"
-            .value=${this.filters.rules[0] || ''}
-            @sl-change=${this._handleRulesFilterChange}
-          >
-            <sl-option value="with_rules">With rules</sl-option>
-            <sl-option value="no_rules">No rules</sl-option>
-            <sl-option value="require_approval">Require approval</sl-option>
-          </sl-select>
-          <sl-select
-            class="workflow-filter"
-            label="Workflow"
-            clearable
-            placeholder="Any workflow"
-            .value=${this.filters.workflows[0] || ''}
-            @sl-change=${this._handleWorkflowFilterChange}
-          >
-            ${this.approvalPolicies.map(
-              (policy) =>
-                html`<sl-option value=${policy.id}>${policy.name}</sl-option>`
-            )}
-          </sl-select>
+            <sl-select
+              class="status-filter"
+              label="Status"
+              clearable
+              placeholder="Any status"
+              .value=${this.filters.statuses[0] || ''}
+              @sl-change=${this._handleStatusFilterChange}
+            >
+              <sl-option value="enabled">Enabled</sl-option>
+              <sl-option value="disabled">Disabled</sl-option>
+              <sl-option value="unavailable">Unavailable</sl-option>
+            </sl-select>
+            <sl-select
+              class="server-filter"
+              label="Server"
+              clearable
+              placeholder="Any server"
+              .value=${this.filters.servers[0] || ''}
+              @sl-change=${this._handleServerFilterChange}
+            >
+              <sl-option value="preloop">Preloop</sl-option>
+              ${this.mcpServers.map(
+                (server) =>
+                  html`<sl-option value=${server.id}>${server.name}</sl-option>`
+              )}
+            </sl-select>
+            <sl-select
+              class="rules-filter"
+              label="Rules"
+              clearable
+              placeholder="Any rules"
+              .value=${this.filters.rules[0] || ''}
+              @sl-change=${this._handleRulesFilterChange}
+            >
+              <sl-option value="with_rules">With rules</sl-option>
+              <sl-option value="no_rules">No rules</sl-option>
+              <sl-option value="require_approval">Require approval</sl-option>
+            </sl-select>
+            <sl-select
+              class="workflow-filter"
+              label="Workflow"
+              clearable
+              placeholder="Any workflow"
+              .value=${this.filters.workflows[0] || ''}
+              @sl-change=${this._handleWorkflowFilterChange}
+            >
+              ${this.approvalPolicies.map(
+                (policy) =>
+                  html`<sl-option value=${policy.id}>${policy.name}</sl-option>`
+              )}
+            </sl-select>
+          </div>
           ${this._renderWorkflowsMenu()}
           <span slot="count"
             >${this._resultsLabel(filtered.length, total)}</span
