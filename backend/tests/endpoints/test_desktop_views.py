@@ -16,6 +16,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, AsyncIterator, Optional
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -1182,3 +1183,719 @@ def test_list_endpoints_is_not_n_plus_one(harness, db_session):
         event.remove(engine, "before_cursor_execute", count)
     assert len([r for r in rows if r["active_view"]]) == 6
     assert len(statements) <= 2, statements
+
+
+# ---------------------------------------------------------------------------
+# Explicit session -> desktop link via PRELOOP_DESKTOP_ENDPOINT_ID (#1568)
+
+
+def _plain_session(db_session, account_id) -> models.RuntimeSession:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    session = models.RuntimeSession(
+        account_id=account_id,
+        session_source_type="custom",
+        session_source_id=f"s-{uuid.uuid4().hex[:8]}",
+        started_at=now,
+    )
+    db_session.add(session)
+    db_session.commit()
+    return session
+
+
+def _runtime_key(db_session, user, *, runtime_session_id=None) -> str:
+    context = None
+    if runtime_session_id is not None:
+        context = {"runtime_session_id": str(runtime_session_id)}
+    _key, token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Adapter key",
+        account_id=user.account_id,
+        user_id=user.id,
+        context_data=context,
+    )
+    return token
+
+
+def test_session_named_endpoint_shows_live_desktop(harness, db_session):
+    """A session run with a different credential than the tunnel is linked
+    once the adapter names the endpoint (PRELOOP_DESKTOP_ENDPOINT_ID)."""
+    h = harness
+    agent = _make_agent(db_session, h.user)
+    session = _plain_session(db_session, h.user.account_id)
+    tunnel_key = h.endpoint_key(managed_agent_id=str(agent.id))
+    adapter_key = _runtime_key(db_session, h.user, runtime_session_id=session.id)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint = FakeEndpoint(h.base_ws, tunnel_key, vnc.port)
+            await endpoint.connect()
+            eid = endpoint.registered["endpoint_id"]
+            params = {"runtime_session_id": str(session.id)}
+            async with h.http() as client:
+                before = await client.get("/api/v1/desktop/endpoints", params=params)
+                linked = await client.put(
+                    f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint",
+                    json={"desktop_endpoint_id": eid},
+                    headers={"Authorization": f"Bearer {adapter_key}"},
+                )
+                after = await client.get("/api/v1/desktop/endpoints", params=params)
+                created = await client.post(
+                    f"/api/v1/desktop/endpoints/{eid}/views",
+                    json={"runtime_session_id": str(session.id)},
+                )
+            assert before.json()["endpoints"] == []
+            assert linked.status_code == 200, linked.text
+            assert linked.json() == {
+                "runtime_session_id": str(session.id),
+                "desktop_endpoint_id": eid,
+                "linked": True,
+            }
+            assert [r["endpoint_id"] for r in after.json()["endpoints"]] == [eid]
+            assert created.status_code == 201, created.text
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_session_naming_another_accounts_endpoint_is_ignored(harness, db_session):
+    h = harness
+    outsider = _make_user(db_session, username="desk-outsider")
+    session = _plain_session(db_session, h.user.account_id)
+    adapter_key = _runtime_key(db_session, h.user)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            foreign = FakeEndpoint(h.base_ws, h.endpoint_key(outsider), vnc.port)
+            await foreign.connect()
+            eid = foreign.registered["endpoint_id"]
+            foreign_pk = str(
+                db_session.query(models.DesktopEndpoint)
+                .filter(models.DesktopEndpoint.endpoint_id == eid)
+                .one()
+                .id
+            )
+            async with h.http() as client:
+                results = [
+                    await client.put(
+                        f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint",
+                        json={"desktop_endpoint_id": ident},
+                        headers={"Authorization": f"Bearer {adapter_key}"},
+                    )
+                    for ident in (eid, foreign_pk)
+                ]
+                listed = await client.get(
+                    "/api/v1/desktop/endpoints",
+                    params={"runtime_session_id": str(session.id)},
+                )
+            for result in results:
+                assert result.status_code == 200, result.text
+                assert result.json()["linked"] is False
+            assert listed.json()["endpoints"] == []
+            await foreign.close()
+
+    asyncio.run(scenario())
+
+
+def test_desktop_endpoint_link_rejects_other_sessions_and_accounts(
+    client, db_session, test_user
+):
+    session = _plain_session(db_session, test_user.account_id)
+    other = _plain_session(db_session, test_user.account_id)
+    outsider = _make_user(db_session, username="desk-outsider-2")
+    pinned = _runtime_key(db_session, test_user, runtime_session_id=other.id)
+    foreign = _runtime_key(db_session, outsider)
+    url = f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint"
+    body = {"desktop_endpoint_id": "dep_abc"}
+
+    assert client.put(url, json=body).status_code == 401
+    wrong_session = client.put(
+        url, json=body, headers={"Authorization": f"Bearer {pinned}"}
+    )
+    assert wrong_session.status_code == 403
+    wrong_account = client.put(
+        url, json=body, headers={"Authorization": f"Bearer {foreign}"}
+    )
+    assert wrong_account.status_code == 404
+    db_session.refresh(session)
+    assert session.desktop_endpoint_id is None
+
+
+def test_clearing_the_link_and_sessions_without_it(client, db_session, test_user):
+    session = _plain_session(db_session, test_user.account_id)
+    key = _runtime_key(db_session, test_user, runtime_session_id=session.id)
+    url = f"/api/v1/runtime-sessions/{session.id}/desktop-endpoint"
+    headers = {"Authorization": f"Bearer {key}"}
+
+    assert crud_desktop_filters(db_session, test_user, session) == {
+        "managed_agent_ids": [],
+        "api_key_ids": [crud_api_key.get_by_key(db_session, key=key).id],
+    }
+    set_ = client.put(url, json={"desktop_endpoint_id": "dep_abc"}, headers=headers)
+    assert set_.status_code == 200, set_.text
+    assert crud_desktop_filters(db_session, test_user, session)["endpoint_idents"] == [
+        "dep_abc"
+    ]
+    cleared = client.put(url, json={"desktop_endpoint_id": None}, headers=headers)
+    assert cleared.status_code == 200
+    assert cleared.json()["desktop_endpoint_id"] is None
+    assert "endpoint_idents" not in crud_desktop_filters(db_session, test_user, session)
+
+
+def crud_desktop_filters(db_session, user, session):
+    from preloop.models.crud import crud_desktop
+
+    db_session.expire_all()
+    return crud_desktop.session_link_filters(
+        db_session, account_id=user.account_id, runtime_session_id=session.id
+    )
+
+
+def test_runtime_session_token_records_the_desktop_endpoint(
+    client, db_session, test_user
+):
+    """Hooks and plugins name the endpoint when they mint the session token."""
+    from preloop.api.auth import get_current_active_user
+
+    client.app.dependency_overrides[get_current_active_user] = lambda: test_user
+    try:
+        response = client.post(
+            "/api/v1/auth/runtime-sessions/token",
+            json={
+                "session_source_type": "custom",
+                "session_source_id": f"hook-{uuid.uuid4().hex[:8]}",
+                "desktop_endpoint_id": "dep_from_hook",
+            },
+        )
+    finally:
+        client.app.dependency_overrides.pop(get_current_active_user, None)
+    assert response.status_code == 201, response.text
+    session = db_session.get(
+        models.RuntimeSession, uuid.UUID(response.json()["runtime_session_id"])
+    )
+    assert session.desktop_endpoint_id == "dep_from_hook"
+
+
+# ---------------------------------------------------------------------------
+# Take control through the approvals service (#1567)
+
+
+def _approvals(h: Harness):
+    """Approval service on the shared test session, as the route would use."""
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services.approval_service import ApprovalService
+
+    return ApprovalService(SyncApprovalSession(h.db), "http://localhost")
+
+
+@pytest.fixture
+def two_admins(harness, db_session):
+    h = harness
+    colleague = _make_user(
+        db_session, account_id=h.user.account_id, username="desk-colleague"
+    )
+    for user in (h.user, colleague):
+        grant_permission(db_session, user, "control_managed_agent")
+        grant_permission(db_session, user, "decide_approvals")
+
+    @asynccontextmanager
+    async def approval_db():
+        from preloop.models.db.session import SyncApprovalSession
+
+        yield SyncApprovalSession(db_session)
+
+    h.monkeypatch.setattr(desktop, "_approval_db", approval_db)
+    return colleague
+
+
+async def _live_viewer(h: Harness, vnc: FakeVncServer):
+    endpoint = FakeEndpoint(h.base_ws, h.endpoint_key(), vnc.port)
+    await endpoint.connect()
+    view = await open_view(h, endpoint)
+    return endpoint, view
+
+
+async def _input_reaches_display(viewer: RfbViewer, vnc: FakeVncServer) -> bool:
+    before = len(vnc.received_types)
+    await viewer.send_input()
+    await viewer.request_frame()
+    return bool({4, 5, 6} & set(vnc.received_types[before:]))
+
+
+def test_multi_admin_control_waits_for_another_admin(harness, two_admins):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            view_id = view["view_id"]
+            async with h.viewer(view) as ws:
+                viewer = RfbViewer(ws)
+                await viewer.handshake()
+                async with h.http() as client:
+                    asked = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                    again = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                    waiting = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert asked.status_code == 202, asked.text
+                body = asked.json()
+                assert body["mode"] == "view_only"
+                assert body["control_request"]["state"] == "pending"
+                approval_id = body["control_request"]["approval_id"]
+                assert again.status_code == 202
+                assert again.json()["control_request"]["approval_id"] == approval_id
+                assert waiting.json()["control_request"] == {
+                    "approval_id": approval_id,
+                    "state": "pending",
+                }
+                assert not await _input_reaches_display(viewer, vnc)
+
+                service = _approvals(h)
+                from fastapi import HTTPException
+
+                with pytest.raises(HTTPException) as own:
+                    await service.approve_request(
+                        uuid.UUID(approval_id), "ok", user_id=h.user.id
+                    )
+                assert own.value.status_code == 403
+                with pytest.raises(HTTPException) as anonymous:
+                    await service.approve_request(uuid.UUID(approval_id), "ok")
+                assert anonymous.value.status_code == 403
+                assert h.view(view_id).mode == "view_only"
+                assert not await _input_reaches_display(viewer, vnc)
+
+                await service.approve_request(
+                    uuid.UUID(approval_id), "go ahead", user_id=colleague.id
+                )
+                assert h.view(view_id).mode == "control"
+                await asyncio.sleep(0.1)
+                assert await _input_reaches_display(viewer, vnc)
+                async with h.http() as client:
+                    granted = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert granted.json()["mode"] == "control"
+                assert granted.json()["control_request"] is None
+                expires = datetime.fromisoformat(
+                    granted.json()["control_expires_at"].rstrip("Z")
+                )
+                now = datetime.now(UTC).replace(tzinfo=None)
+                assert expires <= now + timedelta(seconds=601)
+
+                async with h.http() as client:
+                    released = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control/release"
+                    )
+                assert released.status_code == 204
+                await asyncio.sleep(0.1)
+                assert not await _input_reaches_display(viewer, vnc)
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    granted = h.audit("desktop.control.granted")
+    assert len(granted) == 1
+    assert granted[0].details["approval"] == "approved"
+    assert granted[0].details["approver_id"] == str(colleague.id)
+    assert len(h.audit("desktop.control.requested")) == 1
+    assert h.audit("desktop.control.denied") == []
+
+
+@pytest.mark.parametrize("outcome", ["declined", "expired"])
+def test_denied_or_expired_control_request_never_forwards_input(
+    harness, two_admins, outcome
+):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            view_id = view["view_id"]
+            async with h.viewer(view) as ws:
+                viewer = RfbViewer(ws)
+                await viewer.handshake()
+                async with h.http() as client:
+                    asked = await client.post(
+                        f"/api/v1/desktop/views/{view_id}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+                service = _approvals(h)
+                if outcome == "declined":
+                    await service.decline_request(
+                        approval_id, "not now", user_id=colleague.id
+                    )
+                else:
+                    row = h.db.get(models.ApprovalRequest, approval_id)
+                    row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                        seconds=5
+                    )
+                    h.db.commit()
+                async with h.http() as client:
+                    after = await client.get(f"/api/v1/desktop/views/{view_id}")
+                assert after.json()["mode"] == "view_only"
+                assert after.json()["control_request"] is None
+                assert not await _input_reaches_display(viewer, vnc)
+                # A late approval of a settled request changes nothing.
+                await service.approve_request(approval_id, "late", user_id=colleague.id)
+                assert h.view(view_id).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    denied = h.audit("desktop.control.denied")
+    assert len(denied) == 1
+    assert denied[0].details["approval_status"] == outcome
+    assert denied[0].details["approver_id"] == (
+        str(colleague.id) if outcome == "declined" else None
+    )
+    assert h.audit("desktop.control.granted") == []
+
+
+def test_single_admin_still_self_confirms(harness, db_session):
+    """With nobody else to decide, the OSS v1 self-confirm stays."""
+    h = harness
+    grant_permission(db_session, h.user, "decide_approvals")
+    grant_permission(db_session, h.user, "control_managed_agent")
+    # A member without decide_approvals is not a second admin.
+    _make_user(db_session, account_id=h.user.account_id, username="desk-member")
+    from preloop.utils import permissions
+
+    real = permissions.user_holds_permission
+
+    def holds(db, user, name):
+        if getattr(user, "username", "") == "desk-member":
+            return False
+        return real(db, user, name)
+
+    h.monkeypatch.setattr(desktop, "user_holds_permission", holds)
+    h.monkeypatch.setattr(permissions, "members_have_full_access", lambda: False)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                granted = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["mode"] == "control"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    granted = h.audit("desktop.control.granted")
+    assert granted[0].details["approval"] == "self_confirmed"
+
+
+def test_single_admin_cannot_self_confirm_an_expired_view(
+    harness: Any, db_session: Any
+) -> None:
+    """The self-confirm path must reject expiry before the sweeper runs."""
+    h = harness
+    grant_permission(db_session, h.user, "decide_approvals")
+    grant_permission(db_session, h.user, "control_managed_agent")
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.viewer(view) as sock:
+                await RfbViewer(sock).handshake()
+                row = h.view(view["view_id"])
+                assert row.state == "live"
+                row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                    seconds=1
+                )
+                h.db.commit()
+                async with h.http() as client:
+                    response = await client.post(
+                        f"/api/v1/desktop/views/{view['view_id']}/control",
+                        json={"reason": "fix the stuck dialog"},
+                    )
+                assert response.status_code == 409, response.text
+                assert response.json()["detail"]["code"] == "desktop_view_closed"
+                assert h.view(view["view_id"]).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert h.audit("desktop.control.granted") == []
+
+
+def test_closing_the_view_settles_its_control_request(harness, two_admins):
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+                await client.delete(f"/api/v1/desktop/views/{view['view_id']}")
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "expired"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    denied = h.audit("desktop.control.denied")
+    assert len(denied) == 1 and denied[0].details["approval_status"] == "expired"
+
+
+def test_bulk_inbox_expiry_leaves_control_requests_to_the_service(harness, two_admins):
+    from preloop.models.crud import crud_approval_request
+
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            row = h.db.get(models.ApprovalRequest, approval_id)
+            row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                seconds=5
+            )
+            h.db.commit()
+            crud_approval_request.expire_stale_pending(
+                h.db, account_id=h.user.account_id
+            )
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "pending"
+            async with h.http() as client:
+                await client.get(f"/api/v1/desktop/views/{view['view_id']}")
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "expired"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert len(h.audit("desktop.control.denied")) == 1
+
+
+def test_approval_after_the_view_ran_out_is_a_denial(harness, two_admins):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            row = h.view(view["view_id"])
+            row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                seconds=1
+            )
+            h.db.commit()
+            await _approvals(h).approve_request(
+                uuid.UUID(asked.json()["control_request"]["approval_id"]),
+                "ok",
+                user_id=colleague.id,
+            )
+            assert h.view(view["view_id"]).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert h.audit("desktop.control.granted") == []
+    assert len(h.audit("desktop.control.denied")) == 1
+
+
+def test_second_admin_found_beyond_the_first_page(harness, db_session, monkeypatch):
+    from preloop.utils import permissions
+
+    h = harness
+    members = [
+        _make_user(db_session, account_id=h.user.account_id, username=f"desk-m{i}")
+        for i in range(3)
+    ]
+    approver = max(members, key=lambda m: m.id)
+    monkeypatch.setattr(permissions, "members_have_full_access", lambda: False)
+    monkeypatch.setattr(
+        desktop, "user_holds_permission", lambda db, u, n: u.id == approver.id
+    )
+    real = desktop.crud_desktop.active_member_ids
+    monkeypatch.setattr(
+        desktop.crud_desktop,
+        "active_member_ids",
+        lambda db, **kw: real(db, **{**kw, "limit": 1}),
+    )
+    assert desktop._has_other_approver(db_session, h.user)
+    monkeypatch.setattr(desktop, "user_holds_permission", lambda db, u, n: False)
+    assert not desktop._has_other_approver(db_session, h.user)
+
+
+def test_control_request_notifies_the_other_admins_not_the_requester(
+    harness, two_admins, monkeypatch
+):
+    from preloop.services.approval_service import ApprovalService
+
+    h = harness
+    colleague = two_admins
+    notified = []
+
+    async def capture(self, approval, workflow, *, recipient_user_ids):
+        notified.append(recipient_user_ids)
+        return {}
+
+    monkeypatch.setattr(ApprovalService, "send_notifications", capture)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert asked.status_code == 202
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert notified == [[colleague.id]]
+
+
+@pytest.mark.parametrize("channel", ["webhook", "slack", "mattermost"])
+def test_control_request_queues_workflow_webhook(
+    harness: Harness, two_admins: models.User, monkeypatch: Any, channel: str
+) -> None:
+    """Recipient selection must not replace the persistent workflow row."""
+    from preloop.services import chat_worker
+    from preloop.services.approval_service import ApprovalService
+
+    h = harness
+    workflow = models.ApprovalWorkflow(
+        account_id=h.user.account_id,
+        name="Desktop approval notifications",
+        approval_type="standard",
+        is_default=True,
+        approver_user_ids=[h.user.id],
+        channel_configs={channel: {"url": "https://chat.example.com/approvals"}},
+    )
+    h.db.add(workflow)
+    h.db.commit()
+    # Only external per-user delivery is stubbed. Keep the webhook shim,
+    # delivery outbox and notification audit on the real database session.
+    monkeypatch.setattr(
+        ApprovalService,
+        "_partition_approvers_for_stagger",
+        AsyncMock(
+            return_value={
+                "push_capable": [two_admins.id],
+                "email_only": [two_admins.id],
+                "both_immediate": [],
+                "both_stagger": [],
+                "all_email": [two_admins.id],
+            }
+        ),
+    )
+    push = AsyncMock(return_value={"success": True})
+    email = AsyncMock(return_value={"success": True})
+    chat = Mock(return_value=1)
+    monkeypatch.setattr(ApprovalService, "_send_push_notification", push)
+    monkeypatch.setattr(ApprovalService, "_send_email_notification", email)
+    monkeypatch.setattr(chat_worker, "enqueue_approval_notifications", chat)
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            assert asked.status_code == 202, asked.text
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            delivery = (
+                h.db.query(models.WebhookDelivery)
+                .filter(models.WebhookDelivery.subject_id == approval_id)
+                .one()
+            )
+            assert delivery.status == "pending"
+            shim = h.db.get(models.WebhookEndpoint, delivery.endpoint_id)
+            assert shim.approval_workflow_id == workflow.id
+            assert shim.url == "https://chat.example.com/approvals"
+            h.db.refresh(workflow)
+            assert workflow.approver_user_ids == [h.user.id]
+            assert workflow.approval_config["webhook_secret"]
+            assert h.db.is_active
+            push.assert_awaited_once_with(
+                push.await_args.args[0], workflow, user_ids=[two_admins.id]
+            )
+            email.assert_awaited_once_with(
+                email.await_args.args[0], workflow, user_ids=[two_admins.id]
+            )
+            assert chat.call_args.args[2] == [two_admins.id]
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_existing_approval_found_under_the_lock_is_reused(harness, two_admins):
+    """The branch the view lock exists for: the pre-lock check missed a
+    pending approval that another request created."""
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            url = f"/api/v1/desktop/views/{view['view_id']}/control"
+            async with h.http() as client:
+                first = await client.post(url, json={"reason": "fix the dialog"})
+                h.monkeypatch.setattr(desktop, "_pending_control", lambda db, v: None)
+                second = await client.post(url, json={"reason": "fix the dialog"})
+            assert second.status_code == 202
+            assert (
+                second.json()["control_request"]["approval_id"]
+                == first.json()["control_request"]["approval_id"]
+            )
+            assert (
+                h.db.query(models.ApprovalRequest)
+                .filter(models.ApprovalRequest.tool_name == "desktop_control")
+                .count()
+                == 1
+            )
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_view_closed_before_the_lock_gets_no_approval(harness, two_admins):
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            real = desktop.crud_desktop.lock_view_async
+
+            async def close_first(db, *, view_id):
+                row = h.view(view["view_id"])
+                row.state = "closed"
+                h.db.commit()
+                return await real(db, view_id=view_id)
+
+            h.monkeypatch.setattr(desktop.crud_desktop, "lock_view_async", close_first)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the dialog"},
+                )
+            assert asked.status_code == 409
+            assert asked.json()["detail"]["code"] == "desktop_view_closed"
+            assert (
+                h.db.query(models.ApprovalRequest)
+                .filter(models.ApprovalRequest.tool_name == "desktop_control")
+                .count()
+                == 0
+            )
+            await endpoint.close()
+
+    asyncio.run(scenario())

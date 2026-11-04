@@ -19,7 +19,7 @@ pip install ./runtime-plugins/browser-use-preloop
 from browser_use import Agent
 from preloop_browser_use import PreloopBrowserUseReporter
 
-# Reads PRELOOP_URL, PRELOOP_AGENT_KEY, PRELOOP_RUNTIME_SESSION_ID.
+# Reads PRELOOP_URL, PRELOOP_AGENT_KEY and PRELOOP_SESSION_ID.
 reporter = PreloopBrowserUseReporter.from_env()
 agent = Agent(task="Draft a reorder for SKU WH-7781", llm=llm)
 history = await reporter.run(agent, max_steps=30)  # flushes at the end
@@ -39,7 +39,14 @@ reporter.close()
 | --- | --- |
 | `PRELOOP_URL` | Preloop base URL, with or without `/api/v1`. |
 | `PRELOOP_AGENT_KEY` | The agent key (falls back to `PRELOOP_API_KEY`). The same bearer the model gateway accepts. |
-| `PRELOOP_RUNTIME_SESSION_ID` | Runtime session the steps attach to. Use the `runtime_session_id` returned by `POST /api/v1/auth/runtime-sessions/token`, or the id shown on the session page. |
+| `PRELOOP_SESSION_ID` | The session key your LLM client sends the model gateway as `X-Preloop-Session-Id`. The reporter resolves it to the runtime session with `GET /api/v1/runtime-sessions/resolve?create=true`, so steps and model turns share one session. |
+| `PRELOOP_RUNTIME_SESSION_ID` | Optional. A known runtime session id; wins over `PRELOOP_SESSION_ID`. |
+| `PRELOOP_DESKTOP_ENDPOINT_ID` | Optional. Set by `preloop desktop enable`; when present (or when `~/.preloop/desktop.json` has an `endpoint_id`) the reporter links the session to this host's live desktop once per run. |
+
+If your LLM client already goes through the gateway, `RuntimeSessionCapture`
+is an `httpx` response hook that records the `X-Preloop-Runtime-Session-Id`
+header; after the first model call, `capture.target(url, key)` returns a
+`PreloopTarget` for `PreloopBrowserUseReporter(target)`.
 
 When any variable is missing the reporter logs one warning and does
 nothing; the agent still runs.

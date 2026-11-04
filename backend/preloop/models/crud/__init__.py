@@ -7,6 +7,7 @@ from .callback_receipt import crud_callback_key_binding, crud_callback_receipt
 from .review_publication_receipt import crud_review_publication_receipt
 from .mcp_inventory import crud_mcp_inventory
 from .support import crud_support
+from .rate_limit import crud_rate_limit
 from ..models import (
     Account,
     AccountDiscoverySalt,
@@ -341,6 +342,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 __all__ = [
     "crud_observation_verification",
     "crud_support",
+    "crud_rate_limit",
     "crud_mcp_inventory",
     "crud_fleet_finding",
     "crud_fleet_alert_settings",

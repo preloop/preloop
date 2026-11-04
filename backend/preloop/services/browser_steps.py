@@ -426,6 +426,29 @@ def _require_session(
     runtime_session_id: str,
 ) -> None:
     """Reject a path the credential may not write, or that is not owned."""
+    require_writable_session(db, auth=auth, runtime_session_id=runtime_session_id)
+
+
+def require_writable_session(
+    db: Session,
+    *,
+    auth: ModelGatewayAuthContext,
+    runtime_session_id: str,
+) -> Any:
+    """The session an agent bearer may write, shared by agent-bearer routes.
+
+    Args:
+        db: Database session.
+        auth: Authenticated agent credential.
+        runtime_session_id: Session named in the request path.
+
+    Returns:
+        The runtime session row.
+
+    Raises:
+        BrowserStepsError: 403 when the credential is pinned to another
+            session, 404 when the session is not in the credential's account.
+    """
     try:
         canonical = str(UUID(str(runtime_session_id).strip()))
     except ValueError:
@@ -443,6 +466,7 @@ def _require_session(
     )
     if session is None:
         raise BrowserStepsError(404, "Runtime session not found")
+    return session
 
 
 def _emit_session_updated(

@@ -268,3 +268,109 @@ async def test_async_acceptance_does_not_emit_terminal_result() -> None:
     assert not any(
         item["name"] in {"command_result", "command_error"} for item in outbound
     )
+
+
+# --- desktop.install (#1566) -------------------------------------------------
+
+
+def _install_envelope(**payload: Any) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "name": "desktop.install",
+        "message_id": "req-1",
+        "payload": {"request_id": "req-1", "managed_agent_id": "agent-1", **payload},
+    }
+
+
+@pytest.mark.asyncio
+async def test_desktop_install_runs_the_cli_and_reports_ok() -> None:
+    from preloop.integrations.agent_control.core import (
+        HookedDesktopInstaller,
+        run_desktop_enable,
+    )
+
+    calls: list[list[str]] = []
+
+    async def run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return 0, "Enabled preloop-desktop-tunnel.service"
+
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        raise AssertionError("not a message")
+
+    adapter = OpenClawAgentControlAdapter.with_hooks(send_message=send_message)
+    adapter.desktop_installer = HookedDesktopInstaller(
+        lambda agent_id: run_desktop_enable(agent_id, run=run)
+    )
+    outbound = await dispatch_operator_command(adapter, _install_envelope())
+
+    assert calls == [["preloop", "desktop", "enable", "--agent", "agent-1"]]
+    assert outbound == [
+        {
+            "type": "status",
+            "name": "command_result",
+            "message_id": "req-1",
+            "payload": {
+                "command_id": "req-1",
+                "status": "completed",
+                "command": "desktop.install",
+                "desktop_install": {"ok": True},
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "error"),
+    [
+        ("Error: desktop_unsupported_distro", "desktop_unsupported_distro"),
+        ("Error: desktop_privilege_required", "desktop_privilege_required"),
+        ("Error: desktop_unsupported_os", "desktop_unsupported_os"),
+        ("apt-get exploded", "desktop_failed"),
+    ],
+)
+async def test_desktop_install_maps_cli_failures(output: str, error: str) -> None:
+    from preloop.integrations.agent_control.core import run_desktop_enable
+
+    async def run(argv: list[str]) -> tuple[int, str]:
+        return 1, output
+
+    assert await run_desktop_enable("agent-1", run=run) == {"ok": False, "error": error}
+
+
+@pytest.mark.asyncio
+async def test_desktop_install_without_an_installer_is_unsupported() -> None:
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        raise AssertionError("not a message")
+
+    adapter = OpenClawAgentControlAdapter.with_hooks(send_message=send_message)
+    outbound = await dispatch_operator_command(adapter, _install_envelope())
+    assert outbound[0]["name"] == "command_error"
+    assert outbound[0]["payload"]["error"] == "unsupported agent-control command"
+
+
+def test_hermes_client_answers_desktop_install(tmp_path: Path) -> None:
+    from preloop.integrations.agent_control import create_hermes_agent_control_client
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        json.dumps(
+            {
+                "preloop": {
+                    "control": {
+                        "control_ws_url": "ws://localhost:8000/api/v1/agents/control/ws",
+                        "bearer_token": "agt_local",
+                        "runtime_principal_id": "hermes-1",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        raise AssertionError("not a message")
+
+    client = create_hermes_agent_control_client(config_path, send_message=send_message)
+    assert client.hooks.desktop_installer is not None

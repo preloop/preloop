@@ -67,6 +67,7 @@
   "GET /api/v1/agents/{agent_id}/control/commands/{command_id}": "deny",
   "GET /api/v1/agents/{agent_id}/credentials": "deny",
   "GET /api/v1/agents/{agent_id}/desktop-views/{view_id}": "deny",
+  "GET /api/v1/agents/{agent_id}/desktop/install/{request_id}": "deny",
   "GET /api/v1/agents/{agent_id}/enrollments": "deny",
   "GET /api/v1/agents/{agent_id}/governance": "deny",
   "GET /api/v1/agents/{agent_id}/model-bindings": "deny",
@@ -345,6 +346,7 @@
   "POST /api/v1/agents/{agent_id}/desktop-views": "deny",
   "POST /api/v1/agents/{agent_id}/desktop-views/{view_id}/control": "deny",
   "POST /api/v1/agents/{agent_id}/desktop-views/{view_id}/control/release": "deny",
+  "POST /api/v1/agents/{agent_id}/desktop/install": "deny",
   "POST /api/v1/agents/{agent_id}/enrollments": "deny",
   "POST /api/v1/agents/{agent_id}/enrollments/{enrollment_id}/restore": "deny",
   "POST /api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate": "deny",
@@ -562,6 +564,7 @@
   "PUT /api/v1/projects/{project_id}/readiness-policy": "deny",
   "PUT /api/v1/retention/settings": "deny",
   "PUT /api/v1/runtime-sessions/settings/embedding": "deny",
+  "PUT /api/v1/runtime-sessions/{runtime_session_id}/desktop-endpoint": "deny",
   "PUT /api/v1/tool-configurations/{config_id}": "deny",
   "PUT /api/v1/tool-configurations/{config_id}/approval-condition": "deny",
   "PUT /api/v1/tool-configurations/{config_id}/condition": "deny",
@@ -579,5 +582,6 @@
   "WEBSOCKET /api/v1/ws/runtime-sessions/{runtime_session_id}": "deny",
   "WEBSOCKET /api/v1/ws/unified": "deny",
   "GET /api/v1/users/{user_id}/machine-credentials": "deny",
-  "POST /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}": "deny"
+  "POST /api/v1/weekly-report/deliveries/{delivery_id}/acknowledge/{exception_key}": "deny",
+  "GET /api/v1/runtime-sessions/resolve": "deny"
 }

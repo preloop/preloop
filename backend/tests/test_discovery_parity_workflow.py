@@ -1,4 +1,4 @@
-"""Guard offline discovery checks on hosted and self-hosted Linux runners."""
+"""Guard native discovery runner selection and offline Linux isolation."""
 
 from pathlib import Path
 
@@ -41,14 +41,12 @@ def test_linux_discovery_uses_narrow_self_hosted_helper() -> None:
     )
 
 
-def test_discovery_linux_avoids_private_alias_without_changing_other_platforms() -> (
-    None
-):
+def test_discovery_uses_native_hosted_platforms() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text())
     job = workflow["jobs"]["discovery-parity"]
     assert job["strategy"]["matrix"]["os"] == [
         "ubuntu-24.04",
-        "macos-latest",
+        "macos-26-intel",
         "windows-latest",
     ]
     assert job["runs-on"] == "${{ matrix.os }}"

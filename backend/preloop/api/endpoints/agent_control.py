@@ -1068,6 +1068,19 @@ def _persist_agent_control_result(
     }
     error_text = inbound.payload.get("error")
     full_result_payload = _sanitize_agent_control_result_payload(inbound.payload)
+    envelope_name = (
+        command.envelope.get("name") if isinstance(command.envelope, dict) else None
+    )
+    # Audit the first result only: a repeated result is ignored by
+    # mark_terminal_result and must not write a second audit row.
+    if (
+        envelope_name == DESKTOP_INSTALL_COMMAND
+        and command.status not in {"failed", "expired", "cancelled"}
+        and crud_agent_control_command.command_result_payload(command) is None
+    ):
+        _audit_desktop_install_result(
+            db, command=command, failed=failed, payload=inbound.payload
+        )
     crud_agent_control_command.mark_terminal_result(
         db,
         account_id=context.account_id,
@@ -2550,3 +2563,230 @@ async def release_managed_agent_session(
         current_user=current_user,
         db=db,
     )
+
+
+# ---------------------------------------------------------------------------
+# Console "Enable desktop" (#1566)
+#
+# ``desktop.install {request_id}`` asks the runtime plugin to run
+# ``preloop desktop enable --agent <id>`` on its host with the CLI login it
+# already has. The plugin answers with the usual ``command_result`` carrying
+# ``desktop_install: {ok, error?}`` or a ``command_error`` whose ``error`` is
+# one of DESKTOP_INSTALL_ERRORS. A plugin that predates the command answers
+# with neither; that reads as ``unsupported`` and the console shows the
+# one-line command instead. The request id is the command id.
+
+DESKTOP_INSTALL_COMMAND = "desktop.install"
+#: What the agent-control kit answers for a command name it does not know.
+UNKNOWN_COMMAND_ERROR = "unsupported agent-control command"
+DESKTOP_INSTALL_ERRORS = frozenset(
+    {
+        "desktop_unsupported_os",
+        "desktop_unsupported_distro",
+        "desktop_privilege_required",
+        "desktop_failed",
+    }
+)
+
+
+def _desktop_enable_command(agent_id: Any) -> str:
+    return f"preloop desktop enable --agent {agent_id}"
+
+
+def _desktop_install_outcome(
+    payload: Optional[dict[str, Any]], *, errored: bool
+) -> tuple[str, Optional[str]]:
+    """``(state, error)`` for a finished ``desktop.install``."""
+    payload = payload or {}
+    result = payload.get("desktop_install")
+    if isinstance(result, dict):
+        if result.get("ok") is True:
+            return "done", None
+        error = result.get("error")
+        error = error if isinstance(error, str) else None
+        return "failed", error if error in DESKTOP_INSTALL_ERRORS else "desktop_failed"
+    error = payload.get("error")
+    error = error if isinstance(error, str) else None
+    if errored:
+        # Only the kit's own refusal means the plugin predates the command.
+        if error == UNKNOWN_COMMAND_ERROR:
+            return "unsupported", None
+        return "failed", str(error) if error in DESKTOP_INSTALL_ERRORS else (
+            "desktop_failed"
+        )
+    return "unsupported", None
+
+
+def _audit_desktop_install_result(
+    db: Session,
+    *,
+    command: Any,
+    failed: bool,
+    payload: dict[str, Any],
+) -> None:
+    state, error = _desktop_install_outcome(payload, errored=failed)
+    if state == "unsupported":
+        return
+    crud_audit_log.log_action(
+        db,
+        account_id=command.account_id,
+        user_id=command.created_by_user_id,
+        action="desktop.install.succeeded"
+        if state == "done"
+        else "desktop.install.failed",
+        resource_type="managed_agent",
+        resource_id=str(command.managed_agent_id),
+        status="success" if state == "done" else "failure",
+        details={"request_id": command.command_id, "error": error},
+        commit=False,
+    )
+
+
+@require_permission("manage_agents")
+def _require_manage_agents(*, current_user: models.User, db: Session) -> None:
+    """``manage_agents``: enabling a desktop installs packages and mints a key."""
+    ensure_permission_in_oss(db, current_user, "manage_agents")
+
+
+def _require_desktop_install_enabled() -> None:
+    """Apply the desktop feature flag to installation and status requests."""
+    if not settings.desktop_views_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "desktop_views_disabled",
+                "message": "Desktop views are not enabled",
+            },
+        )
+
+
+@router.post(
+    "/agents/{agent_id}/desktop/install",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        409: {
+            "description": (
+                "No Agent Control channel; ``detail.command`` is the one-line "
+                "command to run on the host"
+            )
+        }
+    },
+)
+async def request_agent_desktop_install(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Ask the agent's runtime plugin to enable a live desktop on its host.
+
+    Returns 404 ``desktop_views_disabled`` when desktop views are disabled.
+    """
+    _require_desktop_install_enabled()
+    await run_db_off_loop(
+        lambda: _require_manage_agents(current_user=current_user, db=db)
+    )
+    try:
+        uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Managed agent not found") from None
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=str(current_user.account_id), agent_id=agent_id
+    )
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Managed agent not found")
+    unavailable = HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "desktop_install_unavailable",
+            "message": "This agent has no Agent Control channel",
+            "command": _desktop_enable_command(agent.id),
+        },
+    )
+    if agent.lifecycle_state != "active" or not _agent_has_control_config(
+        db, account_id=str(current_user.account_id), agent=agent
+    ):
+        raise unavailable
+    request_id = str(uuid.uuid4())
+    try:
+        # Raises when the control socket is gone (no runtime session).
+        envelope = build_operator_envelope(
+            agent,
+            name=DESKTOP_INSTALL_COMMAND,
+            payload={"request_id": request_id, "managed_agent_id": str(agent.id)},
+        )
+    except AgentControlDispatchError as exc:
+        raise unavailable from exc
+    envelope = envelope.model_copy(update={"message_id": request_id})
+    try:
+        await persist_and_deliver_command(
+            db,
+            agent=agent,
+            envelope=envelope,
+            source="console",
+            created_by_user_id=current_user.id,
+            require_delivery=True,
+        )
+    except AgentControlDispatchError as exc:
+        raise unavailable from exc
+    crud_audit_log.log_action(
+        db,
+        account_id=current_user.account_id,
+        user_id=current_user.id,
+        action="desktop.install.requested",
+        resource_type="managed_agent",
+        resource_id=str(agent.id),
+        status="success",
+        details={"request_id": request_id},
+    )
+    return {"request_id": request_id, "state": "pending"}
+
+
+@router.get("/agents/{agent_id}/desktop/install/{request_id}")
+def get_agent_desktop_install(
+    agent_id: str,
+    request_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, Any]:
+    """State of one ``desktop.install`` request: pending, done, failed or
+    unsupported (the plugin does not know the command). Sync, so FastAPI
+    runs it in the threadpool off the event loop.
+
+    Returns 404 ``desktop_views_disabled`` when desktop views are disabled.
+    """
+    _require_desktop_install_enabled()
+    _require_manage_agents(current_user=current_user, db=db)
+    try:
+        agent_uuid = uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Request not found") from None
+    record = crud_agent_control_command.get_for_consumer(
+        db,
+        account_id=current_user.account_id,
+        managed_agent_id=agent_uuid,
+        command_id=request_id.strip(),
+    )
+    envelope = record.envelope if record is not None else None
+    if (
+        record is None
+        or not isinstance(envelope, dict)
+        or envelope.get("name") != DESKTOP_INSTALL_COMMAND
+    ):
+        raise HTTPException(status_code=404, detail="Request not found")
+    delivery_state, _ = command_delivery_state(record)
+    state, error = "pending", None
+    if delivery_state in TERMINAL_COMMAND_DELIVERY_STATES:
+        payload = crud_agent_control_command.command_result_payload(record)
+        if payload is None and record.last_error:
+            payload = {"error": record.last_error}
+        state, error = _desktop_install_outcome(
+            payload, errored=str(record.status) == "failed"
+        )
+        if delivery_state in {"expired", "cancelled"} and state == "unsupported":
+            state, error = "failed", "desktop_failed"
+    return {
+        "request_id": record.command_id,
+        "state": state,
+        "error": error,
+        "command": _desktop_enable_command(agent_uuid),
+    }

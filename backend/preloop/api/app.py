@@ -995,6 +995,7 @@ def _register_control_plane_routes(
         runners,
         runtime_session_artifacts,
         runtime_session_browser_steps,
+        runtime_session_desktop,
     )
     from preloop.api.endpoints import search as search_router
     from preloop.api.endpoints import delivery_report_policy
@@ -1075,6 +1076,16 @@ def _register_control_plane_routes(
         gateway_identity_providers.router,
         prefix="/api/v1",
         tags=["Gateway Identity Providers"],
+    )
+    # Before account.router: its "/runtime-sessions/{runtime_session_id}"
+    # route would otherwise capture "/runtime-sessions/resolve". Gateway
+    # bearer auth happens inside the route (#1358).
+    from preloop.api.endpoints import runtime_session_resolve
+
+    app.include_router(
+        runtime_session_resolve.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
     )
     app.include_router(
         account.router,
@@ -1411,6 +1422,12 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Runtime Sessions"],
     )
+    # Same agent-bearer authentication as browser steps (#1568).
+    app.include_router(
+        runtime_session_desktop.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+    )
     # Artifact deposit and list authenticate inside the route for the same
     # reason: the agent's runtime key is the main caller.
     app.include_router(
@@ -1540,6 +1557,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # EE #66: 429 body with the stable ``rate_limited`` code and Retry-After.
+    from preloop.services.rate_limit import install_rate_limit_handler
+
+    install_rate_limit_handler(app)
+
     # Add global exception handler to ensure all errors are logged
     @app.exception_handler(ModelGatewayAPIError)
     async def model_gateway_exception_handler(
@@ -1661,6 +1683,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Browser-side adapters read the session the gateway attributed the
+        # request to (#1358).
+        expose_headers=["X-Preloop-Runtime-Session-Id"],
     )
 
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()

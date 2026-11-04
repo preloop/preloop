@@ -303,6 +303,20 @@ class CRUDChat:
         )
         if request is None:
             return False
+        if request.tool_name == "desktop_control":
+            # Desktop control is decided by another active admin, regardless
+            # of the default workflow's saved approvers. Apply the same rule
+            # when queueing, delivering and acting on a private-chat prompt.
+            from preloop.utils.permissions import user_holds_permission
+            from .desktop import crud_desktop
+
+            view = crud_desktop.control_approval_view(db, request)
+            return bool(
+                user.is_active
+                and view is not None
+                and user.id != view.user_id
+                and user_holds_permission(db, user, "decide_approvals")
+            )
         workflow = (
             db.query(models.ApprovalWorkflow)
             .filter_by(id=request.approval_workflow_id, account_id=user.account_id)

@@ -280,3 +280,25 @@ filtering and `allowed_mcp_tools` on this page are not a network boundary.
 ## Governed usage rows
 
 Each governed tool call writes one `runtime_session_activity` row. `status` is `succeeded`, `refused` (a policy or approval denial), or `failed` (the handler or the upstream server errored). Older rows may still say `success`; readers treat any status that starts with `succ` as success. The row does not store the argument payload. `metadata.arguments_summary` is key names and sizes, and `metadata.arguments_hash` distinguishes same-shape calls for loop detection. `metadata.started_at` is the call start, so a timeline can match a parsed "detected" marker (stamped at start) to the row (stamped at end) for calls longer than a few seconds. The execution detail's `mcp_usage_logs` entries expose `status`, `summary`, `error`, and `arguments_summary` rather than the raw metadata object.
+
+## API-key scopes and delegated grants
+
+API-key scopes are retained in MCP request context: `mcp:read` permits
+discovery and resource/prompt reads, while `mcp:write` permits tool invocation.
+These checks precede dispatch and preserve the independent account, runtime,
+tool-list and policy limits. REST and console channels confine MCP-only keys;
+discovery, telemetry and enrollment credentials retain their narrow surfaces.
+See [agent credential boundaries](../security/agent-isolation.md).
+
+MCP calls with delegated-grant introspection resolve the prefix/first-wins server
+through CRUD once and copy its dispatch configuration before releasing the DB.
+The exact forwarded bearer/OAuth token is checked with RFC 7662 before access
+rules, after approval waits, and after client connection waits. A call keeps the
+same owner/configuration throughout; asynchronous approval replay starts a fresh
+snapshot and grant check. Inactive grants, missing scopes and unavailable
+introspection have separate denial reasons. Only explicit fail-open allows an
+unavailable result. Hash-keyed bounded caches limit revocation delay to the
+configured TTL (at most 300 seconds); expiry shortens it. Safe grant metadata
+flows into policy and tool-call audits, whose account-scoped consent index is
+built concurrently. Synthetic simulation does no introspection HTTP. See
+[Delegated grants](../guide/grant-introspection.md).

@@ -6634,7 +6634,7 @@ class FlowExecutionOrchestrator:
                 )
 
     def _review_publication_required(self) -> bool:
-        """Whether this flow (or its source preset) requires a delivered review."""
+        """Whether this flow opted in to a delivered review (never inherited)."""
         from preloop.services.review_publication import (
             review_publication_required,
         )
@@ -6642,16 +6642,7 @@ class FlowExecutionOrchestrator:
         flow = getattr(self, "flow", None)
         if flow is None:
             return False
-        own = getattr(flow, "git_clone_config", None)
-        preset_config = None
-        preset_id = getattr(flow, "source_preset_id", None)
-        own_block = own.get("review_publication") if isinstance(own, dict) else None
-        if not isinstance(own_block, dict) and preset_id is not None:
-            preset = crud_flow.get(self.db, id=preset_id)
-            if preset is None or not getattr(preset, "is_preset", False):
-                raise ValueError(f"Source preset {preset_id} is unavailable")
-            preset_config = getattr(preset, "git_clone_config", None)
-        return review_publication_required(own, preset_config)
+        return review_publication_required(getattr(flow, "git_clone_config", None))
 
     def _apply_review_publication_gate(
         self, final_status: str, agent_result: Dict[str, Any], merged_result: Any
@@ -6668,7 +6659,6 @@ class FlowExecutionOrchestrator:
         from preloop.models.crud import crud_review_publication_receipt
         from preloop.services.review_publication import (
             REASON_LOOKUP_FAILED,
-            REASON_PRESET_LOOKUP_FAILED,
             REVIEW_PUBLICATION_INCOMPLETE,
             REVIEW_PUBLICATION_RESULT_KEY,
             STATUS_NOT_PUBLISHED,
@@ -6676,11 +6666,10 @@ class FlowExecutionOrchestrator:
             trigger_pull_request,
         )
 
-        lookup_failure_reason = REASON_PRESET_LOOKUP_FAILED
+        if not self._review_publication_required():
+            return final_status, agent_result, merged_result
+        lookup_failure_reason = REASON_LOOKUP_FAILED
         try:
-            if not self._review_publication_required():
-                return final_status, agent_result, merged_result
-            lookup_failure_reason = REASON_LOOKUP_FAILED
             account_id = getattr(self.flow, "account_id", None)
             repository, pull_request = trigger_pull_request(self.trigger_event_data)
             head_sha = getattr(self, "_commit_sha", None) or self._extract_commit_sha()

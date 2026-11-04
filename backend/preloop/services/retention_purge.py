@@ -12,7 +12,7 @@ added centrally by :func:`_hold_filters_for_model` from the flag on the model,
 so a class cannot carry a cutoff without carrying the hold check; a class whose
 model has no flag has to say so in :data:`HOLD_EXEMPT_CLASSES` and explain why.
 Statements that write a model outside :data:`RECORD_CLASSES` (the legacy
-evidence-column drop on ``FlowExecution``) unpack the same helper.
+evidence-column drop on ``models.FlowExecution``) unpack the same helper.
 
 **It is off by default.** ``RETENTION_PURGE_ENABLED`` is false. An operator
 upgrading to this release does not discover afterwards that a background job
@@ -55,18 +55,12 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.models import models
 from preloop.models.crud import crud_audit_log
+from preloop.models.crud import retention_sweeps
 from preloop.models.crud.history_policy import lock_account_for_retention
 from preloop.models.crud.legal_hold import execution_in_account
 from preloop.models.db.session import get_db_session
-from preloop.models.models.account import Account
-from preloop.models.models.api_usage import ApiUsage
-from preloop.models.models.approval_request import ApprovalRequest
-from preloop.models.models.audit_log import AuditLog
-from preloop.models.models.flow_artifact import FlowArtifact
-from preloop.models.models.flow_execution import FlowExecution
-from preloop.models.models.runtime_session import RuntimeSession
-from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.services.analytics_history import storage_history_days
 from preloop.services.retention_policy import (
     CLASS_APPROVALS,
@@ -74,7 +68,11 @@ from preloop.services.retention_policy import (
     CLASS_EVIDENCE,
     CLASS_RUNTIME_SESSIONS,
     CLASS_USAGE,
+    HIGH_VOLUME_SWEEPS,
     RECORD_CLASSES,
+    SWEEP_EVENTS,
+    SWEEP_EXECUTION_LOGS,
+    governing_class,
     resolve_retention,
 )
 from preloop.services.service_roles import (
@@ -119,7 +117,13 @@ class ClassResult:
 
     def as_details(self) -> dict[str, Any]:
         """Audit-row shape."""
+        details: dict[str, Any] = {}
+        governed_by = governing_class(self.record_class)
+        if governed_by != self.record_class:
+            # A high-volume sweep: say which class's retention it applied.
+            details["governed_by"] = governed_by
         return {
+            **details,
             "record_class": self.record_class,
             "retention_days": self.retention_days,
             "applied_cutoffs": list(self.applied_cutoffs),
@@ -197,20 +201,20 @@ def in_window(now: datetime, window: Optional[tuple[int, int]]) -> bool:
 
 
 def _audit_cutoff_filters(cutoff: datetime):
-    return (AuditLog.timestamp < cutoff,)
+    return (models.AuditLog.timestamp < cutoff,)
 
 
 def _approval_cutoff_filters(cutoff: datetime):
     return (
-        ApprovalRequest.requested_at < cutoff,
-        ApprovalRequest.status != _UNRESOLVED_APPROVAL_STATUS,
+        models.ApprovalRequest.requested_at < cutoff,
+        models.ApprovalRequest.status != _UNRESOLVED_APPROVAL_STATUS,
     )
 
 
 def _evidence_cutoff_filters(cutoff: datetime):
     return (
-        FlowArtifact.created_at < cutoff,
-        FlowArtifact.kind == "evidence",
+        models.FlowArtifact.created_at < cutoff,
+        models.FlowArtifact.kind == "evidence",
     )
 
 
@@ -219,24 +223,26 @@ def _runtime_session_cutoff_filters(cutoff: datetime):
     # alone would make an abandoned session immortal.
     return (
         func.greatest(
-            RuntimeSession.ended_at,
-            RuntimeSession.last_activity_at,
-            RuntimeSession.started_at,
+            models.RuntimeSession.ended_at,
+            models.RuntimeSession.last_activity_at,
+            models.RuntimeSession.started_at,
         )
         < cutoff,
     )
 
 
 def _usage_cutoff_filters(cutoff: datetime):
-    return (ApiUsage.timestamp < cutoff,)
+    return (models.ApiUsage.timestamp < cutoff,)
 
 
 _CLASS_MODELS: dict[str, Any] = {
-    CLASS_AUDIT: AuditLog,
-    CLASS_APPROVALS: ApprovalRequest,
-    CLASS_EVIDENCE: FlowArtifact,
-    CLASS_RUNTIME_SESSIONS: RuntimeSession,
-    CLASS_USAGE: ApiUsage,
+    CLASS_AUDIT: models.AuditLog,
+    CLASS_APPROVALS: models.ApprovalRequest,
+    CLASS_EVIDENCE: models.FlowArtifact,
+    CLASS_RUNTIME_SESSIONS: models.RuntimeSession,
+    CLASS_USAGE: models.ApiUsage,
+    SWEEP_EXECUTION_LOGS: models.FlowExecutionLog,
+    SWEEP_EVENTS: models.Event,
 }
 
 _CLASS_FILTERS = {
@@ -264,6 +270,11 @@ HOLD_EXEMPT_CLASSES: dict[str, str] = {
         "usage rows carry no hold flag yet; holds over usage are a separate "
         "gap, deliberately out of scope here"
     ),
+    SWEEP_EVENTS: (
+        "event rows have no independent hold flag; events naming an execution "
+        "in event_data.execution_id inherit that execution's hold through the "
+        "account-scoped event predicate; other account telemetry is not held"
+    ),
 }
 
 #: Models the purge writes that are not :data:`RECORD_CLASSES`, plus rows a
@@ -271,13 +282,16 @@ HOLD_EXEMPT_CLASSES: dict[str, str] = {
 #: :func:`_hold_filters_for_model` so a hold cannot be skipped the way runtime
 #: sessions were (issue #650).
 #:
-#: ``FlowExecution`` itself is never deleted; only leftover ``evidence_archive``
+#: ``models.FlowExecution`` itself is never deleted; only leftover ``evidence_archive``
 #: bytes are cleared.
 #:
-#: ``RuntimeSessionArtifact`` is deleted by the ``runtime_session`` foreign-key
+#: ``models.RuntimeSessionArtifact`` is deleted by the ``runtime_session`` foreign-key
 #: cascade and kept by the session's hold flag. Listing it here makes a model
 #: that carries ``legal_hold`` visible to the invariant test.
-HOLD_SIDE_MODELS: tuple[Any, ...] = (FlowExecution, RuntimeSessionArtifact)
+HOLD_SIDE_MODELS: tuple[Any, ...] = (
+    models.FlowExecution,
+    models.RuntimeSessionArtifact,
+)
 
 
 def _hold_filters_for_model(model: Any) -> list[Any]:
@@ -306,9 +320,23 @@ def _hold_filters(record_class: str) -> list[Any]:
     return _hold_filters_for_model(_CLASS_MODELS[record_class])
 
 
-def class_filters(record_class: str, cutoff: datetime):
-    """Every predicate the purge applies to one class: cutoff plus hold."""
-    return (*_CLASS_FILTERS[record_class](cutoff), *_hold_filters(record_class))
+def class_filters(
+    record_class: str, cutoff: datetime, *, account_id: Any
+) -> tuple[Any, ...]:
+    """Every predicate for a class: account ownership, cutoff and holds."""
+    if record_class == SWEEP_EXECUTION_LOGS:
+        return retention_sweeps.execution_log_filters(
+            account_id=account_id,
+            cutoff=cutoff,
+            hold_filters=_hold_filters_for_model(models.FlowExecution),
+        )
+    if record_class == SWEEP_EVENTS:
+        return retention_sweeps.event_filters(account_id=account_id, cutoff=cutoff)
+    return (
+        _CLASS_MODELS[record_class].account_id == account_id,
+        *_CLASS_FILTERS[record_class](cutoff),
+        *_hold_filters(record_class),
+    )
 
 
 def _candidate_ids_stmt(
@@ -316,12 +344,18 @@ def _candidate_ids_stmt(
 ):
     """Ids of the next batch to remove for one class, account scoped."""
     model = _CLASS_MODELS[record_class]
-    return (
-        select(model.id)
-        .where(model.account_id == account_id, *class_filters(record_class, cutoff))
-        .order_by(model.id)
-        .limit(limit)
+    stmt = select(model.id).where(
+        *class_filters(record_class, cutoff, account_id=account_id),
     )
+    if record_class == SWEEP_EVENTS:
+        # Walks ix_event_account_timestamp oldest first instead of sorting
+        # the account's whole history by a random uuid on every batch.
+        stmt = stmt.order_by(models.Event.timestamp)
+    elif record_class != SWEEP_EXECUTION_LOGS:
+        stmt = stmt.order_by(model.id)
+    # Execution logs are not ordered: every matching line goes, and sorting a
+    # multi-gigabyte backlog per batch would cost more than the delete.
+    return stmt.limit(limit)
 
 
 def count_purgeable(
@@ -334,8 +368,7 @@ def count_purgeable(
             select(func.count())
             .select_from(model)
             .where(
-                model.account_id == account_id,
-                *class_filters(record_class, cutoff),
+                *class_filters(record_class, cutoff, account_id=account_id),
             )
         ).scalar_one()
     )
@@ -356,9 +389,9 @@ def _expire_receipts_for_artifacts(
         return 0
     execution_ids = list(
         db.execute(
-            select(FlowArtifact.execution_id).where(
-                FlowArtifact.id.in_(list(artifact_ids)),
-                FlowArtifact.account_id == account_id,
+            select(models.FlowArtifact.execution_id).where(
+                models.FlowArtifact.id.in_(list(artifact_ids)),
+                models.FlowArtifact.account_id == account_id,
             )
         )
         .scalars()
@@ -369,9 +402,9 @@ def _expire_receipts_for_artifacts(
     wanted = {str(value) for value in artifact_ids}
     rows = (
         db.execute(
-            select(FlowExecution).where(
+            select(models.FlowExecution).where(
                 execution_in_account(account_id),
-                FlowExecution.id.in_(execution_ids),
+                models.FlowExecution.id.in_(execution_ids),
             )
         )
         .scalars()
@@ -405,12 +438,12 @@ def _drop_legacy_evidence_columns(
     The execution row itself stays: it is a run record, not an evidence record.
     """
     result = db.execute(
-        update(FlowExecution)
+        update(models.FlowExecution)
         .where(
             execution_in_account(account_id),
-            FlowExecution.created_at < cutoff,
-            *_hold_filters_for_model(FlowExecution),
-            FlowExecution.evidence_archive.isnot(None),
+            models.FlowExecution.created_at < cutoff,
+            *_hold_filters_for_model(models.FlowExecution),
+            models.FlowExecution.evidence_archive.isnot(None),
         )
         .values(evidence_archive=None)
         .execution_options(synchronize_session=False)
@@ -421,7 +454,7 @@ def _drop_legacy_evidence_columns(
 def purge_class(
     db: Session,
     *,
-    account: Account,
+    account: models.Account,
     record_class: str,
     now: datetime,
     batch_size: int,
@@ -432,12 +465,13 @@ def purge_class(
     """Delete one record class for one account, in bounded batches."""
     account_id = account.id
 
-    def effective_policy(current_account: Account) -> tuple[int, datetime]:
+    def effective_policy(current_account: models.Account) -> tuple[int, datetime]:
+        policy_class = governing_class(record_class)
         setting = resolve_retention(
-            current_account.meta_data, record_class=record_class
+            current_account.meta_data, record_class=policy_class
         )
         retained_days = setting.days
-        if record_class in (CLASS_RUNTIME_SESSIONS, CLASS_USAGE):
+        if policy_class in (CLASS_RUNTIME_SESSIONS, CLASS_USAGE):
             history_days = storage_history_days(db, account=current_account)
             if history_days is None:
                 return -1, datetime.min.replace(tzinfo=UTC)
@@ -487,10 +521,10 @@ def purge_class(
             .all()
         )
         if not ids:
-            if record_class == CLASS_USAGE:
-                # Held sessions keep gateway chunks after their usage rows go.
-                # Those usage ids never appear in a later batch, so an empty
-                # usage pass still reclaims released-hold orphans.
+            if record_class in (CLASS_USAGE, SWEEP_EXECUTION_LOGS):
+                # Held sessions keep chunks after their source rows go.
+                # Those ids never appear in a later batch, so an empty
+                # source-class pass still reclaims released-hold orphans.
                 result.derived_deleted += delete_derived_chunks(
                     db,
                     record_class=record_class,
@@ -574,8 +608,10 @@ def _count_cascading_session_artifacts(db: Session, session_ids: Sequence[Any]) 
     return int(
         db.execute(
             select(func.count())
-            .select_from(RuntimeSessionArtifact)
-            .where(RuntimeSessionArtifact.runtime_session_id.in_(list(session_ids)))
+            .select_from(models.RuntimeSessionArtifact)
+            .where(
+                models.RuntimeSessionArtifact.runtime_session_id.in_(list(session_ids))
+            )
         ).scalar_one()
     )
 
@@ -583,7 +619,7 @@ def _count_cascading_session_artifacts(db: Session, session_ids: Sequence[Any]) 
 def _max_chain_seq(db: Session, ids: Sequence[Any]) -> int:
     """Highest chain position among the audit rows about to be deleted."""
     value = db.execute(
-        select(func.max(AuditLog.chain_seq)).where(AuditLog.id.in_(ids))
+        select(func.max(models.AuditLog.chain_seq)).where(models.AuditLog.id.in_(ids))
     ).scalar()
     return int(value or 0)
 
@@ -617,7 +653,7 @@ def _raise_chain_floor(
 def purge_account(
     db: Session,
     *,
-    account: Account,
+    account: models.Account,
     now: datetime,
     batch_size: int,
     max_batches: int,
@@ -627,7 +663,16 @@ def purge_account(
 ) -> list[ClassResult]:
     """Run every record class for one account and audit what was removed."""
     results: list[ClassResult] = []
-    for record_class in record_classes:
+    for index, record_class in enumerate(record_classes):
+        class_deadline = deadline
+        if deadline is not None:
+            # Share the remaining pass time across the remaining classes.
+            # A log backlog cannot consume the events' allowance, and unused
+            # time from an empty class remains available to later classes.
+            started = time.monotonic()
+            class_deadline = started + max(0.0, deadline - started) / (
+                len(record_classes) - index
+            )
         try:
             result = purge_class(
                 db,
@@ -637,7 +682,7 @@ def purge_account(
                 batch_size=batch_size,
                 max_batches=max_batches,
                 dry_run=dry_run,
-                deadline=deadline,
+                deadline=class_deadline,
             )
         except Exception:
             # One bad class must not stop the others, and must not take the
@@ -702,10 +747,17 @@ def run_retention_purge(
     batch_size = max(1, int(settings.retention_purge_batch_size))
     max_batches = max(1, int(settings.retention_purge_max_batches))
     deadline = time.monotonic() + max(1, int(settings.retention_purge_max_seconds))
+    record_classes: tuple[str, ...] = RECORD_CLASSES
+    if settings.retention_purge_high_volume_enabled:
+        record_classes = (*HIGH_VOLUME_SWEEPS, *RECORD_CLASSES)
 
-    stmt = select(Account).where(Account.is_active.is_(True)).order_by(Account.id)
+    stmt = (
+        select(models.Account)
+        .where(models.Account.is_active.is_(True))
+        .order_by(models.Account.id)
+    )
     if account_ids:
-        stmt = stmt.where(Account.id.in_(list(account_ids)))
+        stmt = stmt.where(models.Account.id.in_(list(account_ids)))
     accounts = list(db.execute(stmt).scalars().all())
     for account in accounts:
         if time.monotonic() >= deadline:
@@ -720,6 +772,7 @@ def run_retention_purge(
             max_batches=max_batches,
             dry_run=dry_run,
             deadline=deadline,
+            record_classes=record_classes,
         ):
             summary.record(result)
             if result.more_remaining:

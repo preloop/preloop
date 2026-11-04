@@ -113,3 +113,14 @@ For detailed rules on how Organizations and Projects limit scope during syncing 
 Account-scoped organization identifier lookups exclude soft-deleted trackers, so a reconnect resolves the live tracker’s organization while retaining the prior tracker’s history. Tracker-scoped lookups remain available for explicit historical ownership.
 
 Jira project scope uses the stable numeric project ID, matching `Project.identifier`; the mutable Jira key remains `Project.slug`. Existing key-based scope rules continue matching only Jira projects returned for the selected tracker and organization. Explicit exclusions take precedence over inclusions, and editing/saving scope normalizes listed rules to numeric IDs.
+
+## Bitbucket Data Center
+
+Bitbucket Data Center uses the separate `bitbucket_dc` adapter, gated off by
+default. Its REST transport enforces administrator-approved HTTPS instances,
+context paths, connection-time destination validation and verified TLS; user PATs
+use tracker SecretReference encryption through CRUD. Repository numeric IDs
+remain stable when slugs change. DC repository/review support targets the 10.2
+LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
+webhooks and execution/publication routing are separate integrations. See the
+[deployment and validation guide](../guide/bitbucket-data-center.md).

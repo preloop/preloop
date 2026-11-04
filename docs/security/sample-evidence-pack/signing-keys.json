@@ -1,0 +1,15 @@
+{
+  "active_key_id": "psk_e6630dfe7a76b604",
+  "keys": [
+    {
+      "active": true,
+      "algorithm": "ed25519",
+      "created_at": "2026-09-10T23:45:57.211598",
+      "key_id": "psk_e6630dfe7a76b604",
+      "public_key": "N6q0eWb41BPzMCXuaCI52+rikxzKYzCxsD5oO0eUq94=",
+      "retired_at": null
+    }
+  ],
+  "signature_schema": "preloop.signature/v1",
+  "signed_bytes_format": "preloop.signature/v1\\n<payload_type>\\n<digest>\\n<signed_at>"
+}

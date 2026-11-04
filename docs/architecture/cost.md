@@ -391,3 +391,104 @@ buckets, monthly usage observations or ingest quotas. The customer covering
 indexes apply that exclusion in their partial predicate. The older replay-only
 indexes cannot provide an index-only customer read because evaluating the
 additional governance filter requires `meta_data`, which they do not include.
+
+[Reviewed price feeds](../guide/model-price-refresh.md) update the generic model
+map and Alibaba's dedicated regional tariff store in each API, gateway, and
+worker process. Alibaba estimates retain input tiers and distinct implicit,
+explicit, and cache-creation rates. Native discovery keeps credentials on their
+documented host; workspace routes can use reviewed regional prices without a
+cross-host credential transfer. Weekly review produces a PR with source evidence
+and verification gates. Feed ingestion never rewrites historical usage.
+
+## Analytics history and reporting reads
+
+Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](../guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
+
+Customer-facing gateway reports exclude replay validation and every
+`governance_` purpose, including account-funded analysis. Explicit purpose-scoped
+budget reads retain analysis spend. Dedicated customer covering indexes preserve
+index-only cost and model aggregates; the weekly policy section reports review
+cost separately from customer activity.
+
+The Cost console shares one summary between totals, the initially selected
+tab and imported usage; settings and later tabs load independently. Exact-window
+summary aggregates use a bounded 60-second cache per worker. Selective reporting
+queries and per-section loading states are described in
+[Progressive reporting](#progressive-reporting).
+Console catalogue lists use typed `/tools/summary` and `/flows/summary` views
+instead of downloading tool schemas and flow prompts/configuration. Full
+`/tools` and `/flows` responses retain their existing defaults for editors and
+API clients. Flow summary statistics are opt-in (`include_stats=true`) and use
+the same period and owned-flow aggregates as the full list, plus each flow's
+`last_run` (id, status, times, subject) so the Flows list links the run without
+fetching executions. Policies reads `/tools/rules`, each tool's identity and
+access rules without descriptions or schemas, and the Tools list asks
+`/tools/stats?include_agents=false`, which skips the per-agent breakdown and
+its query. Both account gateway
+and Cost summaries support selecting repeated `breakdown` sections; callers
+needing only totals set `include_breakdown=false`, which skips the unused
+aggregations. The grouped audit timeline resolves correlations and approval
+lifecycle through account-scoped partial JSON-expression indexes. Their
+migration builds indexes concurrently and repairs interrupted invalid builds.
+Explicit concurrent-index blocks have bounded lock and statement budgets and
+restore the migration session's short blocking-DDL timeout afterwards. Operation
+durations and cancellation diagnostics identify contention without extending
+the deployment deadline. See [schema migrations](../operations/schema-migrations.md).
+
+## Cost per issue coverage
+
+Cost and cycle time per tracker issue are rolled up across flows into their own
+tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
+(`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
+unpriced subscription-backed run is never read as a free ticket; see
+[Cost per issue](#cost-and-cycle-time-per-tracker-issue).
+
+## Hosted model visibility and request billing attribution
+
+The console loads entitled hosted models and durable allowance balances through
+the capability-gated `/account/hosted-models` API. Models, Cost, and Plan share
+the allowance display, including outstanding holds and the monthly reset date;
+one-time credit has no reset. Subscription details live on Plan, while Account
+links to that view. Gateway events preserve the billing path and actual resolved
+model row captured at request time, so later alias changes cannot relabel history.
+
+Prepaid credit is a separate ledger (`hosted_credit_account`,
+`hosted_credit_ledger`, `hosted_credit_purchase`) with one lot per purchase.
+The allowance balance above is unchanged: `reserve` and `settle` do not spend
+credit yet. An absent `hosted_credit_topup_setting` row means auto top-up is off.
+
+`preloop models list` separates your models from Preloop-hosted models and reports
+the allowance when supported. Before adding a system alias, operators can run
+`preloop models check-hosted-alias ALIAS` for aggregate collision warnings.
+The lookup exposes no account identifiers and does not change model routing.
+
+## Cache-inclusive input tokens
+
+`ApiUsage.prompt_tokens` is cache inclusive for every provider: it counts the
+input read from and written to the prompt cache as well as the uncached part,
+so `uncached = prompt - cache_read - cache_creation` holds per row and in every
+aggregate. Anthropic reports `input_tokens` without the cache, so the gateway
+adds `cache_read_input_tokens` and `cache_creation_input_tokens` back when it
+records a raw Anthropic payload (`usage_token_details.anthropic_cache_input_tokens`);
+litellm's OpenAI-shaped usage is already inclusive and is left alone. The raw
+provider usage stays in `meta_data.usage_details`, and cost is priced from it,
+so cached input keeps the cache rate. The remaining clamp at zero only absorbs
+provider rounding.
+
+Existing rows were backfilled rather than guarded at read time
+(`20261106_anthropic_cache_input`): aggregates sum `prompt_tokens` from
+covering indexes that never read `meta_data`, so a read-time guard could only
+be a heuristic over sums, which a mix of Anthropic and other traffic defeats.
+The backfill touches only rows whose raw usage is the Anthropic shape and whose
+`prompt_tokens` still equals the raw `input_tokens`, and records what it added
+in `meta_data.input_cache_backfill` for an exact downgrade. Because the
+migration runs before the new pods while the previous release keeps serving,
+each API replica runs the same conversion once more over the last day of rows
+15 minutes after startup (`services/anthropic_cache_input_repair.py`); an
+advisory lock lets one pass run at a time and the update re-checks each row,
+so concurrent replicas never convert a row twice.
+`estimated_cost` is not repriced: catalog-priced rows were already priced from
+the raw usage, while rows priced by a configured price or the DeepSeek native
+tariff keep the old undercount of their uncached input. Activity rollup
+buckets and budget windows written before the change keep their original
+token counts.

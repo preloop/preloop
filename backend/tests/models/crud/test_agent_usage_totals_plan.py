@@ -123,10 +123,7 @@ def test_principal_totals_plan_is_index_only(
         # SQLAlchemy 2.0 does not render the numeric casts that 2.1 adds.
         # Untyped CASE parameters resolve to text, making SUM(text) invalid.
         # Inline query constants; leave account/principal/window inputs unknown.
-        if isinstance(value, (int, float)) or value in (
-            "api_equivalent_cost",
-            "number",
-        ):
+        if isinstance(value, (int, float)):
             return _literal(value)
         number = placeholders.setdefault(name, len(placeholders) + 1)
         return f"${number}"
@@ -139,3 +136,10 @@ def test_principal_totals_plan_is_index_only(
         )
     )
     assert f"Index Scan using {SUBSCRIPTION_INDEX}" in generic_plan, generic_plan
+
+
+def test_subscription_price_reuses_numeric_filter(db_session: Session) -> None:
+    """Coverage and sum need two JSON reads, without a third type-check read."""
+    statement, _ = _captured_usage_select(db_session)
+    assert statement.count("jsonb_path_query_first(") == 2
+    assert "jsonb_typeof(" not in statement

@@ -8,6 +8,7 @@ the source no longer has.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from preloop.models.models.session_search_document import (
     REDACTION_STATE_REDACTED,
     REDACTION_STATE_WITHHELD,
     REDACTION_STATES,
+    SOURCE_KIND_FLOW_LOG,
     SOURCE_KIND_GATEWAY_INTERACTION,
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
     TEXT_RETURNABLE_REDACTION_STATES,
@@ -30,7 +32,11 @@ from preloop.services import retention_purge as purge
 from preloop.services import session_search_index as index
 from preloop.services import session_search_retention as corpus_retention
 from preloop.services.legal_hold import place_hold, release_hold
-from preloop.services.retention_policy import CLASS_RUNTIME_SESSIONS, CLASS_USAGE
+from preloop.services.retention_policy import (
+    CLASS_RUNTIME_SESSIONS,
+    CLASS_USAGE,
+    SWEEP_EXECUTION_LOGS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +86,40 @@ def _usage(db_session, test_user, *, session_id, age_days: int) -> models.ApiUsa
     db_session.add(row)
     db_session.flush()
     return row
+
+
+def _flow_log(
+    db_session, test_user, *, session_id, age_days: int
+) -> models.FlowExecutionLog:
+    stamp = datetime.now(UTC) - timedelta(days=age_days)
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        name="Example flow",
+        prompt_template="Example task",
+        agent_type="codex",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(
+        flow_id=flow.id,
+        status="COMPLETED",
+        created_at=stamp,
+        trigger_event_details={
+            "_agent_control": {"runtime_session_id": str(session_id)}
+        },
+    )
+    db_session.add(execution)
+    db_session.flush()
+    log = models.FlowExecutionLog(
+        execution_id=execution.id,
+        timestamp=stamp,
+        log_type="log",
+        message="Example log line",
+    )
+    db_session.add(log)
+    db_session.flush()
+    return log
 
 
 def _chunk(
@@ -349,31 +389,42 @@ def test_a_held_sessions_chunks_survive_the_usage_purge_as_well(
     )
 
 
-def test_releasing_a_hold_lets_the_next_usage_pass_take_the_chunk(
-    db_session, test_user, account
+@pytest.mark.parametrize(
+    "record_class,source_kind,make_source,orphan_field",
+    [
+        (CLASS_USAGE, SOURCE_KIND_GATEWAY_INTERACTION, _usage, "orphaned_usage"),
+        (SWEEP_EXECUTION_LOGS, SOURCE_KIND_FLOW_LOG, _flow_log, "orphaned_flow_logs"),
+    ],
+)
+def test_releasing_a_hold_lets_the_next_source_pass_take_the_chunk(
+    db_session, test_user, account, record_class, source_kind, make_source, orphan_field
 ):
-    """Usage ids purged under a hold never come back; the sweep reclaims them.
+    """Source ids purged under a hold never come back; the sweep reclaims them.
 
-    After release, and before the next usage pass, the operator check reports
-    a usage orphan. The next usage pass, even with no remaining usage rows,
+    After release, and before the next source pass, the operator check reports
+    a source orphan. The next source pass, even with no remaining source rows,
     deletes the released chunk and leaves a still-held sibling alone.
     """
     released = _session(db_session, test_user, age_days=2)
-    released_usage = _usage(db_session, test_user, session_id=released.id, age_days=500)
+    released_usage = make_source(
+        db_session, test_user, session_id=released.id, age_days=500
+    )
     _chunk(
         db_session,
         test_user,
         session_id=released.id,
-        source_kind=SOURCE_KIND_GATEWAY_INTERACTION,
+        source_kind=source_kind,
         source_id=released_usage.id,
     )
     still_held = _session(db_session, test_user, age_days=2)
-    still_usage = _usage(db_session, test_user, session_id=still_held.id, age_days=500)
+    still_usage = make_source(
+        db_session, test_user, session_id=still_held.id, age_days=500
+    )
     _chunk(
         db_session,
         test_user,
         session_id=still_held.id,
-        source_kind=SOURCE_KIND_GATEWAY_INTERACTION,
+        source_kind=source_kind,
         source_id=still_usage.id,
     )
     db_session.commit()
@@ -397,13 +448,14 @@ def test_releasing_a_hold_lets_the_next_usage_pass_take_the_chunk(
     first = purge.purge_class(
         db_session,
         account=account,
-        record_class=CLASS_USAGE,
+        record_class=record_class,
         now=datetime.now(UTC),
         batch_size=100,
         max_batches=5,
         dry_run=False,
     )
 
+    assert first.deleted == 2
     assert first.derived_deleted == 0
     assert _chunk_count(db_session, released.id) == 1
     assert _chunk_count(db_session, still_held.id) == 1
@@ -418,13 +470,15 @@ def test_releasing_a_hold_lets_the_next_usage_pass_take_the_chunk(
     )
 
     after_release = corpus_retention.orphan_chunk_report(db_session)
-    assert after_release.orphaned_usage == 1
+    assert getattr(after_release, orphan_field) == 1
+    assert after_release.as_dict()[orphan_field] == 1
+    assert after_release.total == 1
     assert after_release.clean is False
 
     second = purge.purge_class(
         db_session,
         account=account,
-        record_class=CLASS_USAGE,
+        record_class=record_class,
         now=datetime.now(UTC),
         batch_size=100,
         max_batches=5,
@@ -437,7 +491,7 @@ def test_releasing_a_hold_lets_the_next_usage_pass_take_the_chunk(
     report = corpus_retention.orphan_chunk_report(db_session)
     assert report.clean, report.as_dict()
     corpus_retention.assert_no_orphan_chunks(
-        db_session, context="a usage pass after a hold release"
+        db_session, context="a source pass after a hold release"
     )
 
 
@@ -734,16 +788,20 @@ def test_every_redaction_state_is_decided_returnable_or_not():
 def test_every_class_with_derived_chunks_deletes_them_in_the_purge():
     """The mapping the purge consults is the mapping the corpus is written by.
 
-    Only two source kinds name a row outside the session: the gateway kind
-    names an ``api_usage`` row. Everything else is session content and goes
-    with the session, so the classes that need an entry are these two.
+    Two source kinds name a row outside the session: the gateway kind names
+    an ``api_usage`` row and the flow log kind a ``flow_execution_log`` row.
+    Everything else is session content and goes with the session, so the
+    classes and sweeps that need an entry are these three.
     """
     assert set(corpus_retention.DERIVED_CHUNK_DELETES) == {
         CLASS_RUNTIME_SESSIONS,
         CLASS_USAGE,
+        SWEEP_EXECUTION_LOGS,
     }
     for record_class in corpus_retention.DERIVED_CHUNK_DELETES:
-        assert record_class in purge._CLASS_FILTERS
+        assert purge.class_filters(
+            record_class, datetime.now(UTC), account_id=uuid.uuid4()
+        )
 
 
 def test_delete_derived_chunks_is_a_no_op_for_a_class_with_no_corpus(db_session):
@@ -759,3 +817,62 @@ def test_delete_derived_chunks_is_a_no_op_for_a_class_with_no_corpus(db_session)
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("with_batch", [False, True])
+def test_flow_log_orphan_cleanup_is_account_scoped(
+    db_session, test_user, account, with_batch: bool
+) -> None:
+    other = models.Account(organization_name="Other Organization", is_active=True)
+    db_session.add(other)
+    db_session.flush()
+    other_owner = SimpleNamespace(account_id=other.id)
+    ours = _session(db_session, test_user, age_days=2)
+    theirs = _session(db_session, other_owner, age_days=2)
+    for owner, session in ((test_user, ours), (other_owner, theirs)):
+        _chunk(
+            db_session, owner, session_id=session.id, source_kind=SOURCE_KIND_FLOW_LOG
+        )
+    # A current source must survive orphan cleanup in the same account.
+    live_log = _flow_log(db_session, test_user, session_id=ours.id, age_days=2)
+    _chunk(
+        db_session,
+        test_user,
+        session_id=ours.id,
+        source_kind=SOURCE_KIND_FLOW_LOG,
+        source_id=live_log.id,
+    )
+    if with_batch:
+        expired_log = _flow_log(db_session, test_user, session_id=ours.id, age_days=500)
+        _chunk(
+            db_session,
+            test_user,
+            session_id=ours.id,
+            source_kind=SOURCE_KIND_FLOW_LOG,
+            source_id=expired_log.id,
+        )
+    db_session.commit()
+
+    result = purge.purge_class(
+        db_session,
+        account=account,
+        record_class=SWEEP_EXECUTION_LOGS,
+        now=datetime.now(UTC),
+        batch_size=100,
+        max_batches=5,
+        dry_run=False,
+    )
+
+    assert result.deleted == int(with_batch)
+    assert result.derived_deleted == 1 + int(with_batch)
+    assert _chunk_count(db_session, ours.id) == 1
+    assert _chunk_count(db_session, theirs.id) == 1
+    assert (
+        _source_chunk_count(
+            db_session, source_kind=SOURCE_KIND_FLOW_LOG, source_id=live_log.id
+        )
+        == 1
+    )
+    report = corpus_retention.orphan_chunk_report(db_session)
+    assert report.orphaned_flow_logs == 1
+    assert report.total == 1

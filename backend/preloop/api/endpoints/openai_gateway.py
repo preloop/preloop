@@ -17,7 +17,10 @@ from preloop.api.gateway_auth_dependency import get_model_gateway_auth_context
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.api.deps import get_budget_enforcer
 from preloop.services.gateway_streaming import GatewayStreamingResponse
-from preloop.services.openai_gateway import OpenAIGatewayService
+from preloop.services.openai_gateway import (
+    OpenAIGatewayService,
+    runtime_session_response_headers,
+)
 
 router = APIRouter(include_in_schema=False)
 
@@ -83,6 +86,7 @@ def _with_gateway_warnings(
     if isinstance(usage_id, str) and usage_id:
         headers["X-Preloop-Usage-Id"] = _sanitize_header_value(usage_id)
     headers.update(_codex_relay_headers(service))
+    headers.update(runtime_session_response_headers(service))
     if headers:
         return JSONResponse(content=result, headers=headers)
     return result
@@ -106,6 +110,7 @@ def _streaming_with_gateway_warnings(
     if warning:
         headers["X-Preloop-Warning"] = _sanitize_header_value(warning)
     headers.update(_codex_relay_headers(service))
+    headers.update(runtime_session_response_headers(service))
     return GatewayStreamingResponse(
         events,
         media_type="text/event-stream",

@@ -61,16 +61,19 @@ class PreloopBrowserUseReporter:
         self._started_at: datetime | None = None
         self._steps: list[dict[str, Any]] = []
         self.recording_uploaded = False
+        self._desktop_linked = False
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> PreloopBrowserUseReporter:
-        """Build from ``PRELOOP_URL``, ``PRELOOP_AGENT_KEY`` and
-        ``PRELOOP_RUNTIME_SESSION_ID``; disabled with one warning if unset."""
+        """Build from ``PRELOOP_URL``, ``PRELOOP_AGENT_KEY`` and either
+        ``PRELOOP_RUNTIME_SESSION_ID`` or ``PRELOOP_SESSION_ID`` (the gateway
+        session key, resolved to the runtime session); disabled with one
+        warning if unset."""
         target = PreloopTarget.from_env()
         if target is None:
             logger.warning(
                 "Preloop reporting disabled: set PRELOOP_URL, PRELOOP_AGENT_KEY "
-                "and PRELOOP_RUNTIME_SESSION_ID"
+                "and PRELOOP_SESSION_ID (or PRELOOP_RUNTIME_SESSION_ID)"
             )
         return cls(target, **kwargs)
 
@@ -140,6 +143,10 @@ class PreloopBrowserUseReporter:
         """Worker thread: read deferred screenshot files, then post."""
         if self._poster is None:
             return []
+        if not self._desktop_linked:
+            # One try per run: a failed link only hides the Live desktop button.
+            self._desktop_linked = True
+            self._poster.link_desktop()
         return self._poster.post([resolve_screenshot_path(step) for step in batch])
 
     def close(self) -> None:

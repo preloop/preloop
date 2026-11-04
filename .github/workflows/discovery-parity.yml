@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
+        # Use Intel capacity for native Darwin fixtures; macos-latest selects arm64.
+        os: [ubuntu-24.04, macos-26-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:

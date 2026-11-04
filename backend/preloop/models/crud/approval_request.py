@@ -113,6 +113,10 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             )
             if execution_id:
                 pending = pending.filter(self.model.execution_id == execution_id)
+            # Desktop control requests (#1567) expire through the approvals
+            # service so the denial is applied and audited; the view's own
+            # close settles any that nobody decided.
+            pending = pending.filter(self.model.tool_name != "desktop_control")
             if halted is not None and halted.is_active:
                 # A halt cannot revive approvals whose deadline already passed.
                 pending = pending.filter(

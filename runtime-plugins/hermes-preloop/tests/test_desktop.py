@@ -76,3 +76,46 @@ def test_capabilities_desktop_none_when_host_is_not_loopback(
     assert caps.desktop == "none"
     assert caps.desktop_display is None
     assert _SECRET not in json.dumps(caps.to_payload())
+
+
+def test_login_names_the_desktop_endpoint_on_the_session(tmp_path, monkeypatch):
+    """#1568: the runtime session links to this host's live desktop."""
+    module = sys.modules[HermesPreloopPlugin.__module__]
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("PRELOOP_DESKTOP_FILE", raising=False)
+    monkeypatch.setattr("builtins.input", lambda _: "code-1")
+    monkeypatch.setattr(module, "_post_form", lambda *a: {"access_token": "at"})
+    bodies = []
+
+    class StopLoginError(Exception):
+        pass
+
+    def post_json(url, body, token):
+        bodies.append(body)
+        raise StopLoginError
+
+    monkeypatch.setattr(module, "_post_json", post_json)
+    plugin = HermesPreloopPlugin(config_path=tmp_path / "hermes" / "config.yaml")
+
+    monkeypatch.delenv("PRELOOP_DESKTOP_ENDPOINT_ID", raising=False)
+    try:
+        plugin.login("https://preloop.example.com")
+    except StopLoginError:
+        pass
+    (tmp_path / ".preloop").mkdir()
+    (tmp_path / ".preloop" / "desktop.json").write_text('{"endpoint_id": "dep_f"}')
+    try:
+        plugin.login("https://preloop.example.com")
+    except StopLoginError:
+        pass
+    monkeypatch.setenv("PRELOOP_DESKTOP_ENDPOINT_ID", "dep_env")
+    try:
+        plugin.login("https://preloop.example.com")
+    except StopLoginError:
+        pass
+
+    assert "desktop_endpoint_id" not in bodies[0]
+    assert bodies[1]["desktop_endpoint_id"] == "dep_f"
+    assert bodies[2]["desktop_endpoint_id"] == "dep_env"

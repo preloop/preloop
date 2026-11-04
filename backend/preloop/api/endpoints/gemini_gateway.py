@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, Query
 from sqlalchemy.orm import Session
+from fastapi.responses import JSONResponse
 from starlette.responses import StreamingResponse
 
 from preloop.api.deps import get_budget_enforcer
@@ -17,6 +18,7 @@ from preloop.services.model_gateway_auth import (
     authenticate_bearer_token,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.openai_gateway import runtime_session_response_headers
 
 router = APIRouter(include_in_schema=False)
 
@@ -83,16 +85,21 @@ def generate_content(
     auth_context: ModelGatewayAuthContext = Depends(get_gemini_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
-) -> Dict[str, Any]:
+) -> Any:
     """Generate Gemini-compatible content from the shared gateway."""
-    return GeminiGatewayService(
+    service = GeminiGatewayService(
         db,
         auth_context,
         client_session_id=x_preloop_session_id,
         client_session_id_is_explicit=bool(x_preloop_session_id),
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
-    ).generate_content(model_name, payload)
+    )
+    result = service.generate_content(model_name, payload)
+    headers = runtime_session_response_headers(service)
+    if headers:
+        return JSONResponse(content=result, headers=headers)
+    return result
 
 
 @router.post("/models/{model_name:path}:streamGenerateContent")
@@ -116,5 +123,6 @@ def stream_generate_content(
     return GatewayStreamingResponse(
         service.stream_generate_content(model_name, payload),
         media_type="text/event-stream",
+        headers=runtime_session_response_headers(service) or None,
         on_complete=service.flush_deferred_stream_record,
     )
