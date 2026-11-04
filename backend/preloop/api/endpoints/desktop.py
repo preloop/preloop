@@ -43,7 +43,6 @@ from preloop.models.crud import (
     crud_audit_log,
     crud_desktop,
     crud_managed_agent,
-    crud_user,
 )
 from preloop.models.crud.desktop import endpoint_is_online
 from preloop.services import desktop_broker as broker
@@ -255,6 +254,7 @@ async def close_view(view_id: Any, reason: str, *, expected_state: str = "") -> 
     if closed is None:
         return False
     view_pk, endpoint_pk = closed
+    await _settle_control_requests(view_pk)
     bus = await broker.get_desktop_bus()
     code = broker.CLOSE_CODE_BY_REASON.get(reason, broker.CLOSE_NORMAL)
     try:
@@ -271,6 +271,33 @@ async def close_view(view_id: Any, reason: str, *, expected_state: str = "") -> 
     except Exception:  # noqa: BLE001 - the DB close already happened
         logger.warning("Desktop view %s close notification failed", view_pk)
     return True
+
+
+async def _settle_control_requests(view_pk: str) -> None:
+    """Expire control approvals nobody decided before the view ended."""
+
+    def find(db: Session) -> list[str]:
+        view = crud_desktop.get_view(db, view_id=view_pk)
+        if view is None:
+            return []
+        pending = crud_desktop.pending_control_approval(
+            db, account_id=view.account_id, view_id=view.id, tool_name=_control_tool()
+        )
+        return [str(pending.id)] if pending is not None else []
+
+    try:
+        ids = await _run_db(find)
+        if not ids:
+            return
+        async with _approval_db() as db:
+            for approval_id in ids:
+                await _approval_service(db).expire_request(
+                    uuid.UUID(approval_id),
+                    reason="desktop_view_closed",
+                    detail="The desktop view ended before control was approved",
+                )
+    except Exception:  # noqa: BLE001 - the view is closed either way
+        logger.warning("Desktop view %s control request not settled", view_pk)
 
 
 async def _expire_pending(view_id: str, delay: float) -> None:
@@ -633,15 +660,31 @@ def _control_request_json(
 
 
 def _has_other_approver(db: Session, user: models.User) -> bool:
-    """Whether someone other than ``user`` may decide approvals here."""
-    for member in crud_user.get_active_by_account(
-        db, account_id=user.account_id, limit=500
-    ):
-        if member.id == user.id:
-            continue
-        if user_holds_permission(db, member, "decide_approvals"):
+    """Whether someone other than ``user`` may decide approvals here.
+
+    Walks every active member (keyset pages), not a fixed window, so a large
+    account cannot drop its second admin and fall back to self-confirm.
+    Without the RBAC plugin every member holds every permission, so one
+    other active member is enough and no per-member check runs.
+    """
+    from preloop.utils.permissions import members_have_full_access
+
+    after = None
+    while True:
+        ids = crud_desktop.active_member_ids(
+            db, account_id=user.account_id, exclude=user.id, after=after, limit=200
+        )
+        if not ids:
+            return False
+        if members_have_full_access():
             return True
-    return False
+        for member_id in ids:
+            member = db.get(models.User, member_id)
+            if member is not None and user_holds_permission(
+                db, member, "decide_approvals"
+            ):
+                return True
+        after = ids[-1]
 
 
 async def _request_control_approval(
@@ -694,6 +737,23 @@ async def _request_control_approval(
 
         async with _approval_db() as db:
             service = _approval_service(db)
+            # Lock the view, then look again: a concurrent request for the
+            # same view waits here and reuses the approval this one creates.
+            view_pk = create["tool_args"]["view_id"]
+            await crud_desktop.lock_view_async(db, view_id=view_pk)
+            existing = await crud_desktop.pending_control_approval_id_async(
+                db,
+                account_id=user.account_id,
+                view_id=view_pk,
+                tool_name=_control_tool(),
+            )
+            if existing is not None:
+                await db.rollback()
+                payload["control_request"] = {
+                    "approval_id": str(existing),
+                    "state": "pending",
+                }
+                return JSONResponse(status_code=202, content=payload)
             workflow = await resolve_workflow(db, str(user.account_id), user.id)
             agent_id = create["managed_agent_id"]
             session_id = create["runtime_session_id"]
@@ -752,10 +812,10 @@ async def apply_control_decision(
             "approver_id": approver_id,
             "reason": tool_args.get("reason"),
         }
-        if status != "approved" or view.state == "closed":
+        now = _now()
+        if status != "approved" or view.state == "closed" or view.expires_at <= now:
             _audit(db, view, "desktop.control.denied", {**facts, **decision})
             return None
-        now = _now()
         until = min(
             view.expires_at, now + timedelta(seconds=broker.CONTROL_MAX_SECONDS)
         )
@@ -911,17 +971,49 @@ async def delete_agent_desktop_view(
     await _delete_view(current_user, view_id)
 
 
+class DesktopControlRequestState(BaseModel):
+    """A control request waiting for another admin (#1567)."""
+
+    approval_id: str
+    state: str
+
+
+class DesktopViewResponse(BaseModel):
+    """One desktop view, as every view route returns it."""
+
+    view_id: str
+    endpoint_id: str
+    managed_agent_id: Optional[str] = None
+    runtime_session_id: Optional[str] = None
+    user_id: str
+    state: str
+    mode: str
+    ws_url: str
+    created_at: Optional[str] = None
+    live_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    closed_reason: Optional[str] = None
+    control_expires_at: Optional[str] = None
+    control_request: Optional[DesktopControlRequestState] = None
+
+
 _CONTROL_RESPONSES: dict[int | str, dict[str, Any]] = {
     202: {
+        "model": DesktopViewResponse,
         "description": (
             "Another admin must approve: the view stays view only and "
             "``control_request`` names the pending approval"
-        )
+        ),
     }
 }
 
 
-@router.post("/desktop/views/{view_id}/control", responses=_CONTROL_RESPONSES)
+@router.post(
+    "/desktop/views/{view_id}/control",
+    response_model=DesktopViewResponse,
+    responses=_CONTROL_RESPONSES,
+)
 async def request_desktop_control(
     view_id: str,
     body: DesktopControlRequest,
@@ -938,6 +1030,7 @@ async def request_desktop_control(
 
 @router.post(
     "/agents/{agent_id}/desktop-views/{view_id}/control",
+    response_model=DesktopViewResponse,
     responses=_CONTROL_RESPONSES,
 )
 async def request_agent_desktop_control(

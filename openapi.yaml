@@ -21166,11 +21166,14 @@ paths:
           content:
             application/json:
               schema:
-                title: Response Request Desktop Control Api V1 Desktop Views  View
-                  Id  Control Post
+                $ref: '#/components/schemas/DesktopViewResponse'
         '202':
           description: 'Another admin must approve: the view stays view only and ``control_request``
             names the pending approval'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -21218,11 +21221,14 @@ paths:
           content:
             application/json:
               schema:
-                title: Response Request Agent Desktop Control Api V1 Agents  Agent
-                  Id  Desktop Views  View Id  Control Post
+                $ref: '#/components/schemas/DesktopViewResponse'
         '202':
           description: 'Another admin must approve: the view stays view only and ``control_request``
             names the pending approval'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopViewResponse'
         '422':
           description: Validation Error
           content:
@@ -34453,6 +34459,20 @@ components:
       required:
       - reason
       title: DesktopControlRequest
+    DesktopControlRequestState:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        state:
+          type: string
+          title: State
+      type: object
+      required:
+      - approval_id
+      - state
+      title: DesktopControlRequestState
+      description: A control request waiting for another admin (#1567).
     DesktopViewCreate:
       properties:
         duration_seconds:
@@ -34469,6 +34489,80 @@ components:
           title: Runtime Session Id
       type: object
       title: DesktopViewCreate
+    DesktopViewResponse:
+      properties:
+        view_id:
+          type: string
+          title: View Id
+        endpoint_id:
+          type: string
+          title: Endpoint Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        user_id:
+          type: string
+          title: User Id
+        state:
+          type: string
+          title: State
+        mode:
+          type: string
+          title: Mode
+        ws_url:
+          type: string
+          title: Ws Url
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        live_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Live At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        closed_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closed At
+        closed_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closed Reason
+        control_expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Control Expires At
+        control_request:
+          anyOf:
+          - $ref: '#/components/schemas/DesktopControlRequestState'
+          - type: 'null'
+      type: object
+      required:
+      - view_id
+      - endpoint_id
+      - user_id
+      - state
+      - mode
+      - ws_url
+      title: DesktopViewResponse
+      description: One desktop view, as every view route returns it.
     DetectorTimeoutFailMode:
       type: string
       enum:

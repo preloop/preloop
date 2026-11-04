@@ -1554,6 +1554,7 @@ def test_single_admin_still_self_confirms(harness, db_session):
     """With nobody else to decide, the OSS v1 self-confirm stays."""
     h = harness
     grant_permission(db_session, h.user, "decide_approvals")
+    grant_permission(db_session, h.user, "control_managed_agent")
     # A member without decide_approvals is not a second admin.
     _make_user(db_session, account_id=h.user.account_id, username="desk-member")
     from preloop.utils import permissions
@@ -1566,6 +1567,7 @@ def test_single_admin_still_self_confirms(harness, db_session):
         return real(db, user, name)
 
     h.monkeypatch.setattr(desktop, "user_holds_permission", holds)
+    h.monkeypatch.setattr(permissions, "members_have_full_access", lambda: False)
 
     async def scenario() -> None:
         async with serving(h) as vnc:
@@ -1582,3 +1584,145 @@ def test_single_admin_still_self_confirms(harness, db_session):
     asyncio.run(scenario())
     granted = h.audit("desktop.control.granted")
     assert granted[0].details["approval"] == "self_confirmed"
+
+
+def test_a_second_request_reuses_the_pending_approval_under_the_view_lock(
+    harness, two_admins
+):
+    """The create path re-checks under a row lock on the view. The harness
+    runs every request on one shared session, so real concurrency cannot be
+    exercised here; this pins the re-check itself."""
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            url = f"/api/v1/desktop/views/{view['view_id']}/control"
+            seen = []
+            real = desktop.crud_desktop.pending_control_approval_id_async
+
+            async def spy(db, **kw):
+                found = await real(db, **kw)
+                seen.append(found)
+                return found
+
+            h.monkeypatch.setattr(
+                desktop.crud_desktop, "pending_control_approval_id_async", spy
+            )
+            async with h.http() as client:
+                first = await client.post(url, json={"reason": "fix the dialog"})
+            assert seen == [None]
+            assert first.status_code == 202
+            await endpoint.close()
+
+    asyncio.run(scenario())
+
+
+def test_closing_the_view_settles_its_control_request(harness, two_admins):
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+                await client.delete(f"/api/v1/desktop/views/{view['view_id']}")
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "expired"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    denied = h.audit("desktop.control.denied")
+    assert len(denied) == 1 and denied[0].details["approval_status"] == "expired"
+
+
+def test_bulk_inbox_expiry_leaves_control_requests_to_the_service(harness, two_admins):
+    from preloop.models.crud import crud_approval_request
+
+    h = harness
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            approval_id = uuid.UUID(asked.json()["control_request"]["approval_id"])
+            row = h.db.get(models.ApprovalRequest, approval_id)
+            row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                seconds=5
+            )
+            h.db.commit()
+            crud_approval_request.expire_stale_pending(
+                h.db, account_id=h.user.account_id
+            )
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "pending"
+            async with h.http() as client:
+                await client.get(f"/api/v1/desktop/views/{view['view_id']}")
+            h.db.expire_all()
+            assert h.db.get(models.ApprovalRequest, approval_id).status == "expired"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert len(h.audit("desktop.control.denied")) == 1
+
+
+def test_approval_after_the_view_ran_out_is_a_denial(harness, two_admins):
+    h = harness
+    colleague = two_admins
+
+    async def scenario() -> None:
+        async with serving(h) as vnc:
+            endpoint, view = await _live_viewer(h, vnc)
+            async with h.http() as client:
+                asked = await client.post(
+                    f"/api/v1/desktop/views/{view['view_id']}/control",
+                    json={"reason": "fix the stuck dialog"},
+                )
+            row = h.view(view["view_id"])
+            row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                seconds=1
+            )
+            h.db.commit()
+            await _approvals(h).approve_request(
+                uuid.UUID(asked.json()["control_request"]["approval_id"]),
+                "ok",
+                user_id=colleague.id,
+            )
+            assert h.view(view["view_id"]).mode == "view_only"
+            await endpoint.close()
+
+    asyncio.run(scenario())
+    assert h.audit("desktop.control.granted") == []
+    assert len(h.audit("desktop.control.denied")) == 1
+
+
+def test_second_admin_found_beyond_the_first_page(harness, db_session, monkeypatch):
+    from preloop.utils import permissions
+
+    h = harness
+    members = [
+        _make_user(db_session, account_id=h.user.account_id, username=f"desk-m{i}")
+        for i in range(3)
+    ]
+    approver = max(members, key=lambda m: m.id)
+    monkeypatch.setattr(permissions, "members_have_full_access", lambda: False)
+    monkeypatch.setattr(
+        desktop, "user_holds_permission", lambda db, u, n: u.id == approver.id
+    )
+    real = desktop.crud_desktop.active_member_ids
+    monkeypatch.setattr(
+        desktop.crud_desktop,
+        "active_member_ids",
+        lambda db, **kw: real(db, **{**kw, "limit": 1}),
+    )
+    assert desktop._has_other_approver(db_session, h.user)
+    monkeypatch.setattr(desktop, "user_holds_permission", lambda db, u, n: False)
+    assert not desktop._has_other_approver(db_session, h.user)
