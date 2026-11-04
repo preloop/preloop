@@ -525,11 +525,16 @@ export class FlowExecutionsView extends AuthedElement {
   /** The connection-state listener, kept so it can be dropped on disconnect. */
   private unsubscribeState?: () => void;
 
-  async connectedCallback() {
+  private requestGeneration = 0;
+  private executionsAbort?: AbortController;
+  private liveRefreshTimer?: number;
+  private liveRefreshQueued = false;
+
+  connectedCallback(): void {
     super.connectedCallback();
     this.applyQueryParams();
-    await this.loadExecutions();
     this.connectWebSocket();
+    void this.loadExecutions();
     void this.loadFilterSources();
   }
 
@@ -741,7 +746,16 @@ export class FlowExecutionsView extends AuthedElement {
    * session, and rendered "No executions found" over a list that may be full.
    * The error is caught, shown, and retryable instead.
    */
-  async loadExecutions() {
+  async loadExecutions(): Promise<void> {
+    if (!this.isConnected) return;
+    const generation = ++this.requestGeneration;
+    this.executionsAbort?.abort();
+    const controller = new AbortController();
+    this.executionsAbort = controller;
+    // An explicit filter/page read covers invalidations queued before it.
+    this.liveRefreshQueued = false;
+    window.clearTimeout(this.liveRefreshTimer);
+    this.liveRefreshTimer = undefined;
     try {
       const page = await getFlowExecutionsPage({
         limit: this.pageSize + 1,
@@ -750,7 +764,9 @@ export class FlowExecutionsView extends AuthedElement {
         flowId: this.flowIdFilter || undefined,
         search: this.searchQuery.trim() || undefined,
         startedAfter: this.startedAfter,
+        signal: controller.signal,
       });
+      if (generation !== this.requestGeneration) return;
       const rows = page.rows;
       this.totalCount = page.total;
       this.loadError = null;
@@ -762,6 +778,7 @@ export class FlowExecutionsView extends AuthedElement {
         : null;
       this.syncDurationTicker();
     } catch (error) {
+      if (generation !== this.requestGeneration) return;
       console.error('Failed to load flow executions:', error);
       this.loadError =
         error instanceof Error && error.message
@@ -769,7 +786,23 @@ export class FlowExecutionsView extends AuthedElement {
           : 'Could not load the executions.';
       this.hasNextPage = false;
       this.syncDurationTicker();
+    } finally {
+      if (generation === this.requestGeneration) {
+        this.executionsAbort = undefined;
+        if (this.liveRefreshQueued) this.scheduleLiveRefresh();
+      }
     }
+  }
+
+  /** Collapse a burst, retaining a refresh for events received during a read. */
+  private scheduleLiveRefresh(): void {
+    if (!this.isConnected) return;
+    this.liveRefreshQueued = true;
+    if (this.executionsAbort || this.liveRefreshTimer !== undefined) return;
+    this.liveRefreshTimer = window.setTimeout(() => {
+      this.liveRefreshTimer = undefined;
+      void this.loadExecutions();
+    }, 150);
   }
 
   private clearFlowFilter(): void {
@@ -1035,7 +1068,8 @@ export class FlowExecutionsView extends AuthedElement {
   }
 
   connectWebSocket() {
-    // Subscribe to flow execution updates through unified WebSocket
+    // Subscribe before reading so events during the initial request are kept.
+    this.unsubscribe?.();
     this.unsubscribe = unifiedWebSocketManager.subscribe(
       'flow_executions',
       (message: any) => this.handleWebSocketMessage(message)
@@ -1044,9 +1078,13 @@ export class FlowExecutionsView extends AuthedElement {
     // Track connection state. The unsubscribe is kept: dropping it leaked a
     // listener holding this view for every connect.
     this.unsubscribeState?.();
+    this.wsConnected = unifiedWebSocketManager.getState() === 'connected';
+    this.wsWasConnected ||= this.wsConnected;
     this.unsubscribeState = unifiedWebSocketManager.onStateChange((state) => {
+      const wasConnected = this.wsConnected;
       this.wsConnected = state === 'connected';
       if (this.wsConnected) {
+        if (!wasConnected) this.scheduleLiveRefresh();
         this.wsWasConnected = true;
       }
     });
@@ -1076,20 +1114,26 @@ export class FlowExecutionsView extends AuthedElement {
             parseUTCDate(a.start_time).getTime()
         );
         this.syncDurationTicker();
-      } else {
-        // New execution started, reload the list
-        this.loadExecutions();
       }
+      // A changed status can move the row out of the active filter, change
+      // aggregates, or race a list response that still has the old status.
+      this.scheduleLiveRefresh();
     }
 
     // Handle new executions
     if (message.type === 'execution_started' && message.payload) {
-      this.loadExecutions();
+      this.scheduleLiveRefresh();
     }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.requestGeneration += 1;
+    this.executionsAbort?.abort();
+    this.executionsAbort = undefined;
+    window.clearTimeout(this.liveRefreshTimer);
+    this.liveRefreshTimer = undefined;
+    this.liveRefreshQueued = false;
     this.stopDurationTicker();
     // A keystroke 300 ms before the user navigates away must not spend a
     // request on a detached page, or write state into it afterwards.
