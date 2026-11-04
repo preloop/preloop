@@ -4,8 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20261126_rate_limit_bucket"
-down_revision = "20261125_runner_share_grant"
+revision = "20261127_rate_limit_bucket"
+down_revision = "20261126_review_receipt"
 branch_labels = None
 depends_on = None
 
