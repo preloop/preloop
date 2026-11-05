@@ -543,8 +543,10 @@ def settle_reservation(
     if account is None:
         raise HostedSpendUnavailableError("Hosted credit balance is unavailable")
     cost = money(provider_cost)
-    price = multiplier(reservation.price_multiplier)
-    if price is None:
+    # No credit charge needs no historical tariff. This also lets an unpriced
+    # legacy hold release after proven non-dispatch or allowance-only usage.
+    price = multiplier(reservation.price_multiplier) if cost > ZERO else None
+    if cost > ZERO and price is None:
         raise HostedSpendUnavailableError("Hosted credit price is unavailable")
     if reservation.credit_reserved > ZERO:
         standard_key = f"hosted-hold:{reservation.id}"
@@ -587,9 +589,9 @@ def settle_reservation(
                 operation_key=held.operation_key,
                 actor="system",
             )
-    amount = money(cost * price)
-    if amount == ZERO:
+    if price is None:
         return
+    amount = money(cost * price)
     plan: list[tuple[models.HostedCreditPurchase | None, Decimal]] = []
     left = amount
     for lot in _lots_for_update(db, account_id):

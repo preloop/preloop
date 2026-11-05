@@ -489,8 +489,12 @@ calls already in progress are never interrupted for balance exhaustion.
 Above the floor, negative credit does not block a request fully covered by its
 allowance. At or below the floor, the explicit hard stop still applies, including
 after the monthly allowance resets. Reservation-linked credit holds require a
-recorded multiplier; a legacy unpriced hold refuses settlement and stays held for
-recovery instead of being silently stranded by a terminal reservation status.
+recorded multiplier. A legacy unpriced hold releases without a price when no
+credit charge is due, including proven non-dispatch. For a positive credit charge,
+an operator supplies the verified historical multiplier through
+`recover_verified_cost(..., price_multiplier=..., evidence=..., apply=True)`.
+Preview changes nothing; apply records the price and evidence with settlement in
+one transaction. An already recorded multiplier cannot be changed.
 
 CRUD only flushes. The caller commits reserve and dispatch marking before
 provider I/O, then commits settlement in a separate transaction, or rolls back

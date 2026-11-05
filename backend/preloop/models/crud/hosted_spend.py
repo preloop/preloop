@@ -417,6 +417,7 @@ def recover_verified_cost(
     actual: Any,
     evidence: str,
     apply: bool = False,
+    price_multiplier: Any | None = None,
 ) -> dict[str, Any]:
     """Preview or settle one verified charge with an atomic durable audit.
 
@@ -425,6 +426,9 @@ def recover_verified_cost(
     zero from elapsed time or missing responses. Exact replays preserve the first
     audit; conflicting amounts are refused. Previously settled reservations are
     reported honestly without fabricating a recovery audit after the fact.
+    A legacy linked hold without a price may supply a verified multiplier;
+    apply records it with the evidence in this same settlement transaction.
+    A recorded price cannot be changed, and preview never changes the hold.
     """
     if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 500:
         raise HostedSpendUnavailableError("Recovery evidence requires 1-500 characters")
@@ -442,6 +446,24 @@ def recover_verified_cost(
         )
     if row is None:
         raise HostedSpendUnavailableError("Hosted reservation is unavailable")
+    verified_price = None
+    if price_multiplier is not None:
+        from preloop.models.crud import hosted_credit
+
+        verified_price = hosted_credit.multiplier(price_multiplier)
+        if row.price_multiplier is not None and row.price_multiplier != verified_price:
+            raise HostedSpendUnavailableError("Conflicting hosted credit price")
+        if row.price_multiplier is None and row.credit_reserved <= ZERO:
+            raise HostedSpendUnavailableError(
+                "Hosted credit recovery requires a live hold"
+            )
+    if (
+        row.credit_reserved > ZERO
+        and row.price_multiplier is None
+        and actual > row.reserved
+        and verified_price is None
+    ):
+        raise HostedSpendUnavailableError("Hosted credit price is unavailable")
     operation_key = "hosted-recovery:" + str(row.id)
     audit = db.scalar(
         select(models.BillingOperation).where(
@@ -456,6 +478,8 @@ def recover_verified_cost(
         "reserved_usd": str(row.reserved),
         "actual_usd": str(actual),
     }
+    if verified_price is not None:
+        result["price_multiplier"] = str(verified_price)
     if row.status in {"settled", "released"}:
         if row.actual != actual:
             raise HostedSpendUnavailableError("Conflicting hosted settlement")
@@ -475,6 +499,10 @@ def recover_verified_cost(
         raise HostedSpendUnavailableError("Hosted recovery state requires review")
     if not apply:
         return {**result, "status": "would_settle"}
+    if row.price_multiplier is None and verified_price is not None:
+        row.price_multiplier = verified_price
+        # settle refreshes the reservation, including with autoflush disabled.
+        db.flush()
     settle(db, account_id=account_id, reservation_id=row.id, actual=actual)
     audit = models.BillingOperation(
         account_id=account_id,

@@ -315,12 +315,109 @@ def test_legacy_unpriced_hold_cannot_be_silently_settled(
         row.price_multiplier = None  # Simulate a legacy unpriced linked hold.
         db.commit()
         with pytest.raises(spend.HostedSpendUnavailableError, match="price"):
-            spend.settle(db, account_id=account_id, reservation_id=row.id, actual="1")
+            spend.settle(db, account_id=account_id, reservation_id=row.id, actual="3")
         db.rollback()
         assert row.status == "reserved"
         assert row.credit_reserved == Decimal("1.1")
         assert credit.balance(db, account_id=account_id)["reserved"] == Decimal("1.1")
         assert_reconciled(db, account_id)
+
+
+@pytest.mark.parametrize("not_dispatched", [False, True])
+def test_legacy_unpriced_hold_releases_without_a_credit_charge(
+    db_engine: Engine,
+    account_id: UUID,
+    not_dispatched: bool,
+) -> None:
+    with Session(db_engine) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id)
+        row.price_multiplier = None
+        db.commit()
+        spend.settle(
+            db,
+            account_id=account_id,
+            reservation_id=row.id,
+            actual=None if not_dispatched else "1",
+            proven_not_dispatched=not_dispatched,
+        )
+        db.commit()
+        assert row.status == ("released" if not_dispatched else "settled")
+        assert row.credit_reserved == 0
+        assert credit.balance(db, account_id=account_id)["reserved"] == 0
+        assert consumption(db, account_id) == []
+        assert_reconciled(db, account_id)
+
+
+def test_recovery_records_a_verified_price_for_a_legacy_hold(
+    db_engine: Engine,
+    account_id: UUID,
+) -> None:
+    # Match callers that disable autoflush: price must survive settle's refresh.
+    with Session(db_engine, autoflush=False) as db:
+        grant(db, account_id)
+        row = reserve(db, account_id)
+        row.price_multiplier = None
+        db.commit()
+        args = dict(
+            account_id=account_id,
+            reservation_id=row.id,
+            actual="3",
+            evidence="verified historical tariff and provider receipt",
+        )
+        with pytest.raises(spend.HostedSpendUnavailableError, match="price"):
+            spend.recover_verified_cost(db, **args)
+        preview = spend.recover_verified_cost(db, **args, price_multiplier="1.1")
+        assert preview["status"] == "would_settle"
+        assert row.price_multiplier is None
+        result = spend.recover_verified_cost(
+            db, **args, price_multiplier="1.1", apply=True
+        )
+        db.rollback()
+        assert row.price_multiplier is None
+        assert row.status == "reserved"
+        assert credit.balance(db, account_id=account_id)["consumed"] == 0
+        result = spend.recover_verified_cost(
+            db, **args, price_multiplier="1.1", apply=True
+        )
+        db.commit()
+        assert row.price_multiplier == Decimal("1.1")
+        assert row.status == "settled"
+        assert credit.balance(db, account_id=account_id)["consumed"] == Decimal("1.1")
+        audit = db.get(models.BillingOperation, UUID(result["audit_id"]))
+        assert audit.payload["price_multiplier"] == "1.1000"
+        assert audit.payload["evidence"] == args["evidence"]
+        replay = spend.recover_verified_cost(
+            db, **args, price_multiplier="1.1", apply=True
+        )
+        assert replay["status"] == "already_recovered"
+        assert replay["audit_id"] == result["audit_id"]
+        with pytest.raises(spend.HostedSpendUnavailableError, match="Conflicting"):
+            spend.recover_verified_cost(db, **args, price_multiplier="1.2", apply=True)
+        assert_reconciled(db, account_id)
+
+
+def test_recovery_price_cannot_enable_credit_on_a_legacy_allowance_call(
+    db_engine: Engine,
+    account_id: UUID,
+) -> None:
+    with Session(db_engine) as db:
+        row = reserve(db, account_id, amount="1", credit_available=None)
+        db.commit()
+        with pytest.raises(spend.HostedSpendUnavailableError, match="live hold"):
+            spend.recover_verified_cost(
+                db,
+                account_id=account_id,
+                reservation_id=row.id,
+                actual="3",
+                evidence="provider receipt",
+                price_multiplier="1.1",
+                apply=True,
+            )
+        db.commit()
+        assert row.price_multiplier is None
+        assert row.status == "reserved"
+        assert credit.entries(db, account_id=account_id) == []
 
 
 def test_terminal_reservation_cannot_acquire_more_credit(
