@@ -453,8 +453,55 @@ model row captured at request time, so later alias changes cannot relabel histor
 
 Prepaid credit is a separate ledger (`hosted_credit_account`,
 `hosted_credit_ledger`, `hosted_credit_purchase`) with one lot per purchase.
-The allowance balance above is unchanged: `reserve` and `settle` do not spend
-credit yet. An absent `hosted_credit_topup_setting` row means auto top-up is off.
+`crud.hosted_spend.reserve` accepts optional `credit_available` and
+`price_multiplier` arguments. The default `credit_available=None` reads and
+writes no credit rows, so existing callers retain the allowance-only path and
+the same exhaustion error. Missing or empty credit wallets also retain that
+behavior. Consumption is inert until credit grants exist and the caller opts in;
+the Enterprise plugin owns activation, purchases and refusal messages. An absent
+`hosted_credit_topup_setting` row means auto top-up is off.
+
+With credit enabled, reserve takes the account row lock and refreshes the credit
+balance after acquiring it. A caller's earlier balance snapshot cannot authorize
+spending. Monthly allowance pays first at provider cost; overflow is held in
+customer dollars at the supplied multiplier. The allowance counters, credit hold
+and reservation split share one transaction. A hold reserves aggregate credit,
+not a particular purchase lot. Insufficient funds raise `HostedSpendExceededError`
+before any reservation writes. The one-time Free allowance check still runs first.
+
+Settlement takes the same account lock. Allowance absorbs up to the recorded
+allowance reservation; the remaining actual cost uses the recorded multiplier.
+Credit consumption walks lots by `(granted_at, id)`, oldest first, with one ledger
+entry per lot carrying its purchase ID, provider cost and multiplier. Provider
+cost shares sum to the full credit-funded provider cost at ledger precision.
+Unused holds return to both buckets. Unknown provider cost keeps both holds in
+`recovery_required`; held credit cannot be spent or expired. The expiry worker
+writes off expired lots through CRUD, so they no longer contribute to the balance.
+
+An actual charge above its reservation is recorded in full, including lotless
+debt when purchases are exhausted. Credit balance may reach -$1.00. Any amount
+below that floor is immediately compensated with a system `adjustment` noted
+`below credit floor, absorbed`; this clears debt without creating a purchase lot.
+The next grant clears negative balance first. Account totals reconcile to ledger
+movements, and purchase remainders sum to the balance whenever it is nonnegative.
+New credit-funded requests stop when available credit cannot cover them; provider
+calls already in progress are never interrupted for balance exhaustion.
+Above the floor, negative credit does not block a request fully covered by its
+allowance. At or below the floor, the explicit hard stop still applies, including
+after the monthly allowance resets. Reservation-linked credit holds require a
+recorded multiplier. A legacy unpriced hold releases without a price when no
+credit charge is due, including proven non-dispatch. For a positive credit charge,
+an operator supplies the verified historical multiplier through
+`recover_verified_cost(..., price_multiplier=..., evidence=..., apply=True)`.
+Preview changes nothing; apply records the price and evidence with settlement in
+one transaction. An already recorded multiplier cannot be changed.
+
+CRUD only flushes. The caller commits reserve and dispatch marking before
+provider I/O, then commits settlement in a separate transaction, or rolls back
+all changes on failure. Lock order is account, credit wallet, then purchase lots
+in FIFO order. Holds, releases, consumption, floor compensation and terminal
+reservation status remain within these transaction boundaries. Repeated operation
+keys cannot redispatch; repeated settlement cannot debit twice.
 
 `preloop models list` separates your models from Preloop-hosted models and reports
 the allowance when supported. Before adding a system alias, operators can run

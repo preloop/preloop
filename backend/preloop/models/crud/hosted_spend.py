@@ -144,8 +144,16 @@ def reserve(
     lifetime_limit: Any | None,
     monthly_limit: Any | None,
     now: datetime,
+    credit_available: Decimal | None = None,
+    price_multiplier: Decimal = Decimal("1"),
 ) -> models.HostedSpendReservation:
-    """Reserve under the account lock; repeated keys never permit redispatch."""
+    """Reserve allowance then credit; repeated keys never permit redispatch.
+
+    ``credit_available=None`` preserves the allowance-only path without reading
+    credit tables. Otherwise the caller's snapshot opts in, but availability is
+    refreshed under the account lock. Empty credit wallets retain legacy behavior.
+    Callers commit the complete reservation before dispatch, or roll back on error.
+    """
     amount = money(amount)
     if not operation_key or len(operation_key) > 128:
         raise HostedSpendUnavailableError("Hosted operation key is invalid")
@@ -175,7 +183,6 @@ def reserve(
         period = models.HostedSpendMonth(
             account_id=account_id, period=period_key, spent=ZERO, reserved=ZERO
         )
-        db.add(period)
     if lifetime_limit is not None:
         if wallet.lifetime_spent is None:
             raise HostedSpendUnavailableError(
@@ -185,23 +192,57 @@ def reserve(
             lifetime_limit
         ):
             raise HostedSpendExceededError("One-time hosted credit is exhausted")
-    if monthly_limit is not None and period.spent + period.reserved + amount > money(
+    allowance_part = amount
+    credit_part = ZERO
+    multiplier = None
+    available = None
+    if credit_available is not None:
+        from preloop.models.crud import hosted_credit
+
+        available = hosted_credit.reservation_available(db, account_id=account_id)
+    if available is not None:
+        multiplier = hosted_credit.multiplier(price_multiplier)
+        if multiplier is None:
+            raise HostedSpendUnavailableError("Hosted credit price is unavailable")
+        if monthly_limit is not None:
+            remaining = max(money(monthly_limit) - period.spent - period.reserved, ZERO)
+            allowance_part = min(amount, remaining)
+        credit_part = money((amount - allowance_part) * multiplier)
+        # The floor is an explicit hard stop. Above it, a negative credit
+        # balance cannot block a request covered entirely by its allowance.
+        if available <= hosted_credit.CREDIT_FLOOR or (
+            credit_part > ZERO and credit_part > available
+        ):
+            raise HostedSpendExceededError("Prepaid credit is exhausted")
+    elif monthly_limit is not None and period.spent + period.reserved + amount > money(
         monthly_limit
     ):
         raise HostedSpendExceededError(
             "Monthly hosted allowance is exhausted; extra spending is disabled"
         )
-    wallet.lifetime_reserved += amount
-    period.reserved += amount
+    db.add(period)
+    wallet.lifetime_reserved += allowance_part
+    period.reserved += allowance_part
     reservation = models.HostedSpendReservation(
         account_id=account_id,
         operation_key=operation_key,
         period=period_key,
-        reserved=amount,
+        reserved=allowance_part,
+        price_multiplier=multiplier,
         status="reserved",
     )
     db.add(reservation)
     db.flush()
+    if credit_part > ZERO:
+        hosted_credit.hold(
+            db,
+            account_id=account_id,
+            amount=credit_part,
+            operation_key=f"hosted-hold:{reservation.id}",
+            actor="system",
+            reservation_id=reservation.id,
+            price_multiplier=multiplier,
+        )
     return reservation
 
 
@@ -262,11 +303,19 @@ def settle(
     wallet, period = _wallet(db, account_id), _month(db, account_id, row.period)
     if wallet is None or period is None:
         raise HostedSpendUnavailableError("Hosted reservation balance is unavailable")
+    allowance_actual = actual
+    if row.price_multiplier is not None or row.credit_reserved > ZERO:
+        from preloop.models.crud import hosted_credit
+
+        allowance_actual = min(actual, row.reserved)
+        hosted_credit.settle_reservation(
+            db, reservation=row, provider_cost=actual - allowance_actual
+        )
     wallet.lifetime_reserved -= row.reserved
     if wallet.lifetime_spent is not None:
-        wallet.lifetime_spent += actual
+        wallet.lifetime_spent += allowance_actual
     period.reserved -= row.reserved
-    period.spent += actual
+    period.spent += allowance_actual
     row.actual = actual
     row.status = "released" if proven_not_dispatched else "settled"
     db.flush()
@@ -368,6 +417,7 @@ def recover_verified_cost(
     actual: Any,
     evidence: str,
     apply: bool = False,
+    price_multiplier: Any | None = None,
 ) -> dict[str, Any]:
     """Preview or settle one verified charge with an atomic durable audit.
 
@@ -376,6 +426,9 @@ def recover_verified_cost(
     zero from elapsed time or missing responses. Exact replays preserve the first
     audit; conflicting amounts are refused. Previously settled reservations are
     reported honestly without fabricating a recovery audit after the fact.
+    A legacy linked hold without a price may supply a verified multiplier;
+    apply records it with the evidence in this same settlement transaction.
+    A recorded price cannot be changed, and preview never changes the hold.
     """
     if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 500:
         raise HostedSpendUnavailableError("Recovery evidence requires 1-500 characters")
@@ -393,6 +446,24 @@ def recover_verified_cost(
         )
     if row is None:
         raise HostedSpendUnavailableError("Hosted reservation is unavailable")
+    verified_price = None
+    if price_multiplier is not None:
+        from preloop.models.crud import hosted_credit
+
+        verified_price = hosted_credit.multiplier(price_multiplier)
+        if row.price_multiplier is not None and row.price_multiplier != verified_price:
+            raise HostedSpendUnavailableError("Conflicting hosted credit price")
+        if row.price_multiplier is None and row.credit_reserved <= ZERO:
+            raise HostedSpendUnavailableError(
+                "Hosted credit recovery requires a live hold"
+            )
+    if (
+        row.credit_reserved > ZERO
+        and row.price_multiplier is None
+        and actual > row.reserved
+        and verified_price is None
+    ):
+        raise HostedSpendUnavailableError("Hosted credit price is unavailable")
     operation_key = "hosted-recovery:" + str(row.id)
     audit = db.scalar(
         select(models.BillingOperation).where(
@@ -407,6 +478,8 @@ def recover_verified_cost(
         "reserved_usd": str(row.reserved),
         "actual_usd": str(actual),
     }
+    if verified_price is not None:
+        result["price_multiplier"] = str(verified_price)
     if row.status in {"settled", "released"}:
         if row.actual != actual:
             raise HostedSpendUnavailableError("Conflicting hosted settlement")
@@ -426,6 +499,10 @@ def recover_verified_cost(
         raise HostedSpendUnavailableError("Hosted recovery state requires review")
     if not apply:
         return {**result, "status": "would_settle"}
+    if row.price_multiplier is None and verified_price is not None:
+        row.price_multiplier = verified_price
+        # settle refreshes the reservation, including with autoflush disabled.
+        db.flush()
     settle(db, account_id=account_id, reservation_id=row.id, actual=actual)
     audit = models.BillingOperation(
         account_id=account_id,
