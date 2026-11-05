@@ -2240,4 +2240,32 @@ describe('SessionReplayPanel bounded request windows', () => {
     expect(ids(element)).to.include('artifact-historical-result');
     expect(rows(element).length).to.be.at.most(100);
   });
+  it('keeps keyboard focus when cost sorting inserts a row inside the window', async () => {
+    const element = await mount();
+    (element as any).chatSort = 'costliest';
+    element.events = element.events.map((event, index) => ({
+      ...event,
+      payload: { ...event.payload, estimated_cost: 1000 - index },
+    }));
+    await element.updateComplete;
+    const focused = rows(element)[99].querySelector<HTMLElement>('.chat-turn')!;
+    focused.focus();
+    const readingTop = focused.getBoundingClientRect().top;
+    for (const index of [205, 206]) {
+      const inserted = makeEvent(index);
+      inserted.payload.estimated_cost = 950.5;
+      element.events = [...element.events, inserted];
+      await element.updateComplete;
+      expect(element.shadowRoot!.activeElement === focused).to.equal(true);
+      expect(ids(element)).to.include('window-99');
+      expect(rows(element)).to.have.length(100);
+      expect(rows(element)[0].getAttribute('aria-posinset')).to.equal(
+        String(index - 203)
+      );
+      expect(
+        Math.abs(focused.getBoundingClientRect().top - readingTop)
+      ).to.be.at.most(1);
+      expect(element.isUpdatePending).to.equal(false);
+    }
+  });
 });

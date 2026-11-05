@@ -1731,7 +1731,7 @@ export class SessionReplayPanel extends LitElement {
       this.chatWindowStart = 0;
       this.chatWindowAnchor = null;
       this.chatLatestFocusId = null;
-    } else if (this.chatWindowStart === 0 && !changed.has('chatWindowStart')) {
+    } else if (!changed.has('chatWindowStart')) {
       const first =
         this.renderRoot.querySelector<HTMLElement>('[data-chat-row-id]');
       const focused =
@@ -6274,11 +6274,10 @@ export class SessionReplayPanel extends LitElement {
     // Reuse these derived rows: checking eviction in willUpdate would derive
     // the complete transcript a second time on every focused live update.
     const focusToKeep = this.chatFocusToKeep;
-    if (
-      focusToKeep &&
-      rows.findIndex((row) => row.id === focusToKeep.id) >=
-        this.CHAT_WINDOW_SIZE
-    ) {
+    const focusedIndex = focusToKeep
+      ? rows.findIndex((row) => row.id === focusToKeep.id)
+      : -1;
+    if (focusToKeep && focusedIndex >= this.CHAT_WINDOW_SIZE) {
       this.chatWindowAnchor ??= focusToKeep.anchor;
     }
     // Keep the first row of a historical window stable when new requests or
@@ -6291,6 +6290,14 @@ export class SessionReplayPanel extends LitElement {
       0,
       Math.min(this.chatWindowStart, rows.length - 1)
     );
+    // Cost/type sorting can insert rows inside the old window, so keeping its
+    // first row alone may still evict focus. Shift only enough to retain it.
+    if (focusedIndex >= 0) {
+      if (focusedIndex < this.chatWindowStart)
+        this.chatWindowStart = focusedIndex;
+      else if (focusedIndex >= this.chatWindowStart + this.CHAT_WINDOW_SIZE)
+        this.chatWindowStart = focusedIndex - this.CHAT_WINDOW_SIZE + 1;
+    }
     const visibleRows = rows.slice(
       this.chatWindowStart,
       this.chatWindowStart + this.CHAT_WINDOW_SIZE
