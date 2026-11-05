@@ -1,4 +1,4 @@
-import { fixture, html, expect, waitUntil } from '@open-wc/testing';
+import { fixture, html, expect, waitUntil, aTimeout } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './flow-execution-view';
@@ -1028,6 +1028,51 @@ describe('FlowExecutionView', () => {
       } finally {
         clock.restore();
       }
+    });
+
+    for (const following of [false, true]) {
+      it(`does not restart a detached ticker while following=${following}`, async () => {
+        const element = await load('exec-running');
+        const view = element as any;
+        view.wsConnected = true;
+        view.isAutoScroll = following;
+        view.requestUpdate();
+        element.remove();
+        await element.updateComplete;
+        const stoppedAt = view.durationNow;
+        expect(view.durationTickIntervalId).to.equal(undefined);
+        await aTimeout(1100);
+        expect(view.durationNow).to.equal(stoppedAt);
+      });
+    }
+
+    it('owns exactly one ticker after reattachment and stops on completion', async () => {
+      const element = await load('exec-running');
+      const view = element as any;
+      const parent = element.parentElement!;
+      element.remove();
+      await element.updateComplete;
+      parent.append(element);
+      await element.updateComplete;
+      const interval = view.durationTickIntervalId;
+      expect(interval).to.be.a('number');
+      view.requestUpdate();
+      await element.updateComplete;
+      expect(view.durationTickIntervalId).to.equal(interval);
+      view.execution = { ...view.execution, status: 'COMPLETED' };
+      await element.updateComplete;
+      expect(view.durationTickIntervalId).to.equal(undefined);
+    });
+
+    it('stops the previous ticker as soon as in-place navigation starts', async () => {
+      const element = await load('exec-running');
+      const view = element as any;
+      element.executionId = 'exec-1';
+      await element.updateComplete;
+      expect(view.durationTickIntervalId).to.equal(undefined);
+      await waitUntil(() => view.execution?.id === 'exec-1');
+      await element.updateComplete;
+      expect(view.durationTickIntervalId).to.equal(undefined);
     });
 
     it('clears the tick interval when disconnected', async () => {

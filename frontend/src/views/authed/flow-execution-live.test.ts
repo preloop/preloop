@@ -168,6 +168,18 @@ describe('execution live metadata', () => {
   });
 
   it('keeps terminal event diagnostics when the refresh fails without retrying in a loop', async () => {
+    // Startup recovery owns an independent metadata refresh. Let it finish
+    // before measuring whether the failing terminal refresh retries itself.
+    await waitUntil(
+      () =>
+        (view as any).wsConnected &&
+        !(view as any).isLoadingLogs &&
+        (view as any).realtimeRecoveryTimer === undefined &&
+        !(view as any).realtimeRecovery &&
+        (view as any).metadataRefreshTimer === undefined &&
+        !(view as any).metadataRefreshRunning
+    );
+    const initialReads = detailReads;
     pendingRead = async () => {
       throw new Error('Unavailable');
     };
@@ -175,10 +187,10 @@ describe('execution live metadata', () => {
       error_message: 'Timed out',
       end_time: '2026-01-01T00:02:00Z',
     });
-    await waitUntil(() => detailReads === 2);
+    await waitUntil(() => detailReads === initialReads + 1);
     await settle();
     expect((view as any).execution.error_message).to.equal('Timed out');
-    expect(detailReads).to.equal(2);
+    expect(detailReads).to.equal(initialReads + 1);
   });
 
   it('preserves diagnostics added by a later event with the same status', async () => {
