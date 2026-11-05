@@ -107,7 +107,7 @@ async def test_terminal_or_not_running_does_not_mint(
     context = claims()
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(return_value=SimpleNamespace(status=status)),
     )
     mint = AsyncMock()
@@ -130,7 +130,9 @@ async def test_tenancy_missing_does_not_mint(
         else SimpleNamespace(status="RUNNING")
     )
     tracker_get = Mock(return_value=None)
-    monkeypatch.setattr(endpoint.crud_flow_execution, "get", execution_get)
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution, "get_without_workspace", execution_get
+    )
     monkeypatch.setattr(endpoint.crud_tracker, "get", tracker_get)
     mint = AsyncMock()
     monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
@@ -157,7 +159,7 @@ async def test_other_execution_rejected_before_lookup(
 ) -> None:
     context = claims()
     get = Mock()
-    monkeypatch.setattr(endpoint.crud_flow_execution, "get", get)
+    monkeypatch.setattr(endpoint.crud_flow_execution, "get_without_workspace", get)
     with pytest.raises(HTTPException) as error:
         await _refresh(uuid4(), Response(), context, Mock())
     assert error.value.status_code == 403
@@ -173,7 +175,7 @@ async def test_exact_bound_repository_and_sanitized_issuance(
     tracker = Mock()
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(return_value=SimpleNamespace(status="RUNNING")),
     )
     monkeypatch.setattr(endpoint.crud_tracker, "get", Mock(return_value=tracker))
@@ -208,7 +210,7 @@ async def test_stop_intent_blocks_new_authority(
     stopped = SimpleNamespace(status="RUNNING", stop_requested_at=datetime.now(UTC))
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(side_effect=[running, stopped] if mid_mint else [stopped]),
     )
     monkeypatch.setattr(endpoint.crud_tracker, "get", Mock(return_value=Mock()))
@@ -263,7 +265,9 @@ async def test_crud_runs_off_loop_and_async_provider_runs_on_loop(
             token="fresh-token", expires_at=datetime.now(UTC) + timedelta(hours=1)
         )
 
-    monkeypatch.setattr(endpoint.crud_flow_execution, "get", execution_get)
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution, "get_without_workspace", execution_get
+    )
     monkeypatch.setattr(endpoint.crud_tracker, "get", tracker_get)
     monkeypatch.setattr(endpoint, "mint_repository_lease", issue)
     await _refresh(context["execution_id"], Response(), context, Mock())
@@ -319,7 +323,7 @@ def _fresh(token: str, seconds: int = 3600) -> SimpleNamespace:
 def running(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(return_value=SimpleNamespace(status="RUNNING", stop_requested_at=None)),
     )
     mint = AsyncMock()
@@ -484,7 +488,7 @@ async def test_managed_bitbucket_terminal_execution_cannot_reacquire(
     context = _bitbucket_claims()
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(return_value=SimpleNamespace(status=status, stop_requested_at=None)),
     )
     monkeypatch.setattr(
@@ -504,7 +508,9 @@ async def test_managed_bitbucket_stop_during_resolution_withholds_token(
     running_state = SimpleNamespace(status="RUNNING", stop_requested_at=None)
     stopped = SimpleNamespace(status="RUNNING", stop_requested_at=datetime.now(UTC))
     monkeypatch.setattr(
-        endpoint.crud_flow_execution, "get", Mock(side_effect=[running_state, stopped])
+        endpoint.crud_flow_execution,
+        "get_without_workspace",
+        Mock(side_effect=[running_state, stopped]),
     )
     monkeypatch.setattr(
         endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
@@ -538,7 +544,7 @@ async def test_pasted_bitbucket_token_is_not_dispatched_to_resolver(
     context = _bitbucket_claims()
     monkeypatch.setattr(
         endpoint.crud_flow_execution,
-        "get",
+        "get_without_workspace",
         Mock(return_value=SimpleNamespace(status="RUNNING", stop_requested_at=None)),
     )
     tracker = SimpleNamespace(

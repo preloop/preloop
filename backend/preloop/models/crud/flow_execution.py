@@ -20,6 +20,8 @@ from sqlalchemy import (
     true,
     union,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 from sqlalchemy.orm import (
     Session,
     contains_eager,
@@ -446,7 +448,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return query.first()
 
     def get_without_workspace(
-        self, db: Session, id: Any, *, account_id: Any
+        self, db: Session, id: Any, *, account_id: Any, refresh: bool = False
     ) -> Optional[models.FlowExecution]:
         """Read an owned execution without transferring its workspace archive.
 
@@ -454,7 +456,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         the unrelated workspace BYTEA is excluded; accidental lazy access raises
         instead of silently adding a large query. Workspace download uses get.
         """
-        return (
+        query = (
             db.query(models.FlowExecution)
             .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
             .join(models.Flow)
@@ -462,8 +464,47 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.id == id,
                 models.Flow.account_id == account_id,
             )
+        )
+        if refresh:
+            query = query.populate_existing()
+        return query.first()
+
+    def get_flow_id(self, db: Session, id: Any) -> Optional[uuid.UUID]:
+        """Read the parent id for callers that authorize the flow separately."""
+        row = (
+            db.query(models.FlowExecution.flow_id)
+            .filter(models.FlowExecution.id == id)
             .first()
         )
+        return row[0] if row is not None else None
+
+    def _attribution_statement(
+        self, ids: Iterable[Any], account_ids: Iterable[Any]
+    ) -> Select:
+        """Account-scoped attribution rows without saved workspace bytes."""
+        return (
+            select(models.FlowExecution, models.Flow)
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .where(
+                models.FlowExecution.id.in_(list(ids)),
+                models.Flow.account_id.in_(list(account_ids)),
+            )
+            .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
+        )
+
+    def get_for_attribution(
+        self, db: Session, *, ids: Iterable[Any], account_ids: Iterable[Any]
+    ) -> dict[Any, tuple[models.FlowExecution, models.Flow]]:
+        """Batch runs with their flow, preserving an empty account scope."""
+        rows = db.execute(self._attribution_statement(ids, account_ids)).all()
+        return {execution.id: (execution, flow) for execution, flow in rows}
+
+    async def get_for_attribution_async(
+        self, db: AsyncSession, *, ids: Iterable[Any], account_ids: Iterable[Any]
+    ) -> dict[Any, tuple[models.FlowExecution, models.Flow]]:
+        """Async batch lookup for approval decision responses."""
+        result = await db.execute(self._attribution_statement(ids, account_ids))
+        return {execution.id: (execution, flow) for execution, flow in result.all()}
 
     def get_status(
         self, db: Session, *, execution_id: Any, account_id: Any

@@ -149,7 +149,7 @@ def refresh_publication_credential(
     """Issue fresh exact-repository authority only while the execution is running."""
     if claims["execution_id"] != execution_id:
         raise HTTPException(403, "publication_scope_mismatch")
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db, id=execution_id, account_id=str(claims["account_id"]), refresh=True
     )
     if execution is None:
@@ -216,7 +216,7 @@ def refresh_publication_credential(
             raise HTTPException(502, "publication_credential_unavailable") from exc
     # A stop can race the provider request. Do not return newly issued
     # authority to a run which closed or received emergency stop meanwhile.
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db, id=execution_id, account_id=str(claims["account_id"]), refresh=True
     )
     if (
