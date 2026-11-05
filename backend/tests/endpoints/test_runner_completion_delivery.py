@@ -520,3 +520,74 @@ def test_expired_completion_preserves_evidence_publication_and_continuation(
         if (row.meta_data or {}).get("event_type") == "host_exec_result"
     ]
     assert len(premium) == 1
+
+
+@pytest.mark.parametrize("heartbeat", [False, True])
+@pytest.mark.parametrize("principal_active", [False, True])
+def test_replay_mints_routed_runtime_token_without_workspace_sql(
+    db_session: Session, test_user: models.User, heartbeat: bool, principal_active: bool
+) -> None:
+    from types import SimpleNamespace
+    from preloop.models.crud import crud_api_key
+
+    account_id = test_user.account_id
+    test_user.is_active = principal_active
+    db_session.flush()
+    model_id = str(uuid4())
+    flow = models.Flow(
+        account_id=account_id,
+        name="Replay",
+        prompt_template="Example",
+        agent_type="codex",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(
+        flow_id=flow.id,
+        status="PENDING",
+        workspace_snapshot=b"retained workspace" * 70000,
+        trigger_event_details={
+            "_model_routing": {"source": "rule", "ai_model_id": model_id}
+        },
+    )
+    db_session.add(execution)
+    db_session.commit()
+    execution_id = execution.id
+    pending = {"execution_id": str(execution_id), "prompt": "Example"}
+    db_session.expunge_all()
+    statements: list[str] = []
+
+    def capture(
+        _conn: Any, _cursor: Any, sql: str, _params: Any, _context: Any, _many: bool
+    ) -> None:
+        if sql.lstrip().upper().startswith("SELECT"):
+            statements.append(sql)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        if heartbeat:
+            job = runners.job_for_heartbeat_ack(
+                db_session,
+                SimpleNamespace(pending_job=pending, reported_status="PENDING"),
+                publication_capabilities={},
+            )
+        else:
+            job = runners.job_for_runner_replay(
+                db_session, pending_job=pending, mint_token=True
+            )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert job is not None
+    assert "account_api_token" not in pending
+    assert all("workspace_snapshot" not in sql for sql in statements), statements
+    if not principal_active:
+        assert "account_api_token" not in job
+        return
+    assert job.get("account_api_token")
+    key = crud_api_key.get_by_key(db_session, key=job["account_api_token"])
+    assert key.account_id == account_id
+    assert key.context_data["flow_execution_id"] == str(execution_id)
+    assert key.context_data["ai_model_id"] == model_id
+    assert key.context_data["runtime_principal"]["type"] == "flow_execution"

@@ -987,6 +987,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             raise
         return db_obj
 
+    def get_trigger_details(self, db: Session, id: Any) -> Optional[dict[str, Any]]:
+        """Read routing/trigger metadata without materializing execution payloads."""
+        row = (
+            db.query(models.FlowExecution.trigger_event_details)
+            .filter(models.FlowExecution.id == id)
+            .first()
+        )
+        return row[0] if row is not None else None
+
     def get_for_runner(
         self,
         db: Session,
