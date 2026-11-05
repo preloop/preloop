@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Durable prepaid credit purchase CRUD with serialized Checkout attempts, atomic event receipts and grants, refund eligibility, cumulative reversals, and chargeback top-up suspension. `BILLING_PREPAID_CREDITS_ENABLED` defaults to false. Existing allowance consumption is unchanged.
+
 ### Changed
 
 - **Breaking API change:** invitation creation, list, and detail responses
