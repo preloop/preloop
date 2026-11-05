@@ -987,6 +987,49 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             raise
         return db_obj
 
+    def get_for_runner(
+        self,
+        db: Session,
+        id: Any,
+        *,
+        account_id: Any = None,
+        refresh: bool = False,
+    ) -> Optional[models.FlowExecution]:
+        """Read runner metadata without materializing the saved workspace.
+
+        Assignment ownership is checked by the caller; account scope is also
+        applied where the handler previously required it. This does not change
+        the full getter used by workspace recovery and download.
+        """
+        query = (
+            db.query(models.FlowExecution)
+            .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
+            .filter(models.FlowExecution.id == id)
+        )
+        if account_id:
+            query = query.join(models.Flow).filter(models.Flow.account_id == account_id)
+        if refresh:
+            query = query.populate_existing()
+        return query.first()
+
+    def refresh_runner_metadata(
+        self, db: Session, execution: models.FlowExecution
+    ) -> None:
+        """Reload metadata after lease clearing expires the locked execution.
+
+        Explicit column names prevent SQLAlchemy's expired-identity refresh
+        from fetching the workspace archive. The caller retains its completion
+        row lock and transaction; expiration of other identities is preserved.
+        """
+        db.refresh(
+            execution,
+            attribute_names=[
+                column.key
+                for column in models.FlowExecution.__table__.columns
+                if column.key != "workspace_snapshot"
+            ],
+        )
+
     def lock_for_runner_completion(
         self, db: Session, *, execution_id: uuid.UUID, account_id: uuid.UUID
     ) -> Optional[FlowExecution]:
@@ -994,6 +1037,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         with db.no_autoflush:
             return (
                 db.query(FlowExecution)
+                .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
                 .join(Flow, Flow.id == FlowExecution.flow_id)
                 .filter(FlowExecution.id == execution_id, Flow.account_id == account_id)
                 .populate_existing()

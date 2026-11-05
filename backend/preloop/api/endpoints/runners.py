@@ -973,7 +973,7 @@ def job_for_runner_replay(
     execution_id = _parse_runner_execution_id(job.get("execution_id"))
     if execution_id is None:
         return job
-    execution = crud_flow_execution.get(db, id=execution_id)
+    execution = crud_flow_execution.get_for_runner(db, id=execution_id)
     if execution is None or getattr(execution, "flow_id", None) is None:
         return job
     flow = crud_flow.get(db, id=execution.flow_id)
@@ -1374,7 +1374,7 @@ async def runner_ws(
                     await websocket.send_json({"type": "ack"})
                     continue
                 assignment.reported_status = status
-                execution = crud_flow_execution.get(db, id=execution_id)
+                execution = crud_flow_execution.get_for_runner(db, id=execution_id)
                 if execution:
                     execution.status = status
                     db.add(execution)
@@ -1405,7 +1405,7 @@ async def runner_ws(
                             }
                         )
                         continue
-                    execution = crud_flow_execution.get(
+                    execution = crud_flow_execution.get_for_runner(
                         db, id=execution_id, account_id=str(runner.account_id)
                     )
                     if execution is not None:
@@ -1488,7 +1488,7 @@ async def runner_ws(
                     raw, pending_job=leased_job
                 )
                 isolated = bool((leased_job or {}).get("_publication"))
-                execution = crud_flow_execution.get(
+                execution = crud_flow_execution.get_for_runner(
                     db, id=execution_id, account_id=str(runner.account_id), refresh=True
                 )
                 prompt = None
@@ -1593,6 +1593,7 @@ async def runner_ws(
                         db, execution_id=execution_id, commit=False
                     )
                 else:
+                    crud_flow_execution.refresh_runner_metadata(db, execution)
                     apply_runner_completion_to_execution(
                         db,
                         execution,
