@@ -659,7 +659,7 @@ describe('AddAIModelModal model list provenance', () => {
    * Contract guard. The server emits a fixed reason vocabulary defined in
    * preloop/services/ai_model_provider.py; every code must have human wording
    * here. This test caught a real drift: the picker had a label for "auth",
-   * which the server never sends (bad keys raise a 401 instead of returning a
+   * which the server never sends (bad keys raise a 400 instead of returning a
    * fallback list), and had NO label for missing_endpoint / sdk_missing /
    * unknown, which it does send.
    */
@@ -1955,6 +1955,14 @@ describe('Bedrock API key authentication', () => {
     expect(text).to.contain('bedrock:ListInferenceProfiles');
     expect(text).to.contain('hidden');
     expect(text).not.to.contain('unsafe upstream text');
+    // Shoelace alerts already announce themselves; keep them outside the
+    // polite provenance status to avoid duplicate or mixed announcements.
+    const status = element.shadowRoot!.querySelector('[role="status"]')!;
+    expect(status.textContent).to.contain('Fetched 1 models');
+    expect(status.querySelector('sl-alert')).to.equal(null);
+    expect(
+      element.shadowRoot!.querySelectorAll('sl-alert').length
+    ).to.be.greaterThan(0);
   });
 
   it('clears regional suggestions on region changes and refreshes with the entered region', async () => {

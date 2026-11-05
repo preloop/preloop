@@ -1686,8 +1686,8 @@ export class AddAIModelModal extends LitElement {
             </div>
             <div role="status" aria-atomic="true">
               ${this._renderModelsProvenanceNotice()}
-              ${this._renderBedrockDiscoveryWarnings()}
             </div>
+            ${this._renderBedrockDiscoveryWarnings()}
           </div>
 
           ${
