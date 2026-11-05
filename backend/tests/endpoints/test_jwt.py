@@ -368,7 +368,10 @@ class TestGetCurrentActiveUser:
         mock_user = MagicMock()
         mock_user.is_active = True
 
-        result = jwt_module.get_current_active_user(current_user=mock_user)
+        mock_db = MagicMock()
+        mock_db.info = {}
+        result = jwt_module.get_current_active_user(current_user=mock_user, db=mock_db)
+        assert mock_db.info["artifact_reader"]["user_id"] == str(mock_user.id)
 
         assert result == mock_user
 

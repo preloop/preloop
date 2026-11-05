@@ -110,7 +110,11 @@ def auth_from_user_context(db: Session, user_context: Any) -> ModelGatewayAuthCo
         # Scoped to the user's account: a key id from another account never
         # lends its session binding.
         api_key = crud_api_key.get(db, api_key_id, account_id=user.account_id)
-    return ModelGatewayAuthContext(token=NO_BEARER_TOKEN, user=user, api_key=api_key)
+    from preloop.services.artifact_access import bind_gateway
+
+    auth = ModelGatewayAuthContext(token=NO_BEARER_TOKEN, user=user, api_key=api_key)
+    bind_gateway(db, auth)
+    return auth
 
 
 def deposit_from_mcp(

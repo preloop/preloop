@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projected execution caps respect account exemptions; absent plugins retain
   the environment fallback.
 
+- An internal artifact read-policy hook applies exact label and kind predicates
+  before search, pagination, facets, counts, byte reads, media reads and exports,
+  including artifact snippets in the session-search corpus.
+  Optional plugin request guards can impose read-only roles across transports.
+  Without a policy, existing artifact access behavior is unchanged.
 - Durable prepaid credit purchase CRUD with serialized Checkout attempts, atomic event receipts and grants, refund eligibility, cumulative reversals, and chargeback top-up suspension. `BILLING_PREPAID_CREDITS_ENABLED` defaults to false. Existing allowance consumption is unchanged.
 
 ### Changed
