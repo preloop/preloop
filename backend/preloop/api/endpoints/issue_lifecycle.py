@@ -280,7 +280,9 @@ def reconcile_audit(
                 "ABORTED",
             }:
                 # Reload after any concurrent worker update, through the CRUD layer.
-                execution = crud_flow_execution.get(db, id=execution.id)
+                execution = crud_flow_execution.get_without_workspace(
+                    db, id=execution.id, account_id=current_user.account_id
+                )
                 return await service.finish_audit(execution)
             return {
                 "execution_id": str(execution.id) if execution else None,

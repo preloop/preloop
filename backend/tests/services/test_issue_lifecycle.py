@@ -2282,3 +2282,176 @@ async def test_subscription_model_rejected_before_lifecycle_reservation(
             await service.schedule_audit(flow, dispatch)
     create.assert_not_called()
     dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["SUCCEEDED", "FAILED"])
+@pytest.mark.parametrize("lost_provider_reply", [False, True])
+async def test_reconcile_terminal_archive_preserves_provider_recovery(
+    rig: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+    lost_provider_reply: bool,
+) -> None:
+    import inspect
+    from types import SimpleNamespace
+    from sqlalchemy import event
+    from preloop.api.endpoints import issue_lifecycle as endpoint
+
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    execution = await service.schedule_audit(flow, AsyncMock())
+    execution_id = execution.id
+    execution.status = terminal
+    execution.result = audit_result(contract, "gap")
+    execution.workspace_snapshot = b"saved workspace" * 70000
+    service.db.commit()
+    issue_id, account_id = service.issue.id, service.account_id
+    service.db.expunge(execution)
+    monkeypatch.setattr(
+        endpoint, "build_lifecycle_service", AsyncMock(return_value=service)
+    )
+    monkeypatch.setattr(endpoint, "ensure_permission_in_oss", lambda *args: None)
+    monkeypatch.setattr(
+        endpoint, "run_lifecycle_endpoint", lambda operation: operation()
+    )
+    actor = SimpleNamespace(account_id=account_id)
+    statements: list[str] = []
+
+    def capture(
+        _conn: Any, _cursor: Any, sql: str, _params: Any, _context: Any, _many: bool
+    ) -> None:
+        if sql.lstrip().upper().startswith("SELECT"):
+            statements.append(sql)
+
+    connection = service.db.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        if lost_provider_reply and terminal == "SUCCEEDED":
+            transport.fail_after_creation = True
+            with pytest.raises(TimeoutError):
+                await inspect.unwrap(endpoint.reconcile_audit)(
+                    issue_id=issue_id, db=service.db, current_user=actor
+                )
+        result = await inspect.unwrap(endpoint.reconcile_audit)(
+            issue_id=issue_id, db=service.db, current_user=actor
+        )
+        repeated = await inspect.unwrap(endpoint.reconcile_audit)(
+            issue_id=issue_id, db=service.db, current_user=actor
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert all("workspace_snapshot" not in sql for sql in statements), statements
+    assert result["verdict"] == ("gap" if terminal == "SUCCEEDED" else "unknown")
+    assert repeated == {"execution_id": None, "state": "no_pending_merge_audit"}
+    assert len(transport.comments) == 1
+    assert len(transport.issues) == (2 if terminal == "SUCCEEDED" else 1)
+    saved = crud_flow_execution.get(service.db, execution_id)
+    assert saved.workspace_snapshot == b"saved workspace" * 70000
+    assert saved.status == terminal
+
+
+@pytest.mark.asyncio
+async def test_pending_audit_dispatch_keeps_workspace_contract(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    execution = await service.schedule_audit(flow, AsyncMock())
+    execution.workspace_snapshot = b"pending recovery workspace"
+    service.db.commit()
+    execution_id = execution.id
+    service.db.expunge(execution)
+    delivered = []
+
+    async def dispatch(row: models.FlowExecution) -> None:
+        delivered.append((row.id, row.workspace_snapshot))
+
+    repeated = await service.schedule_audit(flow, dispatch)
+    assert repeated.id == execution_id
+    assert delivered == [(execution_id, b"pending recovery workspace")]
+
+
+@pytest.mark.asyncio
+async def test_archived_audit_reconcile_retains_publication_lock(
+    db_engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import inspect
+    from types import SimpleNamespace
+    from preloop.api.endpoints import issue_lifecycle as endpoint
+
+    with Session(db_engine) as first_db, Session(db_engine) as second_db:
+        service, transport, _, flow = rig.__wrapped__(first_db)
+        contract = await contract_for(service)
+        await service.refine(contract)
+        transport.merge()
+        execution = await service.schedule_audit(flow, AsyncMock())
+        execution.status = "SUCCEEDED"
+        execution.result = audit_result(contract, "gap")
+        execution.workspace_snapshot = b"retained workspace" * 70000
+        first_db.commit()
+        issue_id, account_id = service.issue.id, service.account_id
+        first_db.expunge(execution)
+        issue = crud_issue_lifecycle.get_issue(
+            second_db, account_id=account_id, issue_id=issue_id
+        )
+        second = IssueLifecycleService(
+            second_db,
+            account_id=account_id,
+            issue=issue,
+            provider=service.provider,
+            capabilities=Capabilities(),
+            policy=service.policy,
+        )
+
+        async def build(db: Session, **kwargs: Any) -> IssueLifecycleService:
+            return service if db is first_db else second
+
+        monkeypatch.setattr(endpoint, "build_lifecycle_service", build)
+        monkeypatch.setattr(endpoint, "ensure_permission_in_oss", lambda *args: None)
+        monkeypatch.setattr(
+            endpoint, "run_lifecycle_endpoint", lambda operation: operation()
+        )
+        original = transport._request
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed(method: str, path: str, **kwargs: Any) -> Any:
+            if method == "POST" and path.endswith("/comments"):
+                entered.set()
+                await release.wait()
+            return await original(method, path, **kwargs)
+
+        transport._request = delayed
+        actor = SimpleNamespace(account_id=account_id)
+        first_task = asyncio.create_task(
+            inspect.unwrap(endpoint.reconcile_audit)(
+                issue_id=issue_id, db=first_db, current_user=actor
+            )
+        )
+        second_task = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            second_task = asyncio.create_task(
+                inspect.unwrap(endpoint.reconcile_audit)(
+                    issue_id=issue_id, db=second_db, current_user=actor
+                )
+            )
+            await asyncio.sleep(0.1)
+            assert not second_task.done()
+            release.set()
+            first, repeated = await asyncio.wait_for(
+                asyncio.gather(first_task, second_task), 3
+            )
+            assert first["verdict"] == "gap"
+            assert repeated["state"] == "no_pending_merge_audit"
+            assert len(transport.comments) == 1
+            assert len(transport.issues) == 2
+        finally:
+            release.set()
+            await asyncio.gather(
+                first_task,
+                *([second_task] if second_task else []),
+                return_exceptions=True,
+            )

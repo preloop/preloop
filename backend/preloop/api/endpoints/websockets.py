@@ -96,9 +96,14 @@ async def _run_execution_command(
                 _execution_command_permission(current_user=user, db=db)
             except HTTPException:
                 return None
-            found = crud_flow_execution.get(
-                db=db, id=execution_uuid, account_id=user.account_id
+            # Stop hands the execution to the mutation/teardown service;
+            # forwarded commands only need the account-scoped existence check.
+            lookup = (
+                crud_flow_execution.get
+                if command == "stop"
+                else crud_flow_execution.get_without_workspace
             )
+            found = lookup(db=db, id=execution_uuid, account_id=user.account_id)
             # Do not hold the transaction open across NATS/runtime awaits.
             release_transaction(db)
             return found

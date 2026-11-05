@@ -5,6 +5,11 @@ from __future__ import annotations
 import uuid
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from preloop.models import models
 
 import pytest
 
@@ -270,3 +275,49 @@ async def test_command_lookup_runs_off_loop_and_releases_transaction(
         )
     assert result == {"status": "command_sent"}
     assert calls == ["off_loop", "release"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["send_message", "stop"])
+async def test_archived_command_preserves_full_stop_and_bounded_message(
+    db_session: Session,
+    execution: models.FlowExecution,
+    test_user: models.User,
+    command: str,
+) -> None:
+    from sqlalchemy import event
+    from preloop.api.endpoints import websockets as ws
+
+    execution.workspace_snapshot = b"retained workspace" * 70000
+    db_session.commit()
+    execution_id = execution.id
+    db_session.expunge(execution)
+    statements: list[str] = []
+
+    def capture(
+        _conn: Any, _cursor: Any, sql: str, _params: Any, _context: Any, _many: bool
+    ) -> None:
+        if sql.lstrip().upper().startswith("SELECT"):
+            statements.append(sql)
+
+    async def off_loop(operation: Any) -> Any:
+        return operation()
+
+    connection = db_session.connection()
+    with (
+        _ws_env(db_session, test_user) as nats,
+        patch(f"{WS}.run_db_off_loop", off_loop),
+    ):
+        event.listen(connection, "before_cursor_execute", capture)
+        try:
+            response = await ws._run_execution_command(
+                test_user, execution_id, {"command": command, "message": "Example"}
+            )
+        finally:
+            event.remove(connection, "before_cursor_execute", capture)
+        nats.publish.assert_awaited_once()
+    assert response == {"status": "stopped" if command == "stop" else "command_sent"}
+    assert any("workspace_snapshot" in sql for sql in statements) == (command == "stop")
+    saved = crud_flow_execution.get(db_session, execution_id)
+    assert saved.workspace_snapshot == b"retained workspace" * 70000
+    assert saved.status == ("STOPPED" if command == "stop" else "RUNNING")
