@@ -411,8 +411,8 @@ async def test_fetch_provider_models_validation_error_is_400():
 
 
 @pytest.mark.asyncio
-async def test_fetch_provider_models_auth_error_is_401(mocker: MockerFixture):
-    """A provider-rejected API key maps to 401 with the fixed message."""
+async def test_fetch_provider_models_auth_error_is_400(mocker: MockerFixture):
+    """A provider-rejected key is invalid configuration, not console-session expiry."""
     from fastapi import HTTPException
 
     from preloop.services.ai_model_provider import ProviderAuthError
@@ -433,7 +433,7 @@ async def test_fetch_provider_models_auth_error_is_401(mocker: MockerFixture):
         )
 
     http_exc = exc_info.value
-    assert http_exc.status_code == 401
+    assert http_exc.status_code == 400
     assert "Invalid OpenAI API key" in http_exc.detail
     assert "sk-SUPERSECRET-KEY" not in http_exc.detail
 

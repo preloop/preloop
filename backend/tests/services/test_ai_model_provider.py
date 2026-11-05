@@ -1,5 +1,6 @@
 """Tests for AI model provider service."""
 
+import asyncio
 import logging
 import sys
 import pytest
@@ -459,6 +460,43 @@ class TestGetAnthropicModels:
             assert result.source == "live"
             assert result.models == ["claude-brand-new-model", "claude-sonnet-5"]
             mock_instance.models.list.assert_awaited_once()
+            mock_client.assert_called_once_with(
+                api_key="valid_key",
+                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+                max_retries=1,
+            )
+            mock_instance.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_discovery_propagates_and_closes_client(self) -> None:
+        """Task cancellation must not become a fallback or leave the client open."""
+        with patch("anthropic.AsyncAnthropic") as mock_client:
+            client = MagicMock()
+            client.models.list = AsyncMock(side_effect=asyncio.CancelledError)
+            mock_client.return_value = client
+            with pytest.raises(asyncio.CancelledError):
+                await _get_anthropic_models("synthetic-key")
+            client.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sdk_timeout_closes_client_and_returns_timeout_fallback(self) -> None:
+        """A stalled SDK request retains the documented fallback provenance."""
+        import anthropic
+        import httpx
+
+        with patch("anthropic.AsyncAnthropic") as mock_client:
+            client = MagicMock()
+            client.models.list = AsyncMock(
+                side_effect=anthropic.APITimeoutError(
+                    request=httpx.Request("GET", "https://example.com/models")
+                )
+            )
+            mock_client.return_value = client
+            result = await _get_anthropic_models("synthetic-key")
+            assert result.models == []
+            assert result.source == "fallback"
+            assert result.error == ERROR_TIMEOUT
+            client.__aexit__.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_paid_validation_ping_is_made(self):

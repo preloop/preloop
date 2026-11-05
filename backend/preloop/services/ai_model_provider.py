@@ -841,7 +841,11 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
         return _fallback([], ERROR_SDK_MISSING)
 
     try:
-        client = AsyncAnthropic(api_key=api_key)
+        client = AsyncAnthropic(
+            api_key=api_key,
+            timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            max_retries=1,
+        )
         # The SDK's __aenter__ returns the client itself; the context manager
         # closes the underlying HTTP connection pool on exit.
         async with client:

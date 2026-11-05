@@ -28,6 +28,8 @@ export class WelcomeView extends LitElement {
    */
   @state() private _claimToken = '';
   @state() private _error = '';
+  @state() private _passwordError = '';
+  @state() private _success = '';
   @state() private _loading = false;
   @query('#password') private _passwordInput?: HTMLInputElement;
 
@@ -71,6 +73,8 @@ export class WelcomeView extends LitElement {
 
   private async _saveAccountDetailsAndProceed(setupGithub: boolean) {
     this._loading = true;
+    this._error = '';
+    await this.updateComplete;
     try {
       const token = localStorage.getItem('accessToken');
       if (token && this._orgName.trim()) {
@@ -130,10 +134,14 @@ export class WelcomeView extends LitElement {
 
     this._loading = true;
     this._error = '';
+    this._passwordError = '';
+    // Commit the cleared live region so an identical retry is announced again.
+    await this.updateComplete;
 
     const password = this._passwordInput?.value;
     if (!password || password.length < 8) {
-      this._error = 'Password must be at least 8 characters long.';
+      this._passwordError = 'Password must be at least 8 characters long.';
+      this._error = this._passwordError;
       this._loading = false;
       return;
     }
@@ -179,6 +187,7 @@ export class WelcomeView extends LitElement {
 
       // Update UI to show the next step.
       this._needsPassword = false;
+      this._success = 'Password saved. Your account is ready.';
       await this._loadAccountDetails();
     } catch (error: any) {
       this._error = error.message;
@@ -211,7 +220,7 @@ export class WelcomeView extends LitElement {
             </a>
           </div>
           <div class="form-container">
-            <div class="error-message">
+            <div class="error-message" role="alert" aria-atomic="true">
               ${
                 this._email
                   ? this._error
@@ -240,12 +249,14 @@ export class WelcomeView extends LitElement {
                 : 'Your account is ready! Review your account name and optionally connect GitHub to enable PR reviews and automation.'
             }
           </p>
-          ${
-            this._error
-              ? html`<div class="error-message">${this._error}</div>`
-              : ''
-          }
-          <form @submit=${this._handleOnboardingSubmit}>
+          <div id="onboarding-error" role="alert" aria-atomic="true">
+            ${this._error ? html`<div class="error-message">${this._error}</div>` : ''}
+          </div>
+          <div role="status" aria-atomic="true">${this._success}</div>
+          <form
+            aria-describedby="onboarding-error"
+            @submit=${this._handleOnboardingSubmit}
+          >
             ${
               this._needsPassword
                 ? html`
@@ -286,6 +297,7 @@ export class WelcomeView extends LitElement {
                     <div class="form-group">
                       <sl-input
                         id="password"
+                        help-text=${this._passwordError}
                         type="password"
                         label="Password"
                         required
