@@ -94,6 +94,30 @@ describe('Governance findings', () => {
       ],
     });
   });
+  it('shows a completed deterministic report without pending analysis', async () => {
+    runs = [
+      {
+        ...run,
+        model_analysis_enabled: false,
+        sessions_summarized: 0,
+        segments: 0,
+        status: 'completed',
+      },
+    ];
+    rows = [];
+    const el = await fixture<GovernanceView>(
+      html`<governance-view></governance-view>`
+    );
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Model analysis is not enabled.')
+    );
+    const text = el.shadowRoot!.textContent!;
+    expect(text).to.contain('Model analysis is not enabled.');
+    expect(text).to.contain('Completed');
+    expect(text).not.to.contain('Not yet reviewed');
+    expect(text).not.to.contain('first hourly sweep');
+    expect(el.shadowRoot!.querySelector('.partial')).to.equal(null);
+  });
   afterEach(() => {
     api.restore();
     window.history.replaceState({}, '', '/');

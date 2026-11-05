@@ -1232,3 +1232,57 @@ def test_historical_retirement_preserves_attempts(
             override_reason="Attempt to restart with a stale counter",
             commit=False,
         )
+
+
+@pytest.mark.parametrize("override", [True, False, None])
+def test_model_analysis_override_preserves_review_settings(
+    db_session, test_user, override
+):
+    from preloop.models.crud import crud_governance_review_settings
+
+    account_id = test_user.account_id
+    crud_governance_review_settings.set_thresholds(
+        db_session,
+        account_id=account_id,
+        detector_thresholds={"retry_limit": {"count": 7}},
+    )
+    row = crud_governance_review_settings.set_model_analysis_override(
+        db_session, account_id=account_id, enabled=override
+    )
+    assert row.model_analysis_override is override
+    assert row.detector_thresholds == {"retry_limit": {"count": 7}}
+    assert (
+        crud_governance_review_settings.get_or_default(
+            db_session, account_id=account_id
+        ).model_analysis_override
+        is override
+    )
+
+
+def test_inherit_model_analysis_does_not_materialize_default_mode(
+    db_session, test_user, monkeypatch
+):
+    account_id = test_user.account_id
+    assert (
+        crud_governance_review_settings.get_for_account(
+            db_session, account_id=account_id
+        )
+        is None
+    )
+    row = crud_governance_review_settings.set_model_analysis_override(
+        db_session, account_id=account_id, enabled=None
+    )
+    assert row.model_analysis_override is None
+    assert (
+        crud_governance_review_settings.get_for_account(
+            db_session, account_id=account_id
+        )
+        is None
+    )
+    monkeypatch.setenv("PRELOOP_GOVERNANCE_ANALYSIS_MODEL", "analysis-model")
+    assert (
+        crud_governance_review_settings.get_or_default(
+            db_session, account_id=account_id
+        ).mode
+        == "on_own_model"
+    )

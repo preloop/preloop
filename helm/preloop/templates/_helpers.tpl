@@ -268,14 +268,18 @@ the application. Call with the root context.
 {{/*
 Governance review env for the API, workers and scheduler. Each variable is
 rendered only when its value is set, so the application defaults apply
-otherwise: the review schedule is on and a self-hosted install has no
-analysis model (review off) until governanceReview.analysisModel is set.
+otherwise: deterministic reports are on and model analysis defaults off.
+Account overrides can enable analysis independently of the global default.
 */}}
 {{- define "preloop.governanceReviewEnv" -}}
 {{- $gr := .Values.governanceReview | default dict }}
 {{- if kindIs "bool" $gr.enabled }}
 - name: GOVERNANCE_REVIEW_ENABLED
   value: {{ $gr.enabled | quote }}
+{{- end }}
+{{- if kindIs "bool" $gr.modelAnalysisEnabled }}
+- name: GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED
+  value: {{ $gr.modelAnalysisEnabled | quote }}
 {{- end }}
 {{- if $gr.analysisModel }}
 - name: PRELOOP_GOVERNANCE_ANALYSIS_MODEL

@@ -91,6 +91,7 @@ function fakeServer(
     legacyCount?: number;
     watchlistCount?: boolean;
     policyGate?: Promise<void>;
+    analysisSaveFails?: boolean;
   } = {}
 ) {
   let legacyBlocks = options.legacyBlocks ?? 0;
@@ -119,6 +120,10 @@ function fakeServer(
     });
   }
   const settings = {
+    model_analysis_enabled: true,
+    model_analysis_override_available: true,
+    model_analysis_default: false,
+    model_analysis_override: null as boolean | null,
     mode,
     analysis_model_id: (mode === 'on_own_model' ? 'm-own' : null) as
       string | null,
@@ -180,6 +185,14 @@ function fakeServer(
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, url, body });
       const path = new URL(url, window.location.origin).pathname;
+      if (path === '/api/v1/governance-review/model-analysis') {
+        if (options.analysisSaveFails)
+          return json({ detail: 'Save failed' }, 500);
+        settings.model_analysis_override = body.model_analysis_override;
+        settings.model_analysis_enabled =
+          body.model_analysis_override ?? settings.model_analysis_default;
+        return json(settings);
+      }
       if (path === '/api/v1/governance-review/policy') {
         if (method === 'GET') await options.policyGate;
         if (method === 'PUT') addVersion(body.body_markdown);
@@ -278,6 +291,73 @@ describe('governance-policy-panel', () => {
     sinon.restore();
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+  });
+
+  it('saves on, off and inherit account overrides', async () => {
+    server = fakeServer('on_platform');
+    const element = await mount(true);
+    element.canManageAccount = true;
+    await element.updateComplete;
+    for (const [value, expected] of [
+      ['on', true],
+      ['off', false],
+      ['inherit', null],
+    ] as const) {
+      const select = element.shadowRoot!.querySelector(
+        '.model-analysis-override'
+      ) as HTMLInputElement;
+      select.value = value;
+      select.dispatchEvent(new CustomEvent('sl-change'));
+      await waitUntil(
+        () => server.settings.model_analysis_override === expected
+      );
+      await element.updateComplete;
+    }
+    expect(
+      server.calls
+        .filter((c) => c.url.endsWith('/model-analysis'))
+        .map((c) => c.body)
+    ).to.deep.equal([
+      { model_analysis_override: true },
+      { model_analysis_override: false },
+      { model_analysis_override: null },
+    ]);
+  });
+
+  it('keeps deterministic settings and email switches when model analysis is disabled', async () => {
+    server = fakeServer('off_over_budget');
+    server.settings.model_analysis_enabled = false;
+    const element = await mount(true);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Model analysis is not enabled.'
+    );
+    expect(element.shadowRoot!.querySelector('.review-switch')).to.equal(null);
+    expect(element.shadowRoot!.querySelector('.save-settings')).to.equal(null);
+    expect(
+      element.shadowRoot!.querySelector('.email-account-switch')
+    ).not.to.equal(null);
+    expect(element.shadowRoot!.textContent).not.to.contain(
+      'used up its analysis allowance'
+    );
+    expect(element.shadowRoot!.textContent).to.contain(PRIVACY_SENTENCE);
+  });
+
+  it('restores the saved analysis option when an update fails', async () => {
+    server = fakeServer('on_platform', 0, { analysisSaveFails: true });
+    server.settings.model_analysis_override = true;
+    const element = await mount(true);
+    const select = element.shadowRoot!.querySelector(
+      '.model-analysis-override'
+    ) as HTMLInputElement;
+    select.value = 'off';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      server.calls.some((c) => c.url.endsWith('/model-analysis'))
+    );
+    await waitUntil(() => !select.disabled);
+    await element.updateComplete;
+    expect(select.value).to.equal('on');
+    expect(server.settings.model_analysis_override).to.equal(true);
   });
 
   it('explains legacy implicit analysis is off until explicit opt-in', async () => {

@@ -14,6 +14,7 @@ import {
   saveGovernancePolicy,
   saveGovernanceThresholds,
   updateGovernanceReviewSettings,
+  updateGovernanceModelAnalysis,
   type GovernancePolicyDocument,
   type GovernancePolicyVersion,
   type GovernanceReviewMode,
@@ -545,6 +546,37 @@ export class GovernancePolicyPanel extends LitElement {
     }
   }
 
+  private async _changeModelAnalysis(event: Event): Promise<void> {
+    const select = event.target as HTMLInputElement;
+    const value = select.value;
+    this._switching = 'model-analysis';
+    try {
+      this._applySettings(
+        await updateGovernanceModelAnalysis(
+          value === 'inherit' ? null : value === 'on'
+        )
+      );
+      showToast('Model analysis setting saved.', 'success');
+    } catch (error) {
+      if (this._settings) {
+        select.value =
+          this._settings.model_analysis_override == null
+            ? 'inherit'
+            : this._settings.model_analysis_override
+              ? 'on'
+              : 'off';
+      }
+      showToast(
+        error instanceof Error
+          ? error.message
+          : 'Could not save model analysis',
+        'danger'
+      );
+    } finally {
+      this._switching = '';
+    }
+  }
+
   private _renderSwitches() {
     const settings = this._settings;
     if (!settings && !this._email) return nothing;
@@ -554,32 +586,59 @@ export class GovernancePolicyPanel extends LitElement {
       aria-label="Review and email switches"
     >
       ${
-        settings
-          ? html`<div class="switch-row">
-              <sl-switch
-                class="review-switch"
-                ?checked=${on}
-                ?disabled=${!this.canManage || !!this._switching}
-                @sl-change=${(event: Event) =>
-                  void this._toggleReview(
-                    (event.target as HTMLInputElement).checked
-                  )}
-                >AI usage policy review</sl-switch
+        settings?.model_analysis_override_available
+          ? html` <div class="switch-row">
+              <sl-select
+                class="model-analysis-override"
+                label="Model analysis for this account"
+                value=${settings.model_analysis_override == null ? 'inherit' : settings.model_analysis_override ? 'on' : 'off'}
+                ?disabled=${!this.canManageAccount || !!this._switching}
+                @sl-change=${this._changeModelAnalysis}
               >
-              <div class="meta">
-                ${
-                  on
-                    ? 'On. Each hour new sessions are summarised and each Monday last week is checked against this policy.'
-                    : settings.mode === 'off_over_budget'
-                      ? 'Off: the last review used up its analysis allowance.'
-                      : settings.effective_reason ===
-                          'explicit_analysis_opt_in_required'
-                        ? 'Off. Automatic analysis now requires an explicit opt-in. Turn this switch on to enable policy review; factual exception emails work without it.'
-                        : 'Off. No sessions are read, no review runs and nothing is spent.'
-                }
-              </div>
+                <sl-option value="inherit"
+                  >Use platform default
+                  (${settings.model_analysis_default ? 'on' : 'off'})</sl-option
+                >
+                <sl-option value="on">On</sl-option>
+                <sl-option value="off">Off</sl-option>
+              </sl-select>
+              ${
+                settings.model_analysis_enabled === false
+                  ? html`<p class="meta privacy">${PRIVACY_SENTENCE}</p>`
+                  : nothing
+              }
             </div>`
           : nothing
+      }
+      ${
+        settings?.model_analysis_enabled === false
+          ? html`<p class="meta">Model analysis is not enabled.</p>`
+          : settings
+            ? html`<div class="switch-row">
+                <sl-switch
+                  class="review-switch"
+                  ?checked=${on}
+                  ?disabled=${!this.canManage || !!this._switching}
+                  @sl-change=${(event: Event) =>
+                    void this._toggleReview(
+                      (event.target as HTMLInputElement).checked
+                    )}
+                  >AI usage policy review</sl-switch
+                >
+                <div class="meta">
+                  ${
+                    on
+                      ? 'On. Each hour new sessions are summarised and each Monday last week is checked against this policy.'
+                      : settings.mode === 'off_over_budget'
+                        ? 'Off: the last review used up its analysis allowance.'
+                        : settings.effective_reason ===
+                            'explicit_analysis_opt_in_required'
+                          ? 'Off. Automatic analysis now requires an explicit opt-in. Turn this switch on to enable policy review; factual exception emails work without it.'
+                          : 'Off. No sessions are read, no review runs and nothing is spent.'
+                  }
+                </div>
+              </div>`
+            : nothing
       }
       ${
         this._email
@@ -732,6 +791,7 @@ export class GovernancePolicyPanel extends LitElement {
   }
 
   private _renderBanner() {
+    if (this._settings?.model_analysis_enabled === false) return nothing;
     if (this._settings?.mode !== 'off_over_budget') return nothing;
     return html`
       <sl-alert variant="warning" open class="over-budget-banner">
@@ -1031,7 +1091,7 @@ export class GovernancePolicyPanel extends LitElement {
 
   private _renderSettings() {
     const settings = this._settings;
-    if (!settings) return nothing;
+    if (!settings || settings.model_analysis_enabled === false) return nothing;
     const ownModel = this._modeDraft === 'on_own_model';
     return html`
       <section>

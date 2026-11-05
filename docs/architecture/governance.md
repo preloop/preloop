@@ -47,7 +47,13 @@ The OSS store for the weekly governance review is five account-scoped tables: `g
 *   `governance_session_digest_sweep` at minute 0 of every hour, UTC.
 *   `governance_weekly_review` on Monday at 07:00 UTC.
 
-An account with no settings row takes a deployment default. The hosted service (`PRELOOP_HOSTED`) defaults to `on_platform`. A self-hosted install defaults to `off` until `PRELOOP_GOVERNANCE_ANALYSIS_MODEL` is set to the analysis model alias, which switches that default to `on_own_model`. A stored settings row overrides the default.
+The weekly report is enabled by default and runs deterministic checks for every account, including accounts with no review settings row. Account report opt-outs and recipient preferences still apply. Quiet exception weeks send no email.
+
+Model analysis is off by default in 1.0.0 and is planned to return in 1.1.0. The global `GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED` setting defaults to `false`. Each account's `governance_review_settings.model_analysis_override` is nullable: `true` enables analysis, `false` disables it, and `null` inherits the global default. An account value wins even when the global default differs. Account admins choose **Model analysis for this account** on the review settings page; platform admins use the same selector on the account details page. This permits testing on one account while the global default remains off.
+
+When the effective value is off, no analysis model is resolved, no model budget is reserved, and no session work is queued. Deterministic reports are complete and say “Model analysis is not enabled.” The same gate covers session digests, semantic policy findings and follow-up checks, the AI usage policy summary, and optional exception-email synthesis. The latter retains its separate account opt-in and caps. When analysis is enabled, existing model selection, consent, allowance admission and daily/weekly limits apply; unknown allowances refuse summaries, and exhausted allowances do not prevent deterministic findings.
+
+The hourly task stays scheduled so an account override can enable it even when the global default is off. Disabled accounts are skipped before session work is queued. See the [settings reference](../weekly-report-v3.md).
 
 Operators: see the [weekly governance review guide](https://docs.preloop.ai/guide/governance-review/) for what is sent to the analysis model, the cost rules, and the Helm values.
 

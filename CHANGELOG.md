@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (weekly reports)
+
+- Weekly governance reports run deterministic checks by default, including fresh accounts, without model dispatch or analysis budget admission. Account and recipient report opt-outs remain supported.
+- Optional session analysis, AI usage policy summaries and exception synthesis share a global default (off in 1.0.0) and an audited account override: inherit, on or off. Account admins and platform admins can enable one account while the global default stays off. Model analysis is planned to return in 1.1.0.
+- Reports and settings identify disabled model analysis without pending-summary states or allowance prompts.
+
 ### Added
 
 - Persisted global and per-account entitlement enforcement settings with atomic
@@ -56,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closes it.
 
 ### Added
+
+- Atomic hosted spending can reserve monthly allowance first, then prepaid
+  credit, with FIFO purchase consumption, durable holds and a -$1.00 settlement
+  floor. Existing callers and zero-credit accounts retain the current allowance
+  and exhaustion behavior. The split is inert until credit grants exist and
+  the caller explicitly enables credit accounting.
 
 - Runner sharing console: manage grants in a dialog, select per-session owner
   approval, and identify shared runners and their owners in session and flow

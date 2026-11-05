@@ -786,7 +786,7 @@ otlp:
     deploymentEnvironment: ""
   samplerRatio: 1.0
 
-# Weekly governance review (Enterprise). Both values are unset by default
+# Weekly governance review (Enterprise). Values are unset by default
 # and then render no env, so the application defaults apply. See
 # https://docs.preloop.ai/guide/governance-review/.
 governanceReview:
@@ -794,9 +794,14 @@ governanceReview:
   # the Monday review schedule). Unset keeps the default, which is on.
   enabled: null
   # Gateway alias of the analysis model, as PRELOOP_GOVERNANCE_ANALYSIS_MODEL.
-  # A self-hosted install has no platform model, so the review stays off for
-  # accounts without their own model until this is set.
+  # A self-hosted install needs this or an account-owned model for optional
+  # analysis. Deterministic reports run without an analysis model.
   analysisModel: ""
+  # GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED: global default for optional model
+  # analysis, false in 1.0.0; planned to return in 1.1.0. An account's nullable
+  # model_analysis_override wins; null inherits this default. May also be set
+  # through CI Helm extraEnv on API, workers and scheduler. Do not duplicate it.
+  modelAnalysisEnabled: null
 
 # Performance profiling configuration
 profiling:

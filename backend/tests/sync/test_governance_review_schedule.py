@@ -71,9 +71,14 @@ async def _registered_jobs(mocker: MockerFixture, enabled: bool) -> dict[str, An
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("analysis_enabled", [False, True])
 async def test_both_jobs_are_registered_with_their_triggers(
     mocker: MockerFixture,
+    analysis_enabled: bool,
 ) -> None:
+    mocker.patch.object(
+        settings, "governance_review_model_analysis_enabled", analysis_enabled
+    )
     jobs = await _registered_jobs(mocker, enabled=True)
     sweep = jobs["governance_session_digest_sweep_job"]
     weekly = jobs["governance_weekly_review_job"]
@@ -139,3 +144,18 @@ def test_task_calls_a_registered_handler(mocker: MockerFixture) -> None:
     assert tasks.governance_weekly_review() == {"segments": 1}
     handler.assert_called_once_with(db)
     db.close.assert_called_once()
+
+
+def test_model_analysis_defaults_off_and_env_override(monkeypatch):
+    cls = type(settings)
+    assert cls.model_fields["governance_review_model_analysis_enabled"].default is False
+    monkeypatch.setenv("GOVERNANCE_REVIEW_MODEL_ANALYSIS_ENABLED", "true")
+    assert (
+        cls(
+            _env_file=None,
+            database=settings.database,
+            security=settings.security,
+            server=settings.server,
+        ).governance_review_model_analysis_enabled
+        is True
+    )

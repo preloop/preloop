@@ -548,13 +548,25 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert desktop_link.down_revision == "20261127_rate_limit_bucket"
     retention_exec = script.get_revision("20261129_retention_exec_idx")
     assert retention_exec.down_revision == "20261128_session_desktop_link"
-    feature = script.get_revision("20261130_entitlement_enforcement")
-    assert feature.down_revision == "20261129_retention_exec_idx"
+    report = script.get_revision("20261130_report_analysis_flag")
+    assert report.down_revision == "20261129_retention_exec_idx"
+    enforcement = script.get_revision("20261130_entitlement_enforcement")
+    assert enforcement.down_revision == "20261129_retention_exec_idx"
     runner_approval = script.get_revision("20261130_runner_share_approval")
     assert runner_approval.down_revision == "20261129_retention_exec_idx"
-    joined = script.get_revision("20261201_policy_runner_merge")
-    assert set(joined.down_revision) == {
+    report_join = script.get_revision("20261201_report_runner_merge")
+    assert set(report_join.down_revision) == {
+        "20261130_report_analysis_flag",
+        "20261130_runner_share_approval",
+    }
+    policy_join = script.get_revision("20261201_policy_runner_merge")
+    assert set(policy_join.down_revision) == {
         "20261130_entitlement_enforcement",
         "20261130_runner_share_approval",
     }
-    assert script.get_heads() == ["20261201_policy_runner_merge"]
+    joined = script.get_revision("20261202_report_policy_merge")
+    assert set(joined.down_revision) == {
+        "20261201_report_runner_merge",
+        "20261201_policy_runner_merge",
+    }
+    assert script.get_heads() == ["20261202_report_policy_merge"]
