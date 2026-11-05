@@ -1681,6 +1681,13 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 subject_context={
                     "api_key_id": getattr(user_context, "api_key_id", None),
                     "managed_agent_id": getattr(user_context, "managed_agent_id", None),
+                    "user_id": getattr(user_context, "user_id", None),
+                    "runtime_session_id": getattr(
+                        user_context, "runtime_session_id", None
+                    ),
+                    "flow_execution_id": getattr(
+                        user_context, "flow_execution_id", None
+                    ),
                 },
                 query=query,
                 scope=scope,

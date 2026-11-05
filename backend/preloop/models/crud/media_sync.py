@@ -6,10 +6,12 @@ from uuid import UUID
 from sqlalchemy import func
 from sqlalchemy.orm import Session, defer
 
+from preloop.services.artifact_access import audited_read, read_conditions
 from preloop.models import models
 from preloop.models.crud import crud_audit_log
 
 
+@audited_read
 def recording_rows(db: Session, *, account_id: UUID, session_id: UUID) -> list[Any]:
     """Read descriptors without loading encrypted recording bytes."""
     return list(
@@ -17,6 +19,7 @@ def recording_rows(db: Session, *, account_id: UUID, session_id: UUID) -> list[A
         .options(defer(models.RuntimeSessionArtifact.ciphertext))
         .filter(
             models.RuntimeSessionArtifact.account_id == account_id,
+            *read_conditions(db, account_id),
             models.RuntimeSessionArtifact.runtime_session_id == session_id,
             models.RuntimeSessionArtifact.kind.in_(("recording", "screencast")),
         )
@@ -67,6 +70,7 @@ def update_timing(
         .options(defer(models.RuntimeSessionArtifact.ciphertext))
         .filter(
             models.RuntimeSessionArtifact.account_id == account_id,
+            *read_conditions(db, account_id),
             models.RuntimeSessionArtifact.runtime_session_id == session_id,
             models.RuntimeSessionArtifact.id == artifact_id,
         )

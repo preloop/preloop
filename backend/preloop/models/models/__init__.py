@@ -454,6 +454,7 @@ __all__ = [
     "ReadinessSeries",
     "TicketCreationRecord",
     "DeliveryReportPolicySetting",
+    "EntitlementEnforcementSetting",
 ]
 
 from .readiness import (
@@ -491,3 +492,5 @@ from .exception_digest import (
 )
 
 from .rate_limit import RateLimitBucket
+
+from .entitlement_enforcement import EntitlementEnforcementSetting

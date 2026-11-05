@@ -18,6 +18,7 @@ from preloop.models.crud import (
     crud_flow,
 )
 from preloop.models.crud.entitlement import is_live_trial
+from preloop.services.billing_enforcement import entitlements_enforced
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.flow import Flow
@@ -210,6 +211,7 @@ class ModelGatewayBudgetService:
             and subscription
             and is_live_trial(subscription)
             and self._is_built_in_hosted_model(ai_model)
+            and entitlements_enforced(self.auth_context.account_id)
         ):
             trial_hosted_model_limit_usd = max(
                 float(settings.billing_trial_hosted_model_hard_cap_usd), 0.0
@@ -238,8 +240,8 @@ class ModelGatewayBudgetService:
             not hard_limit_exceeded
             and subscription is None
             and is_hosted_instance()
-            and settings.billing_enforce_entitlements
             and self._is_built_in_hosted_model(ai_model)
+            and entitlements_enforced(self.auth_context.account_id)
         ):
             # 3. Free-tier hosted-model cap (T2 paywall move). Card-free
             # accounts have no subscription at all, so the trial branch above

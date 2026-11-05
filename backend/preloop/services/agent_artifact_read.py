@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_account, crud_audit_log
 from preloop.models.crud import runtime_session_artifact as crud_artifact
 from preloop.services import artifact_deposit, session_search_audit
+from preloop.services.artifact_access import bind_reader
 from preloop.services import artifact_shapes as shapes
 from preloop.services.agent_session_search import account_scope_granted
 from preloop.services.artifact_mcp_tools import absolute_uri
@@ -143,18 +144,22 @@ class Caller:
     #: Flow execution the credential belongs to, if any. Its flow is the
     #: identity "own" spans across runs.
     flow_execution_id: Optional[str] = None
+    user_id: Optional[str] = None
+    runtime_session_id: Optional[str] = None
 
     @classmethod
     def from_user_context(cls, user_context: Any) -> "Caller":
         principal = getattr(user_context, "runtime_principal_id", None)
         return cls(
             account_id=user_context.account_id,
+            user_id=getattr(user_context, "user_id", None),
             runtime_principal_id=(str(principal).strip() or None)
             if principal
             else None,
             api_key_id=getattr(user_context, "api_key_id", None),
             managed_agent_id=getattr(user_context, "managed_agent_id", None),
             flow_execution_id=getattr(user_context, "flow_execution_id", None),
+            runtime_session_id=getattr(user_context, "runtime_session_id", None),
         )
 
     def flow_id(self, db: Session) -> Optional[UUID]:
@@ -186,6 +191,9 @@ class Caller:
         return {
             "api_key_id": self.api_key_id,
             "managed_agent_id": self.managed_agent_id,
+            "runtime_principal_id": self.runtime_principal_id,
+            "flow_execution_id": self.flow_execution_id,
+            "runtime_session_id": self.runtime_session_id,
         }
 
 
@@ -300,6 +308,12 @@ def _limit(value: Any) -> int:
 
 def search(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> ReadOutcome:
     """Run one ``search_artifacts`` call. Never raises for a bad request."""
+    bind_reader(
+        db,
+        account_id=caller.account_id,
+        user_id=caller.user_id,
+        **caller.subject_context(),
+    )
     scope, principal, refusal = _resolve_scope(db, caller, arguments.get("scope"))
     audit_filters: Dict[str, Any] = {
         key: arguments.get(key)
@@ -424,6 +438,12 @@ def _utf8_prefix(data: bytes, limit: int) -> str:
 def get(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> ReadOutcome:
     """Run one ``get_artifact`` call. Never raises for a bad request."""
     raw_id = arguments.get("artifact_id")
+    bind_reader(
+        db,
+        account_id=caller.account_id,
+        user_id=caller.user_id,
+        **caller.subject_context(),
+    )
     scope = ARTIFACT_READ_SCOPE_OWN
 
     def refuse(code: str, detail: Optional[str] = None) -> ReadOutcome:

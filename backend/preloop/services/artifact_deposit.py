@@ -259,6 +259,9 @@ def deposit(
     Raises:
         ArtifactDepositError: with the HTTP status and stable code.
     """
+    from preloop.services.artifact_access import bind_gateway
+
+    bind_gateway(db, auth)
     session = require_session(db, auth=auth, runtime_session_id=runtime_session_id)
     if idempotency_key is not None and (
         not idempotency_key.strip() or len(idempotency_key) > IDEMPOTENCY_KEY_MAX_CHARS
@@ -325,6 +328,11 @@ def deposit(
 
     if (artifact.manifest or {}).get(_REQUEST_ID_KEY) != request_id:
         db.rollback()
+        artifact = crud_artifact.get(
+            db, account_id=auth.account_id, artifact_id=artifact.id
+        )
+        if artifact is None:
+            raise ArtifactDepositError(404, "artifact_not_found")
         return DepositResult(artifact=describe(artifact), replayed=True)
 
     try:

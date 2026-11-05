@@ -15,6 +15,11 @@ resumes and re-dispatches obey it too. Precedence:
 1. ``account.meta_data["flow_execution_max_running_per_account"]``
 2. ``settings.flow_execution_max_running_per_account`` (5)
 
+When billing is installed and exempts an identified account (including via
+its environment kill switch), the deployment allowance is a floor: a higher
+saved operator allowance is preserved. Without billing, or on a policy error,
+the original metadata-first rule above applies.
+
 The cap bounds the shared hosted pool. An execution assigned to one of the
 account's private runners is bounded by that runner's own capacity instead,
 so it is not counted here: charging an account's own compute against the
@@ -80,8 +85,22 @@ def account_running_cap(account: Any) -> int:
     Duck-typed on the account row so the CRUD layer can pass whatever it
     already loaded, and tests can pass a stub.
     """
+    # Billing projects plan limits into this metadata. A live exemption must
+    # bypass that projection immediately without rewriting the saved limit.
+    from preloop.plugins import get_plugin_manager
+
+    from preloop.services.billing_enforcement import entitlements_enforced
+
     meta = getattr(account, "meta_data", None)
     override = _coerce(meta.get(ACCOUNT_CAP_KEY)) if isinstance(meta, dict) else None
     if override is None:
         return default_account_cap()
+    account_id = getattr(account, "id", None)
+    resolver = get_plugin_manager().get_service("entitlement_enforcement")
+    if (
+        account_id is not None
+        and callable(resolver)
+        and not entitlements_enforced(account_id)
+    ):
+        return max(default_account_cap(), override)
     return max(MIN_ACCOUNT_CAP, override)

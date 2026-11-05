@@ -830,3 +830,31 @@ def test_owner_allowlist_denial_precedes_consumer_and_hosted_caps(
     assert result.enforcement_reason == "subject_model_not_allowed"
     assert result.allowed_models == ("owner-only-model",)
     cap_probe.assert_not_called()
+
+
+@pytest.mark.parametrize("hosted,expected_calls", [(True, 1), (False, 0)])
+def test_free_preflight_resolves_enforcement_once_only_for_hosted_models(
+    db_session, test_user, monkeypatch, hosted, expected_calls
+):
+    from unittest.mock import Mock
+    from preloop.config import settings
+    from preloop.services import billing_enforcement
+
+    monkeypatch.setenv("PRELOOP_HOSTED", "true")
+    monkeypatch.setattr(settings, "billing_enforce_entitlements", True)
+    resolver = Mock(return_value=False)
+    monkeypatch.setitem(
+        billing_enforcement.get_plugin_manager()._services,
+        "entitlement_enforcement",
+        resolver,
+    )
+    model = _hosted_model(db_session, test_user)
+    if not hosted:
+        model.meta_data = {"pricing": {"price_per_1k": 100.0}}
+        db_session.flush()
+    service = ModelGatewayBudgetService(
+        db_session, ModelGatewayAuthContext(token="test-token", user=test_user)
+    )
+    result = service.preflight_check(model, {"model": "openai/gpt-5", "input": "Hi"})
+    assert result.hard_limit_exceeded is False
+    assert resolver.call_count == expected_calls
