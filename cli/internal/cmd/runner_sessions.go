@@ -465,11 +465,12 @@ type runnerSessionManager struct {
 	runAsync         func(func())
 	resolveWorkspace func(context.Context, string, *sessionWorkspaceSpec, sessionWorkspaceOptions) (*sessionWorkspace, error)
 
-	now        func() time.Time
-	stateDir   string
-	loadConfig func() (map[string]any, error)
-	notifyHost func(string)
-	out        io.Writer
+	now            func() time.Time
+	stateDir       string
+	loadConfig     func() (map[string]any, error)
+	notifyHost     func(string)
+	ownerNoticeIDs map[string]bool
+	out            io.Writer
 }
 
 func newRunnerSessionManager(out io.Writer) *runnerSessionManager {

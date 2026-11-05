@@ -565,6 +565,7 @@ async def test_hello_null_host_exec_profiles_leaves_capabilities_empty(
     runner = SimpleNamespace(
         id=uuid4(),
         account_id=uuid4(),
+        registered_by_user_id=None,
         status="online",
         publication_capabilities=None,
         ephemeral=False,

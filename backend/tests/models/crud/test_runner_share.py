@@ -195,3 +195,14 @@ def test_rows_stay_in_one_account(db_session, test_user):
             updated_by_user_id=None,
             commit=False,
         )
+
+
+def test_share_approval_defaults_to_per_request_and_rejects_unknown_modes(
+    db_session, test_user
+):
+    runner = _runner(db_session, test_user)
+    member = _user(db_session, test_user.account_id, "member")
+    grant = _grant(db_session, runner, test_user, "user", member.id)
+    assert grant.approval == "per_request"
+    with pytest.raises(IntegrityError):
+        _grant(db_session, runner, test_user, "user", member.id, approval="automatic")

@@ -92,6 +92,9 @@ class RunnerShareGrant(Base):
             "authorized directory and tracker checkouts"
         ),
     )
+    approval: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="per_request", server_default="per_request"
+    )
     consent_state: Mapped[str] = mapped_column(String(32), nullable=False)
     consent_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     consented_at: Mapped[Optional[datetime]] = mapped_column(
@@ -108,6 +111,9 @@ class RunnerShareGrant(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "approval IN ('none', 'per_request')", name="ck_runner_share_approval"
+        ),
         CheckConstraint(
             _in("grantee_type", RUNNER_SHARE_GRANTEE_TYPES),
             name="ck_runner_share_grant_grantee_type",

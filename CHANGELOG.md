@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runner sharing console: manage grants in a dialog, select per-session owner
+  approval, and identify shared runners and their owners in session and flow
+  pickers. Owner notices reach the console bell and runner host; session
+  dialogs show approval waiting and stop polling when closed. Sharing controls
+  remain hidden without the server capability.
+- Add generic request-aware runner consent, audit-backed owner notices, and a
+  share approval mode that preserves per-request consent for existing grants.
+
 - The retention purge can also sweep the two high-volume tables it did not
   cover: flow execution log lines (following the account's evidence
   retention, keeping the execution summary row and every line of a held

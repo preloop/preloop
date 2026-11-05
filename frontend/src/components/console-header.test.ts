@@ -1415,6 +1415,40 @@ describe('console-header system notifications', () => {
     expect(urls.some((url) => url.includes('notification'))).to.equal(false);
   });
 
+  it('loads owner runner notices into the bell and deduplicates refreshes', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    const previous = window.fetch;
+    window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/runner-notices'))
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'runner-notice',
+              title: 'Runner session started',
+              message: 'Jane started Claude Code on Workstation in api.',
+              href: '/console/runners',
+              created_at: new Date().toISOString(),
+            },
+          ]),
+          { status: 200 }
+        );
+      return previous(input, init);
+    }) as typeof window.fetch;
+    try {
+      (el as any).runnerNoticesEnabled = true;
+      await (el as any).refreshRunnerNotices();
+      await (el as any).refreshRunnerNotices();
+      await el.updateComplete;
+      expect(stored(el)).to.have.lengthOf(1);
+      expect(stored(el)[0].title).to.equal('Runner session started');
+      expect(el.shadowRoot!.textContent).to.contain('Jane started Claude Code');
+    } finally {
+      window.fetch = previous;
+    }
+  });
+
   it('adds an unread notification for an account event without logging it', async () => {
     const el = await fixture<ConsoleHeader>(
       html`<console-header></console-header>`

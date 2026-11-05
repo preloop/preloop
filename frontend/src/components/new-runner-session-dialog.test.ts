@@ -105,6 +105,74 @@ describe('new-runner-session-dialog', () => {
     invalidateApiCaches();
   });
 
+  it('groups shared runners and identifies their owners', async () => {
+    stubFetch();
+    const element = await fixture<NewRunnerSessionDialog>(
+      html` <new-runner-session-dialog
+        open
+        .runners=${[
+          { id: 'runner-1', name: 'Mine', status: 'online' },
+          {
+            id: 'runner-2',
+            name: 'Shared workstation',
+            status: 'online',
+            shared_with_me: true,
+            owner_name: 'Jane Doe',
+          },
+        ]}
+      ></new-runner-session-dialog>`
+    );
+    await element.updateComplete;
+    const text = element.shadowRoot!.querySelector('.runner')!.textContent;
+    expect(text).to.contain('Shared with me');
+    expect(text).to.contain('Jane Doe');
+    expect(text).to.contain('My runners');
+  });
+
+  it('shows owner approval waiting and aborts polling when closed', async () => {
+    stubFetch(OPTIONS, {
+      status: 409,
+      body: {
+        detail: {
+          status: 'pending',
+          approval_id: 'approval-1',
+          message: 'Waiting for runner owner',
+        },
+      },
+    });
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/session-options')) return json(OPTIONS);
+        if (url.includes('/consent-status')) return json({ status: 'pending' });
+        return json(
+          {
+            detail: {
+              status: 'pending',
+              approval_id: 'approval-1',
+              message: 'Waiting for runner owner',
+            },
+          },
+          409
+        );
+      }
+    );
+    const element = await mount();
+    const submitting = element.submit();
+    await waitUntil(() => element.shadowRoot!.querySelector('[role="status"]'));
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Waiting for the runner owner'
+    );
+    (element.shadowRoot!.querySelector('.cancel') as HTMLElement).click();
+    await submitting;
+    expect(element.open).to.equal(false);
+    expect(startBodies()).to.have.lengthOf(1);
+    const startCall = fetchStub
+      .getCalls()
+      .find((c) => c.args[1]?.method === 'POST')!;
+    expect(startCall.args[1].signal.aborted).to.equal(true);
+  });
+
   it('preselects the first harness, model and an authorized directory', async () => {
     stubFetch();
     const element = await mount();

@@ -231,7 +231,8 @@ type runnerWSMessage struct {
 	Limits          map[string]any      `json:"limits,omitempty"`
 
 	// InventoryWanted on an ack asks for the full harness inventory.
-	InventoryWanted bool `json:"inventory_wanted,omitempty"`
+	InventoryWanted bool                `json:"inventory_wanted,omitempty"`
+	OwnerNotices    []runnerOwnerNotice `json:"owner_notices,omitempty"`
 }
 
 // deliveredJobs returns every job in one server frame, first one first and
@@ -891,6 +892,7 @@ func runRunnerSession(
 				modelProxy.handle(msg.runnerModelRequest)
 				continue
 			}
+			jobs.sessions.handleOwnerNotices(msg.OwnerNotices)
 			if jobs.sessions.handle(msg) {
 				continue
 			}

@@ -69,6 +69,7 @@ class CRUDRunnerShare:
         consent_state: str,
         consent_source: Optional[str],
         created_by_user_id: Any,
+        approval: str = "per_request",
         commit: bool = True,
     ) -> RunnerShareGrant:
         """Insert one grant.
@@ -108,6 +109,7 @@ class CRUDRunnerShare:
             directory_ids=(
                 sorted(set(directory_ids)) if directory_ids is not None else None
             ),
+            approval=approval,
             consent_state=consent_state,
             consent_source=consent_source,
             consented_at=_now() if consent_state == "active" else None,

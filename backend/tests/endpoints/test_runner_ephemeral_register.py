@@ -105,6 +105,7 @@ def _ws_runner(ephemeral: bool) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
         account_id=uuid4(),
+        registered_by_user_id=None,
         status="online",
         publication_capabilities=None,
         ephemeral=ephemeral,
