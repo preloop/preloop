@@ -1234,6 +1234,16 @@ export class SessionReplayPanel extends LitElement {
       color: var(--console-meta-color);
     }
 
+    .chat-window-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+      margin-block: var(--sl-spacing-medium);
+      font-size: var(--sl-font-size-small);
+      color: var(--console-meta-color);
+    }
+
     .chat-thread {
       display: flex;
       flex-direction: column;
@@ -1704,6 +1714,56 @@ export class SessionReplayPanel extends LitElement {
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
+    this.chatFocusToKeep = null;
+    if (
+      [
+        'chatSearch',
+        'chatSort',
+        'chatTypeFilter',
+        'chatThreshold',
+        'chatThresholdMode',
+        'artifactKindFilter',
+      ].some((key) => changed.has(key)) ||
+      (changed.has('session') &&
+        (changed.get('session') as ObservedSession | null)?.id !==
+          this.session?.id)
+    ) {
+      this.chatWindowStart = 0;
+      this.chatWindowAnchor = null;
+      this.chatLatestFocusId = null;
+    } else if (!changed.has('chatWindowStart')) {
+      const first =
+        this.renderRoot.querySelector<HTMLElement>('[data-chat-row-id]');
+      const focused =
+        this.shadowRoot?.activeElement?.closest('[data-chat-row-id]');
+      // First may focus its row. Keep following across multiple arrivals while
+      // that same focused row stays visible; focus farther down pauses reading.
+      const focusedId = focused?.getAttribute('data-chat-row-id');
+      if (
+        first === focused &&
+        first &&
+        first.getBoundingClientRect().top >= 0
+      ) {
+        this.chatLatestFocusId = focusedId ?? null;
+      }
+      const followingFocus =
+        focusedId === this.chatLatestFocusId &&
+        focused &&
+        focused.getBoundingClientRect().top >= 0;
+      if (first?.dataset.chatRowId && focusedId) {
+        this.chatFocusToKeep = {
+          id: focusedId,
+          anchor: first.dataset.chatRowId,
+        };
+      }
+      if (
+        first &&
+        !followingFocus &&
+        (first.getBoundingClientRect().top < 0 || focused)
+      ) {
+        this.chatWindowAnchor = first.dataset.chatRowId ?? null;
+      }
+    }
     const previous = changed.get('session') as
       ObservedSession | null | undefined;
     if (changed.has('session') && previous?.id !== this.session?.id)
@@ -1725,6 +1785,7 @@ export class SessionReplayPanel extends LitElement {
     }
     if (
       changed.has('summarizeVisibleContent') ||
+      changed.has('chatWindowStart') ||
       changed.has('events') ||
       changed.has('timelineEvents') ||
       changed.has('interactionSummaries')
@@ -1735,6 +1796,16 @@ export class SessionReplayPanel extends LitElement {
       changed.has('events') ||
       changed.has('hasMoreEvents') ||
       changed.has('loadingMoreEvents') ||
+      changed.has('chatWindowStart') ||
+      changed.has('chatSearch') ||
+      changed.has('chatTypeFilter') ||
+      changed.has('chatThreshold') ||
+      changed.has('chatThresholdMode') ||
+      changed.has('chatSort') ||
+      changed.has('artifactKindFilter') ||
+      changed.has('activity') ||
+      changed.has('eventDetails') ||
+      changed.has('approvalState') ||
       changed.has('replayMode')
     ) {
       this.updateEventPageObserver();
@@ -4581,7 +4652,18 @@ export class SessionReplayPanel extends LitElement {
     return `idle ${rounded}h`;
   }
 
+  // Cache only within one render: detail/activity/optimization changes and
+  // imperative copy/jump calls always derive from their current inputs.
+  private renderingChat = false;
+  private renderedChatTurns: ChatTurn[] | null = null;
+  private readonly CHAT_WINDOW_SIZE = 100;
+  private chatWindowStart = 0;
+  private chatWindowAnchor: string | null = null;
+  private chatLatestFocusId: string | null = null;
+  private chatFocusToKeep: { id: string; anchor: string } | null = null;
+
   private getChatTurns(): ChatTurn[] {
+    if (this.renderedChatTurns) return this.renderedChatTurns;
     const events = this.getChatEvents();
     const tools = sessionTools(this.events, this.activity);
     const seenSignatures = new Set<string>();
@@ -4730,6 +4812,7 @@ export class SessionReplayPanel extends LitElement {
     turns.forEach((turn, index) => {
       turn.index = index;
     });
+    if (this.renderingChat) this.renderedChatTurns = turns;
     return turns;
   }
 
@@ -4981,6 +5064,7 @@ export class SessionReplayPanel extends LitElement {
       if (this.jumpedNoteFocusId === focusId) return;
       this.jumpedNoteFocusId = focusId;
       this.jumpedFocusEventId = focusId;
+      this.revealChatRow((row) => row.turn?.noteId === focusId);
       void this.updateComplete.then(() =>
         this.jumpToTurnElement(
           `.chat-turn[data-note-id="${CSS.escape(focusId)}"]`
@@ -5057,7 +5141,12 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private jumpToTurn(eventId: string): void {
-    this.jumpToTurnElement(`.chat-turn[data-event-id="${eventId}"]`);
+    this.revealChatRow((row) => row.turn?.event?.id === eventId);
+    void this.updateComplete.then(() =>
+      this.jumpToTurnElement(
+        `.chat-turn[data-event-id="${CSS.escape(eventId)}"]`
+      )
+    );
   }
 
   private jumpToTurnElement(selector: string): void {
@@ -5107,25 +5196,37 @@ export class SessionReplayPanel extends LitElement {
     const active = this.shadowRoot?.activeElement as HTMLElement | null;
     const focusedTurn = active?.closest('.chat-turn') as HTMLElement | null;
     if (!focusedTurn) return;
-    const turns = Array.from(
-      this.shadowRoot?.querySelectorAll('.chat-turn') || []
-    ) as HTMLElement[];
-    const index = turns.indexOf(focusedTurn);
+    const rowId =
+      focusedTurn.closest<HTMLElement>('[data-chat-row-id]')?.dataset.chatRowId;
+    const turns = this.chatRows.shown.filter((row) => row.turn);
+    const index = turns.findIndex((row) => row.id === rowId);
     if (index === -1) return;
+    const focusRow = (target: ChatRow | undefined) => {
+      if (!target) return;
+      this.revealChatRow((row) => row.id === target.id);
+      const focus = () =>
+        this.renderRoot
+          .querySelector<HTMLElement>(
+            `[data-chat-row-id="${CSS.escape(target.id)}"] .chat-turn`
+          )
+          ?.focus();
+      if (this.isUpdatePending) void this.updateComplete.then(focus);
+      else focus();
+    };
     switch (event.key) {
       case 'j':
       case 'ArrowDown':
-        turns[Math.min(index + 1, turns.length - 1)]?.focus();
+        focusRow(turns[Math.min(index + 1, turns.length - 1)]);
         break;
       case 'k':
       case 'ArrowUp':
-        turns[Math.max(index - 1, 0)]?.focus();
+        focusRow(turns[Math.max(index - 1, 0)]);
         break;
       case 'Home':
-        turns[0]?.focus();
+        focusRow(turns[0]);
         break;
       case 'End':
-        turns[turns.length - 1]?.focus();
+        focusRow(turns[turns.length - 1]);
         break;
       case 'Enter':
       case 'o': {
@@ -5482,26 +5583,63 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
+  private scrollToChatRow(
+    selector: string,
+    matches: (row: ChatRow) => boolean,
+    focus = true
+  ): boolean {
+    const scroll = () => {
+      const row = this.renderRoot.querySelector<HTMLElement>(selector);
+      row?.scrollIntoView({
+        behavior: 'smooth',
+        block: focus ? 'center' : 'nearest',
+      });
+      if (focus) row?.focus({ preventScroll: true });
+    };
+    if (this.renderRoot.querySelector(selector)) {
+      scroll();
+      return true;
+    }
+    if (!this.revealChatRow(matches)) return false;
+    void this.updateComplete.then(scroll);
+    return true;
+  }
+
   /** Scroll the turn of one browser step into view and focus it. */
   scrollToBrowserStep(key: string): boolean {
-    const row = this.renderRoot.querySelector<HTMLElement>(
-      `[data-browser-step-key="${key}"]`
+    return this.scrollToChatRow(
+      `[data-browser-step-key="${CSS.escape(key)}"]`,
+      (row) => Boolean(row.turn?.browserStep) && row.id === key
     );
-    if (!row) return false;
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.focus({ preventScroll: true });
-    return true;
   }
 
   /** Scroll the turn of one artifact into view and focus its row. */
   scrollToArtifact(artifactId: string): boolean {
-    const row = this.renderRoot.querySelector<HTMLElement>(
-      `[data-artifact-key="${artifactRowKey(artifactId)}"] session-artifact-row`
+    const key = artifactRowKey(artifactId);
+    return this.scrollToChatRow(
+      `[data-artifact-key="${CSS.escape(key)}"] session-artifact-row`,
+      (row) => Boolean(row.turn?.artifact) && row.id === key
     );
-    if (!row) return false;
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.focus({ preventScroll: true });
-    return true;
+  }
+
+  /** The observer calls this only while recording-follow is not paused. */
+  scrollToRecordingActivity(activityId: string): boolean {
+    return this.scrollToChatRow(
+      `[data-recording-activity="${CSS.escape(activityId)}"]`,
+      (row) =>
+        (row.tool
+          ? recordingToolActivity(
+              row.tool.id,
+              row.tool.callId ?? null,
+              this.activity
+            )
+          : (row.turn?.browserStep?.activity_id ??
+            recordingEventActivity(
+              row.turn?.event ?? null,
+              this.recordingSync
+            ))) === activityId,
+      false
+    );
   }
 
   private renderArtifactTurn(turn: ChatTurn) {
@@ -6052,11 +6190,120 @@ export class SessionReplayPanel extends LitElement {
     };
   }
 
+  private setChatWindow(start: number): void {
+    const previous = this.chatWindowStart;
+    this.chatWindowStart = Math.max(0, start);
+    this.chatWindowAnchor = null;
+    this.chatLatestFocusId = null;
+    this.requestUpdate('chatWindowStart', previous);
+  }
+
+  private revealChatRow(matches: (row: ChatRow) => boolean): boolean {
+    const rows = this.chatRows.shown;
+    const index = rows.findIndex(matches);
+    if (index < 0) return false;
+    if (
+      index < this.chatWindowStart ||
+      index >= this.chatWindowStart + this.CHAT_WINDOW_SIZE
+    ) {
+      this.setChatWindow(
+        Math.floor(index / this.CHAT_WINDOW_SIZE) * this.CHAT_WINDOW_SIZE
+      );
+    }
+    return true;
+  }
+
+  private changeChatWindow(start: number): void {
+    this.setChatWindow(start);
+    void this.updateComplete.then(() => {
+      const row =
+        this.renderRoot.querySelector<HTMLElement>('[data-chat-row-id]');
+      const target =
+        row?.querySelector<HTMLElement>(
+          '.chat-turn[tabindex], session-artifact-row, [tabindex], button'
+        ) ?? row;
+      row?.scrollIntoView({ block: 'start' });
+      target?.focus({ preventScroll: true });
+    });
+  }
+
+  private renderChatWindowControls(total: number, position: 'top' | 'bottom') {
+    if (total <= this.CHAT_WINDOW_SIZE) return nothing;
+    const start = this.chatWindowStart;
+    const end = Math.min(start + this.CHAT_WINDOW_SIZE, total);
+    return html`<nav
+      class="chat-window-controls"
+      aria-label=${position === 'top' ? 'Loaded request pages, before requests' : 'Loaded request pages, after requests'}
+    >
+      <sl-button
+        size="small"
+        ?disabled=${start === 0}
+        @click=${() => this.changeChatWindow(0)}
+        >First</sl-button
+      >
+      <sl-button
+        size="small"
+        ?disabled=${start === 0}
+        @click=${() => this.changeChatWindow(start - this.CHAT_WINDOW_SIZE)}
+        >Previous</sl-button
+      >
+      <span role=${position === 'top' ? 'status' : nothing}
+        >${formatNumber(start + 1)}–${formatNumber(end)} of
+        ${formatNumber(total)} loaded rows</span
+      >
+      <sl-button
+        size="small"
+        ?disabled=${end === total}
+        @click=${() => this.changeChatWindow(end)}
+        >Next</sl-button
+      >
+      <sl-button
+        size="small"
+        ?disabled=${end === total}
+        @click=${() => this.changeChatWindow(Math.floor((total - 1) / this.CHAT_WINDOW_SIZE) * this.CHAT_WINDOW_SIZE)}
+        >Last</sl-button
+      >
+    </nav>`;
+  }
+
   private renderChatView() {
     const turnCount = this.getVisibleChatTurns().length;
     const mostExpensiveTurnId = this.getMostExpensiveTurnId();
     const { shown: rows, total } = this.chatRows;
     const searching = Boolean(this.chatSearch.trim());
+    // Reuse these derived rows: checking eviction in willUpdate would derive
+    // the complete transcript a second time on every focused live update.
+    const focusToKeep = this.chatFocusToKeep;
+    const focusedIndex = focusToKeep
+      ? rows.findIndex((row) => row.id === focusToKeep.id)
+      : -1;
+    if (focusToKeep && focusedIndex >= this.CHAT_WINDOW_SIZE) {
+      this.chatWindowAnchor ??= focusToKeep.anchor;
+    }
+    // Keep the first row of a historical window stable when new requests or
+    // older server pages arrive. Filters intentionally start at the first match.
+    if (this.chatWindowAnchor) {
+      const anchor = rows.findIndex((row) => row.id === this.chatWindowAnchor);
+      if (anchor >= 0) this.chatWindowStart = anchor;
+    }
+    this.chatWindowStart = Math.max(
+      0,
+      Math.min(this.chatWindowStart, rows.length - 1)
+    );
+    // Cost/type sorting can insert rows inside the old window, so keeping its
+    // first row alone may still evict focus. Shift only enough to retain it.
+    if (focusedIndex >= 0) {
+      if (focusedIndex < this.chatWindowStart)
+        this.chatWindowStart = focusedIndex;
+      else if (focusedIndex >= this.chatWindowStart + this.CHAT_WINDOW_SIZE)
+        this.chatWindowStart = focusedIndex - this.CHAT_WINDOW_SIZE + 1;
+    }
+    const visibleRows = rows.slice(
+      this.chatWindowStart,
+      this.chatWindowStart + this.CHAT_WINDOW_SIZE
+    );
+    this.chatWindowAnchor =
+      this.chatWindowStart > 0 ? (visibleRows[0]?.id ?? null) : null;
     return html`
       <div class="panel">
         ${this.renderFocusJumpHint()} ${this.renderChatSummaryBar()}
@@ -6065,22 +6312,35 @@ export class SessionReplayPanel extends LitElement {
           searching ? { shown: rows.length, total } : null,
           rows.length
         )}
+        ${this.renderChatWindowControls(rows.length, 'top')}
         ${
           rows.length
             ? html`
                 <div
                   class="chat-thread"
+                  role="list"
+                  aria-label="Session requests"
                   @keydown=${this.handleChatThreadKeydown}
                 >
                   ${repeat(
-                    rows,
+                    visibleRows,
                     (row) => row.id,
-                    (row) =>
-                      row.turn
-                        ? this.renderChatTurn(row.turn, mostExpensiveTurnId)
-                        : row.tool
-                          ? this.renderToolRow(row.tool)
-                          : this.renderApproval(row.request!)
+                    (row, index) =>
+                      html`<div
+                        data-chat-row-id=${row.id}
+                        role="listitem"
+                        tabindex="-1"
+                        aria-posinset=${this.chatWindowStart + index + 1}
+                        aria-setsize=${rows.length}
+                      >
+                        ${
+                          row.turn
+                            ? this.renderChatTurn(row.turn, mostExpensiveTurnId)
+                            : row.tool
+                              ? this.renderToolRow(row.tool)
+                              : this.renderApproval(row.request!)
+                        }
+                      </div>`
                   )}
                 </div>
               `
@@ -6092,7 +6352,8 @@ export class SessionReplayPanel extends LitElement {
                 }
               </div>`
         }
-        ${this.renderEventPageSentinel()}
+        ${this.renderChatWindowControls(rows.length, 'bottom')}
+        ${searching || this.chatWindowStart + visibleRows.length >= rows.length ? this.renderEventPageSentinel() : nothing}
       </div>
     `;
   }
@@ -6238,7 +6499,13 @@ export class SessionReplayPanel extends LitElement {
   }
 
   render() {
-    return html`${this.renderActivity()}${this.renderContent()}`;
+    this.renderingChat = true;
+    try {
+      return html`${this.renderActivity()}${this.renderContent()}`;
+    } finally {
+      this.renderingChat = false;
+      this.renderedChatTurns = null;
+    }
   }
 
   private renderContent() {
