@@ -548,4 +548,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert desktop_link.down_revision == "20261127_rate_limit_bucket"
     retention_exec = script.get_revision("20261129_retention_exec_idx")
     assert retention_exec.down_revision == "20261128_session_desktop_link"
-    assert script.get_heads() == ["20261129_retention_exec_idx"]
+    report_analysis = script.get_revision("20261130_report_analysis_flag")
+    assert report_analysis.down_revision == "20261129_retention_exec_idx"
+    assert script.get_heads() == ["20261130_report_analysis_flag"]
