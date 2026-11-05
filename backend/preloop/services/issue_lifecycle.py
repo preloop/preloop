@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models import models
-from preloop.models.crud import crud_assessment, crud_issue_lifecycle
+from preloop.models.crud import (
+    crud_assessment,
+    crud_flow_execution,
+    crud_issue_lifecycle,
+)
 from preloop.schemas.issue_lifecycle import (
     AuditResult,
     Criterion,
@@ -503,19 +507,36 @@ class IssueLifecycleService:
                 return None
             execution: models.FlowExecution | None
             if row and row.execution_id:
-                execution = crud_issue_lifecycle.create_execution(
-                    self.db, row=row, flow_id=flow.id, event={}
+                execution = crud_flow_execution.get_without_workspace(
+                    self.db, id=row.execution_id, account_id=self.account_id
                 )
+                if execution is None:
+                    raise ValueError("lifecycle_execution_missing")
             else:
                 execution = await self._queue_ready_audit(
                     row, current, links, merge, flow, polled=polled
                 )
                 if execution is None:
                     return None
-        assert execution is not None
+            execution_id = execution.id
+        # Releasing the issue lock commits and expires ORM state. Reload only
+        # metadata before inspecting a completed audit; an implicit refresh
+        # here would materialize its retained workspace.
+        execution = crud_flow_execution.get_without_workspace(
+            self.db, id=execution_id, account_id=self.account_id
+        )
+        if execution is None:
+            raise ValueError("lifecycle_execution_missing")
         # The durable PENDING execution is recoverable if dispatch fails. The
         # normal worker's execution claim also tolerates repeated delivery.
         if execution.status == "PENDING":
+            # Dispatch/recovery keeps the full execution contract, including
+            # a retained workspace when a pending run needs it.
+            execution = crud_flow_execution.get(
+                self.db, id=execution_id, account_id=self.account_id
+            )
+            if execution is None:
+                raise ValueError("lifecycle_execution_missing")
             await dispatch(execution)
         return execution
 
