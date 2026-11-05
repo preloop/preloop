@@ -206,6 +206,9 @@ export class ApprovalsView extends AuthedElement {
 
   /** Bumped per list load; a slower, older response is dropped. */
   private loadSeq = 0;
+  private lifecycle = 0;
+  private loadController?: AbortController;
+  private statsController?: AbortController;
 
   @state()
   private toolFilter: string = 'all';
@@ -583,15 +586,21 @@ export class ApprovalsView extends AuthedElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    const lifecycle = ++this.lifecycle;
     this.readFilterLocation();
     window.addEventListener('popstate', this.onFilterPopState);
     this.addEventListener('keydown', this.onKeyDown);
     await this.loadApprovalRequests();
-    this.connectWebSocket();
+    if (this.isConnected && lifecycle === this.lifecycle)
+      this.connectWebSocket();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    ++this.lifecycle;
+    ++this.loadSeq;
+    this.loadController?.abort();
+    this.statsController?.abort();
     if (this.statsTimer !== null) window.clearTimeout(this.statsTimer);
     this.statsTimer = null;
     window.removeEventListener('popstate', this.onFilterPopState);
@@ -599,11 +608,12 @@ export class ApprovalsView extends AuthedElement {
       window.clearTimeout(this.filterSearchTimer);
     this.removeEventListener('keydown', this.onKeyDown);
     this.unsubscribe?.();
+    this.unsubscribe = undefined;
     this.stopTicking();
   }
 
   private startTicking() {
-    if (this.tickTimer) return;
+    if (!this.isConnected || this.tickTimer) return;
     this.tickTimer = setInterval(() => {
       this.nowMs = Date.now();
       this.applyFilters();
@@ -804,6 +814,7 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private connectWebSocket() {
+    if (!this.isConnected || this.unsubscribe) return;
     this.unsubscribe = unifiedWebSocketManager.subscribe(
       'approvals',
       (message: any) => this.handleWebSocketMessage(message)
@@ -813,6 +824,7 @@ export class ApprovalsView extends AuthedElement {
   private newApprovalCount = 0;
 
   private handleWebSocketMessage(message: any) {
+    if (!this.isConnected) return;
     debugLog('Approvals view received update:', message);
 
     // After a failed load the list is incomplete, so patching one row into
@@ -932,13 +944,17 @@ export class ApprovalsView extends AuthedElement {
    * One page of the list endpoint and the total it states in
    * `X-Total-Count`. Null when the request failed.
    */
-  private async fetchPage(params: Record<string, string>): Promise<{
+  private async fetchPage(
+    params: Record<string, string>,
+    signal: AbortSignal
+  ): Promise<{
     rows: ApprovalRequest[];
     total: number | null;
   } | null> {
     const query = new URLSearchParams(params).toString();
     const response = await fetchWithAuth(
-      `${REST_API_PREFIX}/approval-requests?${query}`
+      `${REST_API_PREFIX}/approval-requests?${query}`,
+      { signal }
     );
     if (!response.ok) return null;
     const data = await response.json();
@@ -985,19 +1001,26 @@ export class ApprovalsView extends AuthedElement {
    * to filter, search and count it; the server does all three now.
    */
   private async loadApprovalRequests() {
+    if (!this.isConnected) return;
+    this.loadController?.abort();
+    const controller = new AbortController();
+    this.loadController = controller;
     const seq = ++this.loadSeq;
     if (!this.approvalRequests.length) this.loading = true;
     this.loadError = null;
     void this.loadStats();
     try {
       const [pending, history] = await Promise.all([
-        this.fetchPage({
-          ...this.filterParams(),
-          status: 'pending',
-          limit: String(APPROVAL_REQUESTS_PAGE_LIMIT),
-        }),
+        this.fetchPage(
+          {
+            ...this.filterParams(),
+            status: 'pending',
+            limit: String(APPROVAL_REQUESTS_PAGE_LIMIT),
+          },
+          controller.signal
+        ),
         this.showsHistory
-          ? this.fetchPage(this.historyParams())
+          ? this.fetchPage(this.historyParams(), controller.signal)
           : Promise.resolve(null),
       ]);
       if (seq !== this.loadSeq) return;
@@ -1036,13 +1059,24 @@ export class ApprovalsView extends AuthedElement {
 
   /** Account-wide counts; the strip falls back to the loaded rows without. */
   private async loadStats(): Promise<void> {
+    if (!this.isConnected) return;
+    this.statsController?.abort();
+    const controller = new AbortController();
+    this.statsController = controller;
+    const current = () =>
+      this.isConnected &&
+      !controller.signal.aborted &&
+      this.statsController === controller;
     try {
       const response = await fetchWithAuth(
-        REST_API_PREFIX + '/approval-requests/stats'
+        REST_API_PREFIX + '/approval-requests/stats',
+        { signal: controller.signal }
       );
       const data = response.ok ? await response.json() : null;
+      if (!current()) return;
       this.serverStats = isStatsResponse(data) ? data : null;
     } catch {
+      if (!current()) return;
       this.serverStats = null;
     }
     this.calculateStats();
