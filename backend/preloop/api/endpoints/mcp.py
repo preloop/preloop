@@ -778,7 +778,7 @@ def _review_receipt_execution_id(db: Session, current_user: Any) -> str | None:
     if not execution_id:
         return None
     try:
-        execution = crud_flow_execution.get(
+        execution = crud_flow_execution.get_without_workspace(
             db, id=str(execution_id), account_id=current_user.account_id
         )
     except (ValueError, SQLAlchemyError):

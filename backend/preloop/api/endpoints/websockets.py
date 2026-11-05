@@ -350,10 +350,10 @@ async def flow_execution_websocket(
             return
 
     def _load_execution(db: Session):
-        execution = crud_flow_execution.get(db, id=str(execution_id))
-        if not execution:
+        flow_id = crud_flow_execution.get_flow_id(db, id=str(execution_id))
+        if flow_id is None:
             return None
-        flow = crud_flow.get(db, id=execution.flow_id)
+        flow = crud_flow.get(db, id=flow_id)
         if not flow:
             return "missing_flow"
         return flow.account_id
@@ -1124,7 +1124,7 @@ def _authorize_session_attach(
             uuid.UUID(execution_id)
         except ValueError:
             return {"error": 404, "detail": "Flow execution not found"}
-        execution = crud_flow_execution.get(
+        execution = crud_flow_execution.get_without_workspace(
             db, execution_id, account_id=str(user.account_id)
         )
         if execution is None:

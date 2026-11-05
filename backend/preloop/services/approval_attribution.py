@@ -21,7 +21,7 @@ Three entry points, for the three moments attribution is needed:
 Lookups are best-effort. A revoked key, a deleted agent or a purged session
 must degrade to "that part is omitted", never to a failed page load.
 
-Read-time batched lookups use ``select()`` rather than ``preloop.models.crud``:
+Other read-time batched lookups use ``select()``:
 ``CRUDBase.get_multi`` only supports scalar ``==`` filters, and a page of 50
 rows must not issue four queries per row. Creation-time name backfill in
 :func:`resolve_managed_agent_name` is the same kind of single-id lookup.
@@ -39,8 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from preloop.models.models.api_key import ApiKey
-from preloop.models.models.flow import Flow
-from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.crud import crud_flow_execution
 from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.schemas.approval_request import (
@@ -213,20 +212,6 @@ def _by_id_select(model: Any, ids: Sequence[Any], account_ids: Sequence[Any]):
     return statement
 
 
-def _runs_select(ids: Sequence[Any], account_ids: Sequence[Any]):
-    """Executions with their flow in one statement.
-
-    Joined rather than fetched separately for two reasons: the flow name is
-    the only thing worth showing about a run, and ``flow_execution`` has no
-    account column of its own, so the flow's account is what scopes it.
-    """
-    statement = select(FlowExecution, Flow).join(Flow, Flow.id == FlowExecution.flow_id)
-    statement = statement.where(FlowExecution.id.in_(ids))
-    if account_ids:
-        statement = statement.where(Flow.account_id.in_(account_ids))
-    return statement
-
-
 def _load_by_id(
     db: Session, model: Any, ids: Iterable[Any], account_ids: Sequence[Any]
 ) -> Dict[Any, Any]:
@@ -276,8 +261,9 @@ def _load_runs(
             return {}
         if not account_ids:
             return {}
-        rows = db.execute(_runs_select(wanted, account_ids)).all()
-        return {execution.id: (execution, flow) for execution, flow in rows}
+        return crud_flow_execution.get_for_attribution(
+            db, ids=wanted, account_ids=account_ids
+        )
     except Exception:
         logger.debug("Attribution lookup failed for FlowExecution", exc_info=True)
         return {}
@@ -293,8 +279,9 @@ async def _load_runs_async(
             return {}
         if not account_ids:
             return {}
-        result = await db.execute(_runs_select(wanted, account_ids))
-        return {execution.id: (execution, flow) for execution, flow in result.all()}
+        return await crud_flow_execution.get_for_attribution_async(
+            db, ids=wanted, account_ids=account_ids
+        )
     except Exception:
         logger.debug("Attribution lookup failed for FlowExecution", exc_info=True)
         return {}

@@ -139,7 +139,7 @@ def authorize(
     """Recheck execution tenancy and active upload permission on every request."""
     if claims["execution_id"] != execution_id or claims["operation"] != operation:
         raise HTTPException(403, "artifact_scope_mismatch")
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db, id=execution_id, account_id=str(claims["account_id"])
     )
     flow = crud_flow.get(db, id=claims["flow_id"])
