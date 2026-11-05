@@ -1714,6 +1714,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
+    this.chatFocusToKeep = null;
     if (
       [
         'chatSearch',
@@ -1749,15 +1750,16 @@ export class SessionReplayPanel extends LitElement {
         focusedId === this.chatLatestFocusId &&
         focused &&
         focused.getBoundingClientRect().top >= 0;
-      const wouldEvictFocus =
-        focusedId &&
-        this.chatRows.shown.findIndex((row) => row.id === focusedId) >=
-          this.CHAT_WINDOW_SIZE;
+      if (first?.dataset.chatRowId && focusedId) {
+        this.chatFocusToKeep = {
+          id: focusedId,
+          anchor: first.dataset.chatRowId,
+        };
+      }
       if (
         first &&
-        ((!followingFocus &&
-          (first.getBoundingClientRect().top < 0 || focused)) ||
-          wouldEvictFocus)
+        !followingFocus &&
+        (first.getBoundingClientRect().top < 0 || focused)
       ) {
         this.chatWindowAnchor = first.dataset.chatRowId ?? null;
       }
@@ -4658,6 +4660,7 @@ export class SessionReplayPanel extends LitElement {
   private chatWindowStart = 0;
   private chatWindowAnchor: string | null = null;
   private chatLatestFocusId: string | null = null;
+  private chatFocusToKeep: { id: string; anchor: string } | null = null;
 
   private getChatTurns(): ChatTurn[] {
     if (this.renderedChatTurns) return this.renderedChatTurns;
@@ -6268,6 +6271,16 @@ export class SessionReplayPanel extends LitElement {
     const mostExpensiveTurnId = this.getMostExpensiveTurnId();
     const { shown: rows, total } = this.chatRows;
     const searching = Boolean(this.chatSearch.trim());
+    // Reuse these derived rows: checking eviction in willUpdate would derive
+    // the complete transcript a second time on every focused live update.
+    const focusToKeep = this.chatFocusToKeep;
+    if (
+      focusToKeep &&
+      rows.findIndex((row) => row.id === focusToKeep.id) >=
+        this.CHAT_WINDOW_SIZE
+    ) {
+      this.chatWindowAnchor ??= focusToKeep.anchor;
+    }
     // Keep the first row of a historical window stable when new requests or
     // older server pages arrive. Filters intentionally start at the first match.
     if (this.chatWindowAnchor) {
