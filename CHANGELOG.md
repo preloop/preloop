@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Persisted global and per-account entitlement enforcement settings with atomic
+  actor/reason audit records. Optional billing hooks let gateway limits and
+  projected execution caps respect account exemptions; absent plugins retain
+  the environment fallback.
+
 - An internal artifact read-policy hook applies exact label and kind predicates
   before search, pagination, facets, counts, byte reads, media reads and exports,
   including artifact snippets in the session-search corpus.

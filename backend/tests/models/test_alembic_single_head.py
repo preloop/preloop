@@ -548,8 +548,13 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert desktop_link.down_revision == "20261127_rate_limit_bucket"
     retention_exec = script.get_revision("20261129_retention_exec_idx")
     assert retention_exec.down_revision == "20261128_session_desktop_link"
-    assert (
-        script.get_revision("20261130_runner_share_approval").down_revision
-        == "20261129_retention_exec_idx"
-    )
-    assert script.get_heads() == ["20261130_runner_share_approval"]
+    feature = script.get_revision("20261130_entitlement_enforcement")
+    assert feature.down_revision == "20261129_retention_exec_idx"
+    runner_approval = script.get_revision("20261130_runner_share_approval")
+    assert runner_approval.down_revision == "20261129_retention_exec_idx"
+    joined = script.get_revision("20261201_policy_runner_merge")
+    assert set(joined.down_revision) == {
+        "20261130_entitlement_enforcement",
+        "20261130_runner_share_approval",
+    }
+    assert script.get_heads() == ["20261201_policy_runner_merge"]

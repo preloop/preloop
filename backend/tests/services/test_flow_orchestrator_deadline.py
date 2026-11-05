@@ -108,6 +108,16 @@ def flow(db_session: Session, account: Account, user: User) -> Flow:
 @pytest.fixture
 def clock(monkeypatch) -> FakeClock:
     fake = FakeClock()
+
+    class AdmissionDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake.now.astimezone(tz) if tz else fake.now.replace(tzinfo=None)
+
+    # Admission persists the anchor in CRUD; use the same clock as the monitor.
+    monkeypatch.setattr(
+        "preloop.models.crud.flow_execution.datetime", AdmissionDateTime
+    )
     monkeypatch.setattr(orchestrator_module, "_utcnow", fake)
     monkeypatch.setattr(orchestrator_module.asyncio, "sleep", fake.sleep)
     for name in ("_listen_for_commands", "_stream_logs_to_nats", "_cleanup_monitoring"):
@@ -178,8 +188,9 @@ def _milestones(orchestrator, name):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pre_admission_lag", [0, 10])
 async def test_one_deadline_covers_startup_monitoring_and_retries(
-    db_session, flow, clock
+    db_session, flow, clock, pre_admission_lag
 ):
     """Slow startup, slow status calls, a transient failure and a retry.
 
@@ -188,6 +199,8 @@ async def test_one_deadline_covers_startup_monitoring_and_retries(
     so attempt 2's monitor times out at once instead of getting 300 more
     seconds of its own.
     """
+    # Simulate a fixture clock initialized before a slow host admits the run.
+    clock.now -= timedelta(seconds=pre_admission_lag)
     status_calls: List[datetime] = []
     executor = _slow_executor(clock, status_calls)
     orchestrator = _orchestrator(db_session, flow)
@@ -232,12 +245,10 @@ async def test_one_deadline_covers_startup_monitoring_and_retries(
     assert len(attempts) == 2
     deadline = attempts[0]["deadline"]
     assert attempts[1]["deadline"] is deadline
-    assert abs((deadline.anchor - launch).total_seconds()) < 5
+    assert deadline.anchor == launch
     assert deadline.deadline == deadline.anchor + timedelta(seconds=BUDGET)
-    # Startup counted before the first attempt was even monitored (the
-    # anchor is the real admission time, a few ms after the fake clock's
-    # start, hence the one second of slack)...
-    assert attempts[0]["remaining"] <= BUDGET - SLOW_START + 1
+    # Startup counted before the first attempt was even monitored...
+    assert attempts[0]["remaining"] == BUDGET - SLOW_START
     # ...and attempt 2 got what was left, not a fresh budget.
     assert attempts[1]["remaining"] <= 0
 
@@ -248,7 +259,7 @@ async def test_one_deadline_covers_startup_monitoring_and_retries(
     elapsed = timeouts[0]["details"]["elapsed_seconds"]
     # 120 + 100 + 15 + 120 of real (fake) time had passed: the message says
     # so instead of claiming the budget's round number.
-    assert elapsed >= SLOW_START + 100 + 15 + SLOW_START - 1
+    assert elapsed == SLOW_START + 100 + 15 + SLOW_START
     assert f"timed out after {elapsed} seconds" in row.error_message
     assert f"budget {BUDGET} seconds from launch" in row.error_message
     executor.stop.assert_awaited()
