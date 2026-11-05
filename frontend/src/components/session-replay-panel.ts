@@ -1729,14 +1729,36 @@ export class SessionReplayPanel extends LitElement {
     ) {
       this.chatWindowStart = 0;
       this.chatWindowAnchor = null;
+      this.chatLatestFocusId = null;
     } else if (this.chatWindowStart === 0 && !changed.has('chatWindowStart')) {
       const first =
         this.renderRoot.querySelector<HTMLElement>('[data-chat-row-id]');
       const focused =
         this.shadowRoot?.activeElement?.closest('[data-chat-row-id]');
-      // At the top, continue showing new arrivals. Once reading or focusing a
-      // row, keep the same window instead of evicting its last row on append.
-      if (first && (first.getBoundingClientRect().top < 0 || focused)) {
+      // First may focus its row. Keep following across multiple arrivals while
+      // that same focused row stays visible; focus farther down pauses reading.
+      const focusedId = focused?.getAttribute('data-chat-row-id');
+      if (
+        first === focused &&
+        first &&
+        first.getBoundingClientRect().top >= 0
+      ) {
+        this.chatLatestFocusId = focusedId ?? null;
+      }
+      const followingFocus =
+        focusedId === this.chatLatestFocusId &&
+        focused &&
+        focused.getBoundingClientRect().top >= 0;
+      const wouldEvictFocus =
+        focusedId &&
+        this.chatRows.shown.findIndex((row) => row.id === focusedId) >=
+          this.CHAT_WINDOW_SIZE;
+      if (
+        first &&
+        ((!followingFocus &&
+          (first.getBoundingClientRect().top < 0 || focused)) ||
+          wouldEvictFocus)
+      ) {
         this.chatWindowAnchor = first.dataset.chatRowId ?? null;
       }
     }
@@ -4635,6 +4657,7 @@ export class SessionReplayPanel extends LitElement {
   private readonly CHAT_WINDOW_SIZE = 100;
   private chatWindowStart = 0;
   private chatWindowAnchor: string | null = null;
+  private chatLatestFocusId: string | null = null;
 
   private getChatTurns(): ChatTurn[] {
     if (this.renderedChatTurns) return this.renderedChatTurns;
@@ -6168,6 +6191,7 @@ export class SessionReplayPanel extends LitElement {
     const previous = this.chatWindowStart;
     this.chatWindowStart = Math.max(0, start);
     this.chatWindowAnchor = null;
+    this.chatLatestFocusId = null;
     this.requestUpdate('chatWindowStart', previous);
   }
 
@@ -6200,13 +6224,13 @@ export class SessionReplayPanel extends LitElement {
     });
   }
 
-  private renderChatWindowControls(total: number) {
+  private renderChatWindowControls(total: number, position: 'top' | 'bottom') {
     if (total <= this.CHAT_WINDOW_SIZE) return nothing;
     const start = this.chatWindowStart;
     const end = Math.min(start + this.CHAT_WINDOW_SIZE, total);
     return html`<nav
       class="chat-window-controls"
-      aria-label="Loaded request pages"
+      aria-label=${position === 'top' ? 'Loaded request pages, before requests' : 'Loaded request pages, after requests'}
     >
       <sl-button
         size="small"
@@ -6220,7 +6244,7 @@ export class SessionReplayPanel extends LitElement {
         @click=${() => this.changeChatWindow(start - this.CHAT_WINDOW_SIZE)}
         >Previous</sl-button
       >
-      <span role="status"
+      <span role=${position === 'top' ? 'status' : nothing}
         >${formatNumber(start + 1)}–${formatNumber(end)} of
         ${formatNumber(total)} loaded rows</span
       >
@@ -6268,7 +6292,7 @@ export class SessionReplayPanel extends LitElement {
           searching ? { shown: rows.length, total } : null,
           rows.length
         )}
-        ${this.renderChatWindowControls(rows.length)}
+        ${this.renderChatWindowControls(rows.length, 'top')}
         ${
           rows.length
             ? html`
@@ -6308,7 +6332,7 @@ export class SessionReplayPanel extends LitElement {
                 }
               </div>`
         }
-        ${this.renderChatWindowControls(rows.length)}
+        ${this.renderChatWindowControls(rows.length, 'bottom')}
         ${searching || this.chatWindowStart + visibleRows.length >= rows.length ? this.renderEventPageSentinel() : nothing}
       </div>
     `;

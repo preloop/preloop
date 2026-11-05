@@ -2153,4 +2153,91 @@ describe('SessionReplayPanel bounded request windows', () => {
     expect(rows(element)[0].getAttribute('aria-posinset')).to.equal('1');
     expect(rows(element)).to.have.length(100);
   });
+  it('continues rendering new arrivals after First without dropping keyboard focus', async () => {
+    const element = await mount();
+    await page(element, 'Last');
+    await page(element, 'First');
+    const focused = element.shadowRoot!.activeElement;
+    expect(focused?.getAttribute('data-event-id')).to.equal('window-204');
+    for (const index of [205, 206]) {
+      element.events = [...element.events, makeEvent(index)];
+      await element.updateComplete;
+      expect(ids(element)[0]).to.equal(`window-${index}`);
+      expect(rows(element)[0].getAttribute('aria-posinset')).to.equal('1');
+      expect(element.shadowRoot!.activeElement).to.equal(focused);
+    }
+    // Once following would evict keyboard focus, pause the window explicitly
+    // (its range/First control reflects the historical position).
+    element.events = [
+      ...element.events,
+      ...Array.from({ length: 100 }, (_, i) => makeEvent(i + 207)),
+    ];
+    await element.updateComplete;
+    expect(ids(element)).to.include('window-204');
+    expect(element.shadowRoot!.activeElement).to.equal(focused);
+    expect(rows(element)[0].getAttribute('aria-posinset')).not.to.equal('1');
+    expect(rows(element)).to.have.length(100);
+  });
+
+  it('names the two page controls separately and announces their range once', async () => {
+    const element = await mount();
+    const controls = Array.from(
+      element.renderRoot.querySelectorAll('.chat-window-controls')
+    );
+    expect(
+      new Set(controls.map((control) => control.getAttribute('aria-label')))
+        .size
+    ).to.equal(2);
+    expect(
+      element.renderRoot.querySelectorAll(
+        '.chat-window-controls [role="status"]'
+      )
+    ).to.have.length(1);
+    await page(element, 'Next');
+    expect(
+      element.renderRoot.querySelector('.chat-window-controls [role="status"]')
+        ?.textContent
+    ).to.include('101–200');
+  });
+
+  it('reveals and focuses an artifact beyond the first 100 loaded rows', async () => {
+    const element = await mount();
+    element.activity = [
+      {
+        activity_type: 'artifact',
+        timestamp: '2025-12-31T23:00:00Z',
+        title: 'Result file',
+        summary: null,
+        status: 'success',
+        api_usage_id: null,
+        tool_name: null,
+        server_name: null,
+        auth_subject_type: null,
+        api_key_id: null,
+        api_key_name: null,
+        estimated_cost: null,
+        total_tokens: null,
+        metadata: {
+          artifact: {
+            id: 'historical-result',
+            kind: 'file',
+            name: 'result.txt',
+            content_type: 'text/plain',
+            size_bytes: 10,
+          },
+        },
+      },
+    ];
+    await element.updateComplete;
+    expect(element.renderRoot.querySelector('session-artifact-row')).to.equal(
+      null
+    );
+    expect(element.scrollToArtifact('historical-result')).to.equal(true);
+    await element.updateComplete;
+    const artifact = element.renderRoot.querySelector('session-artifact-row');
+    expect(artifact).not.to.equal(null);
+    expect(element.shadowRoot!.activeElement).to.equal(artifact);
+    expect(ids(element)).to.include('artifact-historical-result');
+    expect(rows(element).length).to.be.at.most(100);
+  });
 });
