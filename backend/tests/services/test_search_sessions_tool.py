@@ -366,6 +366,8 @@ async def test_the_scope_is_built_from_the_session_not_the_arguments(
             runtime_principal_id="agent-1",
             api_key_id="key-1",
             managed_agent_id="agent-row-1",
+            runtime_session_id="session-1",
+            flow_execution_id="flow-exec-1",
         ),
     )
     monkeypatch.setattr(
@@ -388,6 +390,9 @@ async def test_the_scope_is_built_from_the_session_not_the_arguments(
     assert kwargs["subject_context"] == {
         "api_key_id": "key-1",
         "managed_agent_id": "agent-row-1",
+        "user_id": "user",
+        "runtime_session_id": "session-1",
+        "flow_execution_id": "flow-exec-1",
     }
     assert kwargs["query"] == "migration"
     assert kwargs["scope"] == "account"
