@@ -81,7 +81,7 @@ def test_job_for_runner_replay_mints_fresh_token(monkeypatch) -> None:
     flow_id = uuid4()
     pending_job = {"execution_id": str(execution_id), "prompt": "do work"}
     monkeypatch.setattr(
-        "preloop.api.endpoints.runners.crud_flow_execution.get",
+        "preloop.api.endpoints.runners.crud_flow_execution.get_for_runner",
         lambda *args, **kwargs: SimpleNamespace(id=execution_id, flow_id=flow_id),
     )
     monkeypatch.setattr(
@@ -109,7 +109,7 @@ def test_job_for_runner_replay_skips_mint_when_disabled(monkeypatch) -> None:
         raise AssertionError("heartbeat replay must not load execution to mint")
 
     monkeypatch.setattr(
-        "preloop.api.endpoints.runners.crud_flow_execution.get",
+        "preloop.api.endpoints.runners.crud_flow_execution.get_for_runner",
         _fail_get,
     )
 
@@ -134,7 +134,7 @@ def _patch_replay_mint(monkeypatch, token: str = "heartbeat-lease-token") -> UUI
     execution_id = uuid4()
     flow_id = uuid4()
     monkeypatch.setattr(
-        "preloop.api.endpoints.runners.crud_flow_execution.get",
+        "preloop.api.endpoints.runners.crud_flow_execution.get_for_runner",
         lambda *args, **kwargs: SimpleNamespace(id=execution_id, flow_id=flow_id),
     )
     monkeypatch.setattr(
@@ -182,7 +182,7 @@ def test_heartbeat_ack_skips_mint_once_running(monkeypatch) -> None:
         raise AssertionError("mid-execution heartbeat must not mint")
 
     monkeypatch.setattr(
-        "preloop.api.endpoints.runners.crud_flow_execution.get",
+        "preloop.api.endpoints.runners.crud_flow_execution.get_for_runner",
         _fail_get,
     )
     runner = SimpleNamespace(pending_job=pending_job, reported_status="RUNNING")
@@ -319,7 +319,7 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
         set_publication_capabilities,
     )
     monkeypatch.setattr(
-        runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
+        runners.crud_flow_execution, "get_for_runner", lambda *args, **kwargs: execution
     )
     monkeypatch.setattr(
         runners.crud_flow_execution,
@@ -412,7 +412,7 @@ async def test_invalid_cra_completion_keeps_original_error_and_contract(
         set_publication_capabilities,
     )
     monkeypatch.setattr(
-        runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
+        runners.crud_flow_execution, "get_for_runner", lambda *args, **kwargs: execution
     )
     monkeypatch.setattr(
         runners.crud_flow_execution,

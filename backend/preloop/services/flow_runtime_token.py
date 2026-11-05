@@ -131,14 +131,14 @@ def execution_model_id(
     if ai_model_id:
         return str(ai_model_id)
     flow_model_id = getattr(flow, "ai_model_id", None)
-    execution = (
-        crud_flow_execution.get(db, id=execution_id)
+    trigger_details = (
+        crud_flow_execution.get_trigger_details(db, id=execution_id)
         if execution_id is not None
         else None
     )
-    if execution is not None:
+    if trigger_details is not None:
         _agent_type, routed = resolve_execution_agent_selection(
-            getattr(execution, "trigger_event_details", None),
+            trigger_details,
             flow_agent_type=getattr(flow, "agent_type", None),
             flow_ai_model_id=flow_model_id,
         )
