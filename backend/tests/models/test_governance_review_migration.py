@@ -31,6 +31,7 @@ MIGRATION_PATH = (
 THRESHOLDS_MIGRATION_PATH = MIGRATION_PATH.with_name(
     "20261019_gov_detector_thresholds.py"
 )
+ANALYSIS_MIGRATION_PATH = MIGRATION_PATH.with_name("20261130_report_analysis_flag.py")
 
 TABLES = {
     "governance_policy_document": GovernancePolicyDocument,
@@ -84,6 +85,7 @@ def test_downgrade_upgrade_on_empty_database_matches_the_orm(
             assert not inspect(db_session.connection()).has_table(table)
         migration.upgrade()
         _load_migration(THRESHOLDS_MIGRATION_PATH).upgrade()
+        _load_migration(ANALYSIS_MIGRATION_PATH).upgrade()
 
     for table, model in TABLES.items():
         assert _column_names(db_session, table) == {
@@ -182,6 +184,7 @@ def test_downgrade_upgrade_on_seeded_database(
             assert not inspect(db_session.connection()).has_table(table)
         migration.upgrade()
         _load_migration(THRESHOLDS_MIGRATION_PATH).upgrade()
+        _load_migration(ANALYSIS_MIGRATION_PATH).upgrade()
 
     for table, model in TABLES.items():
         assert _column_names(db_session, table) == {
@@ -233,3 +236,42 @@ def test_thresholds_migration_adds_and_drops_its_column(db_session: Session) -> 
     assert "detector_thresholds" in _column_names(
         db_session, "governance_review_settings"
     )
+
+
+def test_model_analysis_migration_preserves_existing_settings(
+    db_session: Session, test_user: User
+) -> None:
+    """Existing accounts inherit, and down/up leaves their review mode intact."""
+    from preloop.models.crud.governance_review import crud_governance_review_settings
+
+    crud_governance_review_settings.set_mode(
+        db_session,
+        account_id=test_user.account_id,
+        mode="off_over_budget",
+        commit=False,
+    )
+    analysis = _load_migration(ANALYSIS_MIGRATION_PATH)
+    with _operations(db_session):
+        analysis.downgrade()
+    assert "model_analysis_override" not in _column_names(
+        db_session, "governance_review_settings"
+    )
+    with _operations(db_session):
+        analysis.upgrade()
+    column = next(
+        column
+        for column in inspect(db_session.connection()).get_columns(
+            "governance_review_settings"
+        )
+        if column["name"] == "model_analysis_override"
+    )
+    assert column["nullable"] is True
+    row = db_session.execute(
+        text(
+            "SELECT mode, model_analysis_override FROM governance_review_settings "
+            "WHERE account_id = :account_id"
+        ),
+        {"account_id": test_user.account_id},
+    ).one()
+    assert row.mode == "off_over_budget"
+    assert row.model_analysis_override is None
