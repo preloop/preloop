@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional session analysis, AI usage policy summaries and exception synthesis share a global default (off in 1.0.0) and an audited account override: inherit, on or off. Account admins and platform admins can enable one account while the global default stays off. Model analysis is planned to return in 1.1.0.
 - Reports and settings identify disabled model analysis without pending-summary states or allowance prompts.
 
+### Added
+
+- Durable prepaid credit purchase CRUD with serialized Checkout attempts, atomic event receipts and grants, refund eligibility, cumulative reversals, and chargeback top-up suspension. `BILLING_PREPAID_CREDITS_ENABLED` defaults to false. Existing allowance consumption is unchanged.
+
 ### Changed
 
 - **Breaking API change:** invitation creation, list, and detail responses
@@ -54,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floor. Existing callers and zero-credit accounts retain the current allowance
   and exhaustion behavior. The split is inert until credit grants exist and
   the caller explicitly enables credit accounting.
+
+- Runner sharing console: manage grants in a dialog, select per-session owner
+  approval, and identify shared runners and their owners in session and flow
+  pickers. Owner notices reach the console bell and runner host; session
+  dialogs show approval waiting and stop polling when closed. Sharing controls
+  remain hidden without the server capability.
+- Add generic request-aware runner consent, audit-backed owner notices, and a
+  share approval mode that preserves per-request consent for existing grants.
 
 - The retention purge can also sweep the two high-volume tables it did not
   cover: flow execution log lines (following the account's evidence
@@ -328,6 +340,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order, so both the running acknowledgement and the final result reach the
   model. Outputs for unknown calls, or for a call answered in an earlier tool
   turn, are still rejected. Fixes #2173.
+
+- Runner-served local models now accept streaming and nonstreaming Responses
+  requests from clients such as Codex CLI. The gateway reuses chat-completions
+  translation for MCP namespace tools, freeform tools, output limits and usage,
+  and cancels runner work when a Responses client disconnects. Transport limits
+  and the refusal of unsupported non-chat operations remain in place.
 
 - The Delivery Report turns a follow-up proposed for a closed issue whose
   criterion is shown not met into a reopen request at the issue's closing

@@ -1648,7 +1648,7 @@ export class RuntimeSessionsView extends LitElement {
   async openNewSession(): Promise<void> {
     this.newSessionError = '';
     try {
-      const runners = await getRunners();
+      const runners = await getRunners('sessions');
       this.sessionRunners = runners.filter((runner) => !runner.ephemeral);
     } catch (error) {
       this.newSessionError =

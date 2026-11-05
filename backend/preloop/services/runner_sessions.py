@@ -435,6 +435,19 @@ def request_session(
         status="requested",
         summary=f"Session requested by {_actor_name(actor) or actor.id}",
     )
+    if str(runner.registered_by_user_id) != str(actor.id):
+        from preloop.models.crud.runner_notice import record
+
+        record(
+            db,
+            runner=runner,
+            actor=actor,
+            title="Runner session started",
+            message=f"{_actor_name(actor) or actor.id} started {harness} on {runner.name} in {label}.",
+            href=f"/console/runtime-sessions?sessionId={runtime.id}",
+            host=False,
+            commit=False,
+        )
     db.commit()
     db.refresh(row)
     return row

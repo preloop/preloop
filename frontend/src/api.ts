@@ -5662,8 +5662,12 @@ export async function runPresetOnTarget(body: {
   );
 }
 
-export async function getRunners(): Promise<RunnerRecord[]> {
-  const response = await fetchWithAuth(REST_API_PREFIX + '/runners');
+export async function getRunners(
+  purpose?: 'sessions'
+): Promise<RunnerRecord[]> {
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/runners' + (purpose ? '?purpose=sessions' : '')
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch runners');
   }
@@ -5682,6 +5686,8 @@ export async function getRunner(runnerId: string): Promise<RunnerRecord> {
 }
 
 export interface RunnerRecord {
+  shared_with_me?: boolean;
+  owner_name?: string | null;
   workstation_fingerprint?: string | null;
   paused?: boolean;
   accept_untagged?: boolean;
@@ -5760,6 +5766,8 @@ export interface HarnessModelOption {
 
 /** One runner reporting a harness, for the optional runner pin. */
 export interface HarnessRunnerOption {
+  shared_with_me?: boolean;
+  owner_name?: string | null;
   id: string;
   name: string;
   online: boolean;
@@ -5996,10 +6004,11 @@ async function runnerSessionRequest<T>(
   path: string,
   fallback: string,
   init?: RequestInit,
-  ownerConsent = false
+  ownerConsent = false,
+  onPending?: (approvalId: string) => void
 ): Promise<T> {
   const response = ownerConsent
-    ? await ownerConsentRequest(fetchWithAuth, path, init!)
+    ? await ownerConsentRequest(fetchWithAuth, path, init!, { onPending })
     : await fetchWithAuth(path, init);
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -6028,7 +6037,8 @@ export function getRunnerSessionOptions(
 export function startRunnerSession(
   runnerId: string,
   body: RunnerSessionStartBody,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onPending?: (approvalId: string) => void
 ): Promise<RunnerSessionStarted> {
   return runnerSessionRequest(
     `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}/sessions`,
@@ -6039,7 +6049,8 @@ export function startRunnerSession(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     },
-    true
+    true,
+    onPending
   );
 }
 
@@ -9574,5 +9585,19 @@ export async function getRuntimeSessionMediaSync(
   );
   if (!response.ok)
     throw new Error(`Could not load recording timing (${response.status})`);
+  return response.json();
+}
+
+export interface RunnerOwnerNotice {
+  id: string;
+  title: string;
+  message: string;
+  href: string;
+  created_at: string;
+}
+
+export async function getRunnerOwnerNotices(): Promise<RunnerOwnerNotice[]> {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/runner-notices`);
+  if (!response.ok) throw new Error('Could not load runner notifications');
   return response.json();
 }

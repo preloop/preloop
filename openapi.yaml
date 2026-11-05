@@ -18812,6 +18812,33 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/runner-notices:
+    get:
+      tags:
+      - Runners
+      summary: Runner Owner Notices
+      description: Owner-only notices for the console bell, including missed events.
+      operationId: runner_owner_notices_api_v1_runner_notices_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  additionalProperties: true
+                  type: object
+                type: array
+                title: Response Runner Owner Notices Api V1 Runner Notices Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runners:
     get:
       tags:
@@ -18835,6 +18862,14 @@ paths:
           type: integer
           default: 100
           title: Limit
+      - name: purpose
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose
       responses:
         '200':
           description: Successful Response
@@ -40516,6 +40551,15 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        shared_with_me:
+          type: boolean
+          title: Shared With Me
+          default: false
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
       type: object
       required:
       - id
@@ -47789,6 +47833,15 @@ components:
           - type: string
           - type: 'null'
           title: Registered By Email
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        shared_with_me:
+          type: boolean
+          title: Shared With Me
+          default: false
         capabilities:
           additionalProperties: true
           type: object
@@ -47956,6 +48009,15 @@ components:
           - type: string
           - type: 'null'
           title: Registered By Email
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        shared_with_me:
+          type: boolean
+          title: Shared With Me
+          default: false
         capabilities:
           additionalProperties: true
           type: object

@@ -133,6 +133,18 @@ async def test_github_review_records_bound_receipt(db_session, test_user, action
     assert receipt.head_sha == HEAD
     assert receipt.review_action == action
     assert receipt.provider_review_id == "555"
+    assert (
+        crud_review_publication_receipt.list_for_execution(
+            db_session, account_id=uuid4(), execution_id=execution_id
+        )
+        == []
+    )
+    assert (
+        crud_review_publication_receipt.list_for_execution(
+            db_session, account_id=test_user.account_id, execution_id=uuid4()
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,8 @@ export class ProfileView extends LitElement {
   @state()
   private updateProfileMessage = '';
 
+  @state() private updatingProfile = false;
+
   @state()
   private avatarMessage = '';
 
@@ -59,6 +61,11 @@ export class ProfileView extends LitElement {
 
   async handleUpdateProfile(event: Event) {
     event.preventDefault();
+    if (this.updatingProfile || this.signInRequired) return;
+    this.updatingProfile = true;
+    this.updateProfileMessage = 'Updating profile…';
+    // Commit the pending message before the result, including repeated failures.
+    await this.updateComplete;
     try {
       const changes: { full_name: string; username?: string; email?: string } =
         { full_name: this.fullName };
@@ -87,6 +94,8 @@ export class ProfileView extends LitElement {
     } catch (error) {
       this.updateProfileMessage =
         error instanceof Error ? error.message : 'Failed to update profile.';
+    } finally {
+      this.updatingProfile = false;
     }
   }
 
@@ -299,14 +308,18 @@ export class ProfileView extends LitElement {
                 <sl-button
                   variant="primary"
                   type="submit"
-                  ?disabled=${this.signInRequired}
+                  ?disabled=${this.signInRequired || this.updatingProfile}
+                  ?loading=${this.updatingProfile}
                   >Update profile</sl-button
                 >
-                ${
-                  this.updateProfileMessage
-                    ? html`<p>${this.updateProfileMessage}</p>`
-                    : ''
-                }
+                <p
+                  id="profile-update-status"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  ${this.updateProfileMessage}
+                </p>
               </form>
             </div>
           </div>

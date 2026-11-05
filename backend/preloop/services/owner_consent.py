@@ -172,7 +172,11 @@ def require_owner_consent_result(
                 else "Waiting for the agent owner to approve this session."
             )
             if result.status == "pending"
-            else "The agent owner declined this session, or the request timed out.",
+            else (
+                "The runner owner declined this session, or the request timed out."
+                if action.startswith("runner_")
+                else "The agent owner declined this session, or the request timed out."
+            ),
         },
     )
 

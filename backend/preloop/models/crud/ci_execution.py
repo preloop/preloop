@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import array
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import Query, Session, defer
 
 from preloop.models import models
 from preloop.models.crud.ci_principal import CiAuthorizationContext, crud_ci_principal
@@ -123,7 +123,7 @@ class CRUDCiExecution:
             raise PermissionError("Restricted CI execution operation denied")
         fresh = crud_ci_principal.authorize(db, context=context, action=action)
         stored = models.FlowExecution.ci_review_binding
-        return (
+        query = (
             db.query(models.FlowExecution)
             .populate_existing()
             .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
@@ -158,6 +158,14 @@ class CRUDCiExecution:
                 func.length(stored["base_branch"].astext) <= 255,
             )
         )
+        # Read projections never expose the saved workspace. Keep fresh grant,
+        # binding validation and populate_existing unchanged; stop retains its
+        # existing full execution read for the mutation path.
+        if action != CiAction.STOP_EXECUTION:
+            query = query.options(
+                defer(models.FlowExecution.workspace_snapshot, raiseload=True)
+            )
+        return query
 
     def get(
         self,

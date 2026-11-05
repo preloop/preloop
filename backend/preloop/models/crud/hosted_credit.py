@@ -62,10 +62,12 @@ def _amount(value: Any) -> Decimal:
     return amount
 
 
-def _operation_key(value: Any, *, limit: int) -> str:
+def _operation_key(value: Any, *, limit: int, allow_stripe_id: bool = False) -> str:
     if not isinstance(value, str) or not value or len(value) > limit:
         raise HostedSpendUnavailableError("Hosted operation key is invalid")
-    if any(char in value for char in "/%_"):
+    if any(char in value for char in "/%") or (
+        "_" in value and not (allow_stripe_id and value.startswith("credit-purchase:"))
+    ):
         raise HostedSpendUnavailableError("Hosted operation key is invalid")
     if value.startswith(("credit-expiry:", "credit-release:", "credit-recompute:")):
         raise HostedSpendUnavailableError("Hosted operation key is invalid")
@@ -310,7 +312,7 @@ def grant(
     the key is a conflict, not a replay.
     """
     amount = _amount(amount)
-    operation_key = _operation_key(operation_key, limit=128)
+    operation_key = _operation_key(operation_key, limit=128, allow_stripe_id=True)
     actor = _actor(actor)
     note = _note(note)
     if now is not None:

@@ -48,7 +48,13 @@ from preloop.models.crud.flow_runner import RunnerHasLeasesError, crud_flow_runn
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.db.session import release_transaction
 
-from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
+from preloop.plugins.account_hooks import (
+    AuthorizationContext,
+    Decision,
+    VISIBLE_RUNNER,
+    filter_viewable,
+    may_start_runner_session,
+)
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
 from preloop.api.endpoints.runner_sessions import reauthorize_live_sessions
 from preloop.services.runner_sessions import (
@@ -278,6 +284,7 @@ def _to_response(
     viewer: Optional[User] = None,
     viewer_is_admin: Optional[bool] = None,
     viewer_can_manage_agents: Optional[bool] = None,
+    session_access: Optional[Decision] = None,
 ) -> schemas.RunnerResponse:
     from preloop.models.crud.flow_runner import runner_labels
 
@@ -306,6 +313,30 @@ def _to_response(
         user = crud_user.get(db, id=row.registered_by_user_id)
         if user is not None:
             data.registered_by_email = user.email
+            data.owner_name = user.full_name or user.username
+    if (
+        session_access is None
+        and db is not None
+        and viewer is not None
+        and row.account_id == viewer.account_id
+    ):
+        from preloop.api.endpoints.runner_sessions import _is_account_admin
+
+        if str(row.registered_by_user_id) != str(viewer.id):
+            session_access = may_start_runner_session(
+                AuthorizationContext(
+                    db=db,
+                    user=viewer,
+                    account_id=viewer.account_id,
+                    attributes={"operation": "options"},
+                ),
+                row,
+                is_account_admin=bool(viewer_is_admin)
+                if viewer_is_admin is not None
+                else _is_account_admin(db, viewer),
+            )
+    if session_access is not None:
+        data.shared_with_me = session_access.allowed and bool(session_access.rule_ids)
     if row.harness_inventory is not None:
         # Version and account host are for the owner and account admins.
         visible = (
@@ -462,6 +493,56 @@ def register_runner_model(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/runner-notices")
+@require_permission("view_flows")
+def runner_owner_notices(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[Dict[str, Any]]:
+    """Owner-only notices for the console bell, including missed events."""
+    from preloop.models.crud.runner_notice import recent
+
+    return recent(db, account_id=current_user.account_id, owner_user_id=current_user.id)
+
+
+def _session_runner_page(
+    db: Session, user: User, *, skip: int, limit: int, is_admin: bool
+) -> tuple[list[FlowRunner], dict[UUID, Decision]]:
+    """Page authorized runners, evaluating each candidate's session access once."""
+    rows: list[FlowRunner] = []
+    decisions: dict[UUID, Decision] = {}
+    offset = 0
+    matched = 0
+    batch_size = 100
+    context = AuthorizationContext(
+        db=db,
+        user=user,
+        account_id=user.account_id,
+        attributes={"operation": "options"},
+    )
+    while len(rows) < limit:
+        candidates = crud_flow_runner.list_for_account(
+            db, account_id=user.account_id, skip=offset, limit=batch_size
+        )
+        for row in filter_viewable(db, user, VISIBLE_RUNNER, candidates):
+            if row.ephemeral:
+                continue
+            decision = may_start_runner_session(context, row, is_account_admin=is_admin)
+            if not decision.allowed:
+                continue
+            matched += 1
+            if matched <= skip:
+                continue
+            rows.append(row)
+            decisions[row.id] = decision
+            if len(rows) == limit:
+                break
+        if len(candidates) < batch_size:
+            break
+        offset += batch_size
+    return rows, decisions
+
+
 @router.get("/runners", response_model=List[schemas.RunnerResponse])
 @require_permission("view_flows")
 def list_runners(
@@ -469,22 +550,30 @@ def list_runners(
     current_user: User = Depends(get_current_active_user),
     skip: int = 0,
     limit: int = 100,
+    purpose: Optional[str] = None,
 ):
     # The Runners page is where a phantom would be visible, so reap lapsed
     # one-shot rows on the way in rather than showing them offline forever.
     crud_flow_runner.sweep_stale_ephemeral(db, account_id=current_user.account_id)
-    rows = crud_flow_runner.list_for_account(
-        db, account_id=current_user.account_id, skip=skip, limit=limit
-    )
-    rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
-    # A runner shared from another account (account hook H3) never names
-    # the user who registered it.
-    # One admin check for the whole page, not two queries per runner.
-    is_admin = (
-        viewer_is_account_admin(db, current_user)
-        if any(row.harness_inventory is not None for row in rows)
-        else False
-    )
+    decisions: dict[UUID, Decision] = {}
+    if purpose == "sessions":
+        from preloop.api.endpoints.runner_sessions import _is_account_admin
+
+        is_admin = _is_account_admin(db, current_user)
+        rows, decisions = _session_runner_page(
+            db, current_user, skip=skip, limit=limit, is_admin=is_admin
+        )
+    else:
+        rows = crud_flow_runner.list_for_account(
+            db, account_id=current_user.account_id, skip=skip, limit=limit
+        )
+        rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
+        # One admin check for the page, rather than two queries per runner.
+        is_admin = (
+            viewer_is_account_admin(db, current_user)
+            if any(row.harness_inventory is not None for row in rows)
+            else False
+        )
     can_manage_fingerprints = (
         _can_manage_runner_fingerprints(db, current_user)
         if any(row.workstation_fingerprint for row in rows)
@@ -497,6 +586,7 @@ def list_runners(
             current_user,
             viewer_is_admin=is_admin,
             viewer_can_manage_agents=can_manage_fingerprints,
+            session_access=decisions.get(row.id),
         )
         for row in rows
     ]
@@ -1207,6 +1297,16 @@ async def runner_ws(
                 presence_changed = _refresh_presence(db, runner)
                 evaluate_fleet_findings(db, account_id=runner.account_id)
                 reply: Dict[str, Any] = {"type": "ack", "concurrency": runner.capacity}
+                if runner.registered_by_user_id:
+                    from preloop.models.crud.runner_notice import recent
+
+                    reply["owner_notices"] = recent(
+                        db,
+                        account_id=runner.account_id,
+                        owner_user_id=runner.registered_by_user_id,
+                        runner_id=runner.id,
+                        host_only=True,
+                    )
                 if inventory_wanted:
                     reply["inventory_wanted"] = True
                 if inventory_changed or presence_changed:

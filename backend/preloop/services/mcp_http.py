@@ -156,12 +156,15 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
         finally:
             db.close()
 
-    def _check_oauth_token(self, db, token: str):
+    def _check_oauth_token(
+        self, db: Session, token: str
+    ) -> tuple[AuthCredentials, AuthenticatedUser] | None:
         """Check the OAuth MCP access token table for an opaque token."""
         import time
 
-        from preloop.models.crud import crud_user
+        from preloop.api.auth.identity import require_session_membership
         from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
+        from preloop.services.authentication_policy import authorize_session_record
 
         db_token = crud_oauth_mcp_access_token.get_by_token(db, token=token)
         if not db_token:
@@ -175,10 +178,12 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
             logger.warning("OAuth MCP access token is expired")
             return None
 
-        # Load the user from the token's user_id
-        user = crud_user.get(db, id=str(db_token.user_id))
-        if not user:
-            logger.warning(f"OAuth MCP token user_id={db_token.user_id} not found")
+        # Apply the same human-session gates as the OAuth provider before
+        # caching a principal for downstream MCP context construction.
+        try:
+            user = require_session_membership(db, str(db_token.user_id))
+            authorize_session_record(db, user, db_token, purpose="access")
+        except HTTPException:
             return None
 
         logger.info(f"Authenticated via OAuth MCP token for user {user.username}")

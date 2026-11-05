@@ -237,6 +237,10 @@ def should_use_responses_passthrough(ai_model: Any) -> bool:
     Returns:
         True to forward natively, False to use the chat-completions transcode.
     """
+    # Runner protocol v1 can only carry chat completions. Never probe or dial
+    # its host-local URL, even when model metadata requests native Responses.
+    if getattr(ai_model, "endpoint_type", "direct") == "runner":
+        return False
     mode = responses_passthrough_mode(ai_model)
     if mode == PASSTHROUGH_MODE_TRANSCODE:
         return False

@@ -19,6 +19,7 @@ export interface RunnerShare {
   scopes: ShareScope[];
   harnesses: string[] | null;
   directory_ids: string[] | null;
+  approval?: 'none' | 'per_request';
   consent_state: 'active' | 'pending_owner_consent' | 'declined';
   consent_source: 'owner' | 'owner_accepted' | 'admin_override' | null;
   created_by_user_id: string | null;
@@ -40,6 +41,8 @@ export interface RunnerSharing {
   can_share: boolean;
   can_set_policy: boolean;
   grants: RunnerShare[];
+  approval_modes_available?: boolean;
+  grantees?: Array<{ type: 'team' | 'user'; id: string; label: string }>;
 }
 
 export interface RunnerShareWrite {
@@ -48,6 +51,7 @@ export interface RunnerShareWrite {
   scopes: ShareScope[];
   harnesses?: string[] | null;
   directory_ids?: string[] | null;
+  approval?: 'none' | 'per_request';
 }
 
 async function call<T>(
