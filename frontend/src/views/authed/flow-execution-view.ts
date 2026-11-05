@@ -1436,6 +1436,7 @@ export class FlowExecutionView extends LitElement {
     // A deep link wins over the remembered tab, so a shared "?tab=logs" URL
     // opens on logs for whoever receives it.
     this.activeTab = this.resolveInitialTab();
+    this.syncDurationTicker();
   }
 
   disconnectedCallback() {
@@ -1474,11 +1475,15 @@ export class FlowExecutionView extends LitElement {
   }
 
   /**
-   * Runs the elapsed-time ticker only while the execution is live, so a
-   * finished run does not leave a timer behind re-rendering forever.
+   * Own the ticker only while attached to the loaded live execution. Lit can
+   * finish queued updates after removal, or while a new execution is loading.
    */
   private syncDurationTicker() {
-    if (this.isExecutionRunning()) {
+    if (
+      this.isConnected &&
+      (!this.executionId || this.execution?.id === this.executionId) &&
+      this.isExecutionRunning()
+    ) {
       this.startDurationTicker();
     } else {
       this.stopDurationTicker();
