@@ -1775,6 +1775,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         depth = max(1, min(int(neighbours_per_probe), SIMILAR_NEIGHBOURS_PER_PROBE))
         floor = float(min_similarity)
 
+        scope_conditions = search_document_conditions(db, account_id)
         branches = []
         for probe in usable:
             distance = SessionSearchDocument.embedding.cosine_distance(
@@ -1783,7 +1784,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             conditions = [
                 and_(
                     SessionSearchDocument.account_id == account_id,
-                    *search_document_conditions(db, account_id),
+                    *scope_conditions,
                 ),
                 SessionSearchDocument.runtime_session_id != exclude_session_id,
                 SessionSearchDocument.embedding.isnot(None),

@@ -382,3 +382,230 @@ def test_idempotent_deposit_cannot_reveal_hidden_descriptor(
             name="new.txt",
             idempotency_key="scoped-replay",
         )
+
+
+@pytest.mark.asyncio
+async def test_registered_session_search_keeps_user_scope(
+    db_session, test_user, scoped, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from preloop.services.initialize_mcp import initialize_mcp_with_tools
+    from preloop.services.session_search_index import index_artifact_text
+
+    session, rows, scopes, audits = scoped
+    hidden_session = models.RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="custom",
+        session_source_id=str(uuid4()),
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(hidden_session)
+    db_session.flush()
+    for row in rows[1:]:
+        row.runtime_session_id = hidden_session.id
+    for row in rows:
+        index_artifact_text(db_session, row, commit=False)
+    db_session.flush()
+    monkeypatch.setattr(
+        get_plugin_manager().get_service("artifact_read_policy"),
+        "resolve",
+        lambda db, *, account_id, subject: scopes
+        if subject.get("user_id") == str(test_user.id)
+        else None,
+    )
+    monkeypatch.setattr(
+        "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+        lambda: SimpleNamespace(
+            account_id=test_user.account_id,
+            user_id=str(test_user.id),
+            runtime_principal_id="synthetic-agent",
+            runtime_session_id=str(session.id),
+        ),
+    )
+    monkeypatch.setattr(
+        "preloop.services.initialize_mcp.require_approval",
+        AsyncMock(return_value=(True, None)),
+    )
+    monkeypatch.setattr(
+        "preloop.services.agent_session_search.account_scope_granted",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.models.db.session.get_db_session", lambda: iter([db_session])
+    )
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    tool = await initialize_mcp_with_tools().get_tool("search_sessions")
+    result = json.loads(
+        await tool.fn(query="Synthetic", scope="account", mode="keyword")
+    )
+    assert result["total"] == 1
+    assert audits and {row.id for row in audits} == {rows[0].id}
+    identity = db_session.info["artifact_reader"]
+    assert identity["runtime_principal_id"] == "synthetic-agent"
+    assert identity["runtime_session_id"] == str(session.id)
+
+
+def test_gateway_list_preserves_runtime_scope(
+    db_session, test_user, scoped, monkeypatch
+):
+    from preloop.models.crud import crud_api_key
+    from preloop.api.endpoints.runtime_session_artifacts import (
+        list_runtime_session_artifacts,
+    )
+    from preloop.services.model_gateway_auth import (
+        ModelGatewayAuthContext,
+        NO_BEARER_TOKEN,
+    )
+
+    session, rows, scopes, _ = scoped
+    key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Artifact reader",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "runtime_session_id": str(session.id),
+            "runtime_principal": {"id": "synthetic-agent", "type": "agent"},
+        },
+    )
+    monkeypatch.setattr(
+        get_plugin_manager().get_service("artifact_read_policy"),
+        "resolve",
+        lambda db, *, account_id, subject: scopes
+        if subject.get("runtime_principal_id") == "synthetic-agent"
+        else None,
+    )
+    result = list_runtime_session_artifacts(
+        runtime_session_id=str(session.id),
+        kind=None,
+        label=[],
+        limit=20,
+        cursor=None,
+        db=db_session,
+        auth=ModelGatewayAuthContext(
+            token=NO_BEARER_TOKEN, user=test_user, api_key=key
+        ),
+    )
+    assert {str(row.id) for row in result.items} == {str(rows[0].id)}
+
+
+def test_corpus_always_offers_returned_artifacts_to_audit_sink(
+    db_session, test_user, scoped, monkeypatch
+):
+    from preloop.models.crud import crud_session_search_document
+    from preloop.services.session_search_index import index_artifact_text
+
+    _, rows, _, audits = scoped
+    for row in rows:
+        index_artifact_text(db_session, row, commit=False)
+    db_session.flush()
+    monkeypatch.setattr(
+        get_plugin_manager().get_service("artifact_read_policy"),
+        "resolve",
+        lambda *args, **kwargs: None,
+    )
+    hits = crud_session_search_document.search_account_hits(
+        db_session, account_id=test_user.account_id, query="Synthetic"
+    )
+    assert len(hits) == 3
+    assert {row.id for row in audits} == {row.id for row in rows}
+
+
+def test_corpus_vectors_previews_and_coverage_share_artifact_scope(
+    db_session, test_user, scoped, monkeypatch
+):
+    from datetime import timedelta
+    from unittest.mock import Mock
+    from preloop.models.crud import crud_session_search_document as corpus
+    from preloop.models.models.session_search_document import EMBEDDING_DIMENSIONS
+    from preloop.services.session_search_index import index_artifact_text
+
+    session, rows, _, audits = scoped
+    hidden_session = models.RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="custom",
+        session_source_id=str(uuid4()),
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(hidden_session)
+    db_session.flush()
+    rows[1].runtime_session_id = hidden_session.id
+    for row in rows:
+        index_artifact_text(db_session, row, commit=False)
+    db_session.flush()
+    documents = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(models.SessionSearchDocument.account_id == test_user.account_id)
+        .all()
+    )
+    by_artifact = {row.source_id: row for row in documents}
+    allowed = by_artifact[str(rows[0].id)]
+    by_artifact[str(rows[1].id)].occurred_at = allowed.occurred_at - timedelta(days=3)
+    by_artifact[str(rows[2].id)].occurred_at = allowed.occurred_at + timedelta(days=3)
+    vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+    model = "synthetic:scope-test"
+    corpus.store_embeddings(
+        db_session, vectors=[(row, vector) for row in documents], model_identity=model
+    )
+    db_session.flush()
+    args = {"account_id": test_user.account_id}
+    hits = corpus.search_vector_chunks(
+        db_session, **args, embedding=vector, embedding_model=model
+    )
+    assert {hit.source_id for hit in hits} == {str(rows[0].id)}
+    probes = corpus.session_probe_chunks(
+        db_session, **args, runtime_session_id=session.id, embedding_model=model
+    )
+    assert {hit.source_id for hit in probes} == {str(rows[0].id)}
+    assert (
+        corpus.session_probe_chunks(
+            db_session,
+            **args,
+            runtime_session_id=hidden_session.id,
+            embedding_model=model,
+        )
+        == []
+    )
+    policy = get_plugin_manager().get_service("artifact_read_policy")
+    resolve = Mock(wraps=policy.resolve)
+    monkeypatch.setattr(policy, "resolve", resolve)
+    # A synthetic external probe session keeps both allowed and hidden candidates
+    # eligible for this query's session boundary; only the label predicate differs.
+    similar = corpus.similar_chunks(
+        db_session, **args, probes=probes * 3, exclude_session_id=uuid4()
+    )
+    assert {hit.source_id for hit in similar} == {str(rows[0].id)}
+    assert resolve.call_count == 1
+    ids = [row.id for row in documents]
+    assert set(
+        corpus.snippet_text_for_documents(
+            db_session, **args, document_ids=ids, query="Synthetic"
+        )
+    ) == {str(allowed.id)}
+    assert set(corpus.chunk_previews(db_session, **args, document_ids=ids)) == {
+        str(allowed.id)
+    }
+    assert set(
+        corpus.artifact_excerpts(
+            db_session, **args, artifact_ids=[row.id for row in rows], query="Synthetic"
+        )
+    ) == {str(rows[0].id)}
+    coverage = corpus.embedding_coverage(db_session, **args, embedding_model=model)
+    assert (coverage.vectors, coverage.model_vectors, coverage.pending) == (1, 1, 0)
+    assert (
+        corpus.session_embedding_state(
+            db_session, **args, runtime_session_id=session.id
+        ).chunks
+        == 1
+    )
+    assert (
+        corpus.session_embedding_state(
+            db_session, **args, runtime_session_id=hidden_session.id
+        ).chunks
+        == 0
+    )
+    assert corpus.earliest_occurred_at(db_session, **args) == allowed.occurred_at
+    assert corpus.indexed_through(db_session, **args) == allowed.occurred_at
+    assert audits and {row.id for row in audits} == {rows[0].id}

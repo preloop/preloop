@@ -164,9 +164,7 @@ def audited_search(func: Callable) -> Callable:
         result = func(self, db, *args, **kwargs)
         account_id = kwargs["account_id"]
         policy, subject = _policy(db, account_id)
-        if policy is None or not policy.resolve(
-            db, account_id=account_id, subject=subject
-        ):
+        if policy is None:
             return result
         rows = result[0] if isinstance(result, tuple) else result
         ids = set()

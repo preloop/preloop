@@ -315,7 +315,11 @@ def search_for_agent(
     """
     from preloop.services.artifact_access import bind_reader
 
-    bind_reader(db, account_id=account_id, **subject_context)
+    bind_reader(
+        db,
+        account_id=account_id,
+        **{**subject_context, "runtime_principal_id": runtime_principal_id},
+    )
     actor = session_search_audit.agent_actor(
         managed_agent_id=subject_context.get("managed_agent_id"),
         api_key_id=subject_context.get("api_key_id"),
