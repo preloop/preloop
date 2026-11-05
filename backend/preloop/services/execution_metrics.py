@@ -443,11 +443,14 @@ class ExecutionMetricsService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_execution_metrics(self, execution_id: str) -> Dict:
+    def get_execution_metrics(
+        self, execution_id: str, *, execution: models.FlowExecution | None = None
+    ) -> Dict:
         """Get comprehensive metrics for a flow execution.
 
         Args:
             execution_id: UUID of the flow execution
+            execution: Already authorized row, avoiding a duplicate payload read.
 
         Returns:
             Dictionary with:
@@ -463,7 +466,8 @@ class ExecutionMetricsService:
         """
         from preloop.models.crud import crud_flow_execution
 
-        execution = crud_flow_execution.get(self.db, id=execution_id)
+        if execution is None:
+            execution = crud_flow_execution.get(self.db, id=execution_id)
 
         if not execution:
             raise ValueError(f"Execution {execution_id} not found")

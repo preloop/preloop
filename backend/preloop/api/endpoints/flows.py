@@ -1175,7 +1175,10 @@ def read_batch_executions(
     from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
 
     executions = crud_flow_execution.get_by_batch(
-        db, batch_id=batch_id, account_id=current_user.account_id
+        db,
+        batch_id=batch_id,
+        account_id=current_user.account_id,
+        without_workspace=True,
     )
     if not executions:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -1296,7 +1299,7 @@ def read_execution_tree(
     cost and tokens come back on ``execution``, so the console can show "this
     run cost X, what it started cost Y" without adding the two numbers.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -1385,7 +1388,7 @@ def read_flow_execution(
             db, current_user, execution_id, CiAction.READ_EXECUTION
         )
         return CiExecutionResponse(**execution_projection(execution))
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -1766,7 +1769,7 @@ def get_execution_tool_evidence(
             db, current_user, execution_id, CiAction.READ_EVIDENCE
         )
     else:
-        execution = crud_flow_execution.get(
+        execution = crud_flow_execution.get_without_workspace(
             db=db, id=execution_id, account_id=current_user.account_id
         )
         if execution is None:
@@ -1836,7 +1839,7 @@ def get_flow_execution_result(
                 execution, messages=not withheld
             ),
         }
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -1920,7 +1923,7 @@ def get_flow_execution_evidence_status(
     signing existed. ``preloop evidence verify`` checks it against the
     account's public key.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -1948,7 +1951,7 @@ def get_flow_execution_evidence(
     outcomes: 404 missing, 410 expired, 409 failed. Legacy executions that
     only stored ``evidence_archive`` remain readable.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2064,7 +2067,7 @@ def get_flow_execution_evidence_members(
 
     The full download is not audited. This read is not audited either.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2203,7 +2206,7 @@ async def get_flow_execution_logs(
     from preloop.agents import create_agent_executor
 
     # Verify execution exists and user has access
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2405,7 +2408,7 @@ def get_flow_execution_host_sessions(
         and the Copilot premium requests the CLI reported. None of it is
         gateway traffic.
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2485,7 +2488,7 @@ def get_flow_execution_gateway_events(
         ``has_more``, ``next_cursor``, and ``total`` model calls when
         ``model_calls_only`` is set).
     """
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2593,7 +2596,7 @@ def get_flow_execution_gateway_event(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """Get a single normalized model gateway event."""
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2645,7 +2648,7 @@ def get_flow_execution_metrics(
     from preloop.services.execution_metrics import ExecutionMetricsService
 
     # Verify execution exists and user has access
-    execution = crud_flow_execution.get(
+    execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
@@ -2654,7 +2657,9 @@ def get_flow_execution_metrics(
     # Calculate metrics
     metrics_service = ExecutionMetricsService(db)
     try:
-        metrics = metrics_service.get_execution_metrics(str(execution_id))
+        metrics = metrics_service.get_execution_metrics(
+            str(execution_id), execution=execution
+        )
         # Per-execution ceilings and how the run measures against them, so the
         # page can render "used / allowed" without re-reading the flow. Empty
         # limits and zero usage for flows that configure none.

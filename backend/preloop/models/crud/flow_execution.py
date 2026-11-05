@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import (
     Session,
     contains_eager,
+    defer,
     joinedload,
     load_only,
     with_expression,
@@ -443,6 +444,26 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
+
+    def get_without_workspace(
+        self, db: Session, id: Any, *, account_id: Any
+    ) -> Optional[models.FlowExecution]:
+        """Read an owned execution without transferring its workspace archive.
+
+        Subresources still need legacy logs, evidence and relationships. Only
+        the unrelated workspace BYTEA is excluded; accidental lazy access raises
+        instead of silently adding a large query. Workspace download uses get.
+        """
+        return (
+            db.query(models.FlowExecution)
+            .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == id,
+                models.Flow.account_id == account_id,
+            )
+            .first()
+        )
 
     def get_status(
         self, db: Session, *, execution_id: Any, account_id: Any
@@ -1443,6 +1464,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db: Session,
         batch_id: uuid.UUID,
         account_id: Optional[str] = None,
+        *,
+        without_workspace: bool = False,
     ) -> List[FlowExecution]:
         """Get all executions created by one matrix/batch trigger.
 
@@ -1452,7 +1475,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         recorded matrix index, as the batch listing endpoint does. Batches are
         capped at trigger time, so no pagination is needed. The flow
         relationship is eagerly loaded because callers render flow names per
-        row.
+        row. Set without_workspace for response projections that never read
+        the saved archive; default callers retain the full row.
         """
         query = (
             db.query(FlowExecution)
@@ -1460,6 +1484,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .filter(FlowExecution.batch_id == batch_id)
             .order_by(FlowExecution.created_at.asc(), FlowExecution.id.asc())
         )
+        if without_workspace:
+            query = query.options(
+                defer(FlowExecution.workspace_snapshot, raiseload=True)
+            )
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.all()
