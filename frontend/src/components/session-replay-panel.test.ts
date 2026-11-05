@@ -1880,3 +1880,277 @@ describe('SessionReplayPanel Requests search and copy', () => {
     }
   });
 });
+
+describe('SessionReplayPanel bounded request windows', () => {
+  const makeEvent = (index: number) =>
+    previewEvent(
+      `window-${index}`,
+      new Date(Date.UTC(2026, 0, 1) + index * 10000).toISOString(),
+      [{ role: 'user', text: `Unique historical message ${index}.` }]
+    );
+  async function mount(count = 205) {
+    return fixture<SessionReplayPanel>(
+      html`<session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${Array.from({ length: count }, (_, i) => makeEvent(i))}
+      ></session-replay-panel>`
+    );
+  }
+  const rows = (element: SessionReplayPanel) =>
+    Array.from(
+      element.renderRoot.querySelectorAll<HTMLElement>('[data-chat-row-id]')
+    );
+  const ids = (element: SessionReplayPanel) =>
+    rows(element).map((row) => row.dataset.chatRowId);
+  async function page(element: SessionReplayPanel, label: string) {
+    const button = Array.from(
+      element.renderRoot.querySelectorAll<HTMLElement>(
+        '.chat-window-controls sl-button'
+      )
+    ).find((button) => button.textContent?.trim() === label)!;
+    button.click();
+    await element.updateComplete;
+  }
+  it('bounds the DOM and exposes every row in order through keyboard-accessible pages', async () => {
+    const element = await mount();
+    expect(rows(element)).to.have.length(100);
+    expect(rows(element)[0].getAttribute('aria-setsize')).to.equal('205');
+    const seen = [...ids(element)];
+    await page(element, 'Next');
+    seen.push(...ids(element));
+    expect(element.renderRoot.querySelector('.chat-turn')).to.equal(
+      element.shadowRoot?.activeElement
+    );
+    expect(rows(element)[0].getAttribute('aria-posinset')).to.equal('101');
+    await page(element, 'Last');
+    seen.push(...ids(element));
+    expect(seen).to.deep.equal(
+      Array.from({ length: 205 }, (_, i) => `window-${204 - i}`)
+    );
+    await page(element, 'Previous');
+    expect(ids(element)[0]).to.equal('window-104');
+    await page(element, 'First');
+    expect(ids(element)[0]).to.equal('window-204');
+  });
+  it('keeps a historical reading anchor through live appends and older pages, then resets filters', async () => {
+    const element = await mount();
+    await page(element, 'Next');
+    const before = ids(element);
+    element.events = [...element.events, makeEvent(205)];
+    await element.updateComplete;
+    expect(ids(element)).to.deep.equal(before);
+    element.events = [makeEvent(-1), ...element.events];
+    await element.updateComplete;
+    expect(ids(element)).to.deep.equal(before);
+    const input = element.renderRoot.querySelector<HTMLInputElement>(
+      'input[aria-label="Search requests"]'
+    )!;
+    input.value = 'message 0.';
+    input.dispatchEvent(new Event('input'));
+    await element.updateComplete;
+    expect(ids(element)).to.deep.equal(['window-0']);
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    await element.updateComplete;
+    expect(ids(element)[0]).to.equal('window-205');
+  });
+  it('copies all matching loaded rows independently of the visible window', async () => {
+    const element = await mount();
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    let copied = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          copied = text;
+        },
+      },
+    });
+    try {
+      await page(element, 'Next');
+      const button = Array.from(
+        element.renderRoot.querySelectorAll<HTMLElement>('sl-button')
+      ).find((button) => button.textContent?.includes('Copy as text'))!;
+      button.click();
+      await waitUntil(() => Boolean(copied));
+      const expected = Array.from({ length: 205 }, (_, i) => 204 - i)
+        .map(
+          (i) =>
+            `Time: ${new Date(makeEvent(i).timestamp!).toLocaleString()}\nModel: gpt-test\nTokens: 100\nuser: Unique historical message ${i}.`
+        )
+        .join('\n\n');
+      expect(copied).to.equal(expected);
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+  it('navigates across window boundaries and Home/End without losing keyboard focus', async () => {
+    const element = await mount();
+    const press = async (key: string) => {
+      element.shadowRoot!.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+    };
+    rows(element)[99].querySelector<HTMLElement>('.chat-turn')!.focus();
+    await press('ArrowDown');
+    expect(
+      element.shadowRoot!.activeElement!.getAttribute('data-event-id')
+    ).to.equal('window-104');
+    await press('ArrowUp');
+    expect(
+      element.shadowRoot!.activeElement!.getAttribute('data-event-id')
+    ).to.equal('window-105');
+    await press('End');
+    expect(
+      element.shadowRoot!.activeElement!.getAttribute('data-event-id')
+    ).to.equal('window-0');
+    await press('Home');
+    expect(
+      element.shadowRoot!.activeElement!.getAttribute('data-event-id')
+    ).to.equal('window-204');
+  });
+  it('reveals focused requests outside the window and only pages the server at the loaded boundary', async () => {
+    const element = await mount();
+    element.hasMoreEvents = true;
+    element.focusEventId = 'window-0';
+    await element.updateComplete;
+    await waitUntil(
+      () => !!element.renderRoot.querySelector('.jump-highlight')
+    );
+    expect(
+      element.renderRoot
+        .querySelector('.jump-highlight')
+        ?.getAttribute('data-event-id')
+    ).to.equal('window-0');
+    expect(rows(element).length).to.equal(5);
+    expect(!!element.renderRoot.querySelector('.event-page-sentinel')).to.equal(
+      true
+    );
+    await page(element, 'First');
+    expect(!!element.renderRoot.querySelector('.event-page-sentinel')).to.equal(
+      false
+    );
+  });
+  it('updates derived turn content on detail and event changes', async () => {
+    const element = await mount(1);
+    element.eventDetails = { 'window-0': makeEvent(0) };
+    element.eventDetails['window-0'].payload.conversation_preview = {
+      messages: [{ role: 'assistant', text: 'Changed detail' }],
+    };
+    await element.updateComplete;
+    expect(element.renderRoot.textContent).to.include('Changed detail');
+    element.events = [makeEvent(1)];
+    element.eventDetails = {};
+    await element.updateComplete;
+    expect(element.renderRoot.textContent).to.include(
+      'Unique historical message 1.'
+    );
+    expect(element.renderRoot.textContent).not.to.include('Changed detail');
+  });
+  it('preserves recording and browser-step jumps outside the rendered window', async () => {
+    const element = await mount();
+    element.recordingSync = {
+      artifact_id: 'recording',
+      skew_ms: 0,
+      unmapped_activity_ids: [],
+      mappings: [
+        {
+          activity_id: 'model-0',
+          activity_type: 'model_gateway_call',
+          api_usage_id: 'window-0',
+          offset_ms: 1000,
+          rule: 'server_skew',
+          approximate: false,
+        },
+      ],
+    };
+    element.recordingActivityId = 'model-0';
+    await element.updateComplete;
+    expect(element.scrollToRecordingActivity('model-0')).to.equal(true);
+    await element.updateComplete;
+    expect(
+      element.renderRoot
+        .querySelector('.recording-current')
+        ?.getAttribute('data-event-id')
+    ).to.equal('window-0');
+    await page(element, 'First');
+    element.activity = [
+      {
+        activity_type: 'browser_step',
+        activity_id: 'step-0',
+        timestamp: '2025-12-31T23:00:00Z',
+        title: 'Navigate',
+        summary: null,
+        status: 'success',
+        api_usage_id: null,
+        tool_name: 'navigate',
+        server_name: null,
+        auth_subject_type: null,
+        api_key_id: null,
+        api_key_name: null,
+        estimated_cost: null,
+        total_tokens: null,
+        metadata: {
+          source: 'playwright_mcp',
+          source_step_id: 'step-0',
+          step_index: 0,
+          action: 'navigate',
+        },
+      },
+    ];
+    await element.updateComplete;
+    expect(
+      element.scrollToBrowserStep('browser-step-playwright_mcp-step-0')
+    ).to.equal(true);
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.activeElement?.getAttribute('data-browser-step-key')
+    ).to.equal('browser-step-playwright_mcp-step-0');
+    expect(element.scrollToRecordingActivity('missing')).to.equal(false);
+  });
+
+  it('deduplicates cumulative messages against history outside the window', async () => {
+    const element = await mount();
+    const last = makeEvent(205);
+    last.payload.conversation_preview = {
+      messages: [
+        { role: 'user', text: 'Unique historical message 0.' },
+        { role: 'assistant', text: 'New response' },
+      ],
+    };
+    element.events = [...element.events, last];
+    await element.updateComplete;
+    expect(rows(element)[0].textContent).to.include('New response');
+    expect(rows(element)[0].textContent).not.to.include(
+      'Unique historical message 0.'
+    );
+    await page(element, 'Last');
+    expect(element.renderRoot.textContent).to.include(
+      'Unique historical message 0.'
+    );
+  });
+  it('keeps the last focused row of the first window mounted on live append', async () => {
+    const element = await mount();
+    const last = rows(element)[99].querySelector<HTMLElement>('.chat-turn')!;
+    last.focus();
+    element.events = [...element.events, makeEvent(205)];
+    await element.updateComplete;
+    expect(element.shadowRoot!.activeElement).to.equal(last);
+    expect(ids(element)[0]).to.equal('window-204');
+    expect(ids(element)[99]).to.equal('window-105');
+    expect(rows(element)).to.have.length(100);
+  });
+  it('resets the reading window when the mounted panel switches sessions', async () => {
+    const element = await mount();
+    await page(element, 'Last');
+    element.session = { ...SESSION, id: 'session-2' };
+    element.events = Array.from({ length: 205 }, (_, i) => makeEvent(i + 300));
+    await element.updateComplete;
+    expect(ids(element)[0]).to.equal('window-504');
+    expect(rows(element)[0].getAttribute('aria-posinset')).to.equal('1');
+    expect(rows(element)).to.have.length(100);
+  });
+});

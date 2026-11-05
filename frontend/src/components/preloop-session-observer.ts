@@ -449,7 +449,10 @@ export class PreloopSessionObserver extends LitElement {
       this.replayMode === 'conversation'
         ? 'session-chat-view'
         : 'session-replay-panel';
-    const host = this.renderRoot.querySelector(selector);
+    const host = this.renderRoot.querySelector(selector) as
+      | (Element & { scrollToRecordingActivity?: (id: string) => boolean })
+      | null;
+    if (host?.scrollToRecordingActivity?.(this.recordingActivityId)) return;
     const row = host?.shadowRoot?.querySelector(
       `[data-recording-activity="${CSS.escape(this.recordingActivityId)}"]`
     );

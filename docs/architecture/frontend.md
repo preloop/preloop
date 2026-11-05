@@ -121,6 +121,14 @@ queues one trailing refresh, and session changes abort the old event request
 and ignore stale results. Live refreshes retain already displayed older rows;
 pagination resumes from the server offset, never the number of retained rows.
 Full event drill-in remains available from the existing detail endpoint.
+
+The Requests transcript retains all loaded events, but renders at most 100 rows
+at a time. First/previous/next/last controls navigate that history; search and
+copy operate on all matching loaded rows. Focus and recording-follow jumps
+reveal their target window. Historical windows retain their first row when
+live or older events arrive, and turn derivation is shared only within a render
+so detail, activity and optimization changes cannot reuse stale derived data.
+
 The Agents deployment dialog mounts its editor only when opened.
 The list retains each agent's last complete subscription estimate during
 refreshes and partial reads, visibly marked "previous". It keeps the complete
