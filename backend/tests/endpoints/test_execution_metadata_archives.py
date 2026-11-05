@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy import event, select
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketDisconnect
 
@@ -57,7 +58,14 @@ def archived_world(db_session: Session) -> SimpleNamespace:
     requests = []
     for _ in range(3):
         execution = models.FlowExecution(
-            flow_id=flow.id, status="SUCCEEDED", workspace_snapshot=b"archive" * 150000
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            workspace_snapshot=b"archive" * 150000,
+            evidence_archive=b"evidence" * 150000,
+            execution_logs=["log" * 100000],
+            mcp_usage_logs=[{"message": "mcp" * 100000}],
+            actions_taken_summary=[{"message": "action" * 100000}],
+            result={"message": "result" * 100000},
         )
         db_session.add(execution)
         db_session.flush()
@@ -166,7 +174,15 @@ def test_approval_page_and_detail_match_full_rows_without_archive_sql(
     assert all(
         row["flow_execution"]["flow_name"] == "Example" for row in expected["rows"]
     )
-    assert all("workspace_snapshot" not in sql for sql in statements)
+    for column in (
+        "workspace_snapshot",
+        "evidence_archive",
+        "execution_logs",
+        "mcp_usage_logs",
+        "actions_taken_summary",
+        "result",
+    ):
+        assert all(f"flow_execution.{column}" not in sql for sql in statements)
 
 
 @pytest.mark.asyncio
@@ -181,7 +197,15 @@ async def test_async_attribution_executes_same_bounded_query(
         await approval_attribution.attributed_async(adapter, row)
         response = ApprovalRequestResponse.model_validate(row)
     assert response.flow_execution.flow_name == "Example"
-    assert all("workspace_snapshot" not in sql for sql in statements)
+    for column in (
+        "workspace_snapshot",
+        "evidence_archive",
+        "execution_logs",
+        "mcp_usage_logs",
+        "actions_taken_summary",
+        "result",
+    ):
+        assert all(f"flow_execution.{column}" not in sql for sql in statements)
 
 
 @pytest.mark.parametrize("case", ["missing", "foreign", "empty_scope"])
@@ -467,3 +491,45 @@ def test_publication_refresh_rechecks_stale_identity_without_archives(
     execution_selects = [sql for sql in statements if "FROM flow_execution" in sql]
     assert len(execution_selects) == 2
     assert all("workspace_snapshot" not in sql for sql in statements)
+
+
+@pytest.mark.parametrize("preloaded", [False, True])
+def test_attribution_projection_preserves_existing_identity_without_loading_payloads(
+    db_session: Session, archived_world: SimpleNamespace, preloaded: bool
+) -> None:
+    world = archived_world
+    existing = (
+        crud_flow_execution.get(db_session, world.executions[0]) if preloaded else None
+    )
+    with captured_sql(db_session) as statements:
+        runs = crud_flow_execution.get_for_attribution(
+            db_session, ids=world.executions, account_ids=[world.account_id]
+        )
+        execution, flow = runs[world.executions[0]]
+        assert execution.id == world.executions[0]
+        assert execution.flow_id == world.flow_id
+        assert flow.name == "Example"
+        if preloaded:
+            assert execution is existing
+            assert execution.evidence_archive == b"evidence" * 150000
+        else:
+            for column in (
+                "workspace_snapshot",
+                "evidence_archive",
+                "execution_logs",
+                "mcp_usage_logs",
+                "actions_taken_summary",
+                "result",
+            ):
+                with pytest.raises(InvalidRequestError):
+                    getattr(execution, column)
+    assert len(statements) == 1
+    for column in (
+        "workspace_snapshot",
+        "evidence_archive",
+        "execution_logs",
+        "mcp_usage_logs",
+        "actions_taken_summary",
+        "result",
+    ):
+        assert f"flow_execution.{column}" not in statements[0]

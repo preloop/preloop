@@ -481,7 +481,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     def _attribution_statement(
         self, ids: Iterable[Any], account_ids: Iterable[Any]
     ) -> Select:
-        """Account-scoped attribution rows without saved workspace bytes."""
+        """Only the execution identity and flow label needed for attribution."""
         return (
             select(models.FlowExecution, models.Flow)
             .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
@@ -489,7 +489,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.id.in_(list(ids)),
                 models.Flow.account_id.in_(list(account_ids)),
             )
-            .options(defer(models.FlowExecution.workspace_snapshot, raiseload=True))
+            .options(
+                load_only(
+                    models.FlowExecution.id,
+                    models.FlowExecution.flow_id,
+                    raiseload=True,
+                ),
+                load_only(models.Flow.id, models.Flow.name, raiseload=True),
+            )
         )
 
     def get_for_attribution(
