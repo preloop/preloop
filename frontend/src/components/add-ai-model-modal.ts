@@ -253,6 +253,7 @@ export class AddAIModelModal extends LitElement {
   @state() private _modelsFallbackReason: string | null = null;
   @state() private _modelsWarnings: string[] = [];
   private _bedrockDiscoveryRevision = 0;
+  private _discoveryController?: AbortController;
   /**
    * Extra models to create alongside the primary one, all sharing the single
    * provider key entered on this form. Create-mode only.
@@ -370,9 +371,23 @@ export class AddAIModelModal extends LitElement {
   // ── lifecycle ────────────────────────────────────────
 
   updated(changedProps: Map<string, unknown>) {
-    if (changedProps.has('open') && this.open) {
-      this._populateForm();
+    if (changedProps.has('open') || changedProps.has('model')) {
+      this._invalidateModelDiscovery();
+      if (changedProps.has('open') && this.open) this._populateForm();
     }
+  }
+
+  disconnectedCallback() {
+    this._invalidateModelDiscovery();
+    super.disconnectedCallback();
+  }
+
+  /** Revoke ownership before aborting: even transports ignoring abort are safe. */
+  private _invalidateModelDiscovery() {
+    const controller = this._discoveryController;
+    this._discoveryController = undefined;
+    controller?.abort();
+    this._isFetchingModels = false;
   }
 
   // ── form helpers ─────────────────────────────────────
@@ -463,7 +478,8 @@ export class AddAIModelModal extends LitElement {
   }
 
   /** Invalidate in-flight discovery and clear state derived from its listing. */
-  private _clearBedrockDiscovery() {
+  private _clearModelDiscovery() {
+    this._invalidateModelDiscovery();
     this._bedrockDiscoveryRevision += 1;
     this._modelSuggestions = [];
     this._additionalModelIds = [];
@@ -471,7 +487,6 @@ export class AddAIModelModal extends LitElement {
     this._modelsSource = null;
     this._modelsFallbackReason = null;
     this._modelsFetchError = null;
-    this._isOtherModel = false;
   }
 
   /**
@@ -481,7 +496,7 @@ export class AddAIModelModal extends LitElement {
    */
   private _syncBedrockApiKey() {
     if (!this._isBedrock) return;
-    this._clearBedrockDiscovery();
+    this._clearModelDiscovery();
     this._currentModel.api_key =
       buildBedrockCredentialBlob({
         bearerToken:
@@ -649,6 +664,7 @@ export class AddAIModelModal extends LitElement {
   }
 
   private _handleClose() {
+    this._invalidateModelDiscovery();
     this.dispatchEvent(new CustomEvent('close-modal'));
   }
 
@@ -664,6 +680,7 @@ export class AddAIModelModal extends LitElement {
   // ── provider / model fetching ────────────────────────
 
   private async _handleProviderChange(e: Event) {
+    this._invalidateModelDiscovery();
     const provider = (e.target as SlSelect).value as string;
 
     this._currentModel = {
@@ -736,6 +753,7 @@ export class AddAIModelModal extends LitElement {
   }
 
   private _handleServiceKindChange(e: Event) {
+    this._invalidateModelDiscovery();
     const modelKind = (e.target as SlSelect).value as ServiceKind;
     const provider = this._currentModel.provider_name;
     const providerSupported = PROVIDER_OPTIONS.some(
@@ -770,7 +788,8 @@ export class AddAIModelModal extends LitElement {
     apiKey?: string,
     apiEndpoint?: string,
     awsAuth?: AwsDiscoveryAuth,
-    aiModelId?: string
+    aiModelId?: string,
+    signal?: AbortSignal
   ): Promise<AvailableModelsResult> {
     return await getAvailableModelsForProvider(
       provider,
@@ -778,11 +797,13 @@ export class AddAIModelModal extends LitElement {
       this._selectedServiceKind,
       apiEndpoint,
       awsAuth,
-      aiModelId
+      aiModelId,
+      signal
     );
   }
 
   private async _fetchModelsForCurrentProvider() {
+    this._invalidateModelDiscovery();
     if (!this._currentModel.provider_name) {
       this._modelsFetchError = 'Select a provider first';
       return;
@@ -830,6 +851,8 @@ export class AddAIModelModal extends LitElement {
       return;
     }
 
+    const controller = new AbortController();
+    this._discoveryController = controller;
     const bedrockDiscoveryRevision = this._bedrockDiscoveryRevision;
     this._isFetchingModels = true;
     this._modelsFetchError = null;
@@ -846,9 +869,11 @@ export class AddAIModelModal extends LitElement {
         this._isBedrock ? undefined : typedKey || undefined,
         apiEndpoint,
         awsAuth,
-        storedModelId
+        storedModelId,
+        controller.signal
       );
       if (
+        this._discoveryController !== controller ||
         provider !== this._currentModel.provider_name ||
         (provider === 'bedrock' &&
           bedrockDiscoveryRevision !== this._bedrockDiscoveryRevision)
@@ -875,6 +900,7 @@ export class AddAIModelModal extends LitElement {
       }
     } catch (error) {
       if (
+        this._discoveryController !== controller ||
         provider !== this._currentModel.provider_name ||
         (provider === 'bedrock' &&
           bedrockDiscoveryRevision !== this._bedrockDiscoveryRevision)
@@ -888,8 +914,10 @@ export class AddAIModelModal extends LitElement {
       this._modelsFetchError =
         error instanceof Error ? error.message : 'Failed to fetch models';
     } finally {
-      this._isFetchingModels = false;
-      this.requestUpdate();
+      if (this._discoveryController === controller) {
+        this._discoveryController = undefined;
+        this._isFetchingModels = false;
+      }
     }
   }
 
@@ -1447,7 +1475,7 @@ export class AddAIModelModal extends LitElement {
                       this._bedrockRegion = (
                         e.target as HTMLInputElement
                       ).value;
-                      this._clearBedrockDiscovery();
+                      this._clearModelDiscovery();
                       this.requestUpdate();
                     }}
                     placeholder=${BEDROCK_DEFAULT_REGION}
@@ -1467,6 +1495,7 @@ export class AddAIModelModal extends LitElement {
                     data-field="api_endpoint"
                     .value=${this._currentModel.api_endpoint || ''}
                     @sl-input=${(e: Event) => {
+                      this._clearModelDiscovery();
                       this._currentModel.api_endpoint = (
                         e.target as HTMLInputElement
                       ).value;
@@ -1512,6 +1541,7 @@ export class AddAIModelModal extends LitElement {
                     data-field="api_key"
                     .value=${this._currentModel.api_key || ''}
                     @sl-input=${(e: Event) => {
+                      this._clearModelDiscovery();
                       this._currentModel.api_key = (
                         e.target as HTMLInputElement
                       ).value;
@@ -1641,19 +1671,23 @@ export class AddAIModelModal extends LitElement {
                   : 'Fetch models from provider'
               }
             </sl-button>
-            ${
-              this._modelsFetchError
-                ? html`
-                    <div
-                      style="color: var(--sl-color-danger-600); font-size: 0.875rem; margin-top: 0.5rem;"
-                    >
-                      ${this._modelsFetchError}
-                    </div>
-                  `
-                : ''
-            }
-            ${this._renderModelsProvenanceNotice()}
-            ${this._renderBedrockDiscoveryWarnings()}
+            <div role="alert" aria-atomic="true">
+              ${
+                this._modelsFetchError
+                  ? html`
+                      <div
+                        style="color: var(--sl-color-danger-600); font-size: 0.875rem; margin-top: 0.5rem;"
+                      >
+                        ${this._modelsFetchError}
+                      </div>
+                    `
+                  : ''
+              }
+            </div>
+            <div role="status" aria-atomic="true">
+              ${this._renderModelsProvenanceNotice()}
+              ${this._renderBedrockDiscoveryWarnings()}
+            </div>
           </div>
 
           ${
@@ -1716,7 +1750,7 @@ export class AddAIModelModal extends LitElement {
                     `
                   )}
                 `
-              : this._modelsFetchError || this._isBedrock
+              : this._modelsFetchError || this._isBedrock || this._isOtherModel
                 ? html`
                     <sl-input
                       class="full-width"

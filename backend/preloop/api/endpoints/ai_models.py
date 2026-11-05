@@ -1682,10 +1682,11 @@ async def _fetch_provider_models(
         )
     except ProviderAuthError as e:
         # The provider rejected the caller's API key. The message is our own
-        # fixed text, never the key.
+        # fixed text, never the key. This is invalid provider configuration,
+        # not an expired console session: reserve 401 for console authentication.
         logger.warning("Cannot list models for provider %s: %s", provider, e)
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
     except ProviderValidationError as e:

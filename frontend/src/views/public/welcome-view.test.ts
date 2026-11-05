@@ -93,11 +93,62 @@ describe('WelcomeView', () => {
     await (el as any)._handleOnboardingSubmit(new Event('submit'));
     await el.updateComplete;
     expect((el as any)._error).to.contain('at least 8 characters');
+    expect(pw.helpText).to.contain('at least 8 characters');
     expect(
       fetchStub
         .getCalls()
         .some((c) => String(c.args[0]).includes('complete-onboarding'))
     ).to.be.false;
+  });
+
+  it('keeps a persistent live alert for repeated failures and retains form values', async () => {
+    const el = await mount();
+    Object.assign(el, {
+      _username: 'jane',
+      _email: 'jane@example.com',
+      _claimToken: 'synthetic-claim',
+      _orgName: 'Example team',
+      _error: '',
+    });
+    await el.updateComplete;
+    const password = el.shadowRoot!.querySelector('#password') as any;
+    password.value = 'long-example-password';
+    const alert = el.shadowRoot!.querySelector('[role="alert"]')!;
+    const focused = document.activeElement;
+    let finish!: (response: Response) => void;
+    fetchStub.callsFake(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+    );
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const submitting = (el as any)._handleOnboardingSubmit(
+        new Event('submit')
+      );
+      await el.updateComplete;
+      expect(alert.textContent!.trim()).to.equal('');
+      finish(
+        new Response(
+          JSON.stringify({
+            detail: 'This signup link has expired. Request a new link.',
+          }),
+          { status: 400 }
+        )
+      );
+      await submitting;
+      await el.updateComplete;
+      expect(alert.textContent).to.contain('This signup link has expired');
+      expect(el.shadowRoot!.querySelector('[role="alert"]')).to.equal(alert);
+      expect(password.value).to.equal('long-example-password');
+      expect((el as any)._orgName).to.equal('Example team');
+      expect(document.activeElement).to.equal(focused);
+    }
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes('complete-onboarding'))
+    ).to.have.length(2);
   });
 
   it('completes onboarding and stores tokens on success', async () => {
@@ -128,6 +179,9 @@ describe('WelcomeView', () => {
     await tick();
     await el.updateComplete;
     expect(localStorage.getItem('accessToken')).to.equal('acc-123');
+    expect(
+      el.shadowRoot!.querySelector('[role="status"]')!.textContent
+    ).to.contain('Password saved');
     expect((el as any)._error).to.equal('');
     expect((el as any)._needsPassword).to.be.false;
   });

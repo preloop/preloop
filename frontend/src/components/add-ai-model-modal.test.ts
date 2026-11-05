@@ -2146,3 +2146,186 @@ describe('Bedrock API key authentication', () => {
     ).not.to.have.property('auth_method');
   });
 });
+
+describe('model discovery ownership and feedback', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+  let pending: { resolve: (response: Response) => void; signal: AbortSignal }[];
+
+  const response = (models: string[]) =>
+    new Response(JSON.stringify({ models, source: 'live' }));
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'synthetic-access');
+    localStorage.setItem('refreshToken', 'synthetic-refresh');
+    sandbox = sinon.createSandbox();
+    pending = [];
+    // Deliberately ignore abort: ownership must guard every completion anyway.
+    fetchStub = sandbox
+      .stub(window, 'fetch')
+      .callsFake(
+        (_url, init) =>
+          new Promise<Response>((resolve) =>
+            pending.push({ resolve, signal: init.signal })
+          )
+      );
+    element = await fixture(
+      html`<add-ai-model-modal open></add-ai-model-modal>`
+    );
+    (element as any)._currentModel = {
+      provider_name: 'openai',
+      model_kind: 'llm',
+      api_key: 'synthetic-key',
+      api_endpoint: 'https://api.openai.com/v1',
+    };
+    await element.updateComplete;
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  function change(field: string, value: string) {
+    const input = element.shadowRoot!.querySelector(
+      `[data-field="${field}"]`
+    ) as any;
+    input.value = value;
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+  }
+
+  for (const kind of ['stt', 'tts']) {
+    it(`keeps the newer ${kind} catalog when an older chat request completes`, async () => {
+      const old = (element as any)._fetchModelsForCurrentProvider();
+      (element as any)._handleServiceKindChange({ target: { value: kind } });
+      expect(pending[0].signal.aborted).to.equal(true);
+      pending[1].resolve(response(['speech-example']));
+      await new Promise((resolve) => setTimeout(resolve));
+      pending[0].resolve(response(['chat-example']));
+      await old;
+      expect((element as any)._modelSuggestions).to.deep.equal([
+        'speech-example',
+      ]);
+      expect((element as any)._currentModel.model_kind).to.equal(kind);
+    });
+  }
+
+  it('keeps newer loading state when an older finally runs', async () => {
+    const old = (element as any)._fetchModelsForCurrentProvider();
+    const latest = (element as any)._fetchModelsForCurrentProvider();
+    pending[0].resolve(response(['old']));
+    await old;
+    expect((element as any)._isFetchingModels).to.equal(true);
+    pending[1].resolve(response(['latest']));
+    await latest;
+    expect((element as any)._isFetchingModels).to.equal(false);
+  });
+
+  it('ignores an older error after a newer success', async () => {
+    const old = (element as any)._fetchModelsForCurrentProvider();
+    const latest = (element as any)._fetchModelsForCurrentProvider();
+    pending[1].resolve(response(['latest']));
+    await latest;
+    pending[0].resolve(
+      new Response(JSON.stringify({ detail: 'Old failure' }), { status: 400 })
+    );
+    await old;
+    expect((element as any)._modelsFetchError).to.equal(null);
+    expect((element as any)._modelSuggestions).to.deep.equal(['latest']);
+  });
+
+  it('rejects an old provider A response after A to B to A', async () => {
+    const old = (element as any)._fetchModelsForCurrentProvider();
+    await (element as any)._handleProviderChange({
+      target: { value: 'anthropic' },
+    });
+    await (element as any)._handleProviderChange({
+      target: { value: 'openai' },
+    });
+    pending[0].resolve(response(['old']));
+    await old;
+    expect(pending[0].signal.aborted).to.equal(true);
+    expect((element as any)._modelSuggestions).to.deep.equal([]);
+  });
+
+  for (const [field, value] of [
+    ['api_key', 'replacement-key'],
+    ['api_endpoint', 'https://example.com/v1'],
+  ]) {
+    it(`invalidates discovery when ${field} changes`, async () => {
+      const old = (element as any)._fetchModelsForCurrentProvider();
+      change(field, value);
+      pending[0].resolve(response(['old']));
+      await old;
+      expect(pending[0].signal.aborted).to.equal(true);
+      expect((element as any)._modelSuggestions).to.deep.equal([]);
+      expect((element as any)._isFetchingModels).to.equal(false);
+    });
+  }
+
+  it('retains manual entry when credentials change', async () => {
+    (element as any)._isOtherModel = true;
+    (element as any)._currentModel.model_identifier = 'custom-example';
+    change('api_key', 'replacement-key');
+    await element.updateComplete;
+    const manual = element.shadowRoot!.querySelector(
+      '[data-field="model_identifier"]'
+    ) as any;
+    expect(manual.value).to.equal('custom-example');
+  });
+
+  for (const close of ['reopen', 'unmount']) {
+    it(`invalidates a pending listing on ${close}`, async () => {
+      const old = (element as any)._fetchModelsForCurrentProvider();
+      if (close === 'unmount') element.remove();
+      else {
+        element.open = false;
+        await element.updateComplete;
+        element.open = true;
+        await element.updateComplete;
+      }
+      pending[0].resolve(response(['old']));
+      await old;
+      expect(pending[0].signal.aborted).to.equal(true);
+      expect((element as any)._modelSuggestions).to.deep.equal([]);
+    });
+  }
+
+  it('announces repeated provider failures and recovery without refreshing the console session', async () => {
+    const alert = element.shadowRoot!.querySelector('[role="alert"]')!;
+    const status = element.shadowRoot!.querySelector('[role="status"]')!;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const fetching = (element as any)._fetchModelsForCurrentProvider();
+      await element.updateComplete;
+      expect(alert.textContent!.trim()).to.equal('');
+      pending[attempt].resolve(
+        new Response(
+          JSON.stringify({
+            detail: 'Invalid provider key. Check the key and try again.',
+          }),
+          { status: 400 }
+        )
+      );
+      await fetching;
+      await element.updateComplete;
+      expect(alert.textContent).to.contain('Invalid provider key');
+      expect(element.shadowRoot!.querySelector('[role="alert"]')).to.equal(
+        alert
+      );
+      expect((element as any)._currentModel.api_key).to.equal('synthetic-key');
+    }
+    const recovery = (element as any)._fetchModelsForCurrentProvider();
+    pending[2].resolve(response(['recovered']));
+    await recovery;
+    await element.updateComplete;
+    expect(status.textContent).to.contain('Fetched 1 models');
+    expect(fetchStub.callCount).to.equal(3);
+    expect(
+      fetchStub
+        .getCalls()
+        .every((c) => String(c.args[0]).includes('available-models'))
+    ).to.equal(true);
+    expect(localStorage.getItem('accessToken')).to.equal('synthetic-access');
+  });
+});

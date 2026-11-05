@@ -4641,11 +4641,13 @@ export async function getAvailableModelsForProvider(
   modelKind: 'llm' | 'stt' | 'tts' = 'llm',
   apiEndpoint?: string,
   awsAuth?: AwsDiscoveryAuth,
-  aiModelId?: string
+  aiModelId?: string,
+  signal?: AbortSignal
 ): Promise<AvailableModelsResult> {
   const url = `${REST_API_PREFIX}/ai-models/providers/${provider}/available-models`;
   const response = await fetchWithAuth(url, {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model_kind: modelKind,
