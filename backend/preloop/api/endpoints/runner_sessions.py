@@ -55,7 +55,7 @@ from preloop.plugins.account_hooks import (
     AuthorizationContext,
     may_start_runner_session,
     runner_default_allowed,
-    start_consent_waiver,
+    runner_start_consent_waiver,
 )
 from preloop.utils.permissions import (
     ensure_permission_in_oss,
@@ -1028,7 +1028,17 @@ def _require_start_consent(
         raise audit.reject(
             403, "runner_owner_required", "A runner owner must approve new sessions."
         )
-    waiver = start_consent_waiver(db, current_user, runner)
+    waiver = runner_start_consent_waiver(
+        db,
+        current_user,
+        runner,
+        {
+            "harness": body.harness,
+            "workspace_kind": body.workspace.kind,
+            "workspace_id": getattr(body.workspace, "id", None),
+            "operation": "start",
+        },
+    )
     if waiver:
         audit.log("runner_session.consent", decision="waived", waiver=waiver)
         audit.consent_decision = "waived"
@@ -1101,7 +1111,8 @@ def _require_start_consent(
         audit.log(
             "runner_session.consent",
             status_value="pending" if exc.status_code == 409 else "denied",
-            decision="waiting" if exc.status_code == 409 else "denied",
+            decision=(consent.status if "consent" in locals() else "denied"),
+            approval_id=(str(consent.approval_id) if "consent" in locals() else None),
         )
         raise
     audit.log(

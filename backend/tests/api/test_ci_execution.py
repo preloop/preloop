@@ -279,3 +279,39 @@ def test_accepted_snapshot_is_immutable_in_storage(
             db_session, db_obj=own, obj_in={"ci_review_binding": changed}
         )
     db_session.rollback()
+
+
+def test_read_archive_is_deferred_but_stop_retains_full_read(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """Only read actions exclude the archive; mutations keep existing semantics."""
+    from sqlalchemy.exc import InvalidRequestError
+
+    _, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    execution = crud.crud_ci_execution.create(
+        db_session, context=context, binding=review_binding(context), event={}
+    )
+    execution_id = execution.id
+    archive = b"synthetic workspace archive"
+    execution.workspace_snapshot = archive
+    db_session.flush()
+    db_session.expunge_all()
+    read = crud.crud_ci_execution.get(
+        db_session,
+        context=context,
+        execution_id=execution_id,
+        action=CiAction.READ_RESULT,
+    )
+    assert read is not None
+    assert "workspace_snapshot" not in read.__dict__
+    with pytest.raises(InvalidRequestError):
+        _ = read.workspace_snapshot
+    stopped = crud.crud_ci_execution.get(
+        db_session,
+        context=context,
+        execution_id=execution_id,
+        action=CiAction.STOP_EXECUTION,
+    )
+    assert stopped is not None
+    assert stopped.workspace_snapshot == archive

@@ -2124,6 +2124,8 @@ class HarnessRunnerOption(BaseModel):
     online: bool
     eligible: bool
     reason: Optional[str] = None
+    shared_with_me: bool = False
+    owner_name: Optional[str] = None
 
 
 class HarnessOption(BaseModel):

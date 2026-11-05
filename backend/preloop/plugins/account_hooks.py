@@ -450,6 +450,26 @@ def start_consent_waiver(db: "Session", user: Any, runner: Any) -> Optional[str]
     return waiver(db, user, runner)
 
 
+# Request-aware policy is separate from the legacy waiver for plugin compatibility.
+RunnerStartConsent = Callable[["Session", Any, Any, Mapping[str, Any]], Optional[str]]
+_runner_start_consent: Optional[RunnerStartConsent] = None
+
+
+def register_runner_start_consent(provider: Optional[RunnerStartConsent]) -> None:
+    """Register a request-scoped consent waiver; it never grants access."""
+    global _runner_start_consent
+    _runner_start_consent = provider
+
+
+def runner_start_consent_waiver(
+    db: "Session", user: Any, runner: Any, attributes: Mapping[str, Any]
+) -> Optional[str]:
+    """Ask a request-aware policy, falling back to the legacy admin waiver."""
+    if _runner_start_consent is not None:
+        return _runner_start_consent(db, user, runner, attributes)
+    return start_consent_waiver(db, user, runner)
+
+
 def filter_viewable(
     db: Any, user: Any, resource_type: str, resources: Sequence[Any]
 ) -> list[Any]:

@@ -328,3 +328,42 @@ def test_trigger_override_denied_before_service(
     )
     assert response.status_code == 422, response.text
     trigger.assert_not_awaited()
+
+
+@pytest.mark.parametrize("suffix", ["", "/result", "/tool-evidence"])
+def test_ci_reads_do_not_load_workspace_archive(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient, suffix: str
+) -> None:
+    """Fresh-grant reads retain their projection without unrelated archive IO."""
+    from sqlalchemy import event
+
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    execution_id = execution.id
+    execution.workspace_snapshot = b"synthetic-archive" * 65536
+    execution.result = {"review": "synthetic result"}
+    db_session.flush()
+    db_session.expunge_all()
+    statements: list[str] = []
+
+    def capture(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _params: Any,
+        _context: Any,
+        _many: bool,
+    ) -> None:
+        statements.append(statement)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        response = client.get(
+            f"/api/v1/flows/executions/{execution_id}{suffix}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert response.status_code == 200, response.text
+    assert statements
+    assert all("workspace_snapshot" not in sql for sql in statements)

@@ -34,3 +34,39 @@ func raiseHostNotice(text string) {
 	}
 	_ = runHostNoticeCommand(name, args, env)
 }
+
+// runnerOwnerNotice is an informational control-plane notice, never an approval.
+type runnerOwnerNotice struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// The server repeats recent notices on heartbeats so a reconnect cannot lose
+// one. Keep ids for this connection's manager and show each notice once.
+func (m *runnerSessionManager) handleOwnerNotices(notices []runnerOwnerNotice) {
+	if m == nil {
+		return
+	}
+	if m.ownerNoticeIDs == nil {
+		m.ownerNoticeIDs = map[string]bool{}
+	}
+	current := make(map[string]bool, len(notices))
+	for _, notice := range notices {
+		if notice.ID == "" || notice.Message == "" {
+			continue
+		}
+		current[notice.ID] = true
+		if m.ownerNoticeIDs[notice.ID] {
+			continue
+		}
+		text := hostNoticeTextMax(notice.Message, 4*runnerSessionNameMaxRunes)
+		m.logf("Runner notice: %s", text)
+		if m.notifyHost != nil {
+			go m.notifyHost(text)
+		}
+	}
+	// Non-heartbeat frames have no notices. Do not forget the previous beat.
+	if len(notices) > 0 {
+		m.ownerNoticeIDs = current
+	}
+}

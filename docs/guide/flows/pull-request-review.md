@@ -12,6 +12,17 @@ The preset ships as `backend/presets/002-pull-request-reviewer.yaml`
 Operators set blocking review policy on the flow form's Review instructions
 field when the repository cannot hold `.preloop/review-policy.md`.
 
+For an ephemeral checkout, leave `git_clone_config.source_branch` and the
+repository's `branch` / `source_branch` overrides unset to follow the triggering
+PR or MR. Do not enable `use_remote_default` for this purpose. GitLab MR hooks
+provide the head commit in `object_attributes.last_commit.id` (or `sha`); MR
+note hooks provide it under `merge_request`. When that commit is present, the
+executor checks it out before creating the review branch, even if the initial
+clone used the target or a configured default branch. Without a commit, explicit
+branch settings take precedence over the trigger's source branch. Check the
+execution's checkout log and `git rev-parse HEAD`, not just the generated review
+branch name, when diagnosing a review of the wrong revision.
+
 The review is **stateful**. One summary comment carries HTML markers
 (`<!-- preloop-review:flow-id:pr-reviewer -->`,
 `<!-- preloop-review:reviewed-sha:SHA -->`) and is rewritten in place on each

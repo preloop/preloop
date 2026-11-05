@@ -347,30 +347,6 @@ def test_invalid_upstream_json_closes_stream(monkeypatch: pytest.MonkeyPatch) ->
     assert stream.closed and not stream.thread.is_alive()
 
 
-@pytest.mark.parametrize("method", ["create_response", "stream_response"])
-def test_runner_responses_api_is_rejected_before_credentials(
-    method: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from preloop.services.model_gateway_auth import ModelGatewayAuthContext
-    from preloop.services.model_gateway_errors import ModelGatewayAPIError
-    from preloop.services.openai_gateway import OpenAIGatewayService
-
-    auth = ModelGatewayAuthContext(
-        token="test", user=SimpleNamespace(id=uuid4(), account_id=uuid4())
-    )
-    service = OpenAIGatewayService(MagicMock(), auth)
-    monkeypatch.setattr(
-        service,
-        "_resolve_requested_model",
-        lambda *args, **kwargs: SimpleNamespace(endpoint_type="runner"),
-    )
-    with pytest.raises(ModelGatewayAPIError) as error:
-        getattr(service, method)({"model": "example", "input": "Hello"})
-    assert error.value.status_code == 400
-    assert "chat completions only" in error.value.message
-
-
 def test_request_start_rechecks_socket_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -103,6 +103,13 @@ export class NewRunnerSessionDialog extends LitElement {
   @state() private prompt = '';
 
   private loadToken = 0;
+  private startAbort?: AbortController;
+  @state() private waitingApproval = false;
+
+  disconnectedCallback(): void {
+    this.startAbort?.abort();
+    super.disconnectedCallback();
+  }
 
   static styles = [
     consoleDialogStyles,
@@ -244,6 +251,9 @@ export class NewRunnerSessionDialog extends LitElement {
     if (!this.canSubmit || !workspace) return;
     this.submitting = true;
     this.error = '';
+    this.startAbort?.abort();
+    const controller = new AbortController();
+    this.startAbort = controller;
     try {
       const started: RunnerSessionStarted = await startRunnerSession(
         this.selectedRunnerId,
@@ -252,8 +262,13 @@ export class NewRunnerSessionDialog extends LitElement {
           model: this.model || null,
           workspace,
           first_prompt: this.prompt.trim() || null,
+        },
+        controller.signal,
+        () => {
+          this.waitingApproval = true;
         }
       );
+      if (controller.signal.aborted) return;
       this.dispatchEvent(
         new CustomEvent<RunnerSessionStarted>('runner-session-started', {
           detail: started,
@@ -263,13 +278,19 @@ export class NewRunnerSessionDialog extends LitElement {
       );
       this.close();
     } catch (error) {
-      this.error = runnerSessionErrorMessage(error);
+      if (!controller.signal.aborted)
+        this.error = runnerSessionErrorMessage(error);
     } finally {
-      this.submitting = false;
+      if (this.startAbort === controller) {
+        this.waitingApproval = false;
+        this.submitting = false;
+      }
     }
   }
 
   private close(): void {
+    this.startAbort?.abort();
+    this.waitingApproval = false;
     this.open = false;
     this.dispatchEvent(
       new CustomEvent('runner-session-dialog-hide', {
@@ -416,7 +437,11 @@ export class NewRunnerSessionDialog extends LitElement {
           if (e.target === e.currentTarget) this.close();
         }}
       >
-        <form @submit=${(e: Event) => void this.submit(e)}>
+        ${this.waitingApproval ? html`<p class="hint" role="status">Waiting for the runner owner to approve this session. Closing this dialog stops waiting.</p>` : nothing}
+        <form
+          ?inert=${this.submitting}
+          @submit=${(e: Event) => void this.submit(e)}
+        >
           ${
             this.runnerId
               ? nothing
@@ -429,13 +454,19 @@ export class NewRunnerSessionDialog extends LitElement {
                       (e.target as HTMLSelectElement).value
                     )}
                 >
-                  ${this.runners.map(
-                    (r) =>
-                      html`<sl-option value=${r.id}
-                        >${r.name}${r.hostname ? ` (${r.hostname})` : ''}${
-                          this.isOnline(r) ? '' : ' - offline'
-                        }</sl-option
-                      >`
+                  ${[false, true].map(
+                    (shared) =>
+                      html` ${this.runners.some((r) => Boolean(r.shared_with_me) === shared) ? html`<sl-option disabled value=${shared ? '__shared' : '__mine'}>${shared ? 'Shared with me' : 'My runners'}</sl-option>` : nothing}
+                      ${this.runners
+                        .filter((r) => Boolean(r.shared_with_me) === shared)
+                        .map(
+                          (r) =>
+                            html`<sl-option value=${r.id}
+                              >${r.name}${r.shared_with_me ? ` · ${r.owner_name || 'Runner owner'}` : r.hostname ? ` (${r.hostname})` : ''}${
+                                this.isOnline(r) ? '' : ' - offline'
+                              }</sl-option
+                            >`
+                        )}`
                   )}
                 </sl-select>`
           }

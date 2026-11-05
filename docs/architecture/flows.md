@@ -530,6 +530,11 @@ Responses API; chat-only custom models must enable `meta_data.gateway.enabled`
 to use the gateway translation. Flow saves reject incompatible bindings with
 remediation, and legacy incompatible runs fail with `model_config` before launch.
 Direct providers explicitly configured for Responses remain supported.
+The chat-completions translation flattens Codex MCP namespaces for upstream
+models, then restores tool calls to the shape the client declared. Qualified,
+dotted and unambiguous bare aliases resolve to that same tool; flat MCP
+declarations retain flat calls. Hosted Codex's CLI version is pinned separately
+from its toolchain image.
 Codex uses JSON events: only the last assistant message in a completed turn
 can provide a plaintext completion marker. Prompt echoes, tool output and
 diagnostics stay escaped in the log. The completion grace timeout captures

@@ -503,6 +503,219 @@ describe('ApprovalView', () => {
       );
   }
 
+  describe('rejected decisions without a WebSocket update', () => {
+    for (const publicOnly of [false, true]) {
+      for (const status of ['approved', 'declined', 'expired', 'cancelled']) {
+        it(`reconciles ${publicOnly ? 'public' : 'authenticated'} already ${status}`, async () => {
+          const element = await renderRequest(
+            pendingRequest({ managed_agent_id: 'agent-1' })
+          );
+          const view = element as any;
+          view.publicOnly = publicOnly;
+          view.comment = 'Keep my explanation';
+          view.alwaysAllow = true;
+          const originalUrl = location.href;
+          if (publicOnly) history.replaceState({}, '', '?token=example-token');
+          try {
+            fetchStub
+              .withArgs(sinon.match(publicOnly ? /\/decide\?/ : /\/approve$/))
+              .resolves(
+                json(
+                  {
+                    detail: `${publicOnly ? 'Approval request' : 'Request'} already ${status}`,
+                  },
+                  400
+                )
+              );
+            fetchStub
+              .withArgs(
+                sinon.match(
+                  publicOnly ? /\/data\?/ : /\/approval-requests\/req-1$/
+                )
+              )
+              .resolves(
+                json(
+                  pendingRequest({
+                    status,
+                    history: [
+                      {
+                        event_type: status,
+                        detail: 'Resolved elsewhere',
+                        timestamp: new Date().toISOString(),
+                      },
+                    ],
+                  })
+                )
+              );
+            await view.handleApprove();
+            await element.updateComplete;
+            expect(view.approvalRequest.status).to.equal(status);
+            expect(view.comment).to.equal('Keep my explanation');
+            expect(view.submitting).to.equal(false);
+            expect(element.shadowRoot!.querySelector('.decision-bar')).not.to
+              .exist;
+            expect(element.shadowRoot!.textContent).not.to.contain(
+              'is paused until you decide'
+            );
+            expect(governanceWrites).to.have.length(0);
+          } finally {
+            history.replaceState({}, '', originalUrl);
+          }
+        });
+      }
+    }
+
+    it('blocks stale decisions and offers a retry when the refresh fails', async () => {
+      const element = await renderRequest(pendingRequest());
+      const view = element as any;
+      const liveRegion = element.shadowRoot!.querySelector(
+        '[data-console-status]'
+      )!;
+      view.comment = 'Keep my explanation';
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-1/approve')
+        .resolves(json({ detail: 'Request already approved' }, 400));
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-1')
+        .resolves(json({}, 503));
+      await view.handleApprove();
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('.decision-bar')).not.to.exist;
+      expect(
+        element.shadowRoot!.querySelector('.status-badge')!.textContent
+      ).to.contain('Status unavailable');
+      expect(
+        element.shadowRoot!.querySelector('.decision-recovery')!.textContent
+      ).to.contain('Retry');
+      expect(
+        element.shadowRoot!.querySelector('[data-console-status]')
+      ).to.equal(liveRegion);
+      expect(liveRegion.textContent).to.contain('Use Retry status');
+      expect(
+        element
+          .shadowRoot!.querySelector('.decision-recovery')!
+          .hasAttribute('role')
+      ).to.equal(false);
+      fetchStub.resetHistory();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+      await aTimeout(0);
+      expect(decisionCall('approve')).to.equal(undefined);
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-1')
+        .resolves(json(pendingRequest()));
+      const retry = element.shadowRoot!.querySelector(
+        '.retry-status'
+      ) as HTMLElement;
+      retry.focus();
+      retry.click();
+      await waitUntil(() => !view.reconciliationRequired);
+      await element.updateComplete;
+      expect(
+        (element.shadowRoot!.querySelector('.decision-comment') as any).value
+      ).to.equal('Keep my explanation');
+      expect(view.submitting).to.equal(false);
+      expect(element.shadowRoot!.activeElement).to.equal(
+        element.shadowRoot!.querySelector('.status-badge')
+      );
+      expect(liveRegion.textContent).to.contain('Request status: Pending');
+    });
+
+    it('ignores a reconciliation result after navigating to another request', async () => {
+      const element = await renderRequest(pendingRequest());
+      const view = element as any;
+      let complete!: (response: Response) => void;
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-1/approve')
+        .resolves(json({ detail: 'Request already approved' }, 400));
+      fetchStub.withArgs('/api/v1/approval-requests/req-1').returns(
+        new Promise<Response>((resolve) => {
+          complete = resolve;
+        })
+      );
+      const decision = view.handleApprove();
+      await waitUntil(() => view.reconciling);
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-2')
+        .resolves(json(pendingRequest({ id: 'req-2' })));
+      element.requestId = 'req-2';
+      await element.updateComplete;
+      await waitUntil(() => view.approvalRequest?.id === 'req-2');
+      complete(json(pendingRequest({ status: 'approved' })));
+      await decision;
+      expect(view.approvalRequest.id).to.equal('req-2');
+      expect(view.approvalRequest.status).to.equal('pending');
+      expect(view.reconciliationRequired).to.equal(false);
+    });
+
+    for (const failure of ['network', 'server', 'validation']) {
+      it(`keeps form input and allows retry after a ${failure} failure`, async () => {
+        const element = await renderRequest(
+          pendingRequest({
+            question_schema: {
+              type: 'object',
+              properties: { reason: { type: 'string', title: 'Reason' } },
+            },
+          })
+        );
+        const view = element as any;
+        const form = element.shadowRoot!.querySelector('answer-form') as any;
+        await form.updateComplete;
+        const input = form.shadowRoot.querySelector('.field-input');
+        input.value = 'My explanation';
+        input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+        await form.updateComplete;
+        view.comment = 'Keep comment';
+        const post = fetchStub.withArgs(
+          '/api/v1/approval-requests/req-1/approve'
+        );
+        if (failure === 'network')
+          post.rejects(new TypeError('Failed to fetch'));
+        else
+          post.resolves(
+            json(
+              {
+                detail:
+                  failure === 'validation'
+                    ? {
+                        message: 'Answer invalid',
+                        errors: [
+                          { path: 'reason', message: 'Please explain more' },
+                        ],
+                      }
+                    : 'Unavailable',
+              },
+              failure === 'validation' ? 422 : 503
+            )
+          );
+        fetchStub.resetHistory();
+        await view.submitDecision(
+          'approve',
+          { answer: { reason: 'My explanation' }, comment: view.comment },
+          'Approved'
+        );
+        await element.updateComplete;
+        await form.updateComplete;
+        expect(element.shadowRoot!.querySelector('answer-form')).to.equal(form);
+        expect(form.shadowRoot.querySelector('.field-input').value).to.equal(
+          'My explanation'
+        );
+        if (failure === 'validation')
+          expect(form.shadowRoot.textContent).to.contain('Please explain more');
+        expect(view.comment).to.equal('Keep comment');
+        expect(view.submitting).to.equal(false);
+        expect(view.reconciliationRequired).to.equal(false);
+        expect(
+          fetchStub
+            .getCalls()
+            .filter(
+              (call) =>
+                String(call.args[0]) === '/api/v1/approval-requests/req-1'
+            )
+        ).to.have.length(0);
+      });
+    }
+  });
+
   describe('an expired pending request', () => {
     it('renders as timed out with no decision bar', async () => {
       const element = await renderRequest(
@@ -735,6 +948,39 @@ describe('ApprovalView', () => {
     afterEach(async () => {
       await setViewport({ width: 1280, height: 800 });
     });
+
+    for (const width of [360, 390, 640, 1440]) {
+      for (const toolName of ['read', 'publish_documentation_update']) {
+        it(`fits the complete standing rule scope at ${width}px for ${toolName}`, async () => {
+          await setViewport({ width, height: 844 });
+          const element = await renderRequest(
+            pendingRequest({
+              tool_name: toolName,
+              managed_agent_id: 'agent-1',
+              managed_agent_name: 'release-validation-orchestrator',
+            })
+          );
+          await waitUntil(
+            () => !!element.shadowRoot!.querySelector('.always-allow')
+          );
+          const checkbox = element.shadowRoot!.querySelector(
+            '.always-allow'
+          ) as any;
+          await checkbox.updateComplete;
+          const label = checkbox.shadowRoot.querySelector(
+            '[part="label"]'
+          ) as HTMLElement;
+          expect(checkbox.textContent).to.contain(
+            'release-validation-orchestrator'
+          );
+          expect(label.getBoundingClientRect().right).to.be.at.most(
+            element.getBoundingClientRect().right + 1
+          );
+          expect(document.documentElement.scrollWidth).to.be.at.most(width);
+          expect(checkbox.getBoundingClientRect().height).to.be.at.least(44);
+        });
+      }
+    }
 
     it('keeps the header and the decision buttons inside the page', async () => {
       // A narrow wrapper div would not do: media queries read the window, so the

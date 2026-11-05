@@ -1,6 +1,9 @@
 """Tests for MCP config service."""
 
 import json
+import logging
+
+import pytest
 from unittest.mock import patch
 
 from preloop.services.mcp_config_service import MCPConfigService
@@ -36,6 +39,28 @@ class TestGenerateMCPConfig:
         assert "preloop-mcp" in config["allowed_tools"]
         assert "get_issue" in config["allowed_tools"]["preloop-mcp"]
         assert "search_issues" in config["allowed_tools"]["preloop-mcp"]
+
+    def test_config_diagnostics_exclude_credentials(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Runtime credentials stay in the returned configuration only."""
+        marker = "synthetic-config-credential"
+        with caplog.at_level(
+            logging.DEBUG, logger="preloop.services.mcp_config_service"
+        ):
+            config = MCPConfigService.generate_mcp_config(
+                allowed_mcp_servers=["preloop-mcp"],
+                allowed_mcp_tools=[{"name": "get_issue"}],
+                preloop_url="https://example.com",
+                account_api_token=marker,
+            )
+
+        assert (
+            config["mcpServers"]["preloop-mcp"]["headers"]["Authorization"]
+            == f"Bearer {marker}"
+        )
+        assert marker not in caplog.text
+        assert "Generated MCP config: 1 servers, 1 allowed tools" in caplog.text
 
     def test_generate_mcp_config_without_token(self):
         """Test generating config without API token."""

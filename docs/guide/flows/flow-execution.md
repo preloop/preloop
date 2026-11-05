@@ -213,6 +213,11 @@ Execution pages update in real-time via WebSocket:
 
 Real-time streaming logs from the AI agent.
 
+The log panel shows up to 1,000 loaded lines at a time. Use **Earlier lines**
+and **Later lines** to browse them, or **Load previous logs** to fetch older
+history. Search and **Copy logs** include all loaded lines. Pause following
+live output to keep your place while reading.
+
 **What You'll See:**
 
 

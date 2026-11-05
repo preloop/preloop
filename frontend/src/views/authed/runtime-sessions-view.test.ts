@@ -649,7 +649,7 @@ describe('RuntimeSessionsView', () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       const body =
-        url === '/api/v1/runners'
+        url === '/api/v1/runners?purpose=sessions'
           ? runners
           : url.includes('/session-options')
             ? SESSION_OPTIONS
