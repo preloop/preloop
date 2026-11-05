@@ -55,7 +55,7 @@ from datetime import UTC, datetime
 from typing import Any, BinaryIO, Iterable, Iterator, Optional, Sequence
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.cra.evidence_pack import canonical_manifest_json
@@ -361,25 +361,15 @@ def _artifact_rows(
     Expiry is not a filter: an artifact past ``expires_at`` whose bytes are
     still present (because it, or its session, is held) is exported.
     """
-    stmt = (
-        select(
-            RuntimeSessionArtifact,
-            RuntimeSessionArtifact.ciphertext.is_not(None).label("has_bytes"),
-        )
-        .options(defer(RuntimeSessionArtifact.ciphertext))
-        .where(
-            RuntimeSessionArtifact.account_id == account_id,
-            RuntimeSessionArtifact.created_at >= start,
-            RuntimeSessionArtifact.created_at < end,
-        )
-        .order_by(RuntimeSessionArtifact.created_at, RuntimeSessionArtifact.id)
-    )
-    if runtime_session_id is not None:
-        stmt = stmt.where(
-            RuntimeSessionArtifact.runtime_session_id == runtime_session_id
-        )
     limit = _max_rows()
-    rows = [(row, bool(has)) for row, has in db.execute(stmt.limit(limit + 1)).all()]
+    rows = artifact_crud.export_rows(
+        db,
+        account_id=account_id,
+        start=start,
+        end=end,
+        runtime_session_id=runtime_session_id,
+        limit=limit + 1,
+    )
     if len(rows) > limit:
         raise PeriodExportError(
             "period_too_large",

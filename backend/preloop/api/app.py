@@ -1929,6 +1929,8 @@ def create_app() -> FastAPI:
         plugin_manager = get_plugin_manager()
         for plugin in plugin_manager._plugins.values():
             app.dependency_overrides.update(plugin.get_dependencies())
+            for middleware in plugin.get_middlewares():
+                app.add_middleware(middleware)
 
     if is_api_role:
         if plugin_manager is None:
