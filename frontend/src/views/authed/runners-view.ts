@@ -1171,6 +1171,7 @@ export class RunnersView extends LitElement {
       <capability-extension
         name="runner-sharing"
         .context=${{
+          runnerId: new URLSearchParams(window.location.search).get('sharing'),
           runners: this.runners
             .filter((row) => Boolean(row.registered_by_user_id))
             .map((row) => ({

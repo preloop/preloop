@@ -178,6 +178,26 @@ def get_or_create(
             detail="Owner permission requested",
         )
     )
+    if action == "runner_session_start" and details.get("requester_user_id"):
+        from preloop.models.crud.runner_notice import record
+
+        runner = db.get(models.FlowRunner, UUID(subject_id))
+        requester = db.get(models.User, UUID(details["requester_user_id"]))
+        if (
+            runner is not None
+            and requester is not None
+            and runner.account_id == account_id
+            and requester.account_id == account_id
+        ):
+            record(
+                db,
+                runner=runner,
+                actor=requester,
+                title="Runner approval requested",
+                message=f"{requester.full_name or requester.username} requests {details.get('harness', 'a session')} on {runner.name} in {details.get('workspace_label', '')}.",
+                href=f"/console/approval/{approval.id}",
+                commit=False,
+            )
     db.commit()
     return consent, approval, True
 

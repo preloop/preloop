@@ -3,6 +3,11 @@
 from tests.credential_fixtures import ai_model_with_secret
 
 import json
+import os
+import shutil
+import subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5211,6 +5216,23 @@ def test_merged_confirmation_artifact_is_rechecked_against_the_schema():
     assert orchestrator._result_schema_validation["valid"] is True
 
 
+@pytest.fixture(scope="module")
+def review_cli_binary(tmp_path_factory):
+    """Build the actual entry point so this checks the process exit code too."""
+    if shutil.which("go") is None:
+        pytest.skip("Go is needed for the orchestrator/CLI integration regression")
+    binary = tmp_path_factory.mktemp("review-cli") / "preloop"
+    subprocess.run(
+        ["go", "build", "-o", str(binary), "./cmd/preloop"],
+        cwd=Path(__file__).resolve().parents[2] / "cli",
+        check=True,
+        capture_output=True,
+        timeout=180,
+        env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+    )
+    return binary
+
+
 class TestReviewPublicationGate:
     """EE #202: a required review is proven by a server receipt, not a claim."""
 
@@ -5318,18 +5340,25 @@ class TestReviewPublicationGate:
         return values
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "publication_field", ["review_posted", "review_posted_to_github"]
+    )
     async def test_incident_artifact_fails_with_report_preserved(
-        self, db_session, review_flow, mock_nats_client, pr_event
+        self, db_session, review_flow, mock_nats_client, pr_event, publication_field
     ):
+        artifact = dict(self.INCIDENT_ARTIFACT)
+        artifact[publication_field] = artifact.pop("review_posted_to_github")
         orch = await self._run(
             db_session,
             review_flow,
             mock_nats_client,
             pr_event,
-            dict(self.INCIDENT_ARTIFACT),
+            artifact,
         )
         log = orch.execution_log
         assert log.status == "FAILED"
+        assert publication_field in log.error_message
+        assert log.result["review_publication"]["status"] == "not_published"
         assert log.result["blocker"].startswith("GitHub App 401")
         assert log.result["findings_count"] == 2
 
@@ -5345,6 +5374,9 @@ class TestReviewPublicationGate:
                 "review_posted_to_github": True,
             },
             {"status": "success"},
+            None,
+            {},
+            {"status": "success", "review_posted": "malformed-boolean"},
         ],
     )
     @pytest.mark.asyncio
@@ -5377,6 +5409,122 @@ class TestReviewPublicationGate:
         assert log.status == "SUCCEEDED"
         assert log.result["review_publication"]["status"] == "published"
         assert log.result["review_publication"]["review_action"] == action
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "published", [False, True], ids=["provider-401", "receipt"]
+    )
+    async def test_trigger_wait_process_exit_matches_publication(
+        self,
+        db_session,
+        review_flow,
+        mock_nats_client,
+        pr_event,
+        review_cli_binary,
+        tmp_path,
+        published,
+    ):
+        """Serve the persisted orchestrator verdict to the real CLI over loopback.
+
+        Provider/model work is mocked; the HTTP shim only exposes the run that
+        the real orchestrator persisted. A generic success sentinel cannot make
+        an undelivered review return process exit zero to CI.
+        """
+        artifact = (
+            {"status": "success", "review_action": "approve", "review_posted": True}
+            if published
+            else dict(self.INCIDENT_ARTIFACT)
+        )
+        orch = await self._run(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            artifact,
+            receipt=self._receipt() if published else None,
+        )
+        db_session.refresh(orch.execution_log)
+        log = orch.execution_log
+        assert log.status == ("SUCCEEDED" if published else "FAILED")
+        assert log.result["review_publication"]["status"] == (
+            "published" if published else "not_published"
+        )
+        if not published:
+            assert log.result["blocker"] == self.INCIDENT_ARTIFACT["blocker"]
+            assert log.result["findings_count"] == 2
+        flow_path = f"/api/v1/flows/{review_flow.id}"
+        execution_path = f"/api/v1/flows/executions/{log.id}"
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib request-handler interface
+                requests.append(("GET", self.path))
+                if self.path == flow_path:
+                    response = {"id": str(review_flow.id), "name": review_flow.name}
+                elif self.path == execution_path:
+                    response = {
+                        "id": str(log.id),
+                        "status": log.status,
+                        "result": log.result,
+                        "error_message": log.error_message,
+                    }
+                elif self.path.startswith(execution_path + "/logs"):
+                    response = {"logs": [], "source": "database"}
+                else:
+                    self.send_error(404)
+                    return
+                self.respond(response)
+
+            def do_POST(self):  # noqa: N802 - stdlib request-handler interface
+                requests.append(("POST", self.path))
+                if self.path != flow_path + "/trigger":
+                    self.send_error(404)
+                    return
+                self.respond({"id": str(log.id), "status": "RUNNING"})
+
+            def respond(self, response):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(response).encode())
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = subprocess.run(
+                [
+                    str(review_cli_binary),
+                    "--config",
+                    str(tmp_path / "config.yaml"),
+                    "--url",
+                    f"http://127.0.0.1:{server.server_port}",
+                    "--token",
+                    "synthetic-test-token",
+                    "flow",
+                    "trigger",
+                    str(review_flow.id),
+                    "--wait",
+                    "--timeout",
+                    "5s",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        assert result.returncode == (0 if published else 1), result.stderr
+        assert ("POST", flow_path + "/trigger") in requests
+        assert ("GET", execution_path) in requests
+        if not published:
+            assert "FAILED" in result.stderr
 
     @pytest.mark.parametrize(
         "overrides",

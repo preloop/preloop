@@ -4018,7 +4018,14 @@ _CODEX_NAMESPACE_REQUEST_TOOLS = [
 ]
 
 
-def _run_full_turn1_stream(upstream_chunks):
+def _captured_codex_tools(image: str) -> list[dict]:
+    from pathlib import Path
+
+    fixtures = Path(__file__).parents[1] / "fixtures" / "codex_mcp"
+    return json.loads((fixtures / f"{image}-0.153.4-tools.json").read_text())
+
+
+def _run_full_turn1_stream(upstream_chunks, tools=None):
     """Run stream_response through the REAL tools normalization path.
 
     Unlike `_codex_namespace_service`, nothing is preset on the service: the
@@ -4072,7 +4079,7 @@ def _run_full_turn1_stream(upstream_chunks):
                 {
                     "model": "ox-alpha",
                     "input": "Run the audit",
-                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS if tools is None else tools,
                     "stream": True,
                 }
             )
@@ -4110,12 +4117,24 @@ def test_stream_turn1_text_with_namespace_tools_passes_through():
     assert output[0]["content"] == [{"type": "output_text", "text": "Plan ready."}]
 
 
-def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
-    """A first-turn ask_user call is rewritten to namespace + SHORT name.
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__preloop__get_pull_request",
+        "mcp__preloop.get_pull_request",
+        "preloop.get_pull_request",
+        "get_pull_request",
+    ],
+)
+@pytest.mark.parametrize("image", ["191dc7e2", "c6f75840"])
+def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases(
+    tool_name: str, image: str
+) -> None:
+    """A first-turn get_pull_request call is rewritten to namespace + SHORT name.
 
     The alias map here is captured from the request's own namespace
     container by `_normalize_openai_tools`, not preset on the service: this
-    is the original mcp__preloop__ask_user routing case end to end.
+    is the original mcp__preloop__get_pull_request routing case end to end.
     """
     events, _ = _run_full_turn1_stream(
         [
@@ -4128,7 +4147,7 @@ def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
                                 {
                                     "index": 0,
                                     "id": "call_1",
-                                    "function": {"name": "mcp__preloop__ask_user"},
+                                    "function": {"name": tool_name},
                                 }
                             ]
                         }
@@ -4160,7 +4179,8 @@ def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
                     "total_tokens": 120,
                 },
             },
-        ]
+        ],
+        tools=_captured_codex_tools(image),
     )
 
     assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
@@ -4171,12 +4191,12 @@ def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
     ]
     assert len(added) == 1
     assert added[0]["item"]["namespace"] == "mcp__preloop"
-    assert added[0]["item"]["name"] == "ask_user"
+    assert added[0]["item"]["name"] == "get_pull_request"
     completed = events[-2]
     output_item = completed["response"]["output"][0]
     assert output_item["type"] == "function_call"
     assert output_item["namespace"] == "mcp__preloop"
-    assert output_item["name"] == "ask_user"
+    assert output_item["name"] == "get_pull_request"
     assert output_item["call_id"] == "call_1"
 
 
@@ -4274,7 +4294,19 @@ def test_stream_turn1_text_without_tools_still_passes():
     ]
 
 
-def test_create_response_turn1_with_namespace_tools_nonstreaming():
+@pytest.mark.parametrize("image", ["191dc7e2", "c6f75840"])
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__preloop__get_pull_request",
+        "mcp__preloop.get_pull_request",
+        "preloop.get_pull_request",
+        "get_pull_request",
+    ],
+)
+def test_create_response_turn1_with_namespace_tools_nonstreaming(
+    image: str, tool_name: str
+) -> None:
     """Non-streaming: turn-1 text and tool call shapes with namespace tools."""
     auth_context = ModelGatewayAuthContext(
         token="token",
@@ -4329,7 +4361,7 @@ def test_create_response_turn1_with_namespace_tools_nonstreaming():
                 {
                     "model": "ox-alpha",
                     "input": "Run the audit",
-                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                    "tools": _captured_codex_tools(image),
                 }
             )
 
@@ -4348,7 +4380,7 @@ def test_create_response_turn1_with_namespace_tools_nonstreaming():
                     "id": "call_1",
                     "type": "function",
                     "function": {
-                        "name": "mcp__preloop__ask_user",
+                        "name": tool_name,
                         "arguments": '{"question": "Proceed?"}',
                     },
                 }
@@ -4358,7 +4390,7 @@ def test_create_response_turn1_with_namespace_tools_nonstreaming():
     calls = [i for i in tool_response["output"] if i["type"] == "function_call"]
     assert len(calls) == 1
     assert calls[0]["namespace"] == "mcp__preloop"
-    assert calls[0]["name"] == "ask_user"
+    assert calls[0]["name"] == "get_pull_request"
 
 
 # --------------------------------------------------------------------------
@@ -5067,3 +5099,45 @@ def test_stream_truncated_tool_arguments_are_not_dispatched() -> None:
     )
     assert terminal["response"]["output"][0]["arguments"] == arguments
     assert terminal["response"]["output"][0]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["mcp__preloop__lookup", "mcp__preloop.lookup", "preloop.lookup", "lookup"],
+)
+def test_stream_flat_mcp_declaration_keeps_flat_call_shape(tool_name: str) -> None:
+    events, _ = _run_full_turn1_stream(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": tool_name, "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ],
+        tools=[
+            {
+                "type": "function",
+                "name": "mcp__preloop__lookup",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    added = next(
+        e["item"]
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.output_item.added"
+    )
+    completed = events[-2]["response"]["output"][0]
+    for item in [added, completed]:
+        assert item["name"] == "mcp__preloop__lookup"
+        assert "namespace" not in item

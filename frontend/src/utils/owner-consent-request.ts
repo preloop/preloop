@@ -6,7 +6,11 @@ export async function ownerConsentRequest(
   fetcher: (path: string, init?: RequestInit) => Promise<Response>,
   path: string,
   init: RequestInit,
-  timing: { pollIntervalMs?: number; maxWaitMs?: number } = {}
+  timing: {
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+    onPending?: (approvalId: string) => void;
+  } = {}
 ): Promise<Response> {
   const payload = JSON.parse(init.body as string);
   const body = JSON.stringify({
@@ -28,6 +32,7 @@ export async function ownerConsentRequest(
     return response;
   }
 
+  timing.onPending?.(pending.approval_id);
   const signal = init.signal;
   let deadline = Date.now() + (timing.maxWaitMs ?? 30 * 60 * 1000);
   while (Date.now() < deadline) {

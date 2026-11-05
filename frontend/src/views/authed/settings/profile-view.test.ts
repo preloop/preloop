@@ -143,9 +143,9 @@ describe('ProfileView', () => {
     await (element as any).handleUpdateProfile(new Event('submit'));
     await element.updateComplete;
 
-    expect((element as any).updateProfileMessage).to.contain(
-      'Profile updated successfully'
-    );
+    expect(
+      element.shadowRoot!.querySelector('#profile-update-status')!.textContent
+    ).to.contain('Profile updated successfully');
     const putCall = fetchStub
       .getCalls()
       .find((c) => (c.args[1]?.method || 'GET').toUpperCase() === 'PUT');
@@ -173,6 +173,51 @@ describe('ProfileView', () => {
 
     expect((element as any).updateProfileMessage).to.contain('nope');
   });
+  it('announces pending and repeated save failures without losing input or focus', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<ProfileView>(
+      html`<profile-view></profile-view>`
+    );
+    await waitUntil(() => !!(element as any).user);
+    await element.updateComplete;
+    const status = element.shadowRoot!.querySelector('#profile-update-status')!;
+    expect(status.getAttribute('role')).to.equal('status');
+    expect(status.getAttribute('aria-live')).to.equal('polite');
+    expect(status.getAttribute('aria-atomic')).to.equal('true');
+    const input = element.shadowRoot!.querySelector('sl-input') as any;
+    input.value = 'already.used';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    input.focus();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let resolve!: (response: Response) => void;
+      fetchStub
+        .withArgs('/api/v1/auth/users/me', sinon.match({ method: 'PUT' }))
+        .returns(
+          new Promise<Response>((done) => {
+            resolve = done;
+          })
+        );
+      const submit = element.handleUpdateProfile(new Event('submit'));
+      await waitUntil(() => status.textContent!.includes('Updating profile'));
+      expect(
+        element
+          .shadowRoot!.querySelector('sl-button[type="submit"]')!
+          .hasAttribute('disabled')
+      ).to.equal(true);
+      resolve(
+        jsonResponse({ detail: 'That username is already in use.' }, 409)
+      );
+      await submit;
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('#profile-update-status')
+      ).to.equal(status);
+      expect(status.textContent).to.contain('That username is already in use.');
+      expect(input.value).to.equal('already.used');
+      expect(element.shadowRoot!.activeElement).to.equal(input);
+    }
+  });
+
   it('shows verified status without resend controls', async () => {
     fetchStub = createFetchStub({ verified: true });
     const element = await fixture<ProfileView>(

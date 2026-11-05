@@ -44,13 +44,25 @@ Requests are ephemeral, never queued for an offline runner or replayed on reconn
 ## Routing and policy
 
 Model lookup, account authorization, budgets, request policy, context optimization,
-response policy and usage/audit recording remain in the gateway. Only the provider
-I/O in the chat completion path changes. The gateway replaces the public model
-alias with the registered upstream model identifier. Direct endpoints retain their
-existing SSRF validation; runner URLs are never fetched by backend HTTP clients.
-The first release supports chat completions, including tools and SSE streaming.
-Embeddings, audio, raw Responses passthrough, and provider-specific protocols are
-outside this release.
+response policy and usage/audit recording remain in the gateway. Only provider
+I/O goes through the runner. The gateway replaces the public model alias with the
+registered upstream model identifier. Direct endpoints retain their existing SSRF
+validation; runner URLs are never fetched by backend HTTP clients.
+
+Chat completions support tools and SSE streaming. Responses clients, including
+Codex CLI, also work through the gateway's existing chat-completions translation,
+for both streaming and nonstreaming requests. The shared translation converts
+instructions, conversation/tool history, Codex namespace and freeform tools,
+output limits and structured output formats into chat-completions fields. Runner
+chat SSE is rendered as Responses events; tool calls regain the client-declared
+namespace or freeform shape, and usage retains token/cache/reasoning details.
+The local model must support the requested chat-completions features.
+
+Runner routes always use this translation, even with
+`meta_data.gateway.responses_api: native`; no native Responses probe is sent.
+Raw Responses passthrough, Responses-only hosted tools/state, embeddings, audio,
+and provider-specific protocols remain unsupported. The transport still calls
+only `/chat/completions` and needs no CLI protocol upgrade.
 
 ## Security
 

@@ -51,6 +51,8 @@ describe('PreloopFlowForm harness + model picker', () => {
                   {
                     id: DESKTOP,
                     name: 'jonas-desktop',
+                    shared_with_me: true,
+                    owner_name: 'Jane Doe',
                     online: false,
                     eligible: false,
                     reason: 'runner_offline',
@@ -114,7 +116,7 @@ describe('PreloopFlowForm harness + model picker', () => {
     ].map((node) => node.textContent?.replace(/\s+/g, ' ').trim());
     expect(runners).to.deep.equal([
       'jonas-laptop (ready)',
-      'jonas-desktop (runner_offline)',
+      'jonas-desktop · Shared with me · Jane Doe (runner_offline)',
     ]);
   });
 

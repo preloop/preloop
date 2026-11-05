@@ -275,6 +275,8 @@ class RunnerResponse(BaseModel):
     running_count: int = 0
     running_execution_ids: List[UUID] = Field(default_factory=list)
     registered_by_email: Optional[str] = None
+    owner_name: Optional[str] = None
+    shared_with_me: bool = False
     capabilities: Dict[str, Any] = Field(default_factory=dict)
     #: Last published harness inventory; null means "inventory unknown".
     harness_inventory: Optional[HarnessInventory] = None
