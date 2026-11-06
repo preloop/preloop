@@ -4,7 +4,11 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './runners-view';
-import type { RunnersView } from './runners-view';
+import {
+  runnerHostLabel,
+  runnerOwnerLabel,
+  type RunnersView,
+} from './runners-view';
 import { invalidateApiCaches } from '../../api';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -372,6 +376,69 @@ describe('RunnersView', () => {
     await element.updateComplete;
     return element;
   }
+
+  it('names owner and host on one line under the runner name', async () => {
+    expect(runnerOwnerLabel({ owner_name: 'Nyota Uhura' })).to.equal(
+      'Nyota Uhura'
+    );
+    expect(
+      runnerOwnerLabel({ registered_by_email: 'ops@example.com' })
+    ).to.equal('ops@example.com');
+    expect(runnerOwnerLabel({})).to.equal('Unknown owner');
+    expect(
+      runnerHostLabel({ hostname: 'uhura-mbp', os: 'darwin', arch: 'arm64' })
+    ).to.equal('uhura-mbp (darwin/arm64)');
+    expect(runnerHostLabel({})).to.equal('unknown host');
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'uhura-local',
+        hostname: 'uhura-mbp',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: [],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+        registered_by_email: 'uhura@example.dev',
+        owner_name: 'Nyota Uhura',
+      },
+    ]);
+    const headers = [...element.shadowRoot!.querySelectorAll('th')].map((th) =>
+      th.textContent!.trim()
+    );
+    expect(headers.slice(0, 3)).to.deep.equal([
+      'Runner',
+      'Status',
+      'Harnesses',
+    ]);
+    expect(headers).to.not.include('Registered by');
+    const identity = element.shadowRoot!.querySelector('.runner-identity')!;
+    expect(identity.textContent).to.contain('uhura-local');
+    expect(identity.textContent).to.contain('Nyota Uhura');
+    expect(identity.textContent).to.contain('uhura-mbp (darwin/arm64)');
+    expect(element.shadowRoot!.querySelector('.hosted-row')).to.equal(null);
+  });
+
+  it('lists the Preloop hosted runner first when the account can use it', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'scotty-local',
+        hostname: 'scotty-xps',
+        labels: [],
+        status: 'online',
+        current_execution_id: null,
+      },
+    ]);
+    (element as unknown as { hostedMinutesLeft: number }).hostedMinutesLeft =
+      412;
+    await element.updateComplete;
+    const rows = element.shadowRoot!.querySelectorAll('tbody tr');
+    expect(rows[0].classList.contains('hosted-row')).to.equal(true);
+    expect(rows[0].textContent).to.contain('Preloop hosted');
+    expect(rows[0].textContent).to.contain('412 hosted minutes left');
+  });
 
   it('renders the harness inventory with login, governance, models and billing', async () => {
     const element = await renderWith([
