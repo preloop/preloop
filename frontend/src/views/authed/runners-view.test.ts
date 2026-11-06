@@ -39,7 +39,10 @@ describe('RunnersView', () => {
 
   function createFetchStub(
     runners: unknown[] = [],
-    account: { default_runner_pool?: string | null } = {},
+    account: {
+      default_runner_pool?: string | null;
+      hosted_minutes_remaining?: number | null;
+    } = {},
     options: {
       failPatch?: boolean;
       deleteConflict?: boolean;
@@ -128,6 +131,7 @@ describe('RunnersView', () => {
             id: 'acct-1',
             organization_name: 'Example Org',
             default_runner_pool: account.default_runner_pool ?? null,
+            hosted_minutes_remaining: account.hosted_minutes_remaining ?? null,
             created_at: '2026-09-04T00:00:00Z',
             updated_at: '2026-09-04T00:00:00Z',
           });
@@ -420,24 +424,47 @@ describe('RunnersView', () => {
     expect(element.shadowRoot!.querySelector('.hosted-row')).to.equal(null);
   });
 
-  it('lists the Preloop hosted runner first when the account can use it', async () => {
-    const element = await renderWith([
-      {
-        id: '11111111-1111-4111-8111-111111111111',
-        name: 'scotty-local',
-        hostname: 'scotty-xps',
-        labels: [],
-        status: 'online',
-        current_execution_id: null,
-      },
-    ]);
-    (element as unknown as { hostedMinutesLeft: number }).hostedMinutesLeft =
-      412;
-    await element.updateComplete;
+  async function renderWithHosted(runners: unknown[], minutes: number) {
+    fetchStub = createFetchStub(runners, { hosted_minutes_remaining: minutes });
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => element.shadowRoot!.querySelector('.hosted-row') !== null,
+      'hosted row did not render'
+    );
+    return element;
+  }
+
+  it('lists the Preloop hosted runner first from the account balance', async () => {
+    const element = await renderWithHosted(
+      [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'scotty-local',
+          hostname: 'scotty-xps',
+          labels: [],
+          status: 'online',
+          current_execution_id: null,
+        },
+      ],
+      412
+    );
     const rows = element.shadowRoot!.querySelectorAll('tbody tr');
     expect(rows[0].classList.contains('hosted-row')).to.equal(true);
     expect(rows[0].textContent).to.contain('Preloop hosted');
+    expect(rows[0].textContent).to.contain('Available');
     expect(rows[0].textContent).to.contain('412 hosted minutes left');
+  });
+
+  it('shows the hosted runner instead of the empty state when no runner is registered', async () => {
+    const element = await renderWithHosted([], 0);
+    const row = element.shadowRoot!.querySelector('.hosted-row')!;
+    expect(row.textContent).to.contain('Out of minutes');
+    expect(row.querySelector('sl-badge')!.getAttribute('variant')).to.equal(
+      'warning'
+    );
+    expect(element.shadowRoot!.querySelector('.empty-state')).to.equal(null);
   });
 
   it('renders the harness inventory with login, governance, models and billing', async () => {

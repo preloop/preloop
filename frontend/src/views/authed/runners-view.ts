@@ -99,7 +99,6 @@ export class RunnersView extends LitElement {
   private defaultRunnerPool: string | null = null;
 
   @state()
-  @state()
   private hostedMinutesLeft: number | null = null;
 
   @state()
@@ -1103,7 +1102,7 @@ export class RunnersView extends LitElement {
                   >
                 </div>
               </sl-alert>`
-            : this.runners.length === 0
+            : this.runners.length === 0 && this.hostedMinutesLeft === null
               ? html`
                   <p class="empty-state">
                     <span>No runners registered. Start one:</span>
