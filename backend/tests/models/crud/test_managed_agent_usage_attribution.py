@@ -579,9 +579,13 @@ def test_the_agent_detail_response_carries_the_subscription_block(
 
 
 def test_activity_status_follows_traffic_in_per_run_sessions(
-    db_session: Session, test_user: Any
+    db_session: Session, test_user: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An agent whose bound session is quiet but whose run is busy is active."""
+    from preloop.models.crud import managed_agent
+
+    # Fixture timestamps are anchored at collection, even in a long suite.
+    monkeypatch.setattr(managed_agent, "_utc_now", lambda: NOW.replace(tzinfo=UTC))
     base = f"claude-code-{uuid4().hex[:12]}"
     bound = _session(db_session, test_user, source_type="claude_code", source_id=base)
     agent = _agent(db_session, test_user, base=base, session=bound, name="Runner")
