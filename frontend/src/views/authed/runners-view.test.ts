@@ -461,6 +461,8 @@ describe('RunnersView', () => {
     const element = await renderWithHosted([], 0);
     const row = element.shadowRoot!.querySelector('.hosted-row')!;
     expect(row.textContent).to.contain('Out of minutes');
+    const header = element.shadowRoot!.querySelector('view-header')!;
+    expect(header.getAttribute('description')).to.contain('Preloop hosted');
     expect(row.querySelector('sl-badge')!.getAttribute('variant')).to.equal(
       'warning'
     );

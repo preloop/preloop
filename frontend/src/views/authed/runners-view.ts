@@ -1078,7 +1078,7 @@ export class RunnersView extends LitElement {
     return html`
       <view-header
         headerText="Runners"
-        description="Self-hosted CLI runners for this account."
+        description="Self-hosted CLI runners and Preloop hosted runs for this account."
         >${this.fleetEnabled ? html`<a slot="main-column" href=${fleetHref()}>Device fleet</a>` : nothing}</view-header
       >
       <runner-compliance></runner-compliance>
