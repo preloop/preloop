@@ -6,6 +6,8 @@ Usage::
     DATABASE_URL=postgresql://... DEMO_TEAM_PASSWORD=... \\
         python scripts/seed_demo_team.py [--days 28] [--scale 1] [--seed 1701]
     python scripts/seed_demo_team.py --database-url postgresql://... --reset
+    # keep runners "Online" and agents/devices live while recording:
+    python scripts/seed_demo_team.py --database-url postgresql://... --no-seed --keepalive
 
 What it creates, all inside ONE account ("Enterprise Labs (demo)"):
 
@@ -13,7 +15,10 @@ What it creates, all inside ONE account ("Enterprise Labs (demo)"):
   Montgomery Scott (``scotty@example.com``, no password).
 * Devices ``uhura-mbp`` and ``scotty-xps`` (expected-device roster entries
   whose fingerprints match the runners), a shared hosted runner and each
-  member's personal runner, with owner and host name set.
+  member's personal runner, with owner and host name set, each reporting a
+  harness inventory and a fresh heartbeat. Presence lapses 45 s after the
+  last heartbeat; ``--keepalive`` refreshes runner heartbeats and agent
+  last-seen times every 15 s until Ctrl-C.
 * Managed agents Claude Code, Codex and Copilot owned by the two members.
 * Flows for issue triage, implement, review, repair and deploy.
 * A GitHub tracker for ``enterprise-labs/warp-core`` with 25 issues and 20
@@ -22,7 +27,9 @@ What it creates, all inside ONE account ("Enterprise Labs (demo)"):
 * ``--days`` of flow executions and agent runtime sessions with tool call,
   model and approval activity, priced gateway usage rows across several
   models, issue cost rollups/facts/pull requests, and ``work_ref`` tool calls
-  shaped by ``preloop.services.fleet_work_refs``.
+  shaped by ``preloop.services.fleet_work_refs``. Triage and implement runs
+  carry a dozen execution log steps each, and agent sessions extend their
+  agent's source id so the Users tab attributes them to the owner.
 * Budget policies with spend history: one healthy, one near its limit and
   one over it.
 
@@ -66,6 +73,7 @@ from preloop.models.crud import (
     crud_expected_device,
     crud_flow,
     crud_flow_execution,
+    crud_flow_execution_log,
     crud_flow_runner,
     crud_issue,
     crud_issue_cost,
@@ -607,7 +615,7 @@ class Seeder:
                     "os": m.os,
                     "arch": m.arch,
                     "labels": [m.os, "personal"],
-                    "status": "online" if m.key == "uhura" else "offline",
+                    "status": "online",
                     "concurrency": 2,
                     "reported_concurrency": 2,
                     "flow_execution_consent": "ask_me",
@@ -619,9 +627,11 @@ class Seeder:
                 token_hash=hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
                 capabilities={"harnesses": ["claude_code", "codex"]},
                 publication_capabilities={},
-                last_heartbeat=self.now - timedelta(minutes=2)
-                if row["status"] == "online"
-                else self.now - timedelta(hours=9),
+                # Within the 45 s presence window at seed time; keep it there
+                # while recording with --keepalive.
+                last_heartbeat=self.now,
+                harness_inventory=harness_inventory(row["name"], self.now),
+                harness_inventory_updated_at=self.now,
             )
         members = {m.key: m for m in MEMBERS}
         for a in AGENTS:
@@ -641,8 +651,7 @@ class Seeder:
                     "tags": {"team": "warp-core"},
                     "lifecycle_state": "active",
                     "lifecycle_updated_at": self.start,
-                    "last_seen_at": self.now
-                    - timedelta(minutes=self.rng.randint(3, 90)),
+                    "last_seen_at": self.now,
                 }
             )
         for f in FLOWS:
@@ -799,6 +808,18 @@ class Seeder:
                 execution_id=execution_id,
             )
         end = clock + timedelta(seconds=self.rng.uniform(10, 120))
+        if flow.key in LOGGED_FLOWS:
+            self.data.rows["execution_log"].extend(
+                execution_log_rows(
+                    execution_id,
+                    flow=flow.key,
+                    start=at,
+                    end=end,
+                    status=status,
+                    issue=issue,
+                    pr=pr.number if pr else None,
+                )
+            )
         self.data.rows["execution"].append(
             {
                 "id": execution_id,
@@ -1004,7 +1025,11 @@ class Seeder:
                     "id": session_id,
                     "account_id": ACCOUNT_ID,
                     "session_source_type": spec.kind,
-                    "session_source_id": f"demo-{spec.key}-session-{n}",
+                    # Per-run ids extend the agent's base source id, which is
+                    # how the console resolves a session to its owner.
+                    "session_source_id": (
+                        f"demo-{spec.key}-{MEMBER_HOSTS[spec.owner]}:session-{n}"
+                    ),
                     "runtime_principal_type": "managed_agent",
                     "runtime_principal_id": str(agent_id),
                     "runtime_principal_name": spec.display_name,
@@ -1193,6 +1218,7 @@ class Seeder:
             ("flow", crud_flow),
             ("issue", crud_issue),
             ("execution", crud_flow_execution),
+            ("execution_log", crud_flow_execution_log),
             ("session", crud_runtime_session),
             ("activity", crud_runtime_session_activity),
             ("api_usage", crud_api_usage),
@@ -1244,6 +1270,258 @@ class Seeder:
         self.budget_rows()
 
 
+MEMBER_HOSTS = {m.key: m.host for m in MEMBERS}
+RUNNER_IDS = (sid("runner", "hosted"), *(sid("runner", m.key) for m in MEMBERS))
+AGENT_IDS = tuple(sid("agent", a.key) for a in AGENTS)
+
+#: Flows whose runs get a readable execution log and timeline.
+LOGGED_FLOWS = frozenset({"triage", "implement"})
+
+#: Harnesses each runner reports: (harness id, display name, version, billing).
+RUNNER_HARNESSES: dict[str, tuple[tuple[str, str, str, str], ...]] = {
+    "warp-ci-hosted": (
+        ("claude_code", "Claude Code", "2.1.212", "metered"),
+        ("codex_cli", "Codex CLI", "0.64.0", "metered"),
+    ),
+    "uhura-personal": (
+        ("claude_code", "Claude Code", "2.1.212", "seat"),
+        ("copilot_cli", "Copilot CLI", "0.0.358", "seat"),
+    ),
+    "scotty-personal": (
+        ("codex_cli", "Codex CLI", "0.64.0", "seat"),
+        ("claude_code", "Claude Code", "2.1.209", "metered"),
+    ),
+}
+
+
+def harness_inventory(runner_name: str, now: datetime) -> dict[str, Any]:
+    """The harness inventory a runner would publish with its heartbeat.
+
+    Args:
+        runner_name: Seeded runner name (a key of ``RUNNER_HARNESSES``).
+        now: Report time.
+
+    Returns:
+        A ``HarnessInventory`` wire dictionary.
+    """
+    entries = [
+        {
+            "harness": harness,
+            "display_name": name,
+            "version": version,
+            "login_state": "signed_in",
+            "login_source": "stored",
+            "governance": "governed",
+            "support_level": "flows_and_sessions",
+            "enabled": True,
+            "sessions_enabled": True,
+            "session_mode": "resume",
+            "billing": billing,
+            "models": [],
+        }
+        for harness, name, version, billing in RUNNER_HARNESSES.get(runner_name, ())
+    ]
+    digest = hashlib.sha256(repr(entries).encode()).hexdigest()
+    return {
+        "schema": 1,
+        "generated_at": now.isoformat(),
+        "hash": f"sha256:{digest}",
+        "entries": entries,
+    }
+
+
+def execution_log_rows(
+    execution_id: uuid.UUID,
+    *,
+    flow: str,
+    start: datetime,
+    end: datetime,
+    status: str,
+    issue: Optional[int],
+    pr: Optional[int],
+) -> list[dict[str, Any]]:
+    """Twelve plausible log steps for one triage or implement run.
+
+    Rows use the stored shape of streamed execution messages: ``log_type`` is
+    the message type and ``metadata`` its payload.
+
+    Args:
+        execution_id: The run.
+        flow: ``triage`` or ``implement``.
+        start: Run start.
+        end: Run end.
+        status: Final status.
+        issue: Issue number the run worked on, if any.
+        pr: Pull request number, if any.
+
+    Returns:
+        Rows for ``flow_execution_log``, oldest first.
+    """
+    ref = f"{REPO_PATH}#{issue or pr or 0}"
+    if flow == "triage":
+        steps: list[tuple[str, dict[str, Any]]] = [
+            ("status_update", {"status": "STARTING"}),
+            ("agent_started", {"message": "Agent started on the hosted runner"}),
+            ("agent_log_line", {"line": f"Reading {ref}", "stream": "stdout"}),
+            (
+                "tool_call",
+                {
+                    "tool_name": "get_issue",
+                    "server_name": "github",
+                    "status": "succeeded",
+                },
+            ),
+            (
+                "agent_log_line",
+                {
+                    "line": "Searching for duplicates and related issues",
+                    "stream": "stdout",
+                },
+            ),
+            (
+                "tool_call",
+                {
+                    "tool_name": "search_issues",
+                    "server_name": "github",
+                    "status": "succeeded",
+                },
+            ),
+            (
+                "agent_log_line",
+                {"line": "No duplicate found; 2 related issues", "stream": "stdout"},
+            ),
+            (
+                "agent_log_line",
+                {
+                    "line": "Classified as bug, severity medium, area telemetry",
+                    "stream": "stdout",
+                },
+            ),
+            (
+                "tool_call",
+                {
+                    "tool_name": "update_issue",
+                    "server_name": "preloop-mcp",
+                    "status": "succeeded",
+                },
+            ),
+            (
+                "tool_call",
+                {
+                    "tool_name": "add_comment",
+                    "server_name": "preloop-mcp",
+                    "status": "succeeded",
+                },
+            ),
+            ("agent_stopped", {"message": "Agent finished"}),
+        ]
+    else:
+        steps = [
+            ("status_update", {"status": "STARTING"}),
+            ("agent_started", {"message": "Agent started; workspace cloned"}),
+            (
+                "agent_log_line",
+                {"line": f"Planning a fix for {ref}", "stream": "stdout"},
+            ),
+            (
+                "tool_call",
+                {"tool_name": "Read", "server_name": "native", "status": "succeeded"},
+            ),
+            (
+                "tool_call",
+                {"tool_name": "Grep", "server_name": "native", "status": "succeeded"},
+            ),
+            (
+                "agent_log_line",
+                {
+                    "line": "Root cause: retry loop ignores the backoff ceiling",
+                    "stream": "stdout",
+                },
+            ),
+            (
+                "tool_call",
+                {"tool_name": "Edit", "server_name": "native", "status": "succeeded"},
+            ),
+            (
+                "tool_call",
+                {"tool_name": "Bash", "server_name": "native", "status": "succeeded"},
+            ),
+            (
+                "agent_log_line",
+                {"line": "pytest: 214 passed in 41.2s", "stream": "stdout"},
+            ),
+            (
+                "agent_log_line",
+                {"line": "Committed 3 files; pushing branch", "stream": "stdout"},
+            ),
+            (
+                "tool_call",
+                {
+                    "tool_name": "create_pull_request",
+                    "server_name": "preloop-mcp",
+                    "status": "succeeded",
+                },
+            ),
+            ("agent_stopped", {"message": "Agent finished"}),
+        ]
+    steps.append(("status_update", {"status": status}))
+    span = (end - start) / len(steps)
+    return [
+        {
+            "id": sid("execution-log", f"{execution_id}:{index}"),
+            "execution_id": execution_id,
+            "timestamp": start + span * index,
+            "log_type": kind,
+            "message": payload.get("line") or payload.get("message"),
+            "metadata_": payload,
+        }
+        for index, (kind, payload) in enumerate(steps)
+    ]
+
+
+def keep_alive(db: Session, *, interval: float, rounds: Optional[int] = None) -> int:
+    """Refresh the demo runners' heartbeats and agents' last-seen times.
+
+    Runner presence turns offline 45 s after the last heartbeat, so a static
+    seed cannot stay "Online" for a recording. This loop does what a live
+    runner would, until interrupted (or for ``rounds`` passes).
+
+    Args:
+        db: Database session.
+        interval: Seconds between passes.
+        rounds: Passes to run; None runs until Ctrl-C.
+
+    Returns:
+        Passes completed.
+    """
+    done = 0
+    while rounds is None or done < rounds:
+        now = datetime.now(UTC)
+        for runner_id in RUNNER_IDS:
+            runner = crud_flow_runner.get(db, runner_id)
+            if runner is not None:
+                crud_flow_runner.update(
+                    db,
+                    db_obj=runner,
+                    obj_in={"last_heartbeat": now, "status": "online"},
+                    commit=False,
+                )
+        for agent_id in AGENT_IDS:
+            agent = crud_managed_agent.get(db, agent_id)
+            if agent is not None:
+                crud_managed_agent.update(
+                    db,
+                    db_obj=agent,
+                    obj_in={"last_seen_at": now.replace(tzinfo=None)},
+                    commit=False,
+                )
+        db.commit()
+        done += 1
+        if rounds is None or done < rounds:
+            time.sleep(interval)
+    return done
+
+
 def remove_demo_account(db: Session) -> bool:
     """Delete the demo account and everything it owns, without committing.
 
@@ -1281,6 +1559,13 @@ def remove_demo_account(db: Session) -> bool:
 @click.option("--seed", default=1701, show_default=True, type=int)
 @click.option("--reset", is_flag=True, help="Only remove the demo account's data.")
 @click.option(
+    "--keepalive",
+    is_flag=True,
+    help="After seeding (or alone with --no-seed), keep runners and agents "
+    "online by refreshing heartbeats every 15 s until Ctrl-C.",
+)
+@click.option("--no-seed", is_flag=True, help="Skip seeding; use with --keepalive.")
+@click.option(
     "--password",
     envvar="DEMO_TEAM_PASSWORD",
     help="Owner login password (or DEMO_TEAM_PASSWORD).",
@@ -1291,6 +1576,8 @@ def seed_demo_team(
     scale: int,
     seed: int,
     reset: bool,
+    keepalive: bool,
+    no_seed: bool,
     password: Optional[str],
 ) -> None:
     """Seed (or with --reset, remove) the synthetic Enterprise Labs demo team."""
@@ -1298,12 +1585,17 @@ def seed_demo_team(
     url = database_url or os.getenv("DATABASE_URL")
     if not url:
         raise click.UsageError("Pass --database-url or set DATABASE_URL.")
-    if not reset and not password:
+    if no_seed and not keepalive:
+        raise click.UsageError("--no-seed only makes sense with --keepalive.")
+    if not reset and not no_seed and not password:
         raise click.UsageError("Pass --password or set DEMO_TEAM_PASSWORD.")
     # The session factory reads DATABASE_URL, so --database-url must win there too.
     os.environ["DATABASE_URL"] = url
     setup_database(url)
     db = next(get_db_session())
+    if no_seed:
+        _run_keepalive(db)
+        return
     started = time.monotonic()
     try:
         removed = remove_demo_account(db)
@@ -1327,6 +1619,18 @@ def seed_demo_team(
     for key in sorted(counts):
         click.echo(f"  {key:<20} {counts[key]:>8}")
     click.echo(f"Done in {time.monotonic() - started:.1f}s.")
+    if keepalive:
+        _run_keepalive(next(get_db_session()))
+
+
+def _run_keepalive(db: Session) -> None:
+    click.echo("Keeping runners and agents online; Ctrl-C to stop.")
+    try:
+        keep_alive(db, interval=15.0)
+    except KeyboardInterrupt:
+        click.echo("Stopped.")
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

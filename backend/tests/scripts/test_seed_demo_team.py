@@ -106,6 +106,48 @@ def test_seed_is_idempotent_and_reaches_cost_readers(db_session: Session) -> Non
     assert states[2] >= 1  # over
     assert crud_api_usage.get(db_session, sid("usage", 0)) is not None
 
+    # Seed v2: runners online with inventories, agents seen now, run logs,
+    # agent sessions under their agent's source id (owner attribution).
+    from preloop.models import models
+    from preloop.services.runner_presence import derive_presence
+    from scripts.seed_demo_team import AGENTS, RUNNER_IDS, keep_alive
+
+    # The test seeds at a fixed clock; keep_alive brings heartbeats to now.
+    assert keep_alive(db_session, interval=0, rounds=1) == 1
+    for runner_id in RUNNER_IDS:
+        runner = db_session.get(models.FlowRunner, runner_id)
+        assert runner is not None
+        db_session.refresh(runner)
+        assert derive_presence(runner).state == "online"
+        assert runner.harness_inventory["entries"]
+    agents = {
+        a.key: db_session.get(models.ManagedAgent, sid("agent", a.key)) for a in AGENTS
+    }
+    for agent in agents.values():
+        assert agent is not None and agent.last_seen_at is not None
+    logs = (
+        db_session.query(models.FlowExecutionLog)
+        .join(models.FlowExecution)
+        .join(models.Flow)
+        .filter(models.Flow.account_id == ACCOUNT_ID)
+        .all()
+    )
+    assert logs and {"agent_log_line", "tool_call", "status_update"} <= {
+        log.log_type for log in logs
+    }
+    sessions = (
+        db_session.query(models.RuntimeSession)
+        .filter(
+            models.RuntimeSession.account_id == ACCOUNT_ID,
+            models.RuntimeSession.runtime_principal_type == "managed_agent",
+        )
+        .all()
+    )
+    bases = {a.session_source_id for a in agents.values() if a is not None}
+    assert sessions and all(
+        s.session_source_id.split(":")[0] in bases for s in sessions
+    )
+
 
 def test_delete_unattached_keeps_people_with_a_membership(db_session: Session) -> None:
     from preloop.models.crud import crud_person
