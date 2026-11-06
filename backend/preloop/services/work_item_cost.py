@@ -203,10 +203,17 @@ def build_report(
             for issue_key in closes:
                 uf.union(("issue", issue_key), item)
     for (contributor, repo), closes in pending.items():
-        for item in links.get(contributor, set()):
-            if item[0] == "pull_request" and item[1].startswith(f"{repo}#"):
-                for issue_key in closes:
-                    uf.union(("issue", issue_key), item)
+        named = [
+            item
+            for item in links.get(contributor, set())
+            if item[0] == "pull_request" and item[1].startswith(f"{repo}#")
+        ]
+        # Only an unambiguous follow-up says which pull request was created:
+        # with several candidates, joining all of them would merge unrelated
+        # issue groups.
+        if len(named) == 1:
+            for issue_key in closes:
+                uf.union(("issue", issue_key), named[0])
 
     execution_ids = {uuid.UUID(c[1]) for c in links if c[0] == "execution"}
     session_ids = {uuid.UUID(c[1]) for c in links if c[0] == "session"}

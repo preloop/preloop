@@ -9,8 +9,8 @@ Usage::
 
 What it creates, all inside ONE account ("Enterprise Labs (demo)"):
 
-* Members Nyota Uhura (the owner login, ``uhura@example.dev``) and
-  Montgomery Scott (``scotty@example.dev``, no password).
+* Members Nyota Uhura (the owner login, ``uhura@example.com``) and
+  Montgomery Scott (``scotty@example.com``, no password).
 * Devices ``uhura-mbp`` and ``scotty-xps`` (expected-device roster entries
   whose fingerprints match the runners), a shared hosted runner and each
   member's personal runner, with owner and host name set.
@@ -159,7 +159,7 @@ MEMBERS = (
     Member(
         "uhura",
         "Nyota Uhura",
-        "uhura@example.dev",
+        "uhura@example.com",
         "uhura-mbp",
         "macos",
         "darwin",
@@ -168,7 +168,7 @@ MEMBERS = (
     Member(
         "scotty",
         "Montgomery Scott",
-        "scotty@example.dev",
+        "scotty@example.com",
         "scotty-xps",
         "linux",
         "linux",

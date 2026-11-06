@@ -356,3 +356,50 @@ def test_endpoint_pages_groups(db_session: Session, work: dict[str, Any]) -> Non
         params={"start_date": NOW.isoformat(), "end_date": NOW.isoformat()},
     )
     assert bad.status_code == 422
+
+
+def test_unnumbered_create_does_not_join_every_pull_request_it_touched(
+    db_session: Session, work: dict[str, Any]
+) -> None:
+    """A contributor that opened a PR closing #20 and also commented on two
+    named PRs cannot say which was created: no group is merged by guess."""
+    account = work["user"].account_id
+    session = _runtime_session(db_session, account, f"amb-{uuid4().hex[:8]}")
+    _work_call(
+        db_session,
+        session,
+        {
+            "via": "builtin",
+            "kind": "pull_request",
+            "action": "opened",
+            "ref": None,
+            "repo": REPO,
+            "closes": [f"{REPO}#20"],
+        },
+    )
+    for number in ("#50", "#51"):
+        _work_call(
+            db_session,
+            session,
+            {
+                "via": "builtin",
+                "kind": "pull_request",
+                "action": "commented",
+                "ref": number,
+                "repo": REPO,
+                "host": "github.com",
+            },
+        )
+    _usage(
+        db_session,
+        account,
+        cost=4.0,
+        tokens=400,
+        model="gpt-4.1",
+        session_id=session.id,
+    )
+    db_session.flush()
+    groups = {g.key: g for g in _report(db_session, work["user"]).groups}
+    assert f"{REPO}#20" not in groups
+    assert groups[f"{REPO}#50"].estimated_cost == pytest.approx(2.0)
+    assert groups[f"{REPO}#51"].estimated_cost == pytest.approx(2.0)

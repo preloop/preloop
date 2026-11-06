@@ -54,10 +54,23 @@ export function budgetSpendChart(
   rows: GatewayUsageByDay[] | null | undefined,
   softLimit: number,
   hardLimit: number,
-  slots = 0
+  slots = 0,
+  period: { start: Date; bucketMs: number } | null = null
 ): BudgetSpendChart | null {
   if (!rows || rows.length < 2) return null;
   const ordered = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  // The series is sparse (empty buckets are omitted), so with a period each
+  // point sits at its bucket's offset from the start, not at its index.
+  const slotOf = (row: GatewayUsageByDay, index: number) =>
+    period
+      ? Math.max(
+          0,
+          Math.round(
+            (new Date(row.date).getTime() - period.start.getTime()) /
+              period.bucketMs
+          )
+        )
+      : index;
   let running = 0;
   const cumulative = ordered.map((row) => {
     running += Number(row.estimated_cost || 0);
@@ -69,10 +82,15 @@ export function budgetSpendChart(
     Number((CHART_HEIGHT - (value / max) * (CHART_HEIGHT - 4) - 2).toFixed(2));
   // With the period's bucket count the line stops where today is, so the
   // empty rest of the chart is the part of the period still to come.
-  const step = CHART_WIDTH / (Math.max(slots, cumulative.length) - 1);
+  const positions = ordered.map(slotOf);
+  const span = Math.max(slots - 1, positions[positions.length - 1], 1);
+  const step = CHART_WIDTH / span;
   return {
     points: cumulative
-      .map((value, index) => `${(index * step).toFixed(2)},${y(value)}`)
+      .map(
+        (value, index) =>
+          `${Math.min(CHART_WIDTH, positions[index] * step).toFixed(2)},${y(value)}`
+      )
       .join(' '),
     limitY: limit > 0 ? y(limit) : null,
     softY:
@@ -103,6 +121,7 @@ export class BudgetHealthCard extends LitElement {
   /** Spend per bucket of the current budget period, when loaded. */
   @state() series: GatewayUsageByDay[] | null = null;
   @state() private seriesSlots = 0;
+  private seriesPeriod: { start: Date; bucketMs: number } | null = null;
   private seriesKey = '';
 
   static styles = [
@@ -580,6 +599,7 @@ export class BudgetHealthCard extends LitElement {
     })
       .then((data) => {
         if (key !== this.seriesKey) return;
+        this.seriesPeriod = { start, bucketMs };
         this.series = data.buckets;
         this.seriesSlots = slots;
       })
@@ -594,7 +614,8 @@ export class BudgetHealthCard extends LitElement {
       this.series ?? this.summary?.requests_by_day,
       softLimit,
       hardLimit,
-      this.series ? this.seriesSlots : 0
+      this.series ? this.seriesSlots : 0,
+      this.series ? this.seriesPeriod : null
     );
     if (!chart) return nothing;
     const over = hardLimit > 0 && chart.total >= hardLimit;

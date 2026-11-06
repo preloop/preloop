@@ -602,6 +602,31 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(budgetSpendChart(days, 0, 100, 5)!.points.split(' ')[2]).to.match(
       /^50\.00,/
     );
+    // A sparse series (no bucket on Mar 2) keeps each point at its date.
+    const gap = budgetSpendChart(
+      [
+        {
+          date: '2026-03-01T00:00:00Z',
+          request_count: 1,
+          estimated_cost: 10,
+          total_tokens: 1,
+        },
+        {
+          date: '2026-03-03T00:00:00Z',
+          request_count: 1,
+          estimated_cost: 10,
+          total_tokens: 1,
+        },
+      ],
+      0,
+      100,
+      5,
+      { start: new Date('2026-03-01T00:00:00Z'), bucketMs: 86_400_000 }
+    )!;
+    expect(gap.points.split(' ').map((p) => p.split(',')[0])).to.deep.equal([
+      '0.00',
+      '50.00',
+    ]);
     expect(budgetSpendChart(days.slice(0, 1), 0, 100)).to.equal(null);
     expect(budgetSpendChart(days, 0, 0)!.limitY).to.equal(null);
   });
