@@ -1,8 +1,9 @@
-import { html, fixture, expect, oneEvent } from '@open-wc/testing';
+import { html, fixture, expect, oneEvent, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
 import './budget-health-card.ts';
 import './usage-card.ts';
 import type { UsageCard } from './usage-card';
-import type { BudgetHealthCard } from './budget-health-card';
+import { budgetSpendChart, type BudgetHealthCard } from './budget-health-card';
 import type { BudgetPolicy } from '../api';
 import type { AccountGatewayUsageSummaryResponse } from '../types';
 
@@ -552,5 +553,118 @@ describe('BudgetHealthCard period-aligned spend', () => {
     const value = element.shadowRoot!.querySelector('.row-value')!;
     expect(value.textContent).to.contain('$12,345.68');
     expect(value.getAttribute('title')).to.equal('$12,345.678');
+  });
+
+  const chartPolicies = [
+    {
+      id: 'chart-policy',
+      current_spend_usd: 60,
+      subject_type: 'global',
+      subject_id: 'global',
+      model_alias: null,
+      period: 'monthly',
+      hard_limit_usd: 100,
+      soft_limit_usd: 80,
+      notify_on_soft: true,
+      notify_on_hard: true,
+      notification_emails: null,
+    },
+  ] as unknown as BudgetPolicy[];
+  const days = [
+    {
+      date: '2026-03-02',
+      request_count: 1,
+      estimated_cost: 30,
+      total_tokens: 10,
+    },
+    {
+      date: '2026-03-01',
+      request_count: 1,
+      estimated_cost: 10,
+      total_tokens: 10,
+    },
+    {
+      date: '2026-03-03',
+      request_count: 1,
+      estimated_cost: 20,
+      total_tokens: 10,
+    },
+  ];
+
+  it('charts cumulative spend against the limit', () => {
+    const chart = budgetSpendChart(days, 80, 100)!;
+    expect(chart.total).to.equal(60);
+    // Sorted by date: 10, 40, 60 of a 100 limit across a 40-unit-high box.
+    expect(chart.points).to.equal('0.00,34.4 50.00,23.6 100.00,16.4');
+    expect(chart.limitY).to.equal(2);
+    expect(chart.softY).to.equal(9.2);
+    // Spread over a 5-bucket period, the line stops at today.
+    expect(budgetSpendChart(days, 0, 100, 5)!.points.split(' ')[2]).to.match(
+      /^50\.00,/
+    );
+    expect(budgetSpendChart(days.slice(0, 1), 0, 100)).to.equal(null);
+    expect(budgetSpendChart(days, 0, 0)!.limitY).to.equal(null);
+  });
+
+  it('draws the chart from the summary days with a limit line', async () => {
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${{ ...summary, requests_by_day: days }}
+        .policies=${chartPolicies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+    const chart = element.shadowRoot!.querySelector('svg.spend-chart')!;
+    expect(chart.getAttribute('aria-label')).to.contain('$60.00');
+    expect(chart.querySelector('.limit-line')).to.not.equal(null);
+    expect(chart.querySelector('.soft-line')).to.not.equal(null);
+  });
+
+  it('loads the budget period series only when asked', async () => {
+    const fetchStub = sinon.stub(window, 'fetch').callsFake(async () => {
+      return new Response(
+        JSON.stringify({
+          period_start: '2026-03-01T00:00:00Z',
+          period_end: '2026-03-03T00:00:00Z',
+          granularity: 'day',
+          buckets: days,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    localStorage.setItem('accessToken', 'token');
+    try {
+      const quiet = (await fixture(html`
+        <budget-health-card
+          .summary=${summary}
+          .policies=${chartPolicies}
+        ></budget-health-card>
+      `)) as BudgetHealthCard;
+      await quiet.updateComplete;
+      const seriesCalls = () =>
+        fetchStub
+          .getCalls()
+          .filter((call) => String(call.args[0]).includes('/cost/timeseries'));
+      expect(seriesCalls().length).to.equal(0);
+      const element = (await fixture(html`
+        <budget-health-card
+          .summary=${summary}
+          .policies=${chartPolicies}
+          .loadSeries=${true}
+        ></budget-health-card>
+      `)) as BudgetHealthCard;
+      await waitUntil(() => element.series !== null);
+      await element.updateComplete;
+      const url = new URL(String(seriesCalls()[0].args[0]), location.origin);
+      expect(url.pathname).to.equal('/api/v1/cost/timeseries');
+      expect(url.searchParams.get('granularity')).to.equal('day');
+      expect(element.shadowRoot!.querySelector('svg.spend-chart')).to.not.equal(
+        null
+      );
+      expect(seriesCalls().length).to.equal(1);
+    } finally {
+      fetchStub.restore();
+      localStorage.removeItem('accessToken');
+    }
   });
 });

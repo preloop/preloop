@@ -181,6 +181,35 @@ class CRUDPerson:
             )
         )
 
+    def delete_unattached(self, db: Session, *, emails: list[str]) -> int:
+        """Delete identities with these addresses that hold no membership.
+
+        For removing seeded or test identities after their account is gone.
+        A person who still belongs to any account is never touched. Does not
+        commit.
+
+        Args:
+            db: Database session.
+            emails: Addresses to match after normalization.
+
+        Returns:
+            The number of identities deleted.
+        """
+        if not emails:
+            return 0
+        member = select(models.User.id).where(models.User.person_id == models.Person.id)
+        result = db.execute(
+            delete(models.Person)
+            .where(
+                models.Person.email_normalized.in_(
+                    [normalize_email(email) for email in emails]
+                ),
+                ~member.exists(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
     def resolve_login(self, db: Session, *, identifier: str) -> models.Person | None:
         """Resolve an exact chosen username, or an unambiguous normalized address."""
         person = db.scalar(

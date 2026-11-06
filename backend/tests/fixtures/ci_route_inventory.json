@@ -147,6 +147,7 @@
   "GET /api/v1/cost/health": "deny",
   "GET /api/v1/cost/summary": "deny",
   "GET /api/v1/cost/timeseries": "deny",
+  "GET /api/v1/cost/work-items": "deny",
   "GET /api/v1/delivery-report/opt-out": "deny",
   "GET /api/v1/delivery-report/policy": "deny",
   "GET /api/v1/delivery-report/policy/projects/{project_id}": "deny",

@@ -1,8 +1,9 @@
-import { LitElement, css, html, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
-import type { BudgetPolicy } from '../api';
+import { LitElement, css, html, nothing, svg } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import { getCostTimeseries, type BudgetPolicy } from '../api';
 import type {
   AccountGatewayUsageSummaryResponse,
+  GatewayUsageByDay,
   ManagedAgentSummary,
 } from '../types';
 import { budgetTrackStyles } from '../styles/budget-track';
@@ -10,6 +11,8 @@ import { formatUsd, formatUsdExact } from '../utils/money';
 import {
   budgetPeriodLabel,
   budgetPeriodWindow,
+  periodEndFor,
+  periodStartFor,
   budgetForecastStyles,
   renderBudgetForecast,
 } from '../utils/budget-forecast';
@@ -27,6 +30,59 @@ type BudgetPolicyUsage = {
   percent: number;
 };
 
+/** Chart geometry, in viewBox units; the svg stretches to the card. */
+const CHART_WIDTH = 100;
+const CHART_HEIGHT = 40;
+
+export interface BudgetSpendChart {
+  /** Polyline points of cumulative spend, one per day. */
+  points: string;
+  /** y of the hard (else soft) limit line, or null when off the chart. */
+  limitY: number | null;
+  /** y of the soft limit line when a hard limit is drawn too. */
+  softY: number | null;
+  /** Cumulative spend at the last day. */
+  total: number;
+}
+
+/**
+ * Cumulative estimated spend per day against the budget's limits, scaled so
+ * the higher of spend and limit fills the chart. Fewer than two days is no
+ * trend, so it returns null.
+ */
+export function budgetSpendChart(
+  rows: GatewayUsageByDay[] | null | undefined,
+  softLimit: number,
+  hardLimit: number,
+  slots = 0
+): BudgetSpendChart | null {
+  if (!rows || rows.length < 2) return null;
+  const ordered = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  let running = 0;
+  const cumulative = ordered.map((row) => {
+    running += Number(row.estimated_cost || 0);
+    return running;
+  });
+  const limit = hardLimit > 0 ? hardLimit : softLimit > 0 ? softLimit : 0;
+  const max = Math.max(running, limit) || 1;
+  const y = (value: number) =>
+    Number((CHART_HEIGHT - (value / max) * (CHART_HEIGHT - 4) - 2).toFixed(2));
+  // With the period's bucket count the line stops where today is, so the
+  // empty rest of the chart is the part of the period still to come.
+  const step = CHART_WIDTH / (Math.max(slots, cumulative.length) - 1);
+  return {
+    points: cumulative
+      .map((value, index) => `${(index * step).toFixed(2)},${y(value)}`)
+      .join(' '),
+    limitY: limit > 0 ? y(limit) : null,
+    softY:
+      hardLimit > 0 && softLimit > 0 && softLimit < hardLimit
+        ? y(softLimit)
+        : null,
+    total: running,
+  };
+}
+
 @customElement('budget-health-card')
 export class BudgetHealthCard extends LitElement {
   @property({ type: Object })
@@ -39,6 +95,15 @@ export class BudgetHealthCard extends LitElement {
   @property({ type: Boolean }) loading = false;
   @property({ type: String }) timeRange = 'month';
   @property({ type: Boolean }) showRangeSelector = false;
+  /**
+   * Fetch the budget period's daily spend for the chart. Off by default so
+   * a host that already has a series (or a test) makes no request.
+   */
+  @property({ type: Boolean }) loadSeries = false;
+  /** Spend per bucket of the current budget period, when loaded. */
+  @state() series: GatewayUsageByDay[] | null = null;
+  @state() private seriesSlots = 0;
+  private seriesKey = '';
 
   static styles = [
     budgetTrackStyles,
@@ -78,6 +143,18 @@ export class BudgetHealthCard extends LitElement {
         cursor: pointer;
         font-size: var(--sl-font-size-small);
         outline: none;
+      }
+
+      .spend-chart {
+        display: block;
+        width: 100%;
+        height: 40px;
+      }
+
+      .spend-chart-caption {
+        color: var(--console-meta-color);
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
       }
 
       .content {
@@ -482,6 +559,96 @@ export class BudgetHealthCard extends LitElement {
     `;
   }
 
+  protected updated(): void {
+    if (!this.loadSeries) return;
+    const period = this.periodForTimeRange();
+    const now = new Date();
+    const start = periodStartFor(period, now);
+    const end = periodEndFor(period, now);
+    if (!start || !end) return;
+    const granularity =
+      period === 'daily' || period === 'hourly' ? 'hour' : 'day';
+    const key = `${start.toISOString()}|${granularity}`;
+    if (key === this.seriesKey) return;
+    this.seriesKey = key;
+    const bucketMs = granularity === 'hour' ? 3_600_000 : 86_400_000;
+    const slots = Math.round((end.getTime() - start.getTime()) / bucketMs);
+    void getCostTimeseries({
+      startDate: start.toISOString(),
+      endDate: now.toISOString(),
+      granularity,
+    })
+      .then((data) => {
+        if (key !== this.seriesKey) return;
+        this.series = data.buckets;
+        this.seriesSlots = slots;
+      })
+      .catch(() => {
+        // The chart is a nicety; the rows above still say everything.
+      });
+  }
+
+  /** Cumulative spend over the period's buckets, with the limit as a line. */
+  private renderSpendChart(softLimit: number, hardLimit: number) {
+    const chart = budgetSpendChart(
+      this.series ?? this.summary?.requests_by_day,
+      softLimit,
+      hardLimit,
+      this.series ? this.seriesSlots : 0
+    );
+    if (!chart) return nothing;
+    const over = hardLimit > 0 && chart.total >= hardLimit;
+    const stroke = over
+      ? 'var(--sl-color-danger-500)'
+      : 'var(--sl-color-primary-500)';
+    const label = `Cumulative estimated spend ${this.formatCurrency(chart.total)}${
+      hardLimit > 0 ? ` against a ${this.formatCurrency(hardLimit)} limit` : ''
+    }`;
+    return html`<div>
+      <svg
+        class="spend-chart"
+        viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label=${label}
+      >
+        <polygon
+          points=${`0,${CHART_HEIGHT} ${chart.points} ${CHART_WIDTH},${CHART_HEIGHT}`}
+          fill=${stroke}
+          opacity="0.12"
+        ></polygon>
+        <polyline
+          class="spend-line"
+          points=${chart.points}
+          fill="none"
+          stroke=${stroke}
+          stroke-width="1.5"
+          vector-effect="non-scaling-stroke"
+        ></polyline>
+        ${
+          chart.softY !== null
+            ? svg`<line class="soft-line" x1="0" x2=${CHART_WIDTH} y1=${chart.softY} y2=${chart.softY}
+                stroke="var(--sl-color-warning-500)" stroke-width="1" stroke-dasharray="2 2"
+                vector-effect="non-scaling-stroke"></line>`
+            : nothing
+        }
+        ${
+          chart.limitY !== null
+            ? svg`<line class="limit-line" x1="0" x2=${CHART_WIDTH} y1=${chart.limitY} y2=${chart.limitY}
+                stroke="var(--sl-color-neutral-500)" stroke-width="1" stroke-dasharray="4 3"
+                vector-effect="non-scaling-stroke"></line>`
+            : nothing
+        }
+      </svg>
+      <div class="spend-chart-caption">
+        Cumulative spend
+        ${this.series ? 'this period' : 'in this range'}${
+          hardLimit > 0 || softLimit > 0 ? ', dashed line is the limit' : ''
+        }
+      </div>
+    </div>`;
+  }
+
   private handleRangeChange(event: Event) {
     const value = (event.target as HTMLSelectElement).value;
     this.dispatchEvent(
@@ -567,6 +734,7 @@ export class BudgetHealthCard extends LitElement {
           role="region"
           aria-labelledby="budget-health-title"
         >
+          ${this.renderSpendChart(globalSoftLimit, globalHardLimit)}
           <div class="rows">
             ${this.renderBudgetLimitRow(
               budgetPeriodLabel(selectedPeriod),

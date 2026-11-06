@@ -3644,6 +3644,7 @@ export class CostView extends AuthedElement {
         .teamNames=${this.teamNames}
         .configurable=${this.editPermissions.allows('manage_budgets')}
         .timeRange=${'month'}
+        .loadSeries=${true}
         @configure=${() => (this.budgetDialogOpen = true)}
       ></budget-health-card>
     `;
@@ -4368,6 +4369,9 @@ export class CostView extends AuthedElement {
           ></time-range-select>
           <span class="range-window" title=${this.rangeWindowTitle()}
             >${this.rangeWindowLabel()}</span
+          >
+          <a class="issue-cost-link" href="/console/cost/work-items"
+            >Cost per work item</a
           >
           <a class="issue-cost-link" href="/console/cost/by-issue"
             >Cost per issue</a

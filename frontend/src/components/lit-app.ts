@@ -479,6 +479,7 @@ export class LitApp extends LitElement {
           // close are we to the rate limits". The old flat URLs keep working
           // (digest emails, bookmarks) and carry their query and hash along.
           { path: 'cost/by-issue', component: 'issue-cost-view' },
+          { path: 'cost/work-items', component: 'work-item-cost-view' },
           { path: 'cost/spend', component: 'cost-view' },
           { path: 'cost/gateway', component: 'api-usage-view' },
           {

@@ -2434,7 +2434,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> list[tuple[Any, Any]]:
         """Return the ``limit`` most recently active session/execution pairs.
 
-        Walks matching rows newest first (``ix_api_usage_account_action_ts``
+        Walks matching rows newest first (``ix_api_usage_customer_session_keys``
         serves the order) and stops once ``limit`` distinct
         ``(runtime_session_id, flow_execution_id)`` pairs are seen, plus any
         pair tied with the last one on timestamp. Both pair columns are keys

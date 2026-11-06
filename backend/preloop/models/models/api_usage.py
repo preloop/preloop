@@ -397,6 +397,20 @@ class ApiUsage(Base):
             ],
             postgresql_where=text(CUSTOMER_GATEWAY_PREDICATE),
         ),
+        # Spend sessions: the newest-first session key walk and the distinct
+        # session count. Without it the planner walked the global timestamp
+        # index and filtered every tenant's rows (20261203_session_keys_idx).
+        Index(
+            "ix_api_usage_customer_session_keys",
+            "account_id",
+            "timestamp",
+            postgresql_ops={"timestamp": "DESC"},
+            postgresql_include=["runtime_session_id", "flow_execution_id"],
+            postgresql_where=text(
+                f"{CUSTOMER_GATEWAY_PREDICATE} AND "
+                "(runtime_session_id IS NOT NULL OR flow_execution_id IS NOT NULL)"
+            ),
+        ),
         # Subscription-billed gateway rows (Spend subscription block). Few
         # rows, and without it the block was a sequential scan of the table.
         Index(

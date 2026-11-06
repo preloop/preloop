@@ -1,7 +1,8 @@
 """Base CRUD class for all models."""
 
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from typing import Any, Dict, Generic, List, Mapping, Optional, Sequence, Type, TypeVar
 
+from sqlalchemy import delete, insert
 from sqlalchemy.orm import Query, Session
 
 from ..models.base import Base
@@ -95,6 +96,60 @@ class CRUDBase(Generic[ModelType]):
             db.flush()
         db.refresh(db_obj)
         return db_obj
+
+    def create_many(
+        self,
+        db: Session,
+        *,
+        rows: Sequence[Mapping[str, Any]],
+        chunk_size: int = 5000,
+    ) -> int:
+        """Insert many rows with chunked multi-row statements, without committing.
+
+        Rows go through the ORM bulk insert path, so Python-side column
+        defaults (ids, timestamps) still apply, but no instances are built or
+        refreshed. Meant for seeding and backfills, not request handlers.
+
+        Args:
+            db: Database session.
+            rows: Column values keyed by mapped attribute name. Rows in one
+                chunk should share the same keys to batch efficiently.
+            chunk_size: Rows per statement.
+
+        Returns:
+            The number of rows inserted.
+        """
+        total = 0
+        for start in range(0, len(rows), chunk_size):
+            chunk = [dict(row) for row in rows[start : start + chunk_size]]
+            if chunk:
+                db.execute(insert(self.model), chunk)
+                total += len(chunk)
+        return total
+
+    def delete_where_in(
+        self, db: Session, *, column: str, values: Sequence[Any]
+    ) -> int:
+        """Delete every row whose ``column`` is in ``values``, without committing.
+
+        A set-based ``DELETE``: database cascades run, ORM cascades do not.
+
+        Args:
+            db: Database session.
+            column: Mapped attribute name to match, for example ``account_id``.
+            values: Values to match. An empty sequence deletes nothing.
+
+        Returns:
+            The number of rows deleted.
+        """
+        if not values:
+            return 0
+        result = db.execute(
+            delete(self.model)
+            .where(getattr(self.model, column).in_(list(values)))
+            .execution_options(synchronize_session=False)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     def update(
         self,

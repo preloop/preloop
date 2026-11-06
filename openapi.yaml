@@ -14782,6 +14782,82 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/cost/work-items:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Work Item Costs
+      description: 'Spend per issue and pull request, issues grouped with their pull
+        requests.
+
+
+        Counts every flow run and agentic session that worked on a work item,
+
+        with the agents, flows, models and users that drove it.'
+      operationId: get_work_item_costs_api_v1_cost_work_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Groups per page.
+          default: 50
+          title: Limit
+        description: Groups per page.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Groups to skip.
+          default: 0
+          title: Offset
+        description: Groups to skip.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItemCostReport'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/health:
     get:
       tags:
@@ -54708,7 +54784,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
@@ -55733,6 +55808,210 @@ components:
       - at
       title: WeeklySchedule
       description: 'Friendly schedule form: run on selected weekdays at a fixed time.'
+    WorkItemCostReport:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        groups:
+          items:
+            $ref: '#/components/schemas/WorkItemGroup'
+          type: array
+          title: Groups
+        total_groups:
+          type: integer
+          title: Total Groups
+          description: Groups before the limit.
+          default: 0
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Attributed spend of all groups.
+          default: 0.0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        truncated:
+          type: boolean
+          title: Truncated
+          description: A source hit its row cap, so older contributors may be missing.
+          default: false
+        split_rule:
+          type: string
+          title: Split Rule
+          default: A flow run or agentic session that worked on several work items
+            splits its spend evenly between them, so groups add up to the attributed
+            total without counting any request twice.
+      type: object
+      required:
+      - period_start
+      - period_end
+      title: WorkItemCostReport
+      description: Spend per work item over one window, most expensive first.
+    WorkItemGroup:
+      properties:
+        key:
+          type: string
+          title: Key
+          description: Key of the lead item (the issue when any).
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Priced subtotal in USD.
+          default: 0.0
+        partial:
+          type: boolean
+          title: Partial
+          description: Some contributing requests had no price or no token counts.
+          default: false
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        request_count:
+          type: number
+          title: Request Count
+          default: 0.0
+        execution_count:
+          type: integer
+          title: Execution Count
+          description: Flow runs that contributed.
+          default: 0
+        session_count:
+          type: integer
+          title: Session Count
+          description: Agentic sessions that contributed.
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/WorkItemRef'
+          type: array
+          title: Items
+        agents:
+          items:
+            $ref: '#/components/schemas/WorkItemSlice'
+          type: array
+          title: Agents
+        flows:
+          items:
+            $ref: '#/components/schemas/WorkItemSlice'
+          type: array
+          title: Flows
+        models:
+          items:
+            $ref: '#/components/schemas/WorkItemSlice'
+          type: array
+          title: Models
+        users:
+          items:
+            $ref: '#/components/schemas/WorkItemSlice'
+          type: array
+          title: Users
+      type: object
+      required:
+      - key
+      - kind
+      title: WorkItemGroup
+      description: An issue with the pull requests that implement or reference it.
+    WorkItemRef:
+      properties:
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        key:
+          type: string
+          title: Key
+          description: Canonical key, ``owner/repo#N`` or ``PROJ-N``.
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+          description: Pull request state when known.
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        request_count:
+          type: number
+          title: Request Count
+          default: 0.0
+      type: object
+      required:
+      - kind
+      - key
+      title: WorkItemRef
+      description: One issue or pull request inside a group.
+    WorkItemSlice:
+      properties:
+        key:
+          type: string
+          title: Key
+          description: Stable id of the agent, flow, model or user.
+        label:
+          type: string
+          title: Label
+          description: Display name.
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Priced subtotal in USD after the even split.
+          default: 0.0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          description: Tokens after the even split.
+          default: 0
+        request_count:
+          type: number
+          title: Request Count
+          description: Gateway requests after the even split (may be fractional).
+          default: 0.0
+      type: object
+      required:
+      - key
+      - label
+      title: WorkItemSlice
+      description: One contributor dimension (agent, flow, model or user) of a group.
     WorkspaceSeedInput:
       properties:
         path:
