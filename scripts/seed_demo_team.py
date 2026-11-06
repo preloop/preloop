@@ -832,7 +832,10 @@ class Seeder:
                 "runtime_principal_type": "flow_execution",
                 "runtime_principal_id": str(execution_id),
                 "runtime_principal_name": flow.name,
-                "title": f"{flow.name}: {pr.title if pr else f'#{issue}'}"[:255],
+                "title": (
+                    f"{flow.name}: "
+                    + (pr.title if pr else f"#{issue}" if issue else "main")
+                )[:255],
                 "cwd": f"/workspace/{REPO}",
                 "started_at": at,
                 "last_activity_at": end,

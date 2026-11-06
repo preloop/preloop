@@ -330,11 +330,11 @@ export class WorkItemCostView extends AuthedElement {
               <span
                 >${
                   item.state
-                    ? html`<sl-badge
-                        pill
-                        variant=${item.state === 'merged' ? 'success' : 'neutral'}
-                        >${item.state}</sl-badge
-                      >`
+                    ? item.state === 'merged'
+                      ? html`<sl-badge pill variant="success">merged</sl-badge>`
+                      : html`<sl-badge pill variant="neutral"
+                          >${item.state}</sl-badge
+                        >`
                     : nothing
                 }</span
               >
