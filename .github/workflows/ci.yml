@@ -547,6 +547,14 @@ jobs:
             --cov-report= \
             --junitxml=test-results.xml
 
+      # The locked backend suite uses SQLAlchemy 2.0. Exercise newer bind
+      # rendering too: 2.1 adds VARCHAR casts that exposed untyped JSON paths.
+      - name: Check subscription aggregates with current SQLAlchemy
+        if: matrix.group == 1
+        run: |
+          uv pip install --python "$(command -v python)" --upgrade 'sqlalchemy>=2.1,<2.2'
+          python -m pytest -q backend/tests/models/crud/test_subscription_columns_drivers.py
+
       # Only once Python is set up: otherwise python is absent and an
       # earlier failure is reported twice (exit 127).
       - name: Drop CI database

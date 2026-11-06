@@ -248,6 +248,10 @@ type attachSession struct {
 	pending []attachApproval
 	ended   bool
 	control attachControl
+
+	// Serialize dispatch with shutdown so no follower can be added after Wait.
+	commandMu        sync.Mutex
+	commandFollowers sync.WaitGroup
 }
 
 // attachApproval is a pending approval this attach can decide.
@@ -257,6 +261,15 @@ type attachApproval struct {
 }
 
 func (s *attachSession) run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		cancel()
+		// A prompt may still be returning from its POST on the input goroutine.
+		// Let it register its follower before joining all command polling.
+		s.commandMu.Lock()
+		s.commandMu.Unlock()
+		s.commandFollowers.Wait()
+	}()
 	s.seen = map[string]bool{}
 	id, err := s.resolveSession()
 	if err != nil {
