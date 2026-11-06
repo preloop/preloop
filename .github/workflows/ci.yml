@@ -86,6 +86,8 @@ jobs:
               - '!requirements/docs.txt'
               - '.github/requirements/app-dev.txt'
               - '.github/requirements/coverage.txt'
+              - '.github/requirements/sqlalchemy-21.in'
+              - '.github/requirements/sqlalchemy-21.txt'
               - '.github/requirements/test.txt'
               - '.github/requirements/test.in'
               - 'scripts/init_db.py'
@@ -552,7 +554,8 @@ jobs:
       - name: Check subscription aggregates with current SQLAlchemy
         if: matrix.group == 1
         run: |
-          uv pip install --python "$(command -v python)" --upgrade 'sqlalchemy>=2.1,<2.2'
+          uv pip install --python "$(command -v python)" \
+            --require-hashes -r .github/requirements/sqlalchemy-21.txt
           python -m pytest -q backend/tests/models/crud/test_subscription_columns_drivers.py
 
       # Only once Python is set up: otherwise python is absent and an

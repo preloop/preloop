@@ -1,0 +1,2 @@
+# Compatibility regression for PostgreSQL bind rendering beyond app-dev.txt.
+SQLAlchemy==2.1.8
