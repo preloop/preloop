@@ -10,8 +10,8 @@ import {
 import '../../table/data-table';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { parseUTCDate } from '../../utils/date';
-import { html, css, unsafeCSS, nothing } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { html, css, unsafeCSS, nothing, type PropertyValues } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
 import {
   AuthedElement,
   exportIssueCosts,
@@ -193,6 +193,16 @@ export class IssueCostView extends AuthedElement {
   @state() loading = false;
   @state() error: string | null = null;
   @state() range = 'last-30';
+  /**
+   * Rendered inside the Spend page's main column: no page header, no range
+   * selector of its own (one range per page) and no links back to Spend.
+   */
+  @property({ type: Boolean, reflect: true }) embedded = false;
+  /** The Spend page's window; when set it replaces the local range. */
+  @property({ attribute: false }) period: {
+    startDate: string;
+    endDate: string;
+  } | null = null;
   @state() projectId = '';
   @state() flowId = '';
   @state() projects: NamedOption[] = [];
@@ -305,6 +315,19 @@ export class IssueCostView extends AuthedElement {
     ],
   ];
 
+  protected willUpdate(changed: PropertyValues<this>): void {
+    const previous = changed.get('period') as
+      { startDate: string; endDate: string } | null | undefined;
+    if (
+      changed.has('period') &&
+      previous !== undefined &&
+      (previous?.startDate !== this.period?.startDate ||
+        previous?.endDate !== this.period?.endDate)
+    ) {
+      this.onPeriodChanged();
+    }
+  }
+
   connectedCallback(): void {
     super.connectedCallback();
     void getFeatures()
@@ -317,7 +340,7 @@ export class IssueCostView extends AuthedElement {
   }
 
   filter(): IssueCostFilter {
-    const window = resolveTimeRange(this.range);
+    const window = this.period ?? resolveTimeRange(this.range);
     return {
       startDate: window.startDate,
       endDate: window.endDate,
@@ -427,6 +450,10 @@ export class IssueCostView extends AuthedElement {
     } finally {
       this.exporting = null;
     }
+  }
+
+  private onPeriodChanged(): void {
+    void this.load();
   }
 
   private onRange = (event: Event) => {
@@ -816,18 +843,28 @@ export class IssueCostView extends AuthedElement {
   render() {
     const report = this.report;
     return html`<div class="page">
-      <view-header
-        headerText="Cost per issue"
-        description="Estimated agent cost and cycle time for each tracker issue."
-      ></view-header>
+      ${
+        this.embedded
+          ? html`<p class="muted">
+              Estimated agent cost and cycle time for each tracker issue.
+            </p>`
+          : html`<view-header
+              headerText="Cost per issue"
+              description="Estimated agent cost and cycle time for each tracker issue."
+            ></view-header>`
+      }
       ${this.readinessEnabled && this.projectId ? html`<readiness-policy-settings .projectId=${this.projectId} @readiness-policy-saved=${() => this.load()}></readiness-policy-settings>` : nothing}
       <div class="toolbar">
-        <time-range-select
-          ariaLabel="Issue cost period"
-          .value=${this.range}
-          .options=${RANGE_OPTIONS}
-          @range-change=${this.onRange}
-        ></time-range-select>
+        ${
+          this.embedded
+            ? nothing
+            : html`<time-range-select
+                ariaLabel="Issue cost period"
+                .value=${this.range}
+                .options=${RANGE_OPTIONS}
+                @range-change=${this.onRange}
+              ></time-range-select>`
+        }
         <sl-select
           size="small"
           placeholder="All projects"

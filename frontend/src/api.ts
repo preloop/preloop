@@ -186,8 +186,59 @@ export function onApiCachesInvalidated(reset: () => void): () => void {
   };
 }
 
+/** An open window keeps taking traffic: its cost reads live a minute. */
+export const COST_OPEN_WINDOW_TTL_MS = 60_000;
+/**
+ * A window that ended this long ago is closed: no new traffic lands in it, so
+ * its cost reads stay for the session. A reprice, backfill or import is a
+ * write, and any write in this tab clears the cache (see fetchWithAuth).
+ */
+export const COST_CLOSED_WINDOW_GRACE_MS = 60 * 60_000;
+
+const costReadCache = new Map<
+  string,
+  { expiresAt: number; value: Promise<unknown> }
+>();
+
+export function clearCostReadCache(): void {
+  costReadCache.clear();
+}
+
+/**
+ * Share one cost read per URL. Closed windows never expire during the
+ * session; the current period expires after COST_OPEN_WINDOW_TTL_MS.
+ * Failures are never kept. Callers get their own copy of the answer.
+ */
+export async function cachedCostRead<T>(
+  url: string,
+  endDate: string | undefined,
+  read: () => Promise<T>,
+  now: number = Date.now()
+): Promise<T> {
+  const hit = costReadCache.get(url);
+  if (hit && hit.expiresAt > now) {
+    return structuredClone(await (hit.value as Promise<T>));
+  }
+  const end = endDate ? Date.parse(endDate) : NaN;
+  const closed =
+    Number.isFinite(end) && end <= now - COST_CLOSED_WINDOW_GRACE_MS;
+  const value = read();
+  const entry = {
+    expiresAt: closed ? Infinity : now + COST_OPEN_WINDOW_TTL_MS,
+    value: value as Promise<unknown>,
+  };
+  costReadCache.set(url, entry);
+  try {
+    return structuredClone(await value);
+  } catch (error) {
+    if (costReadCache.get(url) === entry) costReadCache.delete(url);
+    throw error;
+  }
+}
+
 export function invalidateApiCaches(): void {
   for (const reset of apiCacheResetHooks) reset();
+  clearCostReadCache();
   featuresCache = null;
   featuresInflight = null;
   featuresEpoch += 1;
@@ -571,6 +622,8 @@ export async function fetchWithAuth(
     // join one that started before the change.
     inFlightGets.clear();
     invalidateOverviewLoads();
+    // A reprice, backfill or import can change any window, closed or not.
+    clearCostReadCache();
   }
   // Only plain reads: a body, a signal or a custom header makes the call the
   // caller's own, and anything that is not a GET may change something.
@@ -1610,15 +1663,16 @@ export async function getCostAnalyticsSummary(
     query.set('compare_start_date', params.compareStartDate);
     query.set('compare_end_date', params.compareEndDate);
   }
-  const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/cost/summary?${query}`
-  );
-  if (!response.ok) {
-    const refused = await historyUnavailableError(response);
-    if (refused) throw refused;
-    throw new Error('Failed to fetch cost analytics summary');
-  }
-  return response.json();
+  const url = `${REST_API_PREFIX}/cost/summary?${query}`;
+  return cachedCostRead(url, params.endDate, async () => {
+    const response = await fetchWithAuth(url);
+    if (!response.ok) {
+      const refused = await historyUnavailableError(response);
+      if (refused) throw refused;
+      throw new Error('Failed to fetch cost analytics summary');
+    }
+    return (await response.json()) as CostAnalyticsSummaryResponse;
+  });
 }
 
 export type CostGranularity = 'day' | 'week' | 'month';
@@ -1647,11 +1701,12 @@ export async function getCostTimeseries(params: {
     end_date: params.endDate,
     granularity: params.granularity,
   });
-  const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/cost/timeseries?${query}`
-  );
-  if (!response.ok) throw new Error('Failed to fetch spend over time');
-  return response.json();
+  const url = `${REST_API_PREFIX}/cost/timeseries?${query}`;
+  return cachedCostRead(url, params.endDate, async () => {
+    const response = await fetchWithAuth(url);
+    if (!response.ok) throw new Error('Failed to fetch spend over time');
+    return (await response.json()) as CostTimeseriesResponse;
+  });
 }
 
 /** Gateway accounting self-check for the account (last `hours` hours). */
