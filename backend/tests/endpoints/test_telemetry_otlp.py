@@ -1417,3 +1417,21 @@ def test_non_claude_gateway_rows_skip_the_supersede_lookup(
     )
     _gateway_row(db_session, test_user, meta_data={"client_request_id": "cr-any"})
     assert len(calls) == 3
+
+
+def test_ingested_rows_expire_cached_cost_reads(
+    client, db_session, test_user, ingest_key
+):
+    """Exported events can land in closed windows: the cost revision moves."""
+    from preloop.models.crud import crud_account
+
+    def revision() -> int:
+        account = crud_account.get(db_session, id=test_user.account_id)
+        db_session.refresh(account)
+        return (account.meta_data or {}).get(crud_account.COST_REVISION_KEY, 0)
+
+    _, token = ingest_key
+    before = revision()
+    assert _post(client, LOGS, token, _logs_request(_api_request())).status_code == 200
+    assert _otlp_rows(db_session, test_user.account_id)
+    assert revision() == before + 1

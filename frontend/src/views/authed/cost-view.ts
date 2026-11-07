@@ -1216,7 +1216,7 @@ export class CostView extends AuthedElement {
             startDate: summary.period_start,
             endDate: summary.period_end,
           };
-      this.loadedAt = new Date().toISOString();
+      this.loadedAt = summary.fetched_at ?? new Date().toISOString();
       this.loading = false;
       void this.loadTab(this.activeTab, generation);
       if (summary.imported_usage?.event_count)

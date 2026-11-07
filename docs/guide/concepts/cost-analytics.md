@@ -57,9 +57,12 @@ The shared frontend gates Cloud and Enterprise panels behind feature flags such 
 
 - **Cost overview**: spend, tokens, and request volume over selectable ranges.
   Each card renders as soon as its own data arrives, so a slow breakdown never
-  holds up the rest of the page. Closed periods such as last month cannot
-  change, so they are cached for the session and on the server; the current
-  period refreshes on a short interval.
+  holds up the rest of the page. Closed periods such as last month take no new
+  traffic, so their numbers are cached for up to six hours on the server and
+  in the browser tab; a reprice, ledger backfill or usage import invalidates
+  them, and the tab asks again after any change you make and whenever you
+  return to it. The current period is cached for a minute and read again on
+  the next load.
 - **Breakdowns**: by model, provider, managed agent, runtime session, or API key
 - **Work items and issues**: tabs in the main column show spend per issue and
   pull request (issues grouped with the pull requests that close them) and

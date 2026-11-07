@@ -29,7 +29,7 @@ from preloop.api.auth.key_scopes import (
     TELEMETRY_INGEST_SCOPE,
     enforce_api_key_route_scope,
 )
-from preloop.models.crud import crud_api_key, crud_telemetry_ingest
+from preloop.models.crud import crud_account, crud_api_key, crud_telemetry_ingest
 from preloop.models.db.session import get_db_session
 from preloop.services import otlp_telemetry as otlp
 
@@ -139,6 +139,10 @@ def _process(db: Session, signal: str, message: Any, key: Any) -> tuple[int, str
         else:
             stats = ingestor.ingest_metrics(extraction.metrics)
         crud_telemetry_ingest.prune(db, now=now)
+        if stats.created or stats.aggregated:
+            # Exported events can be backdated into closed windows: expire
+            # cached cost reads (committed with the rows below).
+            crud_account.bump_cost_revision(db, account_id=key.account_id)
         db.commit()
     except Exception:
         db.rollback()

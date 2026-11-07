@@ -62,8 +62,10 @@ including in-flight ones. EE repricing that does not go through these paths
 may take up to the TTL to appear.
 
 The console keeps `GET /cost/summary` and `GET /cost/timeseries` answers for
-the browser session when the window is closed and for 60 seconds otherwise.
-Any write from the tab and signing out clear that cache.
+six hours when the window is closed and for 60 seconds otherwise. Any write
+from the tab, signing out and the tab becoming visible again clear that cache,
+so an import or reprice made elsewhere shows on the next read. OTLP ingest and
+the background reprice worker bump the revision too.
 
 Each worker also keeps the `GET /cost/health` self-check
 per (account, window) for 60 s, because the Spend page asks it on every load

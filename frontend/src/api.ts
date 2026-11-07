@@ -189,24 +189,39 @@ export function onApiCachesInvalidated(reset: () => void): () => void {
 /** An open window keeps taking traffic: its cost reads live a minute. */
 export const COST_OPEN_WINDOW_TTL_MS = 60_000;
 /**
- * A window that ended this long ago is closed: no new traffic lands in it, so
- * its cost reads stay for the session. A reprice, backfill or import is a
- * write, and any write in this tab clears the cache (see fetchWithAuth).
+ * A window that ended this long ago is closed: no new traffic lands in it,
+ * so its cost reads live as long as the server keeps them (six hours). A
+ * reprice, backfill or import elsewhere bumps the server's revision; this tab
+ * sees it on the next read after the cache clears, which happens on any write
+ * in this tab and whenever the tab becomes visible again.
  */
 export const COST_CLOSED_WINDOW_GRACE_MS = 60 * 60_000;
+export const COST_CLOSED_WINDOW_TTL_MS = 6 * 60 * 60_000;
 
 const costReadCache = new Map<
   string,
-  { expiresAt: number; value: Promise<unknown> }
+  { expiresAt: number; value: Promise<unknown>; fetchedAt?: number }
 >();
 
 export function clearCostReadCache(): void {
   costReadCache.clear();
 }
 
+/** When the answer cached for `url` was fetched, if it is cached. */
+export function costReadFetchedAt(url: string): number | undefined {
+  return costReadCache.get(url)?.fetchedAt;
+}
+
+if (typeof document !== 'undefined') {
+  // Coming back to a tab may follow an import or reprice elsewhere.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') clearCostReadCache();
+  });
+}
+
 /**
- * Share one cost read per URL. Closed windows never expire during the
- * session; the current period expires after COST_OPEN_WINDOW_TTL_MS.
+ * Share one cost read per URL. Closed windows live for
+ * COST_CLOSED_WINDOW_TTL_MS, the current period for COST_OPEN_WINDOW_TTL_MS.
  * Failures are never kept. Callers get their own copy of the answer.
  */
 export async function cachedCostRead<T>(
@@ -223,13 +238,20 @@ export async function cachedCostRead<T>(
   const closed =
     Number.isFinite(end) && end <= now - COST_CLOSED_WINDOW_GRACE_MS;
   const value = read();
-  const entry = {
-    expiresAt: closed ? Infinity : now + COST_OPEN_WINDOW_TTL_MS,
+  const entry: {
+    expiresAt: number;
+    value: Promise<unknown>;
+    fetchedAt?: number;
+  } = {
+    expiresAt:
+      now + (closed ? COST_CLOSED_WINDOW_TTL_MS : COST_OPEN_WINDOW_TTL_MS),
     value: value as Promise<unknown>,
   };
   costReadCache.set(url, entry);
   try {
-    return structuredClone(await value);
+    const result = await value;
+    entry.fetchedAt ??= Date.now();
+    return structuredClone(result);
   } catch (error) {
     if (costReadCache.get(url) === entry) costReadCache.delete(url);
     throw error;
@@ -1664,7 +1686,7 @@ export async function getCostAnalyticsSummary(
     query.set('compare_end_date', params.compareEndDate);
   }
   const url = `${REST_API_PREFIX}/cost/summary?${query}`;
-  return cachedCostRead(url, params.endDate, async () => {
+  const summary = await cachedCostRead(url, params.endDate, async () => {
     const response = await fetchWithAuth(url);
     if (!response.ok) {
       const refused = await historyUnavailableError(response);
@@ -1673,6 +1695,11 @@ export async function getCostAnalyticsSummary(
     }
     return (await response.json()) as CostAnalyticsSummaryResponse;
   });
+  // When the numbers were read from the server, not when the cache answered.
+  summary.fetched_at = new Date(
+    costReadFetchedAt(url) ?? Date.now()
+  ).toISOString();
+  return summary;
 }
 
 export type CostGranularity = 'day' | 'week' | 'month';

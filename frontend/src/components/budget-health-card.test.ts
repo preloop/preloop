@@ -642,6 +642,22 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(budgetSpendChart(days, 0, 1000)!.projectedTotal).to.equal(null);
   });
 
+  it('counts days without spend as elapsed and puts now at today', () => {
+    // Spend on days 1-3 of a 10-day period, today is day 6 (index 5): the
+    // straight line uses 6 of 10 days, not 3, and now sits at today.
+    const start = new Date('2026-03-01T00:00:00Z');
+    const chart = budgetSpendChart(
+      days.map((d) => ({ ...d, date: `${d.date}T00:00:00Z` })),
+      0,
+      1000,
+      10,
+      { start, bucketMs: 86_400_000 },
+      new Date('2026-03-06T12:00:00Z')
+    )!;
+    expect(chart.projectedTotal).to.equal(100);
+    expect(chart.nowX).to.be.closeTo((5 * 100) / 9, 0.01);
+  });
+
   it('keeps a small spend visible when the limit is far above it', () => {
     // $60 against a $10,000 limit: the limit is named, not drawn, and the
     // line uses the chart's height instead of hugging the bottom edge.
@@ -691,6 +707,13 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(chart.getAttribute('aria-label')).to.contain('$60.00');
     expect(chart.querySelector('.limit-line')).to.not.equal(null);
     expect(chart.querySelector('.soft-line')).to.not.equal(null);
+    // Two dashed lines, two legend entries that tell them apart.
+    const legend = element
+      .shadowRoot!.querySelector('[data-testid="budget-chart-legend"]')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(legend).to.contain('soft limit $80.00');
+    expect(legend).to.contain('hard limit');
+    expect(element.shadowRoot!.querySelector('.legend-swatch.soft')).to.exist;
   });
 
   it('loads the budget period series only when asked', async () => {

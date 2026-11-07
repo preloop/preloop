@@ -1925,6 +1925,8 @@ export interface CostHealthResponse {
 }
 
 export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {
+  /** Client-side: when this answer was read from the server (cache-aware). */
+  fetched_at?: string;
   // Absent (null) when the window contains no imported usage.
   imported_usage?: ImportedUsageSummary | null;
   // Absent (null) when the window contains no subscription-covered requests.

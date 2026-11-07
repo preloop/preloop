@@ -75,7 +75,8 @@ export function budgetSpendChart(
   softLimit: number,
   hardLimit: number,
   slots = 0,
-  period: { start: Date; bucketMs: number } | null = null
+  period: { start: Date; bucketMs: number } | null = null,
+  now: Date = new Date()
 ): BudgetSpendChart | null {
   if (!rows || rows.length < 2) return null;
   const ordered = [...rows].sort((a, b) => a.date.localeCompare(b.date));
@@ -102,7 +103,21 @@ export function budgetSpendChart(
   // rest of the chart is the part of the period still to come.
   const span = Math.max(slots - 1, last, 1);
   const step = SPARKLINE_WIDTH / span;
-  const elapsed = slots > 0 ? (last + 1) / slots : 1;
+  // Today, not the last bucket with spend: days without spend still count
+  // as elapsed, or the straight line would overstate the period.
+  const current =
+    period && slots > 0
+      ? Math.min(
+          slots - 1,
+          Math.max(
+            last,
+            Math.floor(
+              (now.getTime() - period.start.getTime()) / period.bucketMs
+            )
+          )
+        )
+      : last;
+  const elapsed = slots > 0 ? (current + 1) / slots : 1;
   const projectedTotal =
     slots > 0 && running > 0 && elapsed >= 0.1 && elapsed < 1
       ? running / elapsed
@@ -113,7 +128,8 @@ export function budgetSpendChart(
   const max = Math.max(data, limitOffChart ? 0 : limit) || 1;
   const y = (value: number) => sparklineY(value, max);
   const x = (slot: number) => Math.min(SPARKLINE_WIDTH, slot * step);
-  const nowX = Number(x(last).toFixed(2));
+  const nowX = Number(x(current).toFixed(2));
+  const lastX = x(last).toFixed(2);
   return {
     points: cumulative
       .map((value, index) => `${x(positions[index]).toFixed(2)},${y(value)}`)
@@ -121,7 +137,7 @@ export function budgetSpendChart(
     nowX,
     projectedPoints:
       projectedTotal !== null
-        ? `${nowX.toFixed(2)},${y(running)} ${SPARKLINE_WIDTH.toFixed(2)},${y(projectedTotal)}`
+        ? `${lastX},${y(running)} ${nowX.toFixed(2)},${y(running)} ${SPARKLINE_WIDTH.toFixed(2)},${y(projectedTotal)}`
         : null,
     projectedTotal,
     limitY: limit > 0 && !limitOffChart ? y(limit) : null,
@@ -736,13 +752,20 @@ export class BudgetHealthCard extends LitElement {
             : nothing
         }
         ${
+          chart.softY !== null
+            ? html`<span class="legend-item soft-legend"
+                ><span class="legend-swatch soft" aria-hidden="true"></span>soft
+                limit ${this.formatCurrency(softLimit)}</span
+              >`
+            : nothing
+        }
+        ${
           limit > 0
             ? html`<span class="legend-item limit-legend"
-                ><span class="legend-swatch limit" aria-hidden="true"></span>${
-                  chart.limitOffChart
-                    ? `limit ${this.formatCurrency(limit)}, above the chart`
-                    : `limit ${this.formatCurrency(limit)}`
-                }</span
+                ><span class="legend-swatch limit" aria-hidden="true"></span
+                >${`${chart.softY !== null ? 'hard limit' : 'limit'} ${this.formatCurrency(limit)}${
+                  chart.limitOffChart ? ', above the chart' : ''
+                }`}</span
               >`
             : nothing
         }

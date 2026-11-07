@@ -3,6 +3,8 @@ import {
   cachedCostRead,
   clearCostReadCache,
   COST_CLOSED_WINDOW_GRACE_MS,
+  COST_CLOSED_WINDOW_TTL_MS,
+  costReadFetchedAt,
   COST_OPEN_WINDOW_TTL_MS,
 } from './api';
 
@@ -17,14 +19,30 @@ describe('cachedCostRead', () => {
   });
   afterEach(() => clearCostReadCache());
 
-  it('keeps a closed window for the whole session', async () => {
+  it('keeps a closed window as long as the server does', async () => {
     const end = '2026-11-01T00:00:00Z';
     await cachedCostRead('/closed', end, read, now);
-    const later = now + 24 * 60 * 60_000;
+    const later = now + COST_CLOSED_WINDOW_TTL_MS - 1;
     expect(await cachedCostRead('/closed', end, read, later)).to.deep.equal({
       n: 1,
     });
     expect(reads).to.equal(1);
+    await cachedCostRead('/closed', end, read, now + COST_CLOSED_WINDOW_TTL_MS);
+    expect(reads).to.equal(2);
+  });
+
+  it('clears when the tab becomes visible again', async () => {
+    const end = '2026-11-01T00:00:00Z';
+    await cachedCostRead('/visible', end, read, now);
+    document.dispatchEvent(new Event('visibilitychange'));
+    await cachedCostRead('/visible', end, read, now);
+    expect(reads).to.equal(2);
+  });
+
+  it('remembers when the answer was fetched', async () => {
+    const before = Date.now();
+    await cachedCostRead('/fetched', '2026-11-01T00:00:00Z', read, now);
+    expect(costReadFetchedAt('/fetched')).to.be.at.least(before);
   });
 
   it('expires the current period after a minute', async () => {
