@@ -4,7 +4,11 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './runners-view';
-import type { RunnersView } from './runners-view';
+import {
+  runnerHostLabel,
+  runnerOwnerLabel,
+  type RunnersView,
+} from './runners-view';
 import { invalidateApiCaches } from '../../api';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -35,7 +39,10 @@ describe('RunnersView', () => {
 
   function createFetchStub(
     runners: unknown[] = [],
-    account: { default_runner_pool?: string | null } = {},
+    account: {
+      default_runner_pool?: string | null;
+      hosted_minutes_remaining?: number | null;
+    } = {},
     options: {
       failPatch?: boolean;
       deleteConflict?: boolean;
@@ -124,6 +131,7 @@ describe('RunnersView', () => {
             id: 'acct-1',
             organization_name: 'Example Org',
             default_runner_pool: account.default_runner_pool ?? null,
+            hosted_minutes_remaining: account.hosted_minutes_remaining ?? null,
             created_at: '2026-09-04T00:00:00Z',
             updated_at: '2026-09-04T00:00:00Z',
           });
@@ -372,6 +380,94 @@ describe('RunnersView', () => {
     await element.updateComplete;
     return element;
   }
+
+  it('names owner and host on one line under the runner name', async () => {
+    expect(runnerOwnerLabel({ owner_name: 'Nyota Uhura' })).to.equal(
+      'Nyota Uhura'
+    );
+    expect(
+      runnerOwnerLabel({ registered_by_email: 'ops@example.com' })
+    ).to.equal('ops@example.com');
+    expect(runnerOwnerLabel({})).to.equal('Unknown owner');
+    expect(
+      runnerHostLabel({ hostname: 'uhura-mbp', os: 'darwin', arch: 'arm64' })
+    ).to.equal('uhura-mbp (darwin/arm64)');
+    expect(runnerHostLabel({})).to.equal('unknown host');
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'uhura-local',
+        hostname: 'uhura-mbp',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: [],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+        registered_by_email: 'uhura@example.dev',
+        owner_name: 'Nyota Uhura',
+      },
+    ]);
+    const headers = [...element.shadowRoot!.querySelectorAll('th')].map((th) =>
+      th.textContent!.trim()
+    );
+    expect(headers.slice(0, 3)).to.deep.equal([
+      'Runner',
+      'Status',
+      'Harnesses',
+    ]);
+    expect(headers).to.not.include('Registered by');
+    const identity = element.shadowRoot!.querySelector('.runner-identity')!;
+    expect(identity.textContent).to.contain('uhura-local');
+    expect(identity.textContent).to.contain('Nyota Uhura');
+    expect(identity.textContent).to.contain('uhura-mbp (darwin/arm64)');
+    expect(element.shadowRoot!.querySelector('.hosted-row')).to.equal(null);
+  });
+
+  async function renderWithHosted(runners: unknown[], minutes: number) {
+    fetchStub = createFetchStub(runners, { hosted_minutes_remaining: minutes });
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => element.shadowRoot!.querySelector('.hosted-row') !== null,
+      'hosted row did not render'
+    );
+    return element;
+  }
+
+  it('lists the Preloop hosted runner first from the account balance', async () => {
+    const element = await renderWithHosted(
+      [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'scotty-local',
+          hostname: 'scotty-xps',
+          labels: [],
+          status: 'online',
+          current_execution_id: null,
+        },
+      ],
+      412
+    );
+    const rows = element.shadowRoot!.querySelectorAll('tbody tr');
+    expect(rows[0].classList.contains('hosted-row')).to.equal(true);
+    expect(rows[0].textContent).to.contain('Preloop hosted');
+    expect(rows[0].textContent).to.contain('Available');
+    expect(rows[0].textContent).to.contain('412 hosted minutes left');
+  });
+
+  it('shows the hosted runner instead of the empty state when no runner is registered', async () => {
+    const element = await renderWithHosted([], 0);
+    const row = element.shadowRoot!.querySelector('.hosted-row')!;
+    expect(row.textContent).to.contain('Out of minutes');
+    const header = element.shadowRoot!.querySelector('view-header')!;
+    expect(header.getAttribute('description')).to.contain('Preloop hosted');
+    expect(row.querySelector('sl-badge')!.getAttribute('variant')).to.equal(
+      'warning'
+    );
+    expect(element.shadowRoot!.querySelector('.empty-state')).to.equal(null);
+  });
 
   it('renders the harness inventory with login, governance, models and billing', async () => {
     const element = await renderWith([

@@ -52,6 +52,25 @@ import { Router } from '../../router';
 import { fleetAccess, fleetHref } from '../../device-fleet-api';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
+/** Who owns a runner, for the at-a-glance line: name, else email. */
+export function runnerOwnerLabel(row: {
+  owner_name?: string | null;
+  registered_by_email?: string | null;
+}): string {
+  return row.owner_name || row.registered_by_email || 'Unknown owner';
+}
+
+/** Host and platform in one phrase, for example "uhura-mbp (darwin/arm64)". */
+export function runnerHostLabel(row: {
+  hostname?: string | null;
+  os?: string | null;
+  arch?: string | null;
+}): string {
+  const platform = [row.os, row.arch].filter(Boolean).join('/');
+  const host = row.hostname || 'unknown host';
+  return platform ? `${host} (${platform})` : host;
+}
+
 @customElement('runners-view')
 export class RunnersView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -146,6 +165,22 @@ export class RunnersView extends LitElement {
     [
       unsafeCSS(consoleStyles),
       css`
+        .runner-identity {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 12rem;
+        }
+        .runner-where {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 2px var(--sl-spacing-small);
+          font-size: var(--console-text-meta, 13px);
+        }
+        .runner-where sl-icon {
+          vertical-align: -2px;
+        }
+
         /* The runner a device page linked to: a rule, like the sidebar's
            active item, not a resting tint. */
         tr.linked > td:first-child {
@@ -506,6 +541,65 @@ export class RunnersView extends LitElement {
     if (entry.login_state === 'signed_in') return 'success';
     if (entry.login_state === 'signed_out') return 'warning';
     return 'neutral';
+  }
+
+  /** Name, then owner and host on one muted line: who and where at a glance. */
+  private renderRunnerIdentity(row: RunnerRecord) {
+    return html`<div class="runner-identity">
+      <strong>${row.name}</strong>
+      <div class="muted runner-where">
+        <span title=${row.registered_by_email || ''}
+          ><sl-icon name="person" aria-hidden="true"></sl-icon>
+          ${runnerOwnerLabel(row)}</span
+        >
+        <span
+          ><sl-icon name="pc-display" aria-hidden="true"></sl-icon>
+          ${runnerHostLabel(row)}</span
+        >
+      </div>
+    </div>`;
+  }
+
+  /**
+   * Preloop's hosted runner has no runner row of its own; when the account
+   * can use it, it is listed first so the page shows every place a flow can
+   * run.
+   */
+  private renderHostedRow() {
+    if (this.hostedMinutesLeft === null) return nothing;
+    const columns = this.fleetEnabled ? 10 : 9;
+    return html`<tr class="hosted-row" data-runner-id="hosted">
+      <td>
+        <div class="runner-identity">
+          <strong>Preloop hosted</strong>
+          <div class="muted runner-where">
+            <span
+              ><sl-icon name="person" aria-hidden="true"></sl-icon> Managed by
+              Preloop</span
+            >
+            <span
+              ><sl-icon name="cloud" aria-hidden="true"></sl-icon> Preloop
+              Cloud</span
+            >
+          </div>
+        </div>
+      </td>
+      <td>
+        ${
+          this.hostedMinutesLeft > 0
+            ? html`<sl-badge class="chip presence" pill variant="success"
+                >Available</sl-badge
+              >`
+            : html`<sl-badge class="chip presence" pill variant="warning"
+                >Out of minutes</sl-badge
+              >`
+        }
+      </td>
+      <td class="muted" colspan=${columns - 2}>
+        ${Math.max(0, Math.round(this.hostedMinutesLeft))} hosted minutes left
+        this period
+      </td>
+    </tr>`;
   }
 
   private renderHarnesses(row: RunnerRecord) {
@@ -984,7 +1078,7 @@ export class RunnersView extends LitElement {
     return html`
       <view-header
         headerText="Runners"
-        description="Self-hosted CLI runners for this account."
+        description="Self-hosted CLI runners and Preloop hosted runs for this account."
         >${this.fleetEnabled ? html`<a slot="main-column" href=${fleetHref()}>Device fleet</a>` : nothing}</view-header
       >
       <runner-compliance></runner-compliance>
@@ -1008,7 +1102,7 @@ export class RunnersView extends LitElement {
                   >
                 </div>
               </sl-alert>`
-            : this.runners.length === 0
+            : this.runners.length === 0 && this.hostedMinutesLeft === null
               ? html`
                   <p class="empty-state">
                     <span>No runners registered. Start one:</span>
@@ -1035,14 +1129,12 @@ export class RunnersView extends LitElement {
                     <table>
                       <thead>
                         <tr>
-                          <th>Name</th>
-                          <th>Labels</th>
-                          <th>Registered by</th>
-                          <th>Flow runs</th>
-                          <th>Host</th>
-                          ${this.fleetEnabled ? html`<th>Device</th>` : nothing}
-                          <th>Harnesses</th>
+                          <th>Runner</th>
                           <th>Status</th>
+                          <th>Harnesses</th>
+                          <th>Labels</th>
+                          <th>Flow runs</th>
+                          ${this.fleetEnabled ? html`<th>Device</th>` : nothing}
                           <th>Last heartbeat</th>
                           <th>Running / slots</th>
                           <th>Executions</th>
@@ -1050,6 +1142,7 @@ export class RunnersView extends LitElement {
                         </tr>
                       </thead>
                       <tbody>
+                        ${this.renderHostedRow()}
                         ${this.runners.map(
                           (row) => html`
                             <tr
@@ -1057,33 +1150,7 @@ export class RunnersView extends LitElement {
                               class=${row.id === this.linkedRunnerId ? 'linked' : ''}
                               aria-current=${row.id === this.linkedRunnerId ? 'true' : 'false'}
                             >
-                              <td>${row.name}</td>
-                              <td>
-                                <div class="labels">
-                                  ${(row.labels || []).map(
-                                    (label) =>
-                                      html`<sl-badge
-                                        class="tag-chip"
-                                        variant="neutral"
-                                        pill
-                                        ><sl-icon name="tag"></sl-icon
-                                        >${label}</sl-badge
-                                      >`
-                                  )}
-                                </div>
-                              </td>
-                              <td class="muted">
-                                ${row.registered_by_email || '-'}
-                              </td>
-                              <td>${this.renderConsent(row)}</td>
-                              <td>
-                                ${row.hostname || '-'}
-                                <div class="muted">
-                                  ${[row.os, row.arch].filter(Boolean).join('/')}
-                                </div>
-                              </td>
-                              ${this.fleetEnabled ? html`<td>${row.ephemeral ? 'Ephemeral' : html`<a href=${fleetHref(row.workstation_fingerprint ? `fp:${row.workstation_fingerprint}` : `runner:${row.id}`)}>Device</a>`}</td>` : nothing}
-                              <td>${this.renderHarnesses(row)}</td>
+                              <td>${this.renderRunnerIdentity(row)}</td>
                               <td>
                                 <sl-badge
                                   class="chip presence"
@@ -1113,6 +1180,23 @@ export class RunnersView extends LitElement {
                                     : nothing
                                 }
                               </td>
+                              <td>${this.renderHarnesses(row)}</td>
+                              <td>
+                                <div class="labels">
+                                  ${(row.labels || []).map(
+                                    (label) =>
+                                      html`<sl-badge
+                                        class="tag-chip"
+                                        variant="neutral"
+                                        pill
+                                        ><sl-icon name="tag"></sl-icon
+                                        >${label}</sl-badge
+                                      >`
+                                  )}
+                                </div>
+                              </td>
+                              <td>${this.renderConsent(row)}</td>
+                              ${this.fleetEnabled ? html`<td>${row.ephemeral ? 'Ephemeral' : html`<a href=${fleetHref(row.workstation_fingerprint ? `fp:${row.workstation_fingerprint}` : `runner:${row.id}`)}>Device</a>`}</td>` : nothing}
                               <td class="muted">
                                 ${
                                   row.last_heartbeat
