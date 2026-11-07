@@ -1847,6 +1847,86 @@ export async function getIssueCosts(
   return response.json();
 }
 
+export type WorkItemKind = 'issue' | 'pull_request';
+
+/** One agent, flow, model or user that drove a work item's spend. */
+export interface WorkItemSlice {
+  key: string;
+  label: string;
+  estimated_cost: number;
+  total_tokens: number;
+  request_count: number;
+}
+
+/** One issue or pull request inside a work item group. */
+export interface WorkItemRef {
+  kind: WorkItemKind;
+  key: string;
+  title: string | null;
+  url: string | null;
+  state: string | null;
+  estimated_cost: number;
+  total_tokens: number;
+  request_count: number;
+}
+
+/** An issue with the pull requests that implement or reference it. */
+export interface WorkItemGroup {
+  key: string;
+  kind: WorkItemKind;
+  title: string | null;
+  url: string | null;
+  estimated_cost: number;
+  partial: boolean;
+  total_tokens: number;
+  request_count: number;
+  execution_count: number;
+  session_count: number;
+  items: WorkItemRef[];
+  agents: WorkItemSlice[];
+  flows: WorkItemSlice[];
+  models: WorkItemSlice[];
+  users: WorkItemSlice[];
+}
+
+export interface WorkItemCostReport {
+  period_start: string;
+  period_end: string;
+  groups: WorkItemGroup[];
+  total_groups: number;
+  estimated_cost: number;
+  total_tokens: number;
+  truncated: boolean;
+  split_rule: string;
+}
+
+/**
+ * Spend per work item: issues grouped with their pull requests, counting
+ * every flow run and agentic session that worked on them.
+ */
+export async function getWorkItemCosts(
+  params: {
+    startDate?: string | null;
+    endDate?: string | null;
+    limit?: number;
+    offset?: number;
+  } = {}
+): Promise<WorkItemCostReport> {
+  const query = new URLSearchParams();
+  if (params.startDate) query.set('start_date', params.startDate);
+  if (params.endDate) query.set('end_date', params.endDate);
+  if (params.limit) query.set('limit', String(params.limit));
+  if (params.offset) query.set('offset', String(params.offset));
+  const suffix = query.toString();
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/cost/work-items${suffix ? `?${suffix}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch cost per work item');
+  }
+  return response.json();
+}
+
 /** Executions that contributed to one issue row. */
 export async function getIssueCostExecutions(
   rollupId: string,

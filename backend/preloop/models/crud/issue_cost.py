@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import ColumnElement, exists, func, or_, select, text
+from sqlalchemy import ColumnElement, exists, func, insert, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import sqltypes
@@ -68,6 +68,44 @@ def _cost_unknown_count(fact: type[models.IssueCostExecution]) -> ColumnElement[
 
 class CRUDIssueCost:
     """Rollup rows, execution facts and pull request timestamps."""
+
+    #: Tables :meth:`create_many` may write.
+    BULK_MODELS: tuple[type[Any], ...] = (
+        models.IssueCostRollup,
+        models.IssueCostExecution,
+        models.IssueCostPullRequest,
+        models.IssueCostPullRequestIssue,
+    )
+
+    def create_many(
+        self,
+        db: Session,
+        *,
+        model: type[Any],
+        rows: Sequence[dict[str, Any]],
+        chunk_size: int = 5000,
+    ) -> int:
+        """Bulk insert issue cost rows without committing (seeding, backfills).
+
+        Args:
+            db: Database session.
+            model: One of :attr:`BULK_MODELS`.
+            rows: Column values keyed by mapped attribute name.
+            chunk_size: Rows per statement.
+
+        Returns:
+            The number of rows inserted.
+
+        Raises:
+            ValueError: ``model`` is not an issue cost table.
+        """
+        if model not in self.BULK_MODELS:
+            raise ValueError(f"{model.__name__} is not an issue cost table")
+        for start in range(0, len(rows), chunk_size):
+            chunk = list(rows[start : start + chunk_size])
+            if chunk:
+                db.execute(insert(model), chunk)
+        return len(rows)
 
     # --- identity lookups -------------------------------------------------
 

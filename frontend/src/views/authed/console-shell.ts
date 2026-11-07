@@ -96,7 +96,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 const NAV_ALIASES: Record<string, string[]> = {
   '/console/approvals': ['/console/approval'],
   // Cost per issue is a drill-down of Spend.
-  '/console/cost/spend': ['/console/cost/by-issue'],
+  '/console/cost/spend': ['/console/cost/by-issue', '/console/cost/work-items'],
 };
 
 const SIDEBAR_BREAKPOINT = 768;

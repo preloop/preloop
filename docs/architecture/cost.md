@@ -77,6 +77,14 @@ newest unvacuumed rows, which are exactly the Spend window, pushed the planner
 to scan the whole table. A reprice rewrites its whole range and had the same
 effect until the next vacuum.
 
+The Sessions breakdown walks session/run keys newest first and counts the
+window's distinct sessions. Both read `ix_api_usage_customer_session_keys`
+(`account_id`, `timestamp DESC`, including `runtime_session_id` and
+`flow_execution_id`, partial on the customer predicate plus "belongs to a
+session or a run"; migration `20261203_session_keys_idx`). Before that index
+the planner walked the global `ix_api_usage_timestamp` and discarded every
+other tenant's rows, so the cost grew with the whole table, not the account.
+
 ## Cost Analytics and Budgeting
 *   **Purpose:** Turn model usage telemetry into explainable spend, enforceable budgets, and optimization guidance.
 *   **Canonical Ledger:** `ApiUsage` remains the source of truth for model call tokens, estimated cost, provider, model, runtime principal, API key, flow, managed agent, and runtime-session attribution.
@@ -92,6 +100,28 @@ effect until the next vacuum.
 *   **Default AI Model Use:** Enterprise session-value analysis should call the account's default AI model through the Preloop Gateway, producing an auditable meta-usage record for the evaluation itself. The analysis should reference redacted session summaries, gateway events, tool calls, approvals, and final outcomes rather than unrestricted raw prompts.
 *   **Plugin Boundary:** Backend features beyond OSS summaries and budget-health tracking must live in Enterprise plugins under `./plugins/`, likely extending `plugins/billing/` for budget policy enforcement, pricing overrides, FinOps, credits, promotions, forecasting, exports, and value-review jobs. The shared frontend should gate those panels with feature flags.
 *   **Budget Actions:** Core enforcement should continue to block or warn before upstream dispatch. Enterprise plugins can add escalations, Slack/mobile notifications, approval requirements for expensive calls, and post-hoc anomaly workflows.
+
+## Cost per work item
+
+`GET /api/v1/cost/work-items` (`view_cost`, console `/console/cost/work-items`)
+reports spend per issue and pull request over a window, most expensive first.
+
+*   **Contributors:** flow runs attributed by `issue_cost_execution` (assigned
+    links only) and runtime sessions or runs with classified `work_ref` tool
+    calls. A contributor's gateway spend in the window (customer predicate,
+    served by `ix_api_usage_customer_session_keys`) is split evenly between
+    the work items it touched, so no request counts twice.
+*   **Grouping:** an issue joins the pull requests that close it (`work_ref`
+    `closes`), the pull request the issue cost attribution tied to it, and a
+    flow run that worked on both. An unnumbered create's closing references
+    join a pull request only when the same contributor named exactly one in
+    that repository.
+*   **Drill-down:** per group the issues and pull requests (with state), and
+    the agents, flows, models and people that drove the spend. A flow run's own
+    principal is shown as one "Flow runs" row.
+*   **Caps:** 20,000 rows per link source and 50,000 usage slices; reaching a
+    cap sets `truncated`. `limit` (at most 200) and `offset` page the groups;
+    totals always cover every group.
 
 ## Cost and cycle time per tracker issue
 

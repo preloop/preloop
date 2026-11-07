@@ -57,6 +57,8 @@ from preloop.services.model_gateway_usage import (
     normalize_usage_period,
 )
 from preloop.services.usage_repricing import reprice_gateway_usage
+from preloop.schemas.work_item_cost import WorkItemCostReport
+from preloop.services import work_item_cost
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.api.loop_safety import run_db_off_loop
 
@@ -453,6 +455,41 @@ def _build_cost_summary(
         usage_by_tool=summary.usage_by_tool,
         imported_usage=imported_usage,
         subscription_usage=subscription_usage,
+    )
+
+
+@router.get("/work-items", response_model=WorkItemCostReport)
+@heavy_route
+@require_permission("view_cost")
+def get_work_item_costs(
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    limit: int = Query(50, ge=1, le=200, description="Groups per page."),
+    offset: int = Query(0, ge=0, description="Groups to skip."),
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> WorkItemCostReport:
+    """Spend per issue and pull request, issues grouped with their pull requests.
+
+    Counts every flow run and agentic session that worked on a work item,
+    with the agents, flows, models and users that drove it.
+    """
+    account = get_account_or_404(db, current_user)
+    start, end = normalize_usage_period(start_date, end_date)
+    if end <= start:
+        raise HTTPException(status_code=422, detail="end_date must be after start_date")
+    restricted_start, restricted_end = restrict_history_window(
+        db, account=account, start_date=start, end_date=end
+    )
+    assert restricted_start is not None and restricted_end is not None
+    return work_item_cost.build_report(
+        db,
+        account_id=account.id,
+        user=current_user,
+        start=restricted_start,
+        end=restricted_end,
+        limit=limit,
+        offset=offset,
     )
 
 
