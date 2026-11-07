@@ -33,6 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import (
+    crud_account,
     crud_api_usage,
     crud_flow,
     crud_flow_execution,
@@ -242,6 +243,9 @@ def ingest_events(
             skipped += 1
         else:
             imported += 1
+    if imported:
+        # Imported events can land in closed windows: expire cached cost reads.
+        crud_account.bump_cost_revision(db, account_id=account_id)
     db.commit()
     return imported, skipped
 
@@ -891,6 +895,9 @@ def ingest_push_records(
                 conflict=bool(stored_hash and stored_hash != content_hash),
             )
         )
+    if any(not result.deduplicated for result in results):
+        # Pushed records can land in closed windows: expire cached cost reads.
+        crud_account.bump_cost_revision(db, account_id=account_id)
     db.commit()
     if indexed_transcripts:
         # Chunks rode the caller's transaction (commit=False). Nudge only

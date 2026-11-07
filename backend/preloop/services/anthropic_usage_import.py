@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import (
+    crud_account,
     crud_anthropic_import_connection,
     crud_anthropic_usage,
     crud_anthropic_user_mapping,
@@ -592,6 +593,10 @@ def sync_connection(
             connection.account_id,
             error,
         )
+    if synced:
+        # Imported days are closed windows: expire cached cost reads (the
+        # record_sync commit below applies the bump).
+        crud_account.bump_cost_revision(db, account_id=connection.account_id)
     crud_anthropic_import_connection.record_sync(
         db,
         connection=connection,

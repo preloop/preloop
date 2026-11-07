@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from concurrent.futures import Future
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import (
@@ -24,7 +24,7 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_or_404
 from preloop.api.heavy_routes import heavy_route
 from preloop.models import models
-from preloop.models.crud import crud_api_usage
+from preloop.models.crud import crud_account, crud_api_usage
 from preloop.models.db.session import get_db_session
 from preloop.schemas.cost_analytics import (
     CostAnalyticsSummaryResponse,
@@ -229,11 +229,36 @@ def get_cost_summary(
 
 
 SUMMARY_CACHE_TTL_SECONDS = 60.0
-_SUMMARY_CACHE_MAX_ENTRIES = 128
+# A window that ended before ``CLOSED_WINDOW_GRACE`` ago is closed: new gateway
+# traffic cannot land in it, so its aggregates only change through a reprice,
+# a ledger backfill or a usage import. Those writes bump the account's cost
+# revision (``crud_account.bump_cost_revision``), which is part of every cache
+# key, so the long TTL never serves numbers older than the last such write,
+# on any worker or replica.
+CLOSED_WINDOW_GRACE = timedelta(hours=1)
+CLOSED_SUMMARY_CACHE_TTL_SECONDS = 6 * 60 * 60.0
+_SUMMARY_CACHE_MAX_ENTRIES = 512
 _SUMMARY_CACHE_LOCK = threading.Lock()
 _SUMMARY_CACHE: dict[
     tuple[object, ...], tuple[float, Future[CostAnalyticsSummaryResponse]]
 ] = {}
+
+
+def summary_cache_ttl(end: datetime, now: Optional[datetime] = None) -> float:
+    """Return how long a cost aggregate for a window ending at ``end`` may live.
+
+    Args:
+        end: Timezone-aware end of the window.
+        now: Current time, for tests; defaults to the wall clock.
+
+    Returns:
+        ``CLOSED_SUMMARY_CACHE_TTL_SECONDS`` for a closed window, otherwise
+        ``SUMMARY_CACHE_TTL_SECONDS``.
+    """
+    now = now or datetime.now(timezone.utc)
+    if end <= now - CLOSED_WINDOW_GRACE:
+        return CLOSED_SUMMARY_CACHE_TTL_SECONDS
+    return SUMMARY_CACHE_TTL_SECONDS
 
 
 def _cached_cost_summary(
@@ -249,7 +274,10 @@ def _cached_cost_summary(
     session_limit: Optional[int] = None,
     session_offset: int = 0,
 ) -> CostAnalyticsSummaryResponse:
-    """Share exact-window aggregates for a minute, including concurrent reads.
+    """Share exact-window aggregates, including concurrent reads.
+
+    Open windows are shared for ``SUMMARY_CACHE_TTL_SECONDS``; closed windows
+    for ``CLOSED_SUMMARY_CACHE_TTL_SECONDS`` (see ``summary_cache_ttl``).
 
     Authorization and current history policy run before every cache lookup.
     Return a copy so attaching a comparison cannot modify another response.
@@ -274,6 +302,7 @@ def _cached_cost_summary(
         session_limit,
         session_offset,
     )
+    ttl = summary_cache_ttl(end)
     now = time.monotonic()
     with _SUMMARY_CACHE_LOCK:
         cached = _SUMMARY_CACHE.get(key)
@@ -291,7 +320,7 @@ def _cached_cost_summary(
                         del _SUMMARY_CACHE[old_key]
                         break
             if len(_SUMMARY_CACHE) < _SUMMARY_CACHE_MAX_ENTRIES:
-                _SUMMARY_CACHE[key] = (now + SUMMARY_CACHE_TTL_SECONDS, future)
+                _SUMMARY_CACHE[key] = (now + ttl, future)
     if not owner:
         return future.result().model_copy(deep=True)
     try:
@@ -315,10 +344,7 @@ def _cached_cost_summary(
         raise
     with _SUMMARY_CACHE_LOCK:
         if _SUMMARY_CACHE.get(key, (0, None))[1] is future:
-            _SUMMARY_CACHE[key] = (
-                time.monotonic() + SUMMARY_CACHE_TTL_SECONDS,
-                future,
-            )
+            _SUMMARY_CACHE[key] = (time.monotonic() + ttl, future)
     future.set_result(result)
     return result.model_copy(deep=True)
 
@@ -548,6 +574,16 @@ _HEALTH_GENERATION: dict[str, int] = {}
 _HEALTH_CACHE_LOCK = threading.Lock()
 
 
+def invalidate_cost_reads(db: Session, account_id: str) -> None:
+    """Expire cached cost reads for an account on every worker.
+
+    Bumps the account's cost revision (part of each summary cache key, read
+    fresh per request) and drops this worker's entries right away.
+    """
+    crud_account.bump_cost_revision(db, account_id=account_id, commit=True)
+    _forget_cost_health(account_id)
+
+
 def _forget_cost_health(account_id: str) -> None:
     """Drop summary and health entries for an account's plain string id.
 
@@ -604,7 +640,7 @@ def reprice_account_gateway_usage(
         dry_run=reprice_in.dry_run,
     )
     if not reprice_in.dry_run:
-        _forget_cost_health(str(repricing_account_id))
+        invalidate_cost_reads(db, str(repricing_account_id))
     return RepriceResponse(
         submitted_async=False,
         rows_examined=result.rows_examined,
@@ -695,7 +731,7 @@ async def backfill_from_provider_ledger_csv(
     plan = plan_ledger_allocation(entries, rows)
     rows_updated = apply_ledger_backfill(db, plan) if apply else None
     if rows_updated:
-        _forget_cost_health(str(current_user.account_id))
+        invalidate_cost_reads(db, str(current_user.account_id))
 
     return LedgerBackfillResponse(
         dry_run=not apply,

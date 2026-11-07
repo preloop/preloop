@@ -1155,3 +1155,32 @@ def test_unknown_day_keeps_partial_window_totals_unknown(
         )
         == []
     )
+
+
+def _cost_revision(db_session: Session, account_id: Any) -> int:
+    from preloop.models.crud import crud_account
+
+    account = crud_account.get(db_session, id=account_id)
+    db_session.refresh(account)
+    return (account.meta_data or {}).get(crud_account.COST_REVISION_KEY, 0)
+
+
+def test_sync_expires_cached_cost_reads_only_when_days_land(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Imported days are closed windows; the cost cache revision must move."""
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW,
+        http_client_factory=lambda: httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(401))
+        ),
+    )
+    assert _cost_revision(db_session, account_id) == 0
+    svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=FakeGitHub().factory()
+    )
+    assert _cost_revision(db_session, account_id) == 1
