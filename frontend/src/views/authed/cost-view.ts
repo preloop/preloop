@@ -1202,12 +1202,13 @@ export class CostView extends AuthedElement {
       const previousPeriod = this.digestPeriod
         ? null
         : this.getPreviousDateParams(range, now);
-      if (previousPeriod)
-        void this.loadPreviousRange(previousPeriod, generation);
-      const summary = await getCostAnalyticsSummary({
+      const headline = getCostAnalyticsSummary({
         ...period,
         includeBreakdown: false,
       });
+      if (previousPeriod)
+        void this.loadPreviousRange(previousPeriod, generation);
+      const summary = await headline;
       if (generation !== this.loadGeneration) return;
       this.summary = summary;
       this.readyBreakdowns = new Set();
