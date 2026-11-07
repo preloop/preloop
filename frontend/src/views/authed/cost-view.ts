@@ -217,6 +217,11 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
   { value: 'last-90', label: '90d' },
 ];
 
+/** The next whole UTC minute at or after `date`. */
+export function ceilToMinute(date: Date): Date {
+  return new Date(Math.ceil(date.getTime() / 60_000) * 60_000);
+}
+
 @customElement('cost-view')
 export class CostView extends AuthedElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -1138,8 +1143,11 @@ export class CostView extends AuthedElement {
   private async load() {
     const generation = ++this.loadGeneration;
     const range = this.selectedRange;
-    // Resolve both windows from one clock so their boundary agrees exactly.
-    const now = new Date();
+    // Resolve both windows from one clock so their boundary agrees exactly,
+    // rounded up to the minute so loads within a minute ask the same window
+    // and share the server's and this tab's cached answers. Rounding up
+    // never leaves out a request that already happened.
+    const now = ceilToMinute(new Date());
     const period = this.getDateParams(range, now);
     this.loading = true;
     this.error = null;

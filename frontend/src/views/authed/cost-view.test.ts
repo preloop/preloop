@@ -3,7 +3,7 @@ import type { LitElement } from 'lit';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
-import { CostView, sortColumnsToList } from './cost-view';
+import { CostView, ceilToMinute, sortColumnsToList } from './cost-view';
 import { RepriceJobStatusElement } from '../../components/reprice-job-status';
 import { invalidateApiCaches } from '../../api';
 
@@ -730,6 +730,15 @@ describe('CostView', () => {
     expect(
       (element as unknown as { priceDialogOpen: boolean }).priceDialogOpen
     ).to.equal(true);
+  });
+
+  it('rounds the page clock up to the minute so reloads share a window', () => {
+    expect(
+      ceilToMinute(new Date('2026-11-07T21:53:12.345Z')).toISOString()
+    ).to.equal('2026-11-07T21:54:00.000Z');
+    expect(
+      ceilToMinute(new Date('2026-11-07T21:53:00.000Z')).toISOString()
+    ).to.equal('2026-11-07T21:53:00.000Z');
   });
 
   it('paints the totals before the comparison and breakdown reads finish', async () => {
