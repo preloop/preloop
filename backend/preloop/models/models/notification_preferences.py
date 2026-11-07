@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, UTC
-from typing import TYPE_CHECKING, List, Dict, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -30,7 +30,8 @@ class NotificationPreferences(Base):
         user_id: Reference to the user (unique, 1:1).
         preferred_channel: Preferred notification channel ('email' or 'mobile_push').
         mobile_device_tokens: List of mobile device tokens for push notifications.
-            Format: [{platform: 'ios'|'android', token: '...', registered_at: '...'}]
+            Format: [{platform: 'ios'|'android', token: '...', registered_at: '...',
+            apns_environment: 'sandbox'|'production' (iOS only, optional)}]
         enable_email: Whether email notifications are enabled.
         enable_mobile_push: Whether mobile push notifications are enabled.
         created_at: When the preferences were created.
@@ -62,7 +63,11 @@ class NotificationPreferences(Base):
     mobile_device_tokens: Mapped[Optional[List[Dict]]] = mapped_column(
         JSONB,
         nullable=True,
-        comment="List of mobile device tokens: [{platform: 'ios'|'android', token: '...', registered_at: '...'}]",
+        comment=(
+            "List of mobile device tokens: [{platform: 'ios'|'android', "
+            "token: '...', registered_at: '...', apns_environment: "
+            "'sandbox'|'production' (iOS only, optional)}]"
+        ),
     )
 
     enable_email: Mapped[bool] = mapped_column(
@@ -136,12 +141,21 @@ class NotificationPreferences(Base):
             f"preferred={self.preferred_channel}, channels={channels}, devices={device_count})>"
         )
 
-    def add_device_token(self, platform: str, token: str) -> None:
+    def add_device_token(
+        self,
+        platform: str,
+        token: str,
+        apns_environment: Optional[str] = None,
+    ) -> None:
         """Add a mobile device token.
 
         Args:
             platform: Device platform ('ios' or 'android').
             token: Device push notification token.
+            apns_environment: For iOS, the APNs environment that issued the
+                token ('sandbox' or 'production'). Xcode development builds
+                get sandbox tokens, which production APNs rejects. None
+                means the app did not report it.
 
         Raises:
             ValueError: If the token is blank. Storing an empty token makes
@@ -160,14 +174,14 @@ class NotificationPreferences(Base):
             d for d in self.mobile_device_tokens if d.get("platform") != platform
         ]
 
-        # Add new token
-        self.mobile_device_tokens.append(
-            {
-                "platform": platform,
-                "token": token,
-                "registered_at": datetime.now(UTC).isoformat(),
-            }
-        )
+        entry: Dict[str, str] = {
+            "platform": platform,
+            "token": token,
+            "registered_at": datetime.now(UTC).isoformat(),
+        }
+        if platform == "ios" and apns_environment:
+            entry["apns_environment"] = apns_environment
+        self.mobile_device_tokens.append(entry)
 
     def remove_device_token(self, token: str) -> None:
         """Remove a mobile device token.
@@ -198,3 +212,26 @@ class NotificationPreferences(Base):
                 tokens.append(device.get("token"))
 
         return [t for t in tokens if t is not None]
+
+    def get_device_entries(
+        self, platform: Optional[str] = None
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Get (token, apns_environment) pairs, optionally filtered by platform.
+
+        Args:
+            platform: Optional platform filter ('ios' or 'android').
+
+        Returns:
+            List of (token, apns_environment) tuples. The environment is
+            None for Android tokens and for iOS tokens registered by app
+            builds that did not report it.
+        """
+        entries: List[Tuple[str, Optional[str]]] = []
+        for device in self.mobile_device_tokens or []:
+            if platform is not None and device.get("platform") != platform:
+                continue
+            token = device.get("token")
+            if token is None:
+                continue
+            entries.append((token, device.get("apns_environment")))
+        return entries

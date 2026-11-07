@@ -13,7 +13,7 @@ class TestGetAPNsService:
     @pytest.fixture(autouse=True)
     def reset_singleton(self, monkeypatch):
         """Reset the singleton between tests."""
-        monkeypatch.setattr("preloop.services.push_notifications._apns_service", None)
+        monkeypatch.setattr("preloop.services.push_notifications._apns_services", {})
 
     def test_get_apns_service_initializes_singleton(self):
         """Test that get_apns_service initializes singleton on first call."""

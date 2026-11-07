@@ -3924,7 +3924,7 @@ class TestNotificationStagger:
 
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(
-            return_value=({user_id}, [(user_id, "a" * 64)], [])
+            return_value=({user_id}, [(user_id, "a" * 64, None)], [])
         )
 
         with (

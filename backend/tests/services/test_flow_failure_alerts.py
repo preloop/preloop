@@ -690,6 +690,9 @@ class TestGenericPushHelper:
             get_device_tokens=lambda platform=None: (
                 ["tok-android-1"] if platform == "android" else []
             ),
+            get_device_entries=lambda platform=None: (
+                [("tok-android-1", None)] if platform == "android" else []
+            ),
         )
         sent: List[dict] = []
 
@@ -743,6 +746,9 @@ class TestGenericPushHelper:
             notify_when_needed=True,
             get_device_tokens=lambda platform=None: (
                 ["tok-ios-1"] if platform == "ios" else []
+            ),
+            get_device_entries=lambda platform=None: (
+                [("tok-ios-1", None)] if platform == "ios" else []
             ),
         )
         sent: List[dict] = []

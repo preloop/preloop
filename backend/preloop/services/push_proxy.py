@@ -35,6 +35,7 @@ async def send_push_via_proxy(
     title: str,
     body: str,
     data: Optional[Dict[str, Any]] = None,
+    apns_environment: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """Send a push notification via the proxy service.
@@ -45,6 +46,9 @@ async def send_push_via_proxy(
         title: Notification title
         body: Notification body
         data: Custom data payload
+        apns_environment: iOS only: 'sandbox' or 'production', the APNs
+            environment that issued the token, so the hosted instance can
+            send it to the matching host. Omitted when unknown.
         **kwargs: Additional options (badge, sound, priority)
 
     Returns:
@@ -65,6 +69,8 @@ async def send_push_via_proxy(
             "data": data or {},
             **{k: v for k, v in kwargs.items() if v is not None},
         }
+        if platform == "ios" and apns_environment:
+            payload["apns_environment"] = apns_environment
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(

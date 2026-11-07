@@ -168,7 +168,11 @@ async def register_mobile_device(
         )
 
     prefs = notification_preferences.add_device_token(
-        db, current_user.id, device_in.platform, device_in.token
+        db,
+        current_user.id,
+        device_in.platform,
+        device_in.token,
+        apns_environment=device_in.apns_environment,
     )
 
     db.commit()
@@ -375,7 +379,11 @@ async def register_device_via_token(
 
     if push_registered:
         prefs = notification_preferences.add_device_token(
-            db, user_id, device_in.platform, device_in.token
+            db,
+            user_id,
+            device_in.platform,
+            device_in.token,
+            apns_environment=device_in.apns_environment,
         )
         # Enable push notifications by default when adding the first device
         if is_first_device and not prefs.enable_mobile_push:
