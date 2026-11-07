@@ -67,6 +67,7 @@ import '../../table/data-table';
 import { sessionCountLabel } from '../../utils/session-count';
 import {
   resolvePreviousTimeRange,
+  ceilToMinute,
   resolveTimeRange,
   timeRangeShortLabel,
 } from '../../utils/time-range';
@@ -217,10 +218,7 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
   { value: 'last-90', label: '90d' },
 ];
 
-/** The next whole UTC minute at or after `date`. */
-export function ceilToMinute(date: Date): Date {
-  return new Date(Math.ceil(date.getTime() / 60_000) * 60_000);
-}
+export { ceilToMinute };
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
