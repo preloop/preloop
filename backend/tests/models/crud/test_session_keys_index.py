@@ -24,8 +24,9 @@ def test_index_carries_the_session_read_predicate(db_session: Session) -> None:
 
 
 def test_session_key_walk_can_use_the_index(db_session: Session, test_user) -> None:
-    """With the global timestamp index out of the way, the planner proves the
-    read's predicate implies the partial index's (no heap filter needed)."""
+    """With every competing index out of the way, the planner can still use
+    the partial index, which proves the read's predicate implies the index's
+    (a sequential scan would be the only option otherwise)."""
     now = datetime.now(UTC).replace(tzinfo=None)
     conditions = CRUDApiUsage._session_usage_conditions(
         account_id=str(test_user.account_id),
@@ -44,7 +45,23 @@ def test_session_key_walk_can_use_the_index(db_session: Session, test_user) -> N
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
-    db_session.execute(text("DROP INDEX IF EXISTS ix_api_usage_timestamp"))
+    # Leave the partial index as the only index the planner may pick. On a
+    # near-empty table PostgreSQL otherwise costs any api_usage index about
+    # the same (CI picked ix_api_usage_account_principal_id_ts), so asserting
+    # on the chosen index was planner-dependent. Indexes that back
+    # constraints stay; the DROPs roll back with the test transaction.
+    competing = db_session.execute(
+        text(
+            "SELECT i.indexname FROM pg_indexes i "
+            "WHERE i.tablename = 'api_usage' AND i.indexname <> :name "
+            "AND NOT EXISTS (SELECT 1 FROM pg_constraint c "
+            "WHERE c.conindid = to_regclass(quote_ident(i.schemaname) "
+            "|| '.' || quote_ident(i.indexname)))"
+        ),
+        {"name": INDEX},
+    ).scalars()
+    for index_name in list(competing):
+        db_session.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
     plan = "\n".join(row[0] for row in db_session.execute(text(f"EXPLAIN {sql}")).all())
