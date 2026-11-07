@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (telemetry)
+
+- The daily version check marks check-ins from CI jobs with `metadata.ci: true` so CI runs do not count as installs. Set `PRELOOP_DISABLE_TELEMETRY=true` to send nothing.
+
 ### Changed (weekly reports)
 
 - Weekly governance reports run deterministic checks by default, including fresh accounts, without model dispatch or analysis budget admission. Account and recipient report opt-outs remain supported.
