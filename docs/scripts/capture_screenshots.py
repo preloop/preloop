@@ -372,6 +372,13 @@ async def cap_flow_create_form(page, args, api):
     await page.locator('sl-textarea[label="Prompt template"] textarea').fill(
         FLOW_PROMPT
     )
+    # Tools sit in a collapsed "Allowed MCP tools" section, and the list is
+    # paged: open it and search for the one tool the flow needs.
+    tools = page.locator('sl-details[summary^="Allowed MCP tools"]').first
+    await tools.evaluate("(el) => el.show()")
+    await page.wait_for_timeout(500)
+    await page.locator('sl-input[label="Search allowed tools"] input').fill("pay")
+    await page.wait_for_timeout(500)
     pay = (
         page.locator('sl-checkbox:has-text("pay")')
         .filter(has_text="Example MCP Server")
@@ -390,16 +397,15 @@ async def cap_flow_create_form(page, args, api):
 
 
 async def scroll_past_records(page: Page) -> None:
-    """Scroll the execution page so the run itself, not the evidence card, fills the frame.
+    """Scroll the execution page so the run's status banner tops the frame.
 
-    The Records (evidence pack) card sits above the run's status banner and
-    stream; at the docs frame height it would push "Waiting for Support" and
-    the agent output below the fold.
+    The "Waiting for Support" banner and the run stream below it are what the
+    quickstart shows; the Records (evidence pack) card and the page header
+    would otherwise fill the docs frame. Falls back to scrolling past the
+    Records card when no waiting banner is rendered.
     """
-    bottom = await page.evaluate(
-        "() => {"
-        + DEEP_QUERY
-        + """
+    top = await page.evaluate(
+        """() => {
         const all = [];
         const walk = (root) => {
           for (const el of root.querySelectorAll?.('*') || []) {
@@ -408,6 +414,12 @@ async def scroll_past_records(page: Page) -> None:
           }
         };
         walk(document);
+        const banner = all.find((el) => {
+          const text = el.textContent.trim();
+          return el.children.length <= 2 && text.startsWith('Waiting for ')
+            && text.includes('expires') && el.getBoundingClientRect().height > 0;
+        });
+        if (banner) return banner.getBoundingClientRect().top - 90;
         const title = all.find(
           (el) => el.children.length === 0 && el.textContent.trim() === 'Records'
         );
@@ -416,12 +428,12 @@ async def scroll_past_records(page: Page) -> None:
         while (card && card.getBoundingClientRect().height < 250) {
           card = card.parentElement || card.getRootNode().host;
         }
-        return card ? card.getBoundingClientRect().bottom : 0;
+        return card ? card.getBoundingClientRect().bottom - 70 : 0;
       }"""
     )
-    if bottom > 120:
+    if top > 50:
         await page.mouse.move(VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
-        await page.mouse.wheel(0, bottom - 70)
+        await page.mouse.wheel(0, top)
         await page.wait_for_timeout(800)
 
 

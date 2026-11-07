@@ -120,7 +120,21 @@ const MATRIX: Landing[] = [
     url: '/console/cost/gateway',
     tag: 'api-usage-view',
   },
+  // Work items and issues became tabs on Spend; their old pages redirect.
+  {
+    path: '/console/cost/work-items',
+    url: '/console/cost/spend',
+    tag: 'cost-view',
+  },
+
   { path: '/console/issues', tag: 'issues-view', params: {} },
+  // Entered from a different section than the work items redirect above, so
+  // back and forward cross a pathname rather than only a query.
+  {
+    path: '/console/cost/by-issue',
+    url: '/console/cost/spend',
+    tag: 'cost-view',
+  },
   // Settings pages, including the group's own redirect to profile.
   {
     path: '/console/settings',
@@ -577,6 +591,12 @@ describe('console route transitions', () => {
         'cost-view',
       ],
       ['/console/api-usage?a=1', '/console/cost/gateway?a=1', 'api-usage-view'],
+      [
+        '/console/cost/work-items',
+        '/console/cost/spend?tab=work-items',
+        'cost-view',
+      ],
+      ['/console/cost/by-issue', '/console/cost/spend?tab=issues', 'cost-view'],
     ]) {
       clickLink(from);
       await waitUntil(

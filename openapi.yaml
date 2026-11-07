@@ -40757,6 +40757,11 @@ components:
         conversation_id:
           type: string
           title: Conversation Id
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
         parent_conversation_id:
           anyOf:
           - type: string
@@ -40767,6 +40772,41 @@ components:
           - type: string
           - type: 'null'
           title: Source
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        session_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Title
+        session_title_generated:
+          type: boolean
+          title: Session Title Generated
+          default: true
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        first_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Event At
         event_count:
           type: integer
           title: Event Count

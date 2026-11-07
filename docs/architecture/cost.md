@@ -36,18 +36,36 @@ and full-query ordering remain unchanged. It adds no rollups.
 
 The headline totals request also carries the comparison range:
 `compare_start_date` and `compare_end_date` (sent together, 422 otherwise)
-return that window's totals, without breakdowns, as `previous`. A Spend load is
-one summary request shared with the selected tab and imported usage.
+return that window's totals, without breakdowns, as `previous`. The Spend
+page no longer bundles everything into one request: it first asks for the
+window's totals only (`include_breakdown=false`) and paints them, then asks
+for the comparison window's totals and the visible tab's breakdowns in their
+own requests, so the slowest section never holds the page. It rounds its clock
+up to the minute, so reloads within a minute ask the same window.
 
-Exact-window summaries are cached for 60 seconds per worker, with at most 128
-entries. Keys include account, budget metadata, effective dates, principal,
-retry policy, selected breakdowns and session paging. Concurrent identical
-misses share one computation. Permission and current history policy checks run
-before cache hits; responses are copied before adding comparisons. Failures
-are not cached. An OSS non-dry-run reprice or applied CSV reconciliation
-invalidates the account's entries, including in-flight entries. Rolling windows with new timestamps still compute
-fresh answers; this cache does not introduce a daily rollup. Other ledger writes
-and EE repricing may take up to the TTL to appear in an exact repeat.
+Exact-window summaries are cached per worker, with at most 512 entries. A
+window that ended more than an hour ago (`CLOSED_WINDOW_GRACE`) is closed and
+kept for six hours (`CLOSED_SUMMARY_CACHE_TTL_SECONDS`); any other window is
+kept for 60 seconds (`SUMMARY_CACHE_TTL_SECONDS`). Keys include account,
+account metadata, effective dates, principal, retry policy, selected
+breakdowns and session paging. Concurrent identical misses share one
+computation. Permission and current history policy checks run before cache
+hits; responses are copied before adding comparisons. Failures are not cached.
+
+A closed window changes only through a reprice, a ledger backfill or a usage
+import. Each of those writes bumps the account's `cost_cache_revision` in
+`account.meta_data` (`crud_account.bump_cost_revision`, one atomic UPDATE).
+The metadata is part of every key and is read fresh on each request, so every
+worker and replica stops serving older aggregates at once; the worker that
+handled an OSS reprice or CSV reconciliation also drops its entries,
+including in-flight ones. EE repricing that does not go through these paths
+may take up to the TTL to appear.
+
+The console keeps `GET /cost/summary` and `GET /cost/timeseries` answers for
+six hours when the window is closed and for 60 seconds otherwise. Any write
+from the tab, signing out and the tab becoming visible again clear that cache,
+so an import or reprice made elsewhere shows on the next read. OTLP ingest and
+the background reprice worker bump the revision too.
 
 Each worker also keeps the `GET /cost/health` self-check
 per (account, window) for 60 s, because the Spend page asks it on every load
@@ -103,7 +121,7 @@ other tenant's rows, so the cost grew with the whole table, not the account.
 
 ## Cost per work item
 
-`GET /api/v1/cost/work-items` (`view_cost`, console `/console/cost/work-items`)
+`GET /api/v1/cost/work-items` (`view_cost`, console: the Work items tab on Spend, `/console/cost/spend?tab=work-items`)
 reports spend per issue and pull request over a window, most expensive first.
 
 *   **Contributors:** flow runs attributed by `issue_cost_execution` (assigned

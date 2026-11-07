@@ -513,3 +513,19 @@ def test_member_lookup_is_one_batched_query(db_session, test_user, mocker):
 
     assert batched.call_count == 1
     single.assert_not_called()
+
+
+def test_sync_expires_cached_cost_reads_only_when_days_land(db_session, test_user):
+    """Imported days are closed windows; the cost cache revision must move."""
+    from preloop.models.crud import crud_account
+
+    def revision() -> int:
+        account = crud_account.get(db_session, id=test_user.account_id)
+        db_session.refresh(account)
+        return (account.meta_data or {}).get(crud_account.COST_REVISION_KEY, 0)
+
+    connection = _connect(db_session, test_user.account_id)
+    _sync(db_session, connection, FakeAnthropic(report_status=401))
+    assert revision() == 0
+    _sync(db_session, connection, FakeAnthropic())
+    assert revision() == 1

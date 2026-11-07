@@ -631,6 +631,70 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(budgetSpendChart(days, 0, 0)!.limitY).to.equal(null);
   });
 
+  it('projects a straight line to the period end, never in the first tenth', () => {
+    // 3 of 10 buckets elapsed, $60 so far: the straight line ends at $200.
+    const chart = budgetSpendChart(days, 0, 1000, 10)!;
+    expect(chart.projectedTotal).to.equal(200);
+    expect(chart.projectedPoints).to.match(/ 100\.00,/);
+    // 3 of 40 buckets is under a tenth: no projection yet.
+    expect(budgetSpendChart(days, 0, 1000, 40)!.projectedTotal).to.equal(null);
+    // No period (summary days): no projection, the line spans the box.
+    expect(budgetSpendChart(days, 0, 1000)!.projectedTotal).to.equal(null);
+  });
+
+  it('counts days without spend as elapsed and puts now at today', () => {
+    // Spend on days 1-3 of a 10-day period, today is day 6 (index 5): the
+    // straight line uses 6 of 10 days, not 3, and now sits at today.
+    const start = new Date('2026-03-01T00:00:00Z');
+    const chart = budgetSpendChart(
+      days.map((d) => ({ ...d, date: `${d.date}T00:00:00Z` })),
+      0,
+      1000,
+      10,
+      { start, bucketMs: 86_400_000 },
+      new Date('2026-03-06T12:00:00Z')
+    )!;
+    expect(chart.projectedTotal).to.equal(100);
+    expect(chart.nowX).to.be.closeTo((5 * 100) / 9, 0.01);
+  });
+
+  it('keeps a small spend visible when the limit is far above it', () => {
+    // $60 against a $10,000 limit: the limit is named, not drawn, and the
+    // line uses the chart's height instead of hugging the bottom edge.
+    const chart = budgetSpendChart(days, 0, 10_000)!;
+    expect(chart.limitOffChart).to.equal(true);
+    expect(chart.limitY).to.equal(null);
+    const top = Math.min(
+      ...chart.points.split(' ').map((point) => Number(point.split(',')[1]))
+    );
+    expect(top).to.equal(2);
+    // Within the headroom the limit is drawn as before.
+    expect(budgetSpendChart(days, 0, 100)!.limitOffChart).to.equal(false);
+  });
+
+  it('draws the Overview chart shapes and a legend', async () => {
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${{ ...summary, requests_by_day: days }}
+        .policies=${chartPolicies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+    const chart = element.shadowRoot!.querySelector('svg.sparkline')!;
+    expect(chart.classList.contains('spend-chart')).to.equal(true);
+    expect(chart.getAttribute('viewBox')).to.equal('0 0 100 40');
+    expect(chart.querySelector('.sparkline-area')).to.not.equal(null);
+    expect(chart.querySelector('.sparkline-line')).to.not.equal(null);
+    expect(chart.querySelector('clipPath .sparkline-reveal')).to.not.equal(
+      null
+    );
+    const legend = element.shadowRoot!.querySelector(
+      '[data-testid="budget-chart-legend"]'
+    )!;
+    expect(legend.textContent).to.contain('spent');
+    expect(legend.textContent).to.contain('limit');
+  });
+
   it('draws the chart from the summary days with a limit line', async () => {
     const element = (await fixture(html`
       <budget-health-card
@@ -643,6 +707,13 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(chart.getAttribute('aria-label')).to.contain('$60.00');
     expect(chart.querySelector('.limit-line')).to.not.equal(null);
     expect(chart.querySelector('.soft-line')).to.not.equal(null);
+    // Two dashed lines, two legend entries that tell them apart.
+    const legend = element
+      .shadowRoot!.querySelector('[data-testid="budget-chart-legend"]')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(legend).to.contain('soft limit $80.00');
+    expect(legend).to.contain('hard limit');
+    expect(element.shadowRoot!.querySelector('.legend-swatch.soft')).to.exist;
   });
 
   it('loads the budget period series only when asked', async () => {

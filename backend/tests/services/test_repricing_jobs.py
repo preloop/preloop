@@ -222,3 +222,23 @@ def test_progress_is_invoked_on_the_rollup_loop(db_session, monkeypatch):
         db_session, ["exec-1", "exec-2"], progress=lambda: ticks.append("rollup")
     )
     assert ticks == ["rollup", "rollup"]
+
+
+def test_background_reprice_expires_cached_cost_reads(
+    db_session, job, worker, monkeypatch, test_user
+):
+    """A worker reprice changes closed windows: the cost revision moves."""
+    from preloop.models.crud import crud_account
+
+    def revision() -> int:
+        account = crud_account.get(db_session, id=test_user.account_id)
+        db_session.refresh(account)
+        return (account.meta_data or {}).get(crud_account.COST_REVISION_KEY, 0)
+
+    monkeypatch.setattr(
+        "preloop.services.usage_repricing.reprice_gateway_usage",
+        lambda *a, **k: RepriceResult(rows_examined=3, rows_updated=2),
+    )
+    before = revision()
+    worker(**_kwargs(job))
+    assert revision() == before + 1

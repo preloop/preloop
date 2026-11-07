@@ -3,7 +3,7 @@ import type { LitElement } from 'lit';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
-import { CostView, sortColumnsToList } from './cost-view';
+import { CostView, ceilToMinute, sortColumnsToList } from './cost-view';
 import { RepriceJobStatusElement } from '../../components/reprice-job-status';
 import { invalidateApiCaches } from '../../api';
 
@@ -16,6 +16,7 @@ describe('CostView', () => {
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
+  let holdDetail: Promise<void> | null = null;
   // Per-test accounting self-check answer (GET /cost/health).
   let healthPayload: Record<string, unknown>;
   // Per-test feature flags; banner tests enable the override UI.
@@ -261,8 +262,25 @@ describe('CostView', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        if (url.includes('/api/v1/cost/work-items')) {
+          return new Response(
+            JSON.stringify({
+              period_start: '2026-03-01T00:00:00Z',
+              period_end: '2026-03-31T00:00:00Z',
+              groups: [],
+              total_groups: 0,
+              estimated_cost: 0,
+              total_tokens: 0,
+              truncated: false,
+              split_rule: 'equal',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
         if (url.includes('/api/v1/cost/summary')) {
           if (holdSummary) await holdSummary;
+          if (holdDetail && !url.includes('include_breakdown=false'))
+            await holdDetail;
           return new Response(JSON.stringify(summaryPayload), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -311,6 +329,7 @@ describe('CostView', () => {
   });
 
   afterEach(() => {
+    holdDetail = null;
     window.history.replaceState({}, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
@@ -713,32 +732,52 @@ describe('CostView', () => {
     ).to.equal(true);
   });
 
-  it('asks the comparison range in the same summary request (#1583)', async () => {
-    summaryPayload = {
-      ...summary,
-      previous: { ...summary, estimated_cost: 4.25 },
-    };
+  it('rounds the page clock up to the minute so reloads share a window', () => {
+    expect(
+      ceilToMinute(new Date('2026-11-07T21:53:12.345Z')).toISOString()
+    ).to.equal('2026-11-07T21:54:00.000Z');
+    expect(
+      ceilToMinute(new Date('2026-11-07T21:53:00.000Z')).toISOString()
+    ).to.equal('2026-11-07T21:53:00.000Z');
+  });
+
+  it('paints the totals before the comparison and breakdown reads finish', async () => {
+    summaryPayload = { ...summary, estimated_cost: 4.25 };
+    let release!: () => void;
+    // Hold every breakdown read: the totals must paint without them.
+    holdDetail = new Promise<void>((resolve) => (release = resolve));
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await waitUntil(
       () => (element as unknown as { loading: boolean }).loading === false
     );
-    await element.updateComplete;
-    const totalsCalls = fetchStub
-      .getCalls()
-      .map((call) => String(call.args[0]))
-      .filter((url) => url.includes('/api/v1/cost/summary'))
-      .map((url) => new URL(url, window.location.origin).searchParams);
-    // One shared summary carries both windows and the initially visible detail.
-    expect(totalsCalls.length).to.equal(1);
-    expect(totalsCalls[0].get('compare_start_date')).to.be.a('string');
-    expect(totalsCalls[0].get('compare_end_date')).to.be.a('string');
+    const summaryCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.includes('/api/v1/cost/summary'))
+        .map((url) => new URL(url, window.location.origin).searchParams);
+    // The headline asks for totals only and carries no comparison window.
+    const headline = summaryCalls()[0];
+    expect(headline.get('include_breakdown')).to.equal('false');
+    expect(headline.has('compare_start_date')).to.equal(false);
+    expect(headline.getAll('breakdown')).to.deep.equal([]);
+    // The comparison window is its own totals-only read.
     expect(
-      (
-        element as unknown as {
-          previousRangeSummary: { estimated_cost: number } | null;
-        }
-      ).previousRangeSummary?.estimated_cost
-    ).to.equal(4.25);
+      summaryCalls().some(
+        (params) =>
+          params.get('include_breakdown') === 'false' &&
+          params.get('start_date') !== headline.get('start_date')
+      )
+    ).to.equal(true);
+    await waitUntil(
+      () =>
+        (
+          element as unknown as {
+            previousRangeSummary: { estimated_cost: number } | null;
+          }
+        ).previousRangeSummary?.estimated_cost === 4.25
+    );
+    release();
   });
 
   it('exposes loading status while analytics are fetched', async () => {
@@ -828,6 +867,50 @@ describe('CostView', () => {
     );
   });
 
+  it('opens the work item tab from ?tab= and passes the page window down', async () => {
+    window.history.replaceState({}, '', '/console/cost/spend?tab=work-items');
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () =>
+        element.shadowRoot?.querySelector('work-item-cost-view') !== null &&
+        element.shadowRoot?.querySelector('work-item-cost-view') !== undefined
+    );
+    const embedded = element.shadowRoot?.querySelector(
+      'work-item-cost-view'
+    ) as (HTMLElement & { embedded: boolean; period: unknown }) | null;
+    expect(embedded?.embedded).to.equal(true);
+    expect(embedded?.period).to.deep.equal(
+      (element as unknown as { currentPeriod: unknown }).currentPeriod
+    );
+    const active = element.shadowRoot?.querySelector('sl-tab[active]');
+    expect(active?.textContent?.trim()).to.equal('Work items');
+    // No page links remain for what are now tabs.
+    expect(element.shadowRoot?.querySelector('a.issue-cost-link')).to.equal(
+      null
+    );
+  });
+
+  it('expands the main column to full screen and Escape restores it', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+    const button = element.shadowRoot?.querySelector(
+      'sl-button.expand-main'
+    ) as HTMLElement;
+    expect(button.textContent?.trim()).to.equal('Full screen');
+    button.click();
+    await element.updateComplete;
+    const column = element.shadowRoot?.querySelector('.main-column');
+    expect(column?.classList.contains('expanded')).to.equal(true);
+    expect(button.getAttribute('aria-pressed')).to.equal('true');
+    expect(getComputedStyle(column as Element).position).to.equal('fixed');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await element.updateComplete;
+    expect(column?.classList.contains('expanded')).to.equal(false);
+  });
+
   it('describes the page with the tabs it actually has', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await waitUntil(
@@ -839,7 +922,7 @@ describe('CostView', () => {
       ?.querySelector('view-header')
       ?.getAttribute('description');
     expect(description).to.equal(
-      'What did we pay, and for which agents, tools, sessions and people? Includes imported GitHub Copilot and Claude Code usage.'
+      'What did we pay, and for which agents, tools, sessions, people and work items? Includes imported GitHub Copilot and Claude Code usage.'
     );
 
     const tabs = Array.from(
@@ -852,6 +935,8 @@ describe('CostView', () => {
       'Tools',
       'Sessions',
       'Users',
+      'Work items',
+      'Issues',
     ]);
     for (const promised of ['model', 'flow', 'API key']) {
       expect(description).to.not.contain(promised);
@@ -1390,7 +1475,7 @@ describe('CostView', () => {
 
       function conversationTable(element: CostView) {
         return element.shadowRoot?.querySelector(
-          'table[aria-label="Imported usage by conversation"]'
+          'table[aria-label="Imported usage by session"]'
         );
       }
 
@@ -1471,14 +1556,55 @@ describe('CostView', () => {
         expect(headers).to.include('Reconciled cost');
       });
 
-      it('hides the rollup when no conversations are reported', async () => {
+      it('hides the rollup when no sessions are reported', async () => {
         const element = await loadView({
           ...importedUsage,
           usage_by_conversation: [],
         });
 
         expect(conversationTable(element)).to.not.exist;
-        expect(element.shadowRoot?.textContent).to.not.contain('Conversations');
+        expect(element.shadowRoot?.textContent).to.not.contain(
+          'Imported usage per session'
+        );
+      });
+
+      it('titles each session and links it to its agent and session page', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: [
+            {
+              ...conversations[2],
+              session_id: 'conv-lonely',
+              runtime_session_id: 'rs-1',
+              session_title: 'Fix the flaky login test',
+              session_title_generated: false,
+              agent_id: 'agent-1',
+              agent_name: 'Cursor',
+            },
+          ],
+        });
+        const table = conversationTable(element)!;
+        const headers = [...table.querySelectorAll('th[scope="col"]')].map(
+          (th) => th.textContent?.trim()
+        );
+        expect(headers.slice(0, 2)).to.deep.equal(['Session', 'Agent']);
+        const session = table.querySelector(
+          'a.imported-session-title'
+        ) as HTMLAnchorElement;
+        expect(session.textContent?.trim()).to.equal(
+          'Fix the flaky login test'
+        );
+        expect(session.getAttribute('href')).to.equal(
+          '/console/runtime-sessions/rs-1'
+        );
+        expect(
+          table.querySelector('.imported-session-id')?.textContent
+        ).to.equal('conv-lonely');
+        const agent = table.querySelector(
+          'a[href="/console/agents/agent-1"]'
+        ) as HTMLAnchorElement;
+        expect(agent.textContent?.trim()).to.equal('Cursor');
+        expect(element.shadowRoot?.textContent).to.not.contain('Conversation');
       });
 
       it('hides the rollup when an older server omits the field', async () => {
@@ -1504,7 +1630,7 @@ describe('CostView', () => {
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
-      'What did we pay, and for which agents, tools, sessions and people? Includes imported GitHub Copilot and Claude Code usage.'
+      'What did we pay, and for which agents, tools, sessions, people and work items? Includes imported GitHub Copilot and Claude Code usage.'
     );
   });
 
@@ -2370,11 +2496,12 @@ describe('CostView', () => {
     window.dispatchEvent(new PopStateEvent('popstate'));
     await settled(element);
     expect(element.shadowRoot?.textContent).to.contain('Digest period:');
-    const last = new URL(
-      costUrls()[costUrls().length - 1],
-      window.location.origin
-    );
-    expect(last.searchParams.get('start_date')).to.equal(digestStart);
+    // The digest window is closed, so its first answer is reused from the
+    // session cache instead of read again.
+    expect(
+      (element as unknown as { currentPeriod: { startDate: string } })
+        .currentPeriod.startDate
+    ).to.equal(digestStart);
   });
 
   it('ordinary preset changes add no history entry and leaving digest mode drops the account label', async () => {

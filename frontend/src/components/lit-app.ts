@@ -478,8 +478,17 @@ export class LitApp extends LitElement {
           // did we pay", Gateway traffic answers "how much did we send and how
           // close are we to the rate limits". The old flat URLs keep working
           // (digest emails, bookmarks) and carry their query and hash along.
-          { path: 'cost/by-issue', component: 'issue-cost-view' },
-          { path: 'cost/work-items', component: 'work-item-cost-view' },
+          // Work items and issues are tabs on Spend now; old links land there.
+          {
+            path: 'cost/by-issue',
+            action: (_context, commands) =>
+              commands.redirect('/console/cost/spend?tab=issues'),
+          },
+          {
+            path: 'cost/work-items',
+            action: (_context, commands) =>
+              commands.redirect('/console/cost/spend?tab=work-items'),
+          },
           { path: 'cost/spend', component: 'cost-view' },
           { path: 'cost/gateway', component: 'api-usage-view' },
           {

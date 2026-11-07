@@ -1,6 +1,6 @@
 """Selective Cost reads must preserve totals without running unused queries."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import Mock
 
@@ -240,12 +240,83 @@ def test_summary_cache_expires_and_invalidates_on_reprice(
     for _ in range(2):
         assert client.get("/api/v1/cost/summary", params=params).status_code == 200
     assert spy.call_count == 1
+    # January 2026 is a closed window: the open-window minute does not expire it.
     clock.return_value += cost.SUMMARY_CACHE_TTL_SECONDS
+    assert client.get("/api/v1/cost/summary", params=params).status_code == 200
+    assert spy.call_count == 1
+    clock.return_value += cost.CLOSED_SUMMARY_CACHE_TTL_SECONDS
     assert client.get("/api/v1/cost/summary", params=params).status_code == 200
     assert spy.call_count == 2
     cost._forget_cost_health(str(test_user.account_id))
     assert client.get("/api/v1/cost/summary", params=params).status_code == 200
     assert spy.call_count == 3
+
+
+def test_open_window_summary_expires_after_a_minute(
+    client: Any, monkeypatch: Any
+) -> None:
+    """A window still taking traffic keeps the short TTL."""
+    from types import SimpleNamespace
+
+    from preloop.api.endpoints import cost
+
+    clock = Mock(return_value=5000.0)
+    monkeypatch.setattr(cost, "time", SimpleNamespace(monotonic=clock))
+    spy = Mock(wraps=crud_api_usage.get_gateway_usage_summary)
+    monkeypatch.setattr(crud_api_usage, "get_gateway_usage_summary", spy)
+    now = datetime.now(UTC)
+    params = {
+        "start_date": (now - timedelta(days=3)).isoformat(),
+        "end_date": (now + timedelta(days=1)).isoformat(),
+        "include_breakdown": "false",
+    }
+    for _ in range(2):
+        assert client.get("/api/v1/cost/summary", params=params).status_code == 200
+    assert spy.call_count == 1
+    clock.return_value += cost.SUMMARY_CACHE_TTL_SECONDS
+    assert client.get("/api/v1/cost/summary", params=params).status_code == 200
+    assert spy.call_count == 2
+
+
+def test_summary_cache_ttl_by_window() -> None:
+    from preloop.api.endpoints import cost
+
+    now = datetime(2026, 11, 7, 12, tzinfo=UTC)
+    last_month_end = datetime(2026, 11, 1, tzinfo=UTC)
+    assert (
+        cost.summary_cache_ttl(last_month_end, now)
+        == cost.CLOSED_SUMMARY_CACHE_TTL_SECONDS
+    )
+    assert cost.summary_cache_ttl(now, now) == cost.SUMMARY_CACHE_TTL_SECONDS
+    # Inside the grace period a late row may still land: keep the short TTL.
+    just_ended = now - cost.CLOSED_WINDOW_GRACE + timedelta(minutes=1)
+    assert cost.summary_cache_ttl(just_ended, now) == cost.SUMMARY_CACHE_TTL_SECONDS
+
+
+def test_cost_revision_bump_expires_closed_windows_on_every_worker(
+    client: Any, db_session: Any, test_user: Any, monkeypatch: Any
+) -> None:
+    """Another worker's import bumps the revision; this worker's cache misses."""
+    from preloop.models.crud import crud_account
+
+    spy = Mock(wraps=crud_api_usage.get_gateway_usage_summary)
+    monkeypatch.setattr(crud_api_usage, "get_gateway_usage_summary", spy)
+    params = {
+        "start_date": "2025-03-01T00:00:00Z",
+        "end_date": "2025-04-01T00:00:00Z",
+        "include_breakdown": "false",
+    }
+    for _ in range(2):
+        assert client.get("/api/v1/cost/summary", params=params).status_code == 200
+    assert spy.call_count == 1
+    # No in-process forget: only the shared revision changes.
+    crud_account.bump_cost_revision(db_session, account_id=test_user.account_id)
+    db_session.flush()
+    db_session.expire_all()
+    assert client.get("/api/v1/cost/summary", params=params).status_code == 200
+    assert spy.call_count == 2
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account.meta_data[crud_account.COST_REVISION_KEY] == 1
 
 
 def test_summary_cache_copies_response_and_never_caches_errors(

@@ -55,9 +55,31 @@ The shared frontend gates Cloud and Enterprise panels behind feature flags such 
 
 ## Console Surfaces
 
-- **Cost overview**: spend, tokens, and request volume over selectable ranges
+- **Cost overview**: spend, tokens, and request volume over selectable ranges.
+  Each card renders as soon as its own data arrives, so a slow breakdown never
+  holds up the rest of the page. Closed periods such as last month take no new
+  traffic, so their numbers are cached for up to six hours on the server and
+  in the browser tab; a reprice, ledger backfill or usage import invalidates
+  them, and the tab asks again after any change you make and whenever you
+  return to it. The current period is cached for a minute and read again on
+  the next load.
 - **Breakdowns**: by model, provider, managed agent, runtime session, or API key
-- **Budget health**: soft warnings and hard-limit state from gateway budgets
+- **Work items and issues**: tabs in the main column show spend per issue and
+  pull request (issues grouped with the pull requests that close them) and
+  spend per tracker issue. A run or session that worked on several items
+  splits its spend evenly between them, so nothing is counted twice. The old
+  `/console/cost/work-items` and `/console/cost/by-issue` addresses open the
+  tabs. A full-screen toggle
+  widens the main column for long tables.
+- **Budget health**: soft warnings and hard-limit state from gateway budgets,
+  with a cumulative spend chart drawn like the Overview spend chart
+- **Imported sessions**: usage pushed by agent hooks (`POST
+  /api/v1/usage/ingest`, for example Cursor or Codex) is listed per session
+  with a readable title: the title the hook sent, else the first user message
+  of an opt-in transcript, else one built from source, model and start time.
+  Each row links to the agent it is attributed to and to the session on the
+  Sessions page. Anthropic and Copilot imports are daily totals per person,
+  so they appear on the Copilot and Claude Code tab, not as sessions
 - **Session drill-down**: jump from a cost row into the runtime session timeline
 
 Enterprise accounts can additionally configure budget policies and model price overrides from the same area when the billing plugin is enabled. See [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).

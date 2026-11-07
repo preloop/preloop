@@ -102,6 +102,16 @@ never relax this mode. The binding snapshots provider identity, clone path,
 tracker host/type and organization lineage; changing any of these invalidates
 access rather than redirecting an existing grant.
 
+API keys with scopes keep them across REST and MCP. Tool discovery and reads
+need `mcp:read` and tool invocation needs `mcp:write`, on top of the existing
+account, runtime and tool authorization. An MCP-only key (flow execution
+credentials, runtime session tokens, managed-agent credentials) is refused on
+generic REST routes outside the runtime routes that verify their own
+credentials, and single-purpose keys (`report_discovery`,
+`telemetry:ingest`) reach only their own routes
+(`backend/preloop/api/auth/key_scopes.py`). Personal API keys without scopes
+keep their previous behaviour.
+
 Human administrators provision a restricted CI identity through ten
 authenticated `/api/v1/ci-identities` routes: capabilities, preview, list,
 create, show, update, key issue, key rotate, key revoke, and

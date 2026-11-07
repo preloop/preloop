@@ -11,6 +11,9 @@
 # on every Preloop service (AGENTS.md: test rigs never report to preloop.ai).
 x-no-telemetry: &no_telemetry
   PRELOOP_DISABLE_TELEMETRY: "true"
+  # The stub model and example MCP server sit on the compose network, a
+  # private range the model endpoint guard refuses by default.
+  MODEL_ENDPOINT_ALLOWED_CIDRS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
 
 services:
   postgres:

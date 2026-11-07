@@ -90,8 +90,12 @@ describe('spend-chart', () => {
     await el.updateComplete;
     expect(forward.hasAttribute('disabled')).to.equal(false);
     forward.click();
+    // Back to a window already read: closed windows come from the session
+    // cache, so the chart moves without a new request.
     await waitUntil(
-      () => last().searchParams.get('end_date') === '2026-04-01T00:00:00.000Z'
+      () =>
+        (el as unknown as { end: Date }).end.toISOString() ===
+        '2026-04-01T00:00:00.000Z'
     );
   });
 

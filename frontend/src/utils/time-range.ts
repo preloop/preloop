@@ -125,6 +125,16 @@ function coerceTimeRangeKey(
   return normalized;
 }
 
+/**
+ * The next whole minute at or after `date`. Pages that read the same window
+ * round their clock with this, so their requests agree and repeat within a
+ * minute (which lets the server and tab caches answer); rounding up never
+ * leaves out a request that already happened.
+ */
+export function ceilToMinute(date: Date = new Date()): Date {
+  return new Date(Math.ceil(date.getTime() / 60_000) * 60_000);
+}
+
 /** The window a key covers, ending at `now`. */
 export function resolveTimeRange(
   key: TimeRangeKey | string,
