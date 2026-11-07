@@ -30,7 +30,8 @@ class NotificationPreferences(Base):
         user_id: Reference to the user (unique, 1:1).
         preferred_channel: Preferred notification channel ('email' or 'mobile_push').
         mobile_device_tokens: List of mobile device tokens for push notifications.
-            Format: [{platform: 'ios'|'android', token: '...', registered_at: '...'}]
+            Format: [{platform: 'ios'|'android', token: '...', registered_at: '...',
+            apns_environment: 'sandbox'|'production' (iOS only, optional)}]
         enable_email: Whether email notifications are enabled.
         enable_mobile_push: Whether mobile push notifications are enabled.
         created_at: When the preferences were created.
@@ -62,7 +63,11 @@ class NotificationPreferences(Base):
     mobile_device_tokens: Mapped[Optional[List[Dict]]] = mapped_column(
         JSONB,
         nullable=True,
-        comment="List of mobile device tokens: [{platform: 'ios'|'android', token: '...', registered_at: '...'}]",
+        comment=(
+            "List of mobile device tokens: [{platform: 'ios'|'android', "
+            "token: '...', registered_at: '...', apns_environment: "
+            "'sandbox'|'production' (iOS only, optional)}]"
+        ),
     )
 
     enable_email: Mapped[bool] = mapped_column(

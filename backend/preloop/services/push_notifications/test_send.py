@@ -284,7 +284,7 @@ async def _send_one(
                 status_code=status_code,
                 remediation=None
                 if success
-                else _apns_remediation(status_code, error_reason),
+                else _apns_remediation(status_code, error_reason, apns_environment),
             )
 
         if platform == "android" and fcm_available:
@@ -348,9 +348,19 @@ async def _send_one(
         )
 
 
-def _apns_remediation(status_code: int, error_reason: Optional[str]) -> str:
+def _apns_remediation(
+    status_code: int,
+    error_reason: Optional[str],
+    apns_environment: Optional[str] = None,
+) -> str:
     """Return an operator-facing hint for an APNs failure."""
     reason = (error_reason or "").strip()
+    if reason in {"BadDeviceToken", "DeviceTokenNotForTopic"} and apns_environment:
+        return (
+            f"APNs {apns_environment} rejected a token the app reported as "
+            f"{apns_environment}. Check APNS_BUNDLE_ID matches the installed "
+            "build, then re-register from the app. The token was kept."
+        )
     if reason in {"BadDeviceToken", "DeviceTokenNotForTopic"}:
         return (
             "The stored token is not valid for this APNs topic/environment. "

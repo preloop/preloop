@@ -293,3 +293,142 @@ class TestApprovalRouting:
             [(uid, "a" * 64, "sandbox")], MagicMock(), sandbox
         )
         assert len(prune_calls) == 1
+
+
+def _apns(result: tuple) -> MagicMock:
+    client = MagicMock()
+    client.send_notification = AsyncMock(return_value=result)
+    return client
+
+
+class TestOtherPushPaths:
+    """Escalation, policy notices, test push and the proxy path route per token."""
+
+    def test_policy_notice_routes_sandbox_token(self) -> None:
+        """Owner notices send a sandbox-labeled token through the sandbox client."""
+        from types import SimpleNamespace
+
+        from preloop.services import policy_notice_delivery as delivery
+
+        production = _apns((True, 200, None))
+        sandbox = _apns((True, 200, None))
+        prefs = SimpleNamespace(
+            enable_mobile_push=True,
+            notify_when_needed=True,
+            get_device_entries=lambda platform=None: (
+                [("a" * 64, "sandbox")] if platform == "ios" else []
+            ),
+        )
+        with (
+            patch.object(
+                delivery.notification_preferences, "get_by_user", return_value=prefs
+            ),
+            patch.object(
+                push_notifications,
+                "get_apns_service",
+                side_effect=lambda env=None: (
+                    sandbox if env == "sandbox" else production
+                ),
+            ),
+            patch.object(push_notifications, "is_fcm_configured", return_value=False),
+        ):
+            count = delivery.send_push_to_owners(
+                MagicMock(), [SimpleNamespace(id=uuid.uuid4())], title="t", body="b",
+                data={},
+            )
+        assert count == 1
+        sandbox.send_notification.assert_awaited_once()
+        production.send_notification.assert_not_called()
+
+    def test_policy_notice_proxy_forwards_environment(self) -> None:
+        """Without APNs keys the proxy call carries the token's environment."""
+        from types import SimpleNamespace
+
+        from preloop.services import policy_notice_delivery as delivery
+
+        prefs = SimpleNamespace(
+            enable_mobile_push=True,
+            notify_when_needed=True,
+            get_device_entries=lambda platform=None: (
+                [("a" * 64, "sandbox")] if platform == "ios" else []
+            ),
+        )
+        proxy = AsyncMock(return_value={"success": True})
+        with (
+            patch.object(
+                delivery.notification_preferences, "get_by_user", return_value=prefs
+            ),
+            patch.object(push_notifications, "get_apns_service", return_value=None),
+            patch.object(push_notifications, "is_fcm_configured", return_value=False),
+            patch.object(push_proxy, "is_push_proxy_configured", return_value=True),
+            patch.object(push_proxy, "send_push_via_proxy", proxy),
+        ):
+            delivery.send_push_to_owners(
+                MagicMock(), [SimpleNamespace(id=uuid.uuid4())], title="t", body="b",
+                data={},
+            )
+        assert proxy.await_args.kwargs["apns_environment"] == "sandbox"
+
+
+@pytest.mark.asyncio
+class TestOtherAsyncPushPaths:
+    """Async push paths."""
+
+    async def test_escalation_routes_sandbox_token(self) -> None:
+        """Escalation pushes use the sandbox client for sandbox tokens."""
+        service = ApprovalService(AsyncMock(), "https://app.test")
+        service._record_event = AsyncMock()  # type: ignore[method-assign]
+        request, workflow = _approval_fixtures()
+        uid = uuid.uuid4()
+        workflow.escalation_user_ids = [uid]
+        workflow.escalation_team_ids = None
+        production = _apns((True, 200, None))
+        sandbox = _apns((True, 200, None))
+        loop = MagicMock()
+        loop.run_in_executor = AsyncMock(
+            return_value=({uid}, [(uid, "a" * 64, "sandbox")], [])
+        )
+        with (
+            patch("asyncio.get_event_loop", return_value=loop),
+            patch.object(
+                push_notifications,
+                "get_apns_service",
+                side_effect=lambda env=None: (
+                    sandbox if env == "sandbox" else production
+                ),
+            ),
+            patch.object(push_notifications, "is_fcm_configured", return_value=False),
+            patch.object(push_proxy, "is_push_proxy_configured", return_value=False),
+        ):
+            await service._send_escalation_notifications(request, workflow)
+        sandbox.send_notification.assert_awaited_once()
+        production.send_notification.assert_not_called()
+
+    async def test_test_push_routes_and_explains_labeled_rejection(self) -> None:
+        """The diagnostic push uses the label and does not blame APNS_USE_SANDBOX."""
+        from preloop.services.push_notifications.test_send import send_test_push
+
+        production = _apns((True, 200, None))
+        sandbox = _apns((False, 400, "BadDeviceToken"))
+        with (
+            patch.object(
+                push_notifications,
+                "get_apns_service",
+                side_effect=lambda env=None: (
+                    sandbox if env == "sandbox" else production
+                ),
+            ),
+            patch(
+                "preloop.services.push_notifications.fcm_service.is_fcm_configured",
+                return_value=False,
+            ),
+            patch.object(push_proxy, "is_push_proxy_configured", return_value=False),
+        ):
+            report = await send_test_push(
+                [{"platform": "ios", "token": "a" * 64, "apns_environment": "sandbox"}]
+            )
+        sandbox.send_notification.assert_awaited_once()
+        production.send_notification.assert_not_called()
+        remediation = report.results[0].remediation or ""
+        assert "APNS_USE_SANDBOX" not in remediation
+        assert "kept" in remediation

@@ -413,6 +413,25 @@ def test_register_mobile_device_rejects_unknown_apns_environment(
     assert response.status_code == 422
 
 
+def test_register_via_token_stores_apns_environment(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """QR pairing stores the environment the app reports."""
+    token = client.get("/api/v1/notification-preferences/me/qr-code").json()["token"]
+    with patch(
+        "preloop.services.websocket_manager.manager.broadcast_json",
+        new_callable=AsyncMock,
+    ):
+        response = client.post(
+            f"/api/v1/notification-preferences/register-via-token?token={token}",
+            json={"platform": "ios", "token": IOS_TOKEN, "apns_environment": "sandbox"},
+        )
+
+    assert response.status_code == 200
+    entry = response.json()["preferences"]["mobile_device_tokens"][0]
+    assert entry["apns_environment"] == "sandbox"
+
+
 def test_unregister_mobile_device(
     client: TestClient, test_user: User, db_session: Session
 ):
