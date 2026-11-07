@@ -102,7 +102,7 @@ Preloop emits a small, fixed set of opt-out adoption events. All of them are pse
 - `instance_uuid` — random UUID generated at first server startup
 - `version`, `edition` (`oss` or `enterprise`)
 - `metadata` — instance metadata; on exactly one check-in it includes `install_completed: true`, plus `install_started_at` / `install_completed_at` **only if** the installer stamped `PRELOOP_INSTALL_STARTED_AT` / `PRELOOP_INSTALL_COMPLETED_AT` into the instance `.env` (absent stamps are omitted, never synthesized)
-- `metadata.ci: true` when the server runs inside a CI job (`CI` truthy, or a CI vendor variable such as `GITHUB_ACTIONS` or `GITLAB_CI` set), so CI runs are left out of install counts. Nothing about the CI job itself is sent.
+- `metadata.ci: true` on every check-in (not only the `install_completed` one) when the server runs inside a CI job (`CI` truthy, or a CI vendor variable such as `GITHUB_ACTIONS` or `GITLAB_CI` set), so CI runs are left out of install counts. Nothing about the CI job itself is sent.
 
 **`cli_first_run`** — CLI-level, sent once per CLI install. It rides the existing CLI version check-in (`POST /api/v1/cli/version-check`), which carries:
 
