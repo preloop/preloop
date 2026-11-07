@@ -333,7 +333,10 @@ class TestOtherPushPaths:
             patch.object(push_notifications, "is_fcm_configured", return_value=False),
         ):
             count = delivery.send_push_to_owners(
-                MagicMock(), [SimpleNamespace(id=uuid.uuid4())], title="t", body="b",
+                MagicMock(),
+                [SimpleNamespace(id=uuid.uuid4())],
+                title="t",
+                body="b",
                 data={},
             )
         assert count == 1
@@ -364,7 +367,10 @@ class TestOtherPushPaths:
             patch.object(push_proxy, "send_push_via_proxy", proxy),
         ):
             delivery.send_push_to_owners(
-                MagicMock(), [SimpleNamespace(id=uuid.uuid4())], title="t", body="b",
+                MagicMock(),
+                [SimpleNamespace(id=uuid.uuid4())],
+                title="t",
+                body="b",
                 data={},
             )
         assert proxy.await_args.kwargs["apns_environment"] == "sandbox"
