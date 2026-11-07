@@ -29,6 +29,29 @@ def desktop_chat(
             "is_active": True,
         },
     )
+    # This colleague can view and decide approvals in both editions. With
+    # the RBAC plugin installed those permissions need an actual role.
+    granted = []
+    for name in ("view_approvals", "decide_approvals"):
+        permission = (
+            db_session.query(models.Permission).filter_by(name=name).one_or_none()
+        )
+        if permission is None:
+            permission = models.Permission(
+                name=name, description=name, category="approvals"
+            )
+            db_session.add(permission)
+        granted.append(permission)
+    role = models.Role(account_id=test_user.account_id, name="desktop_decider")
+    db_session.add(role)
+    db_session.flush()
+    db_session.add_all(
+        [
+            models.RolePermission(role_id=role.id, permission_id=permission.id)
+            for permission in granted
+        ]
+        + [models.UserRole(user_id=colleague.id, role_id=role.id)]
+    )
     workflow = models.ApprovalWorkflow(
         account_id=test_user.account_id,
         name="Desktop approvals",

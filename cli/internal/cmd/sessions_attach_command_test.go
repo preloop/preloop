@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -399,5 +401,60 @@ func TestDescribeControlMessageLabelsOnlyOperatorCommandsAsCommands(t *testing.T
 		if event.kind != c.want {
 			t.Errorf("%s: kind %q, want %q", c.name, event.kind, c.want)
 		}
+	}
+}
+
+func TestAttachCancelledCommandSendsNothing(t *testing.T) {
+	fake := newAttachFake(t)
+	(&controlFake{modes: []string{controlCommandMode}, states: []string{"finished"}}).install(fake)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	session := &attachSession{
+		client:    api.NewClientWithToken(fake.server.URL, "tok"),
+		sessionID: attachTestSession,
+		out:       &syncBuffer{},
+		now:       time.Now,
+	}
+	session.sendCommand(ctx, attachControl{Mode: attachModeCommand, ManagedAgentID: attachTestAgent}, "go")
+	if posts := fake.postsCopy(); len(posts) != 0 {
+		t.Fatalf("a command after detach must not be dispatched, got %+v", posts)
+	}
+}
+
+func TestAttachDetachWaitsForCommandPolling(t *testing.T) {
+	shortenCommandPolling(t)
+	fake := newAttachFake(t)
+	(&controlFake{modes: []string{controlCommandMode}, states: []string{"finished"}}).install(fake)
+	serve := fake.extra
+	polling := make(chan struct{})
+	release := make(chan struct{})
+	var unblock sync.Once
+	defer unblock.Do(func() { close(release) })
+	fake.extra = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == agentCommandStatusPath(attachTestAgent, attachTestCommand) {
+			close(polling)
+			<-release
+		}
+		return serve(w, r)
+	}
+	fake.conns = []attachConnScript{{}}
+	run := startAttach(t, fake, attachOptions{target: attachTestSession})
+	run.waitFor(t, "mode: command")
+	_, _ = io.WriteString(run.input, "/turn go\n")
+	select {
+	case <-polling:
+	case <-time.After(5 * time.Second):
+		t.Fatal("command polling did not start")
+	}
+	run.cancel()
+	select {
+	case err := <-run.done:
+		t.Fatalf("detach returned before command polling finished: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// A blocked HTTP request must keep teardown pending.
+	}
+	unblock.Do(func() { close(release) })
+	if err := run.stop(t); err != nil {
+		t.Fatal(err)
 	}
 }

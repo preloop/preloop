@@ -25,7 +25,7 @@ from sqlalchemy import (
     tuple_,
     values,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session
 
@@ -480,8 +480,8 @@ def _subscription_columns() -> list[Any]:
     # same expression without a separate coverage CASE and third extraction.
     equivalent = func.jsonb_path_query_first(
         ApiUsage.meta_data,
-        'strict $.api_equivalent_cost ? (@.type() == "number")',
-        "{}",
+        cast('strict $.api_equivalent_cost ? (@.type() == "number")', JSONPATH),
+        literal_column("'{}'::jsonb", JSONB),
         True,
     )
     return [

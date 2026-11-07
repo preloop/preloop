@@ -155,6 +155,11 @@ func agentCommandStatusPath(agentID, commandID string) string {
 
 // sendCommand dispatches one line as a new turn and follows its delivery.
 func (s *attachSession) sendCommand(ctx context.Context, control attachControl, text string) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	if path := control.runnerTurnPath(); path != "" {
 		var turn struct {
 			TurnID string `json:"turn_id"`
@@ -185,7 +190,11 @@ func (s *attachSession) sendCommand(ctx context.Context, control attachControl, 
 	if response.CommandID == "" {
 		return
 	}
-	go s.followCommand(ctx, control.ManagedAgentID, response.CommandID, state)
+	s.commandFollowers.Add(1)
+	go func() {
+		defer s.commandFollowers.Done()
+		s.followCommand(ctx, control.ManagedAgentID, response.CommandID, state)
+	}()
 }
 
 // followCommand prints each new delivery state until the command is done.

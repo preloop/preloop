@@ -218,3 +218,24 @@ def test_browser_profile_does_not_require_sudo_on_self_hosted() -> None:
     assert "npm ci" in step["run"]
     assert "npx playwright install $WITH_DEPS chromium" in step["run"]
     assert "PRELOOP_BROWSER_CI" in str(job)
+
+
+def test_subscription_compatibility_installs_a_verified_lock() -> None:
+    """The extra SQLAlchemy version must retain CI's pinned/hash-verified installs."""
+    backend = load_ci_jobs()["test-backend"]
+    step = next(
+        step
+        for step in backend["steps"]
+        if step.get("name") == "Check subscription aggregates with current SQLAlchemy"
+    )
+    assert step["if"] == "matrix.group == 1"
+    install = step["run"]
+    assert "--require-hashes -r .github/requirements/sqlalchemy-21.txt" in install
+    assert "test_subscription_columns_drivers.py" in install
+    version = _pinned_version(
+        REPO_ROOT / ".github" / "requirements" / "sqlalchemy-21.txt", "sqlalchemy"
+    )
+    assert version is not None and version.startswith("2.1.")
+    paths = _filter_patterns(_path_filters(), "backend")
+    assert ".github/requirements/sqlalchemy-21.in" in paths
+    assert ".github/requirements/sqlalchemy-21.txt" in paths
