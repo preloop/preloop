@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Integer, distinct, func
 
-from preloop.models.crud import crud_managed_agent
+from preloop.models.crud import crud_managed_agent, crud_runtime_session
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.runtime_session import RuntimeSession
 
@@ -597,6 +597,56 @@ class TestIngestRecords:
         assert lifecycle["total_tokens"] is None
         assert lifecycle["estimated_cost"] is None
         assert lifecycle["reconciled_cost"] is None
+
+    def test_conversation_rows_link_session_and_agent_with_a_title(
+        self, client, db_session, test_user
+    ):
+        """Each imported session row can link to its agent and session page."""
+        agent = _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        records = [
+            _record(
+                external_id="titled-1",
+                conversation_id="conv-titled",
+                metadata={"session_title": "Fix the flaky login test"},
+            ),
+            _record(
+                external_id="prompted-1",
+                conversation_id="conv-prompted",
+                transcript=[
+                    {"role": "assistant", "text": "Ready."},
+                    {"role": "user", "text": "Count the   Go files\nin cli"},
+                ],
+            ),
+            _record(
+                external_id="bare-1",
+                conversation_id="conv-bare",
+                timestamp="2026-11-02T14:05:00+00:00",
+            ),
+        ]
+        assert client.post(INGEST_URL, json=_payload(records)).status_code == 200
+        summary = client.get(
+            COST_SUMMARY_URL,
+            params={"start_date": "2026-11-01T00:00:00Z"},
+        ).json()
+        by_id = {
+            row["conversation_id"]: row
+            for row in summary["imported_usage"]["usage_by_conversation"]
+        }
+        titled = by_id["conv-titled"]
+        assert titled["session_id"] == "conv-titled"
+        assert titled["agent_id"] == str(agent.id)
+        assert titled["runtime_session_id"]
+        assert titled["session_title"] == "Fix the flaky login test"
+        assert titled["session_title_generated"] is False
+        session = crud_runtime_session.get(db_session, id=titled["runtime_session_id"])
+        assert session.session_source_id == "conv-titled"
+        # An opt-in transcript names the session by its first user message.
+        assert by_id["conv-prompted"]["session_title"] == "Count the Go files in cli"
+        # Nothing to go on: a deterministic title from source, model and start.
+        bare = by_id["conv-bare"]
+        assert bare["session_title"] == "Cursor session on composer, Nov 2 14:05 UTC"
+        assert bare["session_title_generated"] is True
 
 
 class TestEstimatedPricing:

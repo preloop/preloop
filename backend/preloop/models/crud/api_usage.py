@@ -4994,6 +4994,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.conversation_id,
             func.max(ApiUsage.parent_conversation_id).label("parent_conversation_id"),
             import_source.label("source"),
+            # One conversation is one runtime session (push ingest links
+            # every row to it) attributed to one managed agent; MAX picks the
+            # value deterministically if old rows predate the link.
+            func.max(cast(ApiUsage.runtime_session_id, String)).label(
+                "runtime_session_id"
+            ),
+            func.max(ApiUsage.runtime_principal_type).label("runtime_principal_type"),
+            func.max(ApiUsage.runtime_principal_id).label("runtime_principal_id"),
+            func.max(ApiUsage.runtime_principal_name).label("runtime_principal_name"),
+            func.max(ApiUsage.model_alias).label("model"),
+            func.min(ApiUsage.timestamp).label("first_event_at"),
             func.count(ApiUsage.id).label("event_count"),
             # No COALESCE on purpose: NULL means "not reported", not zero.
             func.sum(ApiUsage.total_tokens).label("total_tokens"),
@@ -5016,9 +5027,64 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         if limit is not None:
             query = query.limit(limit)
+        rows = query.all()
+        session_ids = {row.runtime_session_id for row in rows if row.runtime_session_id}
+        titles: Dict[str, Optional[str]] = {}
+        if session_ids:
+            titles = {
+                str(session_id): title
+                for session_id, title in db.query(
+                    models.RuntimeSession.id, models.RuntimeSession.title
+                ).filter(
+                    models.RuntimeSession.account_id == account_id,
+                    models.RuntimeSession.id.in_(session_ids),
+                )
+            }
+        principals = {
+            (row.runtime_principal_type, row.runtime_principal_id)
+            for row in rows
+            if row.runtime_principal_type and row.runtime_principal_id
+        }
+        agent_ids: Dict[tuple, str] = {}
+        if principals:
+            agent_ids = {
+                (agent.session_source_type, agent.session_source_id): str(agent.id)
+                for agent in db.query(
+                    models.ManagedAgent.id,
+                    models.ManagedAgent.session_source_type,
+                    models.ManagedAgent.session_source_id,
+                ).filter(
+                    models.ManagedAgent.account_id == account_id,
+                    models.ManagedAgent.session_source_id.in_(
+                        {principal_id for _, principal_id in principals}
+                    ),
+                )
+            }
         return [
             {
                 "conversation_id": row.conversation_id,
+                "session_id": row.conversation_id,
+                "runtime_session_id": row.runtime_session_id,
+                "session_title": (
+                    titles.get(row.runtime_session_id)
+                    if row.runtime_session_id
+                    else None
+                )
+                or imported_session_title(
+                    source=row.source,
+                    model=row.model,
+                    agent_name=row.runtime_principal_name,
+                    started_at=row.first_event_at,
+                ),
+                "session_title_generated": not (
+                    row.runtime_session_id and titles.get(row.runtime_session_id)
+                ),
+                "agent_id": agent_ids.get(
+                    (row.runtime_principal_type, row.runtime_principal_id)
+                ),
+                "agent_name": row.runtime_principal_name,
+                "model": row.model,
+                "first_event_at": row.first_event_at,
                 "parent_conversation_id": row.parent_conversation_id,
                 "source": row.source,
                 "event_count": int(row.event_count or 0),
@@ -5037,8 +5103,44 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ),
                 "last_event_at": row.last_event_at,
             }
-            for row in query.all()
+            for row in rows
         ]
+
+
+def imported_session_title(
+    *,
+    source: Optional[str],
+    model: Optional[str],
+    agent_name: Optional[str],
+    started_at: Optional[datetime],
+) -> str:
+    """A deterministic title for an imported session that carried none.
+
+    Built only from what the import stored (source, model, agent and start
+    time), so two sessions can be told apart without any model call. The
+    opt-in AI title path still runs for untitled sessions on the Sessions
+    page, because this fallback is computed at read time and never stored.
+
+    Args:
+        source: Import source label, for example ``claude_code``.
+        model: Model the session's first rows named, if any.
+        agent_name: Managed agent the rows were attributed to.
+        started_at: Timestamp of the session's first imported row (UTC).
+
+    Returns:
+        For example ``Claude Code session on claude-sonnet-4, Nov 7 14:05 UTC``.
+    """
+    label = (source or agent_name or "Imported").replace("_", " ").replace("-", " ")
+    label = " ".join(
+        word if word[:1].isupper() else word.capitalize() for word in label.split()
+    )
+    parts = [f"{label} session"]
+    if model:
+        parts.append(f"on {model}")
+    title = " ".join(parts)
+    if started_at is not None:
+        title += f", {started_at:%b} {started_at.day} {started_at:%H:%M} UTC"
+    return title[:255]
 
 
 crud_api_usage = CRUDApiUsage(ApiUsage)

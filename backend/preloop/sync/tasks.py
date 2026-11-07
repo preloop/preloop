@@ -1,6 +1,11 @@
 from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
-from preloop.models.crud import crud_tracker, crud_issue_embedding, crud_webhook
+from preloop.models.crud import (
+    crud_account,
+    crud_issue_embedding,
+    crud_tracker,
+    crud_webhook,
+)
 from sqlalchemy.orm import Session
 from preloop.services.db_executor import run_db_sync
 from preloop.api.loop_safety import run_db_off_loop
@@ -372,6 +377,9 @@ def reprice_gateway_usage_task(
             progress=progress,
         )
         payload = asdict(result)
+        if not dry_run and result.rows_updated:
+            # Repriced rows change closed windows: expire cached cost reads.
+            crud_account.bump_cost_revision(db, account_id=account_id, commit=True)
         if job_id and attempt is not None:
             if not crud_repricing_job.finish(
                 db,

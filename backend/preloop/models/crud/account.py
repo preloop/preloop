@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 
@@ -183,6 +184,39 @@ class CRUDAccount(CRUDBase[Account]):
         else:
             db.flush()
         return account
+
+    COST_REVISION_KEY = "cost_cache_revision"
+
+    def bump_cost_revision(
+        self, db: Session, *, account_id: Any, commit: bool = False
+    ) -> None:
+        """Advance the account's cost revision in one atomic UPDATE.
+
+        Cost read caches key on the account's ``meta_data``, so a write that
+        changes past usage (reprice, ledger backfill, usage import) bumps this
+        counter and every worker stops serving older aggregates. The UPDATE
+        touches only this key, so concurrent metadata writers are not lost.
+
+        Args:
+            db: Database session.
+            account_id: Account whose cached cost reads are now stale.
+            commit: Commit immediately; otherwise the caller's commit applies it.
+        """
+        db.execute(
+            text(
+                "UPDATE account SET meta_data = jsonb_set("
+                "COALESCE(meta_data::jsonb, '{}'::jsonb), :path, "
+                "to_jsonb(COALESCE((meta_data::jsonb ->> :key)::bigint, 0) + 1)"
+                ")::json WHERE id = :account_id"
+            ),
+            {
+                "path": "{" + self.COST_REVISION_KEY + "}",
+                "key": self.COST_REVISION_KEY,
+                "account_id": str(account_id),
+            },
+        )
+        if commit:
+            db.commit()
 
     def get_organizations(self, db: Session, *, account_id: str) -> Dict[str, str]:
         """Get all organizations and roles for an account."""

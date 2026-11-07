@@ -96,6 +96,20 @@ latency need the `view_users` permission, and everyone can see their own row.
 
 Account-scoped APIs expose recent sessions plus captured gateway interactions. The console can drill from aggregate usage charts into one session timeline: model calls, tool calls, approvals, and operator actions on the same canvas.
 
+The **Requests** tab (formerly Transcript) reads like the terminal: each turn
+shows the prompt, then the agent's prose and one row per tool call in time
+order, with a short result preview, diffs for edits and a footer with how long
+the turn took. A search box filters the rows, and **Copy as text** copies the
+rows shown. Long sessions render 100 turns at a time with first, previous,
+next and last controls; search and copy still cover the whole loaded history.
+
+Usage pushed by agent hooks (`POST /api/v1/usage/ingest`) registers one
+session per source conversation, attributed to the managed agent, so those
+sessions appear here next to gateway-metered ones. They carry the hook's
+title, start, last activity and end, and transcript turns only when the hook
+opted in to sending transcript text. On Spend, the imported sessions table
+links each row here.
+
 Flow execution detail also includes a **Gateway Events** tab for execution-scoped model-call inspection.
 
 ---

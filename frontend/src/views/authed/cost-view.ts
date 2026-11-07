@@ -67,6 +67,7 @@ import '../../table/data-table';
 import { sessionCountLabel } from '../../utils/session-count';
 import {
   resolvePreviousTimeRange,
+  ceilToMinute,
   resolveTimeRange,
   timeRangeShortLabel,
 } from '../../utils/time-range';
@@ -216,6 +217,8 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
   { value: 'last-30', label: '30d' },
   { value: 'last-90', label: '90d' },
 ];
+
+export { ceilToMinute };
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
@@ -800,6 +803,19 @@ export class CostView extends AuthedElement {
           color: var(--sl-color-neutral-950);
         }
 
+        .imported-session {
+          display: inline-flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .imported-session-id {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta, 13px);
+          font-family: var(--sl-font-mono);
+          overflow-wrap: anywhere;
+        }
+
         .conversation-child-cell {
           padding-left: var(--sl-spacing-x-large);
         }
@@ -851,6 +867,22 @@ export class CostView extends AuthedElement {
         sl-dialog::part(panel) {
           --width: 640px;
         }
+
+        .main-column-actions {
+          display: flex;
+          justify-content: flex-end;
+          margin-bottom: var(--sl-spacing-x-small);
+        }
+
+        /* Full screen: the main column covers the page surface. */
+        .main-column.expanded {
+          position: fixed;
+          inset: 0;
+          z-index: var(--sl-z-index-dialog);
+          overflow: auto;
+          padding: var(--sl-spacing-large);
+          background: var(--console-page);
+        }
       `,
     ],
   ];
@@ -858,13 +890,40 @@ export class CostView extends AuthedElement {
   connectedCallback() {
     super.connectedCallback();
     this.selectedRange = this.loadStoredDateRange();
-    this.requestedPanel = new URLSearchParams(window.location.search).get(
-      'panel'
-    );
+    const query = new URLSearchParams(window.location.search);
+    this.requestedPanel = query.get('panel');
+    // ?tab= opens one tab; the old work-item and issue pages redirect here.
+    const tab = query.get('tab');
+    if (tab && CostView.LINKABLE_TABS.has(tab)) this.activeTab = tab;
     this.readUrlPeriod();
     window.addEventListener('popstate', this.restoreUrlPeriod);
     void this.load();
     void this.loadCopilotConnection();
+  }
+
+  /** Tabs a `?tab=` link may open directly. */
+  static readonly LINKABLE_TABS = new Set([
+    'agents',
+    'models',
+    'tools',
+    'sessions',
+    'users',
+    'work-items',
+    'issues',
+  ]);
+
+  /** The main column fills the window (Escape or the button restores it). */
+  @state() private mainExpanded = false;
+
+  private readonly onExpandedKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape' && this.mainExpanded)
+      this.setMainExpanded(false);
+  };
+
+  private setMainExpanded(expanded: boolean) {
+    this.mainExpanded = expanded;
+    if (expanded) window.addEventListener('keydown', this.onExpandedKeydown);
+    else window.removeEventListener('keydown', this.onExpandedKeydown);
   }
 
   private async loadCopilotConnection() {
@@ -906,6 +965,7 @@ export class CostView extends AuthedElement {
   disconnectedCallback() {
     ++this.loadGeneration;
     window.removeEventListener('popstate', this.restoreUrlPeriod);
+    window.removeEventListener('keydown', this.onExpandedKeydown);
     super.disconnectedCallback();
   }
 
@@ -1081,8 +1141,11 @@ export class CostView extends AuthedElement {
   private async load() {
     const generation = ++this.loadGeneration;
     const range = this.selectedRange;
-    // Resolve both windows from one clock so their boundary agrees exactly.
-    const now = new Date();
+    // Resolve both windows from one clock so their boundary agrees exactly,
+    // rounded up to the minute so loads within a minute ask the same window
+    // and share the server's and this tab's cached answers. Rounding up
+    // never leaves out a request that already happened.
+    const now = ceilToMinute(new Date());
     const period = this.getDateParams(range, now);
     this.loading = true;
     this.error = null;
@@ -1131,53 +1194,29 @@ export class CostView extends AuthedElement {
       if (!this.requestedPeriod) this.requestedPeriod = { ...period };
       void this.loadContext(generation);
       void this.loadAccountingFindings(generation);
-      // Share the first answer with the visible tab and imported usage. Separate
-      // detail requests repeat all totals and queue behind the headline (#1583).
-      const initialTab = this.activeTab;
-      const initialBreakdowns: CostUsageBreakdown[] = [
-        ...(initialTab === 'agents'
-          ? (['sessions', 'flows'] as const)
-          : initialTab === 'users' || initialTab === 'sessions'
-            ? (['sessions'] as const)
-            : initialTab === 'models'
-              ? (['models'] as const)
-              : initialTab === 'tools'
-                ? (['tools'] as const)
-                : []),
-        'imported',
-      ];
+      // First paint waits only for the totals. The comparison window and
+      // the visible tab's breakdowns are separate reads that fill their
+      // cards as they arrive, so the slowest section never holds the page.
       const previousPeriod = this.digestPeriod
         ? null
         : this.getPreviousDateParams(range, now);
-      const summary = await getCostAnalyticsSummary({
+      const headline = getCostAnalyticsSummary({
         ...period,
-        breakdowns: initialBreakdowns,
-        ...(initialTab === 'sessions'
-          ? { sessionPage: { limit: this.sessionPages.pageSize, offset: 0 } }
-          : {}),
-        ...(previousPeriod
-          ? {
-              compareStartDate: previousPeriod.startDate,
-              compareEndDate: previousPeriod.endDate,
-            }
-          : {}),
+        includeBreakdown: false,
       });
+      if (previousPeriod)
+        void this.loadPreviousRange(previousPeriod, generation);
+      const summary = await headline;
       if (generation !== this.loadGeneration) return;
       this.summary = summary;
-      this.readyBreakdowns = new Set(initialBreakdowns);
-      if (initialTab === 'sessions') {
-        this.initialSessionPage = summary;
-        // A paged answer does not fill the recent-session window for Agents.
-        this.readyBreakdowns.delete('sessions');
-      }
-      this.previousRangeSummary = summary.previous ?? null;
+      this.readyBreakdowns = new Set();
       this.currentPeriod = this.digestPeriod
         ? { ...period }
         : {
             startDate: summary.period_start,
             endDate: summary.period_end,
           };
-      this.loadedAt = new Date().toISOString();
+      this.loadedAt = summary.fetched_at ?? new Date().toISOString();
       this.loading = false;
       void this.loadTab(this.activeTab, generation);
       if (summary.imported_usage?.event_count)
@@ -1191,6 +1230,24 @@ export class CostView extends AuthedElement {
           : 'Failed to load cost analytics';
     } finally {
       if (generation === this.loadGeneration) this.loading = false;
+    }
+  }
+
+  /** The comparison window's totals, for the period-over-period figures. */
+  private async loadPreviousRange(
+    previous: { startDate: string; endDate: string },
+    generation = this.loadGeneration
+  ) {
+    try {
+      const result = await getCostAnalyticsSummary({
+        ...previous,
+        includeBreakdown: false,
+      });
+      if (generation === this.loadGeneration)
+        this.previousRangeSummary = result;
+    } catch (error) {
+      // Decoration only: the window's own numbers stand without it.
+      console.warn('Could not load the comparison window:', error);
     }
   }
 
@@ -1345,6 +1402,8 @@ export class CostView extends AuthedElement {
       copilot: [],
       reconciliation: [],
       teams: [],
+      'work-items': [],
+      issues: [],
     };
     if (!(tab in sections)) return;
     this.sectionStates = { ...this.sectionStates, [tab]: 'loading' };
@@ -1361,6 +1420,8 @@ export class CostView extends AuthedElement {
         tab === 'teams'
           ? import('../../components/team-budgets-panel')
           : undefined,
+        tab === 'work-items' ? import('./work-item-cost-view') : undefined,
+        tab === 'issues' ? import('./issue-cost-view') : undefined,
       ]);
       if (generation !== this.loadGeneration) return;
       this.loadedTabs = new Set(this.loadedTabs).add(tab);
@@ -2662,22 +2723,20 @@ export class CostView extends AuthedElement {
     if (!rows.length) return nothing;
     const threads = this.buildConversationThreads(rows);
     return html`
-      <div class="imported-conversations-title">Conversations</div>
+      <div class="imported-conversations-title">Sessions</div>
       <div class="imported-usage-note">
-        Per-thread rollup of imported usage. Subagent conversations are nested
-        under the conversation that spawned them. Estimated amounts (derived
-        from hook or transcript data) and reconciled amounts (from a billing
-        export) are shown separately and are never summed together.
+        Imported usage per session. Subagent sessions are nested under the
+        session that spawned them. Estimated amounts (derived from hook or
+        transcript data) and reconciled amounts (from a billing export) are
+        shown separately and are never summed together.
       </div>
       <div class="analytics-table-wrap">
         <div class="table-scroll">
-          <table
-            class="styled-table"
-            aria-label="Imported usage by conversation"
-          >
+          <table class="styled-table" aria-label="Imported usage by session">
             <thead>
               <tr>
-                <th scope="col">Conversation</th>
+                <th scope="col">Session</th>
+                <th scope="col">Agent</th>
                 <th scope="col">Events</th>
                 <th scope="col">Tokens</th>
                 <th scope="col">Estimated cost</th>
@@ -2743,7 +2802,8 @@ export class CostView extends AuthedElement {
       ${this.renderConversationRow(row, false)}
       ${children.map((child) => this.renderConversationRow(child, true))}
       <tr class="conversation-thread-total">
-        <td>Thread total (${all.length} conversations)</td>
+        <td>Thread total (${all.length} sessions)</td>
+        <td></td>
         <td>${this.formatNumber(totalEvents)}</td>
         <td>${this.renderReportedNumber(totalTokens)}</td>
         <td>${this.renderReportedCurrency(totalEstimated)}</td>
@@ -2767,7 +2827,17 @@ export class CostView extends AuthedElement {
                 >`
               : nothing
           }
-          ${row.conversation_id}
+          ${this.renderImportedSessionTitle(row)}
+        </td>
+        <td>
+          ${
+            row.agent_id
+              ? html`<a
+                  href=${`/console/agents/${encodeURIComponent(row.agent_id)}`}
+                  >${row.agent_name || 'Agent'}</a
+                >`
+              : row.agent_name || html`<span class="not-reported">n/a</span>`
+          }
         </td>
         <td>${this.formatNumber(row.event_count)}</td>
         <td>${this.renderReportedNumber(row.total_tokens)}</td>
@@ -2782,6 +2852,31 @@ export class CostView extends AuthedElement {
         </td>
       </tr>
     `;
+  }
+
+  /**
+   * The session's title, linked to its page on Sessions when the import
+   * registered one, with the source-side id underneath to tell it apart.
+   */
+  private renderImportedSessionTitle(row: ImportedUsageByConversation) {
+    const id = row.session_id || row.conversation_id;
+    const title = row.session_title || id;
+    return html`<span class="imported-session">
+      ${
+        row.runtime_session_id
+          ? html`<a
+              class="imported-session-title"
+              href=${`/console/runtime-sessions/${encodeURIComponent(row.runtime_session_id)}`}
+              >${title}</a
+            >`
+          : html`<span class="imported-session-title">${title}</span>`
+      }
+      ${
+        title !== id
+          ? html`<span class="imported-session-id" title=${id}>${id}</span>`
+          : nothing
+      }
+    </span>`;
   }
 
   // Null-preserving sum: null when every input is null ("not reported"),
@@ -2809,6 +2904,20 @@ export class CostView extends AuthedElement {
   private renderBreakdown() {
     return html`
       <sl-card class="analytics-card">
+        <div class="main-column-actions">
+          <sl-button
+            size="small"
+            class="expand-main"
+            aria-pressed=${this.mainExpanded ? 'true' : 'false'}
+            @click=${() => this.setMainExpanded(!this.mainExpanded)}
+          >
+            <sl-icon
+              slot="prefix"
+              name=${this.mainExpanded ? 'fullscreen-exit' : 'arrows-angle-expand'}
+            ></sl-icon>
+            ${this.mainExpanded ? 'Exit full screen' : 'Full screen'}
+          </sl-button>
+        </div>
         <sl-tab-group
           @sl-tab-show=${(event: CustomEvent<{ name: string }>) =>
             void this.handleTabShow(event)}
@@ -2836,6 +2945,18 @@ export class CostView extends AuthedElement {
           >
           <sl-tab slot="nav" panel="users" ?active=${this.activeTab === 'users'}
             >Users</sl-tab
+          >
+          <sl-tab
+            slot="nav"
+            panel="work-items"
+            ?active=${this.activeTab === 'work-items'}
+            >Work items</sl-tab
+          >
+          <sl-tab
+            slot="nav"
+            panel="issues"
+            ?active=${this.activeTab === 'issues'}
+            >Issues</sl-tab
           >
           ${
             this.copilotTabShown
@@ -2878,6 +2999,26 @@ export class CostView extends AuthedElement {
           >
           <sl-tab-panel name="users"
             >${this.renderTab('users', () => this.renderUsersTab())}</sl-tab-panel
+          >
+          <sl-tab-panel name="work-items"
+            >${this.renderTab(
+              'work-items',
+              () =>
+                html`<work-item-cost-view
+                  embedded
+                  .period=${this.currentPeriod}
+                ></work-item-cost-view>`
+            )}</sl-tab-panel
+          >
+          <sl-tab-panel name="issues"
+            >${this.renderTab(
+              'issues',
+              () =>
+                html`<issue-cost-view
+                  embedded
+                  .period=${this.currentPeriod}
+                ></issue-cost-view>`
+            )}</sl-tab-panel
           >
           ${
             this.copilotTabShown
@@ -4355,7 +4496,7 @@ export class CostView extends AuthedElement {
       <div class="page">
         <view-header
           headerText="Spend"
-          description="What did we pay, and for which agents, tools, sessions and people? Includes imported GitHub Copilot and Claude Code usage."
+          description="What did we pay, and for which agents, tools, sessions, people and work items? Includes imported GitHub Copilot and Claude Code usage."
         ></view-header>
 
         ${this.activeAccountLabel ? html`<p class="active-account">Active account: ${this.activeAccountLabel}</p>` : nothing}
@@ -4369,12 +4510,6 @@ export class CostView extends AuthedElement {
           ></time-range-select>
           <span class="range-window" title=${this.rangeWindowTitle()}
             >${this.rangeWindowLabel()}</span
-          >
-          <a class="issue-cost-link" href="/console/cost/work-items"
-            >Cost per work item</a
-          >
-          <a class="issue-cost-link" href="/console/cost/by-issue"
-            >Cost per issue</a
           >
           ${this.renderSpendSettings()}
         </div>
@@ -4431,7 +4566,9 @@ export class CostView extends AuthedElement {
                           ${this.renderSubscriptionUsage()}
                           ${this.renderCatalogInfo()}
                           <div class="column-layout dashboard extra-wide">
-                            <div class="main-column">
+                            <div
+                              class="main-column ${this.mainExpanded ? 'expanded' : ''}"
+                            >
                               ${this.renderBreakdown()}
                               ${this.renderImportedUsage()}
                             </div>

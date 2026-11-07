@@ -33,6 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import (
+    crud_account,
     crud_api_usage,
     crud_flow,
     crud_flow_execution,
@@ -242,6 +243,9 @@ def ingest_events(
             skipped += 1
         else:
             imported += 1
+    if imported:
+        # Imported events can land in closed windows: expire cached cost reads.
+        crud_account.bump_cost_revision(db, account_id=account_id)
     db.commit()
     return imported, skipped
 
@@ -486,6 +490,20 @@ def sync_runtime_session_for_record(
     elif default_title and not session.title:
         session.title = default_title
         description_changed = True
+    elif not session.title and record.transcript:
+        # The client opted in to sending transcript text, so the first user
+        # message may name the session, the way a gateway session's first
+        # prompt does: redacted, one line, truncated.
+        from preloop.services.agent_session_lineage import title_from_prompt
+
+        first_user = next(
+            (message.text for message in record.transcript if message.role == "user"),
+            None,
+        )
+        prompt_title = title_from_prompt(first_user)
+        if prompt_title:
+            session.title = prompt_title[:MAX_SESSION_TITLE_CHARS]
+            description_changed = True
     summary = _metadata_text(
         record.metadata, "session_summary", MAX_SESSION_SUMMARY_CHARS
     )
@@ -891,6 +909,9 @@ def ingest_push_records(
                 conflict=bool(stored_hash and stored_hash != content_hash),
             )
         )
+    if any(not result.deduplicated for result in results):
+        # Pushed records can land in closed windows: expire cached cost reads.
+        crud_account.bump_cost_revision(db, account_id=account_id)
     db.commit()
     if indexed_transcripts:
         # Chunks rode the caller's transaction (commit=False). Nudge only

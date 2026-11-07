@@ -67,6 +67,7 @@ import {
   formatTimeRangeWindow,
   resolvePreviousTimeRange,
   resolveTimeRange,
+  ceilToMinute,
   timeRangeShortLabel,
   type TimeRangeKey,
 } from '../../utils/time-range';
@@ -654,7 +655,7 @@ export class ApiUsageView extends LitElement {
 
   /** The selected window, in the shape the gateway endpoints take. */
   private rangeParams(): GatewayUsageSummaryParams {
-    const range = resolveTimeRange(this.selectedRange);
+    const range = resolveTimeRange(this.selectedRange, ceilToMinute());
     const params: GatewayUsageSummaryParams = {};
 
     if (range.startDate) {
@@ -675,7 +676,10 @@ export class ApiUsageView extends LitElement {
     this.loading = true;
     this.error = null;
 
-    const previousRange = resolvePreviousTimeRange(this.selectedRange);
+    const previousRange = resolvePreviousTimeRange(
+      this.selectedRange,
+      ceilToMinute()
+    );
     this.previousSummary = null;
     // The comparison needs totals only and can arrive after current usage.
     if (previousRange.startDate) {
@@ -820,7 +824,7 @@ export class ApiUsageView extends LitElement {
    * page prints is what it was actually given.
    */
   private rangeWindowLabel(): string {
-    const requested = resolveTimeRange(this.selectedRange);
+    const requested = resolveTimeRange(this.selectedRange, ceilToMinute());
     return formatTimeRangeWindow({
       startDate: this.summary?.period_start ?? requested.startDate,
       endDate: this.summary?.period_end ?? requested.endDate,
@@ -834,7 +838,9 @@ export class ApiUsageView extends LitElement {
    */
   private spendComparisonDetail(): string {
     // "All time" has no window before it to compare against.
-    if (!resolvePreviousTimeRange(this.selectedRange).startDate) {
+    if (
+      !resolvePreviousTimeRange(this.selectedRange, ceilToMinute()).startDate
+    ) {
       return 'All recorded gateway spend';
     }
     const previousLabel = `prior ${this.rangeChipLabel()}`;

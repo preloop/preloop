@@ -21,6 +21,7 @@ import type {
   GatewayUsageByDay,
 } from '../types';
 import { budgetTrackStyles, renderBudgetTrack } from '../styles/budget-track';
+import { renderSparklineSvg, sparklineIds, sparklineStyles } from './sparkline';
 import {
   isCalendarTimeRange,
   normalizeTimeRangeKey,
@@ -44,8 +45,6 @@ import {
 } from '../utils/usage-projection';
 
 export type UsageUnit = 'tokens' | 'dollars';
-
-let sparklineClipSeq = 0;
 
 export const USAGE_UNIT_STORAGE_KEY = 'overview_usage_unit';
 export const USAGE_RANGE_STORAGE_KEY = 'overview_usage_range';
@@ -168,6 +167,7 @@ export class UsageCard extends LitElement {
   private longRangeTimer: number | null = null;
 
   static styles = [
+    sparklineStyles,
     budgetTrackStyles,
     budgetForecastStyles,
     css`
@@ -314,76 +314,6 @@ export class UsageCard extends LitElement {
         color: var(--console-meta-color);
         font-size: 0.8125rem;
         font-variant-numeric: tabular-nums;
-      }
-
-      .sparkline {
-        display: block;
-        width: 100%;
-        height: 40px;
-      }
-
-      /* Says which part of the chart is data and which is a guess. */
-      .sparkline-legend {
-        align-items: center;
-        color: var(--console-meta-color);
-        display: flex;
-        flex-wrap: wrap;
-        font-size: 0.75rem;
-        gap: var(--sl-spacing-x-small);
-        margin-top: var(--sl-spacing-2x-small);
-      }
-
-      .legend-item {
-        align-items: center;
-        display: inline-flex;
-        gap: var(--sl-spacing-2x-small);
-        white-space: nowrap;
-      }
-
-      .legend-total {
-        flex-basis: 100%;
-      }
-
-      .legend-swatch {
-        display: inline-block;
-        height: 0;
-        vertical-align: middle;
-        width: 16px;
-        border-top: 2px solid var(--sl-color-primary-500);
-      }
-
-      .legend-swatch.dashed {
-        border-top-style: dashed;
-        border-top-color: var(--sl-color-primary-400);
-      }
-
-      /* One deliberate motion on the Overview: the trend reveals itself
-         once, left to right, on the paint that first has data. A clip
-         rectangle grows across the chart and uncovers the line and the area
-         together, so they always end at the same x. Nothing loops, nothing
-         pulses. Under prefers-reduced-motion the chart is simply there.
-
-         The reveal used to be a stroke-dasharray draw on the line alone.
-         With pathLength="1", vector-effect="non-scaling-stroke" and
-         preserveAspectRatio="none" the dash was measured in screen pixels,
-         so the finished line showed gaps while the area ran to the end. */
-      .sparkline-reveal {
-        transform-origin: 0 0;
-      }
-
-      @media (prefers-reduced-motion: no-preference) {
-        .sparkline-reveal {
-          animation: sparkline-reveal 300ms ease-out both;
-        }
-      }
-
-      @keyframes sparkline-reveal {
-        from {
-          transform: scaleX(0);
-        }
-        to {
-          transform: scaleX(1);
-        }
       }
 
       .budgets,
@@ -797,10 +727,7 @@ export class UsageCard extends LitElement {
   }
 
   /** Unique per card: the clip path id lives in this card's shadow root. */
-  private readonly sparklineClipId = `usage-sparkline-clip-${++sparklineClipSeq}`;
-
-  /** Unique per card: the hatch pattern id lives in this card's shadow root. */
-  private readonly sparklineHatchId = `usage-sparkline-hatch-${sparklineClipSeq}`;
+  private readonly sparklineIdPair = sparklineIds('usage');
 
   private renderSparklineSkeleton() {
     return html`<sl-skeleton
@@ -879,48 +806,7 @@ export class UsageCard extends LitElement {
 
   /** One svg, one clip: the reveal uncovers data and projection together. */
   private renderSparklineSvg(label: string, shapes: unknown) {
-    const width = 100;
-    const height = 40;
-    return html`
-      <svg
-        class="sparkline"
-        viewBox="0 0 ${width} ${height}"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label=${label}
-      >
-        <defs>
-          <clipPath id=${this.sparklineClipId}>
-            <!-- A little taller than the viewBox so the stroke is never
-                 clipped at the top or bottom edge. -->
-            <rect
-              class="sparkline-reveal"
-              x="0"
-              y="-4"
-              width=${width}
-              height=${height + 8}
-            ></rect>
-          </clipPath>
-          <pattern
-            id=${this.sparklineHatchId}
-            patternUnits="userSpaceOnUse"
-            width="2"
-            height="4"
-            patternTransform="rotate(45)"
-          >
-            <rect
-              width="0.6"
-              height="4"
-              fill="var(--sl-color-primary-500)"
-              opacity="0.35"
-            ></rect>
-          </pattern>
-        </defs>
-        <g class="sparkline-shapes" clip-path="url(#${this.sparklineClipId})">
-          ${shapes}
-        </g>
-      </svg>
-    `;
+    return renderSparklineSvg(label, shapes, this.sparklineIdPair);
   }
 
   /**
@@ -998,7 +884,7 @@ export class UsageCard extends LitElement {
             ? svg`<polygon
                   class="sparkline-projection-area"
                   points=${`${nowX},${height} ${projectedPoints.join(' ')} ${width},${height}`}
-                  fill="url(#${this.sparklineHatchId})"
+                  fill="url(#${this.sparklineIdPair.hatch})"
                 ></polygon>
                 <polyline
                   class="sparkline-projection-line"

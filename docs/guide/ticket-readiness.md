@@ -2,7 +2,7 @@
 
 Enable `TICKET_READINESS_ENABLED=true` to opt in to ticket readiness observation
 and the console's project policy settings. Existing issue-cost intervals and
-filters keep their meanings. Select a project in **Cost per issue** to configure
+filters keep their meanings. Select a project on the **Issues** tab of **Spend** to configure
 an explicit list of required build-status keys, minimum approvals, and whether
 changes requests and unresolved tasks block readiness. `[]` and approval count
 `0` are explicit choices; omitted configuration is unknown. Saving requires

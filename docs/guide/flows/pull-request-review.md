@@ -314,6 +314,26 @@ can set `PRELOOP_TEST_CONCURRENCY` to a positive integer to override it; see
 [test concurrency](environments-and-recovery.md#backend-and-frontend-tests-in-the-image)
 for configuration and resource guidance.
 
+## Review delivery check
+
+A reviewer run can be required to prove that the code host accepted its
+review. Set `git_clone_config.review_publication.required: true` on the flow.
+Flows created from the Pull Request Reviewer preset carry this block; an
+existing flow without its own block is never gated, whatever its source preset
+says. Turn it on for an existing flow once the API build that writes receipts
+is serving, and use `required: false` to opt out.
+
+With the check on, the MCP `update_pull_request` tool records a receipt only
+after an approve, request-changes or comment review succeeds on the triggering
+pull request. At the end of the run the result carries
+`result.review_publication` (`published`, `already_reviewed` or
+`not_published`). A run that claimed success without a receipt fails with
+`review_publication_incomplete` and keeps its report. The agent's own
+`review_posted` claim, the success line and a zero exit code never satisfy the
+check. GitLab and Bitbucket receipts do not carry the reviewed head, so they
+prove delivery for the current run but cannot justify skipping a head that was
+already reviewed. Details: [Flows architecture](../../architecture/flows.md#review-publication-receipts).
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`

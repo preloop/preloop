@@ -1,6 +1,6 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { invalidateApiCaches } from '../../api';
+import { clearCostReadCache, invalidateApiCaches } from '../../api';
 import { CostView } from './cost-view';
 import './cost-view.ts';
 
@@ -63,7 +63,7 @@ describe('Cost progressive loading', () => {
     invalidateApiCaches();
   });
 
-  it('renders the shared summary while metadata is still pending', async () => {
+  it('renders the totals while metadata is still pending', async () => {
     const fallback = handler;
     handler = (url) => {
       if (url.pathname.endsWith('/ai-models')) {
@@ -83,15 +83,12 @@ describe('Cost progressive loading', () => {
     const summaries = urls.filter((url) =>
       url.pathname.endsWith('/cost/summary')
     );
-    expect(summaries).to.have.length(1);
-    expect(summaries[0].searchParams.get('include_breakdown')).not.to.equal(
+    // The first read is the totals only: no breakdowns, no comparison.
+    expect(summaries[0].searchParams.get('include_breakdown')).to.equal(
       'false'
     );
-    expect(summaries[0].searchParams.getAll('breakdown')).to.deep.equal([
-      'sessions',
-      'flows',
-      'imported',
-    ]);
+    expect(summaries[0].searchParams.getAll('breakdown')).to.deep.equal([]);
+    expect(summaries[0].searchParams.has('compare_start_date')).to.equal(false);
     await waitUntil(() => element['loadedTabs'].has('agents'));
   });
 
@@ -105,20 +102,16 @@ describe('Cost progressive loading', () => {
     expect(
       urls.filter((u) => u.searchParams.getAll('breakdown').includes('days'))
     ).to.have.length(0);
-    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows', 'imported']);
+    // Imported detail is asked only when the totals report imported events.
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows']);
     await element['handleTabShow'](
       new CustomEvent('sl-tab-show', { detail: { name: 'users' } })
     );
-    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows', 'imported']);
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows']);
     await element['handleTabShow'](
       new CustomEvent('sl-tab-show', { detail: { name: 'tools' } })
     );
-    expect(tabBreakdowns()).to.deep.equal([
-      'sessions',
-      'flows',
-      'imported',
-      'tools',
-    ]);
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows', 'tools']);
   });
 
   it('keeps totals visible after a breakdown failure and retries only that section', async () => {
@@ -161,23 +154,30 @@ describe('Cost progressive loading', () => {
     await waitUntil(() => element['loadedTabs'].has('agents'));
     const fallback = handler;
     const pending: Array<(response: Response) => void> = [];
-    handler = (url) =>
+    // Hold the headline totals (they end now; the comparison ends earlier).
+    const isHeadline = (url: URL) =>
       url.pathname.endsWith('/cost/summary') &&
-      url.searchParams.has('compare_start_date') &&
-      pending.length < 3
+      url.searchParams.get('include_breakdown') === 'false' &&
+      new Date(url.searchParams.get('end_date')!).getTime() >
+        Date.now() - 24 * 60 * 60 * 1000;
+    handler = (url) =>
+      isHeadline(url) && pending.length < 2
         ? new Promise((resolve) => pending.push(resolve))
         : fallback(url);
+    clearCostReadCache();
     const first = element['load']();
     element['selectedRange'] = 'last-7';
     const second = element['load']();
     element['selectedRange'] = 'last-30';
     await new Promise((resolve) => setTimeout(resolve, 20));
+    // Back on the first range: the same window joins the read already in the
+    // air, so two headline reads are pending, not three.
     const latest = element['load']();
-    await waitUntil(() => pending.length === 3);
-    pending[2](reply({ ...payload, estimated_cost: 70 }));
+    await waitUntil(() => pending.length === 2);
+    pending[0](reply({ ...payload, estimated_cost: 70 }));
     await latest;
+    // The last-7 answer lands late and must not replace the current totals.
     pending[1](reply({ ...payload, estimated_cost: 60 }));
-    pending[0](reply({ ...payload, estimated_cost: 50 }));
     await Promise.all([first, second]);
     expect(element['summary']!.estimated_cost).to.equal(70);
     expect(element['loading']).to.equal(false);
@@ -264,7 +264,7 @@ describe('Cost progressive loading', () => {
     expect(element['error']).to.equal(null);
   });
 
-  it('shares imported detail with the headline and keeps its spend separate', async () => {
+  it('reads imported detail after the totals and keeps its spend separate', async () => {
     const fallback = handler;
     handler = async (url) => {
       if (url.pathname.endsWith('/cost/summary')) {
@@ -292,7 +292,11 @@ describe('Cost progressive loading', () => {
     ).to.include('$7.00');
     await waitUntil(() => element['loadedTabs'].has('imported'));
     expect(
-      urls.filter((url) => url.pathname.endsWith('/cost/summary'))
+      urls.filter(
+        (url) =>
+          url.pathname.endsWith('/cost/summary') &&
+          url.searchParams.getAll('breakdown').includes('imported')
+      )
     ).to.have.length(1);
     expect(
       element.shadowRoot!.querySelector(
@@ -349,7 +353,7 @@ describe('Cost progressive loading', () => {
 });
 
 describe('Spend summary fan-out regression (#1583)', () => {
-  it('shares one summary across the headline, Agents and imported detail on load', async () => {
+  it('reads totals, comparison and each detail once, and reuses them across tabs', async () => {
     localStorage.setItem('accessToken', 'test-token');
     const urls: URL[] = [];
     const fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
@@ -386,19 +390,26 @@ describe('Spend summary fan-out regression (#1583)', () => {
           element['loadedTabs'].has('agents') &&
           element['loadedTabs'].has('imported')
       );
+      const summaries = urls.filter((url) =>
+        url.pathname.endsWith('/cost/summary')
+      );
+      // Totals, comparison totals, Agents detail and imported detail: one
+      // read each, never one per card.
+      expect(summaries).to.have.length(4);
       expect(
-        urls.filter((url) => url.pathname.endsWith('/cost/summary'))
-      ).to.have.length(1);
-      expect(element['previousRangeSummary']!.estimated_cost).to.equal(21);
+        summaries.filter((url) => url.searchParams.has('compare_start_date'))
+      ).to.have.length(0);
+      await waitUntil(() => element['previousRangeSummary'] !== null);
       expect(element['summary']!.imported_usage!.usage_by_model).to.have.length(
         1
       );
       await element['handleTabShow'](
         new CustomEvent('sl-tab-show', { detail: { name: 'users' } })
       );
+      // Users reuses the Agents session window: no new read.
       expect(
         urls.filter((url) => url.pathname.endsWith('/cost/summary'))
-      ).to.have.length(1);
+      ).to.have.length(4);
     } finally {
       fetchStub.restore();
       localStorage.clear();
@@ -408,7 +419,7 @@ describe('Spend summary fan-out regression (#1583)', () => {
 });
 
 describe('Spend selected-tab reload (#1583)', () => {
-  it('includes the first session page in the single reload summary', async () => {
+  it('pages sessions after the totals on a reload with Sessions open', async () => {
     localStorage.setItem('accessToken', 'test-token');
     const urls: URL[] = [];
     const fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
@@ -432,19 +443,20 @@ describe('Spend selected-tab reload (#1583)', () => {
       urls.length = 0;
       await element['load']();
       await waitUntil(() => element['loadedTabs'].has('sessions'));
-      const summaries = urls.filter((url) =>
-        url.pathname.endsWith('/cost/summary')
+      const summaries = () =>
+        urls.filter((url) => url.pathname.endsWith('/cost/summary'));
+      const paged = summaries().filter((url) =>
+        url.searchParams.has('session_limit')
       );
-      expect(summaries).to.have.length(1);
-      expect(summaries[0].searchParams.get('session_limit')).to.equal('25');
+      expect(paged).to.have.length(1);
+      expect(paged[0].searchParams.get('session_limit')).to.equal('25');
       expect(element.sessionPages.total).to.equal(100);
+      const before = summaries().length;
       await element['handleTabShow'](
         new CustomEvent('sl-tab-show', { detail: { name: 'users' } })
       );
       // The paged result cannot stand in for Users' recent-session window.
-      expect(
-        urls.filter((url) => url.pathname.endsWith('/cost/summary'))
-      ).to.have.length(2);
+      expect(summaries()).to.have.length(before + 1);
     } finally {
       fetchStub.restore();
       localStorage.clear();

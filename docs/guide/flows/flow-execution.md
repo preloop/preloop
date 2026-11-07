@@ -146,6 +146,7 @@ Execution pages update in real-time via WebSocket:
 3. Agent error (e.g., unable to parse response)
 4. MCP tool call timed out (default 600 seconds)
 5. Out of API credits
+6. A run limit stopped it (see [Failure categories set by the platform](#failure-categories-set-by-the-platform))
 
 **Next Steps:**
 
@@ -370,6 +371,21 @@ Tool call timed out after 600 seconds
 ```
 OpenAI API error: Rate limit exceeded
 ```
+
+### Failure categories set by the platform
+
+Some failures are decided by Preloop rather than by the agent. The execution
+records one of these categories:
+
+| Category | When |
+|---|---|
+| `default_limit_reached` | The instance default ceiling stopped the run. There are no built-in default ceilings: a flow runs without a token, turn or cost ceiling unless it sets `agent_config.limits` or the operator sets `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or `PRELOOP_DEFAULT_MAX_USD`. |
+| `budget_exceeded` | A flow or account budget stopped the run. The category is kept even when the agent then fails on a call refused because the execution was closed. |
+| `repeated_upstream_failure` | The last model calls failed the same way (same request, error class and status). The gateway refuses the next call with HTTP 424 before contacting the provider, instead of retrying until the timeout. |
+| `gateway_bypassed` | A private-runner Codex or Claude Code run produced model output without a gateway request. A flow can opt out with `agent_config.allow_unmetered_host_model: true` (never in read-only review). |
+| `approval_denied`, `approval_timeout` | A command matched a `require_approval` rule, the run parked on an approval request, and the request was refused or expired. On approval the run resumes with that command allowed once. |
+| `approval_unavailable` | An approval-required rule applies but the hosted harness could not install the Preloop hook that enforces it. |
+| `review_publication_incomplete` | The flow requires a delivered review (`git_clone_config.review_publication.required`) and the code host never accepted one. See [Pull request review](pull-request-review.md#review-delivery-check). |
 
 ---
 

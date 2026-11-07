@@ -103,6 +103,37 @@ describe('WorkItemCostView', () => {
     expect(groupMakeup(report.groups[0])).to.equal('1 issue + 1 PR');
   });
 
+  it('embedded on Spend: no header or range, reads the page window and follows it', async () => {
+    const element = await fixture<WorkItemCostView>(
+      html`<work-item-cost-view
+        embedded
+        .period=${{
+          startDate: '2026-10-01T00:00:00Z',
+          endDate: '2026-11-01T00:00:00Z',
+        }}
+      ></work-item-cost-view>`
+    );
+    await waitUntil(() => element.report !== null);
+    expect(element.shadowRoot?.querySelector('view-header')).to.equal(null);
+    expect(element.shadowRoot?.querySelector('time-range-select')).to.equal(
+      null
+    );
+    const first = new URL(
+      requested.find((url) => url.includes('/cost/work-items'))!,
+      location.origin
+    );
+    expect(first.searchParams.get('start_date')).to.equal(
+      '2026-10-01T00:00:00Z'
+    );
+    element.period = {
+      startDate: '2026-09-01T00:00:00Z',
+      endDate: '2026-10-01T00:00:00Z',
+    };
+    await waitUntil(() =>
+      requested.some((url) => url.includes('start_date=2026-09-01'))
+    );
+  });
+
   it('asks for one page of the selected period', async () => {
     const element = await fixture<WorkItemCostView>(
       html`<work-item-cost-view></work-item-cost-view>`

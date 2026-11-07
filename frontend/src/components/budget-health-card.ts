@@ -7,6 +7,14 @@ import type {
   ManagedAgentSummary,
 } from '../types';
 import { budgetTrackStyles } from '../styles/budget-track';
+import {
+  renderSparklineSvg,
+  SPARKLINE_HEIGHT,
+  SPARKLINE_WIDTH,
+  sparklineIds,
+  sparklineStyles,
+  sparklineY,
+} from './sparkline';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import {
   budgetPeriodLabel,
@@ -30,32 +38,45 @@ type BudgetPolicyUsage = {
   percent: number;
 };
 
-/** Chart geometry, in viewBox units; the svg stretches to the card. */
-const CHART_WIDTH = 100;
-const CHART_HEIGHT = 40;
-
 export interface BudgetSpendChart {
-  /** Polyline points of cumulative spend, one per day. */
+  /** Polyline points of cumulative spend, one per bucket up to now. */
   points: string;
+  /** x of the last bucket with data: the "now" marker on a period chart. */
+  nowX: number;
+  /** Straight-line projection from now to the end of the period, if any. */
+  projectedPoints: string | null;
+  /** Cumulative spend the straight line reaches at the end of the period. */
+  projectedTotal: number | null;
   /** y of the hard (else soft) limit line, or null when off the chart. */
   limitY: number | null;
   /** y of the soft limit line when a hard limit is drawn too. */
   softY: number | null;
-  /** Cumulative spend at the last day. */
+  /** A limit exists but sits far above the spend, so it is not drawn. */
+  limitOffChart: boolean;
+  /** Cumulative spend at the last bucket. */
   total: number;
 }
 
 /**
- * Cumulative estimated spend per day against the budget's limits, scaled so
- * the higher of spend and limit fills the chart. Fewer than two days is no
- * trend, so it returns null.
+ * A limit more than this many times the chart's data would flatten the line
+ * against the bottom edge, so it is named in the legend instead of drawn.
+ */
+export const LIMIT_HEADROOM = 2;
+
+/**
+ * Cumulative estimated spend per bucket against the budget's limits, drawn
+ * like the Overview's Usage chart: the whole period on the x axis, the data
+ * up to now as a line over an area, then a straight-line projection to the
+ * end of the period (the forecast rule, never before a tenth of the period).
+ * Fewer than two buckets is no trend, so it returns null.
  */
 export function budgetSpendChart(
   rows: GatewayUsageByDay[] | null | undefined,
   softLimit: number,
   hardLimit: number,
   slots = 0,
-  period: { start: Date; bucketMs: number } | null = null
+  period: { start: Date; bucketMs: number } | null = null,
+  now: Date = new Date()
 ): BudgetSpendChart | null {
   if (!rows || rows.length < 2) return null;
   const ordered = [...rows].sort((a, b) => a.date.localeCompare(b.date));
@@ -76,27 +97,59 @@ export function budgetSpendChart(
     running += Number(row.estimated_cost || 0);
     return running;
   });
-  const limit = hardLimit > 0 ? hardLimit : softLimit > 0 ? softLimit : 0;
-  const max = Math.max(running, limit) || 1;
-  const y = (value: number) =>
-    Number((CHART_HEIGHT - (value / max) * (CHART_HEIGHT - 4) - 2).toFixed(2));
-  // With the period's bucket count the line stops where today is, so the
-  // empty rest of the chart is the part of the period still to come.
   const positions = ordered.map(slotOf);
-  const span = Math.max(slots - 1, positions[positions.length - 1], 1);
-  const step = CHART_WIDTH / span;
+  const last = positions[positions.length - 1];
+  // With the period's bucket count the line stops where today is, so the
+  // rest of the chart is the part of the period still to come.
+  const span = Math.max(slots - 1, last, 1);
+  const step = SPARKLINE_WIDTH / span;
+  // Today, not the last bucket with spend: days without spend still count
+  // as elapsed, or the straight line would overstate the period.
+  const current =
+    period && slots > 0
+      ? Math.min(
+          slots - 1,
+          Math.max(
+            last,
+            Math.floor(
+              (now.getTime() - period.start.getTime()) / period.bucketMs
+            )
+          )
+        )
+      : last;
+  const elapsed = slots > 0 ? (current + 1) / slots : 1;
+  const projectedTotal =
+    slots > 0 && running > 0 && elapsed >= 0.1 && elapsed < 1
+      ? running / elapsed
+      : null;
+  const data = Math.max(running, projectedTotal ?? 0);
+  const limit = hardLimit > 0 ? hardLimit : softLimit > 0 ? softLimit : 0;
+  const limitOffChart = limit > 0 && data > 0 && limit > data * LIMIT_HEADROOM;
+  const max = Math.max(data, limitOffChart ? 0 : limit) || 1;
+  const y = (value: number) => sparklineY(value, max);
+  const x = (slot: number) => Math.min(SPARKLINE_WIDTH, slot * step);
+  const nowX = Number(x(current).toFixed(2));
+  const lastX = x(last).toFixed(2);
   return {
     points: cumulative
-      .map(
-        (value, index) =>
-          `${Math.min(CHART_WIDTH, positions[index] * step).toFixed(2)},${y(value)}`
-      )
+      .map((value, index) => `${x(positions[index]).toFixed(2)},${y(value)}`)
       .join(' '),
-    limitY: limit > 0 ? y(limit) : null,
+    nowX,
+    projectedPoints:
+      projectedTotal !== null
+        ? `${lastX},${y(running)} ${nowX.toFixed(2)},${y(running)} ${SPARKLINE_WIDTH.toFixed(2)},${y(projectedTotal)}`
+        : null,
+    projectedTotal,
+    limitY: limit > 0 && !limitOffChart ? y(limit) : null,
     softY:
-      hardLimit > 0 && softLimit > 0 && softLimit < hardLimit
+      !limitOffChart &&
+      hardLimit > 0 &&
+      softLimit > 0 &&
+      softLimit < hardLimit &&
+      softLimit <= max
         ? y(softLimit)
         : null,
+    limitOffChart,
     total: running,
   };
 }
@@ -125,6 +178,7 @@ export class BudgetHealthCard extends LitElement {
   private seriesKey = '';
 
   static styles = [
+    sparklineStyles,
     budgetTrackStyles,
     budgetForecastStyles,
     css`
@@ -162,18 +216,6 @@ export class BudgetHealthCard extends LitElement {
         cursor: pointer;
         font-size: var(--sl-font-size-small);
         outline: none;
-      }
-
-      .spend-chart {
-        display: block;
-        width: 100%;
-        height: 40px;
-      }
-
-      .spend-chart-caption {
-        color: var(--console-meta-color);
-        font-size: 0.75rem;
-        font-variant-numeric: tabular-nums;
       }
 
       .content {
@@ -608,7 +650,13 @@ export class BudgetHealthCard extends LitElement {
       });
   }
 
-  /** Cumulative spend over the period's buckets, with the limit as a line. */
+  /** Unique per card: the clip path id lives in this card's shadow root. */
+  private readonly sparklineIdPair = sparklineIds('budget');
+
+  /**
+   * Cumulative spend over the period's buckets with the limit as a dashed
+   * line, in the Overview Usage chart's shapes and legend.
+   */
   private renderSpendChart(softLimit: number, hardLimit: number) {
     const chart = budgetSpendChart(
       this.series ?? this.summary?.requests_by_day,
@@ -618,53 +666,108 @@ export class BudgetHealthCard extends LitElement {
       this.series ? this.seriesPeriod : null
     );
     if (!chart) return nothing;
+    const height = SPARKLINE_HEIGHT;
+    const width = SPARKLINE_WIDTH;
     const over = hardLimit > 0 && chart.total >= hardLimit;
     const stroke = over
       ? 'var(--sl-color-danger-500)'
       : 'var(--sl-color-primary-500)';
+    const limit = hardLimit > 0 ? hardLimit : softLimit;
     const label = `Cumulative estimated spend ${this.formatCurrency(chart.total)}${
-      hardLimit > 0 ? ` against a ${this.formatCurrency(hardLimit)} limit` : ''
+      limit > 0 ? ` against a ${this.formatCurrency(limit)} limit` : ''
+    }${
+      chart.projectedTotal !== null
+        ? `, on a straight line to ${this.formatCurrency(chart.projectedTotal)} by the end of the period`
+        : ''
     }`;
+    const nowX = chart.nowX.toFixed(2);
+    const shapes = svg`<polygon
+        class="sparkline-area"
+        points=${`0,${height} ${chart.points} ${nowX},${height}`}
+        fill=${stroke}
+        opacity="0.12"
+      ></polygon>
+      <polyline
+        class="sparkline-line spend-line"
+        points=${chart.points}
+        fill="none"
+        stroke=${stroke}
+        stroke-width="1.5"
+        vector-effect="non-scaling-stroke"
+      ></polyline>
+      ${
+        chart.projectedPoints !== null
+          ? svg`<polygon
+              class="sparkline-projection-area"
+              points=${`${nowX},${height} ${chart.projectedPoints} ${width},${height}`}
+              fill="url(#${this.sparklineIdPair.hatch})"
+            ></polygon>
+            <polyline
+              class="sparkline-projection-line"
+              points=${chart.projectedPoints}
+              fill="none"
+              stroke="var(--sl-color-primary-400)"
+              stroke-width="1.5"
+              stroke-dasharray="4 3"
+              vector-effect="non-scaling-stroke"
+            ></polyline>`
+          : nothing
+      }
+      ${
+        this.series && chart.nowX < width
+          ? svg`<line class="sparkline-now" x1=${nowX} x2=${nowX} y1="0" y2=${height}
+              stroke="var(--sl-color-neutral-500)" stroke-width="1"
+              vector-effect="non-scaling-stroke"></line>`
+          : nothing
+      }
+      ${
+        chart.softY !== null
+          ? svg`<line class="soft-line" x1="0" x2=${width} y1=${chart.softY} y2=${chart.softY}
+              stroke="var(--sl-color-warning-500)" stroke-width="1" stroke-dasharray="2 2"
+              vector-effect="non-scaling-stroke"></line>`
+          : nothing
+      }
+      ${
+        chart.limitY !== null
+          ? svg`<line class="limit-line" x1="0" x2=${width} y1=${chart.limitY} y2=${chart.limitY}
+              stroke="var(--sl-color-neutral-500)" stroke-width="1" stroke-dasharray="4 3"
+              vector-effect="non-scaling-stroke"></line>`
+          : nothing
+      }`;
     return html`<div>
-      <svg
-        class="spend-chart"
-        viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label=${label}
-      >
-        <polygon
-          points=${`0,${CHART_HEIGHT} ${chart.points} ${CHART_WIDTH},${CHART_HEIGHT}`}
-          fill=${stroke}
-          opacity="0.12"
-        ></polygon>
-        <polyline
-          class="spend-line"
-          points=${chart.points}
-          fill="none"
-          stroke=${stroke}
-          stroke-width="1.5"
-          vector-effect="non-scaling-stroke"
-        ></polyline>
+      ${renderSparklineSvg(label, shapes, this.sparklineIdPair, 'sparkline spend-chart')}
+      <div class="sparkline-legend" data-testid="budget-chart-legend">
+        <span class="legend-item"
+          ><span class="legend-swatch" aria-hidden="true"></span>spent
+          ${this.series ? 'this period' : 'in this range'}</span
+        >
+        ${
+          chart.projectedTotal !== null
+            ? html`<span
+                class="legend-item"
+                title="Straight line from the spend so far to the end of the period"
+                ><span class="legend-swatch dashed" aria-hidden="true"></span
+                >projected</span
+              >`
+            : nothing
+        }
         ${
           chart.softY !== null
-            ? svg`<line class="soft-line" x1="0" x2=${CHART_WIDTH} y1=${chart.softY} y2=${chart.softY}
-                stroke="var(--sl-color-warning-500)" stroke-width="1" stroke-dasharray="2 2"
-                vector-effect="non-scaling-stroke"></line>`
+            ? html`<span class="legend-item soft-legend"
+                ><span class="legend-swatch soft" aria-hidden="true"></span>soft
+                limit ${this.formatCurrency(softLimit)}</span
+              >`
             : nothing
         }
         ${
-          chart.limitY !== null
-            ? svg`<line class="limit-line" x1="0" x2=${CHART_WIDTH} y1=${chart.limitY} y2=${chart.limitY}
-                stroke="var(--sl-color-neutral-500)" stroke-width="1" stroke-dasharray="4 3"
-                vector-effect="non-scaling-stroke"></line>`
+          limit > 0
+            ? html`<span class="legend-item limit-legend"
+                ><span class="legend-swatch limit" aria-hidden="true"></span
+                >${`${chart.softY !== null ? 'hard limit' : 'limit'} ${this.formatCurrency(limit)}${
+                  chart.limitOffChart ? ', above the chart' : ''
+                }`}</span
+              >`
             : nothing
-        }
-      </svg>
-      <div class="spend-chart-caption">
-        Cumulative spend
-        ${this.series ? 'this period' : 'in this range'}${
-          hardLimit > 0 || softLimit > 0 ? ', dashed line is the limit' : ''
         }
       </div>
     </div>`;
