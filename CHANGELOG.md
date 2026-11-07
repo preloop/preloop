@@ -159,7 +159,7 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
   on the client and the server, shows work item and issue cost as tabs with a
   full-screen toggle, draws the budget health chart like the Overview spend
   chart, and lists imported usage as titled sessions linked to agents and
-  sessions (#PR).
+  sessions (#2237).
 - The Overview Usage box moves the budget counting note into an info tooltip
   (#2171), distinguishes budget usage from spend estimates (#2101), and opens
   the Fleet Map as a full-screen surface (#2074). Fleet Map gains window
@@ -172,7 +172,7 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
   `docs/architecture/` (#2191).
 - `preloop agents discover` and `status` note that Cursor headless print mode
   fires no `stop` hook, so late operator notes are marked undeliverable (#2192).
-- `docker-compose.yml` passes SMTP settings from `.env` to the services that send email, and `.env.example` documents them (#PR).
+- `docker-compose.yml` passes SMTP settings from `.env` to the services that send email, and `.env.example` documents them (#2237).
 
 ### Fixed
 
@@ -214,7 +214,7 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
 - OTLP model-call span timestamps are UTC-correct (#2094).
 - Runner launch errors, duplicate runner logs and partial flow updates
   (#2138); attach teardown (#2233).
-- The session-keys index test no longer depends on planner cost ties (#PR).
+- The session-keys index test no longer depends on planner cost ties (#2237).
 
 ## [0.17.1] - 2026-10-21
 
