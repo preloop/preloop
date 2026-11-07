@@ -187,6 +187,7 @@ nav:
       - Delegated grants: guide/grant-introspection.md
       - Sensitive data: guide/sensitive-data.md
       - Account kill switch: guide/account-kill-switch.md
+      - Weekly report settings: weekly-report-v3.md
       - Operator notes: guide/operator-notes.md
       - Operator note verification: guide/operator-notes-smoke.md
       - Spawning workers: guide/spawning-workers.md
@@ -235,6 +236,7 @@ nav:
       - Webhook triggers: webhook-triggers.md
       - Flow execution: guide/flows/flow-execution.md
       - Persistent execution: guide/flows/persistent-execution.md
+      - Event-driven employees: guide/virtual-employees.md
       - Delegation:
           - Delegation with run_flow: guide/flows/flow-delegation.md
           - Delegation object shapes: guide/flow-delegation-shapes.md
@@ -249,6 +251,7 @@ nav:
           - Durable implementation feedback: guide/flows/durable-implementation-feedback.md
           - Issue readiness and completion audits: guide/flows/issue-lifecycle.md
           - Issue readiness policy: guide/flows/issue-readiness-policy.md
+          - Sampled ticket readiness: guide/ticket-readiness.md
           - Release backport: guide/flows/release-backport.md
           - Full-repo review: guide/flows/repo-review-presets.md
           - Portfolio review: guide/flows/portfolio-review.md
@@ -267,8 +270,10 @@ nav:
       - Trackers:
           - GitLab self-hosted: guide/gitlab-self-hosted.md
           - Bitbucket Cloud: guide/bitbucket-tracker.md
+          - Bitbucket Data Center: guide/bitbucket-data-center.md
           - Jira Cloud: guide/jira-tracker.md
           - Moving a GitHub repository: guide/github-repository-transfer.md
+          - Forge reconciliation: guide/forge-reconciliation.md
           - Bitbucket and Jira quickstart: guide/bitbucket-jira-quickstart.md
           - Jira repository binding: guide/flows/jira-repository-binding.md
 
@@ -289,6 +294,7 @@ nav:
       - Managing teams: guide/users/managing-teams.md
       - Accounts and CLI profiles: guide/accounts-and-profiles.md
       - Removing a member: guide/removing-members.md
+      - Single sign-on and SCIM: guide/users/single-sign-on.md
 
   - Self-hosting and operations:
       - Anthropic Enterprise hooks: operations/anthropic-inference-hooks.md
@@ -302,8 +308,10 @@ nav:
       - Upgrade acceptance: operations/upgrade-acceptance.md
       - Schema migrations: operations/schema-migrations.md
       - Database credentials: operations/database-credentials.md
+      - Credential storage upgrade: operations/credential-storage-upgrade.md
       - PgBouncer: operations/pgbouncer.md
       - Request rate limiting: operations/rate-limiting.md
+      - Durable audit delivery: operations/audit-outbox.md
       - Gateway memory: operations/gateway-memory.md
       - Gateway activity storage: operations/gateway-activity-storage.md
       - Reference sizing on AKS: operations/sizing-aks.md
@@ -330,6 +338,7 @@ nav:
       - OpenSSF Best Practices badge: security/openssf-best-practices.md
       - OpenSSF badge readiness (2026-09-10): OPENSSF_BEST_PRACTICES.md
       - Release verification: release-verification.md
+      - Release SBOM and audit gate: release-sbom-audit.md
       - Compatibility policy: compatibility.md
 
   - Reference:

@@ -7,423 +7,214 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (weekly reports)
+### Highlights
 
-- Weekly governance reports run deterministic checks by default, including fresh accounts, without model dispatch or analysis budget admission. Account and recipient report opt-outs remain supported.
-- Optional session analysis, AI usage policy summaries and exception synthesis share a global default (off in 1.0.0) and an audited account override: inherit, on or off. Account admins and platform admins can enable one account while the global default stays off. Model analysis is planned to return in 1.1.0.
-- Reports and settings identify disabled model analysis without pending-summary states or allowance prompts.
+Preloop 1.0.0 is the first release under the published
+[compatibility policy](docs/compatibility.md): the `/api/v1` REST API, the MCP
+endpoint, CLI commands and flags, webhooks and Helm values change only
+additively within a minor line, and a removal is deprecated at least one minor
+release ahead and ships no earlier than two minors later. The MCP server speaks protocol
+`2026-07-28` on the existing URLs and keeps older clients working. Stored
+credentials are encrypted at rest, API key scopes are enforced across REST and
+MCP, and upgrade acceptance from 0.17 is reproducible on Docker Compose and
+Helm. Open source
+now includes users, invitations and teams. Your own laptop can be a runner,
+with flows and remote sessions on your own agent seat, sleep and wake
+reporting and owner-approved sharing. Pull request reviews must be delivered
+to count as done, runs that keep failing stop early, and there are no built-in
+run ceilings. Preloop Cloud and Enterprise add single sign-on with SCIM
+provisioning. The console gains the Delivery Report, a terminal-like session
+view, Talk with live streaming, cost per work item and a faster Spend page.
 
-### Added
+### Breaking changes
 
-- Persisted global and per-account entitlement enforcement settings with atomic
-  actor/reason audit records. Optional billing hooks let gateway limits and
-  projected execution caps respect account exemptions; absent plugins retain
-  the environment fallback.
-
-- An internal artifact read-policy hook applies exact label and kind predicates
-  before search, pagination, facets, counts, byte reads, media reads and exports,
-  including artifact snippets in the session-search corpus.
-  Optional plugin request guards can impose read-only roles across transports.
-  Without a policy, existing artifact access behavior is unchanged.
-- Durable prepaid credit purchase CRUD with serialized Checkout attempts, atomic event receipts and grants, refund eligibility, cumulative reversals, and chargeback top-up suspension. `BILLING_PREPAID_CREDITS_ENABLED` defaults to false. Existing allowance consumption is unchanged.
-
-### Changed
-
-- **Breaking API change:** invitation creation, list, and detail responses
-  no longer include `token`. Clients should use invitation email delivery
-  and the resend endpoint to deliver acceptance links. The invitation
-  acceptance request still takes the token from the emailed link.
-
-- New guide [Your machine as a Preloop runner](docs/guide/runners/your-machine.md)
-  with an FAQ: what the runner offered at `preloop login` installs and
-  reports, flows and remote sessions on your own seat, presence and sleep,
-  and how to undo it. The login prompt links it. The README editions table
-  now lists the audit hash chain, retention, legal holds and signed exports
-  as open source, and `SECURITY.md` names the latest release line instead of
-  a fixed minor. Refs #1486.
-- Taking control of a desktop view requires another admin's approval when
-  another active member can decide approvals. Single-admin accounts still
-  self-confirm with a reason (#1567).
-
-- `preloop agents discover` and `preloop agents status` print an
-  `Operator notes:` line for Cursor: headless `--print` runs of Cursor CLI
-  `2026.10.01-e373342` fire no `stop` hook, so a session note queued after the
-  last tool call is marked undeliverable at session end instead of being
-  rescued. The operator-note guide and verification guide record the evidence
-  (#1684).
-- `ARCHITECTURE.md` is a short map again. Subsystem notes that had grown
-  in it moved, unchanged, into chapters under `docs/architecture/`, with six
-  new chapters (runners, identity, chat, discovery, telemetry, operations).
-  Every chapter is in the docs.preloop.ai navigation, and a test keeps the
-  map short and every chapter linked from it and the navigation (EE #83).
-- The Overview Usage box no longer shows the paragraph on how budget usage
-  is counted. A small info icon next to the first budget number shows it in
-  a tooltip on hover, keyboard focus or tap; Escape or a tap elsewhere
-  closes it.
+- Invitation create, list and detail responses no longer include `token`.
+  Deliver acceptance links by email and use the resend endpoint; acceptance
+  still takes the token from the emailed link (#2199).
+- There are no built-in default run ceilings. A flow runs without a token,
+  turn or cost ceiling unless it sets `agent_config.limits` or the operator
+  sets `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
+  `PRELOOP_DEFAULT_MAX_USD`. The Pull Request Reviewer preset's own ceilings
+  are 100,000,000 tokens and 1000 turns, USD stays at 50 (#2139, #2140).
+- A flow's `runner_pool` no longer reaches another member's personal runner
+  unless the flow author is its registrant, an account admin, or holds a
+  `flows` grant, the same rule as pinning `agent_config.runner_id`. Without the
+  RBAC plugin every member is an admin, so routing changes only when roles are
+  enabled (#2182).
+- `apply` rejects a `sensitive_data` scope that names an unknown server
+  instead of silently matching nothing; `skip_missing_servers` turns it into a
+  warning (#1994).
+- Stored model gateway calls, on sessions and on flow execution logs, keep
+  only the messages each call added plus the response, bounded by
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8 MB). The console
+  stitches the conversation back together. An hourly maintenance task compacts
+  older rows; flow log compaction is opt-in with
+  `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` (#2013, #2041, #2132).
+- Scoped API keys keep their scopes through MCP: discovery and reads need
+  `mcp:read`, tool calls need `mcp:write` (#2004).
 
 ### Added
 
-- Atomic hosted spending can reserve monthly allowance first, then prepaid
-  credit, with FIFO purchase consumption, durable holds and a -$1.00 settlement
-  floor. Existing callers and zero-credit accounts retain the current allowance
-  and exhaustion behavior. The split is inert until credit grants exist and
-  the caller explicitly enables credit accounting.
-
-- Runner sharing console: manage grants in a dialog, select per-session owner
-  approval, and identify shared runners and their owners in session and flow
-  pickers. Owner notices reach the console bell and runner host; session
-  dialogs show approval waiting and stop polling when closed. Sharing controls
-  remain hidden without the server capability.
-- Add generic request-aware runner consent, audit-backed owner notices, and a
-  share approval mode that preserves per-request consent for existing grants.
-
-- The retention purge can also sweep the two high-volume tables it did not
-  cover: flow execution log lines (following the account's evidence
-  retention, keeping the execution summary row and every line of a held
-  execution) and account events (following usage retention and the plan's
-  storage promise). Off by default behind its own switch,
-  `RETENTION_PURGE_HIGH_VOLUME_ENABLED`, on top of `RETENTION_PURGE_ENABLED`;
-  `RETENTION_PURGE_DRY_RUN` previews it. Refs preloop-ee#46.
-
-- Shared request rate limiting for password login, token refresh, password
-  reset, registration, the OAuth token, register and authorize endpoints and
-  public approval links. Counters live in the new `rate_limit_bucket` table
-  so every API replica shares one budget; refusals are 429 with
-  `Retry-After` and code `rate_limited`. Configure with `RATE_LIMIT_*`
-  variables, see docs/operations/rate-limiting.md.
-- Personal runners report sleep and wake. On Linux with systemd-logind the
-  runner sends `going_to_sleep` before suspend under a short sleep delay and
-  stops heartbeating, so the console shows `asleep` and routing skips it. On
-  every host the runner detects wake from a wall-clock gap between samples
-  (at least 25 seconds between checks scheduled every 5 seconds) and
-  reconnects at once with the backoff reset. Sleep notifications expire when
-  their sleep delay is released, so a short suspend cannot replay them on
-  the new connection. Heartbeats carry `os_idle_seconds` on macOS and
-  Windows, which drives the `idle` state. macOS and Windows have no
-  pre-sleep signal in this build and fall back to `offline`. Refs #1487, #1507.
-- Browser adapters find their runtime session without
-  `PRELOOP_RUNTIME_SESSION_ID`. Gateway model responses (OpenAI, Anthropic,
-  Gemini; streaming too) carry `X-Preloop-Runtime-Session-Id` when the request
-  was attributed to a session, and the new
-  `GET /api/v1/runtime-sessions/resolve?client_session_id=<key>` maps the
-  `X-Preloop-Session-Id` key to the session with the gateway's keying, scoped
-  to the caller's account; `create=true` creates it as the gateway would. The
-  Browser Use reporter resolves `PRELOOP_SESSION_ID` and offers an `httpx`
-  hook for the header; the Skyvern importer takes `--client-session-id`.
-  The old variable keeps priority. Refs #1358.
-- Extension points for runner sharing. The runner session API passes the
-  requested harness, workspace and operation to the account authorizer; a
-  caller admitted through a grant sees only the harnesses and directories
-  the grant covers and only their own sessions. A start consent waiver hook
-  can lift the per-start owner approval. Flow pinning and harness options
-  ask a `runner:flow_use` action, and the lease passes the pinned runner,
-  harness and directory with `runner:accept`. Each runner heartbeat
-  re-checks live sessions started by someone other than the owner and stops
-  those no longer allowed. New `runner_share_grant` and
-  `runner_sharing_policy` tables hold grants and the owner consent policy.
-  The console shows a runner sharing panel when the server reports the
-  `runner_sharing` capability. Without a plugin, runners stay owner or
-  account admin only.
-- Apply the current sensitive-data rules to rows that were stored before a
-  rule was installed or tightened: `preloop policy apply-stored`, `POST
-  /api/v1/policies/sensitive-data/apply-to-stored` (account admins) and
-  `python -m preloop.services.sensitive_data.stored_rows`. Covers audit row
-  tool content, decided approval requests, the session timeline and the
-  session search index. Dry run by default, batched, resumable and
-  idempotent; legal holds and pending approvals are skipped. Each batch that
-  changes rows records a `redaction_applied` audit event with rule ids and
-  counts, never content. Rewritten sealed audit rows keep their `row_hash`
-  and record `redacted_row_hash` and `redaction_event_id`; the server
-  verifier and `preloop audit verify` accept such a row only when its event
-  lists it with that hash, and report `redacted_rows`. Migration
-  `20261124_audit_row_redaction` adds the three nullable `audit_log`
-  columns. See `docs/guide/sensitive-data.md#apply-rules-to-stored-rows`.
-- Operators can rotate an AI model credential with
-  `POST /api/v1/ai-models/{model_id}/credentials/rotate`, sending a new
-  `api_key` or a new Vault/OpenBao `external_ref`. The secret is replaced in
-  place for every model that shares it, verified before it is saved, and
-  recorded in the audit log without the key. Credential secrets now carry a
-  `version` and `rotated_at`, shown on models as `credentials_version` and
-  `credentials_rotated_at`.
-- The console's SCIM token form asks which single sign-on connection the
-  token provisions for. The choice is required when the account has more
-  than one connection and preselected when it has one; the form is disabled
-  until a connection exists. The token list shows each token's connection,
-  the one-time token message names it, and tokens that are not bound to a
-  connection are marked for replacement with a note that they cannot
-  provision. Token creation from the console previously omitted the
-  connection and was rejected by the server.
-- Hosted Codex runs as the unprivileged `preloop-agent` user. Root writes the
-  Codex configuration, the `PreToolUse` hook and its trust state first; the
-  agent cannot overwrite or remove the hook CLI, `hooks.json` or
-  `config.toml`, so the hook checks every command in the run. Workspaces,
-  the agent's home and caches stay writable. The runtime credential stays
-  out of shell commands' reach: Codex and the hook run from execute-only
-  binaries whose environment the agent user cannot read, and root's own
-  credentials are removed from Codex's environment. Before its post-run git
-  steps, root takes the workspace back, restores the git config and removes
-  hooks, so nothing the agent planted runs as root. The universal
-  image adds the user and checks the language smoke as that user; hosted
-  runs use it once the hosted image pin moves to an image built with it.
-  See `docs/security/agent-isolation.md`.
-- Upstream MCP requests identify Preloop. Every request to an upstream MCP
-  server carries `User-Agent: Preloop/<version>`, and the session that serves
-  a proxied tool call carries `X-Preloop-Correlation-Id` with the same
-  `correlation_id` as the audit rows for that call. A server can opt in to
-  `X-Preloop-Instance` (a stable, non-secret per-installation id, overridable
-  with `PRELOOP_INSTANCE_ID`) with `auth_config.send_instance_id: true`, or
-  remove all three headers with `auth_config.send_identity_headers: false`.
-- Helm values for enterprise single sign-on on the API: `sso.enabled`
-  (`ENTERPRISE_SSO_ENABLED`), `sso.publicUrl` (`SSO_PUBLIC_URL`, origin of the
-  OIDC redirect URI and SAML SP URLs) and `sso.allowPrivateIssuers`
-  (`GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`, the core setting shared with gateway
-  identity providers). The open-source image ignores the first two.
-- Private-runner Codex and Claude Code host runs are metered per execution.
-  The control plane delivers a signed execution marker with each host job and
-  the runner sends it as `X-Preloop-Execution` on the onboarded CLI's gateway
-  requests (Codex: a per-run override on its Preloop model provider, with the
-  value hidden from shell commands; Claude Code: `ANTHROPIC_CUSTOM_HEADERS`).
-  The gateway attributes those requests to the flow execution as well as the
-  agent and enforces the flow's run limits on them; results record the real
-  `gateway_metered` and `gateway_request_count`. A run that produced model
-  output with no gateway request fails with the new `gateway_bypassed`
-  category, unless the flow sets the break-glass
-  `agent_config.allow_unmetered_host_model: true` (never in read-only review).
-  For Claude Code the runner also reports the exact model call count
-  (`cli_model_calls`); CLI calls that exceed the gateway rows by more than 2
-  calls and more than 20% fail the run as a partial bypass. Codex exposes no
-  per-request count and keeps the at-least-one rule. `gateway_call_check`
-  names the rule that applied.
-- Hosted Codex containers install the Preloop `PreToolUse` hook (from the
-  image CLI, or a pinned checksum-verified release) and trust it through
-  Codex's own `hooks/list` hash, so deny rules block native commands and
-  approval-required rules park the run with the execution's runtime
-  credential. Hosted Codex runs with approval-required rules are no longer
-  refused with `approval_unavailable`; that category now means the hook could
-  not be installed, or the hosted harness has none. The universal Codex image
-  ships the CLI at `/opt/preloop/bin/preloop`.
-- Removing or deactivating a member now revokes that member's access to the
-  account in one transaction: sessions and tokens, CLI sessions, MCP OAuth
-  tokens, team memberships, personal API and runtime keys, and runners they
-  registered. An `access.revoked` audit event records the counts. The same
-  person's other account memberships are unaffected. Account-owned CI and
-  managed-agent credentials keep working; `GET /api/v1/users/{id}/machine-credentials`
-  lists the ones the member created. Reactivation re-enables the membership
-  only and writes `access.restored`.
-- Restricted CI flows can opt into `git_clone_config.publication_mode: read_only`
-  for native checkout of the admitted commit using an exact-repository, read-only
-  GitHub App lease. Review workers can use inference and their own evidence upload,
-  but cannot use MCP, account/runtime administration, push, or publish. Publication
-  requires a separate trusted publisher.
-- Read-only native review also runs on a private runner pool with a Codex
-  `host_exec_profile`, so the runner user's Preloop-onboarded Codex (for
-  example with a ChatGPT subscription) serves the review through the gateway. The runner clones the admitted SHA with the
-  delivered read lease only (host git config and credential helpers disabled),
-  revokes the lease before starting `codex exec --sandbox read-only`, and
-  reports a receipt the control plane requires for success. Runners advertise
-  the `host_read_only_review` profile capability; older runners are not assigned
-  this work.
-- **Use from my flows.** The owner of a Codex or Claude subscription model can
-  let flows they own use it from hosted executions (console switch on the
-  model page, `preloop models flow-use <id> on`, or
-  `PUT /api/v1/ai-models/{id}/owner-flow-use`). Admission and the gateway
-  accept the selection only when the flow's owner (`created_by_user_id`, now
-  recorded on new flows) is the subscription's owner; other users' flows and
-  other agents stay refused, and the onboarded agent's bindings and sign-in are
-  untouched. Usage is attributed to the execution with
-  `meta_data.subscription_use: "owner_flow"`.
+- **Protocol.** MCP protocol `2026-07-28` on `/mcp` and
+  `/mcp/v1` with MCP SDK 2.3 and FastMCP 4, keeping `2024-11-05` through
+  `2025-11-25` clients working (#2008). A server-version diagnostic header and
+  centralized REST prefixes (#2002, #2053). MCP tool annotations and catalog
+  listing metadata (#1969).
+- **Users, invitations and teams in open source.** Every active member manages
+  the account; roles, owner protection and seat policies come from the
+  commercial plugins (#1874). Removing or deactivating a member revokes their
+  sessions, tokens, CLI and MCP grants, team memberships, personal keys and
+  runners in one transaction, recorded as `access.revoked` (#2150).
+- **Single sign-on and SCIM (Cloud and Enterprise).** OIDC and SAML connections,
+  verified domains, group to team mapping, tested enforcement and owner
+  recovery in the console; SCIM tokens bound to one connection; Helm values
+  `sso.enabled`, `sso.publicUrl` and `sso.allowPrivateIssuers`. The login page
+  asks for an email first only when single sign-on is configured (#2058,
+  #2121, #2122, #2123, #2124, #2125, #2149, #2152, #2161, #2175).
+- **Personal runners.** Guide and FAQ for using your machine as a runner,
+  linked from the `preloop login` prompt (#2181). Runners report sleep and
+  wake and OS idle time (#2195). Runner sharing: grants, per-start owner
+  approval and owner notices in the console, on top of new extension points
+  and tables (#2171, #2222). Runner-served local models answer Codex Responses
+  requests (#2212).
+- **Private-runner runs through the gateway.** Codex and Claude Code host runs
+  are metered per execution with a signed marker; a run with model output and
+  no gateway request fails with `gateway_bypassed` (#2140). Read-only native
+  reviews run on private runner Codex profiles (#2130) and on restricted CI
+  with a read-only GitHub App clone (#2115, #2127, #2136).
+- **Hosted Codex governance.** The Preloop policy hook runs in hosted Codex
+  containers, Codex runs as an unprivileged user that cannot change it, and
+  approval-required rules park the run on an approval instead of being
+  refused (#2141, #2145, #2155, #2165).
+- **Approvals pause unattended runs.** A native command that matches a
+  `require_approval` rule parks the execution on an approval request and
+  resumes with that command allowed once; refusal or expiry fails with
+  `approval_denied` or `approval_timeout` (#2137, #2144).
+- **Use from my flows.** A subscription owner can let flows they own use their
+  Codex or Claude subscription from hosted runs (#2131).
+- **Delivery Report.** A flow preset, console collection and report page,
+  account policy with per-repository overrides, tracker actions, email
+  distribution with recipient management, and reopen requests for measured
+  misses (#2026, #2032, #2038, #2039, #2049, #2050, #2059, #2077, #2078, #2079,
+  #2081, #2082, #2120, #2170). Agent decisions and a change brief are recorded
+  from implementation and review runs (#2030). Copilot coding agent and
+  external pull requests enter the pull request record (#2027, #2048).
+- **Review delivery check.** A reviewer flow can require that the code host
+  accepted its review (`git_clone_config.review_publication.required`); runs
+  without a receipt fail with `review_publication_incomplete`. It is a
+  per-flow opt-in, never inherited from the preset (#2186, #2207).
+- **Repairs when main is red.** Review findings still get a repair turn when
+  every failing check also fails on the base commit, and the pull request gets
+  one comment saying why the thread stopped (#2187).
+- **Sessions.** The Requests tab reads like the terminal, with search and
+  Copy as text, and pages long histories 100 turns at a time (#1986, #2055,
+  #2230). Session recordings follow the timeline (#1999). One agent state and
+  status vocabulary everywhere (#1989).
+- **Talk.** Lines go to the session they are typed in, the open turn streams
+  live, and the input supports Esc, history, slash commands and Y/N on
+  approvals (#1987, #1988, #2051, #2052, #2057). Codex live terminal driver
+  over the shared app-server (#1990).
+- **Desktops.** Taking control of a desktop view needs another admin's
+  approval when one can decide; agents can enable a desktop from the console
+  through Agent Control; sessions link to their desktop (#2196, #2197, #2198).
+- **Cost.** Cost per work item: spend per issue and pull request, grouped and
+  split so nothing is counted twice (#2234). Agent spend totals are stored
+  instead of rescanned (#1993, #2043). Atomic prepaid credit purchases and
+  allowance-then-credit spending for hosted billing, off by default (#2219,
+  #2225). Audited global and per-account entitlement enforcement settings
+  (#2220).
+- **Sensitive data on stored rows.** `preloop policy apply-stored` and
+  `POST /api/v1/policies/sensitive-data/apply-to-stored` apply current rules to
+  audit rows, approvals, timelines and the search index without breaking the
+  audit chain (#2164).
+- **Security.** Stored credentials encrypted at rest, with a column audit in
+  `docs/security/credentials-at-rest.md` (#1997, #2153). Operator rotation of
+  AI model credentials (#2169). Shared rate limiting for login, token,
+  registration, OAuth and public approval endpoints (#2188). Optional artifact
+  label scopes across every read path (#2224). Audit intents are atomic with
+  approval and policy writes (#1998), and final password and passkey outcomes
+  are audited (#2119).
+- **Operations.** Retention purge can sweep flow execution log lines and
+  account events (#2201). Optional CNPG PgBouncer pooler in Helm (#2168).
+  Reproducible Compose and Helm upgrade acceptance (#2007). Release images
+  carry SBOMs and provenance attestations, with a release rehearsal run (#2005,
+  #2160). `server.json` is published to the MCP registry on release (#2014).
+- **Integrations.** Browser adapters discover their runtime session from a
+  gateway header and a resolve endpoint (#2194). Upstream MCP requests identify
+  Preloop with `User-Agent`, a correlation id and an opt-in instance id
+  (#2151). Upstream MCP OAuth connection lifecycle (#2000). Issue text reaches
+  issue-triggered flows as data (#2028). Execution snapshots and bounded
+  lifecycle streams (#2128). Explicit grants for reusing a completed human
+  review (#2129).
+- **Weekly reports** run deterministic checks by default; model analysis is
+  off by default with an audited per-account override (#2223). Storage and
+  routes for the factual weekly exception digest (#2154).
+- **Telemetry.** New `gen_ai.client.token.usage` and `preloop.usage.cost`
+  metrics, a Gigapipe destination section, and Compose forwards `OTLP_*` to the
+  `api` and `gateway` services (#2094).
 
 ### Changed
 
-- No built-in default run ceilings. A flow runs without a token, turn or
-  cost ceiling unless it sets `agent_config.limits`, or the operator sets
-  `PRELOOP_DEFAULT_MAX_TOTAL_TOKENS`, `PRELOOP_DEFAULT_MAX_TURNS` or
-  `PRELOOP_DEFAULT_MAX_USD`, which become the instance default (a run they
-  stop fails `default_limit_reached`). The 2,000,000-token built-in default
-  stopped legitimate PR reviews, which use 2 to 13 million tokens. The flow
-  page shows "None" with a hint when no ceiling applies.
-- The Pull Request Reviewer preset's own ceilings are 100,000,000 tokens and
-  1000 turns (were 2,000,000 and 300); USD stays at 50, which an expensive
-  model can reach first.
-- A run the gateway stopped at a run limit keeps `default_limit_reached` or
-  `budget_exceeded` and the limit message, even when the agent then fails on
-  a checkpoint or capture call refused because the execution was closed.
-- Docs: private-runner Codex review keeps the Preloop-onboarded Codex
-  configuration; a separate `CODEX_HOME` without the Preloop model provider
-  is no longer described, because it bypasses the gateway.
-
-### Telemetry
-
-- **OTLP model-call span timestamps are UTC-correct.** `ApiUsage.timestamp`
-  is a naive UTC column; the exporter read it as host local time, so chat
-  spans were shifted by the host UTC offset on processes not running in UTC.
-  The timestamp is now read as UTC. It is written when the call completes, so
-  it stays the span end, with start = end - duration.
-- **New metric `gen_ai.client.token.usage`** (experimental, GenAI semconv):
-  histogram in `{token}` with GenAI semconv bucket boundaries (1 to 4^13),
-  one point per model call for
-  `gen_ai.token.type=input` and `output`, with the same operation, provider
-  and model dimensions as `gen_ai.client.operation.duration`.
-- **New metric `preloop.usage.cost`** (stable): counter in `USD` of the
-  recorded cost per model call.
-- OTLP guide: Gigapipe destination section.
-- **Docker Compose forwards `OTLP_*` from `.env`** to the `api` and `gateway`
-  services in `docker-compose.yml` and `docker-compose.release.yaml`; export
-  stays off unless `OTLP_ENABLED=true` and `OTLP_ENDPOINT` is set.
-
-### Breaking or behavior changes
-
-- **Flow runs store model calls slim too.** The `model_gateway_call` rows a
-  flow run writes to `flow_execution_log` carried the whole replayed
-  conversation on every call, like session activity rows did. They are now
-  stored in the same slim form, under the same
-  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` cap; the live event is unchanged
-  and the flow Transcript tab rebuilds the conversation by message position.
-  Rows from older releases are compacted by the existing maintenance task
-  when `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` is set (off by default), or by
-  hand with `python -m preloop.services.gateway_activity_maintenance
-  --flow-logs`.
-
-- **Stored model gateway calls keep only what each call added.** A
-  `model_gateway_call` row in `runtime_session_activity` used to store the
-  whole conversation the call replayed, so storage grew with the square of
-  session length. It now stores the messages new to that call, with their
-  original positions, plus the response, bounded by
-  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 8388608). The console
-  stitches the conversation back together across a session's rows. An hourly
-  maintenance task, `maintain_gateway_activity`, compacts rows written by
-  older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,
-  on by default) and, when `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` is set,
-  removes conversation content older than the account's plan history window.
-  See the Gateway activity storage operations page.
-
-- **`apply` rejects a `sensitive_data` scope server it does not know.** A tool
-  rule or `reference_only` entry whose `scope.servers` names a server that is
-  neither in the file's `mcp_servers` nor configured in or shared with the
-  account matched no call, so a deny rule or reference-only entry applied to
-  nothing. `apply` now returns an error, as it does for a tool on an unknown
-  server. `skip_missing_servers` turns it into a warning and keeps the entry
-  (#1426).
-
-- **A flow's `runner_pool` no longer reaches another member's personal
-  runner.** A pool naming a runner's id, name or label used to lease work to
-  any runner in the account, gated only by the owner's flow consent. A
-  runner registered by a member who is not an account admin now takes a
-  pool-routed lease only when the flow author is its registrant, an account
-  admin, or holds a `flows` grant through the authorizer (`runner:flow_use`
-  with `operation=lease`), the same rule as pinning `agent_config.runner_id`.
-  Admin-registered and registrant-less runners, the `auto` and `server`
-  pools, and flows with no recorded author (including one whose author was
-  hard deleted) are unchanged. A refused runner counts as unavailable for
-  harness routing, so `harness_fallback: fallback_server` applies. Without
-  the RBAC plugin every member is an account admin, so this changes routing
-  only when roles are enabled (#2176).
-
-- **A pull request review that was not delivered fails the run.** The Pull
-  Request Reviewer preset now sets `git_clone_config.review_publication.required`,
-  and reviewer flows created from it inherit the setting. Such a run
-  succeeds only when the MCP `update_pull_request` tool recorded a
-  `review_publication_receipt` for a review the code host accepted on the
-  triggering pull request and head commit. The agent's `review_posted`
-  claim, the success line and a zero exit code no longer turn an
-  undelivered review green; the run fails with
-  `review_publication_incomplete` and keeps its report. `result.review_publication`
-  records `published`, `already_reviewed` or `not_published`. A flow can opt
-  out with `review_publication: {required: false}`. New
-  `review_publication_receipt` table (EE #202).
+- The cost page renders each card as its data arrives, caches closed periods
+  on the client and the server, shows work item and issue cost as tabs with a
+  full-screen toggle, draws the budget health chart like the Overview spend
+  chart, and lists imported usage as titled sessions linked to agents and
+  sessions (#PR).
+- The Overview Usage box moves the budget counting note into an info tooltip
+  (#2171), distinguishes budget usage from spend estimates (#2101), and opens
+  the Fleet Map as a full-screen surface (#2074). Fleet Map gains window
+  evidence, users scope and pull request state (#1959, #1960, #1972, #1973,
+  #2084, #2126).
+- Spend, Plan and User detail pages paint progressively with one range control
+  per page (#2062). Console times show relative ages (#2060). Agent, Talk,
+  tool filter and execution pages work on phones (#2202, #2205).
+- `ARCHITECTURE.md` is a short map again, with subsystem chapters under
+  `docs/architecture/` (#2191).
+- `preloop agents discover` and `status` note that Cursor headless print mode
+  fires no `stop` hook, so late operator notes are marked undeliverable (#2192).
+- `docker-compose.yml` passes SMTP settings from `.env` to the services that send email, and `.env.example` documents them (#PR).
 
 ### Fixed
 
-- Production incident 2026-11-04: the review publication gate (EE #202) is a
-  per-flow opt-in again. `git_clone_config.review_publication.required` is
-  read from the flow only and is no longer inherited from its source preset,
-  so the deploy-time preset catalog refresh cannot switch a fail-closed gate
-  on for existing reviewer flows. Every flow derived from the Pull Request
-  Reviewer preset had failed with `review_publication_incomplete: no_receipt`
-  after delivering its review, because the API still ran a build without the
-  receipt-writing MCP tool while the workers already enforced the receipt.
-  The `preset_lookup_failed` reason is gone with the lookup.
-
-- The Responses gateway accepts more than one output for the same tool call
-  within a tool turn, as Codex records when an `exec` cell yields and later
-  calls `notify()`. Later outputs are appended to that call's tool result in
-  order, so both the running acknowledgement and the final result reach the
-  model. Outputs for unknown calls, or for a call answered in an earlier tool
-  turn, are still rejected. Fixes #2173.
-
-- Runner-served local models now accept streaming and nonstreaming Responses
-  requests from clients such as Codex CLI. The gateway reuses chat-completions
-  translation for MCP namespace tools, freeform tools, output limits and usage,
-  and cancels runner work when a Responses client disconnects. Transport limits
-  and the refusal of unsupported non-chat operations remain in place.
-
-- The Delivery Report turns a follow-up proposed for a closed issue whose
-  criterion is shown not met into a reopen request at the issue's closing
-  merge SHA, so a measured miss is reported as a reopen, not as new work. The
-  platform also labels dependency bumps and docs-only changes as
-  metadata-only when the run leaves the label out. A test on the first
-  measured week checks that the summary and the rendered report state the
-  same counts, computed from the structured output.
-
-- **Rules that require approval now pause unattended flow runs.** On a private
-  runner host profile, a native command matching a `require_approval` rule used
-  to hold the hook for the workflow timeout and, when refused or expired, only
-  denied that command while the run carried on. The command now does not run;
-  the execution parks on a normal approval request linked to it (flow window,
-  console, notifications, audit), resumes on approval with that exact command
-  allowed once, and fails closed with the new `approval_denied` or
-  `approval_timeout` category otherwise. Hosted container runs, which have no
-  native command hook yet, are refused before launch with
-  `approval_unavailable` when such a rule applies, instead of running ungated.
-
-- Stored model gateway call rows no longer lose the call's own content when
-  they exceed `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES`. The response, the
-  messages the call added and the last user message are always kept, and the
-  `request` and `response` keys are never removed. Long text is cut in the
-  middle with a `[... truncated N chars ...]` marker (head and tail kept,
-  `MODEL_GATEWAY_ACTIVITY_TRUNCATE_KEEP_CHARS`, default 2048), largest tool
-  outputs first and the response last. The default cap rises from 32768 bytes to
-  8 MB (8388608), a guard against runaway payloads rather than a size
-  budget; normal calls are stored whole. `body_compaction` records every step, and the session views
-  show a Truncated badge on cut text. Rows already stored under the old cap
-  keep what they lost. Applies to flow execution logs too.
-- Subscription logins no longer break when the local client and the Preloop
-  gateway both hold one single-use refresh lineage (`refresh_token_reused` from
-  OpenAI, `invalid_grant` from Anthropic). The CLI now reconciles Claude Code's
-  login (macOS Keychain or `~/.claude/.credentials.json`) with Preloop's copy in
-  both directions, like Codex; the reconcile also runs from the session hook
-  (`SessionStart`, `UserPromptSubmit`) before the first model call, not only on
-  tool hooks; `preloop agents sync-credentials "Claude Code"` is accepted; the
-  gateway refreshes subscription OAuth 10 minutes before expiry (was 60 s) so
-  it rotates ahead of the clients; and the refresh-failure message names
-  `preloop agents sync-credentials` as the first recovery step. An upstream
-  401 on a Claude Code subscription model now returns that recovery message
-  instead of the raw "OAuth access token has been revoked" text. Follow-up (not
-  in this release): a server-side background refresh for idle bundles.
-
-- **Paging stored gateway payloads no longer serialises every row to measure
-  it.** The byte-budgeted payload reader computed
-  `octet_length(metadata::text)` per candidate row, which detoasts and
-  serialises the whole value. `runtime_session_activity` now has a nullable
-  `metadata_bytes` column, set on every write, and the reader uses it, falling
-  back to the old measurement only for rows not yet filled in. The migration
-  adds the column only; the hourly `maintain_gateway_activity` task fills
-  older gateway call rows in bounded batches
-  (`GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED`, on by default).
-
-- **Generated policies no longer set `defaults` that `apply` rejects.** The
-  policy-generation prompts asked for `unknown_tools: deny` or
-  `require_approval` (the audit-log prompt always asked for
-  `require_approval`), which `preloop policy apply` refuses. The prompts now
-  leave `defaults` out and show a `sensitive_data` rule scoped to one MCP
-  server, with a CEL allowlist, for deny-by-default; the audit-log prompt's
-  version requires approval through a workflow it defines. A generated
-  `defaults` block that `apply` would reject goes back to the model with the
-  error. Because `apply` replaces the whole `sensitive_data` block,
-  generation puts back the stored detectors, rules and `reference_only`
-  entries that the model leaves out. Audit-log generation now runs the same
-  merge as prompt generation. The policy-as-code reference and the schema
-  now say that `inherit_from_parent` is not used (#1426).
+- The review publication gate no longer switches on for existing reviewer
+  flows when the preset catalog refreshes (#2207).
+- A run whose model calls keep failing identically stops with
+  `repeated_upstream_failure` instead of retrying until its timeout (#2184).
+- A run stopped at a run limit keeps `default_limit_reached` or
+  `budget_exceeded` even when a later call is refused (#2140).
+- The Responses gateway accepts several outputs for one tool call, as Codex
+  sends (#2174).
+- Subscription logins stay in sync between Claude Code, Codex and the gateway,
+  which refreshes 10 minutes before expiry (#2135).
+- Stored gateway rows keep the call's own content when they hit the byte cap,
+  and payload paging uses a stored size instead of detoasting rows (#2042,
+  #2132).
+- Generated policies only set `defaults` that `apply` accepts (#1994).
+- The execution transcript is read a bounded page at a time (#2183), and the
+  execution list, realtime views and detached views no longer race or restart
+  (#2203, #2216, #2226).
+- Faster agent, Overview and session reads (#1991, #1992, #2009, #2035, #2046,
+  #2116, #2200, #2204) and fewer workspace archive reads (#2214, #2227, #2229,
+  #2231).
+- Migrations run data backfills after the deploy and keep legacy credential
+  columns during a rolling upgrade (#2012, #2067). Redundant `api_usage`
+  indexes are dropped (#2011).
+- Gateway connection holds, pool exhaustion, liveness recovery and the NATS
+  lease during maintenance (#2010, #2044, #2056, #2066).
+- MCP: legacy JSON-RPC servers connect, failed scans are reported, sessions
+  and configuration diagnostics align, and hosted Codex MCP routing works
+  (#2097, #2210, #2213).
+- Codex: completion outcomes, pinned metadata for custom models and native
+  tool counts (#1984, #1985, #2102, #2109). OpenRouter reasoning and output
+  caps are kept (#2093).
+- Forge pull request state distinguishes merged from closed (#2045, #2080).
+- Webhook target policy applies throughout delivery, and role lists are scoped
+  to the account (#2003).
+- Approval recovery, provider discovery and form feedback (#2215, #2228).
+- OTLP model-call span timestamps are UTC-correct (#2094).
+- Runner launch errors, duplicate runner logs and partial flow updates
+  (#2138); attach teardown (#2233).
+- The session-keys index test no longer depends on planner cost ties (#PR).
 
 ## [0.17.1] - 2026-10-21
 
