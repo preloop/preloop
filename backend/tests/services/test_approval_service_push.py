@@ -93,7 +93,7 @@ class TestSendPushNotification:
             # Return a future that resolves to the function result
             future = asyncio.Future()
             # We need to mock what the function returns (approvers, ios_tokens, android_tokens)
-            future.set_result(([user_id_1], [(user_id_1, "a" * 64)], []))
+            future.set_result(([user_id_1], [(user_id_1, "a" * 64, None)], []))
             return future
 
         with patch(
@@ -130,7 +130,7 @@ class TestSendPushNotification:
             future.set_result(
                 (
                     [user_id_1, user_id_2],
-                    [(user_id_1, "a" * 64), (user_id_2, "b" * 64)],
+                    [(user_id_1, "a" * 64, None), (user_id_2, "b" * 64, None)],
                     [],
                 )
             )
@@ -230,7 +230,7 @@ class TestSendPushNotification:
             future.set_result(
                 (
                     [user_id_1, user_id_2],
-                    [(user_id_1, "a" * 64), (user_id_2, "b" * 64)],
+                    [(user_id_1, "a" * 64, None), (user_id_2, "b" * 64, None)],
                     [],
                 )
             )
@@ -266,7 +266,7 @@ class TestSendPushNotification:
             import asyncio
 
             future = asyncio.Future()
-            future.set_result(([user_id_1], [(user_id_1, "   ")], []))
+            future.set_result(([user_id_1], [(user_id_1, "   ", None)], []))
             return future
 
         with patch(
@@ -320,7 +320,7 @@ class TestSendPushNotification:
             future.set_result(
                 (
                     [user_id_1, user_id_2],
-                    [(user_id_1, "a" * 64), (user_id_2, "b" * 64)],
+                    [(user_id_1, "a" * 64, None), (user_id_2, "b" * 64, None)],
                     [],
                 )
             )
@@ -450,7 +450,7 @@ class TestSendPushNotification:
             future.set_result(
                 (
                     [user_id_1, user_id_2],
-                    [(user_id_1, "a" * 64), (user_id_2, "b" * 64)],
+                    [(user_id_1, "a" * 64, None), (user_id_2, "b" * 64, None)],
                     [],
                 )
             )

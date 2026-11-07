@@ -76,6 +76,30 @@ Available on iPhone, iPad, Apple Watch, and Android.
 
 See [Mobile Apps](../clients/mobile-apps.md) for the full setup flow.
 
+### Server configuration for iOS push
+
+A self-hosted server sends iOS pushes either with its own APNs key or
+through the hosted push proxy.
+
+With your own key, set `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_AUTH_KEY` (or
+`APNS_AUTH_KEY_PATH`) and, if you ship your own build, `APNS_BUNDLE_ID`.
+One `.p8` key works for both APNs environments.
+
+Apple issues device tokens from two environments. App Store and TestFlight
+builds get production tokens; builds installed from Xcode get sandbox
+tokens. Each environment rejects the other's tokens with `BadDeviceToken`.
+The iOS app reports `apns_environment` (`sandbox` or `production`) when it
+registers, the server stores it with the token and sends each push to the
+matching APNs host, so development and release builds both receive pushes
+from the same server.
+
+`APNS_USE_SANDBOX=true` only changes where tokens from older app versions,
+which do not report an environment, are sent. Leave it unset (production)
+unless every unlabeled device is a development build.
+
+Without a key, set `PUSH_PROXY_URL` and `PUSH_PROXY_API_KEY`; the server
+forwards the environment with each iOS push.
+
 ---
 
 ## Slack and Mattermost

@@ -77,6 +77,26 @@ class MobileDeviceRegistration(BaseModel):
     device_name: Optional[str] = Field(
         None, description="Optional device name for API key"
     )
+    apns_environment: Optional[Literal["sandbox", "production"]] = Field(
+        None,
+        description=(
+            "iOS only: APNs environment that issued the token. Xcode "
+            "development builds get 'sandbox' tokens, App Store and TestFlight "
+            "builds get 'production' tokens. 'development' is accepted as an "
+            "alias for 'sandbox'. Omitted means the server default."
+        ),
+    )
+
+    @field_validator("apns_environment", mode="before")
+    @classmethod
+    def normalize_apns_environment(cls, value: object) -> object:
+        """Map the entitlement spelling 'development' to 'sandbox'."""
+        if isinstance(value, str):
+            cleaned = value.strip().lower()
+            if not cleaned:
+                return None
+            return "sandbox" if cleaned == "development" else cleaned
+        return value
 
     @field_validator("token")
     @classmethod

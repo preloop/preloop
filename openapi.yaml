@@ -44145,6 +44145,18 @@ components:
           - type: 'null'
           title: Device Name
           description: Optional device name for API key
+        apns_environment:
+          anyOf:
+          - type: string
+            enum:
+            - sandbox
+            - production
+          - type: 'null'
+          title: Apns Environment
+          description: 'iOS only: APNs environment that issued the token. Xcode development
+            builds get ''sandbox'' tokens, App Store and TestFlight builds get ''production''
+            tokens. ''development'' is accepted as an alias for ''sandbox''. Omitted
+            means the server default.'
       type: object
       required:
       - platform
@@ -54784,7 +54796,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

@@ -177,7 +177,7 @@ async def send_test_push(
         send_push_via_proxy,
     )
 
-    from . import get_apns_service
+    from . import get_apns_service, select_apns_service
     from .fcm_service import is_fcm_configured, send_fcm_notification
 
     request_id = str(uuid.uuid4())
@@ -196,6 +196,7 @@ async def send_test_push(
     for device in devices:
         platform = (device.get("platform") or "").strip().lower()
         token = (device.get("token") or "").strip()
+        apns_env = device.get("apns_environment") if platform == "ios" else None
         result = await _send_one(
             platform=platform,
             token=token,
@@ -203,7 +204,8 @@ async def send_test_push(
             title=title,
             body=body,
             data=data,
-            apns_service=apns_service,
+            apns_service=select_apns_service(apns_service, apns_env),
+            apns_environment=apns_env,
             fcm_available=fcm_available,
             proxy_available=proxy_available,
             send_fcm_notification=send_fcm_notification,
@@ -238,6 +240,7 @@ async def _send_one(
     proxy_available: bool,
     send_fcm_notification: Any,
     send_push_via_proxy: Any,
+    apns_environment: Optional[str] = None,
 ) -> DeviceSendResult:
     """Send to a single device and translate the outcome into a result."""
     masked = mask_token(token)
@@ -307,6 +310,7 @@ async def _send_one(
                 body=body,
                 data=data,
                 priority="high",
+                apns_environment=apns_environment,
             )
             return DeviceSendResult(
                 platform=platform,

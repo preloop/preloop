@@ -3489,6 +3489,7 @@ class ApprovalService:
             get_apns_service,
             NotificationPayloadBuilder,
             is_fcm_configured,
+            select_apns_service,
         )
         from preloop.services.push_proxy import (
             is_push_proxy_configured,
@@ -3537,10 +3538,8 @@ class ApprovalService:
                     if getattr(prefs, "notify_when_needed", True) is False:
                         continue
 
-                    ios_tokens = prefs.get_device_tokens(platform="ios")
-                    if ios_tokens:
-                        for token in ios_tokens:
-                            ios_tokens_list.append((user_id, token))
+                    for token, apns_env in prefs.get_device_entries(platform="ios"):
+                        ios_tokens_list.append((user_id, token, apns_env))
 
                     android_tokens = prefs.get_device_tokens(platform="android")
                     if android_tokens:
@@ -3663,7 +3662,7 @@ class ApprovalService:
         notification_data = payload.get("data", {})
 
         # Send to iOS devices
-        for user_id, token in ios_tokens:
+        for user_id, token, apns_env in ios_tokens:
             token = (token or "").strip()
             if not token:
                 logger.warning(
@@ -3681,18 +3680,43 @@ class ApprovalService:
                 )
                 continue
             try:
-                if apns_service:
-                    # Use native APNs (enterprise mode with credentials)
+                token_apns_service = select_apns_service(apns_service, apns_env)
+                if token_apns_service:
+                    # Use native APNs, routed to the environment that issued
+                    # the token (sandbox for Xcode builds, production for
+                    # App Store and TestFlight builds).
                     (
                         success,
                         status_code,
                         error_reason,
-                    ) = await apns_service.send_notification(
+                    ) = await token_apns_service.send_notification(
                         device_token=token, payload=payload, priority=apns_priority
                     )
 
                     if success:
                         sent_count += 1
+                    elif apns_env and (error_reason or "").strip() in {
+                        "BadDeviceToken",
+                        "DeviceTokenNotForTopic",
+                    }:
+                        # The app reported which environment issued this
+                        # token, so a BadDeviceToken here points at a
+                        # server-side environment or topic mismatch, not a
+                        # dead token. Keep it and log instead of pruning.
+                        logger.warning(
+                            "APNs rejected labeled iOS token %s... "
+                            "(environment=%s, reason=%s); token kept",
+                            token[:8],
+                            apns_env,
+                            error_reason,
+                        )
+                        _record_failure(
+                            platform="ios",
+                            token=token,
+                            status_code=status_code,
+                            reason=error_reason or "unknown_apns_error",
+                        )
+                        failed_count += 1
                     elif _is_prunable_apns_failure(
                         token=token,
                         status_code=status_code,
@@ -3727,6 +3751,7 @@ class ApprovalService:
                         body=notification_body,
                         data=notification_data,
                         priority="high" if apns_priority == 10 else "normal",
+                        apns_environment=apns_env,
                     )
 
                     if result.get("success"):
@@ -4139,6 +4164,7 @@ class ApprovalService:
             get_apns_service,
             NotificationPayloadBuilder,
             is_fcm_configured,
+            select_apns_service,
         )
         from preloop.services.push_proxy import (
             is_push_proxy_configured,
@@ -4211,10 +4237,8 @@ class ApprovalService:
                     # Get device tokens
                     prefs = notification_preferences.get_by_user(sync_db, user_id)
                     if prefs and prefs.enable_mobile_push:
-                        ios_tokens = prefs.get_device_tokens(platform="ios")
-                        if ios_tokens:
-                            for token in ios_tokens:
-                                ios_tokens_list.append((user_id, token))
+                        for token, apns_env in prefs.get_device_entries(platform="ios"):
+                            ios_tokens_list.append((user_id, token, apns_env))
 
                         android_tokens = prefs.get_device_tokens(platform="android")
                         if android_tokens:
@@ -4285,14 +4309,15 @@ class ApprovalService:
         notification_data = payload.get("data", {})
 
         # Send to iOS devices
-        for _user_id, token in ios_tokens:
+        for _user_id, token, apns_env in ios_tokens:
             try:
-                if apns_service:
+                token_apns_service = select_apns_service(apns_service, apns_env)
+                if token_apns_service:
                     (
                         success,
                         status_code,
                         error_reason,
-                    ) = await apns_service.send_notification(
+                    ) = await token_apns_service.send_notification(
                         device_token=token,
                         payload=payload,
                         priority=10,  # High priority
@@ -4311,6 +4336,7 @@ class ApprovalService:
                         title=notification_title,
                         body=notification_body,
                         data=notification_data,
+                        apns_environment=apns_env,
                     )
                     if result.get("success"):
                         sent_count += 1

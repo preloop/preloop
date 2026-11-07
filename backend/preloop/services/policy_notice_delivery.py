@@ -273,13 +273,14 @@ def send_push_to_owners(
     from preloop.services.push_notifications import (
         get_apns_service,
         is_fcm_configured,
+        select_apns_service,
     )
     from preloop.services.push_proxy import (
         is_push_proxy_configured,
         send_push_via_proxy,
     )
 
-    targets: List[tuple[str, str]] = []
+    targets: List[tuple[str, str, Optional[str]]] = []
     for owner in owners:
         prefs = notification_preferences.get_by_user(db, owner.id)
         if prefs is None or not prefs.enable_mobile_push:
@@ -287,9 +288,9 @@ def send_push_to_owners(
         if getattr(prefs, "notify_when_needed", True) is False:
             continue
         for platform in ("ios", "android"):
-            for token in prefs.get_device_tokens(platform=platform) or []:
+            for token, apns_env in prefs.get_device_entries(platform=platform):
                 if token and token.strip():
-                    targets.append((platform, token.strip()))
+                    targets.append((platform, token.strip(), apns_env))
     if not targets:
         return 0
 
@@ -308,10 +309,13 @@ def send_push_to_owners(
 
     async def _send_all() -> int:
         sent = 0
-        for platform, token in targets:
+        for platform, token, apns_env in targets:
             try:
-                if platform == "ios" and apns is not None:
-                    ok, _status, _reason = await apns.send_notification(
+                token_apns = (
+                    select_apns_service(apns, apns_env) if platform == "ios" else None
+                )
+                if platform == "ios" and token_apns is not None:
+                    ok, _status, _reason = await token_apns.send_notification(
                         device_token=token, payload=payload, priority=5
                     )
                 elif platform == "ios" and use_proxy:
@@ -322,6 +326,7 @@ def send_push_to_owners(
                         body=body,
                         data=data,
                         priority="normal",
+                        apns_environment=apns_env,
                     )
                     ok = bool(result.get("success"))
                 elif platform == "android":

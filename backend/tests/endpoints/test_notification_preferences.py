@@ -383,6 +383,36 @@ def test_register_mobile_device_direct(
     assert device["token"] == IOS_TOKEN
 
 
+def test_register_mobile_device_stores_apns_environment(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """A dev build reports its sandbox environment and it is stored."""
+    response = client.post(
+        "/api/v1/notification-preferences/me/register-device",
+        json={
+            "platform": "ios",
+            "token": IOS_TOKEN,
+            "apns_environment": "development",
+        },
+    )
+
+    assert response.status_code == 200
+    device = response.json()["mobile_device_tokens"][0]
+    assert device["apns_environment"] == "sandbox"
+
+
+def test_register_mobile_device_rejects_unknown_apns_environment(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """Unknown environments are refused instead of guessed."""
+    response = client.post(
+        "/api/v1/notification-preferences/me/register-device",
+        json={"platform": "ios", "token": IOS_TOKEN, "apns_environment": "beta"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_unregister_mobile_device(
     client: TestClient, test_user: User, db_session: Session
 ):

@@ -139,6 +139,7 @@ def add_device_token(
     user_id: uuid.UUID,
     platform: str,
     token: str,
+    apns_environment: Optional[str] = None,
 ) -> NotificationPreferences:
     """Add a mobile device token for a user.
 
@@ -147,12 +148,14 @@ def add_device_token(
         user_id: User ID.
         platform: Device platform ('ios' or 'android').
         token: Device push notification token.
+        apns_environment: iOS only: 'sandbox' or 'production', the APNs
+            environment that issued the token. None if not reported.
 
     Returns:
         Updated NotificationPreferences.
     """
     prefs = get_or_create(db, user_id)
-    prefs.add_device_token(platform, token)
+    prefs.add_device_token(platform, token, apns_environment=apns_environment)
     db.flush()
     return prefs
 
