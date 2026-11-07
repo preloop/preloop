@@ -87,6 +87,14 @@ services:
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
       PRELOOP_SERVICE_ROLE: api
+      # SMTP, needed for approval emails, invitations and password resets.
+      # Mirrors docker-compose.release.yaml; set the values in .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
       # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
       # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
       OTLP_ENABLED: ${OTLP_ENABLED:-false}
@@ -195,6 +203,14 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
+      # SMTP, needed for approval emails, invitations and password resets.
+      # Mirrors docker-compose.release.yaml; set the values in .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
     volumes:
       - .:/app
     command: preloop-sync worker
