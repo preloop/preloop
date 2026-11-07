@@ -237,8 +237,23 @@ class ImportedUsageByConversation(BaseModel):
     """
 
     conversation_id: str
+    #: The same id under the console's name for it. ``conversation_id`` stays
+    #: for existing clients.
+    session_id: Optional[str] = None
     parent_conversation_id: Optional[str] = None
     source: Optional[str] = None
+    #: The runtime session push ingest registered for this conversation, for
+    #: a link to the Sessions page; ``None`` for rows imported before it.
+    runtime_session_id: Optional[str] = None
+    #: The session's title, else a deterministic one from source, model and
+    #: start time (``session_title_generated`` says which).
+    session_title: Optional[str] = None
+    session_title_generated: bool = True
+    #: Managed agent the rows are attributed to, for a link to its page.
+    agent_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    model: Optional[str] = None
+    first_event_at: Optional[datetime] = None
     event_count: int = 0
     total_tokens: Optional[int] = None
     estimated_cost: Optional[float] = None

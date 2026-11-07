@@ -1852,8 +1852,20 @@ export interface ImportedUsageByModel {
 // subagent workers of that parent thread.
 export interface ImportedUsageByConversation {
   conversation_id: string;
+  /** The same id; the console calls these sessions. Absent on older servers. */
+  session_id?: string | null;
   parent_conversation_id: string | null;
   source: string | null;
+  /** Runtime session for the Sessions page link; absent on older servers. */
+  runtime_session_id?: string | null;
+  /** Stored title, else one derived from source, model and start time. */
+  session_title?: string | null;
+  session_title_generated?: boolean;
+  /** Managed agent the session is attributed to, for the agent page link. */
+  agent_id?: string | null;
+  agent_name?: string | null;
+  model?: string | null;
+  first_event_at?: string | null;
   event_count: number;
   total_tokens: number | null;
   estimated_cost: number | null;

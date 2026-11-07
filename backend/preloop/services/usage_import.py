@@ -490,6 +490,20 @@ def sync_runtime_session_for_record(
     elif default_title and not session.title:
         session.title = default_title
         description_changed = True
+    elif not session.title and record.transcript:
+        # The client opted in to sending transcript text, so the first user
+        # message may name the session, the way a gateway session's first
+        # prompt does: redacted, one line, truncated.
+        from preloop.services.agent_session_lineage import title_from_prompt
+
+        first_user = next(
+            (message.text for message in record.transcript if message.role == "user"),
+            None,
+        )
+        prompt_title = title_from_prompt(first_user)
+        if prompt_title:
+            session.title = prompt_title[:MAX_SESSION_TITLE_CHARS]
+            description_changed = True
     summary = _metadata_text(
         record.metadata, "session_summary", MAX_SESSION_SUMMARY_CHARS
     )

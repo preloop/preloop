@@ -1466,7 +1466,7 @@ describe('CostView', () => {
 
       function conversationTable(element: CostView) {
         return element.shadowRoot?.querySelector(
-          'table[aria-label="Imported usage by conversation"]'
+          'table[aria-label="Imported usage by session"]'
         );
       }
 
@@ -1547,14 +1547,55 @@ describe('CostView', () => {
         expect(headers).to.include('Reconciled cost');
       });
 
-      it('hides the rollup when no conversations are reported', async () => {
+      it('hides the rollup when no sessions are reported', async () => {
         const element = await loadView({
           ...importedUsage,
           usage_by_conversation: [],
         });
 
         expect(conversationTable(element)).to.not.exist;
-        expect(element.shadowRoot?.textContent).to.not.contain('Conversations');
+        expect(element.shadowRoot?.textContent).to.not.contain(
+          'Imported usage per session'
+        );
+      });
+
+      it('titles each session and links it to its agent and session page', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: [
+            {
+              ...conversations[2],
+              session_id: 'conv-lonely',
+              runtime_session_id: 'rs-1',
+              session_title: 'Fix the flaky login test',
+              session_title_generated: false,
+              agent_id: 'agent-1',
+              agent_name: 'Cursor',
+            },
+          ],
+        });
+        const table = conversationTable(element)!;
+        const headers = [...table.querySelectorAll('th[scope="col"]')].map(
+          (th) => th.textContent?.trim()
+        );
+        expect(headers.slice(0, 2)).to.deep.equal(['Session', 'Agent']);
+        const session = table.querySelector(
+          'a.imported-session-title'
+        ) as HTMLAnchorElement;
+        expect(session.textContent?.trim()).to.equal(
+          'Fix the flaky login test'
+        );
+        expect(session.getAttribute('href')).to.equal(
+          '/console/runtime-sessions/rs-1'
+        );
+        expect(
+          table.querySelector('.imported-session-id')?.textContent
+        ).to.equal('conv-lonely');
+        const agent = table.querySelector(
+          'a[href="/console/agents/agent-1"]'
+        ) as HTMLAnchorElement;
+        expect(agent.textContent?.trim()).to.equal('Cursor');
+        expect(element.shadowRoot?.textContent).to.not.contain('Conversation');
       });
 
       it('hides the rollup when an older server omits the field', async () => {

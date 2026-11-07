@@ -800,6 +800,19 @@ export class CostView extends AuthedElement {
           color: var(--sl-color-neutral-950);
         }
 
+        .imported-session {
+          display: inline-flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .imported-session-id {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta, 13px);
+          font-family: var(--sl-font-mono);
+          overflow-wrap: anywhere;
+        }
+
         .conversation-child-cell {
           padding-left: var(--sl-spacing-x-large);
         }
@@ -2703,22 +2716,20 @@ export class CostView extends AuthedElement {
     if (!rows.length) return nothing;
     const threads = this.buildConversationThreads(rows);
     return html`
-      <div class="imported-conversations-title">Conversations</div>
+      <div class="imported-conversations-title">Sessions</div>
       <div class="imported-usage-note">
-        Per-thread rollup of imported usage. Subagent conversations are nested
-        under the conversation that spawned them. Estimated amounts (derived
-        from hook or transcript data) and reconciled amounts (from a billing
-        export) are shown separately and are never summed together.
+        Imported usage per session. Subagent sessions are nested under the
+        session that spawned them. Estimated amounts (derived from hook or
+        transcript data) and reconciled amounts (from a billing export) are
+        shown separately and are never summed together.
       </div>
       <div class="analytics-table-wrap">
         <div class="table-scroll">
-          <table
-            class="styled-table"
-            aria-label="Imported usage by conversation"
-          >
+          <table class="styled-table" aria-label="Imported usage by session">
             <thead>
               <tr>
-                <th scope="col">Conversation</th>
+                <th scope="col">Session</th>
+                <th scope="col">Agent</th>
                 <th scope="col">Events</th>
                 <th scope="col">Tokens</th>
                 <th scope="col">Estimated cost</th>
@@ -2784,7 +2795,8 @@ export class CostView extends AuthedElement {
       ${this.renderConversationRow(row, false)}
       ${children.map((child) => this.renderConversationRow(child, true))}
       <tr class="conversation-thread-total">
-        <td>Thread total (${all.length} conversations)</td>
+        <td>Thread total (${all.length} sessions)</td>
+        <td></td>
         <td>${this.formatNumber(totalEvents)}</td>
         <td>${this.renderReportedNumber(totalTokens)}</td>
         <td>${this.renderReportedCurrency(totalEstimated)}</td>
@@ -2808,7 +2820,17 @@ export class CostView extends AuthedElement {
                 >`
               : nothing
           }
-          ${row.conversation_id}
+          ${this.renderImportedSessionTitle(row)}
+        </td>
+        <td>
+          ${
+            row.agent_id
+              ? html`<a
+                  href=${`/console/agents/${encodeURIComponent(row.agent_id)}`}
+                  >${row.agent_name || 'Agent'}</a
+                >`
+              : row.agent_name || html`<span class="not-reported">n/a</span>`
+          }
         </td>
         <td>${this.formatNumber(row.event_count)}</td>
         <td>${this.renderReportedNumber(row.total_tokens)}</td>
@@ -2823,6 +2845,31 @@ export class CostView extends AuthedElement {
         </td>
       </tr>
     `;
+  }
+
+  /**
+   * The session's title, linked to its page on Sessions when the import
+   * registered one, with the source-side id underneath to tell it apart.
+   */
+  private renderImportedSessionTitle(row: ImportedUsageByConversation) {
+    const id = row.session_id || row.conversation_id;
+    const title = row.session_title || id;
+    return html`<span class="imported-session">
+      ${
+        row.runtime_session_id
+          ? html`<a
+              class="imported-session-title"
+              href=${`/console/runtime-sessions/${encodeURIComponent(row.runtime_session_id)}`}
+              >${title}</a
+            >`
+          : html`<span class="imported-session-title">${title}</span>`
+      }
+      ${
+        title !== id
+          ? html`<span class="imported-session-id" title=${id}>${id}</span>`
+          : nothing
+      }
+    </span>`;
   }
 
   // Null-preserving sum: null when every input is null ("not reported"),
