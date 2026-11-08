@@ -333,3 +333,47 @@ def test_authorization_binds_scope_resource_redirect_and_s256():
     assert params["resource"] == [RESOURCE]
     assert params["code_challenge_method"] == ["S256"]
     assert "synthetic-verifier" not in url
+
+
+def _gzip_provider(body: bytes):
+    """Every route answers with the same gzip-encoded body, like a CDN would."""
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    def handle(request):
+        return httpx.Response(
+            200,
+            content=body,
+            headers={
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                "content-length": str(len(body)),
+            },
+        )
+
+    return OAuthHTTP(transport=httpx.MockTransport(handle), resolver=resolve)
+
+
+@pytest.mark.asyncio
+async def test_gzip_encoded_metadata_is_decoded_once():
+    """#2249: compressed metadata must not be decompressed a second time."""
+    import gzip
+    import json
+
+    payload = {"resource": RESOURCE, "authorization_servers": [ISSUER]}
+    http = _gzip_provider(gzip.compress(json.dumps(payload).encode()))
+    response = await http.get("https://resource.example.com/metadata")
+    assert response.json() == payload
+    assert "content-encoding" not in response.headers
+    token = await http.post(ISSUER + "/token", data={"code": "synthetic-code"})
+    assert token == payload
+
+
+@pytest.mark.asyncio
+async def test_undecodable_body_is_oauth_error():
+    http = _gzip_provider(b"not gzip at all")
+    with pytest.raises(OAuthError, match="could not be decoded"):
+        await http.get("https://resource.example.com/metadata")
+    with pytest.raises(OAuthError, match="could not be decoded"):
+        await http.post(ISSUER + "/token", data={"code": "synthetic-code"})
