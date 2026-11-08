@@ -1,7 +1,7 @@
 """Add an opt-in GitHub repository_dispatch sink to CI completion endpoints.
 
 Revision ID: 20261205_ci_dispatch_sink
-Revises: 20261203_session_keys_idx
+Revises: 20261204_ci_principal_retire
 
 A restricted CI completion subscription can deliver ``flow.execution.finished``
 as a GitHub ``repository_dispatch`` instead of an HTTP POST to a customer
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261205_ci_dispatch_sink"
-down_revision: Union[str, None] = "20261203_session_keys_idx"
+down_revision: Union[str, None] = "20261204_ci_principal_retire"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

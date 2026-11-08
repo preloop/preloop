@@ -3673,7 +3673,8 @@ The delete is refused with 409 and nothing is changed when:
   bound to the flow, a security maintenance release that uses it as its
   audit, implementation or recheck flow, or a security maintenance baseline
   whose audit evidence is one of the flow's executions. References are never
-  revoked or detached as a side effect of the delete.
+  revoked or detached as a side effect of the delete. Retire CI identities
+  explicitly with ``POST /api/v1/ci-identities/{id}/retire``.
 """
 
 
@@ -3686,12 +3687,11 @@ def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
             for ref in blockers.ci_identities
         )
         parts.append(
-            f"CI identities bound to this flow: {names}. A CI identity keeps "
-            "its flow binding permanently (it can be disabled with PATCH "
-            '/api/v1/ci-identities/{id} and {"enabled": false}, but not '
-            "deleted or rebound), so a flow with CI identities cannot be "
-            "deleted. Disable the flow instead (PUT /api/v1/flows/{id} with "
-            '{"is_enabled": false}).'
+            f"CI identities bound to this flow: {names}. To delete the flow, "
+            "retire each identity with POST /api/v1/ci-identities/{id}/retire "
+            "(this permanently disables it and revokes its keys; its history "
+            "is kept) and retry. To keep the identities, disable the flow "
+            'instead (PUT /api/v1/flows/{id} with {"is_enabled": false}).'
         )
     if blockers.security_maintenance_releases:
         names = ", ".join(

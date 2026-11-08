@@ -19,7 +19,7 @@ var ciIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 // server fields never implicitly reach stdout, including on issuance.
 var ciSafeFields = map[string]bool{
 	"id": true, "principal_id": true, "key_id": true, "name": true,
-	"is_active": true, "credential_version": true, "grant": true,
+	"is_active": true, "retired": true, "credential_version": true, "grant": true,
 	"version": true, "project_id": true, "flow_id": true, "actions": true,
 	"repository_identifier": true, "repository_slug": true, "tracker_type": true,
 	"keys": true, "expires_at": true, "created_at": true, "last_used_at": true,
@@ -55,7 +55,7 @@ func newCICmd() *cobra.Command {
 		Use: "ci", Short: "Human setup for restricted CI identities",
 		Long: "Use your saved human login or PRELOOP_TOKEN. Issued secrets go only to a new 0600 file; safe metadata goes to stdout. CI credentials cannot administer themselves.",
 	}
-	for _, operation := range []string{"capabilities", "list", "show", "preview", "create", "update", "issue", "rotate", "revoke", "subscribe"} {
+	for _, operation := range []string{"capabilities", "list", "show", "preview", "create", "update", "issue", "rotate", "revoke", "retire", "subscribe"} {
 		group.AddCommand(newCICommand(operation))
 	}
 	return group
@@ -64,7 +64,7 @@ func newCICmd() *cobra.Command {
 func newCICommand(operation string) *cobra.Command {
 	var inputPath, secretPath string
 	argCount := 0
-	if operation == "show" || operation == "update" || operation == "issue" || operation == "subscribe" {
+	if operation == "show" || operation == "update" || operation == "issue" || operation == "retire" || operation == "subscribe" {
 		argCount = 1
 	} else if operation == "rotate" || operation == "revoke" {
 		argCount = 2
@@ -195,6 +195,8 @@ func ciRequestPath(operation string, args []string) (string, string) {
 		return http.MethodPost, suffix + "/keys/" + args[1] + "/rotate"
 	case "revoke":
 		return http.MethodDelete, suffix + "/keys/" + args[1]
+	case "retire":
+		return http.MethodPost, suffix + "/retire"
 	case "subscribe":
 		return http.MethodPost, suffix + "/subscriptions"
 	default:

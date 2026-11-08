@@ -465,6 +465,7 @@ preloop ci show PRINCIPAL_ID
 preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
 preloop ci revoke PRINCIPAL_ID KEY_ID
 preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
+preloop ci retire PRINCIPAL_ID
 ```
 
 The CLI reserves a new exclusive file with mode `0600` before requesting a
@@ -487,6 +488,24 @@ available when a bound flow/project is inactive. An expired or revoked key
 cannot rotate, but a human can issue a replacement on the same active principal.
 Rotation keeps the old key's action ceiling and expiry unless an expiry is
 explicitly supplied. It never broadens ownership or re-enables the identity.
+
+### Retiring an identity
+
+A CI identity is never deleted, and its flow binding cannot change, so while an
+identity is bound to a flow that flow cannot be deleted (the delete returns 409
+and names the identity). To release the flow, retire the identity with the
+**Retire identity** button in the console, `preloop ci retire PRINCIPAL_ID`, or
+`POST /api/v1/ci-identities/{id}/retire`. Retiring:
+
+- disables the identity permanently and revokes all of its keys;
+- clears its flow binding, so the flow can then be deleted;
+- keeps the grant (which still records the original flow), execution
+  attribution and audit history.
+
+Retirement cannot be undone. A retired identity cannot be re-enabled, narrowed,
+reissued, subscribed or used for result exports; provision a new identity to
+resume CI. It uses the same authority as disabling, and retiring an already
+retired identity changes nothing. Reads show `"retired": true`.
 
 ## Completion subscriptions
 

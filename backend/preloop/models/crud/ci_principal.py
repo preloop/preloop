@@ -398,6 +398,8 @@ class CRUDCiPrincipal:
         )
         if principal is None:
             raise ValueError("CI identity not found")
+        if principal.flow_id is None:
+            raise ValueError("CI identity is retired; provision a new identity")
         current = CiGrant.model_validate(principal.grant)
         if grant is not None:
             grant = CiGrant.model_validate(grant)
@@ -423,6 +425,50 @@ class CRUDCiPrincipal:
                 principal.is_active = enabled
             operation = "disable" if enabled is False else "change"
             self._audit(db, actor=actor, principal=principal, operation=operation)
+            db.commit()
+            return principal
+        except Exception:
+            db.rollback()
+            raise
+
+    def retire(
+        self, db: Session, *, actor: models.User, principal_id: UUID
+    ) -> models.CiPrincipal:
+        """Permanently disable an identity and release its flow binding.
+
+        Disables the identity, revokes all of its keys and clears ``flow_id``
+        so the bound flow can be deleted. The grant (including the original
+        flow id), execution attribution and audit history are kept. A retired
+        identity cannot be re-enabled; provision a new one instead. Retiring
+        an already retired identity is a no-op.
+
+        Raises:
+            ValueError: The identity does not exist in the actor's account.
+            PermissionError: The actor may not disable this identity.
+        """
+        principal = self.get(
+            db, account_id=actor.account_id, principal_id=principal_id, lock=True
+        )
+        if principal is None:
+            raise ValueError("CI identity not found")
+        # Retiring only removes capability, so the disable authority applies.
+        self._authorize(
+            db,
+            actor=actor,
+            operation="disable",
+            grant=CiGrant.model_validate(principal.grant),
+        )
+        if principal.flow_id is None:
+            return principal
+        try:
+            db.query(models.ApiKey).filter(
+                models.ApiKey.ci_principal_id == principal.id,
+                models.ApiKey.account_id == principal.account_id,
+                models.ApiKey.is_active.is_(True),
+            ).update({models.ApiKey.is_active: False}, synchronize_session="fetch")
+            principal.is_active = False
+            principal.flow_id = None
+            self._audit(db, actor=actor, principal=principal, operation="retire")
             db.commit()
             return principal
         except Exception:

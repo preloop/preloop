@@ -139,6 +139,7 @@ class CiAdminIdentityRead(BaseModel):
     id: UUID
     name: str
     is_active: bool
+    retired: bool = False
     credential_version: int
     grant: CiGrant
     repository_identifier: str

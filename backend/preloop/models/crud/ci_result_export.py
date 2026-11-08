@@ -44,6 +44,8 @@ def prepare_consent(
     )
     if principal is None:
         raise LookupError("Export target unavailable")
+    if principal.flow_id is None:
+        raise PermissionError("Export target identity is retired")
     grant = CiGrant.model_validate(principal.grant)
     _owner(db, actor, grant, "grant_result_export")
     repo = _object(principal.repository_binding)
