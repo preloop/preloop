@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pairing a mobile device by QR code no longer fails with 422 when the app
+  has no push token yet (a fresh iOS install before notification permission
+  is granted). `register-via-token` now accepts a missing, null or blank
+  `token`: pairing succeeds and the API key is issued, nothing is stored for
+  push, and the response reports `push_registered: false` with a
+  `push_error` explaining why. The authenticated `me/register-device`
+  endpoint returns 400 for a missing token instead of 422. (#2248)
+
 ## [1.0.0] - 2026-11-08
 
 ### Highlights

@@ -3,10 +3,14 @@
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_registration_token
+from preloop.models.crud import (
+    notification_preferences as crud_notification_preferences,
+)
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.user import User
 
@@ -251,6 +255,78 @@ def test_register_via_token_invalid_platform(
 
     # Currently accepts any platform (validation needed in future)
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"platform": "ios"},
+        {"platform": "ios", "token": None},
+        {"platform": "ios", "token": ""},
+        {"platform": "ios", "token": "   "},
+    ],
+    ids=["missing", "null", "empty", "whitespace"],
+)
+def test_register_via_token_without_push_token_pairs(
+    client: TestClient, test_user: User, db_session: Session, body: dict
+):
+    """#2248: pairing a fresh install with no push token must not 422.
+
+    The API key is issued, no device token is stored, and the response says
+    push is not enabled.
+    """
+    qr_response = client.get("/api/v1/notification-preferences/me/qr-code")
+    token = qr_response.json()["token"]
+
+    with patch(
+        "preloop.services.websocket_manager.manager.broadcast_json",
+        new_callable=AsyncMock,
+    ):
+        response = client.post(
+            f"/api/v1/notification-preferences/register-via-token?token={token}",
+            json=body,
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["api_key"]
+    assert data["push_registered"] is False
+    assert "No push token supplied" in data["push_error"]
+    assert data["preferences"]["mobile_device_tokens"] in (None, [])
+
+    prefs = crud_notification_preferences.get_by_user(db_session, test_user.id)
+    assert not (prefs and prefs.mobile_device_tokens)
+
+    token_obj = crud_registration_token.get_by_token(db_session, token=token)
+    assert token_obj.is_consumed
+
+
+def test_register_via_token_without_push_token_invalid_qr_still_400(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """An invalid registration token is still rejected when push is absent."""
+    response = client.post(
+        "/api/v1/notification-preferences/register-via-token?token=invalid-token",
+        json={"platform": "ios", "token": ""},
+    )
+    assert response.status_code == 400
+    assert "Invalid or expired" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "body", [{"platform": "ios"}, {"platform": "ios", "token": ""}]
+)
+def test_register_device_requires_push_token(
+    client: TestClient, test_user: User, db_session: Session, body: dict
+):
+    """The authenticated register-device endpoint only stores push tokens."""
+    response = client.post(
+        "/api/v1/notification-preferences/me/register-device", json=body
+    )
+    assert response.status_code == 400
+    assert "required" in response.json()["detail"]
+    prefs = crud_notification_preferences.get_by_user(db_session, test_user.id)
+    assert not (prefs and prefs.mobile_device_tokens)
 
 
 def test_check_token_validity_valid(

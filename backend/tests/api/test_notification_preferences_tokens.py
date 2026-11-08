@@ -14,12 +14,22 @@ from preloop.models.models.notification_preferences import NotificationPreferenc
 from preloop.schemas.notification_preferences import MobileDeviceRegistration
 
 
-def test_schema_rejects_blank_token() -> None:
-    """The API schema refuses empty/whitespace tokens."""
+def test_schema_normalises_blank_token_to_none() -> None:
+    """Missing, null and blank tokens all mean "no push token" (#2248).
+
+    A fresh app install has no push token yet; the schema must not 422 the
+    pairing call. Blank tokens become None so they can never be stored.
+    """
+    assert MobileDeviceRegistration(platform="ios").token is None
+    assert MobileDeviceRegistration(platform="ios", token=None).token is None
+    assert MobileDeviceRegistration(platform="ios", token="").token is None
+    assert MobileDeviceRegistration(platform="ios", token="   ").token is None
+
+
+def test_schema_still_requires_platform() -> None:
+    """Platform remains required."""
     with pytest.raises(ValidationError):
-        MobileDeviceRegistration(platform="ios", token="")
-    with pytest.raises(ValidationError):
-        MobileDeviceRegistration(platform="ios", token="   ")
+        MobileDeviceRegistration(token="abc123")  # type: ignore[call-arg]
 
 
 def test_schema_trims_token() -> None:

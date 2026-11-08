@@ -149,6 +149,13 @@ async def register_mobile_device(
     Returns:
         Updated notification preferences.
     """
+    # This endpoint exists only to store a push token, so one is required.
+    if device_in.token is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Device push token is required",
+        )
+
     # Reject structurally impossible tokens here rather than storing them and
     # failing every later send: a stored placeholder makes the account look
     # push-enabled while silently delivering nothing.
@@ -372,12 +379,21 @@ async def register_device_via_token(
     # Validate the push token, but never fail pairing over it: pairing also
     # issues the API key the app needs to function at all. A bad token is
     # skipped (not stored) so it cannot poison every future send, and the
-    # caller is told push was not enabled.
-    push_registered, push_error = validate_device_token(
-        device_in.platform, device_in.token
-    )
+    # caller is told push was not enabled. A missing token (fresh install
+    # without notification permission yet) is the same: pair without push.
+    push_registered: bool
+    push_error: Optional[str]
+    if device_in.token is None:
+        push_registered = False
+        push_error = (
+            "No push token supplied; pairing succeeded without push notifications"
+        )
+    else:
+        push_registered, push_error = validate_device_token(
+            device_in.platform, device_in.token
+        )
 
-    if push_registered:
+    if push_registered and device_in.token is not None:
         prefs = notification_preferences.add_device_token(
             db,
             user_id,
@@ -418,7 +434,7 @@ async def register_device_via_token(
         key_value=api_key_value,
         obj_in={
             "name": device_name,
-            "scopes": [{"device_token": device_in.token}],
+            "scopes": [{"device_token": device_in.token}] if device_in.token else [],
             "account_id": user.account_id,
             "user_id": user_id,
             "expires_at": expires_at,
