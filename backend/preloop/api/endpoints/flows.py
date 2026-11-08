@@ -6,6 +6,7 @@ from typing import Annotated, Any, Dict, List, Literal, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.plugins.account_hooks import AuthorizationContext
@@ -28,7 +29,7 @@ from preloop.models.crud import (
     crud_runtime_session_activity,
 )
 from preloop.models.crud.ci_principal import CiAuthorizationContext
-from preloop.models.crud.flow import CRUDFlow
+from preloop.models.crud.flow import CRUDFlow, FlowDeleteBlockers
 from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.models.db.session import get_db_session as get_db
@@ -3603,7 +3604,76 @@ def update_flow(
     return flow
 
 
-@router.delete("/flows/{flow_id}", response_model=schemas.FlowResponse)
+_FLOW_DELETE_DESCRIPTION = """Delete a flow and its execution history.
+
+Deleting a flow also deletes all of its executions, together with their
+logs, artifacts and other per-execution records. Records that only point
+at an execution for reporting (for example usage and cost rows) are kept
+with the execution link cleared. Export anything you need first, or
+disable the flow instead of deleting it.
+
+The delete is refused with 409 and nothing is changed when:
+
+* an execution of the flow is still running (stop it first), or
+* another record keeps a restricting reference to the flow: a CI identity
+  bound to the flow, a security maintenance release that uses it as its
+  audit, implementation or recheck flow, or a security maintenance baseline
+  whose audit evidence is one of the flow's executions. References are never
+  revoked or detached as a side effect of the delete.
+"""
+
+
+def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
+    """Build an actionable 409 detail for references that block a delete."""
+    parts = ["Flow cannot be deleted because other records reference it."]
+    if blockers.ci_identities:
+        names = ", ".join(
+            f"'{ref.name}' ({ref.id}{'' if ref.is_active else ', disabled'})"
+            for ref in blockers.ci_identities
+        )
+        parts.append(
+            f"CI identities bound to this flow: {names}. A CI identity keeps "
+            "its flow binding permanently (it can be disabled with PATCH "
+            '/api/v1/ci-identities/{id} and {"enabled": false}, but not '
+            "deleted or rebound), so a flow with CI identities cannot be "
+            "deleted. Disable the flow instead (PUT /api/v1/flows/{id} with "
+            '{"is_enabled": false}).'
+        )
+    if blockers.security_maintenance_releases:
+        names = ", ".join(
+            f"'{ref.name}' ({ref.id})" for ref in blockers.security_maintenance_releases
+        )
+        parts.append(
+            f"Security maintenance releases using this flow: {names}. Point "
+            "them at another flow with PATCH "
+            "/api/v1/security-maintenance/releases/{id} (audit_flow_id, "
+            "implementation_flow_id, recheck_flow_id) and retry."
+        )
+    if blockers.security_maintenance_baselines:
+        parts.append(
+            f"{blockers.security_maintenance_baselines} security maintenance "
+            "baseline(s) use an execution of this flow as audit evidence. "
+            "Baselines are retained as evidence, so the flow cannot be "
+            "deleted; disable it instead."
+        )
+    if blockers.other_account_references:
+        parts.append(
+            f"{blockers.other_account_references} reference(s) from other "
+            "accounts also block the delete."
+        )
+    return " ".join(parts)
+
+
+@router.delete(
+    "/flows/{flow_id}",
+    response_model=schemas.FlowResponse,
+    description=_FLOW_DELETE_DESCRIPTION,
+    responses={
+        409: {
+            "description": "Running executions or references block the delete; nothing was changed."
+        }
+    },
+)
 @require_permission("delete_flows")
 def delete_flow(
     *,
@@ -3611,7 +3681,17 @@ def delete_flow(
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Delete a flow."""
+    """Delete a flow and its execution history.
+
+    Executions of the flow are deleted with it (see ``_FLOW_DELETE_DESCRIPTION``).
+    Running executions and restricting references (CI identities, security
+    maintenance releases and baselines) are reported as 409 before anything
+    is changed; they are never revoked or detached by this endpoint.
+
+    Raises:
+        HTTPException: 404 if the flow is not visible, 403 for built-in
+            presets, 409 if the delete is blocked.
+    """
     ensure_permission_in_oss(db, current_user, "delete_flows")
     import logging
 
@@ -3661,8 +3741,7 @@ def delete_flow(
             status_code=409,
             detail=(
                 f"Flow has {len(active_executions)} active execution(s). "
-                "Stop the active executions first (use the execution's stop command "
-                "endpoint) and retry the delete."
+                "Stop them first (POST /api/v1/flows/executions/{id}/command "
                 'with {"command": "stop"}) and retry the delete.'
             ),
         )
@@ -3672,9 +3751,32 @@ def delete_flow(
     # Validate before mutating: a stored row that fails FlowResponse should
     # remain so operators can inspect it, rather than being deleted and then
     # returning HTTP 500 (a retry would 404 and hide the failed delete).
+    blockers = crud_flow.get_delete_blockers(
+        db, flow_id=flow.id, account_id=current_user.account_id
+    )
+    if blockers:
+        logger.warning(f"Refusing to delete flow {flow_id}: referenced by other rows")
+        raise HTTPException(status_code=409, detail=_describe_delete_blockers(blockers))
+
     response = schemas.FlowResponse.model_validate(flow)
     flow_name = flow.name
-    crud_flow.remove(db=db, id=flow_id, account_id=current_user.account_id)
+    try:
+        crud_flow.remove(db=db, id=flow_id, account_id=current_user.account_id)
+    except IntegrityError:
+        # A reference created after the check above, or one this endpoint
+        # does not know about. Nothing was deleted; report it as a conflict.
+        db.rollback()
+        logger.warning(
+            f"Flow {flow_id} delete hit a foreign key restriction", exc_info=True
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Flow cannot be deleted because other records still reference "
+                "it. Nothing was changed. Disable the flow instead, or remove "
+                "the references and retry."
+            ),
+        ) from None
 
     log_config_change(
         db,

@@ -9,6 +9,7 @@ from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import flows
 from preloop.models import models, schemas
+from preloop.models.crud.flow import FlowDeleteBlockers
 from preloop.models.models.account import Account
 
 from tests.conftest import maybe_await
@@ -272,6 +273,7 @@ async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
         updated_at=datetime.now(timezone.utc),
     )
     mock_crud_flow.get.return_value = mock_flow
+    mock_crud_flow.get_delete_blockers.return_value = FlowDeleteBlockers()
 
     # Act
     await maybe_await(

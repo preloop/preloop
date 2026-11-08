@@ -18616,7 +18616,18 @@ paths:
       tags:
       - Flows
       summary: Delete Flow
-      description: Delete a flow.
+      description: "Delete a flow and its execution history.\n\nDeleting a flow also\
+        \ deletes all of its executions, together with their\nlogs, artifacts and\
+        \ other per-execution records. Records that only point\nat an execution for\
+        \ reporting (for example usage and cost rows) are kept\nwith the execution\
+        \ link cleared. Export anything you need first, or\ndisable the flow instead\
+        \ of deleting it.\n\nThe delete is refused with 409 and nothing is changed\
+        \ when:\n\n* an execution of the flow is still running (stop it first), or\n\
+        * another record keeps a restricting reference to the flow: a CI identity\n\
+        \  bound to the flow, a security maintenance release that uses it as its\n\
+        \  audit, implementation or recheck flow, or a security maintenance baseline\n\
+        \  whose audit evidence is one of the flow's executions. References are never\n\
+        \  revoked or detached as a side effect of the delete."
       operationId: delete_flow_api_v1_flows__flow_id__delete
       security:
       - bearerAuth: []
@@ -18635,6 +18646,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
+        '409':
+          description: Running executions or references block the delete; nothing
+            was changed.
         '422':
           description: Validation Error
           content:
@@ -54836,7 +54850,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
