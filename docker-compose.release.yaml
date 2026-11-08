@@ -13,6 +13,10 @@
 # Optional environment variables:
 #   POSTGRES_PASSWORD - Database password (default: postgres)
 #   LOG_LEVEL         - Logging level (default: INFO)
+#   SECURITY__ENCRYPTION_KEY - Fernet key for stored credentials, separate from
+#                       SECRET_KEY. When unset the key is derived from
+#                       SECRET_KEY. Set it before first start; changing either
+#                       key later makes stored credentials unreadable.
 
 services:
   postgres:
@@ -49,6 +53,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     command: python scripts/init_db.py --force
 
@@ -68,6 +73,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -119,6 +125,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -151,6 +158,7 @@ services:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
       NATS_URL: nats://nats:4222
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -170,6 +178,7 @@ services:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
       NATS_URL: nats://nats:4222
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -203,6 +212,7 @@ services:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
       NATS_URL: nats://nats:4222
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
