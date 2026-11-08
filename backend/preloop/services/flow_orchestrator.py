@@ -9059,7 +9059,9 @@ class FlowExecutionOrchestrator:
             emit_cra_reportable_vulnerabilities(self.db, self.execution_log, self.flow)
             self.db.commit()
         except Exception:
-            logger.warning(
+            # Completion still stands; the lost event is reported at error
+            # level so it reaches the error tracker instead of a debug log.
+            logger.error(
                 "Failed to queue flow.execution.finished webhook for %s",
                 getattr(self.execution_log, "id", "unknown"),
                 exc_info=True,

@@ -1002,3 +1002,49 @@ async def test_result_export_checks_exact_provider_base_revision(
             await service._read_provider(
                 source_for(context), expected_base_sha="b" * 40
             )
+
+
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+def test_accepted_binding_records_provider_base_revision(
+    context: CiAuthorizationContext, provider: str
+) -> None:
+    """The base commit the provider reports is recorded with the head."""
+    context = replace(context, tracker_type=provider)
+    payload = provider_payload(context)
+    if provider == "github":
+        payload["base"]["sha"] = "b" * 40
+    else:
+        payload["diff_refs"] = {"base_sha": "b" * 40, "head_sha": "a" * 40}
+    binding = service._accepted_binding(source_for(context), payload)
+    assert binding.base_sha == "b" * 40
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-sha", 7, "B" * 40])
+def test_accepted_binding_omits_malformed_base_revision(
+    context: CiAuthorizationContext, value: Any
+) -> None:
+    """A missing or malformed base commit is recorded as unknown, never trusted."""
+    payload = provider_payload(context)
+    payload["base"]["sha"] = value
+    assert service._accepted_binding(source_for(context), payload).base_sha is None
+
+
+def test_bindings_persisted_without_base_revision_stay_valid() -> None:
+    """Rows written before base_sha was recorded still validate."""
+    stored = review_binding(
+        CiAuthorizationContext(
+            account_id=uuid4(),
+            principal_id=uuid4(),
+            key_id=uuid4(),
+            project_id=uuid4(),
+            flow_id=uuid4(),
+            tracker_id=uuid4(),
+            repository_identifier="12345",
+            repository_slug="example/repository",
+            tracker_type="github",
+            tracker_url=None,
+            actions=frozenset(CiAction),
+        )
+    ).model_dump(mode="json")
+    stored.pop("base_sha")
+    assert CiReviewBinding.model_validate(stored).base_sha is None

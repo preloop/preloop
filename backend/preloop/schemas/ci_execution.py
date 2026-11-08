@@ -62,6 +62,11 @@ class CiReviewBinding(CiReviewRequest):
         max_length=255,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
     )
+    # Target-branch commit the provider reported when the review was accepted.
+    # Optional so bindings persisted before it was recorded stay valid.
+    base_sha: str | None = Field(
+        default=None, strict=True, pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$"
+    )
     review_url: str | None = Field(default=None, max_length=2048)
     review_title: str | None = Field(default=None, max_length=1024)
     review_description: str | None = Field(default=None, max_length=16384)
@@ -199,6 +204,8 @@ class CiExecutionResponse(BaseModel):
     pr_number: int
     provider_pr_id: str
     head_sha: str
+    # Base commit recorded when the review was accepted; null on older rows.
+    base_sha: str | None = None
     status: str
     start_time: datetime | None
     end_time: datetime | None

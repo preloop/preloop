@@ -90,6 +90,13 @@ class WebhookEndpointRead(BaseModel):
     last_response_code: Optional[int] = None
     last_error: Optional[str] = None
     created_at: Optional[datetime] = None
+    # ``http`` posts to ``url``; ``github_dispatch`` sends a GitHub
+    # repository_dispatch to the subscription's bound repository.
+    delivery_kind: str = "http"
+    dispatch_event_type: Optional[str] = None
+    # Whether a dispatch credential is stored. The credential itself is never
+    # returned.
+    dispatch_credential_configured: bool = False
 
 
 class WebhookEndpointCreated(WebhookEndpointRead):

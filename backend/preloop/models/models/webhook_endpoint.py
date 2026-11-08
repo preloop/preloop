@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -32,6 +33,12 @@ from .base import Base
 SOURCE_ACCOUNT = "account"
 SOURCE_APPROVAL_WORKFLOW = "approval_workflow"
 
+# ``webhook_endpoint.delivery_kind`` values. ``github_dispatch`` is only valid
+# on a restricted CI completion subscription: the delivery is a GitHub
+# ``repository_dispatch`` to the subscription's bound repository.
+DELIVERY_KIND_HTTP = "http"
+DELIVERY_KIND_GITHUB_DISPATCH = "github_dispatch"
+
 # ``webhook_delivery.status`` values.
 DELIVERY_PENDING = "pending"
 DELIVERY_DELIVERED = "delivered"
@@ -42,6 +49,20 @@ class WebhookEndpoint(Base):
     """One registered outbound target for one account."""
 
     __tablename__ = "webhook_endpoint"
+    __table_args__ = (
+        CheckConstraint(
+            "delivery_kind IN ('http', 'github_dispatch')",
+            name="ck_webhook_endpoint_delivery_kind",
+        ),
+        CheckConstraint(
+            "(delivery_kind = 'http' AND dispatch_event_type IS NULL "
+            "AND dispatch_token_encrypted IS NULL) OR "
+            "(delivery_kind = 'github_dispatch' AND dispatch_event_type IS NOT NULL "
+            "AND dispatch_token_encrypted IS NOT NULL "
+            "AND ci_subscription_binding IS NOT NULL)",
+            name="ck_webhook_endpoint_dispatch_settings",
+        ),
+    )
 
     ci_principal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -101,6 +122,20 @@ class WebhookEndpoint(Base):
     )
     last_response_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    delivery_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=DELIVERY_KIND_HTTP,
+        server_default=DELIVERY_KIND_HTTP,
+    )
+    # ``repository_dispatch`` event_type the publisher workflow listens for.
+    dispatch_event_type: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    # Fernet ciphertext of the GitHub token used only to call
+    # ``POST /repos/{owner}/{repo}/dispatches``. Never returned by any read and
+    # never passed to an execution, runner or agent environment.
+    dispatch_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class WebhookDelivery(Base):

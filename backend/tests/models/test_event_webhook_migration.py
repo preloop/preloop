@@ -72,6 +72,9 @@ def test_upgrade_after_downgrade_rebuilds_the_original_orm_shape(db_session):
         "ci_principal_id",
         "initiating_ci_key_id",
         "ci_subscription_binding",
+        "delivery_kind",
+        "dispatch_event_type",
+        "dispatch_token_encrypted",
     }
     expected_delivery = {c.name for c in WebhookDelivery.__table__.columns}
 

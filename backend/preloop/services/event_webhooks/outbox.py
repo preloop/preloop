@@ -59,6 +59,8 @@ class EnqueueResult:
     delivery_ids: list[uuid.UUID] = field(default_factory=list)
     endpoints_matched: int = 0
     skipped_queue_full: int = 0
+    # True when the enqueue raised and nothing was recorded.
+    failed: bool = False
 
 
 def _utcnow() -> datetime:
@@ -350,7 +352,19 @@ def enqueue_event(
         result.delivery_ids = _insert_deliveries(db, rows)
         return result
     except Exception:  # noqa: BLE001 - emitting must never break the caller
-        logger.warning("Failed to enqueue webhook event %s", event_type, exc_info=True)
+        # Error level: the event is lost for every subscriber, and nothing
+        # retries an enqueue. Error logs reach the deployment's error tracker.
+        logger.error(
+            "Failed to enqueue webhook event %s for subject %s",
+            event_type,
+            subject_id,
+            exc_info=True,
+            extra={
+                "webhook_event_type": event_type,
+                "webhook_subject_id": str(subject_id) if subject_id else None,
+            },
+        )
+        result.failed = True
         return result
 
 

@@ -1811,7 +1811,23 @@ def get_execution_tool_evidence(
     return result
 
 
-@router.get("/flows/executions/{execution_id}/result")
+@router.get(
+    "/flows/executions/{execution_id}/result",
+    responses={
+        404: {
+            "description": (
+                "The execution does not exist for this caller, or it finished "
+                "without reporting a result artifact."
+            )
+        },
+        409: {
+            "description": (
+                "The execution exists but has not finished. ``detail.code`` is "
+                "``result_pending`` and ``detail.status`` is the current status."
+            )
+        },
+    },
+)
 @require_permission("view_flows", ci_action=CiAction.READ_RESULT)
 def get_flow_execution_result(
     *,
@@ -1823,7 +1839,19 @@ def get_flow_execution_result(
 
     Eval/observe flows write ``/workspace/result.json`` as their final
     report; the runner captures it as a first-class execution artifact.
-    Returns 404 if the execution does not exist or reported no result.
+
+    Status codes tell the three empty cases apart:
+
+    - 404 ``Flow execution not found``: no such execution for this caller.
+    - 409 with ``detail.code == "result_pending"``: the execution exists but
+      has not reached a terminal status, so no result is final yet. Retry
+      after the execution finishes; ``detail.status`` is its current status.
+    - 404 ``Flow execution did not report a result artifact``: the execution
+      is terminal and reported no result. This will not change.
+
+    The result is persisted with the terminal status, before
+    ``flow.execution.finished`` is queued, so a caller notified of completion
+    never receives 409 for that execution.
 
     ``evidence`` is the persisted receipt only: bounded, account-scoped,
     no decrypt. Availability is not integrity proof; download
@@ -1842,7 +1870,7 @@ def get_flow_execution_result(
             db, current_user, execution_id, CiAction.READ_RESULT
         )
         if execution.result is None:
-            raise HTTPException(404, "Flow execution did not report a result artifact")
+            _raise_result_missing(execution)
         withheld = ci_result_withheld_paths(execution.result)
         return {
             "execution_id": str(execution.id),
@@ -1861,10 +1889,7 @@ def get_flow_execution_result(
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
     if execution.result is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Flow execution did not report a result artifact",
-        )
+        _raise_result_missing(execution)
     return {
         "execution_id": str(execution.id),
         "status": execution.status,
@@ -1874,6 +1899,35 @@ def get_flow_execution_result(
         # when the flow sets none.
         "schema_validation": _public_schema_validation(execution),
     }
+
+
+RESULT_PENDING_CODE = "result_pending"
+
+
+def _raise_result_missing(execution: Any) -> NoReturn:
+    """Raise 409 while the execution can still report, else the stable 404.
+
+    Args:
+        execution: An execution the caller may read that has no result.
+
+    Raises:
+        HTTPException: 409 ``result_pending`` before a terminal status, 404
+            once the execution finished without reporting a result.
+    """
+    status = getattr(execution, "status", None)
+    if status not in CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": RESULT_PENDING_CODE,
+                "message": "Flow execution has not finished; no result yet",
+                "status": status,
+            },
+        )
+    raise HTTPException(
+        status_code=404,
+        detail="Flow execution did not report a result artifact",
+    )
 
 
 def _ci_schema_validation(

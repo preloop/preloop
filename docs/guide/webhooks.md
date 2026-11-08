@@ -293,6 +293,69 @@ A replay is a new generation of the same event id. The original rows are left
 as they are, so a dead-lettered attempt stays on the record, and the receiver
 sees the same `X-Preloop-Event-Id` with a new `X-Preloop-Delivery-Id`.
 
+## Restricted CI completion
+
+A completion subscription owned by a restricted CI identity (see
+[Completion subscriptions](flows/restricted-ci.md#completion-subscriptions))
+receives `flow.execution.finished` with a narrower `data` block, built from
+the execution's persisted state immediately before each attempt rather than
+from the emitter:
+
+| Field | Meaning |
+| --- | --- |
+| `execution_id`, `flow_id`, `project_id` | The owned execution and its bound flow and project |
+| `repository_identifier`, `repository_slug`, `tracker_type` | The bound provider repository |
+| `pr_number`, `provider_pr_id` | The reviewed pull request |
+| `head_sha` | The exact head commit the review checked out |
+| `base_branch`, `base_sha` | The target branch and the base commit the provider reported when the review was accepted (`base_sha` is `null` on executions accepted before it was recorded) |
+| `status` | The terminal status |
+| `result_ready` | Whether a result is stored |
+| `result_sha256` | SHA-256 of the canonical JSON of the `result` that `GET .../result` returns to the CI key (sorted keys, compact separators, UTF-8), or `null` |
+
+Preloop records no separate merge-base or diff digest; `head_sha` plus
+`base_sha` identify the reviewed snapshot.
+
+The result is stored with the terminal status before the event is queued, so
+`result_ready: true` means the result can be read now. An execution that is
+not yet terminal is never delivered. If an enqueue fails, the execution still
+completes and the failure is logged at error level; nothing retries it, so a
+publisher that must not miss a review should also handle a missing event, for
+example by reading the execution once after its own timeout.
+
+Delivery follows the same outbox, retry, dead-letter and circuit-breaker
+rules as every other endpoint (below). A delivery whose identity or grant was
+revoked after queueing is marked dead without being sent. Generic replay and
+test sends are refused for these endpoints. Receivers deduplicate on the
+envelope `id` and on `execution_id` plus `head_sha`.
+
+### GitHub repository_dispatch delivery
+
+A CI completion subscription can deliver as a GitHub `repository_dispatch`
+to the identity's bound repository instead of an HTTP POST, so a GitHub
+Actions workflow wakes up with no receiver of your own. GitHub passes no
+request headers to the workflow, so the signature travels inside
+`client_payload`:
+
+```json
+{
+  "event": "<the envelope, exactly the bytes that were signed>",
+  "signature": "t=1767225600,v1=<hex HMAC-SHA256 of t.event>",
+  "event_id": "<envelope id>",
+  "delivery_id": "<delivery id>",
+  "attempt": 1
+}
+```
+
+Verify `signature` against `event` with the subscription secret using the
+same scheme as `X-Preloop-Signature`, then parse `event`. Allow for the time
+a dispatch waits in GitHub's queue before the workflow starts; the example
+publisher accepts 30 minutes and deduplicates its publication per execution,
+so a replay inside that window publishes nothing new. GitHub answers `204`
+on success; any other status is a failed attempt and is retried as above.
+The payload stays far below GitHub's 10 top-level key and 64 KB limits; a
+delivery that would exceed them fails instead of being truncated. Setup is
+in [Completion by GitHub repository_dispatch](flows/restricted-ci.md#completion-by-github-repository_dispatch).
+
 ## Approval workflow webhooks
 
 An approval workflow sends its approval requests to a webhook configured in

@@ -12,7 +12,9 @@ from preloop.models.crud.base import CRUDBase
 from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.plugins.ci_authorization import register_ci_machine_authorizer
 from preloop.schemas.ci_principal import CiAction
+from preloop.services.ci_execution import public_ci_result
 from preloop.services.event_webhooks import outbox
+from preloop.services.execution_tool_evidence import digest
 from tests.api.test_ci_execution import review_binding
 from tests.api.test_ci_principal import ci_resources as create_ci_resources
 from tests.api.test_ci_principal import provision
@@ -76,6 +78,11 @@ def test_valid_callback_uses_persisted_correlation_without_runtime_material(
         "head_sha": "a" * 40,
         "status": "SUCCEEDED",
         "result_ready": True,
+        "tracker_type": context.tracker_type,
+        "repository_slug": context.repository_slug,
+        "base_branch": "develop",
+        "base_sha": None,
+        "result_sha256": digest(public_ci_result(execution.result)),
     }
     serialized = json.dumps(payload, default=str)
     for trusted in (
@@ -726,3 +733,30 @@ def test_pre_post_revalidation_preserves_already_terminal_delivery(
     assert delivery.attempt_count == 2
     assert delivery.last_error == "existing outcome"
     assert delivery.payload == original_payload
+
+
+def test_callback_carries_recorded_base_revision(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """The completion names the base commit recorded when the review was accepted."""
+    from preloop.schemas.ci_subscription import CiSubscriptionCreate
+
+    _, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    endpoint, _ = crud.crud_ci_subscription.create(
+        db_session,
+        context=context,
+        payload=CiSubscriptionCreate(url="https://example.com/completed"),
+    )
+    binding = review_binding(context).model_copy(update={"base_sha": "b" * 40})
+    execution = crud.crud_ci_execution.create(
+        db_session, context=context, binding=binding, event={}
+    )
+    CRUDBase(models.FlowExecution).update(
+        db_session, db_obj=execution, obj_in={"status": "FAILED"}
+    )
+    payload = callback_payload(db_session, endpoint, execution.id)
+    assert payload["base_sha"] == "b" * 40
+    assert payload["head_sha"] == "a" * 40
+    assert payload["result_ready"] is False
+    assert payload["result_sha256"] is None
