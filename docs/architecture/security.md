@@ -112,9 +112,9 @@ credentials, and single-purpose keys (`report_discovery`,
 (`backend/preloop/api/auth/key_scopes.py`). Personal API keys without scopes
 keep their previous behaviour.
 
-Human administrators provision a restricted CI identity through ten
+Human administrators provision a restricted CI identity through eleven
 authenticated `/api/v1/ci-identities` routes: capabilities, preview, list,
-create, show, update, key issue, key rotate, key revoke, and
+create, show, update, retire, key issue, key rotate, key revoke, and
 completion-subscription create. The console Restricted CI page and `preloop ci`
 use that same lifecycle. Generic REST, MCP, model gateway, WebSocket and
 session exchange authentication cannot treat a restricted key as its issuing
@@ -205,9 +205,14 @@ principal ownership and narrowing to the previous key/current grant intersection
 Revoking one key does not stop existing work or transfer/delete owned resources.
 Disable a principal to suspend all its machine access; stopping existing runs is
 a separate administrator action. Principals and bound resources use restrictive
-foreign keys to preserve attribution: retire identities by disabling them,
-retain historical owned rows, and explicitly remove retained dependent records
-before resource deletion. Deleting a human retains the principal's nullable
+foreign keys to preserve attribution. Disabling is reversible and keeps the
+flow binding. Retiring (`POST /api/v1/ci-identities/{id}/retire`) is permanent:
+it disables the principal, revokes all of its keys and clears
+`ci_principal.flow_id`, so the bound flow can be deleted, while the grant still
+records the original flow and owned rows keep their attribution. A retired
+principal cannot be re-enabled, reissued, subscribed or granted a result export;
+provision a new identity instead. Explicitly remove other retained dependent
+records before resource deletion. Deleting a human retains the principal's nullable
 administration attribution; existing key/user deletion semantics still revoke
 that human's keys. Schema rollback refuses restricted keys or retained principals
 rather than erase machine markers and turn a CI key into an owner key.

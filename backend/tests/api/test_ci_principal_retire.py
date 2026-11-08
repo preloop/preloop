@@ -5,6 +5,7 @@ its keys are revoked, ``flow_id`` is cleared, and the grant still records the
 original flow.
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import ci_identities, flows
 from preloop.models import crud, models
+from preloop.models.crud import ci_result_export
 from preloop.plugins.ci_authorization import register_ci_administrator
 from preloop.schemas.ci_administration import CiAdminUpdate
 from tests.api import test_ci_principal as ci_fixtures
@@ -142,3 +144,65 @@ async def test_flow_delete_points_to_retire_and_succeeds_after_it(
     db_session.expire_all()
     row = db_session.get(models.CiPrincipal, principal.id)
     assert row is not None and row.flow_id is None and row.is_active is False
+
+
+def test_retired_identity_cannot_create_subscription(
+    db_session: Session, ci_resources: Any, mocker: Any
+) -> None:
+    owner, _, _, _ = ci_resources
+    principal, key, _ = provision(db_session, ci_resources)
+    _retire(db_session, owner, principal.id)
+    mocker.patch.object(
+        crud.crud_ci_administration, "require_available", return_value=None
+    )
+    payload = SimpleNamespace(key_id=key.id)
+    before = db_session.query(models.WebhookEndpoint).count()
+
+    with pytest.raises(PermissionError, match="retired"):
+        crud.crud_ci_administration.create_subscription(
+            db_session, actor=owner, principal_id=principal.id, payload=payload
+        )
+
+    assert db_session.query(models.WebhookEndpoint).count() == before
+    assert (
+        db_session.query(models.AuditLog)
+        .filter(models.AuditLog.action == "ci_identity_administration_denied")
+        .filter(models.AuditLog.resource_id == str(principal.id))
+        .count()
+        == 1
+    )
+
+
+def test_retired_identity_cannot_consent_to_result_export(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, _, _ = ci_resources
+    principal, _, _ = provision(db_session, ci_resources)
+    _retire(db_session, owner, principal.id)
+
+    with pytest.raises(PermissionError, match="retired"):
+        ci_result_export.prepare_consent(
+            db_session,
+            actor=owner,
+            execution_id=ci_fixtures.uuid4(),
+            payload=SimpleNamespace(principal_id=principal.id),
+        )
+
+
+def test_denied_retire_is_audited_as_retire(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, _, _ = ci_resources
+    principal, _, _ = provision(db_session, ci_resources)
+    register_ci_administrator(lambda *_: False)
+
+    with pytest.raises(HTTPException):
+        _retire(db_session, owner, principal.id)
+
+    denials = (
+        db_session.query(models.AuditLog)
+        .filter(models.AuditLog.action == "ci_identity_administration_denied")
+        .filter(models.AuditLog.resource_id == str(principal.id))
+        .all()
+    )
+    assert denials and all(d.details["operation"] == "retire" for d in denials)

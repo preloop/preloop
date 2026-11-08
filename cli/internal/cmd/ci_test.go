@@ -150,6 +150,7 @@ func TestCIGetAndDeleteOmitJSONNullBody(t *testing.T) {
 		{"list"},
 		{"show", principal},
 		{"revoke", principal, key},
+		{"retire", principal},
 	} {
 		command := newCICommand(args[0])
 		command.SetOut(&bytes.Buffer{})
@@ -183,6 +184,7 @@ func TestCIRequestPaths(t *testing.T) {
 		{"create", "POST", ""}, {"update", "PATCH", "/principal"},
 		{"issue", "POST", "/principal/keys"}, {"rotate", "POST", "/principal/keys/key/rotate"},
 		{"revoke", "DELETE", "/principal/keys/key"}, {"subscribe", "POST", "/principal/subscriptions"},
+		{"retire", "POST", "/principal/retire"},
 	} {
 		args := []string{}
 		if strings.Contains(test.path, "principal") {
@@ -195,5 +197,12 @@ func TestCIRequestPaths(t *testing.T) {
 		if method != test.method || path != test.path {
 			t.Fatalf("%s: %s %s", test.operation, method, path)
 		}
+	}
+}
+
+func TestCISafeMetadataKeepsRetired(t *testing.T) {
+	out := ciSafeMetadata(map[string]interface{}{"retired": true, "hidden": "x"})
+	if got := out.(map[string]interface{}); got["retired"] != true || got["hidden"] != nil {
+		t.Fatalf("retired must reach stdout, unknown fields must not: %v", got)
 	}
 }

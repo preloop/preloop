@@ -274,6 +274,9 @@ export class CiIdentitiesView extends LitElement {
     if (!confirmed) return;
     void this.run(async () => {
       await ciAdministration.retire(identity.id);
+      // A retired identity has no controls, so close any editor open on it.
+      if (this.editId === identity.id) this.editId = '';
+      if (this.subscriptionId === identity.id) this.subscriptionId = '';
       await this.refreshRows();
     });
   }
@@ -587,7 +590,7 @@ export class CiIdentitiesView extends LitElement {
                         </p>
                         <p>Actions: ${identity.grant.actions.join(', ')}</p>
                         ${this.manage ? this.controls(identity) : nothing}
-                        ${this.manage && this.editId === identity.id ? html`${this.actionChoices(this.editActions, identity.grant.actions, (actions) => (this.editActions = actions))}<button ?disabled=${this.busy || !this.editActions.length} @click=${() => this.narrow(identity)}>Save narrower grant</button><button @click=${() => (this.editId = '')}>Cancel narrowing</button>` : nothing}
+                        ${this.manage && !identity.retired && this.editId === identity.id ? html`${this.actionChoices(this.editActions, identity.grant.actions, (actions) => (this.editActions = actions))}<button ?disabled=${this.busy || !this.editActions.length} @click=${() => this.narrow(identity)}>Save narrower grant</button><button @click=${() => (this.editId = '')}>Cancel narrowing</button>` : nothing}
                         <div class="table-scroll">
                           <table>
                             <thead>

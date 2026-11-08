@@ -338,6 +338,9 @@ describe('restricted CI settings view', () => {
       ],
     });
     const element = await render();
+    button(element, 'Narrow grant').click();
+    await element.updateComplete;
+    expect(button(element, 'Save narrower grant')).to.not.equal(undefined);
     button(element, 'Retire identity').click();
     expect(await answerConfirmDialog(false)).to.contain('cannot be undone');
     await element.updateComplete;
@@ -350,6 +353,7 @@ describe('restricted CI settings view', () => {
     await waitUntil(() => element.textContent!.includes('Retired'));
     expect(button(element, 'Retire identity')).to.equal(undefined);
     expect(button(element, 'Reenable identity')).to.equal(undefined);
+    expect(button(element, 'Save narrower grant')).to.equal(undefined);
   });
   it('denies an operation when current management authority is revoked', async () => {
     let reads = 0;
