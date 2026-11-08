@@ -1,0 +1,52 @@
+# Copy into your repository only after completing local release checks.
+# This example is not enabled as a workflow in the Preloop repository.
+#
+# Callback-driven publisher for a native read-only Preloop review. Preloop
+# sends a repository_dispatch when the bound execution finishes (see
+# docs/guide/flows/restricted-ci.md, "Completion by GitHub repository_dispatch").
+# This job is the only holder of GitHub-write permissions: the Preloop
+# reviewer clones read-only and has no GitHub credential that can write.
+#
+# repository_dispatch workflows run from the default branch, so the
+# publisher code below is always your reviewed default-branch copy, never
+# pull-request code.
+name: Publish Preloop review
+on:
+  repository_dispatch:
+    # Must match the event_type configured on the dispatch subscription.
+    types: [preloop-review-completed]
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+concurrency:
+  # One publisher per dispatched event; a redelivery waits, then deduplicates.
+  group: preloop-publish-${{ github.event.client_payload.event_id }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the signed completion and publish review and check
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+          # Restricted CI key with execution:read and execution:result:read.
+          PRELOOP_CI_TOKEN: ${{ secrets.PRELOOP_CI_TOKEN }}
+          # Signing secret returned once when the dispatch subscription was created.
+          PRELOOP_CALLBACK_SECRET: ${{ secrets.PRELOOP_CALLBACK_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_URL: ${{ vars.PRELOOP_URL }}
+          CI_PROJECT: ${{ vars.PRELOOP_PROJECT_ID }}
+          CI_FLOW: ${{ vars.PRELOOP_FLOW_ID }}
+          CI_ACCOUNT: ${{ vars.PRELOOP_ACCOUNT_ID }}
+        # client_payload is read from GITHUB_EVENT_PATH by the script; it is
+        # never interpolated into this shell command.
+        run: >-
+          python scripts/restricted_ci_publish.py
+          --url "$CI_URL" --project "$CI_PROJECT" --flow "$CI_FLOW"
+          --account "$CI_ACCOUNT" --repository "$GITHUB_REPOSITORY"

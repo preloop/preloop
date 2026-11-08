@@ -573,4 +573,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert session_keys.down_revision == "20261202_report_policy_merge"
     retire = script.get_revision("20261204_ci_principal_retire")
     assert retire.down_revision == "20261203_session_keys_idx"
-    assert script.get_heads() == ["20261204_ci_principal_retire"]
+    dispatch_sink = script.get_revision("20261205_ci_dispatch_sink")
+    assert dispatch_sink.down_revision == "20261204_ci_principal_retire"
+    assert script.get_heads() == ["20261205_ci_dispatch_sink"]

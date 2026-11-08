@@ -75,6 +75,7 @@ def test_projection_result_and_rotation(
         "pr_number",
         "provider_pr_id",
         "head_sha",
+        "base_sha",
         "status",
         "start_time",
         "end_time",
@@ -341,6 +342,7 @@ def test_ci_reads_do_not_load_workspace_archive(
     execution_id = execution.id
     execution.workspace_snapshot = b"synthetic-archive" * 65536
     execution.result = {"review": "synthetic result"}
+    execution.status = "SUCCEEDED"
     db_session.flush()
     db_session.expunge_all()
     statements: list[str] = []
@@ -367,3 +369,66 @@ def test_ci_reads_do_not_load_workspace_archive(
     assert response.status_code == 200, response.text
     assert statements
     assert all("workspace_snapshot" not in sql for sql in statements)
+
+
+@pytest.mark.parametrize("status", ["PENDING", "STARTING", "RUNNING", "PARKED"])
+def test_result_of_unfinished_execution_is_pending_not_missing(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    status: str,
+) -> None:
+    """409 result_pending separates "not finished" from "not found"."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    CRUDBase(models.FlowExecution).update(
+        db_session, db_obj=execution, obj_in={"status": status}
+    )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "result_pending",
+        "message": "Flow execution has not finished; no result yet",
+        "status": status,
+    }
+
+
+def test_result_of_finished_execution_without_result_stays_404(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    """A terminal execution with no result keeps the existing 404 contract."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    CRUDBase(models.FlowExecution).update(
+        db_session, db_obj=execution, obj_in={"status": "FAILED"}
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result", headers=headers
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Flow execution did not report a result artifact"
+    )
+    missing = client.get(f"/api/v1/flows/executions/{uuid4()}/result", headers=headers)
+    assert missing.status_code == 404
+
+
+def test_parked_checkpoint_is_not_served_as_the_final_result(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    """A stored checkpoint on an unfinished execution still answers 409."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    CRUDBase(models.FlowExecution).update(
+        db_session,
+        db_obj=execution,
+        obj_in={"status": "PARKED", "result": {"review": "checkpoint"}},
+    )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "result_pending"
+    assert "checkpoint" not in response.text

@@ -15,6 +15,8 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
     CiAdminCreate,
+    CiAdminDispatchSubscription,
+    CiAdminDispatchToken,
     CiAdminIdentityRead,
     CiAdminIssue,
     CiAdminIssued,
@@ -24,7 +26,10 @@ from preloop.schemas.ci_administration import (
     CiAdminSubscription,
     CiAdminUpdate,
 )
-from preloop.schemas.webhook_endpoint import WebhookEndpointCreated
+from preloop.schemas.webhook_endpoint import (
+    WebhookEndpointCreated,
+    WebhookEndpointRead,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ci-identities", tags=["Restricted CI administration"])
@@ -215,3 +220,61 @@ def create_subscription(
         return WebhookEndpointCreated(**_to_read(endpoint).model_dump(), secret=secret)
 
     return _call(create)
+
+
+@router.post(
+    "/{principal_id}/github-dispatch-subscriptions",
+    response_model=WebhookEndpointCreated,
+    status_code=201,
+)
+def create_github_dispatch_subscription(
+    principal_id: UUID,
+    payload: CiAdminDispatchSubscription,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> WebhookEndpointCreated:
+    """Deliver this identity's completion as a GitHub repository_dispatch.
+
+    The dispatch is sent to the identity's bound GitHub repository with the
+    given ``event_type``. Its ``client_payload`` carries the signed
+    ``flow.execution.finished`` envelope; verify it with the signing secret
+    returned once in this response. The GitHub token needs ``contents: write``
+    on that repository; it is stored encrypted, never returned and never
+    passed to an execution.
+    """
+    from preloop.api.endpoints.event_webhooks import _to_read
+
+    def create() -> WebhookEndpointCreated:
+        endpoint, secret = crud.crud_ci_administration.create_dispatch_subscription(
+            db, actor=actor, principal_id=principal_id, payload=payload
+        )
+        return WebhookEndpointCreated(**_to_read(endpoint).model_dump(), secret=secret)
+
+    return _call(create)
+
+
+@router.put(
+    "/{principal_id}/github-dispatch-subscriptions/{endpoint_id}/token",
+    response_model=WebhookEndpointRead,
+)
+def replace_github_dispatch_token(
+    principal_id: UUID,
+    endpoint_id: UUID,
+    payload: CiAdminDispatchToken,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> WebhookEndpointRead:
+    """Replace the stored GitHub dispatch token; the value is never returned."""
+    from preloop.api.endpoints.event_webhooks import _to_read
+
+    return _call(
+        lambda: _to_read(
+            crud.crud_ci_administration.replace_dispatch_token(
+                db,
+                actor=actor,
+                principal_id=principal_id,
+                endpoint_id=endpoint_id,
+                payload=payload,
+            )
+        )
+    )

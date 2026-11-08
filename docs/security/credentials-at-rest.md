@@ -214,4 +214,5 @@ tracked as follow-up work.
 | `webhook.secret` | Sealed (`EncryptedText`) | `20261119_credentials_at_rest` |
 | `webhook_endpoint.initiating_ci_key_id` | Not a secret: foreign key | `20261004_ci_principal` |
 | `webhook_endpoint.secret_encrypted` | Fernet | `20260908_event_webhooks` |
+| `webhook_endpoint.dispatch_token_encrypted` | Fernet; never returned by any read, used only by the delivery worker | `20261205_ci_dispatch_sink` |
 | `webhook_endpoint.secret_hint` | Not a secret: last characters shown in the console | `20260908_event_webhooks` |

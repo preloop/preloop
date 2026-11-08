@@ -184,6 +184,7 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
             }
             if pr.get("source_branch") is not None:
                 review_metadata["review_source_branch"] = pr["source_branch"]
+        base_sha = _provider_base_sha(context.tracker_type, pr)
         return CiReviewBinding(
             **values,
             version=1,
@@ -191,12 +192,26 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
             head_sha=request.head_sha,
             provider_pr_id=str(provider_id),
             base_branch=branch,
+            base_sha=base_sha,
             **review_metadata,
         )
     except ValueError:
         raise CiReviewDeniedError(
             "Restricted CI pull request verification denied"
         ) from None
+
+
+def _provider_base_sha(tracker_type: str, pr: dict[str, Any]) -> str | None:
+    """Return the provider-reported base commit, or None when it is not a SHA."""
+    if tracker_type == "github":
+        base = pr.get("base")
+        sha = base.get("sha") if isinstance(base, dict) else None
+    else:
+        refs = pr.get("diff_refs")
+        sha = refs.get("base_sha") if isinstance(refs, dict) else None
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", sha):
+        return sha
+    return None
 
 
 def _bounded_provider_text(value: Any, limit: int) -> str:
@@ -308,6 +323,7 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "pr_number": binding.pr_number,
         "provider_pr_id": binding.provider_pr_id,
         "head_sha": binding.head_sha,
+        "base_sha": binding.base_sha,
         "status": execution.status,
         "start_time": execution.start_time,
         "end_time": execution.end_time,
@@ -405,6 +421,9 @@ async def ensure_ci_dispatch_admission(
         "review_description",
         "review_author",
         "review_source_branch",
+        # The target branch may advance between acceptance and launch; the
+        # recorded base is the one observed at acceptance.
+        "base_sha",
     }
     if current.model_dump(exclude=presentation_fields) != expected.model_dump(
         exclude=presentation_fields

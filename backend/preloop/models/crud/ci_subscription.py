@@ -1,6 +1,7 @@
 """Principal-owned subscriptions and fresh trusted completion eligibility."""
 
 from typing import Any
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -9,6 +10,10 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud.ci_principal import CiAuthorizationContext, crud_ci_principal
 from preloop.models.crud.flow_execution import CRUDFlowExecution
+from preloop.models.models.webhook_endpoint import (
+    DELIVERY_KIND_GITHUB_DISPATCH,
+    DELIVERY_KIND_HTTP,
+)
 from preloop.schemas.ci_execution import CiReviewBinding
 from preloop.schemas.ci_principal import CiAction
 from preloop.schemas.ci_subscription import (
@@ -46,6 +51,66 @@ def is_ci_endpoint(endpoint: models.WebhookEndpoint) -> bool:
     )
 
 
+def is_github_dispatch(endpoint: models.WebhookEndpoint) -> bool:
+    """Whether completion for this endpoint is a GitHub repository_dispatch."""
+    return getattr(endpoint, "delivery_kind", None) == DELIVERY_KIND_GITHUB_DISPATCH
+
+
+def github_api_base(tracker_url: str | None) -> str:
+    """Return the REST API root for a bound GitHub integration.
+
+    github.com integrations use ``https://api.github.com``; a GitHub
+    Enterprise Server integration uses ``<host>/api/v3``.
+
+    Raises:
+        ValueError: When the integration URL is not a plain HTTPS origin.
+    """
+    if tracker_url is None:
+        return "https://api.github.com"
+    parsed = urlsplit(tracker_url.rstrip("/"))
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Unsupported GitHub integration URL")
+    if parsed.hostname in {"github.com", "api.github.com", "www.github.com"}:
+        return "https://api.github.com"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/api/v3"):
+        path = f"{path}/api/v3"
+    return f"https://{parsed.netloc}{path}"
+
+
+def github_dispatch_url(binding: CiSubscriptionBinding) -> str:
+    """Derive the repository_dispatch URL from the immutable binding only.
+
+    The stored ``url`` column is display only for dispatch endpoints; every
+    delivery recomputes the target from the binding, so no update can point
+    the dispatch credential at another host or repository.
+
+    Raises:
+        ValueError: When the binding is not a GitHub repository.
+    """
+    if binding.tracker_type != "github":
+        raise ValueError("GitHub dispatch requires a GitHub repository binding")
+    parts = binding.repository_slug.split("/")
+    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Unsupported GitHub repository slug")
+    owner, repo = (quote(part, safe="") for part in parts)
+    return f"{github_api_base(binding.tracker_url)}/repos/{owner}/{repo}/dispatches"
+
+
+def delivery_target(endpoint: models.WebhookEndpoint) -> str:
+    """The URL a delivery for this endpoint is sent to."""
+    if is_github_dispatch(endpoint):
+        return github_dispatch_url(_binding(endpoint))
+    return endpoint.url
+
+
 def _snapshot(context: CiAuthorizationContext) -> CiSubscriptionBinding:
     values = {name: getattr(context, name) for name in (*_STABLE_FIELDS, "key_id")}
     return CiSubscriptionBinding(version=1, **values)
@@ -70,9 +135,28 @@ def _binding(endpoint: models.WebhookEndpoint) -> CiSubscriptionBinding:
         or endpoint.source != "account"
         or endpoint.approval_workflow_id is not None
         or endpoint.created_by_user_id is not None
+        or (
+            getattr(endpoint, "delivery_kind", None) not in (None, DELIVERY_KIND_HTTP)
+            and (
+                not is_github_dispatch(endpoint)
+                or binding.tracker_type != "github"
+                or not endpoint.dispatch_event_type
+                or not endpoint.dispatch_token_encrypted
+            )
+        )
     ):
         raise ValueError("Invalid CI subscription attribution")
     return binding
+
+
+def _result_digest(result: Any) -> str | None:
+    """Digest of the result projection served to the CI principal, or None."""
+    if result is None:
+        return None
+    from preloop.services.ci_execution import public_ci_result
+    from preloop.services.execution_tool_evidence import digest
+
+    return digest(public_ci_result(result))
 
 
 def _validate_url(url: str) -> None:
@@ -108,10 +192,22 @@ class CRUDCiSubscription:
         payload: CiSubscriptionCreate,
         max_endpoints: int = 20,
         commit: bool = True,
+        dispatch: tuple[str, str] | None = None,
     ) -> tuple[models.WebhookEndpoint, str]:
-        """Persist after explicit machine or human authority has been checked."""
+        """Persist after explicit machine or human authority has been checked.
+
+        Args:
+            dispatch: ``(event_type, token)`` for a GitHub repository_dispatch
+                endpoint. Only the human administration path passes it.
+        """
         fresh = context
         payload = CiSubscriptionCreate.model_validate(payload)
+        if dispatch is not None:
+            payload = CiSubscriptionCreate(
+                url=github_dispatch_url(_snapshot(fresh)),
+                description=payload.description,
+                active=payload.active,
+            )
         _validate_url(payload.url)
         if (
             db.query(models.WebhookEndpoint)
@@ -137,6 +233,11 @@ class CRUDCiSubscription:
             secret_encrypted=encrypt_value(secret),
             secret_hint=secret_hint(secret),
         )
+        if dispatch is not None:
+            event_type, token = dispatch
+            endpoint.delivery_kind = DELIVERY_KIND_GITHUB_DISPATCH
+            endpoint.dispatch_event_type = event_type
+            endpoint.dispatch_token_encrypted = encrypt_value(token)
         db.add(endpoint)
         if commit:
             db.commit()
@@ -229,6 +330,12 @@ class CRUDCiSubscription:
         )
         fields = payload.model_dump(exclude_unset=True)
         fields.pop("event_types", None)
+        if (
+            is_github_dispatch(endpoint)
+            and "url" in fields
+            and fields["url"] != endpoint.url
+        ):
+            raise ValueError("A GitHub dispatch target follows the bound repository")
         if "url" in fields:
             _validate_url(fields["url"])
         for name, value in fields.items():
@@ -293,6 +400,22 @@ class CRUDCiSubscription:
         db.refresh(endpoint)
         return endpoint, secret
 
+    def replace_dispatch_token(
+        self, db: Session, *, endpoint: models.WebhookEndpoint, token: str
+    ) -> models.WebhookEndpoint:
+        """Store a new dispatch credential and close the circuit, uncommitted.
+
+        Raises:
+            LookupError: When the endpoint is not a GitHub dispatch endpoint.
+        """
+        if not is_github_dispatch(endpoint):
+            raise LookupError("Webhook endpoint not found")
+        endpoint.dispatch_token_encrypted = encrypt_value(token)
+        endpoint.consecutive_failures = 0
+        endpoint.circuit_opened_at = None
+        db.flush()
+        return endpoint
+
     def callback_payload(
         self,
         db: Session,
@@ -353,6 +476,14 @@ class CRUDCiSubscription:
                 "head_sha": review.head_sha,
                 "status": execution.status,
                 "result_ready": execution.result is not None,
+                # The reviewed snapshot: bound repository, PR and both
+                # revisions as accepted from the provider, plus the digest of
+                # the result a reader of ``.../result`` will receive.
+                "tracker_type": review.tracker_type,
+                "repository_slug": review.repository_slug,
+                "base_branch": review.base_branch,
+                "base_sha": review.base_sha,
+                "result_sha256": _result_digest(execution.result),
             }
         except (
             PermissionError,
@@ -403,11 +534,15 @@ class CRUDCiSubscription:
             if endpoint is not None
             else None
         )
-        reason = (
-            blocked_target_reason(endpoint.url)
-            if data is not None and endpoint is not None
-            else None
-        )
+        try:
+            target = (
+                delivery_target(endpoint)
+                if data is not None and endpoint is not None
+                else None
+            )
+        except (ValidationError, ValueError, TypeError):
+            target, data = None, None
+        reason = blocked_target_reason(target) if target is not None else None
         if data is not None and reason == "unresolvable":
             raise RuntimeError("Restricted CI callback target resolution failed")
         if data is None or endpoint is None or reason:

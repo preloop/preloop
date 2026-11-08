@@ -8181,6 +8181,112 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/github-dispatch-subscriptions:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Create Github Dispatch Subscription
+      description: 'Deliver this identity''s completion as a GitHub repository_dispatch.
+
+
+        The dispatch is sent to the identity''s bound GitHub repository with the
+
+        given ``event_type``. Its ``client_payload`` carries the signed
+
+        ``flow.execution.finished`` envelope; verify it with the signing secret
+
+        returned once in this response. The GitHub token needs ``contents: write``
+
+        on that repository; it is stored encrypted, never returned and never
+
+        passed to an execution.'
+      operationId: create_github_dispatch_subscription_api_v1_ci_identities__principal_id__github_dispatch_subscriptions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminDispatchSubscription'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/github-dispatch-subscriptions/{endpoint_id}/token:
+    put:
+      tags:
+      - Restricted CI administration
+      summary: Replace Github Dispatch Token
+      description: Replace the stored GitHub dispatch token; the value is never returned.
+      operationId: replace_github_dispatch_token_api_v1_ci_identities__principal_id__github_dispatch_subscriptions__endpoint_id__token_put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminDispatchToken'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/catalogue:
     get:
       tags:
@@ -17680,36 +17786,27 @@ paths:
       tags:
       - Flows
       summary: Get Flow Execution Result
-      description: 'Get the structured result artifact reported by a flow execution.
-
-
-        Eval/observe flows write ``/workspace/result.json`` as their final
-
-        report; the runner captures it as a first-class execution artifact.
-
-        Returns 404 if the execution does not exist or reported no result.
-
-
-        ``evidence`` is the persisted receipt only: bounded, account-scoped,
-
-        no decrypt. Availability is not integrity proof; download
-
-        ``GET .../evidence`` to verify digest.
-
-
-        A restricted CI credential (``execution:result:read``) reads only its own
-
-        execution and gets the correlation fields of the status projection,
-
-        including ``startup_receipt``, plus ``result`` (the captured document
-
-        without controller-private members), ``result_withheld_paths`` (JSON
-
-        Pointers of any withheld members; empty means ``result`` is the complete
-
-        captured document) and ``schema_validation`` (``valid``, ``error_count``
-
-        and ``errors``; messages are omitted when a member was withheld).'
+      description: "Get the structured result artifact reported by a flow execution.\n\
+        \nEval/observe flows write ``/workspace/result.json`` as their final\nreport;\
+        \ the runner captures it as a first-class execution artifact.\n\nStatus codes\
+        \ tell the three empty cases apart:\n\n- 404 ``Flow execution not found``:\
+        \ no such execution for this caller.\n- 409 with ``detail.code == \"result_pending\"\
+        ``: the execution exists but\n  has not reached a terminal status, so no result\
+        \ is final yet, even\n  when a checkpoint (for example of a parked run) is\
+        \ stored. Retry\n  after the execution finishes; ``detail.status`` is its\
+        \ current status.\n- 404 ``Flow execution did not report a result artifact``:\
+        \ the execution\n  is terminal and reported no result. This will not change.\n\
+        \nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
+        \ is queued, so a caller notified of completion\nnever receives 409 for that\
+        \ execution.\n\n``evidence`` is the persisted receipt only: bounded, account-scoped,\n\
+        no decrypt. Availability is not integrity proof; download\n``GET .../evidence``\
+        \ to verify digest.\n\nA restricted CI credential (``execution:result:read``)\
+        \ reads only its own\nexecution and gets the correlation fields of the status\
+        \ projection,\nincluding ``startup_receipt``, plus ``result`` (the captured\
+        \ document\nwithout controller-private members), ``result_withheld_paths``\
+        \ (JSON\nPointers of any withheld members; empty means ``result`` is the complete\n\
+        captured document) and ``schema_validation`` (``valid``, ``error_count``\n\
+        and ``errors``; messages are omitted when a member was withheld)."
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -17731,6 +17828,12 @@ paths:
                 additionalProperties: true
                 title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
                   Id  Result Get
+        '404':
+          description: The execution does not exist for this caller, or it finished
+            without reporting a result artifact.
+        '409':
+          description: The execution exists but has not finished. ``detail.code``
+            is ``result_pending`` and ``detail.status`` is the current status.
         '422':
           description: Validation Error
           content:
@@ -32423,6 +32526,66 @@ components:
       - grant
       title: CiAdminCreate
       description: Provision one stable identity and disclose one initial credential.
+    CiAdminDispatchSubscription:
+      properties:
+        token:
+          type: string
+          format: password
+          title: Token
+          writeOnly: true
+        key_id:
+          type: string
+          format: uuid
+          title: Key Id
+        event_type:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$
+          title: Event Type
+          default: preloop-review-completed
+        description:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Description
+        active:
+          type: boolean
+          title: Active
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - token
+      - key_id
+      title: CiAdminDispatchSubscription
+      description: 'Deliver completion as a GitHub repository_dispatch, not an HTTP
+        POST.
+
+
+        The target is always the identity''s bound GitHub repository; no URL is
+
+        accepted.'
+    CiAdminDispatchToken:
+      properties:
+        token:
+          type: string
+          format: password
+          title: Token
+          writeOnly: true
+      additionalProperties: false
+      type: object
+      required:
+      - token
+      title: CiAdminDispatchToken
+      description: 'A GitHub token that may call repository_dispatch on the bound
+        repository.
+
+
+        GitHub requires ``contents: write`` on that repository for the call. Use a
+
+        dedicated GitHub App installation or fine-grained token limited to the
+
+        one repository. The value is stored encrypted and never returned.'
     CiAdminIdentityRead:
       properties:
         id:
@@ -32679,6 +32842,11 @@ components:
         head_sha:
           type: string
           title: Head Sha
+        base_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Sha
         status:
           type: string
           title: Status
@@ -55616,6 +55784,19 @@ components:
             format: date-time
           - type: 'null'
           title: Created At
+        delivery_kind:
+          type: string
+          title: Delivery Kind
+          default: http
+        dispatch_event_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dispatch Event Type
+        dispatch_credential_configured:
+          type: boolean
+          title: Dispatch Credential Configured
+          default: false
         secret:
           type: string
           title: Secret
@@ -55707,6 +55888,19 @@ components:
             format: date-time
           - type: 'null'
           title: Created At
+        delivery_kind:
+          type: string
+          title: Delivery Kind
+          default: http
+        dispatch_event_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dispatch Event Type
+        dispatch_credential_configured:
+          type: boolean
+          title: Dispatch Credential Configured
+          default: false
       type: object
       required:
       - id

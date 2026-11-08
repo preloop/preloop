@@ -1,5 +1,6 @@
 """Human-only setup schemas; resource identity and secrets have separate lifetimes."""
 
+import re
 from datetime import datetime
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     StrictBool,
     field_validator,
     model_validator,
@@ -76,6 +78,47 @@ class CiAdminSubscription(CiSubscriptionCreate):
     """A real principal key is an audit anchor, not administrator authentication."""
 
     key_id: UUID
+
+
+# GitHub limits repository_dispatch ``event_type`` to 100 characters.
+DISPATCH_EVENT_TYPE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$"
+# Classic, fine-grained and GitHub App installation tokens share this alphabet.
+DISPATCH_TOKEN_PATTERN = r"^[A-Za-z0-9_]{20,1024}$"
+
+
+class CiAdminDispatchToken(BaseModel):
+    """A GitHub token that may call repository_dispatch on the bound repository.
+
+    GitHub requires ``contents: write`` on that repository for the call. Use a
+    dedicated GitHub App installation or fine-grained token limited to the
+    one repository. The value is stored encrypted and never returned.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    token: SecretStr
+
+    @field_validator("token")
+    @classmethod
+    def token_shape(cls, value: SecretStr) -> SecretStr:
+        """Reject values that cannot be a GitHub token, without echoing them."""
+        if not re.fullmatch(DISPATCH_TOKEN_PATTERN, value.get_secret_value()):
+            raise ValueError("Dispatch token has an unsupported format")
+        return value
+
+
+class CiAdminDispatchSubscription(CiAdminDispatchToken):
+    """Deliver completion as a GitHub repository_dispatch, not an HTTP POST.
+
+    The target is always the identity's bound GitHub repository; no URL is
+    accepted.
+    """
+
+    key_id: UUID
+    event_type: str = Field(
+        default="preloop-review-completed", pattern=DISPATCH_EVENT_TYPE_PATTERN
+    )
+    description: str | None = Field(default=None, max_length=255)
+    active: StrictBool = True
 
 
 class CiAdminKeyRead(BaseModel):

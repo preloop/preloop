@@ -14,6 +14,8 @@ from preloop.models.crud.ci_subscription import crud_ci_subscription
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
     CiAdminCreate,
+    CiAdminDispatchSubscription,
+    CiAdminDispatchToken,
     CiAdminIdentityRead,
     CiAdminIssue,
     CiAdminIssued,
@@ -500,6 +502,98 @@ class CRUDCiAdministration:
         principal_id: UUID,
         payload: CiAdminSubscription,
     ) -> tuple[models.WebhookEndpoint, str]:
+        """Human-authorize an HTTP completion callback for one principal."""
+        return self._create_subscription(
+            db, actor=actor, principal_id=principal_id, payload=payload
+        )
+
+    def create_dispatch_subscription(
+        self,
+        db: Session,
+        *,
+        actor: models.User,
+        principal_id: UUID,
+        payload: CiAdminDispatchSubscription,
+    ) -> tuple[models.WebhookEndpoint, str]:
+        """Human-authorize a GitHub repository_dispatch completion sink.
+
+        The dispatch credential is accepted only here and on the human token
+        replacement route: a restricted CI key can neither set nor read it.
+        """
+        receiver = CiAdminSubscription(
+            key_id=payload.key_id,
+            url="https://api.github.com",
+            description=payload.description,
+            active=payload.active,
+        )
+        return self._create_subscription(
+            db,
+            actor=actor,
+            principal_id=principal_id,
+            payload=receiver,
+            dispatch=(payload.event_type, payload.token.get_secret_value()),
+        )
+
+    def replace_dispatch_token(
+        self,
+        db: Session,
+        *,
+        actor: models.User,
+        principal_id: UUID,
+        endpoint_id: UUID,
+        payload: CiAdminDispatchToken,
+    ) -> models.WebhookEndpoint:
+        """Replace the stored dispatch credential of one dispatch subscription."""
+        self.require_available(db)
+        principal = self._principal(
+            db,
+            actor=actor,
+            principal_id=principal_id,
+            operation="create_subscription",
+        )
+        grant = CiGrant.model_validate(principal.grant)
+        self._authorize(
+            db,
+            actor=actor,
+            operation="create_subscription",
+            grant=grant,
+            principal_id=principal.id,
+        )
+        endpoint = (
+            db.query(models.WebhookEndpoint)
+            .populate_existing()
+            .filter(
+                models.WebhookEndpoint.id == endpoint_id,
+                models.WebhookEndpoint.account_id == principal.account_id,
+                models.WebhookEndpoint.ci_principal_id == principal.id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if endpoint is None:
+            raise LookupError("CI subscription not found")
+        crud_ci_subscription.replace_dispatch_token(
+            db, endpoint=endpoint, token=payload.token.get_secret_value()
+        )
+        crud_ci_principal._audit(
+            db,
+            actor=actor,
+            principal=principal,
+            operation="dispatch_token_replace",
+        )
+        db.commit()
+        db.refresh(endpoint)
+        return endpoint
+
+    def _create_subscription(
+        self,
+        db: Session,
+        *,
+        actor: models.User,
+        principal_id: UUID,
+        payload: CiAdminSubscription,
+        dispatch: tuple[str, str] | None = None,
+    ) -> tuple[models.WebhookEndpoint, str]:
         self.require_available(db)
         principal = self._principal(
             db,
@@ -581,13 +675,17 @@ class CRUDCiAdministration:
             payload.model_dump(exclude={"key_id"})
         )
         endpoint, secret = crud_ci_subscription._persist(
-            db, context=fresh, payload=receiver, commit=False
+            db, context=fresh, payload=receiver, commit=False, dispatch=dispatch
         )
         crud_ci_principal._audit(
             db,
             actor=actor,
             principal=principal,
-            operation="subscription_create",
+            operation=(
+                "subscription_create"
+                if dispatch is None
+                else "dispatch_subscription_create"
+            ),
             key_id=key.id,
         )
         db.commit()

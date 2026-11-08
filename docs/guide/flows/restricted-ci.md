@@ -539,6 +539,116 @@ flow, provider repository identifier, PR number/provider ID, exact SHA and
 terminal status. No general execution logs, artifacts or session contents are
 included in restricted results.
 
+The completion `data` block, the delivery and retry contract and replay
+handling are documented in
+[Restricted CI completion](../webhooks.md#restricted-ci-completion). It names
+the bound repository, PR number, head SHA and the base SHA recorded when the
+review was accepted, plus `result_sha256`, the digest of the result the CI key
+will read.
+
+### Result readiness
+
+Preloop stores the result together with the terminal status, then queues
+`flow.execution.finished`, and materializes each delivery from that stored
+state. A completion event therefore never arrives before its result:
+`result_ready: true` means `GET /api/v1/flows/executions/{id}/result` returns
+it now. `GET .../result` answers:
+
+- `200` with the result;
+- `409` with `detail.code: "result_pending"` and the current `detail.status`
+  while the execution has not finished, even if a checkpoint is stored, for
+  example while it is parked (retry after it finishes);
+- `404` when the execution does not exist for the caller, or finished without
+  reporting a result. This does not change later.
+
+## Completion by GitHub repository_dispatch
+
+Instead of a URL, a human administrator can have Preloop deliver the
+completion as a GitHub `repository_dispatch` to the identity's bound
+repository. A workflow in that repository then runs on completion: no
+polling and no callback receiver to host.
+
+```bash
+curl -X POST "$PRELOOP_URL/api/v1/ci-identities/$PRINCIPAL_ID/github-dispatch-subscriptions" \
+  -H "Authorization: Bearer $PRELOOP_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key_id": "<principal key id>", "event_type": "preloop-review-completed", "token": "<GitHub token>"}'
+```
+
+The principal's grant must include `subscription:create`, as for an HTTP
+subscription; removing it stops future dispatches, including queued retries.
+The response returns the signing secret once; store it as the publisher's
+`PRELOOP_CALLBACK_SECRET`. The target URL is always derived from the bound
+repository (`https://api.github.com/repos/{owner}/{repo}/dispatches`, or
+`<host>/api/v3/...` for GitHub Enterprise Server) and cannot be edited.
+Replace the token with
+`PUT /api/v1/ci-identities/{principal_id}/github-dispatch-subscriptions/{endpoint_id}/token`.
+
+**The dispatch token needs write access.** GitHub requires `contents: write`
+on the repository for `POST /repos/{owner}/{repo}/dispatches`. Use the
+narrowest credential you can:
+
+1. A dedicated GitHub App installed on this one repository with only
+   `contents: write` (preferred). Note that installation tokens expire after
+   one hour, so the stored token must be refreshed with the replace route by
+   your own automation, or use option 2.
+2. A fine-grained personal access token limited to this one repository with
+   only `Contents: read and write`, owned by a machine account.
+
+Do not reuse the publisher's credentials or the review integration's App.
+`contents: write` also allows pushing to the repository, so keep this token
+out of every workflow; Preloop holds it only to send the dispatch.
+
+The dispatch credential is configured only by a human administrator (a CI
+key is refused), stored encrypted on the subscription, never returned by any
+read, and used only by the delivery worker. It is never placed in the
+execution, the runner or the agent environment, so the read-only reviewer
+still holds no GitHub-write credential. Deleting the subscription deletes the
+token.
+
+## Callback-driven publisher example
+
+[`restricted-ci-publish.yml`](../../examples/restricted-ci-publish.yml) with
+`scripts/restricted_ci_publish.py` is a `repository_dispatch` publisher. The
+flow uses the native read-only mode described above:
+
+```json
+{
+  "agent_type": "codex",
+  "runner_pool": "server",
+  "git_clone_config": {
+    "enabled": true,
+    "publication_mode": "read_only",
+    "repositories": [{"project_id": "<project id>", "tracker_id": "<GitHub App tracker id>"}]
+  },
+  "allowed_mcp_tools": [],
+  "allowed_mcp_servers": []
+}
+```
+
+Give the principal key used by the publisher only `execution:read` and
+`execution:result:read`. Whatever starts reviews (for example a separate job
+calling `POST /api/v1/flows/{flow_id}/trigger`) needs only `flow:trigger`
+and no GitHub write permission. The publisher job:
+
+1. reads `client_payload` from the event file (never from the shell
+   command line) and verifies `signature` over `event` with
+   `PRELOOP_CALLBACK_SECRET`;
+2. re-fetches the execution and `/result` with `PRELOOP_CI_TOKEN` and
+   requires the execution, flow, project, repository, PR, head SHA, base SHA,
+   status and `result_sha256` to match the signed completion;
+3. reads the pull request with its own `GITHUB_TOKEN`. If the head or base
+   moved, it creates a `neutral` check run and publishes no review;
+4. otherwise publishes one COMMENT review on the exact head and one check run
+   (`success` or `failure`), using only that job's `GITHUB_TOKEN` with
+   `checks: write` and `pull-requests: write`. Both are deduplicated by
+   execution ID, so a redelivered dispatch publishes nothing new.
+
+GitHub calls use the Actions-provided `GITHUB_API_URL`, so the example also
+works on GitHub Enterprise Server. The example publishes only executions that
+stored a result; a run that
+finished without one ends the job with an error and publishes nothing.
+
 ## Operator-run GitHub Actions example
 
 Copy [the workflow example](../../examples/restricted-ci-review.yml) and

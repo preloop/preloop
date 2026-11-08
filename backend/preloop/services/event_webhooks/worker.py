@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,11 +25,15 @@ import httpx
 
 from preloop.config import settings
 from preloop.models import crud, models
-from preloop.models.crud.ci_subscription import is_ci_endpoint
+from preloop.models.crud.ci_subscription import (
+    delivery_target,
+    is_ci_endpoint,
+    is_github_dispatch,
+)
 from preloop.models.models.webhook_endpoint import (
     SOURCE_APPROVAL_WORKFLOW,
 )
-from preloop.services.event_webhooks import outbox
+from preloop.services.event_webhooks import github_dispatch, outbox
 from preloop.services.event_webhooks.signing import (
     ATTEMPT_HEADER,
     DELIVERY_ID_HEADER,
@@ -62,6 +66,10 @@ class PreparedDelivery:
     attempt: int
     body: bytes
     restricted_ci: bool = False
+    # Set only for a GitHub repository_dispatch endpoint. Kept out of repr so
+    # a logged PreparedDelivery cannot leak it.
+    dispatch_token: Optional[str] = field(default=None, repr=False)
+    dispatch_event_type: Optional[str] = None
 
 
 @dataclass
@@ -100,19 +108,33 @@ def prepare_claimed(
     except Exception:  # noqa: BLE001 - a broken secret is a delivery failure
         logger.warning("Webhook endpoint %s has an undecryptable secret", endpoint.id)
         return None
+    dispatch_token = None
+    try:
+        url = delivery_target(endpoint)
+        if is_github_dispatch(endpoint):
+            dispatch_token = decrypt_value(endpoint.dispatch_token_encrypted)
+            if not dispatch_token:
+                raise ValueError("empty dispatch credential")
+    except Exception:  # noqa: BLE001 - never post without a valid target
+        logger.warning("Webhook endpoint %s has no usable delivery target", endpoint.id)
+        return None
     body = json.dumps(delivery.payload, default=str, separators=(",", ":")).encode(
         "utf-8"
     )
     return PreparedDelivery(
         delivery_id=delivery.id,
         endpoint_id=endpoint.id,
-        url=endpoint.url,
+        url=url,
         secret=secret,
         event_id=str(delivery.event_id),
         event_type=delivery.event_type,
         attempt=delivery.attempt_count + 1,
         body=body,
         restricted_ci=is_ci_endpoint(endpoint),
+        dispatch_token=dispatch_token,
+        dispatch_event_type=(
+            endpoint.dispatch_event_type if dispatch_token is not None else None
+        ),
     )
 
 
@@ -154,6 +176,8 @@ async def post_delivery(
         The outcome to record. Any non-2xx or transport error is a failure;
         no response body is retained.
     """
+    if prepared.dispatch_token is not None:
+        return await post_github_dispatch(client, prepared)
     try:
         response = await client.post(
             prepared.url,
@@ -177,6 +201,64 @@ async def post_delivery(
         success=False,
         response_status=response.status_code,
         error=f"receiver returned HTTP {response.status_code}",
+    )
+
+
+async def post_github_dispatch(
+    client: httpx.AsyncClient, prepared: PreparedDelivery
+) -> AttemptOutcome:
+    """Send one delivery as a GitHub repository_dispatch.
+
+    GitHub answers 204 on success. Neither the request nor any error string
+    carries the dispatch credential; the response body is never read.
+
+    Args:
+        client: Shared HTTP client.
+        prepared: A prepared dispatch delivery.
+
+    Returns:
+        The outcome to record, classified exactly like an HTTP delivery.
+    """
+    try:
+        content = github_dispatch.request_body(
+            prepared.dispatch_event_type or "",
+            github_dispatch.client_payload(
+                envelope=prepared.body,
+                secret=prepared.secret,
+                event_id=prepared.event_id,
+                delivery_id=str(prepared.delivery_id),
+                attempt=prepared.attempt,
+            ),
+        )
+    except ValueError as exc:
+        return AttemptOutcome(
+            delivery_id=prepared.delivery_id, success=False, error=str(exc)
+        )
+    try:
+        response = await client.post(
+            prepared.url,
+            content=content,
+            headers=github_dispatch.request_headers(
+                prepared.dispatch_token or "", user_agent=USER_AGENT
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - transport errors are outcomes
+        return AttemptOutcome(
+            delivery_id=prepared.delivery_id,
+            success=False,
+            error=f"{type(exc).__name__}: GitHub dispatch request failed",
+        )
+    if 200 <= response.status_code < 300:
+        return AttemptOutcome(
+            delivery_id=prepared.delivery_id,
+            success=True,
+            response_status=response.status_code,
+        )
+    return AttemptOutcome(
+        delivery_id=prepared.delivery_id,
+        success=False,
+        response_status=response.status_code,
+        error=f"GitHub dispatch returned HTTP {response.status_code}",
     )
 
 

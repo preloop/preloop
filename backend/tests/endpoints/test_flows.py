@@ -1576,6 +1576,8 @@ async def test_get_flow_execution_result_no_artifact(
     execution = MagicMock()
     execution.id = execution_id
     execution.result = None
+    # A finished execution without a result; an unfinished one answers 409.
+    execution.status = "FAILED"
     mock_crud_flow_execution.get_without_workspace.return_value = execution
 
     with pytest.raises(HTTPException) as exc_info:

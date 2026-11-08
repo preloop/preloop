@@ -14,7 +14,17 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
-TERMINAL = {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"}
+# Mirrors CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES on the server.
+TERMINAL = {
+    "SUCCEEDED",
+    "FAILED",
+    "STOPPED",
+    "TIMEOUT",
+    "TIMED_OUT",
+    "ABORTED",
+    "CANCELLED",
+    "CANCELED",
+}
 CORRELATION = (
     "flow_id",
     "project_id",
@@ -22,6 +32,12 @@ CORRELATION = (
     "pr_number",
     "provider_pr_id",
     "head_sha",
+)
+
+# Snapshot fields added to the completion payload. Older servers omit them;
+# any other unknown member is still rejected.
+BINDING_FIELDS = frozenset(
+    {"tracker_type", "repository_slug", "base_branch", "base_sha", "result_sha256"}
 )
 
 
@@ -154,7 +170,11 @@ def verify_callback(
         "result_ready",
         *CORRELATION,
     }
-    if not isinstance(payload, dict) or set(payload) != required:
+    if (
+        not isinstance(payload, dict)
+        or not required <= set(payload)
+        or not set(payload) <= required | BINDING_FIELDS
+    ):
         raise VerificationError("Callback completion schema mismatch")
     if (
         payload["execution_id"] != persisted.get("execution_id")

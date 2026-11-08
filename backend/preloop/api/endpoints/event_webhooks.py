@@ -36,7 +36,7 @@ from preloop.api.auth.ci import get_current_actor
 from preloop.api.common import get_account_for_user
 from preloop.models import crud, models
 from preloop.models.crud.ci_principal import CiAuthorizationContext
-from preloop.models.crud.ci_subscription import is_ci_endpoint
+from preloop.models.crud.ci_subscription import is_ci_endpoint, is_github_dispatch
 from preloop.models.db.session import get_db_session
 from preloop.models.models.webhook_endpoint import (
     DELIVERY_DEAD,
@@ -147,6 +147,11 @@ def _to_read(endpoint: models.WebhookEndpoint) -> WebhookEndpointRead:
         last_response_code=endpoint.last_response_code,
         last_error=endpoint.last_error,
         created_at=getattr(endpoint, "created_at", None),
+        delivery_kind=getattr(endpoint, "delivery_kind", None) or "http",
+        dispatch_event_type=getattr(endpoint, "dispatch_event_type", None),
+        dispatch_credential_configured=bool(
+            getattr(endpoint, "dispatch_token_encrypted", None)
+        ),
     )
 
 
@@ -344,6 +349,14 @@ def update_webhook_endpoint(
         and fields["event_types"] != endpoint.event_types
     ):
         raise HTTPException(422, "Restricted CI callback filter is immutable")
+    if (
+        is_github_dispatch(endpoint)
+        and "url" in fields
+        and fields["url"] != endpoint.url
+    ):
+        raise HTTPException(
+            422, "A GitHub dispatch target follows the bound repository"
+        )
     if fields.get("url"):
         _reject_blocked_target(fields["url"])
     for name, value in fields.items():
