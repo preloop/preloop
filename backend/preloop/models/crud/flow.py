@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, List, Optional, Union
 from uuid import UUID
 
@@ -7,6 +8,39 @@ from sqlalchemy.orm import Query, Session, joinedload, load_only
 
 from .. import models, schemas
 from .base import CRUDBase
+
+
+@dataclass(frozen=True)
+class FlowReference:
+    """One row that holds a restricting foreign key to a flow."""
+
+    id: UUID
+    name: str
+    is_active: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class FlowDeleteBlockers:
+    """Rows that stop a flow from being deleted.
+
+    Names are only collected for rows in the caller's account; rows in
+    other accounts are counted but never described.
+    """
+
+    ci_identities: List[FlowReference] = dataclass_field(default_factory=list)
+    security_maintenance_releases: List[FlowReference] = dataclass_field(
+        default_factory=list
+    )
+    security_maintenance_baselines: int = 0
+    other_account_references: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(
+            self.ci_identities
+            or self.security_maintenance_releases
+            or self.security_maintenance_baselines
+            or self.other_account_references
+        )
 
 
 class CRUDFlow(CRUDBase[models.Flow]):
@@ -442,6 +476,81 @@ class CRUDFlow(CRUDBase[models.Flow]):
         db.commit()
         db.refresh(db_obj)
         return db_obj
+
+    def get_delete_blockers(
+        self, db: Session, *, flow_id: UUID, account_id: UUID
+    ) -> FlowDeleteBlockers:
+        """Return rows whose ON DELETE RESTRICT keys would block deleting a flow.
+
+        Covers CI identities bound to the flow, security maintenance releases
+        that name it as their audit, implementation or recheck flow, and
+        security maintenance baselines whose audit evidence is one of the
+        flow's executions (deleting the flow would delete that execution).
+
+        Args:
+            db: The database session.
+            flow_id: The flow that would be deleted.
+            account_id: The caller's account; only its rows are named.
+
+        Returns:
+            The blocking references. Falsy when the flow can be deleted.
+        """
+        ci_rows = (
+            db.query(
+                models.CiPrincipal.id,
+                models.CiPrincipal.name,
+                models.CiPrincipal.is_active,
+                models.CiPrincipal.account_id,
+            )
+            .filter(models.CiPrincipal.flow_id == flow_id)
+            .order_by(models.CiPrincipal.name, models.CiPrincipal.id)
+            .all()
+        )
+        release = models.SecurityMaintenanceRelease
+        release_rows = (
+            db.query(release.id, release.display_name, release.account_id)
+            .filter(
+                or_(
+                    release.audit_flow_id == flow_id,
+                    release.implementation_flow_id == flow_id,
+                    release.recheck_flow_id == flow_id,
+                )
+            )
+            .order_by(release.display_name, release.id)
+            .all()
+        )
+        baseline = models.SecurityMaintenanceBaseline
+        baseline_rows = (
+            db.query(baseline.account_id)
+            .join(
+                models.FlowExecution,
+                models.FlowExecution.id == baseline.audit_execution_id,
+            )
+            .filter(models.FlowExecution.flow_id == flow_id)
+            .all()
+        )
+        own = str(account_id)
+        others = sum(
+            1
+            for row in (*ci_rows, *release_rows, *baseline_rows)
+            if str(row.account_id) != own
+        )
+        return FlowDeleteBlockers(
+            ci_identities=[
+                FlowReference(id=row.id, name=row.name, is_active=row.is_active)
+                for row in ci_rows
+                if str(row.account_id) == own
+            ],
+            security_maintenance_releases=[
+                FlowReference(id=row.id, name=row.display_name)
+                for row in release_rows
+                if str(row.account_id) == own
+            ],
+            security_maintenance_baselines=sum(
+                1 for row in baseline_rows if str(row.account_id) == own
+            ),
+            other_account_references=others,
+        )
 
     def remove(
         self, db: Session, *, id: Union[str, UUID], account_id: Union[str, UUID]
