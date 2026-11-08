@@ -8,6 +8,7 @@ import {
   type MockApi,
   type MockRoute,
 } from '../../../test-helpers/capability-api';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 
 const BASE = '/api/v1/ci-identities';
 const grant = {
@@ -319,6 +320,36 @@ describe('restricted CI settings view', () => {
     element.remove();
     await element.updateComplete;
     expect(element.textContent).not.to.contain('synthetic-once-token');
+  });
+  it('retires an identity only after confirmation and hides its controls', async () => {
+    let rows: CiIdentity[] = [identity];
+    api = mockApi({
+      routes: [
+        {
+          method: 'POST',
+          path: `${BASE}/principal-a/retire`,
+          body: () => {
+            rows = [{ ...identity, is_active: false, retired: true }];
+            return rows[0];
+          },
+        },
+        ...routes([], rows).filter((route) => route.path !== BASE),
+        { path: BASE, body: () => rows },
+      ],
+    });
+    const element = await render();
+    button(element, 'Retire identity').click();
+    expect(await answerConfirmDialog(false)).to.contain('cannot be undone');
+    await element.updateComplete;
+    expect(api.callsTo(`${BASE}/principal-a/retire`, 'POST')).to.have.length(0);
+    button(element, 'Retire identity').click();
+    await answerConfirmDialog(true);
+    await waitUntil(
+      () => api.callsTo(`${BASE}/principal-a/retire`, 'POST').length === 1
+    );
+    await waitUntil(() => element.textContent!.includes('Retired'));
+    expect(button(element, 'Retire identity')).to.equal(undefined);
+    expect(button(element, 'Reenable identity')).to.equal(undefined);
   });
   it('denies an operation when current management authority is revoked', async () => {
     let reads = 0;

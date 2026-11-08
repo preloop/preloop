@@ -229,6 +229,7 @@ class CRUDCiAdministration:
             id=principal.id,
             name=principal.name,
             is_active=principal.is_active,
+            retired=principal.flow_id is None,
             credential_version=principal.credential_version,
             grant=CiGrant.model_validate(principal.grant),
             repository_identifier=principal.repository_identifier,
@@ -351,6 +352,26 @@ class CRUDCiAdministration:
             grant=payload.grant,
             enabled=payload.enabled,
         )
+
+    def retire(
+        self, db: Session, *, actor: models.User, principal_id: UUID
+    ) -> models.CiPrincipal:
+        """Permanently disable an identity and release its flow binding."""
+        principal = self._principal(
+            db, actor=actor, principal_id=principal_id, operation="retire"
+        )
+        self._authorize(
+            db,
+            actor=actor,
+            operation="disable",
+            grant=CiGrant.model_validate(principal.grant),
+            principal_id=principal.id,
+        )
+        try:
+            return crud_ci_principal.retire(db, actor=actor, principal_id=principal.id)
+        except (PermissionError, ValueError):
+            self._denied(db, actor=actor, operation="retire", principal_id=principal.id)
+            raise
 
     def issue(
         self,

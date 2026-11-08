@@ -1,5 +1,6 @@
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { getAllFlows, listProjects } from '../../../api';
@@ -261,6 +262,21 @@ export class CiIdentitiesView extends LitElement {
       await this.refreshRows();
     });
   }
+  private async retireIdentity(identity: CiIdentity): Promise<void> {
+    const confirmed = await confirmDialog({
+      title: 'Retire CI identity',
+      message: `Retire "${identity.name}"?`,
+      detail:
+        'The identity is disabled permanently and all of its keys are revoked. Its history is kept and its flow can then be deleted. This cannot be undone; provision a new identity to resume CI.',
+      confirmLabel: 'Retire identity',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    void this.run(async () => {
+      await ciAdministration.retire(identity.id);
+      await this.refreshRows();
+    });
+  }
   private narrow(identity: CiIdentity): void {
     if (!this.editActions.length) return;
     void this.run(async () => {
@@ -319,6 +335,7 @@ export class CiIdentitiesView extends LitElement {
   }
   private controls(identity: CiIdentity): TemplateResult {
     const disabled = this.busy || !!this.secret;
+    if (identity.retired) return html``;
     return html`<div>
       <button
         ?disabled=${disabled}
@@ -345,7 +362,12 @@ export class CiIdentitiesView extends LitElement {
           this.anchorId = identity.keys[0].id;
         }}
       >
-        Set up completion callback
+        Set up completion callback</button
+      ><button
+        ?disabled=${disabled}
+        @click=${() => void this.retireIdentity(identity)}
+      >
+        Retire identity
       </button>
     </div>`;
   }
@@ -554,8 +576,9 @@ export class CiIdentitiesView extends LitElement {
                       >
                         <h2>${identity.name}</h2>
                         <p>
-                          ${identity.is_active ? 'Enabled' : 'Disabled'} ·
-                          ${identity.tracker_type}: ${identity.repository_slug}
+                          ${identity.retired ? 'Retired' : identity.is_active ? 'Enabled' : 'Disabled'}
+                          · ${identity.tracker_type}:
+                          ${identity.repository_slug}
                         </p>
                         <p>
                           Identity: <code>${identity.id}</code><br />Project:

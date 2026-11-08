@@ -7958,6 +7958,50 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/retire:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Retire Identity
+      description: 'Permanently disable an identity and release its flow binding.
+
+
+        All keys are revoked and the identity can never be re-enabled. Its grant,
+
+        execution attribution and audit history are kept, and the flow it was
+
+        bound to can then be deleted. Provision a new identity to resume CI.'
+      operationId: retire_identity_api_v1_ci_identities__principal_id__retire_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminIdentityRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ci-identities/{principal_id}/keys:
     post:
       tags:
@@ -18627,7 +18671,8 @@ paths:
         \ to the flow, a security maintenance release that uses it as its\n  audit,\
         \ implementation or recheck flow, or a security maintenance baseline\n  whose\
         \ audit evidence is one of the flow's executions. References are never\n \
-        \ revoked or detached as a side effect of the delete."
+        \ revoked or detached as a side effect of the delete. Retire CI identities\n\
+        \  explicitly with ``POST /api/v1/ci-identities/{id}/retire``."
       operationId: delete_flow_api_v1_flows__flow_id__delete
       security:
       - bearerAuth: []
@@ -32390,6 +32435,10 @@ components:
         is_active:
           type: boolean
           title: Is Active
+        retired:
+          type: boolean
+          title: Retired
+          default: false
         credential_version:
           type: integer
           title: Credential Version

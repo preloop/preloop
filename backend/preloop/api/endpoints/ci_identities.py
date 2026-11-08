@@ -125,6 +125,28 @@ def update_identity(
     return _call(change)
 
 
+@router.post("/{principal_id}/retire", response_model=CiAdminIdentityRead)
+def retire_identity(
+    principal_id: UUID,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> CiAdminIdentityRead:
+    """Permanently disable an identity and release its flow binding.
+
+    All keys are revoked and the identity can never be re-enabled. Its grant,
+    execution attribution and audit history are kept, and the flow it was
+    bound to can then be deleted. Provision a new identity to resume CI.
+    """
+
+    def retire() -> CiAdminIdentityRead:
+        row = crud.crud_ci_administration.retire(
+            db, actor=actor, principal_id=principal_id
+        )
+        return crud.crud_ci_administration.project_metadata(db, principal=row)
+
+    return _call(retire)
+
+
 @router.post("/{principal_id}/keys", response_model=CiAdminKeyIssued, status_code=201)
 def issue_key(
     principal_id: UUID,
