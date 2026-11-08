@@ -335,3 +335,35 @@ def test_virustotal_cannot_modify_release_contents() -> None:
     scan = next(step for step in job["steps"] if "virustotal@" in step.get("uses", ""))
     assert scan["with"]["update_release_body"] is False
     assert "github_token" not in scan["with"]
+
+
+def _steps_using(action: str) -> list[Dict[str, Any]]:
+    return [
+        step
+        for job in _workflow()["jobs"].values()
+        for step in job.get("steps") or []
+        if str(step.get("uses", "")).startswith(action)
+    ]
+
+
+def test_dockerhub_description_cannot_fail_the_release() -> None:
+    """The Docker Hub description sync is cosmetic and must not block a tag."""
+    steps = _steps_using("peter-evans/dockerhub-description")
+    assert len(steps) == 2
+    for step in steps:
+        assert step.get("continue-on-error") is True
+
+
+def test_artifact_uploads_replace_earlier_attempts() -> None:
+    """Re-run jobs replace same-named artifacts instead of adding duplicates.
+
+    Artifacts are scoped to the run, not the attempt. Without ``overwrite``
+    a "re-run failed jobs" leaves two ``image-sbom-*`` artifacts per name and
+    the audit can verify the previous attempt's digest. With ``overwrite`` a
+    full re-run, a partial re-run, and an audit-only re-run all see exactly
+    the latest upload.
+    """
+    steps = _steps_using("actions/upload-artifact")
+    assert steps
+    for step in steps:
+        assert step["with"].get("overwrite") is True, step.get("name")
