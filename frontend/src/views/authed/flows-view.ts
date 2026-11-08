@@ -1534,7 +1534,7 @@ export class FlowsView extends LitElement {
         message: `Delete ${count}?`,
         names: rows.map((row) => row.name),
         detail:
-          'The flows and their triggers stop immediately. Past runs stay in the executions list. This cannot be undone.',
+          'The flows and their triggers stop immediately. Their executions, logs and artifacts are deleted too. This cannot be undone.',
         confirmLabel: rows.length === 1 ? 'Delete flow' : 'Delete flows',
         variant: 'danger',
       });
@@ -1595,7 +1595,7 @@ export class FlowsView extends LitElement {
       title: 'Delete flow',
       message: `Delete "${row.name}"?`,
       detail:
-        'The flow and its trigger stop immediately. Past runs stay in the executions list. This cannot be undone.',
+        'The flow and its trigger stop immediately. Its executions, logs and artifacts are deleted too. This cannot be undone.',
       confirmLabel: 'Delete flow',
       variant: 'danger',
     });

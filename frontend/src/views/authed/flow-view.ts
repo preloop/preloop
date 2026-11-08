@@ -714,7 +714,7 @@ export class FlowView extends LitElement {
       title: 'Delete flow',
       message: `Delete "${this.flow?.name || 'this flow'}"?`,
       detail:
-        'The flow and its trigger stop immediately. Past runs stay in the executions list. This cannot be undone.',
+        'The flow and its trigger stop immediately. Its executions, logs and artifacts are deleted too. This cannot be undone.',
       confirmLabel: 'Delete flow',
       variant: 'danger',
     });

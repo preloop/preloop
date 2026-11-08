@@ -3607,9 +3607,9 @@ def update_flow(
 _FLOW_DELETE_DESCRIPTION = """Delete a flow and its execution history.
 
 Deleting a flow also deletes all of its executions, together with their
-logs, artifacts and other per-execution records. Records that only point
-at an execution for reporting (for example usage and cost rows) are kept
-with the execution link cleared. Export anything you need first, or
+logs, artifacts, issue cost attribution rows and other per-execution
+records. API usage rows (including their cost columns) are kept, with the
+flow and execution links cleared. Export anything you need first, or
 disable the flow instead of deleting it.
 
 The delete is refused with 409 and nothing is changed when:

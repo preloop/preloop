@@ -189,3 +189,61 @@ async def test_active_execution_conflict_detail_is_clean(
         '/api/v1/flows/executions/{id}/command with {"command": "stop"}) '
         "and retry the delete."
     )
+
+
+@pytest.mark.asyncio
+async def test_other_account_references_are_counted_but_not_named(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, project, flow, _ = ci_resources
+    other = crud.crud_account.create(
+        db_session, obj_in={"organization_name": "Other", "is_active": True}
+    )
+    foreign = models.CiPrincipal(
+        name="Foreign identity",
+        account_id=other.id,
+        project_id=project.id,
+        flow_id=flow.id,
+        tracker_id=project.organization.tracker_id,
+        repository_identifier="example/repository",
+        repository_binding={},
+        grant={},
+    )
+    db_session.add(foreign)
+    db_session.flush()
+    _disable(db_session, flow)
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, flow, owner)
+
+    assert exc.value.status_code == 409
+    assert "Foreign identity" not in exc.value.detail
+    assert str(foreign.id) not in exc.value.detail
+    assert "1 reference(s) from other accounts" in exc.value.detail
+    assert crud.crud_flow.get(db_session, id=flow.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_release_using_flow_only_for_recheck_is_refused(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, project, flow, _ = ci_resources
+    audit_flow = models.Flow(
+        name="Audit",
+        prompt_template="x",
+        agent_type="openhands",
+        agent_config={},
+        account_id=owner.account_id,
+    )
+    db_session.add(audit_flow)
+    db_session.flush()
+    release = _release(db_session, owner, project, audit_flow)
+    release.recheck_flow_id = flow.id
+    db_session.flush()
+    _disable(db_session, flow)
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, flow, owner)
+
+    assert exc.value.status_code == 409
+    assert str(release.id) in exc.value.detail
