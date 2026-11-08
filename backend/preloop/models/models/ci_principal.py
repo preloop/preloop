@@ -11,7 +11,13 @@ from .base import Base
 
 
 class CiPrincipal(Base):
-    """Disable instead of deleting: historical ownership is never reassigned."""
+    """Disable instead of deleting: historical ownership is never reassigned.
+
+    Retiring an identity disables it permanently and clears ``flow_id`` so the
+    flow can be deleted. The original flow stays recorded in ``grant``, and a
+    retired identity (``flow_id`` is NULL) can never authenticate or be
+    re-enabled.
+    """
 
     __tablename__ = "ci_principal"
     __table_args__ = (
@@ -30,8 +36,11 @@ class CiPrincipal(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("project.id", ondelete="RESTRICT"), index=True
     )
-    flow_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("flow.id", ondelete="RESTRICT"), index=True
+    flow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("flow.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     # Snapshot repository identity, so moving a project never repoints a grant.
     tracker_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)

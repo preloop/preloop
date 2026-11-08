@@ -33,6 +33,8 @@ export interface CiIdentity {
   id: string;
   name: string;
   is_active: boolean;
+  /** Permanently disabled; its flow binding is released. */
+  retired?: boolean;
   credential_version: number;
   grant: CiGrant;
   repository_identifier: string;
@@ -132,6 +134,8 @@ export const ciAdministration = {
       'POST',
       expires_at ? { expires_at } : {}
     ),
+  retire: (principal: string): Promise<CiIdentity> =>
+    request(`/${id(principal)}/retire`, 'POST'),
   revoke: (principal: string, key: string): Promise<void> =>
     request(`/${id(principal)}/keys/${id(key)}`, 'DELETE'),
   subscribe: (
