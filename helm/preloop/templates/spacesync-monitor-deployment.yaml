@@ -66,6 +66,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "preloop.secretName" . }}
                   key: jwt-secret
+            {{- if .Values.security.encryptionKey }}
+            - name: SECURITY__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: encryption-key
+            {{- end }}
             - name: JWT_ALGORITHM
               value: {{ .Values.environment.jwtAlgorithm | quote }}
             - name: ACCESS_TOKEN_EXPIRE_MINUTES
