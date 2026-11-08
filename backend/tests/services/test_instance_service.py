@@ -24,6 +24,9 @@ def _reset_module_state(monkeypatch):
     monkeypatch.delenv("PRELOOP_HOSTED", raising=False)
     monkeypatch.delenv("PRELOOP_INSTALL_STARTED_AT", raising=False)
     monkeypatch.delenv("PRELOOP_INSTALL_COMPLETED_AT", raising=False)
+    # These tests run in CI; the ci marker is covered explicitly below.
+    for name in (instance_service.CI_ENV_FLAG, *instance_service.CI_VENDOR_ENV_VARS):
+        monkeypatch.delenv(name, raising=False)
     instance_service._current_instance = None
     instance_service._version_check_task = None
     yield
@@ -540,3 +543,56 @@ def test_hosted_registration_preserves_tracker_edition(
     assert instance.edition == expected
     assert instance_service.instance_edition() == "cloud"
     db.add.assert_called_once_with(instance)
+
+
+# --- CI marker ----------------------------------------------------------------
+
+
+class TestCiMarker:
+    def test_not_ci_by_default(self):
+        assert instance_service.is_ci_environment() is False
+
+    @pytest.mark.parametrize("value", ["true", "1", "TRUE", " yes "])
+    def test_ci_flag_truthy(self, monkeypatch, value):
+        monkeypatch.setenv("CI", value)
+        assert instance_service.is_ci_environment() is True
+
+    @pytest.mark.parametrize("value", ["false", "0", ""])
+    def test_ci_flag_falsy(self, monkeypatch, value):
+        monkeypatch.setenv("CI", value)
+        assert instance_service.is_ci_environment() is False
+
+    @pytest.mark.parametrize(
+        "name", ["GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_URL", "TF_BUILD"]
+    )
+    def test_vendor_variable(self, monkeypatch, name):
+        monkeypatch.setenv(name, "x")
+        assert instance_service.is_ci_environment() is True
+
+    @pytest.mark.asyncio
+    async def test_payload_carries_ci_marker_in_ci(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        instance = _make_instance(
+            metadata_={instance_service.INSTALL_COMPLETED_EMITTED_KEY: "x"}
+        )
+        mock_client = _mock_success_client()
+        with patch.object(
+            instance_service.httpx, "AsyncClient", return_value=mock_client
+        ):
+            assert await send_version_check(instance) is True
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["metadata"]["ci"] is True
+        # Sent per check-in, never persisted on the local instance.
+        assert "ci" not in instance.metadata_
+
+    @pytest.mark.asyncio
+    async def test_payload_has_no_ci_marker_outside_ci(self):
+        instance = _make_instance(
+            metadata_={instance_service.INSTALL_COMPLETED_EMITTED_KEY: "x"}
+        )
+        mock_client = _mock_success_client()
+        with patch.object(
+            instance_service.httpx, "AsyncClient", return_value=mock_client
+        ):
+            await send_version_check(instance)
+        assert "ci" not in mock_client.post.call_args.kwargs["json"]["metadata"]

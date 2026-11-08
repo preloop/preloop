@@ -60,6 +60,34 @@ def is_telemetry_disabled() -> bool:
     )
 
 
+# CI environment markers. A CI run with a fresh database looks like a new
+# install to the version-check tracker; the check-in carries ``ci: true`` so
+# the tracker can leave it out of install counts. ``CI`` must be truthy (it is
+# "true" on GitHub Actions, GitLab CI, CircleCI, Travis, Buildkite...); the
+# vendor-specific variables count when set to anything non-empty.
+CI_ENV_FLAG = "CI"
+CI_VENDOR_ENV_VARS = (
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "CIRCLECI",
+    "TRAVIS",
+    "TF_BUILD",
+    "JENKINS_URL",
+    "TEAMCITY_VERSION",
+    "BITBUCKET_BUILD_NUMBER",
+    "CODEBUILD_BUILD_ID",
+    "DRONE",
+)
+
+
+def is_ci_environment() -> bool:
+    """True when this process runs inside a CI job."""
+    if os.getenv(CI_ENV_FLAG, "").strip().lower() in _TRUTHY_VALUES:
+        return True
+    return any(os.getenv(name, "").strip() for name in CI_VENDOR_ENV_VARS)
+
+
 def is_hosted_instance() -> bool:
     """True when this deployment is the hosted preloop.ai service itself."""
     return os.getenv(HOSTED_ENV, "").strip().lower() in _TRUTHY_VALUES
@@ -282,6 +310,9 @@ async def send_version_check(instance: "Instance") -> bool:
         if include_install_completed:
             metadata["install_completed"] = True
             metadata.update(_installer_timestamps())
+        if is_ci_environment():
+            # Lets the tracker keep CI runs out of the install counts.
+            metadata["ci"] = True
 
         payload = {
             "instance_uuid": str(instance.instance_uuid),

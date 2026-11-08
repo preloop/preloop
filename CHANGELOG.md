@@ -155,6 +155,7 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
 
 ### Changed
 
+- The daily version check marks check-ins from CI jobs with `metadata.ci: true` so CI runs do not count as installs. Set `PRELOOP_DISABLE_TELEMETRY=true` to send nothing.
 - The cost page renders each card as its data arrives, caches closed periods
   on the client and the server, shows work item and issue cost as tabs with a
   full-screen toggle, draws the budget health chart like the Overview spend
