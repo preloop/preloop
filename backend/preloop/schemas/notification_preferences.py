@@ -116,6 +116,27 @@ class MobileDeviceRegistration(BaseModel):
         return token or None
 
 
+class MobileDeviceTokenRegistration(MobileDeviceRegistration):
+    """Schema for the authenticated push-only device registration.
+
+    Unlike QR pairing, this endpoint exists only to store a push token, so a
+    non-blank token is required.
+    """
+
+    token: str = Field(  # type: ignore[assignment]
+        ..., min_length=1, description="Device push notification token"
+    )
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: Optional[str]) -> Optional[str]:
+        """Reject blank/whitespace-only push tokens."""
+        token = (value or "").strip()
+        if not token:
+            raise ValueError("Device push token must not be empty")
+        return token
+
+
 class TestPushRequest(BaseModel):
     """Schema for triggering an admin diagnostic test push."""
 

@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `token`: pairing succeeds and the API key is issued, nothing is stored for
   push, and the response reports `push_registered: false` with a
   `push_error` explaining why. The authenticated `me/register-device`
-  endpoint returns 400 for a missing token instead of 422. (#2248)
+  endpoint still requires a token. When a device paired without a token
+  later registers one with its pairing key, the key is linked to that token
+  so unregistering the device revokes it. (#2248)
 
 ## [1.0.0] - 2026-11-08
 

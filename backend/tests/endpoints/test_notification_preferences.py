@@ -323,10 +323,47 @@ def test_register_device_requires_push_token(
     response = client.post(
         "/api/v1/notification-preferences/me/register-device", json=body
     )
-    assert response.status_code == 400
-    assert "required" in response.json()["detail"]
+    assert response.status_code == 422
     prefs = crud_notification_preferences.get_by_user(db_session, test_user.id)
     assert not (prefs and prefs.mobile_device_tokens)
+
+
+def test_tokenless_pairing_key_is_revoked_on_unregister(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """Pair without push, register a token later, unregister: key is revoked."""
+    qr_token = client.get("/api/v1/notification-preferences/me/qr-code").json()["token"]
+    with patch(
+        "preloop.services.websocket_manager.manager.broadcast_json",
+        new_callable=AsyncMock,
+    ):
+        paired = client.post(
+            f"/api/v1/notification-preferences/register-via-token?token={qr_token}",
+            json={"platform": "ios", "token": ""},
+        )
+    assert paired.status_code == 200, paired.text
+    key_id = paired.json()["api_key_id"]
+    pairing_key = db_session.query(ApiKey).filter(ApiKey.id == key_id).one()
+    assert pairing_key.scopes == [{"device_token": None}]
+
+    # The app later gets notification permission and registers its token
+    # authenticated with the pairing key.
+    test_user._auth_api_key = pairing_key  # type: ignore[attr-defined]
+    try:
+        registered = client.post(
+            "/api/v1/notification-preferences/me/register-device",
+            json={"platform": "ios", "token": IOS_TOKEN},
+        )
+    finally:
+        del test_user._auth_api_key  # type: ignore[attr-defined]
+    assert registered.status_code == 200, registered.text
+    db_session.refresh(pairing_key)
+    assert pairing_key.scopes == [{"device_token": IOS_TOKEN}]
+
+    removed = client.delete(f"/api/v1/notification-preferences/me/device/{IOS_TOKEN}")
+    assert removed.status_code == 200, removed.text
+    db_session.expire_all()
+    assert db_session.query(ApiKey).filter(ApiKey.id == key_id).first() is None
 
 
 def test_check_token_validity_valid(

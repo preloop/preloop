@@ -10282,7 +10282,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MobileDeviceRegistration'
+              $ref: '#/components/schemas/MobileDeviceTokenRegistration'
         required: true
       responses:
         '200':
@@ -44474,6 +44474,46 @@ components:
       - api_key_id
       title: MobileDeviceRegistrationResponse
       description: Schema for mobile device registration response with API key.
+    MobileDeviceTokenRegistration:
+      properties:
+        platform:
+          type: string
+          title: Platform
+          description: 'Device platform: ''ios'' or ''android'''
+        token:
+          type: string
+          minLength: 1
+          title: Token
+          description: Device push notification token
+        device_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Device Name
+          description: Optional device name for API key
+        apns_environment:
+          anyOf:
+          - type: string
+            enum:
+            - sandbox
+            - production
+          - type: 'null'
+          title: Apns Environment
+          description: 'iOS only: APNs environment that issued the token. Xcode development
+            builds get ''sandbox'' tokens, App Store and TestFlight builds get ''production''
+            tokens. ''development'' is accepted as an alias for ''sandbox''. Omitted
+            means the server default.'
+      type: object
+      required:
+      - platform
+      - token
+      title: MobileDeviceTokenRegistration
+      description: 'Schema for the authenticated push-only device registration.
+
+
+        Unlike QR pairing, this endpoint exists only to store a push token, so a
+
+        non-blank token is required.'
     ModelIODetectors:
       properties:
         pii:

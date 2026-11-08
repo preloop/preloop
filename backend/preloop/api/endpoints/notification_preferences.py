@@ -20,6 +20,7 @@ from preloop.schemas.notification_preferences import (
     NotificationPreferencesUpdate,
     NotificationPreferencesResponse,
     MobileDeviceRegistration,
+    MobileDeviceTokenRegistration,
     MobileDeviceRegistrationResponse,
     QRCodeResponse,
     TestPushRequest,
@@ -137,7 +138,7 @@ async def update_my_notification_preferences(
 
 @router.post("/me/register-device", response_model=NotificationPreferencesResponse)
 async def register_mobile_device(
-    device_in: MobileDeviceRegistration,
+    device_in: MobileDeviceTokenRegistration,
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> models.NotificationPreferences:
@@ -149,13 +150,6 @@ async def register_mobile_device(
     Returns:
         Updated notification preferences.
     """
-    # This endpoint exists only to store a push token, so one is required.
-    if device_in.token is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Device push token is required",
-        )
-
     # Reject structurally impossible tokens here rather than storing them and
     # failing every later send: a stored placeholder makes the account look
     # push-enabled while silently delivering nothing.
@@ -181,11 +175,39 @@ async def register_mobile_device(
         device_in.token,
         apns_environment=device_in.apns_environment,
     )
+    _link_pairing_key_to_device_token(db, current_user, device_in.token)
 
     db.commit()
     db.refresh(prefs)
 
     return prefs
+
+
+def _link_pairing_key_to_device_token(
+    db: Session, current_user: models.User, device_token: str
+) -> None:
+    """Attach a push token to the QR pairing key that made this request.
+
+    A device paired without a push token gets an API key whose metadata is
+    ``[{"device_token": None}]``. When that device later registers a token
+    with the same key, record the token on the key so unregistering the
+    device also revokes its key.
+
+    Args:
+        db: Database session.
+        current_user: Authenticated user; carries the API key used, if any.
+        device_token: The push token just registered.
+    """
+    api_key = getattr(current_user, "_auth_api_key", None)
+    scopes = getattr(api_key, "scopes", None)
+    if api_key is None or scopes != [{"device_token": None}]:
+        return
+    crud_api_key.update(
+        db,
+        db_obj=api_key,
+        obj_in={"scopes": [{"device_token": device_token}]},
+        commit=False,
+    )
 
 
 @router.delete("/me/device/{token}", response_model=NotificationPreferencesResponse)
@@ -434,7 +456,9 @@ async def register_device_via_token(
         key_value=api_key_value,
         obj_in={
             "name": device_name,
-            "scopes": [{"device_token": device_in.token}] if device_in.token else [],
+            # A None device_token marks a pairing key with no push token yet;
+            # register-device fills it in so unregistering revokes the key.
+            "scopes": [{"device_token": device_in.token}],
             "account_id": user.account_id,
             "user_id": user_id,
             "expires_at": expires_at,
