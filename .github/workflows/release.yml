@@ -176,6 +176,7 @@ jobs:
       - name: Upload image SBOM evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: image-sbom-backend
           path: image-sbom-backend/
           if-no-files-found: error
@@ -207,6 +208,8 @@ jobs:
 
       - name: Update Docker Hub description
         if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        # Cosmetic: a Docker Hub token or API failure must not block a release.
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -326,6 +329,7 @@ jobs:
       - name: Upload image SBOM evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: image-sbom-frontend
           path: image-sbom-frontend/
           if-no-files-found: error
@@ -357,6 +361,8 @@ jobs:
 
       - name: Update Docker Hub description
         if: env.REHEARSAL != 'true' && vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        # Cosmetic: a Docker Hub token or API failure must not block a release.
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -495,6 +501,7 @@ jobs:
       - name: Upload SBOMs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: sbom
           path: sbom/
           if-no-files-found: error
@@ -526,6 +533,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: python-dist
           path: dist/
 
@@ -595,6 +603,7 @@ jobs:
       - name: Upload CLI binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           # Windows binaries are finalized by sign-windows-cli (signed when
           # SignPath is configured, otherwise pass-through unsigned).
           name: cli-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '-unsigned' || '' }}
@@ -632,6 +641,7 @@ jobs:
         id: upload-unsigned
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: windows-cli-unsigned-bundle
           path: unsigned-bundle/*
           if-no-files-found: error
@@ -687,6 +697,7 @@ jobs:
       - name: Upload Windows amd64 CLI
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: cli-windows-amd64
           path: signed-bundle/preloop-windows-amd64.exe
           if-no-files-found: error
@@ -694,6 +705,7 @@ jobs:
       - name: Upload Windows arm64 CLI
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: cli-windows-arm64
           path: signed-bundle/preloop-windows-arm64.exe
           if-no-files-found: error
@@ -737,6 +749,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           # Deliberately outside cli-*; reports are not executable release assets.
           name: windows-defender-report
           path: windows-defender-report/
@@ -875,6 +888,7 @@ jobs:
       - name: Upload audited release evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: audited-sbom
           path: audited-sbom/
           if-no-files-found: error
