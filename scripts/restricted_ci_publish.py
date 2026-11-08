@@ -152,7 +152,7 @@ def pr_is_current(pr: dict[str, Any], data: dict[str, Any]) -> bool:
 def _existing_check(github: Fetch, repository: str, data: dict[str, Any]) -> Any:
     found = github(
         f"/repos/{repository}/commits/{data['head_sha']}/check-runs"
-        f"?check_name={CHECK_NAME.replace(' ', '%20')}&per_page=100"
+        f"?check_name={CHECK_NAME.replace(' ', '%20')}&filter=all&per_page=100"
     )
     for run in found.get("check_runs", []) if isinstance(found, dict) else []:
         if run.get("external_id") == data["execution_id"]:
@@ -229,8 +229,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
         raise VerificationError("Use an owner/repository slug")
 
+    # Actions sets GITHUB_API_URL (``<host>/api/v3`` on GitHub Enterprise
+    # Server); request_json rejects anything but a plain HTTPS origin.
+    github_api = os.environ.get("GITHUB_API_URL") or "https://api.github.com"
+
     def github(path: str, method: str = "GET", body: Any = None) -> Any:
-        return request_json("https://api.github.com", path, github_token, method, body)
+        return request_json(github_api, path, github_token, method, body)
 
     def remote(path: str) -> Any:
         return request_json(args.url, "/api/v1" + path, token)

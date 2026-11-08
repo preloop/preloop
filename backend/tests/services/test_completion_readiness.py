@@ -114,3 +114,22 @@ def test_finished_execution_without_result_keeps_404(status: str) -> None:
         _raise_result_missing(SimpleNamespace(status=status))
     assert raised.value.status_code == 404
     assert raised.value.detail == "Flow execution did not report a result artifact"
+
+
+def test_human_result_route_withholds_unfinished_checkpoint() -> None:
+    """The account route also answers 409 for an unfinished execution."""
+    from preloop.api.endpoints import flows
+
+    execution = SimpleNamespace(
+        id=uuid.uuid4(), status="PARKED", result={"review": "checkpoint"}
+    )
+    account = SimpleNamespace(account_id=uuid.uuid4())
+    with (
+        patch.object(flows, "crud_flow_execution") as crud,
+        pytest.raises(HTTPException) as raised,
+    ):
+        crud.get_without_workspace.return_value = execution
+        flows.get_flow_execution_result.__wrapped__(
+            db=MagicMock(), execution_id=execution.id, current_user=account
+        )
+    assert raised.value.status_code == 409

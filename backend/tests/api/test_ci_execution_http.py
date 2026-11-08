@@ -342,6 +342,7 @@ def test_ci_reads_do_not_load_workspace_archive(
     execution_id = execution.id
     execution.workspace_snapshot = b"synthetic-archive" * 65536
     execution.result = {"review": "synthetic result"}
+    execution.status = "SUCCEEDED"
     db_session.flush()
     db_session.expunge_all()
     statements: list[str] = []
@@ -412,3 +413,22 @@ def test_result_of_finished_execution_without_result_stays_404(
     )
     missing = client.get(f"/api/v1/flows/executions/{uuid4()}/result", headers=headers)
     assert missing.status_code == 404
+
+
+def test_parked_checkpoint_is_not_served_as_the_final_result(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    """A stored checkpoint on an unfinished execution still answers 409."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    CRUDBase(models.FlowExecution).update(
+        db_session,
+        db_obj=execution,
+        obj_in={"status": "PARKED", "result": {"review": "checkpoint"}},
+    )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "result_pending"
+    assert "checkpoint" not in response.text

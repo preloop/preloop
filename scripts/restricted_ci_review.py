@@ -14,7 +14,17 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
-TERMINAL = {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"}
+# Mirrors CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES on the server.
+TERMINAL = {
+    "SUCCEEDED",
+    "FAILED",
+    "STOPPED",
+    "TIMEOUT",
+    "TIMED_OUT",
+    "ABORTED",
+    "CANCELLED",
+    "CANCELED",
+}
 CORRELATION = (
     "flow_id",
     "project_id",

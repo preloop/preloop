@@ -1844,7 +1844,8 @@ def get_flow_execution_result(
 
     - 404 ``Flow execution not found``: no such execution for this caller.
     - 409 with ``detail.code == "result_pending"``: the execution exists but
-      has not reached a terminal status, so no result is final yet. Retry
+      has not reached a terminal status, so no result is final yet, even
+      when a checkpoint (for example of a parked run) is stored. Retry
       after the execution finishes; ``detail.status`` is its current status.
     - 404 ``Flow execution did not report a result artifact``: the execution
       is terminal and reported no result. This will not change.
@@ -1869,7 +1870,7 @@ def get_flow_execution_result(
         execution = _owned_ci_execution(
             db, current_user, execution_id, CiAction.READ_RESULT
         )
-        if execution.result is None:
+        if execution.result is None or not _is_terminal(execution):
             _raise_result_missing(execution)
         withheld = ci_result_withheld_paths(execution.result)
         return {
@@ -1888,7 +1889,7 @@ def get_flow_execution_result(
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    if execution.result is None:
+    if execution.result is None or not _is_terminal(execution):
         _raise_result_missing(execution)
     return {
         "execution_id": str(execution.id),
@@ -1904,6 +1905,14 @@ def get_flow_execution_result(
 RESULT_PENDING_CODE = "result_pending"
 
 
+def _is_terminal(execution: Any) -> bool:
+    """Whether the execution reached a terminal status."""
+    return (
+        getattr(execution, "status", None)
+        in CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES
+    )
+
+
 def _raise_result_missing(execution: Any) -> NoReturn:
     """Raise 409 while the execution can still report, else the stable 404.
 
@@ -1915,7 +1924,7 @@ def _raise_result_missing(execution: Any) -> NoReturn:
             once the execution finished without reporting a result.
     """
     status = getattr(execution, "status", None)
-    if status not in CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES:
+    if not _is_terminal(execution):
         raise HTTPException(
             status_code=409,
             detail={

@@ -322,3 +322,62 @@ def test_workflow_holds_the_only_write_permissions() -> None:
     assert "scripts/restricted_ci_publish.py" in step["run"]
     checkout = workflow["jobs"]["publish"]["steps"][0]
     assert checkout["with"]["persist-credentials"] is False
+
+
+def test_publisher_terminal_set_matches_the_server() -> None:
+    from preloop.models.crud.flow_execution import CRUDFlowExecution
+
+    assert example.TERMINAL == set(CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES)
+
+
+@pytest.mark.parametrize("status", ["TIMEOUT", "TIMED_OUT", "ABORTED", "CANCELED"])
+def test_every_terminal_failure_gets_a_failure_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str
+) -> None:
+    recorder = Recorder(pull_request())
+
+    def route(base: str, path: str, token: str, method: str = "GET", body: Any = None):
+        if base.startswith("https://preloop"):
+            document = recorder(base, path, token, method, body)
+            return {**document, "status": status}
+        return recorder(base, path, token, method, body)
+
+    outcome = run_with(
+        monkeypatch, tmp_path, client_payload(completion(status=status)), route
+    )
+    assert outcome["review_id"] is None
+    [(path, check)] = recorder.posts
+    assert path.endswith("/check-runs") and check["conclusion"] == "failure"
+
+
+def test_check_dedup_sees_checks_of_other_executions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """filter=all, so an older execution's check is found behind a newer one."""
+    recorder = Recorder(pull_request(), existing_check=True)
+    paths: list[str] = []
+
+    def route(base: str, path: str, token: str, method: str = "GET", body: Any = None):
+        paths.append(path)
+        return recorder(base, path, token, method, body)
+
+    run_with(monkeypatch, tmp_path, client_payload(), route)
+    assert all("filter=all" in path for path in paths if "/check-runs?" in path)
+    assert not [p for p, _ in recorder.posts if p.endswith("/check-runs")]
+
+
+def test_github_enterprise_api_base_is_used(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = Recorder(pull_request())
+    bases: set[str] = set()
+
+    def route(base: str, path: str, token: str, method: str = "GET", body: Any = None):
+        if not base.startswith("https://preloop"):
+            bases.add(base)
+            base = "https://api.github.com"
+        return recorder(base, path, token, method, body)
+
+    monkeypatch.setenv("GITHUB_API_URL", "https://git.example.com/api/v3")
+    run_with(monkeypatch, tmp_path, client_payload(), route)
+    assert bases == {"https://git.example.com/api/v3"}

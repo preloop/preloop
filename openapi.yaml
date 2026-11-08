@@ -17792,8 +17792,9 @@ paths:
         \ tell the three empty cases apart:\n\n- 404 ``Flow execution not found``:\
         \ no such execution for this caller.\n- 409 with ``detail.code == \"result_pending\"\
         ``: the execution exists but\n  has not reached a terminal status, so no result\
-        \ is final yet. Retry\n  after the execution finishes; ``detail.status`` is\
-        \ its current status.\n- 404 ``Flow execution did not report a result artifact``:\
+        \ is final yet, even\n  when a checkpoint (for example of a parked run) is\
+        \ stored. Retry\n  after the execution finishes; ``detail.status`` is its\
+        \ current status.\n- 404 ``Flow execution did not report a result artifact``:\
         \ the execution\n  is terminal and reported no result. This will not change.\n\
         \nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
         \ is queued, so a caller notified of completion\nnever receives 409 for that\

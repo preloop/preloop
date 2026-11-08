@@ -556,7 +556,8 @@ it now. `GET .../result` answers:
 
 - `200` with the result;
 - `409` with `detail.code: "result_pending"` and the current `detail.status`
-  while the execution has not finished (retry after it finishes);
+  while the execution has not finished, even if a checkpoint is stored, for
+  example while it is parked (retry after it finishes);
 - `404` when the execution does not exist for the caller, or finished without
   reporting a result. This does not change later.
 
@@ -643,7 +644,9 @@ and no GitHub write permission. The publisher job:
    `checks: write` and `pull-requests: write`. Both are deduplicated by
    execution ID, so a redelivered dispatch publishes nothing new.
 
-The example publishes only executions that stored a result; a run that
+GitHub calls use the Actions-provided `GITHUB_API_URL`, so the example also
+works on GitHub Enterprise Server. The example publishes only executions that
+stored a result; a run that
 finished without one ends the job with an error and publishes nothing.
 
 ## Operator-run GitHub Actions example
