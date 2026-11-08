@@ -3,7 +3,7 @@
   "name": "io.github.preloop/preloop",
   "title": "Preloop",
   "description": "Open-source AI agent control plane and software factory: govern every tool and model call.",
-  "version": "0.17.1",
+  "version": "1.0.0",
   "websiteUrl": "https://preloop.ai",
   "repository": {
     "url": "https://github.com/preloop/preloop",
