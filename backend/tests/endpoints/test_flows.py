@@ -1448,6 +1448,11 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
     execution.evidence_receipt = None
     execution.evidence_archive = None
     mock_crud_flow_execution.get_without_workspace.return_value = execution
+    # No bound receipt: the poll asks the download's question (#2189), and
+    # here no evidence row exists either.
+    latest = mocker.patch(
+        "preloop.services.flow_artifacts.crud.latest", return_value=None
+    )
 
     result = await maybe_await(
         flows.get_flow_execution_result(
@@ -1455,6 +1460,7 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
         )
     )
 
+    latest.assert_called_once()
     assert result["execution_id"] == str(execution_id)
     assert result["status"] == "SUCCEEDED"
     assert result["result"] == execution.result

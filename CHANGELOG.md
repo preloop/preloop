@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GET /flows/executions/{id}/evidence-status` and the `evidence` block of
+  `/result` no longer report `missing` for a run that was closed before its
+  final evidence outcome was recorded while the download serves the stored
+  pack. With no bound receipt, status now comes from the same evidence record
+  the download serves, so status, download and period-export receipts agree
+  and CRA CI gating no longer fails such runs. An evidence upload after the
+  run has finished is still refused with 409 `artifact_execution_closed`.
+  (#2189)
 - Pairing a mobile device by QR code no longer fails with 422 when the app
   has no push token yet (a fresh iOS install before notification permission
   is granted). `register-via-token` now accepts a missing, null or blank

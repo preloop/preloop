@@ -75,8 +75,8 @@ from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
     attach_evidence_signature,
     integrity_state,
+    evidence_status,
     load_evidence,
-    public_evidence_status,
 )
 from preloop.services.flow_continuation_adoption import (
     ContinuationAdoptionError,
@@ -1854,8 +1854,9 @@ def get_flow_execution_result(
     ``flow.execution.finished`` is queued, so a caller notified of completion
     never receives 409 for that execution.
 
-    ``evidence`` is the persisted receipt only: bounded, account-scoped,
-    no decrypt. Availability is not integrity proof; download
+    ``evidence`` is the persisted receipt when one is bound, else derived
+    from the same evidence record the download serves: bounded,
+    account-scoped, no decrypt. Availability is not integrity proof; download
     ``GET .../evidence`` to verify digest.
 
     A restricted CI credential (``execution:result:read``) reads only its own
@@ -1895,7 +1896,9 @@ def get_flow_execution_result(
         "execution_id": str(execution.id),
         "status": execution.status,
         "result": execution.result,
-        "evidence": public_evidence_status(execution),
+        "evidence": evidence_status(
+            db, account_id=current_user.account_id, execution=execution
+        ),
         # Capture-time check against the flow result schema (#868); null
         # when the flow sets none.
         "schema_validation": _public_schema_validation(execution),
@@ -1991,7 +1994,9 @@ def get_flow_execution_evidence_status(
     """Report evidence availability without downloading the pack.
 
     Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
-    Served from the persisted execution receipt (no decrypt). Availability
+    Served from the persisted execution receipt when one is bound, else
+    from the same evidence record the download serves (no decrypt either
+    way), so a pack the download returns is never reported missing. Availability
     is not integrity proof. ``object_lock`` is always false: this API does
     not implement WORM retention and cannot verify a property of the storage
     layer beneath it. ``legal_hold`` is true while a hold covers the pack or
@@ -2010,7 +2015,9 @@ def get_flow_execution_evidence_status(
     return attach_evidence_signature(
         db,
         account_id=current_user.account_id,
-        receipt=public_evidence_status(execution),
+        receipt=evidence_status(
+            db, account_id=current_user.account_id, execution=execution
+        ),
     )
 
 

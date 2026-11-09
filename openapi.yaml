@@ -17798,8 +17798,9 @@ paths:
         \ the execution\n  is terminal and reported no result. This will not change.\n\
         \nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
         \ is queued, so a caller notified of completion\nnever receives 409 for that\
-        \ execution.\n\n``evidence`` is the persisted receipt only: bounded, account-scoped,\n\
-        no decrypt. Availability is not integrity proof; download\n``GET .../evidence``\
+        \ execution.\n\n``evidence`` is the persisted receipt when one is bound, else\
+        \ derived\nfrom the same evidence record the download serves: bounded,\naccount-scoped,\
+        \ no decrypt. Availability is not integrity proof; download\n``GET .../evidence``\
         \ to verify digest.\n\nA restricted CI credential (``execution:result:read``)\
         \ reads only its own\nexecution and gets the correlation fields of the status\
         \ projection,\nincluding ``startup_receipt``, plus ``result`` (the captured\
@@ -17857,7 +17858,11 @@ paths:
 
         Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
 
-        Served from the persisted execution receipt (no decrypt). Availability
+        Served from the persisted execution receipt when one is bound, else
+
+        from the same evidence record the download serves (no decrypt either
+
+        way), so a pack the download returns is never reported missing. Availability
 
         is not integrity proof. ``object_lock`` is always false: this API does
 

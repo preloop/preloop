@@ -232,7 +232,8 @@ policy, and result capture reports a missing result rather than a decoded
 payload. The switch does not cover pod-spec access or ordinary agent
 stdout. Encrypted log transport with per-execution keys is a separate
 decision tracked in issue #268. `GET .../result` and `GET .../evidence-status`
-report the persisted receipt (`kind=evidence`) without decrypt; download
+report the persisted receipt (`kind=evidence`) when bound, else the record
+the download serves, without decrypt; download
 verifies digest and tenancy and reports `available` / `missing` / `expired`
 / `failed` distinctly. Packs are signed at capture with the account Ed25519
 key; the signature lives beside the archive so the content-addressed digest

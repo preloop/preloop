@@ -605,6 +605,38 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
     )
 
 
+def evidence_status(db: Session, *, account_id: UUID, execution: Any) -> dict[str, Any]:
+    """Status poll answer taken from the record the download serves (#2189).
+
+    ``public_evidence_status`` reads only the persisted receipt. A run closed
+    before its final ``evidence_upload`` outcome was bound has no receipt,
+    yet ``inspect_evidence`` (and so the download) still finds the committed
+    pack. With no bound receipt, ask the same question the download asks and
+    shape it like the poll receipt. One indexed lookup, no decrypt;
+    availability is still not integrity proof.
+
+    A bound receipt is what the terminal download serves too, so polls on a
+    bound run stay a pure row read, except a legacy ``available`` receipt
+    whose archive column retention already cleared: that one is re-asked.
+    """
+    raw = getattr(execution, "evidence_receipt", None)
+    stale_legacy = (
+        isinstance(raw, dict)
+        and raw.get("status") == "available"
+        and str(raw.get("transport") or "") in ("", "legacy")
+        and _legacy_archive_bytes(execution) is None
+    )
+    if isinstance(raw, dict) and raw.get("status") and not stale_legacy:
+        return public_evidence_status(execution)
+    receipt = inspect_evidence(db, account_id=account_id, execution=execution)
+    archive = (
+        _legacy_archive_bytes(execution)
+        if str(receipt.get("transport") or "") == "legacy"
+        else None
+    )
+    return _mark_status_receipt(receipt, archive=archive)
+
+
 def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
     """Build a receipt from a scoped evidence row's current availability."""
     now = datetime.now(UTC)
