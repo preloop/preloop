@@ -168,6 +168,9 @@ export interface EvidenceStatus {
   error?: string | null;
   signature?: Record<string, unknown> | null;
   signing_key_id?: string | null;
+  signed?: boolean;
+  /** Set on packs stored before #2190 over the legacy transport. */
+  unsigned_reason?: string | null;
 }
 
 export interface BinaryDownload {

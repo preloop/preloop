@@ -5337,6 +5337,52 @@ class FlowExecutionOrchestrator:
             )
             return archive
 
+    def _ingest_legacy_evidence(self, flow: Any, execution: Any, archive: bytes) -> Any:
+        """Store and sign a legacy-transport pack; None falls back to the column.
+
+        A pack that cannot be stored this way (over the durable cap, quota,
+        no encryption key) is still kept in the legacy column, unsigned, and
+        the status endpoint says so. Losing the bytes would be worse.
+        """
+        from preloop.models.crud import flow_artifact as crud_flow_artifact
+        from preloop.services.flow_artifacts import artifact_thread_id, put_artifact
+
+        thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+        try:
+            reference = put_artifact(
+                self.db,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=thread_id,
+                execution_id=execution.id,
+                kind="evidence",
+                archive=archive,
+                require_execution_open=False,
+            )
+            return crud_flow_artifact.get(
+                self.db,
+                artifact_id=reference.artifact_id,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=thread_id,
+            )
+        except ValueError as exc:
+            # Rejected before any write (size, shape, quota): nothing to undo.
+            logger.warning(
+                "Legacy evidence pack kept unsigned in the execution row: %s", exc
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Legacy evidence pack kept unsigned in the execution row: %s",
+                type(exc).__name__,
+            )
+            # A failed write leaves the session unusable until rolled back.
+            rollback = getattr(self.db, "rollback", None)
+            if callable(rollback):
+                rollback()
+            return None
+
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
     ) -> None:
@@ -5457,6 +5503,29 @@ class FlowExecutionOrchestrator:
                 {"size_bytes": len(archive), "transport": "direct"},
             )
             return
+
+        if archive is not None and flow is not None and execution is not None:
+            # Legacy transport (#2190): the pack came over the Docker archive
+            # API or the pod log, not a worker PUT. Store it in the same
+            # encrypted artifact store and sign it with the account key, so a
+            # default install produces packs ``preloop evidence verify`` can
+            # check. The receipt keeps transport="legacy" because that is how
+            # the bytes travelled; the artifact_id is what makes it signed.
+            ingested = self._ingest_legacy_evidence(flow, execution, archive)
+            if ingested is not None:
+                self._sync_evidence_artifact_identity(ingested.id, archive)
+                self._evidence_receipt = evidence_receipt(
+                    status="available",
+                    execution_id=execution.id,
+                    transport="legacy",
+                    artifact=ingested,
+                    archive=archive,
+                )
+                self.execution_logger.log_milestone(
+                    "evidence_archive_captured",
+                    {"size_bytes": len(archive), "transport": "legacy"},
+                )
+                return
 
         if archive is not None:
             self._sync_evidence_artifact_identity(None, archive)
@@ -10610,9 +10679,12 @@ class FlowExecutionOrchestrator:
             if have_binary_artifacts and self.execution_log is not None:
                 try:
                     receipt = self._evidence_receipt
-                    direct_evidence = (
-                        isinstance(receipt, dict)
-                        and receipt.get("transport") == "direct"
+                    # A pack already in the artifact store (direct upload, or
+                    # a legacy pack ingested and signed, #2190) is not copied
+                    # into the execution row as well.
+                    direct_evidence = isinstance(receipt, dict) and (
+                        receipt.get("transport") == "direct"
+                        or bool(receipt.get("artifact_id"))
                     )
                     if self._evidence_archive is not None and not direct_evidence:
                         crud_flow_execution.set_evidence_archive(

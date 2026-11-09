@@ -569,6 +569,19 @@ def _mark_status_receipt(
     return out
 
 
+def _label_unsigned_legacy(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Mark a pack held only in the legacy execution-row column as unsigned.
+
+    Before #2190 a default install stored packs there with no artifact row,
+    so there is nothing a signature could name. Say so instead of leaving a
+    bare ``signature: null`` for the reader to interpret.
+    """
+    if receipt.get("transport") == "legacy" and not receipt.get("artifact_id"):
+        if receipt.get("status") == "available":
+            receipt["unsigned_reason"] = "legacy_transport"
+    return receipt
+
+
 def public_evidence_status(execution: Any) -> dict[str, Any]:
     """Account-scoped availability from the execution row. No decrypt or hash.
 
@@ -587,16 +600,18 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
         else None
     )
     if isinstance(raw, dict) and raw.get("status"):
-        return _mark_status_receipt(raw, archive=archive)
+        return _label_unsigned_legacy(_mark_status_receipt(raw, archive=archive))
     if archive is not None:
         # The bytes are in the row we already loaded. Hashing them is cheaper
         # than an operator opening a support thread about a pack that is fine.
-        return evidence_receipt(
-            status="available",
-            execution_id=getattr(execution, "id", None),
-            transport="legacy",
-            archive=archive,
-            integrity_verified=True,
+        return _label_unsigned_legacy(
+            evidence_receipt(
+                status="available",
+                execution_id=getattr(execution, "id", None),
+                transport="legacy",
+                archive=archive,
+                integrity_verified=True,
+            )
         )
     return evidence_receipt(
         status="missing",
@@ -1013,6 +1028,7 @@ def attach_evidence_signature(
     out = dict(receipt)
     out["signature"] = document
     out["signing_key_id"] = (document or {}).get("key_id")
+    out["signed"] = document is not None
     return out
 
 

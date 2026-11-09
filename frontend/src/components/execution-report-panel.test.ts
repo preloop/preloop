@@ -261,4 +261,32 @@ describe('ExecutionReportPanel', () => {
     await waitUntil(() => (el.shadowRoot?.textContent || '').includes('Held'));
     expect(el.shadowRoot!.textContent).to.contain('Held');
   });
+
+  it('labels a pre-#2190 legacy pack as unsigned', async () => {
+    install();
+    const el = await mount({
+      ...EVIDENCE,
+      transport: 'legacy',
+      signature: null,
+      signed: false,
+      unsigned_reason: 'legacy_transport',
+    });
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('[data-testid="pack-unsigned"]')
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="pack-unsigned"]')!.textContent
+    ).to.contain('Unsigned');
+  });
+
+  it('shows no unsigned label on a signed pack', async () => {
+    install();
+    const el = await mount(EVIDENCE);
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('[data-testid="pack-integrity"]')
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="pack-unsigned"]')
+    ).to.equal(null);
+  });
 });

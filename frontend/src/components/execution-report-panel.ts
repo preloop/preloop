@@ -419,6 +419,17 @@ export class ExecutionReportPanel extends LitElement {
             ? html`<sl-badge variant="warning" pill>Held</sl-badge>`
             : nothing
         }
+        ${
+          evidence?.unsigned_reason === 'legacy_transport'
+            ? html`<sl-badge
+                variant="neutral"
+                pill
+                data-testid="pack-unsigned"
+                title="Stored over the legacy transport before signing covered it. preloop evidence verify cannot check this pack."
+                >Unsigned</sl-badge
+              >`
+            : nothing
+        }
         <span>Integrity: ${evidence?.integrity || 'Unknown'}</span>
         <span class="mono"
           >SHA-256
