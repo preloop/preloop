@@ -314,7 +314,14 @@ def test_register_via_token_without_push_token_invalid_qr_still_400(
 
 
 @pytest.mark.parametrize(
-    "body", [{"platform": "ios"}, {"platform": "ios", "token": ""}]
+    "body",
+    [
+        {"platform": "ios"},
+        {"platform": "ios", "token": None},
+        {"platform": "ios", "token": ""},
+        {"platform": "ios", "token": "   "},
+    ],
+    ids=["missing", "null", "empty", "whitespace"],
 )
 def test_register_device_requires_push_token(
     client: TestClient, test_user: User, db_session: Session, body: dict

@@ -11,7 +11,10 @@ import pytest
 from pydantic import ValidationError
 
 from preloop.models.models.notification_preferences import NotificationPreferences
-from preloop.schemas.notification_preferences import MobileDeviceRegistration
+from preloop.schemas.notification_preferences import (
+    MobileDeviceRegistration,
+    MobileDeviceTokenRegistration,
+)
 
 
 def test_schema_normalises_blank_token_to_none() -> None:
@@ -30,6 +33,20 @@ def test_schema_still_requires_platform() -> None:
     """Platform remains required."""
     with pytest.raises(ValidationError):
         MobileDeviceRegistration(token="abc123")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"token": None}, {"token": ""}, {"token": "  "}]
+)
+def test_push_only_schema_requires_non_blank_token(kwargs: dict) -> None:
+    """me/register-device's schema rejects missing, null and blank tokens."""
+    with pytest.raises(ValidationError):
+        MobileDeviceTokenRegistration(platform="ios", **kwargs)
+
+
+def test_push_only_schema_trims_token() -> None:
+    """A valid token is trimmed by the push-only schema."""
+    assert MobileDeviceTokenRegistration(platform="ios", token=" abc ").token == "abc"
 
 
 def test_schema_trims_token() -> None:
