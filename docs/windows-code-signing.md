@@ -151,12 +151,22 @@ fails if policy prevents enabling protection. The separate required Windows
 security test workflow exercises this setup and the actual scanner on PRs.
 
 Validation updates Defender intelligence, requires active antivirus, real-time, behavior,
-cloud and download protection without exclusions, and scans both executables.
+cloud and download protection with no exclusions other than the runner-agent
+one below, and scans both executables.
 It runs `version`, `--help`, and `agents discover --no-onboard-prompt` on AMD64 with telemetry
-disabled, then observes the unchanged files for ten minutes. A threat event,
-remediation, missing or changed file, failed command, or unavailable required
-protection fails the job. The workflow never adds exclusions, disables
-protection, or removes Mark of the Web. The validator does not change security
+disabled, then observes the unchanged files for ten minutes. A threat event or
+remediation that references the artifact directory, a `preloop-windows-*.exe`
+file, or a process started from one (or that names no path at all), loss of
+real-time protection, a missing or changed file, a failed command, or
+unavailable required protection fails the job. Other detections are recorded
+under `unrelated_detections` in the report and raised as workflow warnings.
+Runner setup adds exactly one exclusion,
+`%SystemDrive%\Users\*\AppData\Local\Temp\provjobd.exe*`, for GitHub's
+hosted-runner provisioning daemon
+([actions/runner-images#15272](https://github.com/actions/runner-images/issues/15272));
+the validator rejects any other exclusion, refuses artifacts under that path,
+and records active exclusions as `defender_exclusions`. The workflow never
+disables protection or removes Mark of the Web. The validator does not change security
 settings; runner setup only strengthens them. Runner environments that cannot meet
 these requirements block publication instead of reporting a clean scan.
 

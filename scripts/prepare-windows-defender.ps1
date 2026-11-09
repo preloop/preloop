@@ -68,6 +68,12 @@ function Initialize-GitHubHostedDefender {
       Remove-MpPreference @parameters
     }
   }
+  # GitHub's hosted-compute agent runs a provisioning daemon from the runner
+  # temp directory that current signatures flag (actions/runner-images#15272).
+  # Without this one exclusion Defender can remove the agent and the job hangs.
+  # Release artifacts never live under this path; the gate accepts no other.
+  Add-MpPreference -ExclusionPath (Get-RunnerAgentDefenderExclusion) -ErrorAction Stop
+  Write-Host "Defender path exclusions: $(@((Get-MpPreference -ErrorAction Stop).ExclusionPath | Where-Object { $_ }) -join ', ')"
   Enable-WindowsDefenderEventLog
   Update-GitHubHostedDefenderSignature
   Assert-DefenderCoverage | Format-List AMRunningMode, AMEngineVersion, AMProductVersion, AntivirusSignatureVersion, RealTimeProtectionEnabled

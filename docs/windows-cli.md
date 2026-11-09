@@ -95,6 +95,23 @@ Do not disable protection, add directory/process exclusions, or remove download
 metadata to work around an unresolved alert. Use a release that has been
 investigated and validated in the affected environment.
 
+### Release gate classification
+
+The release gate (`scripts/test-windows-defender.ps1`) fails on any Defender
+detection or remediation whose path, resources, or process name reference the
+artifact directory, a `preloop-windows-*.exe` file, or a process started from
+one, and on any loss of real-time protection or the antimalware service.
+Detections that reference none of these, such as GitHub's own hosted-runner
+provisioning daemon flagged by recent signatures
+([actions/runner-images#15272](https://github.com/actions/runner-images/issues/15272)),
+are recorded under `unrelated_detections` in the evidence report and raised as
+workflow warnings instead of failing the release. Detections without a path are
+treated as ours. The runner setup adds exactly one exclusion,
+`%SystemDrive%\Users\*\AppData\Local\Temp\provjobd.exe*`, so Defender does not
+remove the runner agent mid-job; the gate rejects any other exclusion, refuses
+artifacts under that path, and lists active exclusions in the report as
+`defender_exclusions`.
+
 ### Verify a release binary
 
 ```powershell

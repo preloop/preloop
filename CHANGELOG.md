@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- ci(release): the Windows Defender release gate no longer fails on detections
+  unrelated to our artifacts, such as GitHub's hosted-runner provisioning
+  daemon `provjobd.exe` flagged as Trojan:Win32/Gracing.I by signature
+  1.463.201.0 ([actions/runner-images#15272](https://github.com/actions/runner-images/issues/15272)).
+  Such detections are recorded under `unrelated_detections` and warned.
+  Detections touching the release artifacts, their file names or processes
+  started from them, and loss of real-time protection still fail. The runner
+  setup adds a single exclusion for the runner agent's temp daemon.
+
 ## [1.0.1] - 2026-11-09
 
 ### Fixed
