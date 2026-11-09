@@ -23,6 +23,9 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import httpx
 
 
+_DECODED_BODY_HEADERS = ("content-encoding", "content-length", "transfer-encoding")
+
+
 class OAuthError(ValueError):
     """A fixed, credential-free error safe for API responses and logs."""
 
@@ -112,6 +115,33 @@ class OAuthHTTP:
         body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
+        try:
+            return await self._send(
+                method,
+                url,
+                timeout=timeout,
+                probe=probe,
+                data=data,
+                body=body,
+                headers=headers,
+            )
+        except httpx.TransportError:
+            raise  # Callers own retry policy for transport failures.
+        except httpx.HTTPError:
+            # e.g. DecodingError on a corrupt compressed body (#2249).
+            raise OAuthError("OAuth response could not be decoded.") from None
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        timeout: float,
+        probe: bool,
+        data: dict[str, str] | None,
+        body: dict[str, Any] | None,
+        headers: dict[str, str] | None,
+    ) -> httpx.Response:
         async with asyncio.timeout(timeout):
             original, address = await self.validate(url)
             # Pin DNS without changing certificate validation or HTTP authority.
@@ -140,10 +170,13 @@ class OAuthHTTP:
                         chunks.extend(chunk)
                         if len(chunks) > 262144:
                             raise OAuthError("OAuth response is too large.")
+                    # The body is already decoded and buffered: drop framing
+                    # headers so httpx does not decompress it a second time.
+                    decoded = response.headers.copy()
+                    for name in _DECODED_BODY_HEADERS:
+                        decoded.pop(name, None)
                     return httpx.Response(
-                        response.status_code,
-                        headers=response.headers,
-                        content=bytes(chunks),
+                        response.status_code, headers=decoded, content=bytes(chunks)
                     )
                 finally:
                     await response.aclose()
