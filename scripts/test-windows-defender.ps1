@@ -13,6 +13,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-RunnerAgentDefenderExclusion {
+  # The only exclusion the gate accepts: GitHub's hosted-compute provisioning
+  # daemon, which signature 1.463.201.0 flags as Trojan:Win32/Gracing.I.
+  # https://github.com/actions/runner-images/issues/15272
+  return "$env:SystemDrive\Users\*\AppData\Local\Temp\provjobd.exe*"
+}
+
 function Assert-DefenderCoverage {
   $status = Get-MpComputerStatus -ErrorAction Stop
   $preferences = Get-MpPreference -ErrorAction Stop
@@ -29,8 +36,11 @@ function Assert-DefenderCoverage {
   if ([int]$preferences.MAPSReporting -lt 1 -or [int]$preferences.SubmitSamplesConsent -notin @(1, 3)) {
     throw 'Defender cloud protection and automatic sample submission are required.'
   }
+  $allowedPath = Get-RunnerAgentDefenderExclusion
   foreach ($name in @('ExclusionPath', 'ExclusionExtension', 'ExclusionProcess', 'ExclusionIpAddress')) {
-    if (@($preferences.$name | Where-Object { $_ }).Count -gt 0) {
+    $values = @($preferences.$name | Where-Object { $_ })
+    if ($name -eq 'ExclusionPath') { $values = @($values | Where-Object { $_ -ne $allowedPath }) }
+    if ($values.Count -gt 0) {
       throw "Defender exclusions prevent an unqualified validation: $name."
     }
   }
@@ -62,6 +72,100 @@ function Get-RecentDefenderThreatDetections {
     ($_.InitialDetectionTime -and ([datetimeoffset]$_.InitialDetectionTime).UtcDateTime -ge $sinceUtc) -or
       ($_.LastThreatStatusChangeTime -and ([datetimeoffset]$_.LastThreatStatusChangeTime).UtcDateTime -ge $sinceUtc)
   })
+}
+
+function Get-DefenderArtifactNeedles {
+  param([string]$ArtifactDirectory, [string[]]$ArtifactPaths)
+  $needles = New-Object System.Collections.Generic.List[string]
+  $directory = [IO.Path]::GetFullPath($ArtifactDirectory).TrimEnd('\', '/')
+  $needles.Add($directory)
+  foreach ($path in $ArtifactPaths) { $needles.Add([IO.Path]::GetFullPath($path)) }
+  # Defender can report 8.3 short paths (C:\Users\RUNNER~1\...). Add the short
+  # forms where the host provides them; elsewhere the long forms suffice.
+  try {
+    $fso = New-Object -ComObject Scripting.FileSystemObject -ErrorAction Stop
+    $needles.Add($fso.GetFolder($directory).ShortPath)
+    foreach ($path in $ArtifactPaths) {
+      if (Test-Path -LiteralPath $path -PathType Leaf) { $needles.Add($fso.GetFile($path).ShortPath) }
+    }
+  } catch { }
+  return @($needles | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
+}
+
+function Get-DefenderDetectionText {
+  param([object]$Detection)
+  $parts = @()
+  foreach ($name in @('Message', 'Resources', 'Path', 'ProcessName')) {
+    $property = $Detection.PSObject.Properties[$name]
+    if ($property -and $property.Value) { $parts += @($property.Value | ForEach-Object { [string]$_ }) }
+  }
+  return ($parts -join "`n")
+}
+
+function Test-DefenderDetectionAffectsArtifacts {
+  <#
+  .SYNOPSIS
+    True when a detection may concern our release artifacts (fails closed).
+  #>
+  param([object]$Detection, [string[]]$Needles)
+  $idProperty = $Detection.PSObject.Properties['Id']
+  # Event 5001 is loss of real-time protection: never unrelated.
+  if ($idProperty -and [int]$idProperty.Value -notin @(1116, 1117)) { return $true }
+  $text = Get-DefenderDetectionText $Detection
+  # Without a path, process, or resource we cannot rule our artifacts out.
+  if (-not $text -or ($idProperty -and $text -notmatch '(?m)^\s*(Path|Process Name):')) { return $true }
+  $lower = ($text -replace '(?i)file:_', '').ToLowerInvariant()
+  if ($lower -match 'preloop-windows-[^\\/\s;]*\.exe' -or $lower -match 'preloo~\d+\.exe') { return $true }
+  foreach ($needle in $Needles) {
+    if ($lower.Contains($needle)) { return $true }
+  }
+  return $false
+}
+
+function ConvertTo-UnrelatedDetection {
+  param([object]$Detection, [string]$Source)
+  $text = Get-DefenderDetectionText $Detection
+  $threatName = $null; $threatId = $null; $paths = @()
+  if ($text -match '(?m)^\s*Name:\s*(.+?)\s*$') { $threatName = $Matches[1] }
+  if ($text -match '(?m)^\s*ID:\s*(\d+)') { $threatId = [long]$Matches[1] }
+  $idProperty = $Detection.PSObject.Properties['ThreatID']
+  if ($idProperty -and $idProperty.Value) { $threatId = [long]$idProperty.Value }
+  foreach ($match in [regex]::Matches($text, '(?m)^\s*(?:Path|Process Name):\s*(.+?)\s*$')) { $paths += $match.Groups[1].Value }
+  foreach ($name in @('Resources', 'ProcessName')) {
+    $property = $Detection.PSObject.Properties[$name]
+    if ($property -and $property.Value) { $paths += @($property.Value | ForEach-Object { [string]$_ }) }
+  }
+  return [ordered]@{
+    source = $Source; threat_name = $threatName; threat_id = $threatId
+    paths = @($paths | Select-Object -Unique)
+  }
+}
+
+function Split-DefenderDetections {
+  <#
+  .SYNOPSIS
+    Separate detections that may concern our artifacts from unrelated ones.
+  #>
+  param([object[]]$Events, [object[]]$ThreatDetections, [string[]]$Needles)
+  $related = @(); $unrelated = @()
+  foreach ($item in @(@($Events | ForEach-Object { @{ d = $_; s = 'event' } }) + @($ThreatDetections | ForEach-Object { @{ d = $_; s = 'threat_detection' } }))) {
+    if ($null -eq $item.d) { continue }
+    if (Test-DefenderDetectionAffectsArtifacts -Detection $item.d -Needles $Needles) { $related += $item.d }
+    else { $unrelated += ConvertTo-UnrelatedDetection -Detection $item.d -Source $item.s }
+  }
+  return [pscustomobject]@{ Related = $related; Unrelated = $unrelated }
+}
+
+function Write-UnrelatedDetectionWarnings {
+  param([object[]]$Unrelated, [hashtable]$Seen)
+  foreach ($detection in $Unrelated) {
+    $key = '{0}|{1}|{2}' -f $detection.source, $detection.threat_id, ($detection.paths -join ';')
+    if ($Seen.ContainsKey($key)) { continue }
+    $Seen[$key] = $true
+    $message = "Defender detection unrelated to the release artifacts (not failing the gate): $($detection.threat_name) ID $($detection.threat_id) at $($detection.paths -join ', ')"
+    Write-Warning $message
+    Write-Host "::warning::$message"
+  }
 }
 
 function Invoke-ValidationProcess {
@@ -145,7 +249,9 @@ function Invoke-WindowsDefenderValidation {
     coverage = 'Defender on this AMD64 Windows host; ARM64 static scan only. SmartScreen and corporate EDR are not validated.'
     defender_before = $null; defender_after = $null
     artifacts = @(); events = @(); threat_detections = @(); probes = @()
+    unrelated_detections = @(); defender_exclusions = @()
   }
+  $warned = @{}
   $ReportPath = [IO.Path]::GetFullPath($ReportPath)
   $reportDirectory = Split-Path -Parent $ReportPath
   New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
@@ -160,6 +266,7 @@ function Invoke-WindowsDefenderValidation {
     }
     Update-MpSignature -ErrorAction Stop
     $report.defender_before = Assert-DefenderCoverage
+    $report.defender_exclusions = @((Get-MpPreference -ErrorAction Stop).ExclusionPath | Where-Object { $_ })
     foreach ($arch in @('amd64', 'arm64')) {
       $name = "preloop-windows-$arch.exe"
       $path = Join-Path ([IO.Path]::GetFullPath($ArtifactDirectory)) $name
@@ -179,6 +286,10 @@ function Invoke-WindowsDefenderValidation {
       Invoke-DefenderFileScan -FilePath $path -LogPath (Join-Path $reportDirectory "$arch-scan.log")
       $report.artifacts[-1].scan_completed = $true
     }
+    foreach ($artifact in $report.artifacts) {
+      if ($artifact.path -like (Get-RunnerAgentDefenderExclusion)) { throw "Release artifact is inside the runner-agent exclusion: $($artifact.name)." }
+    }
+    $needles = Get-DefenderArtifactNeedles -ArtifactDirectory $ArtifactDirectory -ArtifactPaths @($report.artifacts | ForEach-Object { $_.path })
     $nativePath = $report.artifacts[0].path
     foreach ($probe in @(
       @{ name = 'version'; arguments = @('version') },
@@ -193,7 +304,10 @@ function Invoke-WindowsDefenderValidation {
       $report.defender_after = Assert-DefenderCoverage
       $report.events = @(Get-DefenderValidationEvents -Since $started)
       $report.threat_detections = @(Get-RecentDefenderThreatDetections -Since $started)
-      if ($report.events.Count -gt 0 -or $report.threat_detections.Count -gt 0) {
+      $split = Split-DefenderDetections -Events $report.events -ThreatDetections $report.threat_detections -Needles $needles
+      $report.unrelated_detections = @($split.Unrelated)
+      Write-UnrelatedDetectionWarnings -Unrelated $split.Unrelated -Seen $warned
+      if (@($split.Related).Count -gt 0) {
         throw 'Defender recorded a detection, remediation, or loss of real-time protection during validation.'
       }
       Assert-ValidationArtifacts -Artifacts $report.artifacts
@@ -204,7 +318,10 @@ function Invoke-WindowsDefenderValidation {
     $report.defender_after = Assert-DefenderCoverage
     $report.events = @(Get-DefenderValidationEvents -Since $started)
     $report.threat_detections = @(Get-RecentDefenderThreatDetections -Since $started)
-    if ($report.events.Count -gt 0 -or $report.threat_detections.Count -gt 0) { throw 'Defender reported a threat during delayed observation.' }
+    $split = Split-DefenderDetections -Events $report.events -ThreatDetections $report.threat_detections -Needles $needles
+    $report.unrelated_detections = @($split.Unrelated)
+    Write-UnrelatedDetectionWarnings -Unrelated $split.Unrelated -Seen $warned
+    if (@($split.Related).Count -gt 0) { throw 'Defender reported a threat during delayed observation.' }
     Assert-ValidationArtifacts -Artifacts $report.artifacts
     $report.result = 'passed'
   } catch {

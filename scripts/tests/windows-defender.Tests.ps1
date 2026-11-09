@@ -116,6 +116,63 @@ Describe 'Windows release Defender validation' {
     (Get-Content -Raw $resultFile | ConvertFrom-Json).events[0].Id | Should -Be 1116
   }
 
+  It 'records and warns on a detection unrelated to the artifacts without failing' {
+    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 1116; Message = "Microsoft Defender Antivirus has detected malware.`r`n `tName: Trojan:Win32/Gracing.I`r`n `tID: 2147912911`r`n `tPath: file:_C:\Users\RUNNER~1\AppData\Local\Temp\provjobd.exe3807202850; process:_pid:5324`r`n `tProcess Name: C:\Users\RUNNER~1\AppData\Local\Temp\provjobd.exe3807202850" }) }
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 2147912911; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'C:\Users\RUNNER~1\AppData\Local\Temp\provjobd.exe3807202850'
+      Resources = @('file:_C:\Users\RUNNER~1\AppData\Local\Temp\provjobd.exe3807202850', 'process:_pid:5324') }) }
+    Mock Write-Warning { }
+    Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0
+    $report = Get-Content -Raw $resultFile | ConvertFrom-Json
+    $report.result | Should -Be 'passed'
+    $report.unrelated_detections.Count | Should -Be 2
+    $report.unrelated_detections[0].threat_name | Should -Be 'Trojan:Win32/Gracing.I'
+    $report.unrelated_detections.threat_id | Should -Contain 2147912911
+    ($report.unrelated_detections.paths -join ';') | Should -Match 'provjobd'
+    $report.events[0].Id | Should -Be 1116
+    Should -Invoke Write-Warning -ParameterFilter { $Message -like '*unrelated*Gracing*' }
+  }
+
+  It 'fails on a detection of preloop-windows-amd64.exe' {
+    $artifact = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 42; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'Unknown'; Resources = @("file:_$artifact") }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+    (Get-Content -Raw $resultFile | ConvertFrom-Json).unrelated_detections.Count | Should -Be 0
+  }
+
+  It 'fails on a detection of a process started from the artifact' {
+    $artifact = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
+    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 1116; Message = "`tName: Behavior:Win32/Example`r`n `tID: 7`r`n `tPath: behavior:_pid:99`r`n `tProcess Name: $artifact" }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'fails on a renamed artifact file name reported outside the artifact directory' {
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 43; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'C:\Users\someone\Downloads\preloop-windows-arm64.exe'; Resources = @() }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'still fails on loss of real-time protection (event 5001)' {
+    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 5001; Message = 'Real-time Protection scanning for malware is disabled.' }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'fails closed on a detection event without a path' {
+    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 1117; Message = 'synthetic remediation' }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'accepts only the runner-agent path exclusion' {
+    $script:preferences.ExclusionPath = @(Get-RunnerAgentDefenderExclusion)
+    { Assert-DefenderCoverage } | Should -Not -Throw
+    $script:preferences.ExclusionPath = @((Get-RunnerAgentDefenderExclusion), 'C:\example')
+    { Assert-DefenderCoverage } | Should -Throw '*exclusions*'
+    $script:preferences.ExclusionPath = @()
+    $script:preferences.ExclusionProcess = @('provjobd.exe')
+    { Assert-DefenderCoverage } | Should -Throw '*exclusions*'
+  }
+
   It 'fails if threat-history access is unavailable' {
     Mock Get-MpThreatDetection { throw 'threat history unavailable' }
     { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*threat history unavailable*'
@@ -236,6 +293,7 @@ Describe 'Disposable runner protection setup' {
       ExclusionProcess = @(); ExclusionIpAddress = @()
     } }
     Mock Remove-MpPreference { }
+    Mock Add-MpPreference { }
     Mock Enable-WindowsDefenderEventLog { }
     Mock Update-MpSignature { }
     Mock Start-Sleep { }
@@ -265,6 +323,9 @@ Describe 'Disposable runner protection setup' {
       $SubmitSamplesConsent -eq 'SendSafeSamples'
     }
     Should -Invoke Remove-MpPreference -Times 1 -Exactly -ParameterFilter { $ExclusionPath.Count -eq 2 }
+    Should -Invoke Add-MpPreference -Times 1 -Exactly -ParameterFilter {
+      $ExclusionPath.Count -eq 1 -and $ExclusionPath[0] -like '*\Users\`*\AppData\Local\Temp\provjobd.exe`*'
+    }
     Should -Invoke Assert-DefenderCoverage -Times 1 -Exactly
   }
 
