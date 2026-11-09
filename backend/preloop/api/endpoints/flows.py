@@ -2007,7 +2007,8 @@ def get_flow_execution_evidence_status(
     signing existed. ``preloop evidence verify`` checks it against the
     account's public key. ``signed`` is true when a signature is present.
     An available pack without one carries ``unsigned_reason``:
-    ``legacy_transport`` for a pack stored on the execution row before #2190,
+    ``legacy_transport`` for a pack stored on the execution row (captured
+    before #2190, or kept there because the artifact store refused it),
     ``no_signature`` for an artifact that was never signed.
     """
     execution = crud_flow_execution.get_without_workspace(
