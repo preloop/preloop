@@ -71,9 +71,17 @@ class MobileDeviceRegistration(BaseModel):
     """Schema for registering a mobile device."""
 
     platform: str = Field(..., description="Device platform: 'ios' or 'android'")
-    # A blank token is silently accepted by APNs registration but then fails
-    # every send with 400 MissingDeviceToken — reject it at the door.
-    token: str = Field(..., min_length=1, description="Device push notification token")
+    # A fresh app install may not have a push token yet (iOS only gets one
+    # after the user grants notification permission). Missing, null and
+    # blank tokens all normalise to None, meaning "no push token": QR pairing
+    # still succeeds, but nothing is stored. A blank token must never be
+    # stored: APNs accepts it at registration and then fails every send with
+    # 400 MissingDeviceToken.
+    token: Optional[str] = Field(
+        None,
+        description="Device push notification token. Omit, null or empty when "
+        "the app has no push token yet.",
+    )
     device_name: Optional[str] = Field(
         None, description="Optional device name for API key"
     )
@@ -100,9 +108,30 @@ class MobileDeviceRegistration(BaseModel):
 
     @field_validator("token")
     @classmethod
-    def validate_token(cls, value: str) -> str:
-        """Reject blank/whitespace-only push tokens."""
+    def validate_token(cls, value: Optional[str]) -> Optional[str]:
+        """Normalise blank/whitespace-only push tokens to None."""
+        if value is None:
+            return None
         token = value.strip()
+        return token or None
+
+
+class MobileDeviceTokenRegistration(MobileDeviceRegistration):
+    """Schema for the authenticated push-only device registration.
+
+    Unlike QR pairing, this endpoint exists only to store a push token, so a
+    non-blank token is required.
+    """
+
+    token: str = Field(  # type: ignore[assignment]
+        ..., min_length=1, description="Device push notification token"
+    )
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: Optional[str]) -> Optional[str]:
+        """Reject blank/whitespace-only push tokens."""
+        token = (value or "").strip()
         if not token:
             raise ValueError("Device push token must not be empty")
         return token

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pairing a mobile device by QR code no longer fails with 422 when the app
+  has no push token yet (a fresh iOS install before notification permission
+  is granted). `register-via-token` now accepts a missing, null or blank
+  `token`: pairing succeeds and the API key is issued, nothing is stored for
+  push, and the response reports `push_registered: false` with a
+  `push_error` explaining why. The authenticated `me/register-device`
+  endpoint still requires a token. When a device paired without a token
+  later registers one with its pairing key, the key is linked to that token
+  so unregistering the device revokes it. (#2248)
 - MCP OAuth discovery no longer fails with a 500 when an upstream serves
   gzip-compressed metadata or token responses (for example the Pipedrive MCP
   server). A body that cannot be decoded now returns the normal OAuth error
