@@ -639,6 +639,7 @@ def evidence_status(db: Session, *, account_id: UUID, execution: Any) -> dict[st
         isinstance(raw, dict)
         and raw.get("status") == "available"
         and str(raw.get("transport") or "") in ("", "legacy")
+        and not raw.get("artifact_id")
         and _legacy_archive_bytes(execution) is None
     )
     if isinstance(raw, dict) and raw.get("status") and not stale_legacy:
@@ -649,11 +650,19 @@ def evidence_status(db: Session, *, account_id: UUID, execution: Any) -> dict[st
         if str(receipt.get("transport") or "") == "legacy"
         else None
     )
-    return _mark_status_receipt(receipt, archive=archive)
+    return _label_unsigned_legacy(_mark_status_receipt(receipt, archive=archive))
 
 
-def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
-    """Build a receipt from a scoped evidence row's current availability."""
+def _receipt_for_artifact(
+    execution: Any, artifact: Any, stored: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Build a receipt from a scoped evidence row's current availability.
+
+    ``transport`` says how the bytes travelled. A legacy-transport pack
+    ingested into the artifact store (#2190) keeps ``legacy`` when the
+    persisted receipt names this artifact; routing to the bytes uses the
+    ``artifact_id``, not the transport.
+    """
     now = datetime.now(UTC)
     # A held pack whose bytes are still there is available, whatever the
     # operational expiry says: the hold is what stopped the janitor from
@@ -669,9 +678,20 @@ def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
     return evidence_receipt(
         status=status,
         execution_id=execution.id,
-        transport="direct",
+        transport=_capture_transport(artifact, stored),
         artifact=artifact,
     )
+
+
+def _capture_transport(artifact: Any, stored: Mapping[str, Any] | None) -> str:
+    """``legacy`` for an ingested legacy pack, otherwise ``direct``."""
+    if (
+        stored
+        and stored.get("transport") == "legacy"
+        and str(stored.get("artifact_id") or "") == str(artifact.id)
+    ):
+        return "legacy"
+    return "direct"
 
 
 def inspect_evidence(
@@ -699,7 +719,7 @@ def inspect_evidence(
                     transport=str(stored.get("transport") or "direct"),
                     error="artifact_scope_mismatch",
                 )
-            return _receipt_for_artifact(execution, artifact)
+            return _receipt_for_artifact(execution, artifact, stored)
         if stored.get("status") == "available" and stored.get("transport") == "legacy":
             archive = getattr(execution, "evidence_archive", None)
             if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
@@ -714,7 +734,7 @@ def inspect_evidence(
         kind="evidence",
     )
     if artifact is not None:
-        return _receipt_for_artifact(execution, artifact)
+        return _receipt_for_artifact(execution, artifact, stored)
     archive = getattr(execution, "evidence_archive", None)
     if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
         return evidence_receipt(
@@ -744,7 +764,7 @@ def load_evidence(
         raise EvidenceUnavailableError("failed", receipt)
     if status == "expired":
         raise EvidenceUnavailableError("expired", receipt)
-    if receipt.get("transport") == "legacy":
+    if receipt.get("transport") == "legacy" and not receipt.get("artifact_id"):
         archive = bytes(execution.evidence_archive or b"")
         if not archive:
             raise EvidenceUnavailableError("missing", receipt)
@@ -826,7 +846,7 @@ def load_evidence(
     return archive, evidence_receipt(
         status="available",
         execution_id=execution.id,
-        transport="direct",
+        transport=str(receipt.get("transport") or "direct"),
         artifact=artifact,
         archive=archive,
         integrity_verified=True,
@@ -1029,6 +1049,11 @@ def attach_evidence_signature(
     out["signature"] = document
     out["signing_key_id"] = (document or {}).get("key_id")
     out["signed"] = document is not None
+    if document is None and out.get("status") == "available":
+        # Any available pack without a signature says why, not only the
+        # pre-#2190 column packs: an artifact can also be unsigned (captured
+        # before signing existed, or the account key could not be used).
+        out.setdefault("unsigned_reason", "no_signature")
     return out
 
 

@@ -215,6 +215,8 @@ export function sameEvidencePack(
     integrity?: string | null;
     integrity_note?: string | null;
     error?: string | null;
+    signed?: boolean;
+    unsigned_reason?: string | null;
   } | null,
   next: {
     status?: string;
@@ -223,6 +225,8 @@ export function sameEvidencePack(
     integrity?: string | null;
     integrity_note?: string | null;
     error?: string | null;
+    signed?: boolean;
+    unsigned_reason?: string | null;
   } | null
 ): boolean {
   if (!current || !next) return current === next;
@@ -232,6 +236,8 @@ export function sameEvidencePack(
     Boolean(current.legal_hold) === Boolean(next.legal_hold) &&
     (current.integrity || '') === (next.integrity || '') &&
     (current.integrity_note || '') === (next.integrity_note || '') &&
-    (current.error || '') === (next.error || '')
+    (current.error || '') === (next.error || '') &&
+    current.signed === next.signed &&
+    (current.unsigned_reason || '') === (next.unsigned_reason || '')
   );
 }

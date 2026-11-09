@@ -37,7 +37,10 @@ fallback pack, have no signature. `evidence-status` says so with
 `signed: false` and `unsigned_reason: legacy_transport`, and the console
 evidence view shows an **Unsigned** label. They cannot be signed after the
 fact: a signature made now would only say what the server holds today, not
-what was captured. Every response from `evidence-status` carries `signed`.
+what was captured. Every response from `evidence-status` carries `signed`,
+and any available pack without a signature carries `unsigned_reason`
+(`legacy_transport`, or `no_signature` for an artifact captured before signing
+existed or when the account key could not be used); the console labels both.
 Failed
 persist is visible as `evidence-status: failed` or `missing`; it must not
 look like a successful receipt. Existing downloads keep working.

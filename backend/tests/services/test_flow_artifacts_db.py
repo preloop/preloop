@@ -1173,8 +1173,19 @@ async def test_default_settings_legacy_capture_yields_a_verifiable_signature(
     signature = payload["signature"]
     assert signature is not None
     assert payload["signed"] is True
+    assert payload["transport"] == "legacy"
+    assert "unsigned_reason" not in payload
     download = client.get(f"/flows/executions/{execution.id}/evidence")
     assert download.status_code == 200
+    # The download and dossier receipts say how the bytes travelled too.
+    from preloop.services.flow_artifacts import load_evidence
+    from preloop.services.product_dossier import portable_evidence_fields
+
+    _, loaded = load_evidence(
+        db_session, account_id=scope["account_id"], execution=execution
+    )
+    assert loaded["transport"] == "legacy"
+    assert portable_evidence_fields(loaded)["transport"] == "legacy"
     assert signature["payload"]["archive_sha256"] == (
         hashlib.sha256(download.content).hexdigest()
     )
@@ -1218,3 +1229,52 @@ def test_pre_existing_legacy_pack_is_labelled_unsigned(
     assert payload["signature"] is None
     assert payload["signed"] is False
     assert payload["unsigned_reason"] == "legacy_transport"
+
+
+def test_artifact_backed_pack_without_signature_is_labelled_unsigned(
+    db_session, scope, test_user, monkeypatch
+) -> None:
+    """#2190 review: an artifact with no signature is unsigned too."""
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
+    from preloop.api.endpoints import flows as flow_endpoints
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services import record_signing
+    from preloop.services.flow_artifacts import evidence_receipt
+
+    monkeypatch.setattr(record_signing, "sign_evidence_pack", lambda *a, **k: None)
+    reference = put_artifact(
+        db_session, **scope, kind="evidence", archive=_evidence_body(b"nokey")
+    )
+    artifact = crud.get(
+        db_session,
+        artifact_id=reference.artifact_id,
+        account_id=scope["account_id"],
+        flow_id=scope["flow_id"],
+        thread_id=scope["thread_id"],
+    )
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    execution.status = "SUCCEEDED"
+    crud_flow_execution.set_evidence_receipt(
+        db_session,
+        db_obj=execution,
+        receipt=evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="direct",
+            artifact=artifact,
+        ),
+    )
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
+    payload = (
+        TestClient(app).get(f"/flows/executions/{execution.id}/evidence-status").json()
+    )
+    assert payload["artifact_id"] == str(reference.artifact_id)
+    assert payload["signed"] is False
+    assert payload["unsigned_reason"] == "no_signature"
