@@ -1,11 +1,12 @@
 """Ephemeral harness approval credentials cannot escape their execution session."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from preloop.api.endpoints import agent_permission as endpoint
 
@@ -87,3 +88,310 @@ def test_flow_permission_requires_own_active_execution(
         with pytest.raises(HTTPException) as exc:
             endpoint._resolve_permission_identity("flow-token")
         assert exc.value.status_code == 401
+
+
+@pytest.fixture
+def restricted_review(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Authenticate synthetic keys; keep real resolver and scope guards."""
+    account_id, session_id, execution_id, flow_id = (uuid4() for _ in range(4))
+    key = SimpleNamespace(
+        id=uuid4(),
+        account_id=account_id,
+        scopes=["mcp:read"],
+        context_data={
+            "read_only_review": True,
+            "allowed_mcp_tools": [],
+            "allowed_mcp_servers": [],
+            "flow_id": str(flow_id),
+            "flow_execution_id": str(execution_id),
+            "runtime_principal": {"type": "flow_execution", "id": str(execution_id)},
+        },
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution_id),
+        ended_at=None,
+        runtime_principal_name="Synthetic review",
+    )
+    case = SimpleNamespace(key=key, session=session, managed=None)
+    monkeypatch.setattr(endpoint, "get_session_factory", lambda: MagicMock())
+    monkeypatch.setattr(endpoint.crud_api_key, "get_by_key", lambda *a, **kw: key)
+    case.authenticate = Mock(return_value=SimpleNamespace(id=uuid4()))
+    monkeypatch.setattr(endpoint, "_authenticate_with_api_key", case.authenticate)
+    monkeypatch.setattr(endpoint, "_managed_agent_for_api_key", lambda *a: case.managed)
+    monkeypatch.setattr(
+        endpoint, "_runtime_session_id_from_api_key", lambda *a: session_id
+    )
+    case.lookup = Mock(side_effect=lambda *a, **kw: case.session)
+    monkeypatch.setattr(
+        endpoint.crud_runtime_session, "get_account_session", case.lookup
+    )
+    return case
+
+
+def test_review_permission_identity_requires_explicit_opt_in(restricted_review) -> None:
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity("review-token")
+    assert exc.value.status_code == 403
+    identity = endpoint._resolve_permission_identity(
+        "review-token", allow_read_only_review=True
+    )
+    assert identity.api_key_id == restricted_review.key.id
+    assert identity.runtime_session_id == restricted_review.session.id
+    assert (
+        str(identity.flow_execution_id) == restricted_review.session.session_source_id
+    )
+    assert identity.managed_agent_id is None
+    assert restricted_review.lookup.call_args.kwargs == {
+        "account_id": restricted_review.key.account_id,
+        "runtime_session_id": restricted_review.session.id,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("allowed_mcp_tools", None),
+        ("allowed_mcp_tools", ["example-tool"]),
+        ("allowed_mcp_servers", None),
+        ("allowed_mcp_servers", ["example-server"]),
+        ("flow_id", None),
+        ("flow_id", "invalid"),
+        ("flow_execution_id", None),
+        ("flow_execution_id", "invalid"),
+        ("runtime_principal", None),
+        ("runtime_principal", {}),
+        ("runtime_principal", {"type": "managed_agent", "id": "wrong"}),
+        ("runtime_principal", {"type": "flow_execution", "id": "wrong"}),
+    ],
+)
+def test_review_permission_rejects_invalid_bindings(
+    restricted_review, field: str, value: object
+) -> None:
+    restricted_review.key.context_data[field] = value
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity(
+            "review-token", allow_read_only_review=True
+        )
+    assert exc.value.status_code in {401, 403}
+
+
+@pytest.mark.parametrize("scopes", [None, [], ["*"], ["mcp:read", "mcp:write"]])
+def test_review_permission_rejects_scope_expansion(restricted_review, scopes) -> None:
+    restricted_review.key.scopes = scopes
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity(
+            "review-token", allow_read_only_review=True
+        )
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "scenario", ["missing", "ended", "wrong_execution", "wrong_source", "managed"]
+)
+def test_review_permission_requires_active_unmanaged_execution(
+    restricted_review, scenario: str
+) -> None:
+    if scenario == "missing":
+        # The account-scoped CRUD lookup also returns None for another account.
+        restricted_review.session = None
+    elif scenario == "ended":
+        restricted_review.session.ended_at = "2026-01-01"
+    elif scenario == "wrong_execution":
+        restricted_review.session.session_source_id = str(uuid4())
+    elif scenario == "wrong_source":
+        restricted_review.session.session_source_type = "codex"
+    else:
+        restricted_review.managed = SimpleNamespace(id=uuid4())
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity(
+            "review-token", allow_read_only_review=True
+        )
+    assert exc.value.status_code in {401, 403}
+
+
+def test_review_permission_does_not_bypass_authentication(restricted_review) -> None:
+    restricted_review.authenticate.side_effect = HTTPException(status_code=401)
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity(
+            "review-token", allow_read_only_review=True
+        )
+    assert exc.value.status_code == 401
+    restricted_review.lookup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "active",
+        "inactive",
+        "expired",
+        "ended_execution",
+        "inactive_user",
+        "wrong_account",
+        "machine_authorization",
+    ],
+)
+def test_review_permission_preserves_real_key_authentication(
+    monkeypatch: pytest.MonkeyPatch, restricted_review, state: str
+) -> None:
+    from preloop.api.auth import jwt
+
+    key = restricted_review.key
+    key.is_active = state != "inactive"
+    key.is_expired = state == "expired"
+    key.requires_machine_authorization = state == "machine_authorization"
+    key.user_id = uuid4()
+    key.context_data["runtime_session_id"] = str(restricted_review.session.id)
+    restricted_review.session.runtime_principal_type = "flow_execution"
+    restricted_review.session.runtime_principal_id = key.context_data[
+        "flow_execution_id"
+    ]
+    user = SimpleNamespace(
+        id=key.user_id,
+        account_id=uuid4() if state == "wrong_account" else key.account_id,
+        is_active=state != "inactive_user",
+    )
+    monkeypatch.setattr(
+        endpoint, "_authenticate_with_api_key", jwt._authenticate_with_api_key
+    )
+    monkeypatch.setattr(jwt.crud_user, "get", lambda *a, **kw: user)
+    monkeypatch.setattr(jwt.crud_managed_agent, "get_by_source", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        jwt.crud_flow_execution,
+        "get_status",
+        lambda *a, **kw: "SUCCEEDED" if state == "ended_execution" else "RUNNING",
+    )
+    if state == "active":
+        with pytest.raises(HTTPException) as exc:
+            endpoint._resolve_permission_identity("review-token")
+        assert exc.value.status_code == 403
+        identity = endpoint._resolve_permission_identity(
+            "review-token", allow_read_only_review=True
+        )
+        assert identity.api_key_id == key.id
+    else:
+        with pytest.raises(HTTPException) as exc:
+            endpoint._resolve_permission_identity(
+                "review-token", allow_read_only_review=True
+            )
+        assert exc.value.status_code == (
+            403 if state == "machine_authorization" else 401
+        )
+
+
+@pytest.mark.parametrize("scenario", ["own", "other_key", "other_account", "missing"])
+def test_review_hook_expiry_requires_own_approval(
+    monkeypatch: pytest.MonkeyPatch, restricted_review, scenario: str
+) -> None:
+    from preloop.models.crud.approval_request import crud_approval_request
+
+    identity = endpoint._resolve_permission_identity(
+        "review-token", allow_read_only_review=True
+    )
+    row = SimpleNamespace(
+        account_id=restricted_review.key.account_id,
+        api_key_id=restricted_review.key.id,
+        managed_agent_id=None,
+    )
+    if scenario == "other_key":
+        row.api_key_id = uuid4()
+    elif scenario == "other_account":
+        row.account_id = uuid4()
+    elif scenario == "missing":
+        row = None
+    monkeypatch.setattr(crud_approval_request, "get", lambda *a, **kw: row)
+    assert endpoint._owned_approval_exists(identity, uuid4()) is (scenario == "own")
+
+
+@pytest.mark.parametrize("decision", ["allow", "deny", "park"])
+def test_review_native_hook_retains_policy_decision(
+    monkeypatch: pytest.MonkeyPatch, restricted_review, decision: str
+) -> None:
+    decide = AsyncMock(
+        return_value=(decision, "Synthetic policy decision", None, False)
+    )
+    monkeypatch.setattr(endpoint, "request_agent_permission", decide)
+    monkeypatch.setattr(endpoint, "_claim_operator_note", Mock(return_value=None))
+    record = Mock()
+    monkeypatch.setattr(endpoint, "_record_native_tool_call", record)
+    app = FastAPI()
+    app.include_router(endpoint.router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/agents/permission-check",
+            headers={"Authorization": "Bearer review-token"},
+            json={
+                "source": "codex_cli",
+                "tool_name": "Bash",
+                "tool_input": {"command": "example-review-helper"},
+                "evaluation_phase": "pre_tool_use",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["decision"] == ("deny" if decision == "park" else decision)
+    assert response.json()["parked"] is (decision == "park")
+    assert decide.await_args.kwargs["api_key_id"] == restricted_review.key.id
+    assert str(decide.await_args.kwargs["flow_execution_id"]) == (
+        restricted_review.session.session_source_id
+    )
+    record.assert_called_once()
+
+
+def test_review_native_expiry_route_rejects_another_keys_approval(
+    monkeypatch: pytest.MonkeyPatch, restricted_review
+) -> None:
+    from preloop.models.crud.approval_request import crud_approval_request
+
+    other = SimpleNamespace(
+        account_id=restricted_review.key.account_id,
+        api_key_id=uuid4(),
+        managed_agent_id=None,
+    )
+    lookup = Mock(return_value=other)
+    monkeypatch.setattr(crud_approval_request, "get", lookup)
+    app = FastAPI()
+    app.include_router(endpoint.router)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/approvals/{uuid4()}/expire",
+            headers={"Authorization": "Bearer review-token"},
+            json={"reason": "hook_deadline"},
+        )
+    assert response.status_code == 404
+    lookup.assert_called_once()
+
+
+def test_review_native_expiry_route_expires_only_own_request(
+    monkeypatch: pytest.MonkeyPatch, restricted_review
+) -> None:
+    from preloop.models.crud.approval_request import crud_approval_request
+    from preloop.models.db import session
+    from preloop.services.approval_service import ApprovalService
+
+    approval_id = uuid4()
+    row = SimpleNamespace(
+        id=approval_id,
+        account_id=restricted_review.key.account_id,
+        api_key_id=restricted_review.key.id,
+        managed_agent_id=None,
+        status="expired",
+        approver_comment=None,
+    )
+    monkeypatch.setattr(crud_approval_request, "get", lambda *a, **kw: row)
+    monkeypatch.setattr(session, "get_async_db_session", MagicMock())
+    expire = AsyncMock(return_value=row)
+    monkeypatch.setattr(ApprovalService, "expire_request", expire)
+    app = FastAPI()
+    app.include_router(endpoint.router)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/approvals/{approval_id}/expire",
+            headers={"Authorization": "Bearer review-token"},
+            json={"reason": "hook_deadline"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "expired"
+    assert expire.await_args.args == (approval_id,)
+    assert expire.await_args.kwargs["reason"] == "hook_deadline"
