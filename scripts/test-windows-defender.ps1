@@ -88,7 +88,10 @@ function Get-DefenderArtifactNeedles {
     foreach ($path in $ArtifactPaths) {
       if (Test-Path -LiteralPath $path -PathType Leaf) { $needles.Add($fso.GetFile($path).ShortPath) }
     }
-  } catch { }
+  } catch {
+    # Best effort: file-name patterns (including PRELOO~N.EXE) still apply.
+    Write-Host "Defender short-path resolution unavailable: $($_.Exception.Message)"
+  }
   return @($needles | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
 }
 
@@ -114,6 +117,15 @@ function Test-DefenderDetectionAffectsArtifacts {
   $text = Get-DefenderDetectionText $Detection
   # Without a path, process, or resource we cannot rule our artifacts out.
   if (-not $text -or ($idProperty -and $text -notmatch '(?m)^\s*(Path|Process Name):')) { return $true }
+  if (-not $idProperty) {
+    # Threat-history records must name a file resource or a process path.
+    $located = @()
+    foreach ($name in @('Resources', 'ProcessName', 'Path')) {
+      $property = $Detection.PSObject.Properties[$name]
+      if ($property -and $property.Value) { $located += @($property.Value | Where-Object { [string]$_ -match '^(?i:file:_)?[a-z]:\\|^\\\\' }) }
+    }
+    if ($located.Count -eq 0) { return $true }
+  }
   $lower = ($text -replace '(?i)file:_', '').ToLowerInvariant()
   if ($lower -match 'preloop-windows-[^\\/\s;]*\.exe' -or $lower -match 'preloo~\d+\.exe') { return $true }
   foreach ($needle in $Needles) {

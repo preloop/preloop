@@ -153,6 +153,25 @@ Describe 'Windows release Defender validation' {
     { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
   }
 
+  It 'fails on a detection of another file inside the artifact directory' {
+    $script:artifactPath = Join-Path $fixtureDir 'dropped.dll'
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 44; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'Unknown'; Resources = @("file:_$script:artifactPath") }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'fails on an 8.3 short artifact file name' {
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 45; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'C:\Users\RUNNER~1\Downloads\PRELOO~1.EXE'; Resources = @() }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
+  It 'fails closed on a threat-history record without a file or process path' {
+    Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 46; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
+      ProcessName = 'Unknown'; Resources = @() }) }
+    { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
+  }
+
   It 'still fails on loss of real-time protection (event 5001)' {
     Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 5001; Message = 'Real-time Protection scanning for malware is disabled.' }) }
     { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
