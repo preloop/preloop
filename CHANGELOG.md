@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and CRA CI gating no longer fails such runs. An evidence upload after the
   run has finished is still refused with 409 `artifact_execution_closed`.
   (#2189)
+- MCP OAuth discovery no longer fails with a 500 when an upstream serves
+  gzip-compressed metadata or token responses (for example the Pipedrive MCP
+  server). A body that cannot be decoded now returns the normal OAuth error
+  instead of a 500. ([#2249](https://github.com/preloop/preloop/issues/2249))
 
 ## [1.0.0] - 2026-11-08
 

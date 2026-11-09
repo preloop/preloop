@@ -793,3 +793,37 @@ def test_oauth_redirect_rechecks_current_authentication_policy(
     assert refused.status_code == 403
     assert gate.authorize.call_args.kwargs["purpose"] == "exchange"
     assert gate.authorize.call_args.kwargs["claims"]["amr"] == ["password"]
+
+
+def test_oauth_authorize_undecodable_metadata_is_400_not_500(
+    client, db_session, test_user, monkeypatch
+):
+    """#2249: a bad upstream body yields the normal OAuth error, not a 500."""
+    import httpx
+    from preloop.api.endpoints import mcp_servers
+    from preloop.services.upstream_mcp_oauth import OAuthHTTP
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    def handle(request):
+        return httpx.Response(
+            200, content=b"not gzip", headers={"content-encoding": "gzip"}
+        )
+
+    monkeypatch.setattr(
+        mcp_servers,
+        "OAuthHTTP",
+        lambda: OAuthHTTP(transport=httpx.MockTransport(handle), resolver=resolve),
+    )
+    server = _oauth_server(db_session, test_user)
+    ticket = client.post(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
+    ).json()["authorize_token"]
+    response = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": ticket},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert "decoded" in response.json()["detail"]
