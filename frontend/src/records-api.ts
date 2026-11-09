@@ -169,7 +169,10 @@ export interface EvidenceStatus {
   signature?: Record<string, unknown> | null;
   signing_key_id?: string | null;
   signed?: boolean;
-  /** Set on packs stored before #2190 over the legacy transport. */
+  /**
+   * Why an available pack has no signature: `legacy_transport` for a pack
+   * stored on the execution row, `no_signature` for an artifact never signed.
+   */
   unsigned_reason?: string | null;
 }
 
