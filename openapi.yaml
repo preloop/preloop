@@ -17857,7 +17857,11 @@ paths:
 
         Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
 
-        Served from the persisted execution receipt (no decrypt). Availability
+        Served from the persisted execution receipt when one is bound, else
+
+        from the same evidence record the download serves (no decrypt either
+
+        way), so a pack the download returns is never reported missing. Availability
 
         is not integrity proof. ``object_lock`` is always false: this API does
 

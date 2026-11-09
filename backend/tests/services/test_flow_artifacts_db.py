@@ -923,3 +923,149 @@ def test_controller_retention_put_after_failed_run(db_session, scope) -> None:
         thread_id=scope["thread_id"],
     )
     assert row is not None and row.kind == "workspace"
+
+
+def _evidence_api_client(db_session, test_user) -> TestClient:
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
+    from preloop.api.endpoints import flows as flow_endpoints
+
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
+    return TestClient(app)
+
+
+def _trap_upload_then_fail(db_session, scope, client) -> tuple[bytes, str]:
+    """EXIT-trap PUT lands, then the run is closed FAILED with no final receipt.
+
+    This is the #2189 shape: the controller marks the execution terminal
+    before (or without) the final ``evidence_upload`` outcome, so no receipt
+    is bound, and the final PUT is refused with 409.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    body = _evidence_body(b"trap")
+    token = mint_artifact_capability(**scope, kind="evidence", operation="put")
+    uploaded = client.put(
+        f"/flows/executions/{scope['execution_id']}/artifacts",
+        headers={"Authorization": "Bearer " + token},
+        content=body,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={"status": "FAILED", "result": {"verdict": "fail"}},
+    )
+    db_session.commit()
+    late = client.put(
+        f"/flows/executions/{scope['execution_id']}/artifacts",
+        headers={"Authorization": "Bearer " + token},
+        content=_evidence_body(b"late"),
+    )
+    assert late.status_code == 409
+    assert late.json()["detail"] == "artifact_execution_closed"
+    return body, uploaded.json()["artifact_id"]
+
+
+def test_evidence_status_matches_download_after_unbound_failure(
+    db_session, scope, test_user
+) -> None:
+    """#2189: status must not say missing while the download serves a pack."""
+    client = _evidence_api_client(db_session, test_user)
+    body, artifact_id = _trap_upload_then_fail(db_session, scope, client)
+    execution_id = scope["execution_id"]
+
+    download = client.get(f"/flows/executions/{execution_id}/evidence")
+    assert download.status_code == 200
+    assert download.content == body
+
+    status = client.get(f"/flows/executions/{execution_id}/evidence-status")
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["status"] == "available"
+    assert payload["artifact_id"] == str(artifact_id)
+    assert payload["sha256"] == download.headers["x-preloop-evidence-sha256"]
+    assert payload["kind"] == "evidence"
+    assert "integrity" in payload and "legal_hold" in payload
+
+    result = client.get(f"/flows/executions/{execution_id}/result")
+    assert result.status_code == 200
+    assert result.json()["evidence"]["status"] == "available"
+    assert result.json()["evidence"]["artifact_id"] == str(artifact_id)
+
+
+def test_evidence_status_stays_missing_when_nothing_was_uploaded(
+    db_session, scope, test_user
+) -> None:
+    """No pack, terminal run: status and download both say missing."""
+    from preloop.models.crud import crud_flow_execution
+
+    client = _evidence_api_client(db_session, test_user)
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    crud_flow_execution.update(
+        db_session, db_obj=execution, obj_in={"status": "FAILED"}
+    )
+    db_session.commit()
+    status = client.get(f"/flows/executions/{execution.id}/evidence-status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "missing"
+    download = client.get(f"/flows/executions/{execution.id}/evidence")
+    assert download.status_code == 404
+
+
+def test_cra_ci_fetch_evidence_accepts_pack_after_unbound_failure(
+    db_session, scope, test_user, tmp_path
+) -> None:
+    """The CI consumer of evidence-status gets a usable receipt (#2189)."""
+    from urllib.parse import urlsplit
+
+    from preloop.cra.ci import fetch_evidence, fetch_evidence_status
+
+    client = _evidence_api_client(db_session, test_user)
+    body, artifact_id = _trap_upload_then_fail(db_session, scope, client)
+
+    class _Response:
+        def __init__(self, response) -> None:
+            self.status = response.status_code
+            self.headers = dict(response.headers)
+            self._data = response.content
+
+        def read(self, n: int = -1) -> bytes:
+            if n is None or n < 0:
+                data, self._data = self._data, b""
+                return data
+            data, self._data = self._data[:n], self._data[n:]
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def opener(request, timeout: int = 0):
+        path = urlsplit(request.full_url).path.removeprefix("/api/v1")
+        return _Response(client.request(request.get_method(), path))
+
+    execution_id = str(scope["execution_id"])
+    receipt = fetch_evidence_status(
+        "https://preloop.test", "t", execution_id, opener=opener
+    )
+    assert receipt is not None
+    assert receipt["status"] == "available"
+    assert receipt["artifact_id"] == str(artifact_id)
+
+    dest = fetch_evidence(
+        "https://preloop.test",
+        "t",
+        execution_id,
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+    )
+    assert dest.read_bytes() == body
