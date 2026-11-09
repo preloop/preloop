@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP OAuth discovery no longer fails with a 500 when an upstream serves
+  gzip-compressed metadata or token responses (for example the Pipedrive MCP
+  server). A body that cannot be decoded now returns the normal OAuth error
+  instead of a 500. ([#2249](https://github.com/preloop/preloop/issues/2249))
+
 ## [1.0.0] - 2026-11-08
 
 ### Highlights
