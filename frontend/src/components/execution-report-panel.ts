@@ -419,6 +419,17 @@ export class ExecutionReportPanel extends LitElement {
             ? html`<sl-badge variant="warning" pill>Held</sl-badge>`
             : nothing
         }
+        ${
+          evidence?.status === 'available' && evidence.signed === false
+            ? html`<sl-badge
+                variant="neutral"
+                pill
+                data-testid="pack-unsigned"
+                title=${unsignedNote(evidence.unsigned_reason)}
+                >Unsigned</sl-badge
+              >`
+            : nothing
+        }
         <span>Integrity: ${evidence?.integrity || 'Unknown'}</span>
         <span class="mono"
           >SHA-256
@@ -516,4 +527,12 @@ declare global {
   interface HTMLElementTagNameMap {
     'execution-report-panel': ExecutionReportPanel;
   }
+}
+
+/** Why a pack has no signature, for the Unsigned label's tooltip. */
+function unsignedNote(reason: string | null | undefined): string {
+  if (reason === 'legacy_transport') {
+    return 'Stored on the legacy transport without a signature. preloop evidence verify cannot check this pack.';
+  }
+  return 'This pack has no signature. preloop evidence verify cannot check it.';
 }

@@ -31,6 +31,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server). A body that cannot be decoded now returns the normal OAuth error
   instead of a 500. ([#2249](https://github.com/preloop/preloop/issues/2249))
 
+- Default self-hosted installs (Docker Compose and Helm, without
+  `FLOW_ARTIFACT_DIRECT_UPLOAD`) now sign flow evidence packs. A pack that
+  arrives over the legacy Docker/Kubernetes transport is stored in the
+  encrypted artifact store and signed with the account key at capture, with
+  the same signature format as direct upload, so `preloop evidence verify`
+  can check it. No networking change is needed (#2190).
+
+### Upgrade notes
+
+- Evidence packs captured on the legacy transport before this release stay
+  unsigned. `GET /api/v1/flows/executions/{id}/evidence-status` now returns
+  `signed` on every response, and `unsigned_reason: legacy_transport` on
+  those packs; the console evidence view labels them **Unsigned**. Re-run the
+  flow if you need a signed pack (#2190).
+- Legacy-transport packs captured after the upgrade follow the evidence
+  retention (`FLOW_EVIDENCE_RETENTION_HOURS`, 30 days by default) and the
+  `FLOW_EVIDENCE_MAX_BYTES` cap, the same as direct upload. Place a legal hold
+  on packs you must keep longer. A pack the artifact store refuses is still
+  kept on the execution row, unsigned (#2190).
+
 ## [1.0.0] - 2026-11-08
 
 ### Highlights

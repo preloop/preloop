@@ -48,6 +48,15 @@ describe('evidence report markdown', () => {
     expect(
       sameEvidencePack(current, { ...current, legal_hold: true })
     ).to.equal(false);
+    expect(sameEvidencePack(current, { ...current, signed: false })).to.equal(
+      false
+    );
+    expect(
+      sameEvidencePack(current, {
+        ...current,
+        unsigned_reason: 'legacy_transport',
+      })
+    ).to.equal(false);
     expect(sameEvidencePack(null, null)).to.equal(true);
     expect(sameEvidencePack(current, null)).to.equal(false);
   });

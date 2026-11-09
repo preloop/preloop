@@ -261,4 +261,54 @@ describe('ExecutionReportPanel', () => {
     await waitUntil(() => (el.shadowRoot?.textContent || '').includes('Held'));
     expect(el.shadowRoot!.textContent).to.contain('Held');
   });
+
+  it('labels a pre-#2190 legacy pack as unsigned', async () => {
+    install();
+    const el = await mount({
+      ...EVIDENCE,
+      transport: 'legacy',
+      signature: null,
+      signed: false,
+      unsigned_reason: 'legacy_transport',
+    });
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('[data-testid="pack-unsigned"]')
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="pack-unsigned"]')!.textContent
+    ).to.contain('Unsigned');
+  });
+
+  it('labels an artifact-backed pack with no signature as unsigned', async () => {
+    install();
+    const el = await mount({
+      ...EVIDENCE,
+      transport: 'direct',
+      artifact_id: '44444444-4444-4444-8444-444444444444',
+      signature: null,
+      signed: false,
+      unsigned_reason: 'no_signature',
+    });
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('[data-testid="pack-unsigned"]')
+    );
+  });
+
+  it('shows no unsigned label on a signed pack', async () => {
+    install();
+    const el = await mount({
+      ...EVIDENCE,
+      transport: 'legacy',
+      artifact_id: '44444444-4444-4444-8444-444444444444',
+      signature: { key_id: 'k1', signature: 'c2ln' },
+      signing_key_id: 'k1',
+      signed: true,
+    });
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('[data-testid="pack-integrity"]')
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="pack-unsigned"]')
+    ).to.equal(null);
+  });
 });

@@ -1106,3 +1106,224 @@ def test_purged_legacy_receipt_is_not_reported_available(
     assert status.json()["status"] == "missing"
     result = client.get(f"/flows/executions/{execution.id}/result")
     assert result.json()["evidence"]["status"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_default_settings_legacy_capture_yields_a_verifiable_signature(
+    db_session, scope, test_user, monkeypatch
+) -> None:
+    """#2190: a default install (no direct upload) still signs the pack.
+
+    The pack arrives over the legacy Docker/K8s transport. The API stores it
+    in the encrypted artifact store and signs it with the account key, so
+    ``preloop evidence verify`` can check it offline.
+    """
+    import hashlib
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
+    from preloop.api.endpoints import flows as flow_endpoints
+    from preloop.config import settings
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services import record_signing
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    assert type(settings).model_fields["flow_artifact_direct_upload"].default is False
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    flow = db_session.get(models.Flow, scope["flow_id"])
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db_session
+    orchestrator.execution_log = execution
+    orchestrator.flow = flow
+    orchestrator.execution_logger = Mock()
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._evidence_artifact_id = None
+
+    body = _evidence_body(b"legacy findings")
+
+    async def getter(_ref: str) -> bytes:
+        return body
+
+    executor = SimpleNamespace(
+        evidence_transport_error=None, get_evidence_archive=getter
+    )
+    await orchestrator._capture_evidence_archive(executor, "container")
+    receipt = orchestrator._evidence_receipt
+    assert receipt["status"] == "available"
+    assert receipt["artifact_id"]
+    execution.status = "SUCCEEDED"
+    crud_flow_execution.set_evidence_receipt(
+        db_session, db_obj=execution, receipt=receipt
+    )
+    db_session.commit()
+    db_session.refresh(execution)
+    assert not execution.evidence_archive
+
+    app = FastAPI()
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
+    client = TestClient(app)
+    payload = client.get(f"/flows/executions/{execution.id}/evidence-status").json()
+    signature = payload["signature"]
+    assert signature is not None
+    assert payload["signed"] is True
+    assert payload["transport"] == "legacy"
+    assert "unsigned_reason" not in payload
+    download = client.get(f"/flows/executions/{execution.id}/evidence")
+    assert download.status_code == 200
+    # The download and dossier receipts say how the bytes travelled too.
+    from preloop.services.flow_artifacts import load_evidence
+    from preloop.services.product_dossier import portable_evidence_fields
+
+    _, loaded = load_evidence(
+        db_session, account_id=scope["account_id"], execution=execution
+    )
+    assert loaded["transport"] == "legacy"
+    assert portable_evidence_fields(loaded)["transport"] == "legacy"
+    assert signature["payload"]["archive_sha256"] == (
+        hashlib.sha256(download.content).hexdigest()
+    )
+    key = record_signing.get_key_by_id(
+        db_session, account_id=scope["account_id"], key_id=signature["key_id"]
+    )
+    assert record_signing.verify_signature_document(
+        signature,
+        public_key=key.public_key,
+        payload_type=record_signing.PAYLOAD_EVIDENCE_PACK,
+        digest=record_signing.digest_of(signature["payload"]),
+    )
+
+
+def test_pre_existing_legacy_pack_is_labelled_unsigned(
+    db_session, scope, test_user
+) -> None:
+    """#2190: packs stored in the legacy column before the fix say unsigned."""
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
+    from preloop.api.endpoints import flows as flow_endpoints
+    from preloop.services.flow_artifacts import public_evidence_status
+
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    execution.status = "SUCCEEDED"
+    execution.evidence_archive = _evidence_body(b"old")
+    db_session.commit()
+
+    status = public_evidence_status(execution)
+    assert status["transport"] == "legacy"
+    assert status["unsigned_reason"] == "legacy_transport"
+
+    app = FastAPI()
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
+    payload = (
+        TestClient(app).get(f"/flows/executions/{execution.id}/evidence-status").json()
+    )
+    assert payload["signature"] is None
+    assert payload["signed"] is False
+    assert payload["unsigned_reason"] == "legacy_transport"
+
+
+def test_artifact_backed_pack_without_signature_is_labelled_unsigned(
+    db_session, scope, test_user, monkeypatch
+) -> None:
+    """#2190 review: an artifact with no signature is unsigned too."""
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
+    from preloop.api.endpoints import flows as flow_endpoints
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services import record_signing
+    from preloop.services.flow_artifacts import evidence_receipt
+
+    monkeypatch.setattr(record_signing, "sign_evidence_pack", lambda *a, **k: None)
+    reference = put_artifact(
+        db_session, **scope, kind="evidence", archive=_evidence_body(b"nokey")
+    )
+    artifact = crud.get(
+        db_session,
+        artifact_id=reference.artifact_id,
+        account_id=scope["account_id"],
+        flow_id=scope["flow_id"],
+        thread_id=scope["thread_id"],
+    )
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    execution.status = "SUCCEEDED"
+    crud_flow_execution.set_evidence_receipt(
+        db_session,
+        db_obj=execution,
+        receipt=evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="direct",
+            artifact=artifact,
+        ),
+    )
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
+    payload = (
+        TestClient(app).get(f"/flows/executions/{execution.id}/evidence-status").json()
+    )
+    assert payload["artifact_id"] == str(reference.artifact_id)
+    assert payload["signed"] is False
+    assert payload["unsigned_reason"] == "no_signature"
+
+
+@pytest.mark.asyncio
+async def test_refused_legacy_pack_falls_back_to_column_unsigned(
+    db_session, scope, monkeypatch
+) -> None:
+    """#2190: a pack the artifact store refuses is kept, unsigned and labelled."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from preloop.config import settings
+    from preloop.services import flow_artifacts
+    from preloop.services.flow_artifacts import public_evidence_status
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+
+    def refuse(*_a, **_k):
+        raise ValueError("artifact_quota_exceeded")
+
+    monkeypatch.setattr(flow_artifacts, "put_artifact", refuse)
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db_session
+    orchestrator.execution_log = execution
+    orchestrator.flow = db_session.get(models.Flow, scope["flow_id"])
+    orchestrator.execution_logger = Mock()
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._evidence_artifact_id = None
+    body = _evidence_body(b"too big")
+
+    async def getter(_ref: str) -> bytes:
+        return body
+
+    await orchestrator._capture_evidence_archive(
+        SimpleNamespace(evidence_transport_error=None, get_evidence_archive=getter),
+        "container",
+    )
+    receipt = orchestrator._evidence_receipt
+    assert receipt["status"] == "available"
+    assert receipt["transport"] == "legacy"
+    assert receipt["artifact_id"] is None
+    assert orchestrator._evidence_archive is not None
+    assert crud.latest(db_session, **scope, kind="evidence") is None
+    execution.evidence_archive = orchestrator._evidence_archive
+    execution.evidence_receipt = receipt
+    status = public_evidence_status(execution)
+    assert status["unsigned_reason"] == "legacy_transport"

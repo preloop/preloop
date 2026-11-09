@@ -21,8 +21,27 @@ logs, so the plaintext switch does not change Docker capture. Kubernetes
 still emits a size-capped base64 block on the pod log channel
 (`MAX_EVIDENCE_ARCHIVE_BYTES`, 2 MiB compressed) for `result.json`, the
 evidence pack, and the workspace snapshot. Base64 is not encryption. Anyone
-who can read retained pod logs can read those bytes. The control plane
-stores the evidence bytes on `flow_execution.evidence_archive`. Failed
+who can read retained pod logs can read those bytes. Since #2190 the control
+plane stores a pack that arrives this way in the same encrypted artifact
+store as a direct upload and signs it with the account key at capture, so a
+default install produces packs `preloop evidence verify` can check offline.
+The receipt keeps `transport: legacy`, because that is how the bytes
+travelled, and carries the `artifact_id` the signature names. Those packs
+follow the evidence retention below (`FLOW_EVIDENCE_RETENTION_HOURS`) like a
+direct upload. A pack the artifact store refuses (over
+`FLOW_EVIDENCE_MAX_BYTES`, over quota, no encryption key) is kept on
+`flow_execution.evidence_archive` instead, unsigned, rather than lost.
+
+Packs stored on `flow_execution.evidence_archive` before #2190, and any
+fallback pack, have no signature. `evidence-status` says so with
+`signed: false` and `unsigned_reason: legacy_transport`, and the console
+evidence view shows an **Unsigned** label. They cannot be signed after the
+fact: a signature made now would only say what the server holds today, not
+what was captured. Every response from `evidence-status` carries `signed`,
+and any available pack without a signature carries `unsigned_reason`
+(`legacy_transport`, or `no_signature` for an artifact captured before signing
+existed or when the account key could not be used); the console labels both.
+Failed
 persist is visible as `evidence-status: failed` or `missing`; it must not
 look like a successful receipt. Existing downloads keep working.
 
