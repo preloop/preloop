@@ -616,10 +616,17 @@ def evidence_status(db: Session, *, account_id: UUID, execution: Any) -> dict[st
     availability is still not integrity proof.
 
     A bound receipt is what the terminal download serves too, so polls on a
-    bound run stay a pure row read.
+    bound run stay a pure row read, except a legacy ``available`` receipt
+    whose archive column retention already cleared: that one is re-asked.
     """
     raw = getattr(execution, "evidence_receipt", None)
-    if isinstance(raw, dict) and raw.get("status"):
+    stale_legacy = (
+        isinstance(raw, dict)
+        and raw.get("status") == "available"
+        and str(raw.get("transport") or "") in ("", "legacy")
+        and _legacy_archive_bytes(execution) is None
+    )
+    if isinstance(raw, dict) and raw.get("status") and not stale_legacy:
         return public_evidence_status(execution)
     receipt = inspect_evidence(db, account_id=account_id, execution=execution)
     archive = (

@@ -226,8 +226,12 @@ Rows under a legal hold or a live lease are not cleared until it ends.
 ## Receipts and retrieval
 
 `GET /api/v1/flows/executions/{id}/evidence-status` and the `evidence`
-object on `GET /api/v1/flows/executions/{id}/result` report **persisted**
-availability from `flow_execution.evidence_receipt` (account-scoped).
+object on `GET /api/v1/flows/executions/{id}/result` report the persisted
+`flow_execution.evidence_receipt` when one is bound (account-scoped).
+When no receipt is bound, for example a run closed before its final upload
+outcome was recorded, or a legacy receipt whose stored archive is gone, they
+answer from the same evidence record the download serves, so status and
+download agree.
 A poll on a direct-transport pack does not decrypt anything, so it is not
 an integrity proof for that pack.
 

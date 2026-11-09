@@ -1069,3 +1069,40 @@ def test_cra_ci_fetch_evidence_accepts_pack_after_unbound_failure(
         opener=opener,
     )
     assert dest.read_bytes() == body
+
+
+def test_purged_legacy_receipt_is_not_reported_available(
+    db_session, scope, test_user
+) -> None:
+    """A legacy receipt outliving its cleared archive column must not say available."""
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services.flow_artifacts import evidence_receipt
+
+    client = _evidence_api_client(db_session, test_user)
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={"status": "SUCCEEDED", "result": {"verdict": "pass"}},
+    )
+    crud_flow_execution.set_evidence_receipt(
+        db_session,
+        db_obj=execution,
+        receipt=evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="legacy",
+            archive=_evidence_body(b"gone"),
+        ),
+    )
+    # Retention cleared the in-row archive but left the receipt behind.
+    execution.evidence_archive = None
+    db_session.commit()
+
+    download = client.get(f"/flows/executions/{execution.id}/evidence")
+    assert download.status_code == 404
+    status = client.get(f"/flows/executions/{execution.id}/evidence-status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "missing"
+    result = client.get(f"/flows/executions/{execution.id}/result")
+    assert result.json()["evidence"]["status"] == "missing"

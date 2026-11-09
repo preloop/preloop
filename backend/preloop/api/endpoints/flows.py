@@ -1854,8 +1854,9 @@ def get_flow_execution_result(
     ``flow.execution.finished`` is queued, so a caller notified of completion
     never receives 409 for that execution.
 
-    ``evidence`` is the persisted receipt only: bounded, account-scoped,
-    no decrypt. Availability is not integrity proof; download
+    ``evidence`` is the persisted receipt when one is bound, else derived
+    from the same evidence record the download serves: bounded,
+    account-scoped, no decrypt. Availability is not integrity proof; download
     ``GET .../evidence`` to verify digest.
 
     A restricted CI credential (``execution:result:read``) reads only its own
