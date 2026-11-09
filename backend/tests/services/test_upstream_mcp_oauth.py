@@ -377,3 +377,30 @@ async def test_undecodable_body_is_oauth_error():
         await http.get("https://resource.example.com/metadata")
     with pytest.raises(OAuthError, match="could not be decoded"):
         await http.post(ISSUER + "/token", data={"code": "synthetic-code"})
+
+
+@pytest.mark.asyncio
+async def test_transport_errors_still_reach_retry_logic(monkeypatch):
+    """Only decode failures become OAuthError; network errors keep retrying."""
+    from preloop.services.upstream_mcp_oauth import OAuthTokenError
+
+    calls = []
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    async def sleep(delay):
+        pass
+
+    def handle(request):
+        calls.append(request)
+        raise httpx.ConnectError("synthetic connect failure")
+
+    monkeypatch.setattr("preloop.services.upstream_mcp_oauth.asyncio.sleep", sleep)
+    http = OAuthHTTP(transport=httpx.MockTransport(handle), resolver=resolve)
+    with pytest.raises(OAuthError, match="temporarily unavailable"):
+        await http.get("https://resource.example.com/metadata")
+    assert len(calls) == 3
+    with pytest.raises(OAuthTokenError, match="Reconnect"):
+        await http.post(ISSUER + "/token", data={"code": "synthetic-code"})
+    assert len(calls) == 4
