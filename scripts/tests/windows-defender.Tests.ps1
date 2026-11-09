@@ -134,16 +134,16 @@ Describe 'Windows release Defender validation' {
   }
 
   It 'fails on a detection of preloop-windows-amd64.exe' {
-    $artifact = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
+    $script:artifactPath = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
     Mock Get-MpThreatDetection { @([pscustomobject]@{ ThreatID = 42; InitialDetectionTime = [datetime]::Now; LastThreatStatusChangeTime = $null
-      ProcessName = 'Unknown'; Resources = @("file:_$artifact") }) }
+      ProcessName = 'Unknown'; Resources = @("file:_$script:artifactPath") }) }
     { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
     (Get-Content -Raw $resultFile | ConvertFrom-Json).unrelated_detections.Count | Should -Be 0
   }
 
   It 'fails on a detection of a process started from the artifact' {
-    $artifact = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
-    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 1116; Message = "`tName: Behavior:Win32/Example`r`n `tID: 7`r`n `tPath: behavior:_pid:99`r`n `tProcess Name: $artifact" }) }
+    $script:artifactPath = Join-Path $fixtureDir 'preloop-windows-amd64.exe'
+    Mock Get-DefenderValidationEvents { @([pscustomobject]@{ Id = 1116; Message = "`tName: Behavior:Win32/Example`r`n `tID: 7`r`n `tPath: behavior:_pid:99`r`n `tProcess Name: $script:artifactPath" }) }
     { Invoke-WindowsDefenderValidation $fixtureDir $resultFile -ObservationSeconds 0 } | Should -Throw '*recorded a detection*'
   }
 
