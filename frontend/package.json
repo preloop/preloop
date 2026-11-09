@@ -1,6 +1,6 @@
 {
   "name": "preloop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Preloop console frontend",
   "type": "module",
   "engines": {
