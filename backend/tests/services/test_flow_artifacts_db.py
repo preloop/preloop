@@ -1278,3 +1278,52 @@ def test_artifact_backed_pack_without_signature_is_labelled_unsigned(
     assert payload["artifact_id"] == str(reference.artifact_id)
     assert payload["signed"] is False
     assert payload["unsigned_reason"] == "no_signature"
+
+
+@pytest.mark.asyncio
+async def test_refused_legacy_pack_falls_back_to_column_unsigned(
+    db_session, scope, monkeypatch
+) -> None:
+    """#2190: a pack the artifact store refuses is kept, unsigned and labelled."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from preloop.config import settings
+    from preloop.services import flow_artifacts
+    from preloop.services.flow_artifacts import public_evidence_status
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+
+    def refuse(*_a, **_k):
+        raise ValueError("artifact_quota_exceeded")
+
+    monkeypatch.setattr(flow_artifacts, "put_artifact", refuse)
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db_session
+    orchestrator.execution_log = execution
+    orchestrator.flow = db_session.get(models.Flow, scope["flow_id"])
+    orchestrator.execution_logger = Mock()
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._evidence_artifact_id = None
+    body = _evidence_body(b"too big")
+
+    async def getter(_ref: str) -> bytes:
+        return body
+
+    await orchestrator._capture_evidence_archive(
+        SimpleNamespace(evidence_transport_error=None, get_evidence_archive=getter),
+        "container",
+    )
+    receipt = orchestrator._evidence_receipt
+    assert receipt["status"] == "available"
+    assert receipt["transport"] == "legacy"
+    assert receipt["artifact_id"] is None
+    assert orchestrator._evidence_archive is not None
+    assert crud.latest(db_session, **scope, kind="evidence") is None
+    execution.evidence_archive = orchestrator._evidence_archive
+    execution.evidence_receipt = receipt
+    status = public_evidence_status(execution)
+    assert status["unsigned_reason"] == "legacy_transport"

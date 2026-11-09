@@ -17879,7 +17879,13 @@ paths:
 
         signing existed. ``preloop evidence verify`` checks it against the
 
-        account''s public key.'
+        account''s public key. ``signed`` is true when a signature is present.
+
+        An available pack without one carries ``unsigned_reason``:
+
+        ``legacy_transport`` for a pack stored on the execution row before #2190,
+
+        ``no_signature`` for an artifact that was never signed.'
       operationId: get_flow_execution_evidence_status_api_v1_flows_executions__execution_id__evidence_status_get
       security:
       - bearerAuth: []
@@ -55113,7 +55119,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
