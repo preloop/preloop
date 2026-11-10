@@ -267,6 +267,18 @@ def test_unexpected_denials_parses_proxy_log() -> None:
     assert extra == [("fixture-site", "dial_error")]
     missing, _ = flow.unexpected_denials("")
     assert missing == ["example.org", "169.254.169.254"]
+    # An expected host that was allowed and then failed to dial is a
+    # regression, not the expected denial.
+    allowed = "\n".join(
+        json.dumps({"target": target, "reason": reason})
+        for target, reason in (
+            ("example.org:443", "dial_error"),
+            ("http://169.254.169.254/", "not_allowlisted"),
+        )
+    )
+    missing, extra = flow.unexpected_denials(allowed)
+    assert missing == ["example.org"]
+    assert extra == [("example.org", "dial_error")]
 
 
 def test_unexpected_denials_skips_entries_before_since() -> None:
@@ -578,6 +590,14 @@ def test_check_browser_run_rejects_leaks_and_unexpected_denials() -> None:
     )
     with pytest.raises(AssertionError):
         integration.check_browser_run(logs, proxy_log + "\n" + late)
+    allowed_offsite = proxy_log.replace(
+        '"2026-11-10T14:00:11Z", "target": "example.org:443", '
+        '"reason": "not_allowlisted"',
+        '"2026-11-10T14:00:11Z", "target": "example.org:443", "reason": "dial_error"',
+    )
+    assert allowed_offsite != proxy_log
+    with pytest.raises(AssertionError):
+        integration.check_browser_run(logs, allowed_offsite)
     # Only the setup-time denials: the flow's own denials are missing.
     setup_only = "\n".join(proxy_log.splitlines()[:2])
     with pytest.raises(AssertionError):

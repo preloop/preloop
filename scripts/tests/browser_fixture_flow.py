@@ -267,12 +267,15 @@ def unexpected_denials(
     denials = proxy_denials(
         log_text, since=since, allowed_dial_hosts=allowed_dial_hosts
     )
-    hosts = {host for host, _ in denials}
+    # dial_error means the proxy allowed the request; it never counts as the
+    # expected denial and is always reported, even for an expected host.
+    hosts = {host for host, reason in denials if reason != "dial_error"}
     missing = [host for host in expected_hosts if host not in hosts]
     extra = [
         (host, reason)
         for host, reason in denials
-        if host not in expected_hosts and host not in ignored_hosts
+        if reason == "dial_error"
+        or (host not in expected_hosts and host not in ignored_hosts)
     ]
     return missing, extra
 
