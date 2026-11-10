@@ -651,6 +651,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			)
 		}
 		if upstream != nil && (upstream.CanRouteThroughGateway() || planServerReuse) {
+			plan.ClaudeFableBuiltinDefault = claudeOnboardFableFollowsBuiltinDefault(
+				agent, upstream, pinModelFamilies,
+			)
 			plan, err = applyManagedGatewayForAgent(
 				plan,
 				agent,
@@ -923,9 +926,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 						modelBindings = append(modelBindings, familyBindings...)
 						familyAliases = familyAliasList
 						plan.Notes = append(plan.Notes, familyNotes...)
+						plan.Notes = append(plan.Notes, claudeOnboardAllowlistNotes(
+							client, managedAgent.ID, upstream.ManagedModelAlias, familyAliasList,
+						)...)
 					}
 				}
 			}
+			plan.ClaudeFableBuiltinDefault = claudeOnboardFableFollowsBuiltinDefault(
+				agent, upstream, pinModelFamilies,
+			)
 			plan, err = applyManagedGatewayForAgent(
 				plan,
 				agent,

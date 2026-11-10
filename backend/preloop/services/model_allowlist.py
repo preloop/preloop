@@ -35,6 +35,7 @@ policy that is written is the policy that is enforced.
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
 from preloop.models.models.ai_model import AIModel
@@ -49,6 +50,19 @@ MAX_LISTED_ALLOWED_MODELS = 5
 # OpenAI-shaped ``error.code`` for an allowlist denial. Distinct from
 # ``budget_limit_exceeded`` because the fix is a policy edit, not spend.
 MODEL_NOT_ALLOWED_ERROR_CODE = "model_not_allowed"
+
+# A Claude family model id inside any alias spelling: ``anthropic/claude-fable-5-2``,
+# ``claude-opus-5-5-20260915``, ``claude-sonnet-5-5[1m]``. Group 1 is the family,
+# group 2 the dash-separated version (with an optional snapshot date).
+_CLAUDE_FAMILY_ID_RE = re.compile(
+    r"claude-(opus|sonnet|haiku|fable)((?:-\d+)*)", re.IGNORECASE
+)
+
+# Remediation printed with every allowlist denial.
+_ALLOWLIST_REMEDIATION = (
+    "Edit the agent's governance in the Preloop console or pick an allowed "
+    "model, then run `preloop agents refresh` to update the local model pins."
+)
 
 
 def normalize_allowed_models(entries: Optional[Iterable[object]]) -> list[str]:
@@ -183,10 +197,70 @@ def requested_model_label(ai_model: AIModel, requested: object) -> str:
     return (ai_model.model_identifier or ai_model.name or "unknown").strip()
 
 
+def _claude_family_version(value: str) -> Optional[tuple[str, tuple[int, ...]]]:
+    """Return ``(family, version)`` for a Claude family model spelling.
+
+    A trailing ``YYYYMMDD`` snapshot date is dropped: it marks a build of the
+    same version, not a newer one.
+
+    Args:
+        value: Any alias, identifier or allowlist entry.
+
+    Returns:
+        The lower-case family and its numeric version, or ``None`` when the
+        value names no Claude family model.
+    """
+    match = _CLAUDE_FAMILY_ID_RE.search(value or "")
+    if match is None:
+        return None
+    parts = [int(part) for part in match.group(2).split("-") if part]
+    if parts and len(str(parts[-1])) == 8 and 20000101 <= parts[-1] <= 21001231:
+        parts = parts[:-1]
+    return match.group(1).lower(), tuple(parts)
+
+
+def older_claude_family_sibling(
+    requested_model: str, allowed_models: Optional[Iterable[object]]
+) -> Optional[str]:
+    """Find an allowlist entry that is an older release of the requested family.
+
+    A new Claude release (``claude-fable-5-2``) requested by an agent whose
+    allowlist still names the previous one (``anthropic/claude-fable-5-1``)
+    is denied like any other model, but the remediation differs: the agent
+    already uses this family, so the operator only needs to admit the new
+    release.
+
+    Args:
+        requested_model: The requested model spelling.
+        allowed_models: The allowlist that denied the request.
+
+    Returns:
+        The newest older-sibling entry, or ``None`` when the request is not a
+        Claude family model or the allowlist names no older release of it.
+    """
+    requested = _claude_family_version(requested_model)
+    if requested is None:
+        return None
+    family, version = requested
+    best: Optional[tuple[tuple[int, ...], str]] = None
+    for entry in normalize_allowed_models(allowed_models):
+        parsed = _claude_family_version(entry)
+        if parsed is None or parsed[0] != family or parsed[1] >= version:
+            continue
+        if best is None or parsed[1] > best[0]:
+            best = (parsed[1], entry)
+    return best[1] if best is not None else None
+
+
 def format_model_not_allowed_detail(
     requested_model: str, allowed_models: Optional[Iterable[object]]
 ) -> str:
     """Render the client-facing detail for a ``subject_model_not_allowed`` denial.
+
+    When the denied model is a newer release of a Claude family the allowlist
+    already names, the detail says so and points at ``preloop agents
+    refresh``, which admits newer releases of families an allowlist already
+    names. The gateway itself never widens an allowlist.
 
     Args:
         requested_model: The spelling to quote (see ``requested_model_label``).
@@ -201,10 +275,18 @@ def format_model_not_allowed_detail(
     listed = ", ".join(normalized[:MAX_LISTED_ALLOWED_MODELS])
     if len(normalized) > MAX_LISTED_ALLOWED_MODELS:
         listed += ", ..."
+    sibling = older_claude_family_sibling(requested_model, normalized)
+    if sibling is not None:
+        return (
+            f"Model '{requested_model}' is not in this agent's allowed models "
+            f"({listed}). It is a newer release of '{sibling}', which this "
+            "agent allows: run `preloop agents refresh <agent>` on the "
+            "onboarded machine to add it, or edit the agent's governance in "
+            "the Preloop console."
+        )
     return (
         f"Model '{requested_model}' is not in this agent's allowed models "
-        f"({listed}). Edit the agent's governance in the Preloop console or "
-        "pick an allowed model."
+        f"({listed}). {_ALLOWLIST_REMEDIATION}"
     )
 
 

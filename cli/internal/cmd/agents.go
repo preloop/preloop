@@ -772,7 +772,12 @@ type managedMCPEnrollmentPlan struct {
 	// runtime for the mcp-remote stdio bridge is missing). The reason and
 	// the user's options are carried in Notes.
 	MCPConfigSkipped bool
-	Notes            []string
+	// ClaudeFableBuiltinDefault makes unpinned Claude Code onboarding treat
+	// Fable like the stock families (no managed env pair) because the
+	// installed Claude Code ships its own fable default. See
+	// claudeFableFollowsBuiltinDefault for when it is set.
+	ClaudeFableBuiltinDefault bool
+	Notes                     []string
 }
 
 type remoteServerSyncResult struct {
@@ -928,7 +933,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
-	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
+	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output allowlisted managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported direct gateway route/accounting probe in addition to config validation (application behavior unverified)")
@@ -4672,9 +4677,11 @@ func applyClaudeManagedGateway(
 // pin, so Claude Code keeps using its own built-in default and the gateway
 // auto-registers unseen claude-* ids for subscription OAuth when enabled; a new release
 // then arrives with the next Claude Code binary update and no `preloop agents
-// refresh`. Fable has no built-in Claude Code default, so its pair stays
-// pinned, and a custom/non-family model is still pinned explicitly or Claude
-// Code's background and subagent requests would 404 at the gateway.
+// refresh`. Fable joins them when plan.ClaudeFableBuiltinDefault is set
+// (Claude Code 2.1.321+ on subscription OAuth); otherwise its pair stays
+// pinned because older builds have no built-in fable default. A
+// custom/non-family model is still pinned explicitly or Claude Code's
+// background and subagent requests would 404 at the gateway.
 //
 // It mutates plan.ManagedDocument and env in place because the caller already
 // holds the maps, and appends the note to plan.Notes (hence the pointer: the
@@ -4686,6 +4693,7 @@ func applyClaudeUnpinnedManagedModelEnv(
 	familyAliases []string,
 ) {
 	coverage := append([]string{modelAlias}, familyAliases...)
+	fableBuiltin := plan.ClaudeFableBuiltinDefault
 	selection, _ := claudePinnedModelSelection(modelAlias)
 	switch {
 	case selection == "":
@@ -4704,23 +4712,33 @@ func applyClaudeUnpinnedManagedModelEnv(
 				modelAlias,
 			),
 		)
-	case claudeFamilySelectorIsStock(selection):
+	case claudeFamilySelectorIsStockWith(selection, fableBuiltin):
 		// Stock family: drop the family pins and any managed ANTHROPIC_MODEL
 		// pin. settings.model keeps the family selector (e.g. "sonnet"), which
 		// Claude Code resolves to its own built-in default and which clears any
 		// stale non-family model left by a previous enrollment.
 		plan.ManagedDocument["model"] = selection
 		delete(env, "ANTHROPIC_MODEL")
-		for key, value := range claudeUnpinnedFamilyEnv(coverage) {
+		for key, value := range claudeUnpinnedFamilyEnvWith(coverage, fableBuiltin) {
 			env[key] = value
+		}
+		if fableBuiltin && selection == "fable" {
+			// A Fable custom option would freeze a second Fable entry in
+			// the picker; drop it together with the pair.
+			delete(env, "ANTHROPIC_CUSTOM_MODEL_OPTION")
+			delete(env, "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME")
 		}
 		plan.Notes = append(
 			plan.Notes,
 			"Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku). Automatic registration of new Anthropic ids requires subscription OAuth and enabled family autoregistration. API-key accounts should use --pin-model-families or run preloop models sync before selecting new ids.",
 		)
+		if fableBuiltin {
+			plan.Notes = append(plan.Notes, claudeFableBuiltinDefaultNote)
+		}
 	default:
-		// Non-stock family (fable): no built-in Claude Code default exists, so
-		// keep the selector and its env pair, but never invent stock pins.
+		// Fable on a Claude Code build without a built-in fable default (or
+		// an account the gateway cannot autoregister for): keep the selector
+		// and its env pair, but never invent stock pins.
 		plan.ManagedDocument["model"] = selection
 		env["ANTHROPIC_MODEL"] = selection
 		for key, value := range claudeUnpinnedFamilyEnv(coverage) {
@@ -4730,13 +4748,25 @@ func applyClaudeUnpinnedManagedModelEnv(
 			plan.Notes = append(
 				plan.Notes,
 				fmt.Sprintf(
-					"Fable has no built-in Claude Code default; /model fable resolves to %s through Preloop.",
+					"Fable is pinned to %s through Preloop (Claude Code older than %s has no built-in fable default, or the account is not on subscription OAuth); run preloop agents refresh after a new Fable release.",
 					alias,
+					claudeCodeFirstBuiltinFableVersion,
 				),
 			)
 		}
 	}
+	if !fableBuiltin {
+		return
+	}
+	if fableAlias := claudeFamilyModelEnv(coverage)["ANTHROPIC_DEFAULT_FABLE_MODEL"]; fableAlias != "" && selection != "fable" {
+		// Fable is a sibling of the selected family here; its pair is
+		// already dropped by claudeUnpinnedFamilyEnvWith.
+		plan.Notes = append(plan.Notes, claudeFableBuiltinDefaultNote)
+	}
 }
+
+// claudeFableBuiltinDefaultNote explains why no Fable pin is written.
+const claudeFableBuiltinDefaultNote = "Claude Code " + claudeCodeFirstBuiltinFableVersion + "+ has a built-in fable default; Preloop leaves /model fable to Claude Code and the gateway registers new Fable releases on first use."
 
 func restoreClaudeGatewayEnvFromOriginal(
 	agent AgentConfig,

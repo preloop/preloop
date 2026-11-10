@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- cli, gateway: Claude Code onboarded through Preloop now reaches newly
+  released Fable models. On Claude Code 2.1.321 and later (the first build
+  with a built-in fable default) with subscription OAuth, onboarding and
+  `preloop agents refresh` no longer write the `ANTHROPIC_DEFAULT_FABLE_MODEL`
+  pair or a Fable custom model option, so the picker follows Claude Code's own
+  newest Fable. Older builds, API-key accounts and `--pin-model-families` keep
+  the pair, and refresh now moves it to the newest admitted Fable release and
+  warns when a newer one is not admitted. Refresh imports a newer family
+  release from the live Anthropic list even when an older one is already in
+  the catalog, and appends it to the agent's allowed models when those name an
+  older release of the same family. The gateway's allowed-models 403 now names
+  the allowed older release and `preloop agents refresh` as the fix.
 - ci(release): the Windows Defender release gate no longer fails on detections
   unrelated to our artifacts, such as GitHub's hosted-runner provisioning
   daemon `provjobd.exe` flagged as Trojan:Win32/Gracing.I by signature
