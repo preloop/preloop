@@ -114,6 +114,28 @@ reasons shown on the execution are listed in
 [Copilot CLI: when no runner is eligible](../copilot-cli.md#when-no-runner-is-eligible).
 Model selection rules for flows are in [Model routing](../flows/model-routing.md).
 
+### When the pinned runner is asleep or offline
+
+A harness flow that pins a runner (`agent_config.runner_id`) follows its
+`agent_config.offline_policy` when that runner is `asleep` (it sent
+`going_to_sleep` before it went quiet) or `offline` (heartbeats stopped
+without a sleep signal; on macOS and Windows a closed lid shows as
+`offline`):
+
+- `fail` (default): the run fails in the same routing cycle with the
+  routing reason `runner_asleep` or `runner_offline`.
+- `reroute`: the run goes to another runner the flow's author may use for
+  flows, with the same harness, model and billing (a seat run never moves
+  to a gateway-metered path), never to the pinned runner itself. When no
+  such runner can take it right now, the run fails with the same reason.
+  `harness_fallback: fallback_server` still applies when no reroute
+  candidate exists, because that is an explicit opt-in to hosted compute.
+
+`queue` (wait for the runner to wake) is not available yet and is refused
+when the flow is saved. Either way the execution timeline gets an entry
+naming the policy that fired. A continuation bound to its host's local
+workspace keeps waiting for that host instead, since its state is there.
+
 ## Bring your own seat, and how runs are labelled
 
 A harness on your machine runs under your own login and plan. Preloop does not

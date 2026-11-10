@@ -71,6 +71,8 @@ ROUTING_HARNESS_SIGNED_OUT = "harness_signed_out"
 ROUTING_HARNESS_DISABLED = "harness_disabled"
 ROUTING_MODEL_NOT_AVAILABLE = "model_not_available"
 ROUTING_RUNNER_OFFLINE = "runner_offline"
+#: The pinned runner said ``going_to_sleep`` before it went quiet (#1508).
+ROUTING_RUNNER_ASLEEP = "runner_asleep"
 ROUTING_OWNER_HAS_NO_RUNNER = "owner_has_no_runner"
 ROUTING_QUEUE_TIMEOUT = "queue_timeout"
 ROUTING_FELL_BACK_TO_SERVER = "fell_back_to_server"
@@ -81,11 +83,22 @@ ROUTING_REASONS = frozenset(
         ROUTING_HARNESS_DISABLED,
         ROUTING_MODEL_NOT_AVAILABLE,
         ROUTING_RUNNER_OFFLINE,
+        ROUTING_RUNNER_ASLEEP,
         ROUTING_OWNER_HAS_NO_RUNNER,
         ROUTING_QUEUE_TIMEOUT,
         ROUTING_FELL_BACK_TO_SERVER,
     }
 )
+#: What a flow pinned to a runner (``agent_config.runner_id``) does when that
+#: runner is ``asleep`` or ``offline`` (#1508). ``queue`` is reserved: it
+#: needs park-until-reachable and is refused until then.
+OFFLINE_POLICY_FAIL = "fail"
+OFFLINE_POLICY_REROUTE = "reroute"
+OFFLINE_POLICY_QUEUE = "queue"
+OFFLINE_POLICIES = frozenset({OFFLINE_POLICY_FAIL, OFFLINE_POLICY_REROUTE})
+#: ``flow_execution_logs.metadata.milestone`` of the timeline entry written
+#: when an offline policy fires.
+OFFLINE_POLICY_MILESTONE = "offline_policy"
 #: Billing modes on executions (contract B cost label).
 BILLING_MODE_SEAT = "seat"
 BILLING_MODE_METERED = "metered"
@@ -342,6 +355,12 @@ def harness_fallback_mode(agent_config: Any) -> str:
     return raw if raw in HARNESS_FALLBACK_MODES else HARNESS_FALLBACK_QUEUE
 
 
+def offline_policy_mode(agent_config: Any) -> str:
+    """``fail`` (default) or ``reroute`` for a runner-pinned flow (#1508)."""
+    raw = _unwrapped_config(agent_config).get("offline_policy")
+    return raw if raw in OFFLINE_POLICIES else OFFLINE_POLICY_FAIL
+
+
 def harness_queue_timeout_seconds(agent_config: Any) -> int:
     """Queue wait for a harness-routed run, clamped to the allowed range."""
     raw = _unwrapped_config(agent_config).get("harness_queue_timeout_seconds")
@@ -377,6 +396,7 @@ def harness_selector_config_error(agent_type: Any, agent_config: Any) -> Optiona
         "harness_fallback",
         "harness_queue_timeout_seconds",
         "fallback_model_identifier",
+        "offline_policy",
     )
     if not any(config.get(key) is not None for key in keys):
         return None
@@ -428,6 +448,19 @@ def harness_selector_config_error(agent_type: Any, agent_config: Any) -> Optiona
         return (
             "agent_config.harness_fallback fallback_server requires "
             "agent_config.fallback_model_identifier"
+        )
+    offline = config.get("offline_policy")
+    if offline == OFFLINE_POLICY_QUEUE:
+        return (
+            "agent_config.offline_policy queue is not available yet; "
+            "use fail or reroute"
+        )
+    if offline is not None and offline not in OFFLINE_POLICIES:
+        return "agent_config.offline_policy must be fail or reroute"
+    if offline is not None and (harness is None or runner_id in (None, "")):
+        return (
+            "agent_config.offline_policy applies to a harness flow pinned to a "
+            "runner; set agent_config.harness and agent_config.runner_id"
         )
     return None
 

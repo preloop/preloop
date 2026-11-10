@@ -17,7 +17,12 @@ from preloop.models.crud.user import crud_user
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_runner import FlowRunner
 from preloop.services.harness_inventory import redact_harness_inventory
-from preloop.services.runner_presence import derive_presence
+from preloop.services.runner_presence import (
+    PRESENCE_ASLEEP,
+    PRESENCE_OFFLINE,
+    derive_presence,
+    derive_state,
+)
 from preloop.services.host_exec import (
     BILLING_MODES,
     BILLING_MODE_UNKNOWN,
@@ -28,6 +33,7 @@ from preloop.services.host_exec import (
     ROUTING_MODEL_NOT_AVAILABLE,
     ROUTING_NO_RUNNER_WITH_HARNESS,
     ROUTING_OWNER_HAS_NO_RUNNER,
+    ROUTING_RUNNER_ASLEEP,
     ROUTING_RUNNER_OFFLINE,
     host_exec_harness,
     host_exec_profile_name,
@@ -524,7 +530,31 @@ _REASON_RANK = {
     ROUTING_HARNESS_SIGNED_OUT: 3,
     ROUTING_MODEL_NOT_AVAILABLE: 4,
     ROUTING_RUNNER_OFFLINE: 5,
+    ROUTING_RUNNER_ASLEEP: 5,
 }
+
+
+def runner_away_reason(runner: Any) -> Optional[str]:
+    """``runner_asleep`` or ``runner_offline`` when presence says so (#1508).
+
+    Presence comes from :func:`derive_state`, the single source of truth
+    for ``asleep`` and ``offline``. A runner that is reachable (online,
+    busy or idle) returns None.
+
+    Args:
+        runner: Runner row, or None for a runner that no longer exists.
+
+    Returns:
+        The routing reason, or None when the runner is reachable or missing.
+    """
+    if runner is None:
+        return None
+    state = derive_state(runner)
+    if state == PRESENCE_ASLEEP:
+        return ROUTING_RUNNER_ASLEEP
+    if state == PRESENCE_OFFLINE:
+        return ROUTING_RUNNER_OFFLINE
+    return None
 
 
 def runner_harness_entries(runner: Any) -> Optional[List[Mapping[str, Any]]]:
@@ -664,6 +694,51 @@ def _flow_author_may_route_to(
     explicit = _explicit_pool(pool)
     if not explicit or _is_auto_pool(explicit) or _is_server_pool(explicit):
         return True
+    return _flow_author_may_use_runner(
+        db,
+        runner,
+        account_id=account_id,
+        pool=explicit,
+        flow_id=flow_id,
+        harness=harness,
+        workspace_id=workspace_id,
+        admin_cache=admin_cache,
+    )
+
+
+def _flow_author_may_use_runner(
+    db: Session,
+    runner: Any,
+    *,
+    account_id: UUID,
+    pool: Optional[str],
+    flow_id: Optional[str],
+    harness: Optional[str],
+    workspace_id: Optional[str],
+    admin_cache: Dict[Any, bool],
+    require_author: bool = False,
+) -> bool:
+    """Whether the flow's author may use ``runner`` for flows (#2176).
+
+    Runners registered by an admin or by nobody are usable; a personal
+    runner needs its registrant as author, or a ``runner:flow_use`` grant.
+
+    Args:
+        db: Database session.
+        runner: Candidate runner.
+        account_id: Account the flow runs in.
+        pool: Pool string recorded on the authorization context.
+        flow_id: The flow, whose ``created_by_user_id`` is the author.
+        harness: Harness of the run, for the authorizer.
+        workspace_id: Authorized directory id, for the authorizer.
+        admin_cache: Memo of "registered by an admin" per user id.
+        require_author: Refuse personal runners when the flow has no known
+            author. Reroute (#1508) sets it: a legacy authorless flow may
+            keep its own pinned runner but is not moved to someone else's.
+
+    Returns:
+        True when the author may route work to the runner.
+    """
     owner_id = getattr(runner, "registered_by_user_id", None)
     if owner_id is None or _runner_registered_by_admin(db, runner, admin_cache):
         return True
@@ -678,7 +753,7 @@ def _flow_author_may_route_to(
         return False
     author_id = getattr(flow, "created_by_user_id", None)
     if author_id is None:
-        return True
+        return not require_author
     if str(author_id) == str(owner_id):
         return True
     author = crud_user.get(db, id=author_id)
@@ -691,7 +766,7 @@ def _flow_author_may_route_to(
             user=author,
             attributes={
                 "operation": "lease",
-                "pool": explicit,
+                "pool": pool,
                 "flow_id": flow_id,
                 "harness": harness,
                 "workspace_id": workspace_id,
@@ -738,6 +813,8 @@ def runner_eligible_for_harness(
     pinned_runner_id: Optional[UUID] = None,
     admin_cache: Optional[Dict[Any, bool]] = None,
     flow_id: Optional[str] = None,
+    reroute_from: Optional[UUID] = None,
+    required_billing: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], Optional[Mapping[str, Any]]]:
     """The single eligibility rule for harness routing (contract B).
 
@@ -748,6 +825,11 @@ def runner_eligible_for_harness(
     author must also be allowed on the runner for explicit pool routing
     (:func:`_flow_author_may_route_to`).
 
+    ``reroute_from`` (``offline_policy=reroute``, #1508) replaces the pin:
+    any other runner the flow's author may use for flows qualifies, and
+    ``required_billing`` keeps the billing path of the pinned runner, so a
+    seat run is never moved to a gateway-metered path.
+
     Returns:
         ``(eligible, reason, entry)``. ``reason`` is a routing reason when
         not eligible.
@@ -756,7 +838,22 @@ def runner_eligible_for_harness(
         account_id
     ):
         return False, ROUTING_OWNER_HAS_NO_RUNNER, None
-    if not runner_usable_by_flow(
+    if reroute_from is not None:
+        if getattr(runner, "id", None) == reroute_from or db is None:
+            return False, ROUTING_OWNER_HAS_NO_RUNNER, None
+        if not _flow_author_may_use_runner(
+            db,
+            runner,
+            account_id=account_id,
+            pool=AUTO_RUNNER_POOL,
+            flow_id=flow_id,
+            harness=harness,
+            workspace_id=None,
+            admin_cache=admin_cache if admin_cache is not None else {},
+            require_author=True,
+        ):
+            return False, ROUTING_OWNER_HAS_NO_RUNNER, None
+    elif not runner_usable_by_flow(
         db,
         runner,
         pool=pool,
@@ -766,26 +863,38 @@ def runner_eligible_for_harness(
         return False, ROUTING_OWNER_HAS_NO_RUNNER, None
     # A known flow also needs its author to be allowed on the runner (#2176),
     # so routing and fallback decisions agree with what the lease accepts.
-    if flow_id is not None and not _flow_author_may_route_to(
-        db,
-        runner,
-        account_id=account_id,
-        pool=pool,
-        flow_id=flow_id,
-        pinned_runner_id=pinned_runner_id,
-        harness=harness,
-        workspace_id=None,
-        admin_cache=admin_cache if admin_cache is not None else {},
+    if (
+        reroute_from is None
+        and flow_id is not None
+        and not _flow_author_may_route_to(
+            db,
+            runner,
+            account_id=account_id,
+            pool=pool,
+            flow_id=flow_id,
+            pinned_runner_id=pinned_runner_id,
+            harness=harness,
+            workspace_id=None,
+            admin_cache=admin_cache if admin_cache is not None else {},
+        )
     ):
         return False, ROUTING_OWNER_HAS_NO_RUNNER, None
     entry = runner_harness_entry(runner, harness)
     reason = harness_entry_reason(entry, model)
     if reason is not None:
         return False, reason, entry
+    if required_billing is not None and harness_entry_billing(entry) != (
+        required_billing
+    ):
+        # Reroute keeps the policy path: a seat harness never lands on a
+        # metered (gateway) one, nor the other way round.
+        return False, ROUTING_NO_RUNNER_WITH_HARNESS, entry
     if getattr(runner, "status", None) not in ("online", "busy") or not is_online(
         runner
     ):
         return False, ROUTING_RUNNER_OFFLINE, entry
+    if getattr(runner, "sleep_signaled_at", None) is not None:
+        return False, ROUTING_RUNNER_ASLEEP, entry
     return True, None, entry
 
 
@@ -799,8 +908,13 @@ def harness_routing_reason(
     pool: Optional[str] = None,
     pinned_runner_id: Optional[UUID] = None,
     flow_id: Optional[str] = None,
+    reroute_from: Optional[UUID] = None,
+    required_billing: Optional[str] = None,
 ) -> Tuple[int, Optional[str]]:
     """Count eligible runners and name why the rest cannot take the run.
+
+    ``reroute_from`` and ``required_billing`` are passed to
+    :func:`runner_eligible_for_harness` unchanged.
 
     Returns:
         ``(eligible_count, reason)``. ``reason`` is None when at least one
@@ -821,6 +935,8 @@ def harness_routing_reason(
             pinned_runner_id=pinned_runner_id,
             admin_cache=cache,
             flow_id=flow_id,
+            reroute_from=reroute_from,
+            required_billing=required_billing,
         )
         if ok:
             eligible += 1
@@ -865,8 +981,16 @@ def lease_job(
     payload: Dict[str, Any],
     required_runner_id: Optional[UUID] = None,
     outcome: Optional[Dict[str, Any]] = None,
+    reroute_from: Optional[UUID] = None,
+    required_billing: Optional[str] = None,
 ) -> Optional[FlowRunner]:
     """Assign a pending job to one matching online runner. None if queued.
+
+    ``reroute_from`` (``offline_policy=reroute``, #1508) leases a harness
+    job pinned to that asleep or offline runner to another runner in the
+    pool that the flow's author may use, with the same harness, model and
+    ``required_billing``. It never leases a job without a harness selection
+    and never considers ``reroute_from`` itself.
 
     A payload with ``host_exec`` (contract B harness routing) only goes to a
     runner that :func:`runner_eligible_for_harness` accepts. ``outcome``,
@@ -885,6 +1009,12 @@ def lease_job(
     """
     from preloop.models.crud import crud_audit_log, crud_flow_execution
 
+    if reroute_from is not None:
+        selection = payload.get(HOST_EXEC_LEASE_KEY)
+        if required_runner_id is not None or not (
+            isinstance(selection, Mapping) and selection.get("harness")
+        ):
+            return None
     # Keep the account lock through lease assignment. A stopped queued
     # execution cannot acquire a new runner after activation's snapshot.
     if not crud_flow_execution.admit_runtime_start(
@@ -904,6 +1034,8 @@ def lease_job(
         matches = [row for row in matches if str(row.id) == consent_runner]
     if required_runner_id is not None:
         matches = [row for row in matches if row.id == required_runner_id]
+    if reroute_from is not None:
+        matches = [row for row in matches if row.id != reroute_from]
     available = [
         row
         for row in matches
@@ -938,6 +1070,8 @@ def lease_job(
                 pinned_runner_id=pinned,
                 admin_cache=admin_cache,
                 flow_id=flow_id,
+                reroute_from=reroute_from,
+                required_billing=required_billing,
             )
             if not ok:
                 continue
@@ -1112,6 +1246,8 @@ def lease_job(
             pool=pool,
             pinned_runner_id=pinned,
             flow_id=flow_id,
+            reroute_from=reroute_from,
+            required_billing=required_billing,
         )
         # Eligible but every slot is taken: still queued, no named cause.
         outcome["routing_reason"] = reason

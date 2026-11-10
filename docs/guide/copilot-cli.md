@@ -347,6 +347,7 @@ one routing reason:
 | `harness_disabled` | The runner owner disabled Copilot CLI for the runner. |
 | `model_not_available` | The harness lists its models and the chosen one is not among them. |
 | `runner_offline` | The runner that could take the run is offline. |
+| `runner_asleep` | The runner said it was going to sleep, or a pinned runner is asleep and its `offline_policy` failed the run ([offline policy](runners/your-machine.md#when-the-pinned-runner-is-asleep-or-offline)). |
 | `owner_has_no_runner` | No runner the flow may use exists. |
 | `queue_timeout` | The queue timeout expired. |
 | `fell_back_to_server` | The run moved to the server pool. |
