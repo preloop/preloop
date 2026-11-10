@@ -28,12 +28,12 @@ answers 403.
 
 Every rule is off until an administrator turns it on. Saving replaces the
 whole settings document through `PUT /api/v1/fleet/settings`; the server
-validates every rule before storing any. A server that predates the three
+validates every rule before storing any. Rules this page does not know are
+sent back unchanged. A server that predates the three
 evidence rules returns only the first two, and the page shows only those.
 
-Each row shows one sentence on what the rule cannot show. The evidence rules
-(agent quiet, control drift, stale inventory) take a report freshness per
-reporter source. Sources are picked from the account's device credentials
+Each row shows one sentence on what the rule cannot show. Agent quiet and
+control drift take a report freshness per reporter source. Sources are picked from the account's device credentials
 (`GET /api/v1/fleet/devices`); a rule is never applied to a source without a
 stated freshness.
 
@@ -80,7 +80,8 @@ be enabled.
 |---|---|---|
 | No inventory report arrived within the inventory freshness (24 hours by default) | A new inventory report arrives | The rule is off |
 
-Settings: inventory fresh for (minutes).
+Settings: inventory fresh for (minutes). The page does not edit per-source
+values for this rule; any already stored are kept unchanged on save.
 
 ## Delivery channels
 

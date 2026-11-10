@@ -20,7 +20,7 @@ import {
   fleetHref,
   getDeviceFleet,
   getFleetDevice,
-  EVIDENCE_RULES,
+  SOURCE_RULES,
   FLEET_CHANNELS,
   fleetRuleProblem,
   getFleetDeviceCredentials,
@@ -189,6 +189,9 @@ export class DeviceFleetView extends LitElement {
   @state() private device: DeviceFleetDevice | null = null;
   @state() private rules: FleetRule[] = [];
   @state() private credentials: FleetDeviceCredential[] = [];
+  @state() private credentialsFailed = false;
+  @state() private saveError = '';
+  private unknownRules: Record<string, unknown> = {};
   @state() private tab =
     new URLSearchParams(location.search).get('tab') || 'devices';
   @state() private search = '';
@@ -663,10 +666,16 @@ export class DeviceFleetView extends LitElement {
       this.page = page;
       this.device = device;
       this.rules = rules?.items || [];
+      this.unknownRules = rules?.unknown || {};
+      this.saveError = '';
+      this.credentialsFailed = false;
       this.credentials = this.rules.some((rule) =>
-        EVIDENCE_RULES.includes(rule.rule)
+        SOURCE_RULES.includes(rule.rule)
       )
-        ? await getFleetDeviceCredentials(controller.signal).catch(() => [])
+        ? await getFleetDeviceCredentials(controller.signal).catch(() => {
+            this.credentialsFailed = true;
+            return [];
+          })
         : [];
       if (controller.signal.aborted) return;
       this.roster = roster;
@@ -796,26 +805,32 @@ export class DeviceFleetView extends LitElement {
     const problem = this.rules.map(fleetRuleProblem).find(Boolean);
     if (problem) {
       this.notice = '';
-      this.error = problem;
+      this.saveError = problem;
       return;
     }
     this.saving = true;
-    this.error = '';
+    this.saveError = '';
     this.notice = '';
     try {
-      const result = await saveFleetRules(this.rules, this.controller?.signal);
+      const result = await saveFleetRules(
+        this.rules,
+        this.controller?.signal,
+        this.unknownRules
+      );
       if (!this.isConnected) return;
       this.rules = result.items;
+      this.unknownRules = result.unknown;
       this.notice = 'Alert settings saved.';
     } catch (error) {
       if (this.isConnected)
-        this.error =
+        this.saveError =
           error instanceof Error ? error.message : 'Could not save settings.';
     } finally {
       this.saving = false;
     }
   }
   private changeRule(index: number, change: Partial<FleetRule>): void {
+    this.saveError = '';
     this.rules = this.rules.map((rule, i) =>
       i === index ? { ...rule, ...change } : rule
     );
@@ -1538,6 +1553,11 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       else next[id] = seconds;
       this.changeRule(index, { source_freshness_seconds: next });
     };
+    if (!sources.length && this.credentialsFailed)
+      return html`<p class="meta" data-testid="sources-failed">
+        Device credentials could not be loaded, so reporter sources cannot be
+        chosen. Reload the page to try again.
+      </p>`;
     if (!sources.length)
       return html`<p class="meta" data-testid="no-sources">
         No device credentials are available as reporter sources. Issue a device
@@ -1627,7 +1647,7 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       >
       ${thresholds}
       ${
-        EVIDENCE_RULES.includes(rule.rule)
+        SOURCE_RULES.includes(rule.rule)
           ? this.renderSources(rule, index)
           : nothing
       }
@@ -1660,6 +1680,13 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
           admins, honoring their notification preferences.
         </p>
         ${this.rules.map((rule, index) => this.renderRule(rule, index))}
+        ${this.saveError
+          ? html`<sl-alert variant="danger" open role="alert" data-testid="save-error">
+              <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+              <strong>Could not save alert settings</strong><br />
+              ${this.saveError}
+            </sl-alert>`
+          : nothing}
         <p>
           <sl-button
             type="submit"

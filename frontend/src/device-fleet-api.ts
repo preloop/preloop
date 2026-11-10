@@ -87,11 +87,19 @@ export type FleetRuleName =
   | 'agent_quiet'
   | 'control_drift'
   | 'stale_inventory';
-/** Rules whose thresholds are set per reporter source. */
+/**
+ * Rules whose thresholds are set per reporter source. Stale inventory also
+ * stores per-source values; the page keeps them unchanged and edits only its
+ * inventory freshness.
+ */
 export const EVIDENCE_RULES: readonly FleetRuleName[] = [
   'agent_quiet',
   'control_drift',
   'stale_inventory',
+];
+export const SOURCE_RULES: readonly FleetRuleName[] = [
+  'agent_quiet',
+  'control_drift',
 ];
 export const FLEET_CHANNELS = ['attention', 'email', 'push', 'webhook'];
 export interface FleetRule {
@@ -296,11 +304,21 @@ function ruleFromSettings(rule: FleetRuleName, value: RuleSettings): FleetRule {
     );
   return result;
 }
-function rulesFromSettings(settings: Settings): { items: FleetRule[] } {
+export interface FleetRuleSet {
+  items: FleetRule[];
+  /** Rules this build does not know, returned unchanged by the full PUT. */
+  unknown: Record<string, unknown>;
+}
+function rulesFromSettings(settings: Settings): FleetRuleSet {
   // Rules this page does not know, or the server does not return, stay hidden.
   return {
     items: KNOWN_RULES.filter((rule) => settings.rules[rule]).map((rule) =>
       ruleFromSettings(rule, settings.rules[rule] as RuleSettings)
+    ),
+    unknown: Object.fromEntries(
+      Object.entries(settings.rules).filter(
+        ([rule]) => !KNOWN_RULES.includes(rule as FleetRuleName)
+      )
     ),
   };
 }
@@ -348,16 +366,20 @@ export function fleetRuleProblem(rule: FleetRule): string {
 }
 export async function getFleetRules(
   signal?: AbortSignal
-): Promise<{ items: FleetRule[] }> {
+): Promise<FleetRuleSet> {
   return rulesFromSettings(await request<Settings>('/settings', signal));
 }
 export async function saveFleetRules(
   items: FleetRule[],
-  signal?: AbortSignal
-): Promise<{ items: FleetRule[] }> {
-  const rules = Object.fromEntries(
-    items.map((rule) => [rule.rule, settingsFromRule(rule)])
-  );
+  signal?: AbortSignal,
+  unknown: Record<string, unknown> = {}
+): Promise<FleetRuleSet> {
+  const rules = {
+    ...unknown,
+    ...Object.fromEntries(
+      items.map((rule) => [rule.rule, settingsFromRule(rule)])
+    ),
+  };
   return rulesFromSettings(
     await request<Settings>('/settings', signal, { schema_version: 1, rules })
   );

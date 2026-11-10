@@ -935,7 +935,21 @@ describe('Device fleet', () => {
     ).click();
     await submit(view);
     expect(api.callsTo('/api/v1/fleet/settings', 'PUT')).to.have.length(0);
-    expect(view.error).to.include('freshness thresholds');
+    const alert = view.shadowRoot.querySelector('[data-testid="save-error"]');
+    expect(alert.textContent).to.include('Could not save alert settings');
+    expect(alert.textContent).to.include('freshness thresholds');
+    expect(view.shadowRoot.querySelector('fieldset[data-rule="agent_quiet"]'))
+      .to.exist;
+    expect(view.shadowRoot.textContent).not.to.include(
+      'Could not load the device fleet'
+    );
+    (
+      row(view, 'agent_quiet').querySelector('[data-channel="push"]') as HTMLElement
+    ).click();
+    await view.updateComplete;
+    expect(view.shadowRoot.querySelector('[data-testid="save-error"]')).to.equal(
+      null
+    );
   });
 
   it('shows the server validation message on a rejected save', async () => {
@@ -952,10 +966,74 @@ describe('Device fleet', () => {
     });
     const view = await mount();
     await submit(view);
-    await waitUntil(() => view.error !== '');
-    expect(view.error).to.equal(
-      'Enabled quiet rule requires inactivity_days and grace_minutes'
+    await waitUntil(() =>
+      view.shadowRoot.querySelector('[data-testid="save-error"]')
     );
+    expect(
+      view.shadowRoot.querySelector('[data-testid="save-error"]').textContent
+    ).to.include('Enabled quiet rule requires inactivity_days and grace_minutes');
+    expect(view.shadowRoot.querySelector('form')).to.exist;
+  });
+
+  it('sends rules this build does not know back unchanged', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    const future = { enabled: true, channels: channelsOff, horizon: 5 };
+    setupFive({
+      ...fiveRules,
+      rules: { ...fiveRules.rules, future_rule: future },
+    });
+    const view = await mount();
+    expect(rows(view)).not.to.include('future_rule');
+    await submit(view);
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
+    );
+    expect(
+      (api.callsTo('/api/v1/fleet/settings', 'PUT')[0].body as any).rules
+        .future_rule
+    ).to.eql(future);
+  });
+
+  it('keeps stale inventory per-source values without offering a picker', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive({
+      ...fiveRules,
+      rules: {
+        ...fiveRules.rules,
+        stale_inventory: {
+          ...fiveRules.rules.stale_inventory,
+          source_freshness_seconds: { [sourceId]: 3600 },
+        },
+      },
+    });
+    const view = await mount();
+    expect(row(view, 'stale_inventory').querySelector('[data-source]')).to.equal(
+      null
+    );
+    await submit(view);
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
+    );
+    expect(
+      (api.callsTo('/api/v1/fleet/settings', 'PUT')[0].body as any).rules
+        .stale_inventory.source_freshness_seconds
+    ).to.eql({ [sourceId]: 3600 });
+  });
+
+  it('says when device credentials could not be loaded', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet', 'manage_device_fleet'] },
+      routes: [
+        { path: '/api/v1/fleet/settings', body: fiveRules },
+        { path: '/api/v1/fleet/devices', status: 500, body: {} },
+      ],
+    });
+    const view = await mount();
+    const quiet = row(view, 'agent_quiet');
+    expect(quiet.querySelector('[data-testid="sources-failed"]')).to.exist;
+    expect(quiet.querySelector('[data-testid="no-sources"]')).to.equal(null);
   });
 
   it('offers no free-text source field when no device credential is listed', async () => {
