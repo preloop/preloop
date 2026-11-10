@@ -45,3 +45,22 @@ Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
 replica from spending the full rollout window draining before replacement.
 The chart renders probe-level grace on Kubernetes 1.28 or newer; older
 clusters retain the existing pod-level grace behavior.
+
+## Request rate limiting
+
+`services/rate_limit.py` is the one request limiter. Every rule is a fixed
+window per identity (client address, account and address, approval request,
+API key or user), stored in the `rate_limit_bucket` table so all API replicas
+share one budget and a restart does not reset it. When the table cannot be
+reached, the same rule is enforced per process and an error is logged, so a
+limiter outage neither refuses nor unthrottles requests. Refusals are 429
+with `Retry-After` and the `rate_limited` code, and count in
+`preloop_rate_limit_hits_total{rule}`.
+
+Rules on the shared limiter: login, refresh, reset-password, register, OAuth
+token/register/authorize, public approval, passkey challenges, verification
+resend and forgot-password, OTLP ingest and admin test pushes. No request
+rate limit keeps a per-process counter; in-flight concurrency caps (heavy
+routes, duplicate checks) are a separate mechanism. Operator notes and desktop views are capped by
+counting their own database rows, which is already shared. Rules, defaults
+and settings: [operations/rate-limiting.md](../operations/rate-limiting.md).

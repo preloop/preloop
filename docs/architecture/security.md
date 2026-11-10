@@ -252,7 +252,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Input validation for all parameters via Pydantic models
 - [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy tracker API-key rows; staged schema migrations remove legacy webhook and AI-model key columns)
 - [x] Sensitive data masked in logs (see Redaction Policy below)
-- [x] Rate limiting on auth, OAuth and public approval endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md)); older per-process limiters (passkey challenges, email resend, OTLP ingest) not yet migrated
+- [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
 - [ ] 2FA/MFA support for user accounts
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)

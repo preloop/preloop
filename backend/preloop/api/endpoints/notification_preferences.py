@@ -3,8 +3,6 @@
 import html as html_module
 import logging
 import os
-import threading
-import time
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -16,6 +14,7 @@ from preloop.models import models
 from preloop.models.crud import crud_api_key, notification_preferences
 from preloop.models.db.session import get_db_session
 from preloop.api.auth import get_current_active_user
+from preloop.services.rate_limit import NOTIFICATIONS_TEST_PUSH, enforce_async
 from preloop.schemas.notification_preferences import (
     NotificationPreferencesUpdate,
     NotificationPreferencesResponse,
@@ -39,53 +38,33 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-# In-memory sliding-window rate limiter for admin test sends: a diagnostic
-# button must not become a way to spam a device. Per-process, matching the
-# existing limiter pattern in plugins/push_notifications/endpoints.py — with
-# multiple pods the effective ceiling scales with pod count, which is fine for
-# a manually-triggered admin action.
+# Admin test sends are rate limited per user: a diagnostic button must not
+# become a way to spam a device. The budget lives in the shared limiter (rule
+# ``notifications.test_push``), so every API replica draws from one budget;
+# ``RATE_LIMIT_NOTIFICATIONS_TEST_PUSH`` overrides it like any rule.
 _TEST_PUSH_LIMIT_PER_MINUTE = 5
-_TEST_PUSH_WINDOW_SECONDS = 60.0
-_test_push_lock = threading.Lock()
-_test_push_state: dict[str, list[float]] = {}
-# Entries for users who tried once and never again would otherwise live for
-# the life of the process. Swept opportunistically on the next call after a
-# full window has elapsed — no timer thread for what is an admin-only surface.
-_test_push_sweep: dict[str, float] = {"last": 0.0}
+_TEST_PUSH_WINDOW_SECONDS = 60
 
 
-def _enforce_test_push_rate_limit(user_id: str) -> None:
+async def _enforce_test_push_rate_limit(user_id: str) -> None:
     """Raise HTTP 429 if the user has exhausted their test-send budget.
 
     Args:
         user_id: Identifier of the user triggering the test send.
 
     Raises:
-        HTTPException: 429 when the per-minute limit is exceeded.
+        HTTPException: 429 ``rate_limited`` with ``Retry-After`` when the
+            per-minute limit is exceeded.
     """
-    now = time.monotonic()
-    window_start = now - _TEST_PUSH_WINDOW_SECONDS
-    with _test_push_lock:
-        if now - _test_push_sweep["last"] > _TEST_PUSH_WINDOW_SECONDS:
-            _test_push_sweep["last"] = now
-            for uid in [
-                uid
-                for uid, times in _test_push_state.items()
-                if uid != user_id and all(t < window_start for t in times)
-            ]:
-                del _test_push_state[uid]
-        recent = [t for t in _test_push_state.get(user_id, []) if t >= window_start]
-        if len(recent) >= _TEST_PUSH_LIMIT_PER_MINUTE:
-            _test_push_state[user_id] = recent
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    f"Rate limit exceeded: {_TEST_PUSH_LIMIT_PER_MINUTE} test "
-                    "notifications per minute."
-                ),
-            )
-        recent.append(now)
-        _test_push_state[user_id] = recent
+    await enforce_async(
+        NOTIFICATIONS_TEST_PUSH,
+        user_id,
+        default=(_TEST_PUSH_LIMIT_PER_MINUTE, _TEST_PUSH_WINDOW_SECONDS),
+        detail=(
+            f"Rate limit exceeded: {_TEST_PUSH_LIMIT_PER_MINUTE} test "
+            "notifications per minute."
+        ),
+    )
 
 
 @router.get("/me", response_model=NotificationPreferencesResponse)
@@ -299,7 +278,7 @@ async def send_test_push_notification(
             detail="Admin access required",
         )
 
-    _enforce_test_push_rate_limit(str(current_user.id))
+    await _enforce_test_push_rate_limit(str(current_user.id))
 
     prefs = notification_preferences.get_by_user(db, current_user.id)
     devices = list(prefs.mobile_device_tokens or []) if prefs else []
