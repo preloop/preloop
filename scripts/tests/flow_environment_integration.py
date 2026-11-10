@@ -27,6 +27,7 @@ import json
 import os
 import tarfile
 import tempfile
+from datetime import datetime
 import threading
 import time
 from pathlib import Path
@@ -231,6 +232,9 @@ for _ in range(60):
         break
     except Exception:
         time.sleep(1)
+from datetime import datetime, timezone
+# Proxy denials before this instant come from the setup self-check.
+print("BROWSER_FLOW_START", datetime.now(timezone.utc).isoformat(), flush=True)
 PY
 /opt/preloop-tests/bin/python /workspace/scripts/tests/browser_fixture_flow.py \
   --base-url http://fixture-site:8080 --result /workspace/result.json \
@@ -264,8 +268,15 @@ def check_browser_run(logs: str, proxy_log: str) -> dict[str, Any]:
         "timeout",
         "cleanup",
     ], result
-    # selfcheck.sh probes a loopback listener; that denial is setup, not flow.
-    missing, extra = unexpected_denials(proxy_log, ignored_hosts=("127.0.0.1",))
+    # selfcheck.sh also sends example.org and a loopback probe through the
+    # proxy during setup; count only denials logged after the flow started.
+    marker = next(
+        item for item in logs.splitlines() if item.startswith("BROWSER_FLOW_START ")
+    )
+    since = datetime.fromisoformat(marker.split(" ", 1)[1].strip())
+    missing, extra = unexpected_denials(
+        proxy_log, since=since, allowed_dial_hosts=("fixture-site",)
+    )
     assert not missing and not extra, proxy_log[-3000:]
     return result
 

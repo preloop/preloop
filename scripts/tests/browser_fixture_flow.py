@@ -191,15 +191,35 @@ def _denied_host(target: str) -> str:
     return target.rsplit(":", 1)[0].strip("[]").lower()
 
 
-def proxy_denials(log_text: str) -> list[tuple[str, str]]:
+def _parse_ts(value: str) -> datetime | None:
+    try:
+        # The proxy writes nanosecond precision; datetime keeps microseconds.
+        trimmed = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(trimmed)
+    except ValueError:
+        return None
+
+
+def proxy_denials(
+    log_text: str,
+    *,
+    since: datetime | None = None,
+    allowed_dial_hosts: tuple[str, ...] = (),
+) -> list[tuple[str, str]]:
     """Extract ``(host, reason)`` for every denial in an egress proxy log.
 
     Args:
         log_text: Proxy stdout, one JSON object per line.
+        since: Skip entries logged before this instant (for example the
+            setup self-check, which runs before the flow).
+        allowed_dial_hosts: Hosts whose ``dial_error`` lines are expected.
+            ``dial_error`` means the request was allowed and then failed
+            upstream; the abandoned ``/slow`` request to the fixture is one.
+            For any other host it is reported, since it means the host got
+            past the allowlist.
 
     Returns:
-        Denials in log order. Non-JSON lines, allowed entries and upstream
-        ``dial_error`` failures are skipped.
+        Denials in log order. Non-JSON lines and allowed entries are skipped.
     """
     denials = []
     for line in log_text.splitlines():
@@ -207,12 +227,18 @@ def proxy_denials(log_text: str) -> list[tuple[str, str]]:
             entry = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(entry, dict) or entry.get("reason") in (None, "dial_error"):
-            # dial_error is a 502 for an allowed request (for example the
-            # browser abandoning /slow), not a policy denial.
+        if not isinstance(entry, dict) or not entry.get("reason"):
             continue
-        if entry.get("target"):
-            denials.append((_denied_host(str(entry["target"])), str(entry["reason"])))
+        if not entry.get("target"):
+            continue
+        if since is not None:
+            logged = _parse_ts(str(entry.get("ts", "")))
+            if logged is None or logged < since:
+                continue
+        host = _denied_host(str(entry["target"]))
+        if entry["reason"] == "dial_error" and host in allowed_dial_hosts:
+            continue
+        denials.append((host, str(entry["reason"])))
     return denials
 
 
@@ -221,6 +247,8 @@ def unexpected_denials(
     *,
     expected_hosts: tuple[str, ...] = ("example.org", METADATA_HOST),
     ignored_hosts: tuple[str, ...] = (),
+    since: datetime | None = None,
+    allowed_dial_hosts: tuple[str, ...] = (),
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Compare the proxy's denials with the ones the scenario provokes.
 
@@ -229,12 +257,16 @@ def unexpected_denials(
         expected_hosts: Hosts that must each have at least one denial.
         ignored_hosts: Hosts denied by something other than this scenario
             (for example the setup self-check's loopback probe).
+        since: Only count entries logged at or after this instant.
+        allowed_dial_hosts: See :func:`proxy_denials`.
 
     Returns:
         ``(missing, extra)``: expected hosts with no denial, and denials of
         hosts that were neither expected nor ignored.
     """
-    denials = proxy_denials(log_text)
+    denials = proxy_denials(
+        log_text, since=since, allowed_dial_hosts=allowed_dial_hosts
+    )
     hosts = {host for host, _ in denials}
     missing = [host for host in expected_hosts if host not in hosts]
     extra = [

@@ -183,12 +183,15 @@ def test_result_is_bounded_and_redacted() -> None:
 
 def test_result_drops_notes_then_shortens_url_to_fit() -> None:
     doc = flow.bounded_result(
-        "http://fixture-site:8080/" + "a" * 2100,
+        # 4-byte characters: the URL alone (2048 kept) is about 8 KiB.
+        "http://fixture-site:8080/" + "\U0001f600" * 2100,
         False,
-        ["é" * 160] * 5,
+        ["\U0001f600" * 160] * 5,
         "2026-11-10T00:00:00+00:00",
     )
     assert len(flow.serialize_result(doc)) <= flow.RESULT_MAX_BYTES
+    assert doc["notes"] == []
+    assert len(doc["url"]) < 2048
     assert doc["pass"] is False
 
 
@@ -252,12 +255,62 @@ def test_unexpected_denials_parses_proxy_log() -> None:
         ]
     )
     assert flow.proxy_denials(log)[0] == ("example.org", "not_allowlisted")
-    missing, extra = flow.unexpected_denials(log, ignored_hosts=("127.0.0.1",))
+    fixture = ("fixture-site",)
+    missing, extra = flow.unexpected_denials(
+        log, ignored_hosts=("127.0.0.1",), allowed_dial_hosts=fixture
+    )
     assert missing == [] and extra == []
-    missing, extra = flow.unexpected_denials(log)
+    missing, extra = flow.unexpected_denials(log, allowed_dial_hosts=fixture)
     assert extra == [("127.0.0.1", "x")]
+    # A dial_error for any other host means it got past the allowlist.
+    _, extra = flow.unexpected_denials(log, ignored_hosts=("127.0.0.1",))
+    assert extra == [("fixture-site", "dial_error")]
     missing, _ = flow.unexpected_denials("")
     assert missing == ["example.org", "169.254.169.254"]
+
+
+def test_unexpected_denials_skips_entries_before_since() -> None:
+    from datetime import UTC, datetime
+
+    log = "\n".join(
+        json.dumps({"ts": ts, "target": target, "reason": "not_allowlisted"})
+        for ts, target in (
+            ("2026-11-10T14:00:00.123456789Z", "example.org:443"),
+            ("2026-11-10T14:00:05.5Z", "http://169.254.169.254/"),
+        )
+    )
+    since = datetime(2026, 11, 10, 14, 0, 1, tzinfo=UTC)
+    missing, extra = flow.unexpected_denials(log, since=since)
+    # The setup-time example.org denial must not satisfy the flow's check.
+    assert missing == ["example.org"]
+    assert extra == []
+
+
+def _browsers_root(executable: Path) -> Path:
+    """The Playwright browsers directory that holds ``executable``."""
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured and configured != "0":
+        return Path(configured)
+    browsers = executable
+    while browsers.name != "ms-playwright":
+        assert browsers != browsers.parent, f"no ms-playwright above {executable}"
+        browsers = browsers.parent
+    return browsers
+
+
+def test_browsers_root_prefers_env_and_never_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/opt/preloop-browsers")
+    assert _browsers_root(Path("/opt/preloop-browsers/c/chrome")) == Path(
+        "/opt/preloop-browsers"
+    )
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH")
+    assert _browsers_root(Path("/h/.cache/ms-playwright/c/chrome")) == Path(
+        "/h/.cache/ms-playwright"
+    )
+    with pytest.raises(AssertionError):
+        _browsers_root(Path("/opt/elsewhere/chrome"))
 
 
 def _free_port() -> int:
@@ -335,9 +388,7 @@ def test_browser_fixture_flow_end_to_end(tmp_path: Path, fixture_site: int) -> N
                 timeout=30,
                 check=True,
             )
-            browsers = Path(located.stdout.strip())
-            while browsers.name != "ms-playwright":
-                browsers = browsers.parent
+            browsers = _browsers_root(Path(located.stdout.strip()))
             home = tmp_path / "home"
             home.mkdir()
             env = {
@@ -412,7 +463,10 @@ def test_browser_fixture_flow_end_to_end(tmp_path: Path, fixture_site: int) -> N
         "cleanup",
     ]
     flow_log = proxy_log.read_bytes()[setup_offset:].decode()
-    missing, extra = flow.unexpected_denials(flow_log)
+    # The abandoned /slow request to the fixture may log a dial_error.
+    missing, extra = flow.unexpected_denials(
+        flow_log, allowed_dial_hosts=("127.0.0.1",)
+    )
     assert missing == [], flow_log
     assert extra == [], flow_log
     reasons = dict(flow.proxy_denials(flow_log))
@@ -483,16 +537,24 @@ def _good_run() -> tuple[str, str]:
         "2026-11-10T00:00:00+00:00",
     )
     logs = (
-        "setup\nBROWSER_FIXTURE_RESULT "
+        "setup\nBROWSER_FLOW_START 2026-11-10T14:00:10+00:00\n"
+        "BROWSER_FIXTURE_RESULT "
         + flow.serialize_result(doc).decode().strip()
         + "\nBROWSER_FIXTURE_EXIT=0\n"
     )
+    # The first two lines are the setup self-check, before the start marker.
     proxy_log = "\n".join(
-        json.dumps({"target": target, "reason": reason})
-        for target, reason in (
-            ("127.0.0.1:41000", "not_allowlisted"),
-            ("example.org:443", "not_allowlisted"),
-            ("http://169.254.169.254/latest/meta-data/", "not_allowlisted"),
+        json.dumps({"ts": ts, "target": target, "reason": reason})
+        for ts, target, reason in (
+            ("2026-11-10T14:00:01Z", "127.0.0.1:41000", "not_allowlisted"),
+            ("2026-11-10T14:00:02Z", "example.org:443", "not_allowlisted"),
+            ("2026-11-10T14:00:11Z", "example.org:443", "not_allowlisted"),
+            (
+                "2026-11-10T14:00:12Z",
+                "http://169.254.169.254/latest/meta-data/",
+                "not_allowlisted",
+            ),
+            ("2026-11-10T14:00:20Z", "http://fixture-site:8080/slow", "dial_error"),
         )
     )
     return logs, proxy_log
@@ -511,9 +573,12 @@ def test_check_browser_run_rejects_leaks_and_unexpected_denials() -> None:
         integration.check_browser_run(
             logs.replace("cleanup: ok", "cleanup: ok fixture-pass"), proxy_log
         )
+    late = json.dumps(
+        {"ts": "2026-11-10T14:00:30Z", "target": "x.test:443", "reason": "r"}
+    )
     with pytest.raises(AssertionError):
-        integration.check_browser_run(
-            logs, proxy_log + "\n" + json.dumps({"target": "x.test:443", "reason": "r"})
-        )
+        integration.check_browser_run(logs, proxy_log + "\n" + late)
+    # Only the setup-time denials: the flow's own denials are missing.
+    setup_only = "\n".join(proxy_log.splitlines()[:2])
     with pytest.raises(AssertionError):
-        integration.check_browser_run(logs, "")
+        integration.check_browser_run(logs, setup_only)
