@@ -460,7 +460,9 @@ class WebSocketManager:
                 claims = decode_token(token)
             except HTTPException:
                 return None
-        if claims.sub != str(user.id) or claims.refresh or claims.claims.get("purpose"):
+        # Track every JWT admitted by the endpoint, including legacy token
+        # classes. Admission policy must never become a revocation exclusion.
+        if claims.sub != str(user.id):
             return None
         connection_id = str(uuid.uuid4())
         connection = RevocableConnection(websocket, claims)

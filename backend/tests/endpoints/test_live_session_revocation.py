@@ -27,6 +27,7 @@ from preloop.models import models
 from preloop.models.crud import crud_account, crud_api_key, crud_cli_session, crud_user
 from preloop.models.db.session import get_db_session
 from preloop.plugins import account_hooks
+from preloop.schemas.auth import TokenData
 from preloop.services import auth_revocation, websocket_manager
 from preloop.services.websocket_manager import WebSocketManager
 
@@ -257,12 +258,16 @@ def committed_member(db_engine: Engine) -> Iterator[models.User]:
 
 
 @pytest.mark.parametrize("event_delivery", [True, False])
-@pytest.mark.parametrize("message_auth", [True, False])
+@pytest.mark.parametrize(
+    "message_auth,credential",
+    [(True, "access"), (False, "access"), (False, "refresh"), (False, "purpose")],
+)
 def test_unified_revoke_closes_second_replica_or_timer(
     monkeypatch: pytest.MonkeyPatch,
     committed_member: models.User,
     event_delivery: bool,
     message_auth: bool,
+    credential: str,
 ) -> None:
     """Call the real self revoke endpoint while /ws/unified stays open."""
     auth_revocation.install_revocation_notifications()
@@ -304,7 +309,19 @@ def test_unified_revoke_closes_second_replica_or_timer(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    token = access(committed_member)
+    access_token = access(committed_member)
+    token = access_token
+    if credential == "refresh":
+        token = create_refresh_token(
+            sub=str(committed_member.id),
+            scopes=[],
+            auth_generation=committed_member.auth_generation,
+        )
+    elif credential == "purpose":
+        token = create_access_token(
+            data={"sub": str(committed_member.id), "purpose": "mcp_oauth_authorize"},
+            auth_generation=committed_member.auth_generation,
+        )
     with TestClient(api(lifespan=lifespan)) as client:
 
         def publish(subject: str, data: bytes) -> None:
@@ -321,11 +338,125 @@ def test_unified_revoke_closes_second_replica_or_timer(
             assert first.revocable_connections == {}
             assert len(second.revocable_connections) == 1
             response = client.post(
-                "/api/v1/auth/sessions/revoke-all", headers=bearer(token)
+                "/api/v1/auth/sessions/revoke-all", headers=bearer(access_token)
             )
             assert response.status_code == 200, response.text
             frame = socket.receive()
             assert frame["type"] == "websocket.close"
             assert frame["code"] == 4401
             assert len(bus.deliveries) == (2 if event_delivery else 0)
+    assert second.revocable_connections == {}
+
+
+@pytest.fixture
+def committed_admin_family(db_engine: Engine) -> Iterator[tuple[models.User, ...]]:
+    """An admin, target member and linked membership visible across sessions."""
+    with Session(db_engine, expire_on_commit=False) as db:
+        account = crud_account.create(db, obj_in={"organization_name": "Admin test"})
+        other = crud_account.create(db, obj_in={"organization_name": "Sibling test"})
+        admin = make_user(db, account.id)
+        member = make_user(db, account.id)
+        sibling = make_user(db, other.id, person_id=member.person_id)
+        person_ids = [admin.person_id, member.person_id]
+        try:
+            yield admin, member, sibling
+        finally:
+            db.rollback()
+            for account_id in (account.id, other.id):
+                db.delete(db.get(models.Account, account_id))
+            db.commit()
+            for person_id in person_ids:
+                db.delete(db.get(models.Person, person_id))
+            db.commit()
+
+
+def test_admin_event_closes_target_live_socket_and_preserves_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    committed_admin_family: tuple[models.User, ...],
+) -> None:
+    """The real admin transaction publishes to a second replica's live sockets."""
+    admin, member, sibling = committed_admin_family
+    auth_revocation.install_revocation_notifications()
+    first, second = WebSocketManager(), WebSocketManager()
+    bus = LocalNats()
+    monkeypatch.setattr(websockets, "manager", second)
+    monkeypatch.setattr(
+        websocket_manager,
+        "get_task_publisher",
+        AsyncMock(return_value=SimpleNamespace(nc=bus)),
+    )
+    monkeypatch.setattr(auth_revocation, "REVOCATION_RECHECK_SECONDS", 60)
+    monkeypatch.setattr(
+        websockets.session_manager,
+        "create_session",
+        AsyncMock(
+            side_effect=lambda **kwargs: SimpleNamespace(
+                id=str(uuid4()),
+                connection_id=str(uuid4()),
+                is_authenticated=True,
+                display_name="Test member",
+                metadata={},
+            )
+        ),
+    )
+    monkeypatch.setattr(websockets.session_manager, "end_session", AsyncMock())
+    checked: set[str] = set()
+    original_check = auth_revocation.session_is_revoked
+
+    async def check(claims: TokenData) -> bool:
+        result = await original_check(claims)
+        checked.add(claims.sub)
+        return result
+
+    monkeypatch.setattr(auth_revocation, "session_is_revoked", check)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        tasks = [
+            asyncio.create_task(websocket_manager.nats_consumer(manager))
+            for manager in (first, second)
+        ]
+        try:
+            while len([s for s in bus.subscriptions if s[0] == "auth.revoked"]) < 2:
+                await asyncio.sleep(0)
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    with TestClient(api(lifespan=lifespan)) as client:
+
+        def publish(subject: str, data: bytes) -> None:
+            client.portal.call(bus.publish, subject, data)
+
+        monkeypatch.setattr(auth_revocation, "publish_realtime", publish)
+        with (
+            client.websocket_connect(
+                "/api/v1/ws/unified", headers=bearer(access(member))
+            ) as target,
+            client.websocket_connect(
+                "/api/v1/ws/unified", headers=bearer(access(sibling))
+            ) as other,
+        ):
+            assert target.receive_json()["type"] == "handshake"
+            assert other.receive_json()["type"] == "handshake"
+
+            async def initial_checks() -> None:
+                while checked != {str(member.id), str(sibling.id)}:
+                    await asyncio.sleep(0.01)
+
+            client.portal.call(asyncio.wait_for, initial_checks(), 2)
+            response = client.post(
+                f"/api/v1/users/{member.id}/sessions/revoke-all",
+                headers=bearer(access(admin)),
+            )
+            assert response.status_code == 200
+            frame = target.receive()
+            assert frame["type"] == "websocket.close" and frame["code"] == 4401
+            assert bus.deliveries == ["auth.revoked", "auth.revoked"]
+            assert first.revocable_connections == {}
+            assert len(second.revocable_connections) == 1
+            other.send_json({"type": "ping"})
+            assert other.receive_json()["type"] == "pong"
     assert second.revocable_connections == {}
