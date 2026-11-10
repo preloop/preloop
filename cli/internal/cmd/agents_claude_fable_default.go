@@ -190,7 +190,7 @@ func extendAllowlistWithFamilySiblings(
 	if len(additions) == 0 {
 		return nil, allowed, nil
 	}
-	updated := make([]interface{}, 0, len(allowed)+len(additions))
+	updated := make([]interface{}, 0, len(allowed))
 	for _, entry := range allowed {
 		updated = append(updated, entry)
 	}
