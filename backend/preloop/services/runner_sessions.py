@@ -492,6 +492,14 @@ def queue_turn(
     # Lock the row and re-check: two concurrent turn requests must not both
     # see no turn and overwrite each other's pending_turn.
     row = crud_runner_remote_session.lock(db, remote_session_id=row.id) or row
+    if away_window_expired(row):
+        # A turn held now would be dropped when the session ends (#1509).
+        expire_away_session(db, row, _runner_for(db, row))
+        db.commit()
+        raise RunnerSessionError(
+            "session_ended",
+            "The runner stayed away past the resume window; the session ended.",
+        )
     if not row.is_live or row.stop_mode:
         raise RunnerSessionError("session_ended", "The session has ended.")
     if flows_or_tools_halted(db, row.account_id):
@@ -1019,16 +1027,45 @@ def runner_away_window(
     if presence.state not in (PRESENCE_ASLEEP, PRESENCE_OFFLINE):
         return None
     since = presence.since
-    if since is None:
+    if row.state == RUNNER_AWAY and row.away_since is not None:
+        # The instant stored when the session went away wins: presence may
+        # have moved on (offline after asleep) without the runner returning.
+        away_since = row.away_since
+    elif since is None:
         away_since = row.last_activity_at or now
     else:
         away_since = since.astimezone(timezone.utc).replace(tzinfo=None)
-    window = timedelta(seconds=row.idle_timeout_seconds or DEFAULT_IDLE_TIMEOUT_SECONDS)
     return {
         "presence": presence.state,
         "away_since": away_since,
-        "resume_until": away_since + window,
+        "resume_until": away_since + _resume_window(row),
     }
+
+
+def _resume_window(row: models.RunnerRemoteSession) -> timedelta:
+    """The resume window: the session's #1482 idle timeout."""
+    return timedelta(seconds=row.idle_timeout_seconds or DEFAULT_IDLE_TIMEOUT_SECONDS)
+
+
+def away_window_expired(
+    row: models.RunnerRemoteSession, *, now: Optional[datetime] = None
+) -> bool:
+    """Whether a ``runner_away`` session is past its stored resume deadline.
+
+    Uses ``away_since`` from the row, so it holds after the runner
+    reconnects, when presence no longer says when it left.
+    """
+    if row.state != RUNNER_AWAY or row.away_since is None:
+        return False
+    return (now or _now()) > row.away_since + _resume_window(row)
+
+
+def expire_away_session(
+    db: Session, row: models.RunnerRemoteSession, runner: Any
+) -> None:
+    """End a session whose runner stayed away past the window. No commit."""
+    end_session(db, row, RUNNER_AWAY_TIMEOUT, commit=False)
+    _notify_starter_away_timeout(db, row, runner)
 
 
 def _mark_away(
@@ -1045,6 +1082,7 @@ def _mark_away(
     so the sweep keeps seeing the session.
     """
     row.state = RUNNER_AWAY
+    row.away_since = away["away_since"]
     db.add(row)
     presence = str(away["presence"])
     away_since = _iso(away["away_since"])
@@ -1094,6 +1132,7 @@ def _record_resumed(
     if row.state != RUNNER_AWAY:
         return
     row.state = state or ("running" if row.active_turn_id else "idle")
+    row.away_since = None
     db.add(row)
     _audit(db, row, runner, "runner_session.resumed")
     _activity(
@@ -1139,7 +1178,9 @@ def resume_away_sessions(
 ) -> int:
     """Resume ``runner_away`` sessions of a runner that is reachable again.
 
-    Does not commit; :func:`pending_runner_messages` commits.
+    A runner that is back after the stored deadline does not resume: the
+    session ends with ``runner_away_timeout`` and its held turn is not
+    delivered. Does not commit; :func:`pending_runner_messages` commits.
 
     Returns:
         How many sessions resumed.
@@ -1147,6 +1188,9 @@ def resume_away_sessions(
     resumed = 0
     for row in crud_runner_remote_session.list_live_for_runner(db, runner_id=runner.id):
         if row.state != RUNNER_AWAY:
+            continue
+        if away_window_expired(row, now=now):
+            expire_away_session(db, row, runner)
             continue
         if runner_away_window(row, runner, now=now) is not None:
             continue
@@ -1178,7 +1222,9 @@ def _notify_starter_away_timeout(
         title="Remote session ended",
         message=(
             f"{runner.name} stayed asleep or offline past the resume window, so "
-            f"the {row.harness} session in {row.workspace_label} ended."
+            f"the {row.harness} session"
+            + (f" in {row.workspace_label}" if row.workspace_label else "")
+            + " ended."
         ),
         href=f"/console/runtime-sessions?sessionId={row.runtime_session_id}",
         host=False,
@@ -1215,12 +1261,15 @@ def sweep_runner_sessions(db: Session, *, now: Optional[datetime] = None) -> int
             if runner is None:
                 end_session(db, row, "runner_offline", commit=False)
                 ended += 1
+            elif away_window_expired(row, now=now) or (
+                away is not None and now > away["resume_until"]
+            ):
+                # Past the deadline even if the runner is back: the window
+                # is a hard limit, not one sweep interval of slack.
+                expire_away_session(db, row, runner)
+                ended += 1
             elif away is None:
                 _record_resumed(db, row, runner)
-            elif now > away["resume_until"]:
-                end_session(db, row, RUNNER_AWAY_TIMEOUT, commit=False)
-                _notify_starter_away_timeout(db, row, runner)
-                ended += 1
             elif row.state != RUNNER_AWAY:
                 _mark_away(db, row, runner, away)
             if row.state == RUNNER_AWAY or not row.is_live or away is not None:

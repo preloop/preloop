@@ -83,6 +83,9 @@ class RunnerRemoteSession(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: When the runner went away (#1509); set with ``runner_away``, cleared
+    #: on resume. The resume deadline is this plus ``idle_timeout_seconds``.
+    away_since: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     @property
     def is_live(self) -> bool:

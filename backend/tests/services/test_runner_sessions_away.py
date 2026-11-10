@@ -326,3 +326,78 @@ def test_live_event_carries_the_away_state(
     assert away[0]["metadata"]["presence"] == "asleep"
     assert away[0]["metadata"]["resume_until"]
     assert away[0]["runtime_session_id"] == str(row.runtime_session_id)
+
+
+def _expire(db: Session, row: models.RunnerRemoteSession) -> None:
+    """Move the stored away instant back past the resume window."""
+    row.away_since = _naive_now() - timedelta(seconds=row.idle_timeout_seconds + 60)
+    db.add(row)
+    db.commit()
+
+
+def test_turn_after_the_deadline_is_refused_not_dropped(
+    db_session, runner, test_user
+) -> None:
+    """Review on #2277: a turn past resume_until must not be held and lost."""
+    row = _started(db_session, runner, test_user)
+    _sleep(db_session, runner)
+    svc.mark_sessions_away(db_session, runner)
+    _expire(db_session, row)
+    runtime = db_session.get(models.RuntimeSession, row.runtime_session_id)
+    control = resolve_session_control_mode(
+        db_session, account_id=str(test_user.account_id), session=runtime
+    )
+    assert (control.mode, control.reason_code) == ("note", "session_ended")
+    with pytest.raises(svc.RunnerSessionError) as exc:
+        svc.queue_turn(db_session, row, actor=test_user, text="too late")
+    assert exc.value.code == "session_ended"
+    db_session.refresh(row)
+    assert (row.state, row.end_reason) == ("ended", "runner_away_timeout")
+    assert row.pending_turn is None
+
+
+def test_reconnect_after_the_deadline_ends_instead_of_resuming(
+    db_session, runner, test_user
+) -> None:
+    """Review on #2277: the window is hard even before the next sweep."""
+    row = _started(db_session, runner, test_user)
+    _sleep(db_session, runner)
+    svc.mark_sessions_away(db_session, runner)
+    svc.queue_turn(db_session, row, actor=test_user, text="held")
+    _expire(db_session, row)
+    _wake(db_session, runner)
+    frames = svc.pending_runner_messages(db_session, runner)
+    db_session.refresh(row)
+    assert (row.state, row.end_reason) == ("ended", "runner_away_timeout")
+    assert not any(f.get("type") == "session_turn" for f in frames)
+    assert "runner_session.resumed" not in _actions(db_session, row)
+
+
+def test_resume_clears_the_stored_away_instant(db_session, runner, test_user) -> None:
+    row = _started(db_session, runner, test_user)
+    _sleep(db_session, runner)
+    svc.mark_sessions_away(db_session, runner)
+    db_session.refresh(row)
+    assert row.away_since is not None
+    _wake(db_session, runner)
+    svc.pending_runner_messages(db_session, runner)
+    db_session.refresh(row)
+    assert row.state == "idle" and row.away_since is None
+
+
+def test_timeout_notice_without_a_workspace_label(
+    db_session, runner, test_user
+) -> None:
+    row = _started(db_session, runner, test_user)
+    row.workspace_label = None
+    db_session.add(row)
+    db_session.commit()
+    _sleep(db_session, runner)
+    svc.mark_sessions_away(db_session, runner)
+    _expire(db_session, row)
+    svc.sweep_runner_sessions(db_session, now=_naive_now() + timedelta(minutes=2))
+    notices = recent(
+        db_session, account_id=test_user.account_id, owner_user_id=test_user.id
+    )
+    assert notices and "None" not in notices[0]["message"]
+    assert notices[0]["message"].endswith("copilot_cli session ended.")
