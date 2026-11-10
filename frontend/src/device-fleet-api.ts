@@ -163,10 +163,16 @@ async function request<T>(
       body !== undefined && response.status === 422
         ? await validationMessage(response)
         : '';
+    const saving = body !== undefined;
     throw new Error(
       response.status === 403
-        ? 'You do not have permission to view device fleet.'
-        : validation || 'Device fleet could not be loaded. Retry to refresh it.'
+        ? saving
+          ? 'You do not have permission to change device fleet settings.'
+          : 'You do not have permission to view device fleet.'
+        : validation ||
+            (saving
+              ? 'Alert settings could not be saved. Retry, or reload if the problem continues.'
+              : 'Device fleet could not be loaded. Retry to refresh it.')
     );
   }
   return response.json();

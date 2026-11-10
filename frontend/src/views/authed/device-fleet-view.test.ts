@@ -1040,6 +1040,50 @@ describe('Device fleet', () => {
     expect(quiet.querySelector('[data-testid="no-sources"]')).to.equal(null);
   });
 
+  it('warns about a credentials failure above stored sources', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet', 'manage_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/settings',
+          body: {
+            ...fiveRules,
+            rules: {
+              ...fiveRules.rules,
+              agent_quiet: {
+                ...fiveRules.rules.agent_quiet,
+                source_freshness_seconds: { [sourceId]: 3600 },
+              },
+            },
+          },
+        },
+        { path: '/api/v1/fleet/devices', status: 500, body: {} },
+      ],
+    });
+    const view = await mount();
+    const quiet = row(view, 'agent_quiet');
+    expect(quiet.querySelector('[data-testid="sources-failed"]')).to.exist;
+    expect(quiet.querySelector(`[data-source="${sourceId}"]`)).to.exist;
+    expect(quiet.textContent).not.to.include('Unlisted reporter');
+  });
+
+  it('gives a failed save its own wording', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive(fiveRules, { status: 500, body: {} });
+    const view = await mount();
+    await submit(view);
+    await waitUntil(() =>
+      view.shadowRoot.querySelector('[data-testid="save-error"]')
+    );
+    const text = view.shadowRoot.querySelector(
+      '[data-testid="save-error"]'
+    ).textContent;
+    expect(text).to.include('Alert settings could not be saved.');
+    expect(text).not.to.include('could not be loaded');
+  });
+
   it('offers no free-text source field when no device credential is listed', async () => {
     history.replaceState({}, '', '?tab=settings');
     setupFive(fiveRules, null, []);

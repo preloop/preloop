@@ -1545,7 +1545,10 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       // so it can be removed; it is never typed in.
       ...Object.keys(freshness)
         .filter((id) => !listed.has(id))
-        .map((id) => ({ id, label: `Unlisted reporter ${id.slice(0, 8)}` })),
+        .map((id) => ({
+          id,
+          label: `${this.credentialsFailed ? 'Reporter' : 'Unlisted reporter'} ${id.slice(0, 8)}`,
+        })),
     ];
     const set = (id: string, seconds: number | null) => {
       const next = { ...freshness };
@@ -1553,17 +1556,21 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       else next[id] = seconds;
       this.changeRule(index, { source_freshness_seconds: next });
     };
-    if (!sources.length && this.credentialsFailed)
-      return html`<p class="meta" data-testid="sources-failed">
-        Device credentials could not be loaded, so reporter sources cannot be
-        chosen. Reload the page to try again.
-      </p>`;
+    const failed = this.credentialsFailed
+      ? html`<p class="meta" data-testid="sources-failed">
+          Device credentials could not be loaded, so reporter sources cannot be
+          chosen and stored sources cannot be matched. Reload the page to try
+          again.
+        </p>`
+      : nothing;
+    if (!sources.length && this.credentialsFailed) return failed;
     if (!sources.length)
       return html`<p class="meta" data-testid="no-sources">
         No device credentials are available as reporter sources. Issue a device
         credential to set report freshness for this rule.
       </p>`;
     return html`<div data-testid="sources">
+      ${failed}
       <p class="meta">Report freshness per reporter source</p>
       ${sources.map(
         (source) =>
