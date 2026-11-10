@@ -3,12 +3,29 @@
 Requires a migrated disposable DATABASE_URL, a locally built profile image,
 pgvector image, and an explicitly selected disposable kubeconfig. Never uses
 the operator's current Kubernetes context. No model/provider calls are made.
+
+``--browser`` (Docker only) instead runs the fixture-site browser QA flow
+(``browser_fixture_flow.py``) in one hosted executor with the egress proxy and
+the fixture site as sidecars, then checks ``result.json`` and the proxy log.
+Sidecar images must be pullable by digest, for example from a local registry::
+
+    docker run -d -p 5000:5000 registry:2
+    docker build -t localhost:5000/egress-proxy environments/egress-proxy
+    docker build -t localhost:5000/fixture-site environments/fixture-site
+    docker push localhost:5000/egress-proxy   # repeat for fixture-site
+    python scripts/tests/flow_environment_integration.py --browser \\
+        --image <preloop environment image> \\
+        --proxy-image localhost:5000/egress-proxy@sha256:<digest> \\
+        --fixture-image localhost:5000/fixture-site@sha256:<digest>
 """
 
 import argparse
 import asyncio
+import base64
+import io
 import json
 import os
+import tarfile
 import tempfile
 import threading
 import time
@@ -34,7 +51,10 @@ from preloop.agents.codex import CodexAgent
 from preloop.services.checkpoint_runtime import checkpoint_context
 
 
+from browser_fixture_flow import RESULT_MAX_BYTES, unexpected_denials
 from kubernetes_guard import disposable_client
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 class ProbeAgent(CodexAgent):
@@ -127,6 +147,18 @@ async def run_probe(context: dict[str, Any], *, kubernetes: bool) -> str:
         else:
             raise AssertionError("probe execution timeout")
         logs = await agent.get_logs(ref)
+        if context.get("collect_service_logs") and not kubernetes:
+            # Sidecars are deleted by aclose(); read their output first.
+            context["service_logs"] = {}
+            for name, container in zip(
+                context["collect_service_logs"],
+                agent._environment_containers,
+                strict=False,
+            ):
+                lines = await container.log(stdout=True, stderr=True)
+                context["service_logs"][name] = "\n".join(
+                    line.rstrip("\n") for line in lines
+                )
         return "\n".join(logs) if isinstance(logs, list) else str(logs)
     finally:
         if ref:
@@ -134,8 +166,168 @@ async def run_probe(context: dict[str, Any], *, kubernetes: bool) -> str:
         await agent.aclose()
 
 
+BROWSER_PAYLOAD = (
+    REPO / "environments" / "preloop" / "browser" / "enable.sh",
+    REPO / "environments" / "preloop" / "browser" / "selfcheck.sh",
+    REPO / "environments" / "preloop" / "browser" / "playwright-mcp.config.json",
+    REPO / "scripts" / "tests" / "browser_fixture_flow.py",
+)
+
+
+def browser_payload_command() -> str:
+    """Shell command that unpacks the browser scripts into ``/workspace``.
+
+    The sandbox image does not contain the repository, and git cloning is
+    off for this probe, so the scripts travel inline as a base64 tarball.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in BROWSER_PAYLOAD:
+            archive.add(path, arcname=str(path.relative_to(REPO)))
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    return f"echo {encoded} | base64 -d | tar -xz -C /workspace"
+
+
+def browser_profile(args: argparse.Namespace) -> dict[str, Any]:
+    """The ``preloop-browser`` example profile, with the fixture site wired in."""
+    return {
+        "image": args.image,
+        "harness": "codex",
+        "setup_timeout_seconds": 180,
+        "services": [
+            {
+                "name": "egress-proxy",
+                "image": args.proxy_image,
+                "port": 3128,
+                "env": {
+                    "EGRESS_ALLOWED_ORIGINS": "http://fixture-site:8080",
+                    # Docker picks the execution network from its default
+                    # pools; the carve-out covers them. Metadata stays denied.
+                    "EGRESS_ALLOW_PRIVATE_CIDRS": "172.16.0.0/12,192.168.0.0/16",
+                },
+            },
+            {"name": "fixture-site", "image": args.fixture_image, "port": 8080},
+        ],
+        "env": {
+            "PRELOOP_BROWSER_PROXY": "http://${service.egress-proxy}:3128",
+            "PRELOOP_HARNESS": "codex",
+        },
+        "setup_commands": [
+            browser_payload_command(),
+            "bash /workspace/environments/preloop/browser/enable.sh",
+        ],
+        # result.json is echoed to the log; no artifact server runs here.
+    }
+
+
+BROWSER_PROBE = """python3 - <<'PY'
+import os, time, urllib.request
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({"http": os.environ["PRELOOP_BROWSER_PROXY"]})
+)
+for _ in range(60):
+    try:
+        opener.open("http://fixture-site:8080/healthz", timeout=2).read()
+        break
+    except Exception:
+        time.sleep(1)
+PY
+/opt/preloop-tests/bin/python /workspace/scripts/tests/browser_fixture_flow.py \
+  --base-url http://fixture-site:8080 --result /workspace/result.json \
+  --tool-timeout 5 && echo BROWSER_FIXTURE_EXIT=0 || echo BROWSER_FIXTURE_EXIT=1
+"""
+
+
+def check_browser_run(logs: str, proxy_log: str) -> dict[str, Any]:
+    """Assert the fixture flow passed and the proxy denied exactly what it should.
+
+    Args:
+        logs: Sandbox output of the browser probe.
+        proxy_log: Output of the ``egress-proxy`` sidecar.
+
+    Returns:
+        The parsed ``result.json`` document.
+    """
+    assert "BROWSER_FIXTURE_EXIT=0" in logs, logs[-3000:]
+    line = next(
+        item for item in logs.splitlines() if item.startswith("BROWSER_FIXTURE_RESULT ")
+    )
+    raw = line.removeprefix("BROWSER_FIXTURE_RESULT ")
+    assert len(raw.encode()) + 1 <= RESULT_MAX_BYTES, raw
+    assert "fixture-pass" not in raw, "credential leaked into result.json"
+    result = json.loads(raw)
+    assert result["pass"] is True, result
+    assert [note.split(":", 1)[0] for note in result["notes"]] == [
+        "login",
+        "rejected_origin",
+        "redirect_escape",
+        "timeout",
+        "cleanup",
+    ], result
+    # selfcheck.sh probes a loopback listener; that denial is setup, not flow.
+    missing, extra = unexpected_denials(proxy_log, ignored_hosts=("127.0.0.1",))
+    assert not missing and not extra, proxy_log[-3000:]
+    return result
+
+
+async def main_browser(args: argparse.Namespace) -> None:
+    """Run the fixture browser flow in one real Docker-hosted executor."""
+    if args.kubeconfig:
+        raise ValueError("--browser runs on Docker only")
+    if not args.proxy_image or not args.fixture_image:
+        raise ValueError("--browser needs --proxy-image and --fixture-image")
+    settings.preloop_url = args.endpoint
+    with tempfile.TemporaryDirectory() as directory:
+        registry = Path(directory) / "profiles.json"
+        registry.write_text(json.dumps({"integration": browser_profile(args)}))
+        settings.flow_environment_profiles_file = str(registry)
+        engine = create_engine(os.environ["DATABASE_URL"])
+        try:
+            with Session(engine) as db:
+                account = models.Account(organization_name="Disposable browser")
+                db.add(account)
+                db.flush()
+                flow = models.Flow(
+                    account_id=account.id,
+                    name="Disposable browser probe",
+                    prompt_template="probe",
+                    agent_type="codex",
+                    agent_config={},
+                )
+                db.add(flow)
+                db.flush()
+                execution = models.FlowExecution(flow_id=flow.id, status="RUNNING")
+                db.add(execution)
+                db.commit()
+                context: dict[str, Any] = {
+                    "account_id": account.id,
+                    "flow_id": str(flow.id),
+                    "execution_id": str(execution.id),
+                    "prompt": "No model invocation",
+                    "agent_config": {"environment_profile": "integration"},
+                    "git_clone_config": {"enabled": False, "repositories": []},
+                    "trigger_event_data": {},
+                    "probe_script": BROWSER_PROBE,
+                    "collect_service_logs": ["egress-proxy", "fixture-site"],
+                }
+                logs = await run_probe(context, kubernetes=False)
+                result = check_browser_run(
+                    logs, context["service_logs"]["egress-proxy"]
+                )
+                print(json.dumps({"runtime": "docker", "browser_fixture": result}))
+                db.delete(account)
+                db.commit()
+        finally:
+            engine.dispose()
+
+
 async def main(args: argparse.Namespace) -> None:
     """Verify real SQL/browser dependencies and recover after a killed sandbox."""
+    if args.browser:
+        await main_browser(args)
+        return
+    if not args.postgres_image:
+        raise ValueError("--postgres-image is required without --browser")
     args.loss_mode = args.loss_mode or ("pod" if args.kubeconfig else "process")
     if (args.loss_mode == "pod") != bool(args.kubeconfig):
         raise ValueError("pod loss requires Kubernetes; process loss requires Docker")
@@ -330,7 +522,14 @@ echo RECOVERY_PROBE_OK
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
-    parser.add_argument("--postgres-image", required=True)
+    parser.add_argument("--postgres-image")
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="run the fixture-site browser QA flow instead of the recovery probe",
+    )
+    parser.add_argument("--proxy-image", help="egress-proxy image by digest")
+    parser.add_argument("--fixture-image", help="fixture-site image by digest")
     parser.add_argument("--endpoint", default="http://host.docker.internal:25440")
     parser.add_argument("--port", type=int, default=25440)
     parser.add_argument("--kubeconfig")
