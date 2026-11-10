@@ -22,9 +22,14 @@ from types import ModuleType
 
 import pytest
 
-from scripts.tests import browser_fixture_flow as flow
-
 REPO = Path(__file__).resolve().parents[3]
+# scripts/tests is not a package on every runner's path; import by directory,
+# the same way flow_environment_integration.py imports its helpers.
+if str(REPO / "scripts" / "tests") not in sys.path:
+    sys.path.insert(0, str(REPO / "scripts" / "tests"))
+
+import browser_fixture_flow as flow  # noqa: E402
+
 FIXTURE_DIR = REPO / "environments" / "fixture-site"
 BROWSER = REPO / "environments" / "preloop" / "browser"
 TOOLS = REPO / "environments" / "preloop" / "tools" / "node_modules"
