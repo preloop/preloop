@@ -1540,6 +1540,10 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI: The configured FastAPI application.
     """
+    from preloop.services.auth_revocation import install_revocation_notifications
+
+    install_revocation_notifications()
+
     # Load environment variables from .env file
     # load_dotenv()
 

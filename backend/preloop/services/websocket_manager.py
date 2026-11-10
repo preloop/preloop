@@ -6,9 +6,10 @@ import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from collections.abc import Collection
 
-from fastapi import WebSocket
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from nats.aio.client import Client
 from nats.aio.msg import Msg
 from sqlalchemy.exc import (
@@ -27,6 +28,10 @@ from preloop.services.account_realtime import (
 )
 
 from preloop.sync.tasks import notify_admins
+
+if TYPE_CHECKING:
+    from preloop.schemas.auth import TokenData
+    from preloop.models.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +412,15 @@ class SessionStreamFilter:
         return False
 
 
+@dataclass
+class RevocableConnection:
+    """A JWT socket, kept separately from the account broadcast registry."""
+
+    websocket: WebSocket
+    token_data: "TokenData"
+    task: asyncio.Task[None] | None = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections for real-time updates with account-based filtering.
@@ -423,6 +437,110 @@ class WebSocketManager:
         self.connection_topics: Dict[str, Set[str]] = {}  # connection_id -> topics
         # connection_id -> filter, for sockets attached to one session
         self.session_streams: Dict[str, "SessionStreamFilter"] = {}
+        self.revocable_connections: dict[str, RevocableConnection] = {}
+
+    def watch_user_connection(
+        self, websocket: WebSocket, user: "User", token: str | None
+    ) -> str | None:
+        """Watch an authenticated JWT without admitting it to any broadcast.
+
+        API keys and machine credentials are deliberately never registered.
+        An immediate recheck also closes the authentication/registration race.
+        """
+        from preloop.api.auth.jwt import decode_token
+        from preloop.schemas.auth import TokenData
+
+        if getattr(user, "_auth_api_key", None) is not None:
+            return None
+        claims = getattr(user, "_auth_token_data", None)
+        if not isinstance(claims, TokenData):
+            if not token:
+                return None
+            try:
+                claims = decode_token(token)
+            except HTTPException:
+                return None
+        if claims.sub != str(user.id) or claims.refresh or claims.claims.get("purpose"):
+            return None
+        connection_id = str(uuid.uuid4())
+        connection = RevocableConnection(websocket, claims)
+        self.revocable_connections[connection_id] = connection
+        connection.task = asyncio.create_task(self._watch_revocation(connection_id))
+        return connection_id
+
+    async def unwatch_user_connection(self, connection_id: str | None) -> None:
+        """Forget a socket and join its recheck task on every handler exit."""
+        if connection_id is None:
+            return
+        connection = self.revocable_connections.pop(connection_id, None)
+        if connection is not None and connection.task is not None:
+            if connection.task is not asyncio.current_task():
+                connection.task.cancel()
+                await asyncio.gather(connection.task, return_exceptions=True)
+
+    async def _watch_revocation(self, connection_id: str) -> None:
+        """Recheck on a clock independent of incoming WebSocket traffic."""
+        from preloop.services import auth_revocation
+
+        while connection_id in self.revocable_connections:
+            await self._recheck_connection(connection_id)
+            if connection_id not in self.revocable_connections:
+                return
+            await asyncio.sleep(auth_revocation.REVOCATION_RECHECK_SECONDS)
+
+    async def _recheck_connection(self, connection_id: str) -> None:
+        """Close one connection only after its current revocation check fails."""
+        from preloop.services.auth_revocation import session_is_revoked
+
+        connection = self.revocable_connections.get(connection_id)
+        if connection is None:
+            return
+        try:
+            revoked = await session_is_revoked(connection.token_data)
+        except Exception:
+            logger.warning("Live session revocation recheck unavailable")
+            return
+        if revoked and self.revocable_connections.get(connection_id) is connection:
+            await self._close_revoked_connection(connection_id, code=4401)
+
+    async def _close_revoked_connection(self, connection_id: str, *, code: int) -> None:
+        """Withdraw broadcasts and the watcher before sending a bounded close."""
+        connection = self.revocable_connections.pop(connection_id, None)
+        if connection is None:
+            return
+        task = connection.task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        # Remove broadcast access before awaiting the peer's close frame.
+        for broadcast_id, websocket in list(self.active_connections.items()):
+            if websocket is connection.websocket:
+                self.disconnect(broadcast_id)
+        try:
+            await asyncio.wait_for(
+                connection.websocket.close(code=code, reason="Session revoked"),
+                timeout=5.0,
+            )
+        except (RuntimeError, WebSocketDisconnect, OSError, asyncio.TimeoutError):
+            logger.debug("Revoked WebSocket was already closed or unresponsive")
+        finally:
+            if task is not None and task is not asyncio.current_task():
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def close_user_connections(
+        self, user_ids: Collection[str], code: int = 4401
+    ) -> None:
+        """Close only the named users' registered JWT connections."""
+        targets = set(user_ids)
+        for connection_id, connection in list(self.revocable_connections.items()):
+            if connection.token_data.sub in targets:
+                await self._close_revoked_connection(connection_id, code=code)
+
+    async def recheck_user_connections(self, user_ids: Collection[str]) -> None:
+        """Handle a revoke hint without closing newer or SSO-exempt sessions."""
+        targets = set(user_ids)
+        for connection_id, connection in list(self.revocable_connections.items()):
+            if connection.token_data.sub in targets:
+                await self._recheck_connection(connection_id)
 
     async def connect(self, websocket: WebSocket) -> str:
         """
@@ -801,6 +919,19 @@ async def nats_consumer(manager: "WebSocketManager"):
         except Exception as e:
             logger.error(f"Error persisting log: {e}")
 
+    async def revocation_handler(msg: Msg) -> None:
+        """Recheck a bounded, explicitly targeted notification on every replica."""
+        try:
+            data = json.loads(msg.data)
+            user_ids = data["user_ids"]
+            if not isinstance(user_ids, list) or not 0 < len(user_ids) <= 1000:
+                return
+            targets = [str(uuid.UUID(value)) for value in user_ids]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            logger.warning("Invalid session revocation notification dropped")
+            return
+        await manager.recheck_user_connections(targets)
+
     subscriptions = []
     log_worker_task = asyncio.create_task(_log_writer_worker())
     try:
@@ -812,6 +943,7 @@ async def nats_consumer(manager: "WebSocketManager"):
             ("account-updates.*", "", message_handler),
             ("approval-updates", "", message_handler),
             ("admin.activity", "", message_handler),
+            ("auth.revoked", "", revocation_handler),
         ):
             subscriptions.append(
                 await nats_client.subscribe(subject, queue=queue_group, cb=handler)
