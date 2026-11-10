@@ -18,9 +18,15 @@ def record(
     href: str,
     host: bool = True,
     commit: bool = True,
+    addressee: Any = None,
 ) -> None:
-    """Persist one notice without exposing it to other account members."""
-    owner = runner.registered_by_user_id
+    """Persist one notice without exposing it to other account members.
+
+    ``addressee`` sends the notice to another user than the runner owner,
+    for example whoever started a remote session; such a notice should
+    pass ``host=False`` so the runner host does not show it.
+    """
+    owner = addressee or runner.registered_by_user_id
     if owner is None:
         return
     crud_audit_log.log_action(

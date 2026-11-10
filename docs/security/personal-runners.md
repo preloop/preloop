@@ -273,10 +273,15 @@ file excerpts and are visible in the session events.
 
 - The runner reconnects after sleep or network loss and reports `session_state`
   for every live session, so delivery resumes.
-- If the runner stays offline, the server ends its sessions with
-  `runner_offline`; turns are not queued for an offline runner. Flows that need
-  the harness follow their `harness_fallback` (`queue`, `fallback_server` or
-  `fail`).
+- While the runner is asleep or offline, a started session is `runner_away`:
+  a turn sent then is held on the server and delivered on reconnect, and
+  pending approvals stay open with nothing able to act on them. If the runner
+  does not reconnect within the resume window (the session's idle timeout,
+  counted from when it went away), the session ends with
+  `runner_away_timeout`, an audit row and a notice to the user who started
+  it. A session the runner never confirmed ends with `runner_offline`. Flows
+  that need the harness follow their `harness_fallback` (`queue`,
+  `fallback_server` or `fail`).
 - Idle sessions end after the idle timeout (T9) whether or not the laptop is
   awake. A Copilot session file survives on disk, but a new turn requires a new
   session.

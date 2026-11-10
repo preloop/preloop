@@ -232,11 +232,14 @@ sessions (the default), and set flow execution consent to `ask_me` or `never`.
 
 The runner shows as `asleep` or `offline` and gets no new work. A flow routed
 by harness follows its `harness_fallback`: it waits (`queue`), runs on hosted
-compute (`fallback_server`) or fails (`fail`). Live remote sessions are kept
-on disk; if the runner comes back within the idle timeout the next turn resumes
-the same session, otherwise the server ends it with `runner_offline`. Turns are
-not queued for an offline runner. Temporary checkouts are cleaned up on the
-runner's next start.
+compute (`fallback_server`) or fails (`fail`). A flow pinned to this runner
+follows its `offline_policy` instead (see above). Live remote sessions show
+as `runner_away` and are kept on disk; a turn sent meanwhile is held, and if
+the runner comes back within the idle timeout the session resumes and the
+held turn runs in the same harness session. Otherwise the server ends it with
+`runner_away_timeout` and tells whoever started it. See
+[When the laptop sleeps](remote-sessions.md#when-the-laptop-sleeps).
+Temporary checkouts are cleaned up on the runner's next start.
 
 ### How do I turn off remote sessions?
 

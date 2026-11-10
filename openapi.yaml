@@ -48537,6 +48537,23 @@ components:
           - type: string
           - type: 'null'
           title: End Reason
+        runner_presence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Presence
+        away_since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Away Since
+        resume_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resume Until
       type: object
       required:
       - session_id
@@ -49081,6 +49098,7 @@ components:
             - no_control_plugin
             - control_offline
             - terminal_session
+            - runner_away
           - type: 'null'
           title: Reason Code
         reason:

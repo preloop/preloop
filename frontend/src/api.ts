@@ -6260,6 +6260,7 @@ export interface RuntimeSessionControl {
     | 'no_control_plugin'
     | 'control_offline'
     | 'terminal_session'
+    | 'runner_away'
     | null;
   reason: string | null;
   /** `turn` when a line starts an agent turn, `note` when it is a note. */
