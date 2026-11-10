@@ -1680,13 +1680,20 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
           admins, honoring their notification preferences.
         </p>
         ${this.rules.map((rule, index) => this.renderRule(rule, index))}
-        ${this.saveError
-          ? html`<sl-alert variant="danger" open role="alert" data-testid="save-error">
-              <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-              <strong>Could not save alert settings</strong><br />
-              ${this.saveError}
-            </sl-alert>`
-          : nothing}
+        ${
+          this.saveError
+            ? html`<sl-alert
+                variant="danger"
+                open
+                role="alert"
+                data-testid="save-error"
+              >
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                <strong>Could not save alert settings</strong><br />
+                ${this.saveError}
+              </sl-alert>`
+            : nothing
+        }
         <p>
           <sl-button
             type="submit"

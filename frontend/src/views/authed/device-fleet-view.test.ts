@@ -944,12 +944,14 @@ describe('Device fleet', () => {
       'Could not load the device fleet'
     );
     (
-      row(view, 'agent_quiet').querySelector('[data-channel="push"]') as HTMLElement
+      row(view, 'agent_quiet').querySelector(
+        '[data-channel="push"]'
+      ) as HTMLElement
     ).click();
     await view.updateComplete;
-    expect(view.shadowRoot.querySelector('[data-testid="save-error"]')).to.equal(
-      null
-    );
+    expect(
+      view.shadowRoot.querySelector('[data-testid="save-error"]')
+    ).to.equal(null);
   });
 
   it('shows the server validation message on a rejected save', async () => {
@@ -971,7 +973,9 @@ describe('Device fleet', () => {
     );
     expect(
       view.shadowRoot.querySelector('[data-testid="save-error"]').textContent
-    ).to.include('Enabled quiet rule requires inactivity_days and grace_minutes');
+    ).to.include(
+      'Enabled quiet rule requires inactivity_days and grace_minutes'
+    );
     expect(view.shadowRoot.querySelector('form')).to.exist;
   });
 
@@ -1007,9 +1011,9 @@ describe('Device fleet', () => {
       },
     });
     const view = await mount();
-    expect(row(view, 'stale_inventory').querySelector('[data-source]')).to.equal(
-      null
-    );
+    expect(
+      row(view, 'stale_inventory').querySelector('[data-source]')
+    ).to.equal(null);
     await submit(view);
     await waitUntil(
       () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
