@@ -54,8 +54,9 @@ API key or user), stored in the `rate_limit_bucket` table so all API replicas
 share one budget and a restart does not reset it. When the table cannot be
 reached, the same rule is enforced per process and an error is logged, so a
 limiter outage neither refuses nor unthrottles requests. Refusals are 429
-with `Retry-After` and the `rate_limited` code, and count in
-`preloop_rate_limit_hits_total{rule}`.
+with `Retry-After` and count in `preloop_rate_limit_hits_total{rule}`. JSON
+API refusals also carry the `rate_limited` code; OTLP ingest keeps the OTLP
+status envelope its exporters parse.
 
 Rules on the shared limiter: login, refresh, reset-password, register, OAuth
 token/register/authorize, public approval, passkey challenges, verification
