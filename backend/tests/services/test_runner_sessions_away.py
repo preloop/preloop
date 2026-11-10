@@ -401,3 +401,29 @@ def test_timeout_notice_without_a_workspace_label(
     )
     assert notices and "None" not in notices[0]["message"]
     assert notices[0]["message"].endswith("copilot_cli session ended.")
+
+
+def test_state_frame_after_the_deadline_ends_and_stops(
+    db_session, runner, test_user
+) -> None:
+    """Review round 2 on #2277: the frame path honours the deadline too."""
+    row = _started(db_session, runner, test_user)
+    _drop(db_session, runner)
+    svc.mark_sessions_away(db_session, runner)
+    svc.queue_turn(db_session, row, actor=test_user, text="held")
+    _expire(db_session, row)
+    _wake(db_session, runner)
+    replies = svc.apply_runner_session_message(
+        db_session,
+        runner,
+        {"type": "session_state", "remote_session_id": str(row.id), "state": "idle"},
+    )
+    db_session.refresh(row)
+    assert (row.state, row.end_reason) == ("ended", "runner_away_timeout")
+    assert replies == [
+        {"type": "session_stop", "remote_session_id": str(row.id), "mode": "kill"}
+    ]
+    assert not any(
+        f.get("type") == "session_turn"
+        for f in svc.pending_runner_messages(db_session, runner)
+    )

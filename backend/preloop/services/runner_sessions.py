@@ -848,6 +848,16 @@ def _apply_state(
         end_session(db, row, reason, commit=False)
         return []
     if row.state == RUNNER_AWAY:
+        if away_window_expired(row):
+            # Back too late: the window is a hard deadline (#1509).
+            expire_away_session(db, row, runner)
+            return [
+                {
+                    "type": "session_stop",
+                    "remote_session_id": str(row.id),
+                    "mode": "kill",
+                }
+            ]
         # Back inside the resume window: the frame names the harness state.
         _record_resumed(db, row, runner, state=state)
     first_start = row.started_at is None and state in ("idle", "running")
