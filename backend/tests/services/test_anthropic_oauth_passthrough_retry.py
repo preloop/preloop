@@ -325,26 +325,64 @@ def test_db_released_and_response_closed_before_backoff() -> None:
     assert order.mock_calls[-1] == call.sleep()
 
 
+def _read_error() -> Any:
+    raise httpx.ReadError("dropped")
+    yield ""  # pragma: no cover - makes this a generator
+
+
+def _in_band_error() -> Any:
+    yield (
+        "event: error\n"
+        'data: {"type":"error","error":{"type":"overloaded_error",'
+        '"message":"Overloaded"}}\n\n'
+    )
+
+
+def _partial_then_disconnect() -> Any:
+    yield (
+        "event: message_start\n"
+        'data: {"type":"message_start","message":{"id":"msg_1",'
+        '"usage":{"input_tokens":3}}}\n\n'
+    )
+    raise httpx.RemoteProtocolError("peer closed connection")
+
+
 @pytest.mark.parametrize(
-    "first_read",
-    [
-        httpx.ReadError("dropped"),
-        iter(['event: error\ndata: {"type":"error"}\n\n']),
-    ],
+    "body", [_read_error, _in_band_error, _partial_then_disconnect]
 )
-def test_accepted_stream_is_never_reopened(first_read: Any) -> None:
-    service = _service()
-    ok = _response(200)
-    if isinstance(first_read, Exception):
-        ok.iter_text.side_effect = first_read
-    else:
-        ok.iter_text.return_value = first_read
-    client = _client([ok, _response(200)])
-    with patch(CLIENT, return_value=client), patch(SLEEP) as sleep:
-        opened_client, opened = _open(service)
-    assert opened is ok
+def test_accepted_stream_is_never_reopened(
+    db_session: Any, test_user: Any, body: Any
+) -> None:
+    """Drive the whole relay: a failure after acceptance never reopens."""
+    _create_oauth_model(db_session, test_user)
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    accepted = _response(200)
+    accepted.iter_text.side_effect = lambda *a, **k: body()
+    client = _client([accepted, _response(200)])
+    with (
+        patch("preloop.services.openai_gateway.get_secret_service") as secrets,
+        patch(CLIENT, return_value=client),
+        patch(SLEEP) as sleep,
+        patch(ENQUEUE),
+    ):
+        secrets.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(
+                credential_type="oauth_anthropic_claude_code",
+                value="sk-ant-oat01-access-token",
+            )
+        )
+        emitted: List[str] = []
+        try:
+            for chunk in service.stream_message({**_payload(), "stream": True}):
+                emitted.append(chunk)
+        except Exception:  # noqa: BLE001 - relay may re-raise the drop
+            pass
+    accepted.iter_text.assert_called_once()
     assert client.send.call_count == 1
     sleep.assert_not_called()
+    accepted.close.assert_called()
 
 
 def test_predicate_true_hint_does_not_broaden_allowlist() -> None:
