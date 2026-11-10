@@ -606,3 +606,62 @@ def test_reroute_beats_hosted_fallback_only_with_an_equal_runner(
     assert (orchestrator.execution_log.routing_reason == "fell_back_to_server") is (
         falls_back
     )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"free_slots": 0},
+        {"paused": True},
+        {"flow_execution_consent": "never"},
+        {"capabilities": {"host_exec_profiles": []}},
+    ],
+)
+def test_reroute_candidate_that_cannot_take_the_lease_keeps_hosted_fallback(
+    monkeypatch, change
+) -> None:
+    """Review on #2276: a busy, paused, refusing or profile-less runner must
+    not suppress ``fallback_server`` and then leave the reroute empty."""
+    account_id = uuid4()
+    author = uuid4()
+    pinned = _runner(account_id, presence="asleep", owner=author)
+    other = _runner(account_id, owner=author, name="desktop")
+    for key, value in change.items():
+        setattr(other, key, value)
+    _lease_world(monkeypatch, account_id, author, [pinned, other])
+    model = SimpleNamespace(id=uuid4(), model_identifier="gpt-5.2")
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_ai_model.get_all_for_account",
+        lambda db, **kw: [model],
+    )
+    monkeypatch.setattr(
+        "preloop.services.model_routing.model_usable_for_agent",
+        lambda candidate, agent_type: agent_type == "codex",
+    )
+    orchestrator = _orchestrator(
+        account_id,
+        {
+            "harness": "copilot_cli",
+            "runner_id": str(pinned.id),
+            "offline_policy": "reroute",
+            "harness_fallback": "fallback_server",
+            "fallback_model_identifier": "gpt-5.2",
+        },
+    )
+    orchestrator._apply_harness_routing_decision()
+    assert orchestrator.agent_type == "codex"
+    assert orchestrator.execution_log.routing_reason == "fell_back_to_server"
+
+
+def test_slept_runner_with_stale_heartbeat_reports_runner_asleep() -> None:
+    """Review on #2276: the canonical asleep case, signal then silence."""
+    account_id = uuid4()
+    runner = _runner(account_id, presence="asleep")
+    ok, reason, _ = runner_eligible_for_harness(
+        None,
+        runner,
+        account_id=account_id,
+        harness="copilot_cli",
+        pinned_runner_id=runner.id,
+    )
+    assert (ok, reason) == (False, "runner_asleep")

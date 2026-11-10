@@ -106,7 +106,9 @@ requirement. Codex, OpenCode and DeepSeek native flows need a hand-written
 profile. See
 [Host execution profiles](quickstart-linux.md#host-execution-profiles-advanced-override-private-only).
 
-When no eligible runner is available, the flow's `harness_fallback` decides:
+When no eligible runner is available, the flow's `harness_fallback` decides
+(a flow pinned to a runner that is asleep or offline follows its
+`offline_policy` first, see below):
 `queue` (default, wait up to `harness_queue_timeout_seconds`, then fail with
 `queue_timeout`), `fallback_server` (run on hosted compute with
 `fallback_model_identifier`, metered by the gateway) or `fail`. The routing
