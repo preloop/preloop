@@ -13,6 +13,8 @@ For the per-OS distinction between installed, configured, observed active and
 governed, read the [coverage guide](endpoint-coverage.md#platform-scope).
 Its [collector data and retention inventory](endpoint-coverage.md#data-minimization-and-retention)
 includes DPIA inputs and the limits of report-only credentials.
+Reported devices appear on [Device fleet](device-fleet.md), which can alert
+when an enrolled agent goes quiet or an expected control is no longer seen.
 
 ## Turning it on
 

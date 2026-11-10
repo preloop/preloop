@@ -81,13 +81,38 @@ export interface FleetFinding {
   detail: string;
   href: string;
 }
+export type FleetRuleName =
+  | 'traffic_without_runner'
+  | 'discovered_not_onboarded'
+  | 'agent_quiet'
+  | 'control_drift'
+  | 'stale_inventory';
+/** Rules whose thresholds are set per reporter source. */
+export const EVIDENCE_RULES: readonly FleetRuleName[] = [
+  'agent_quiet',
+  'control_drift',
+  'stale_inventory',
+];
+export const FLEET_CHANNELS = ['attention', 'email', 'push', 'webhook'];
 export interface FleetRule {
-  rule: 'traffic_without_runner' | 'discovered_not_onboarded';
+  rule: FleetRuleName;
   enabled: boolean;
   channels: string[];
-  window_minutes: number;
-  grace_minutes: number;
-  days: number;
+  window_minutes?: number;
+  grace_minutes?: number | null;
+  days?: number;
+  inactivity_days?: number | null;
+  /** Reporter source (device credential id) to freshness in seconds. */
+  source_freshness_seconds?: Record<string, number>;
+  inventory_freshness_seconds?: number;
+  /** Server fields this page does not edit, returned unchanged on save. */
+  passthrough?: Record<string, unknown>;
+}
+export interface FleetDeviceCredential {
+  id: string;
+  binding: { workstation_fingerprint: string };
+  state: 'active' | 'expired' | 'revoked';
+  expires_at: string;
 }
 export const fleetHref = (key?: string): string =>
   '/console/settings/device-fleet' +
@@ -125,13 +150,43 @@ async function request<T>(
           body: JSON.stringify(body),
         }),
   });
-  if (!response.ok)
+  if (!response.ok) {
+    const validation =
+      body !== undefined && response.status === 422
+        ? await validationMessage(response)
+        : '';
     throw new Error(
       response.status === 403
         ? 'You do not have permission to view device fleet.'
-        : 'Device fleet could not be loaded. Retry to refresh it.'
+        : validation || 'Device fleet could not be loaded. Retry to refresh it.'
     );
+  }
   return response.json();
+}
+
+/**
+ * The settings validators state which threshold is missing; their messages
+ * name fields, never device or person identifiers, so they are shown as is.
+ */
+async function validationMessage(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail))
+      return detail
+        .map((item) =>
+          String((item as { msg?: unknown })?.msg ?? '').replace(
+            /^Value error, /,
+            ''
+          )
+        )
+        .filter(Boolean)
+        .join(' ');
+  } catch {
+    // An unreadable body falls back to the generic message.
+  }
+  return '';
 }
 export const getDeviceFleet = (
   signal?: AbortSignal
@@ -184,30 +239,112 @@ export async function replaceFleetRosterCsv(
   return response.json();
 }
 
-interface RuleSettings {
+type RuleSettings = Record<string, unknown> & {
   enabled: boolean;
   channels: Record<string, boolean>;
-  window_minutes: number;
-  grace_minutes: number;
-  not_onboarded_days: number;
-}
+};
 interface Settings {
   schema_version: 1;
-  rules: Record<FleetRule['rule'], RuleSettings>;
+  rules: Partial<Record<FleetRuleName, RuleSettings>>;
+}
+const KNOWN_RULES: readonly FleetRuleName[] = [
+  'traffic_without_runner',
+  'discovered_not_onboarded',
+  ...EVIDENCE_RULES,
+];
+/** Fields edited on this page; everything else round-trips untouched. */
+const EDITED = new Set([
+  'enabled',
+  'channels',
+  'window_minutes',
+  'grace_minutes',
+  'not_onboarded_days',
+  'inactivity_days',
+  'source_freshness_seconds',
+  'inventory_freshness_seconds',
+]);
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+function ruleFromSettings(rule: FleetRuleName, value: RuleSettings): FleetRule {
+  const result: FleetRule = {
+    rule,
+    enabled: value.enabled,
+    channels: Object.keys(value.channels).filter(
+      (channel) => value.channels[channel]
+    ),
+    passthrough: Object.fromEntries(
+      Object.entries(value).filter(([key]) => !EDITED.has(key))
+    ),
+  };
+  if (!EVIDENCE_RULES.includes(rule)) {
+    result.window_minutes = optionalNumber(value.window_minutes);
+    result.grace_minutes = optionalNumber(value.grace_minutes);
+    result.days = optionalNumber(value.not_onboarded_days);
+    return result;
+  }
+  result.source_freshness_seconds = {
+    ...((value.source_freshness_seconds as Record<string, number>) || {}),
+  };
+  if (rule === 'agent_quiet') {
+    result.inactivity_days = optionalNumber(value.inactivity_days) ?? null;
+    result.grace_minutes = optionalNumber(value.grace_minutes) ?? null;
+  }
+  if (rule === 'stale_inventory')
+    result.inventory_freshness_seconds = optionalNumber(
+      value.inventory_freshness_seconds
+    );
+  return result;
 }
 function rulesFromSettings(settings: Settings): { items: FleetRule[] } {
+  // Rules this page does not know, or the server does not return, stay hidden.
   return {
-    items: Object.entries(settings.rules).map(([rule, value]) => ({
-      rule: rule as FleetRule['rule'],
-      enabled: value.enabled,
-      channels: Object.keys(value.channels).filter(
-        (channel) => value.channels[channel]
-      ),
-      window_minutes: value.window_minutes,
-      grace_minutes: value.grace_minutes,
-      days: value.not_onboarded_days,
-    })),
+    items: KNOWN_RULES.filter((rule) => settings.rules[rule]).map((rule) =>
+      ruleFromSettings(rule, settings.rules[rule] as RuleSettings)
+    ),
   };
+}
+function settingsFromRule(rule: FleetRule): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ...(rule.passthrough || {}),
+    enabled: rule.enabled,
+    channels: Object.fromEntries(
+      FLEET_CHANNELS.map((channel) => [
+        channel,
+        rule.channels.includes(channel),
+      ])
+    ),
+  };
+  if (!EVIDENCE_RULES.includes(rule.rule))
+    return {
+      ...body,
+      window_minutes: rule.window_minutes,
+      grace_minutes: rule.grace_minutes,
+      not_onboarded_days: rule.days,
+    };
+  body.source_freshness_seconds = rule.source_freshness_seconds || {};
+  if (rule.rule === 'agent_quiet') {
+    body.inactivity_days = rule.inactivity_days ?? null;
+    body.grace_minutes = rule.grace_minutes ?? null;
+  }
+  if (
+    rule.rule === 'stale_inventory' &&
+    rule.inventory_freshness_seconds !== undefined
+  )
+    body.inventory_freshness_seconds = rule.inventory_freshness_seconds;
+  return body;
+}
+/**
+ * The checks the server applies to the quiet rule, run before saving so an
+ * incomplete rule is never sent. Returns the server's wording, or ''.
+ */
+export function fleetRuleProblem(rule: FleetRule): string {
+  if (rule.rule !== 'agent_quiet' || !rule.enabled) return '';
+  if (!Object.keys(rule.source_freshness_seconds || {}).length)
+    return 'Enabled quiet rule requires source-specific freshness thresholds';
+  if (rule.inactivity_days == null || rule.grace_minutes == null)
+    return 'Enabled quiet rule requires inactivity_days and grace_minutes';
+  return '';
 }
 export async function getFleetRules(
   signal?: AbortSignal
@@ -219,25 +356,21 @@ export async function saveFleetRules(
   signal?: AbortSignal
 ): Promise<{ items: FleetRule[] }> {
   const rules = Object.fromEntries(
-    items.map((rule) => [
-      rule.rule,
-      {
-        enabled: rule.enabled,
-        channels: Object.fromEntries(
-          ['attention', 'email', 'push', 'webhook'].map((channel) => [
-            channel,
-            rule.channels.includes(channel),
-          ])
-        ),
-        window_minutes: rule.window_minutes,
-        grace_minutes: rule.grace_minutes,
-        not_onboarded_days: rule.days,
-      },
-    ])
+    items.map((rule) => [rule.rule, settingsFromRule(rule)])
   );
   return rulesFromSettings(
     await request<Settings>('/settings', signal, { schema_version: 1, rules })
   );
+}
+/** Device credentials are the reporter sources a freshness threshold names. */
+export async function getFleetDeviceCredentials(
+  signal?: AbortSignal
+): Promise<FleetDeviceCredential[]> {
+  const result = await request<{ items?: FleetDeviceCredential[] }>(
+    '/devices',
+    signal
+  );
+  return Array.isArray(result.items) ? result.items : [];
 }
 export function fleetFindingTitle(rule: string): string {
   return rule === 'traffic_without_runner'

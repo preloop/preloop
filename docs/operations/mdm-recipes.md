@@ -234,6 +234,10 @@ for scope limits, evidence-service prerequisites and credential custody. Never
 add a static report token to these public templates. Metadata inventory does
 not prove activity or verified compliance.
 
+Once reports arrive, [Device fleet](../guide/device-fleet.md) shows each
+device and can alert on quiet agents, missing expected controls and stale
+inventory, with per-source report freshness.
+
 ## Stage, expand and roll back
 
 Keep one acceptance record per OS/app/MDM version and effective policy hash:

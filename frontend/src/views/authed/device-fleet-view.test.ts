@@ -747,6 +747,264 @@ describe('Device fleet', () => {
     expect(body.rules.traffic_without_runner.channels.email).to.equal(false);
   });
 
+  const sourceId = '11111111-1111-4111-8111-111111111111';
+  const channelsOff = {
+    attention: true,
+    email: false,
+    push: false,
+    webhook: false,
+  };
+  const fiveRules = {
+    schema_version: 1,
+    rules: {
+      ...settings.rules,
+      control_drift: {
+        enabled: false,
+        channels: channelsOff,
+        source_freshness_seconds: {},
+        exceptions: [],
+        expectations: [{ axis: 'hooks' }, { axis: 'mcp' }],
+      },
+      stale_inventory: {
+        enabled: false,
+        channels: channelsOff,
+        source_freshness_seconds: {},
+        exceptions: [],
+        inventory_freshness_seconds: 86400,
+      },
+      agent_quiet: {
+        enabled: false,
+        channels: channelsOff,
+        source_freshness_seconds: {},
+        exceptions: [],
+        inactivity_days: null,
+        grace_minutes: null,
+      },
+    },
+  };
+  function setupFive(
+    rules: unknown = fiveRules,
+    put: { status?: number; body: unknown } | null = null,
+    credentials: unknown[] = [
+      {
+        id: sourceId,
+        binding: { version: 1, workstation_fingerprint: 'b'.repeat(64) },
+        scopes: [],
+        expires_at: '2026-12-01T00:00:00Z',
+        state: 'active',
+      },
+    ]
+  ) {
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet', 'manage_device_fleet'] },
+      routes: [
+        { path: '/api/v1/fleet/settings', body: rules },
+        {
+          path: '/api/v1/fleet/devices',
+          body: { schema_version: 1, items: credentials, total: 1 },
+        },
+        {
+          path: '/api/v1/fleet/settings',
+          method: 'PUT',
+          status: put?.status,
+          body: put ? put.body : (call) => call.body,
+        },
+      ],
+    });
+  }
+  const rows = (view: any): string[] =>
+    [...view.shadowRoot.querySelectorAll('fieldset[data-rule]')].map(
+      (f: HTMLElement) => f.dataset.rule as string
+    );
+  const row = (view: any, rule: string): HTMLElement =>
+    view.shadowRoot.querySelector(`fieldset[data-rule="${rule}"]`);
+  async function input(view: any, el: HTMLInputElement, value: string) {
+    el.value = value;
+    el.dispatchEvent(new Event('input'));
+    await view.updateComplete;
+  }
+  async function submit(view: any) {
+    view.shadowRoot
+      .querySelector('form')
+      .dispatchEvent(new Event('submit', { cancelable: true }));
+    await view.updateComplete;
+  }
+
+  it('renders the two rows a two-rule server returns and no device picker', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setup();
+    const view = await mount();
+    expect(rows(view)).to.eql([
+      'traffic_without_runner',
+      'discovered_not_onboarded',
+    ]);
+    expect(api.callsTo('/api/v1/fleet/devices')).to.have.length(0);
+  });
+
+  it('renders five rows with a neutral limitation each', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive();
+    const view = await mount();
+    expect(rows(view)).to.eql([
+      'traffic_without_runner',
+      'discovered_not_onboarded',
+      'agent_quiet',
+      'control_drift',
+      'stale_inventory',
+    ]);
+    for (const rule of rows(view)) {
+      const text = row(view, rule)
+        .querySelector('[data-testid="limitation"]')!
+        .textContent!.trim();
+      expect(text).not.to.equal('');
+    }
+    const form = view.shadowRoot.querySelector('form').textContent;
+    expect(form.toLowerCase()).not.to.match(/complian|bypass/);
+    expect(
+      row(view, 'control_drift').querySelector('[data-testid="expectations"]')!
+        .textContent
+    ).to.include('2 expected controls');
+    expect(row(view, 'agent_quiet').querySelector('input[type=text]')).to.equal(
+      null
+    );
+    expect(
+      row(view, 'agent_quiet').querySelector(
+        '[data-field="require_fresh_report"]'
+      )
+    ).to.equal(null);
+  });
+
+  it('round-trips every rule through PUT, keeping unedited fields', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive();
+    const view = await mount();
+    const quiet = row(view, 'agent_quiet');
+    (quiet.querySelector('[data-field="enabled"]') as HTMLElement).click();
+    const [days, grace] = quiet.querySelectorAll('input[type=number]');
+    await input(view, days as HTMLInputElement, '7');
+    await input(view, grace as HTMLInputElement, '60');
+    (quiet.querySelector(`[data-source="${sourceId}"]`) as HTMLElement).click();
+    await view.updateComplete;
+    (quiet.querySelector('[data-channel="email"]') as HTMLElement).click();
+    const stale = row(view, 'stale_inventory');
+    await input(
+      view,
+      stale.querySelector('input[type=number]') as HTMLInputElement,
+      '120'
+    );
+    const drift = row(view, 'control_drift');
+    (drift.querySelector('[data-channel="webhook"]') as HTMLElement).click();
+    await submit(view);
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
+    );
+    const body = api.callsTo('/api/v1/fleet/settings', 'PUT')[0].body as any;
+    expect(Object.keys(body.rules).sort()).to.eql(
+      Object.keys(fiveRules.rules).sort()
+    );
+    expect(body.rules.agent_quiet).to.deep.include({
+      enabled: true,
+      inactivity_days: 7,
+      grace_minutes: 60,
+      source_freshness_seconds: { [sourceId]: 86400 },
+      exceptions: [],
+    });
+    expect(body.rules.agent_quiet.channels.email).to.equal(true);
+    expect(body.rules.stale_inventory.inventory_freshness_seconds).to.equal(
+      7200
+    );
+    expect(body.rules.control_drift.channels.webhook).to.equal(true);
+    expect(body.rules.control_drift.expectations).to.eql(
+      fiveRules.rules.control_drift.expectations
+    );
+    expect(body.rules.traffic_without_runner).to.eql(
+      settings.rules.traffic_without_runner
+    );
+    await waitUntil(() => view.notice === 'Alert settings saved.');
+  });
+
+  it('does not save an enabled quiet rule without its thresholds', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive();
+    const view = await mount();
+    (
+      row(view, 'agent_quiet').querySelector(
+        '[data-field="enabled"]'
+      ) as HTMLElement
+    ).click();
+    await submit(view);
+    expect(api.callsTo('/api/v1/fleet/settings', 'PUT')).to.have.length(0);
+    expect(view.error).to.include('freshness thresholds');
+  });
+
+  it('shows the server validation message on a rejected save', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive(fiveRules, {
+      status: 422,
+      body: {
+        detail: [
+          {
+            msg: 'Value error, Enabled quiet rule requires inactivity_days and grace_minutes',
+          },
+        ],
+      },
+    });
+    const view = await mount();
+    await submit(view);
+    await waitUntil(() => view.error !== '');
+    expect(view.error).to.equal(
+      'Enabled quiet rule requires inactivity_days and grace_minutes'
+    );
+  });
+
+  it('offers no free-text source field when no device credential is listed', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive(fiveRules, null, []);
+    const view = await mount();
+    const quiet = row(view, 'agent_quiet');
+    expect(quiet.querySelector('[data-testid="no-sources"]')).to.exist;
+    expect(
+      quiet.querySelector('input:not([type=number]):not([type=checkbox])')
+    ).to.equal(null);
+  });
+
+  it('renders the optional fresh-report flag only when the server returns it', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setupFive({
+      ...fiveRules,
+      rules: {
+        ...fiveRules.rules,
+        agent_quiet: {
+          ...fiveRules.rules.agent_quiet,
+          require_fresh_report: true,
+        },
+      },
+    });
+    const view = await mount();
+    const flag = row(view, 'agent_quiet').querySelector(
+      '[data-field="require_fresh_report"]'
+    ) as HTMLInputElement;
+    expect(flag.checked).to.equal(true);
+    flag.click();
+    await submit(view);
+    await waitUntil(
+      () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
+    );
+    expect(
+      (api.callsTo('/api/v1/fleet/settings', 'PUT')[0].body as any).rules
+        .agent_quiet.require_fresh_report
+    ).to.equal(false);
+  });
+
+  it('keeps the 403 path for a member without manage permission', async () => {
+    history.replaceState({}, '', '?tab=settings');
+    setup(true, ['view_device_fleet']);
+    const view = await mount();
+    expect(view.shadowRoot.querySelector('fieldset[data-rule]')).to.equal(null);
+    expect(api.callsTo('/api/v1/fleet/devices')).to.have.length(0);
+  });
+
   it('switches to the map, loads it once, and remembers the choice', async () => {
     localStorage.removeItem('preloop.device_fleet.view_mode');
     api = mockApi({
