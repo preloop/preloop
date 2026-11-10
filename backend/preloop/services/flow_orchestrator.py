@@ -3769,16 +3769,22 @@ class FlowExecutionOrchestrator:
 
         Returns:
             True when the pinned runner is away and another authorized
-            runner with the same harness, model and billing is eligible.
+            runner with the same harness, model and billing could take the
+            lease now (free slot, not paused, consent, host profile and
+            authorized directory), so the explicit hosted fallback is not
+            skipped for a reroute that would then find nobody.
         """
         from preloop.services.host_exec import (
             OFFLINE_POLICY_REROUTE,
+            host_exec_effective_profile,
+            host_exec_workspace,
             offline_policy_mode,
         )
         from preloop.services.runner_service import (
             harness_entry_billing,
             harness_routing_reason,
             runner_away_reason,
+            runner_can_take_lease_now,
             runner_harness_entry,
         )
 
@@ -3786,9 +3792,23 @@ class FlowExecutionOrchestrator:
             return False
         if runner_away_reason(pinned) is None:
             return False
+        kind = self.agent_type or self.flow.agent_type
+        workspace = host_exec_workspace(config)
+        profile = host_exec_effective_profile(kind, config)
+        takers = [
+            runner
+            for runner in runners
+            if runner_can_take_lease_now(
+                runner,
+                profile=profile,
+                agent_type=kind,
+                workspace_id=workspace.get("id") if workspace else None,
+                harness=harness,
+            )
+        ]
         eligible, _reason = harness_routing_reason(
             self.db,
-            runners,
+            takers,
             account_id=self.flow.account_id,
             harness=harness,
             model=model,

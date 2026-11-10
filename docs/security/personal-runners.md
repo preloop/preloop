@@ -287,6 +287,11 @@ file excerpts and are visible in the session events.
   session.
 - Temporary checkouts are deleted when the session ends; if the runner was
   offline, cleanup happens on its next start.
+- A harness flow pinned to the runner (`agent_config.runner_id`) follows its
+  `offline_policy` before `harness_fallback`: `fail` (default) fails at once
+  with `runner_asleep` or `runner_offline`; `reroute` moves the run only to
+  another runner the flow's author may use with the same harness, model and
+  billing, never to a gateway-metered path.
 
 ## What wave 1 does not stop
 

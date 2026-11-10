@@ -889,12 +889,14 @@ def runner_eligible_for_harness(
         # Reroute keeps the policy path: a seat harness never lands on a
         # metered (gateway) one, nor the other way round.
         return False, ROUTING_NO_RUNNER_WITH_HARNESS, entry
+    # Checked first: a runner that said going_to_sleep is asleep whether or
+    # not its socket has dropped yet (#1506 derive_state).
+    if getattr(runner, "sleep_signaled_at", None) is not None:
+        return False, ROUTING_RUNNER_ASLEEP, entry
     if getattr(runner, "status", None) not in ("online", "busy") or not is_online(
         runner
     ):
         return False, ROUTING_RUNNER_OFFLINE, entry
-    if getattr(runner, "sleep_signaled_at", None) is not None:
-        return False, ROUTING_RUNNER_ASLEEP, entry
     return True, None, entry
 
 
@@ -947,6 +949,53 @@ def harness_routing_reason(
     if eligible:
         return eligible, None
     return 0, best or ROUTING_OWNER_HAS_NO_RUNNER
+
+
+def runner_can_take_lease_now(
+    runner: Any,
+    *,
+    profile: Optional[str],
+    agent_type: Any,
+    workspace_id: Optional[str],
+    harness: Optional[str],
+) -> bool:
+    """The lease checks beyond harness eligibility, without claiming a slot.
+
+    Mirrors what :func:`lease_job` requires of a candidate before it claims
+    one: a free slot, not paused, flow consent other than ``never`` (and an
+    owner to ask when it is ``ask_me``), the host profile and the
+    authorized directory. Used where a decision must agree with whether a
+    lease would succeed (``offline_policy=reroute`` versus the hosted
+    fallback, #1508).
+
+    Args:
+        runner: Candidate runner.
+        profile: Host profile the lease names, if any.
+        agent_type: Agent type of the run.
+        workspace_id: Authorized directory the run works in, if any.
+        harness: Harness the directory must allow.
+
+    Returns:
+        True when the runner could take the lease right now.
+    """
+    if getattr(runner, "paused", False) is True:
+        return False
+    if getattr(runner, "status", None) not in ("online", "busy"):
+        return False
+    if not isinstance(getattr(runner, "free_slots", 0), int) or runner.free_slots <= 0:
+        return False
+    consent = getattr(runner, "flow_execution_consent", None) or "ask_me"
+    if consent == "never" or (
+        consent != "always" and getattr(runner, "registered_by_user_id", None) is None
+    ):
+        return False
+    if profile and not runner_has_host_exec_profile(
+        runner, profile, None, agent_type or HOST_EXEC_AGENT_TYPE
+    ):
+        return False
+    return not workspace_id or runner_offers_authorized_directory(
+        runner, workspace_id, harness
+    )
 
 
 def runner_accepts_job(
