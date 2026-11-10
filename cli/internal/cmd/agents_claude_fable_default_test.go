@@ -367,3 +367,61 @@ func TestClaudeRefreshFamilyTargetAliasPrefersNewerLiveRelease(t *testing.T) {
 		t.Fatalf("an older live id must not replace the catalog row, got %q", got)
 	}
 }
+
+func TestRefreshClaudeKeepsConfigWhenAllowlistAdmitsNothing(t *testing.T) {
+	outcome, err := refreshClaudeManagedModelDocumentWithOptions(
+		AgentConfig{Name: "Claude Code"},
+		fableRefreshDoc(),
+		fableRefreshModels(),
+		nil,
+		claudeRefreshOptions{Allowed: []string{"openai/gpt-5.4"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := outcome.Doc["env"].(map[string]interface{})
+	if env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == nil || len(outcome.After) == 0 {
+		t.Fatalf("refresh must not wipe the managed model config, got env %#v", env)
+	}
+	if !strings.Contains(strings.Join(outcome.Warnings, "\n"), "admit none of its authorized models") {
+		t.Fatalf("expected an allowlist warning, got %#v", outcome.Warnings)
+	}
+}
+
+func TestApplyClaudeManagedGatewayFableBuiltinNoteOnce(t *testing.T) {
+	plan := managedMCPEnrollmentPlan{ClaudeFableBuiltinDefault: true, ManagedDocument: map[string]interface{}{}}
+	plan, err := applyClaudeManagedGateway(
+		plan, "https://preloop.example", "managed-token",
+		"anthropic/claude-sonnet-5-5", []string{"anthropic/claude-fable-5-1"}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.Join(plan.Notes, "\n"), "built-in fable default"); got != 1 {
+		t.Fatalf("built-in fable note must appear once, got %d: %#v", got, plan.Notes)
+	}
+
+	custom := managedMCPEnrollmentPlan{ClaudeFableBuiltinDefault: true, ManagedDocument: map[string]interface{}{}}
+	custom, err = applyClaudeManagedGateway(
+		custom, "https://preloop.example", "managed-token",
+		"openai/gpt-5.4", []string{"anthropic/claude-fable-5-1"}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(custom.Notes, "\n"), "built-in fable default") {
+		t.Fatalf("non-family selections must not claim the built-in fable default: %#v", custom.Notes)
+	}
+}
+
+func TestClaudeOnboardAllowlistNotesSkipsSelectedModel(t *testing.T) {
+	server := newGovernanceTestServer(t, []string{"anthropic/claude-fable-5-1"})
+	client := api.NewClientWithToken(server.server.URL, "tok")
+	if notes := claudeOnboardAllowlistNotes(client, "agent-1", nil); len(notes) != 0 || server.putCount != 0 {
+		t.Fatalf("no sibling candidates must not touch the allowlist (notes=%#v puts=%d)", notes, server.putCount)
+	}
+	notes := claudeOnboardAllowlistNotes(client, "agent-1", []string{"anthropic/claude-fable-5-2"})
+	if len(notes) != 1 || server.putCount != 1 {
+		t.Fatalf("sibling release must be added (notes=%#v puts=%d)", notes, server.putCount)
+	}
+}

@@ -927,7 +927,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 						familyAliases = familyAliasList
 						plan.Notes = append(plan.Notes, familyNotes...)
 						plan.Notes = append(plan.Notes, claudeOnboardAllowlistNotes(
-							client, managedAgent.ID, upstream.ManagedModelAlias, familyAliasList,
+							client, managedAgent.ID, familyAliasList,
 						)...)
 					}
 				}

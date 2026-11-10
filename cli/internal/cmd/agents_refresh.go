@@ -878,7 +878,16 @@ func refreshClaudeManagedModelDocumentWithOptions(
 	warnings := []string{}
 	notes := []string{}
 	catalogAuthorized := authorized
-	authorized = filterAliasesByAllowlist(authorized, options.Allowed, accountModels)
+	if admitted := filterAliasesByAllowlist(authorized, options.Allowed, accountModels); len(admitted) > 0 {
+		authorized = admitted
+	} else {
+		// Never write an empty model config: when the allowlist admits none
+		// of the authorized aliases, refresh from the catalog set and say so.
+		warnings = append(warnings, fmt.Sprintf(
+			"this agent's allowed models (%s) admit none of its authorized models; refreshing from the catalog, but gateway requests will be denied until the allowed models are updated in the Preloop console",
+			formatAllowedModelsList(options.Allowed),
+		))
+	}
 
 	// Resolve every family pin first, with live verification, so the
 	// selection and the ANTHROPIC_DEFAULT_*_MODEL keys always agree. The

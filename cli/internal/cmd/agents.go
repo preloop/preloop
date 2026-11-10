@@ -4732,7 +4732,7 @@ func applyClaudeUnpinnedManagedModelEnv(
 			plan.Notes,
 			"Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku). Automatic registration of new Anthropic ids requires subscription OAuth and enabled family autoregistration. API-key accounts should use --pin-model-families or run preloop models sync before selecting new ids.",
 		)
-		if fableBuiltin {
+		if fableBuiltin && claudeFamilyModelEnv(coverage)["ANTHROPIC_DEFAULT_FABLE_MODEL"] != "" {
 			plan.Notes = append(plan.Notes, claudeFableBuiltinDefaultNote)
 		}
 	default:
@@ -4754,14 +4754,6 @@ func applyClaudeUnpinnedManagedModelEnv(
 				),
 			)
 		}
-	}
-	if !fableBuiltin {
-		return
-	}
-	if fableAlias := claudeFamilyModelEnv(coverage)["ANTHROPIC_DEFAULT_FABLE_MODEL"]; fableAlias != "" && selection != "fable" {
-		// Fable is a sibling of the selected family here; its pair is
-		// already dropped by claudeUnpinnedFamilyEnvWith.
-		plan.Notes = append(plan.Notes, claudeFableBuiltinDefaultNote)
 	}
 }
 

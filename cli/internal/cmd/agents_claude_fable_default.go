@@ -330,14 +330,16 @@ func claudeOnboardFableFollowsBuiltinDefault(
 // claudeOnboardAllowlistNotes extends the agent's allowlist with sibling
 // family models onboarding just bound when the allowlist already names an
 // older release of the same family, and returns plan notes describing it.
+//
+// The selected (primary) model is deliberately not a candidate: it goes
+// through ensureSelectedModelAllowed, which asks the operator before adding
+// it, so a deliberate pin is never widened without consent.
 func claudeOnboardAllowlistNotes(
 	client *api.Client,
 	managedAgentID string,
-	primaryAlias string,
 	familyAliases []string,
 ) []string {
-	candidates := append([]string{primaryAlias}, familyAliases...)
-	added, _, err := extendAllowlistWithFamilySiblings(client, managedAgentID, candidates)
+	added, _, err := extendAllowlistWithFamilySiblings(client, managedAgentID, familyAliases)
 	if err != nil {
 		return []string{fmt.Sprintf(
 			"Could not update this agent's allowed models for the imported Claude families: %s",
