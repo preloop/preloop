@@ -314,3 +314,63 @@ not mount the SSO routes.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Console nginx security headers (#2278, #2279). nginx drops server-level
+add_header directives in any block that declares its own add_header, so
+configmap-nginx.yaml includes this at server level AND in every location/if
+block that sets headers. Keep it identical to frontend/docker/
+security-headers.conf (backend/tests/test_nginx_security_headers.py checks
+parity). $preloop_hsts comes from preloop.nginxHstsMap.
+*/}}
+{{- define "preloop.nginxSecurityHeaders" -}}
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=(), microphone=(self)" always;
+add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+add_header Strict-Transport-Security $preloop_hsts always;
+{{- end }}
+
+{{/*
+Validated Strict-Transport-Security value from .Values.securityHeaders.hsts.
+Browsers reject a preload policy without includeSubDomains or with a
+max-age below one year, so the chart refuses to render one.
+*/}}
+{{- define "preloop.hstsValue" -}}
+{{- $hsts := .Values.securityHeaders.hsts -}}
+{{- $maxAge := int64 $hsts.maxAge -}}
+{{- if and $hsts.preload (or (not $hsts.includeSubDomains) (lt $maxAge 31536000)) -}}
+{{- fail "securityHeaders.hsts.preload=true requires securityHeaders.hsts.includeSubDomains=true and securityHeaders.hsts.maxAge >= 31536000 (HSTS_PRELOAD needs HSTS_INCLUDE_SUBDOMAINS and HSTS_MAX_AGE >= 31536000)" -}}
+{{- end -}}
+max-age={{ $maxAge }}{{ if $hsts.includeSubDomains }}; includeSubDomains{{ end }}{{ if $hsts.preload }}; preload{{ end }}
+{{- end }}
+
+{{/*
+http-context map that yields the HSTS value for requests that arrived over
+HTTPS (X-Forwarded-Proto: https, or an https scheme) and "" otherwise. nginx
+omits a header whose value is empty.
+*/}}
+{{- define "preloop.nginxHstsMap" -}}
+{{- $value := include "preloop.hstsValue" . -}}
+map "$http_x_forwarded_proto:$scheme" $preloop_hsts {
+{{- if .Values.securityHeaders.hsts.enabled }}
+    "~*^https" "{{ $value }}";
+    "~*^[^:]*:https$" "{{ $value }}";
+{{- end }}
+    default "";
+}
+{{- end }}
+
+{{/* HSTS settings for the API and gateway middleware (same names as Compose). */}}
+{{- define "preloop.hstsEnv" -}}
+{{- $_ := include "preloop.hstsValue" . -}}
+- name: HSTS_ENABLED
+  value: {{ .Values.securityHeaders.hsts.enabled | toString | quote }}
+- name: HSTS_MAX_AGE
+  value: {{ int64 .Values.securityHeaders.hsts.maxAge | toString | quote }}
+- name: HSTS_INCLUDE_SUBDOMAINS
+  value: {{ .Values.securityHeaders.hsts.includeSubDomains | toString | quote }}
+- name: HSTS_PRELOAD
+  value: {{ .Values.securityHeaders.hsts.preload | toString | quote }}
+{{- end }}

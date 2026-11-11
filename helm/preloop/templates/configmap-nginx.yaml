@@ -6,6 +6,10 @@ metadata:
     {{- include "preloop.labels" . | nindent 4 }}
 data:
   default.conf.template: |
+    # Strict-Transport-Security (#2279), from .Values.securityHeaders.hsts.
+    # TLS terminates in front of this nginx (it listens on 80 only).
+    {{- include "preloop.nginxHstsMap" . | nindent 4 }}
+
     server {
         listen 80;
         server_name _;
@@ -15,12 +19,15 @@ data:
         # proxy-body-size so console-fronted /api/ traffic is not the bottleneck.
         client_max_body_size {{ .Values.gateway.proxy.bodySize }};
 
-        # Security headers
-        add_header X-Frame-Options "SAMEORIGIN" always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer-when-downgrade" always;
-        add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+        # Security headers. Every block below that declares its own add_header
+        # must include this set again: nginx does not inherit add_header into
+        # such blocks (#2278).
+        {{- include "preloop.nginxSecurityHeaders" . | nindent 8 }}
+
+        # Only this nginx sets HSTS; drop any copy from an upstream so proxied
+        # responses never carry two. No location may declare proxy_hide_header,
+        # or this server-level one stops applying there.
+        proxy_hide_header Strict-Transport-Security;
 
         # Root directory for static files
         root /usr/share/nginx/html;
@@ -95,6 +102,7 @@ data:
             proxy_read_timeout 300s;
 
             # CORS headers for API requests
+            {{- include "preloop.nginxSecurityHeaders" . | nindent 12 }}
             add_header 'Access-Control-Allow-Origin' '*' always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
@@ -102,6 +110,7 @@ data:
 
             # Handle preflight requests
             if ($request_method = 'OPTIONS') {
+                {{- include "preloop.nginxSecurityHeaders" . | nindent 16 }}
                 add_header 'Access-Control-Allow-Origin' '*';
                 add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
                 add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization';
@@ -254,12 +263,14 @@ data:
 
         # Missing assets must return 404, including extensions outside the regex below.
         location ^~ /admin/assets/ {
+            {{- include "preloop.nginxSecurityHeaders" . | nindent 12 }}
             expires 1y;
             add_header Cache-Control "public, immutable";
             try_files $uri =404;
         }
 
         location = /admin/index.html {
+            {{- include "preloop.nginxSecurityHeaders" . | nindent 12 }}
             # OSS images have no admin build. Stop here instead of redirecting again.
             try_files $uri =404;
             add_header Cache-Control "no-cache, no-store, must-revalidate";
@@ -269,6 +280,7 @@ data:
 
         # Static files with caching
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+            {{- include "preloop.nginxSecurityHeaders" . | nindent 12 }}
             expires 1y;
             add_header Cache-Control "public, immutable";
             try_files $uri =404;
@@ -332,6 +344,7 @@ data:
 
         # Disable caching for index.html
         location = /index.html {
+            {{- include "preloop.nginxSecurityHeaders" . | nindent 12 }}
             add_header Cache-Control "no-cache, no-store, must-revalidate";
             add_header Pragma "no-cache";
             add_header Expires "0";

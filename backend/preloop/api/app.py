@@ -1726,6 +1726,13 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RestrictedCiAuthMiddleware)
 
+    # Outermost, so every response (including early denials) gets HSTS when
+    # the request arrived over HTTPS (#2279). Settings are validated here so
+    # an invalid HSTS_PRELOAD combination refuses to start the service.
+    from preloop.api.middleware.hsts import HSTSMiddleware, HSTSSettings
+
+    app.add_middleware(HSTSMiddleware, settings=HSTSSettings.from_env())
+
     # --- Local API docs assets ---
     # Serve the pinned Swagger UI and ReDoc bundles from the API origin so the
     # documentation pages render on air-gapped installs and under a strict CSP
