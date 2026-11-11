@@ -18,6 +18,14 @@ map "${HSTS_PRELOAD}" $preloop_hsts_preload {
     default "";
 }
 
+# Referrer-Policy default for the shared header set. When a proxied upstream
+# already sent one (the API uses no-referrer where the URL carries an OAuth
+# code or a signed token), yield "" so nginx adds no second, weaker policy.
+map $upstream_http_referrer_policy $preloop_referrer_policy {
+    "" "strict-origin-when-cross-origin";
+    default "";
+}
+
 map "$preloop_hsts_enabled:$http_x_forwarded_proto:$scheme" $preloop_hsts {
     "~*^1:https" "max-age=${HSTS_MAX_AGE}$preloop_hsts_subdomains$preloop_hsts_preload";
     "~*^1:[^:]*:https$" "max-age=${HSTS_MAX_AGE}$preloop_hsts_subdomains$preloop_hsts_preload";

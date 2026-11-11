@@ -35,7 +35,9 @@ HELM_INCLUDE = re.compile(
 EXPECTED_HEADERS: Dict[str, str] = {
     "X-Frame-Options": '"SAMEORIGIN"',
     "X-Content-Type-Options": '"nosniff"',
-    "Referrer-Policy": '"strict-origin-when-cross-origin"',
+    # Default strict-origin-when-cross-origin, empty when a proxied upstream
+    # set its own policy (see the map in nginx.conf.template).
+    "Referrer-Policy": "$preloop_referrer_policy",
     "Permissions-Policy": (
         '"camera=(), geolocation=(), payment=(), usb=(), microphone=(self)"'
     ),
@@ -176,6 +178,11 @@ def test_both_configs_hide_upstream_hsts_and_map_it_from_https() -> None:
     assert "proxy_hide_header Strict-Transport-Security;" in server_level
     assert "$http_x_forwarded_proto" in docker.split("server {", 1)[0]
     assert "map " in docker.split("server {", 1)[0]
+    assert re.search(
+        r"map \$upstream_http_referrer_policy \$preloop_referrer_policy \{\s*"
+        r'""\s+"strict-origin-when-cross-origin";\s*default\s+"";',
+        docker,
+    )
     for var in (
         "HSTS_ENABLED",
         "HSTS_MAX_AGE",

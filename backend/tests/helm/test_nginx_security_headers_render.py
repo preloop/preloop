@@ -139,6 +139,51 @@ def test_helm_template_fails_on_invalid_preload(overrides: list[str]) -> None:
     assert "maxAge" in result.stderr
 
 
+@pytest.mark.parametrize("max_age", ["abc", "-5", "31536000s", "1.5"])
+def test_helm_template_fails_on_invalid_max_age(max_age: str) -> None:
+    """protects=a typo in maxAge failing the render; fails_when=Sprig int64
+    turns it into max-age=0 and silently disables HSTS; no_claim=none beyond
+    protects."""
+    helm = pytest.importorskip("shutil").which("helm")
+    if helm is None:
+        pytest.skip("helm binary not available")
+    with offline_chart() as chart_dir:
+        result = subprocess.run(
+            [
+                helm,
+                "template",
+                "preloop",
+                str(chart_dir),
+                "--show-only",
+                CONFIGMAP,
+                "--set",
+                f"environment.jwtSecret={TEST_JWT_SECRET}",
+                "--set",
+                f"securityHeaders.hsts.maxAge={max_age}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    assert result.returncode != 0
+    assert "securityHeaders.hsts.maxAge must be a whole number" in result.stderr
+
+
+def test_rendered_referrer_policy_defers_to_upstream() -> None:
+    """protects=the API's no-referrer on token-bearing responses;
+    fails_when=nginx adds a second, weaker Referrer-Policy when the upstream
+    sent one; no_claim=runtime evaluation (smoke test)."""
+    conf = _rendered_nginx()
+    match = re.search(
+        r"map \$upstream_http_referrer_policy \$preloop_referrer_policy \{(.*?)\n\}",
+        conf,
+        re.DOTALL,
+    )
+    assert match
+    assert re.search(r'""\s+"strict-origin-when-cross-origin";', match.group(1))
+    assert re.search(r'default\s+"";', match.group(1))
+
+
 def test_preload_renders_when_valid() -> None:
     """protects=a valid preload configuration still renders;
     fails_when=the guard rejects valid input; no_claim=preload list submission."""

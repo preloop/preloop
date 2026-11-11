@@ -52,6 +52,12 @@ SECURITY = {
 STUB_API_CONF = """
 server {
     listen 80;
+    location /api/v1/oauth-callback {
+        add_header Strict-Transport-Security "max-age=5" always;
+        add_header Referrer-Policy "no-referrer" always;
+        default_type text/html;
+        return 200 "callback";
+    }
     location / {
         add_header Strict-Transport-Security "max-age=5" always;
         default_type application/json;
@@ -232,6 +238,15 @@ def test_preflight_carries_security_and_cors_headers(stack: Dict[str, int]) -> N
         assert _values(headers, name) == [value], name
     assert _values(headers, "access-control-allow-origin") == ["*"]
     assert _values(headers, "access-control-max-age") == ["1728000"]
+
+
+def test_upstream_referrer_policy_is_kept_alone(stack: Dict[str, int]) -> None:
+    """protects=the API's no-referrer on token-bearing OAuth/opt-out responses;
+    fails_when=nginx adds its strict-origin-when-cross-origin next to it (the
+    browser would then follow the redirect with the token URL as Referer);
+    no_claim=the real API endpoints (a stub upstream route stands in)."""
+    status, headers = _request(stack["default"], "/api/v1/oauth-callback")
+    assert _values(headers, "referrer-policy") == ["no-referrer"], status
 
 
 @pytest.mark.parametrize("path", ("/", "/api/v1/health", "/assets/app.js"))

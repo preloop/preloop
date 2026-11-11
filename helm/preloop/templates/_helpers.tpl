@@ -326,7 +326,7 @@ parity). $preloop_hsts comes from preloop.nginxHstsMap.
 {{- define "preloop.nginxSecurityHeaders" -}}
 add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Referrer-Policy $preloop_referrer_policy always;
 add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=(), microphone=(self)" always;
 add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
 add_header Strict-Transport-Security $preloop_hsts always;
@@ -339,6 +339,18 @@ max-age below one year, so the chart refuses to render one.
 */}}
 {{- define "preloop.hstsValue" -}}
 {{- $hsts := .Values.securityHeaders.hsts -}}
+{{- /* Sprig int64 turns unparsable input into 0, which would silently
+       render max-age=0; reject anything that is not a whole number >= 0. */ -}}
+{{- $rawMaxAge := $hsts.maxAge -}}
+{{- $validMaxAge := false -}}
+{{- if kindIs "string" $rawMaxAge -}}
+{{- $validMaxAge = regexMatch "^[0-9]+$" $rawMaxAge -}}
+{{- else if or (kindIs "float64" $rawMaxAge) (kindIs "int64" $rawMaxAge) (kindIs "int" $rawMaxAge) -}}
+{{- $validMaxAge = and (ge (float64 $rawMaxAge) 0.0) (eq (float64 $rawMaxAge) (float64 (int64 $rawMaxAge))) -}}
+{{- end -}}
+{{- if not $validMaxAge -}}
+{{- fail (printf "securityHeaders.hsts.maxAge must be a whole number of seconds >= 0, got %v" $rawMaxAge) -}}
+{{- end -}}
 {{- $maxAge := int64 $hsts.maxAge -}}
 {{- if and $hsts.preload (or (not $hsts.includeSubDomains) (lt $maxAge 31536000)) -}}
 {{- fail "securityHeaders.hsts.preload=true requires securityHeaders.hsts.includeSubDomains=true and securityHeaders.hsts.maxAge >= 31536000 (HSTS_PRELOAD needs HSTS_INCLUDE_SUBDOMAINS and HSTS_MAX_AGE >= 31536000)" -}}
@@ -353,6 +365,14 @@ omits a header whose value is empty.
 */}}
 {{- define "preloop.nginxHstsMap" -}}
 {{- $value := include "preloop.hstsValue" . -}}
+# Referrer-Policy default for the shared header set. When a proxied upstream
+# already sent one (the API uses no-referrer where the URL carries an OAuth
+# code or a signed token), yield "" so nginx adds no second, weaker policy.
+map $upstream_http_referrer_policy $preloop_referrer_policy {
+    "" "strict-origin-when-cross-origin";
+    default "";
+}
+
 map "$http_x_forwarded_proto:$scheme" $preloop_hsts {
 {{- if .Values.securityHeaders.hsts.enabled }}
     "~*^https" "{{ $value }}";

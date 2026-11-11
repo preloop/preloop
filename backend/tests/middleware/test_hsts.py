@@ -139,3 +139,16 @@ def test_create_app_validates_hsts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HSTS_INCLUDE_SUBDOMAINS", "false")
     with pytest.raises(ValueError, match="HSTS_INCLUDE_SUBDOMAINS"):
         create_app()
+
+
+def test_hsts_middleware_is_outermost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """protects=HSTS on responses short-circuited by any other middleware,
+    including plugin ones registered in create_app; fails_when=another
+    middleware is added after HSTSMiddleware; no_claim=plugins loaded at
+    runtime in EE (none are loaded here)."""
+    from preloop.api.app import create_app
+
+    for name in ("HSTS_PRELOAD", "HSTS_INCLUDE_SUBDOMAINS"):
+        monkeypatch.delenv(name, raising=False)
+    app = create_app()
+    assert app.user_middleware[0].cls is HSTSMiddleware

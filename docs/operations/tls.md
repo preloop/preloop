@@ -240,8 +240,9 @@ start sending a one-year policy.
 | `HSTS_INCLUDE_SUBDOMAINS` | `securityHeaders.hsts.includeSubDomains` | `false` | Appends `; includeSubDomains`. |
 | `HSTS_PRELOAD` | `securityHeaders.hsts.preload` | `false` | Appends `; preload`. |
 
-Set the same values on the console, API and gateway services in Docker
-Compose; Helm passes `securityHeaders.hsts` to all three.
+With Docker Compose, set them in `.env` next to `docker-compose.yaml`; the
+shipped Compose files forward them to the `console`, `api` and `gateway`
+services. Helm passes `securityHeaders.hsts` to all three.
 
 !!! warning
     A browser that has seen the header refuses plain HTTP for the host until
