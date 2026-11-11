@@ -1,5 +1,7 @@
 """Ephemeral harness approval credentials cannot escape their execution session."""
 
+from contextlib import nullcontext
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
@@ -7,8 +9,81 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import agent_permission as endpoint
+from preloop.models import models
+from preloop.models.crud import crud_flow, crud_flow_execution, crud_runtime_session
+from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.services.flow_runtime_token import create_flow_runtime_token
+
+
+def test_minted_review_token_resolves_its_execution(
+    db_session: Session, test_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production minter and real authentication agree on review bindings."""
+    flow = crud_flow.create(
+        db_session,
+        flow_in=FlowCreate(
+            name="Synthetic read-only review",
+            prompt_template="Review this change",
+            trigger_event_source="github",
+            trigger_event_types=["pull_request"],
+            agent_type="codex",
+            agent_config={},
+            runner_pool="server",
+            git_clone_config={
+                "enabled": True,
+                "publication_mode": "read_only",
+                "repositories": [
+                    {
+                        "tracker_id": str(uuid4()),
+                        "repository_url": "https://example.com/repo.git",
+                    }
+                ],
+            },
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            account_id=test_user.account_id,
+        ),
+        account_id=test_user.account_id,
+    )
+    execution = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
+    session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution.id),
+        runtime_principal_type="flow_execution",
+        runtime_principal_id=str(execution.id),
+        runtime_principal_name=flow.name,
+        started_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+    )
+    token, key_id = create_flow_runtime_token(
+        db_session,
+        flow=flow,
+        execution_id=execution.id,
+        runtime_session_id=session.id,
+    )
+    assert token is not None
+    assert key_id is not None
+    monkeypatch.setattr(
+        endpoint, "get_session_factory", lambda: lambda: nullcontext(db_session)
+    )
+    with pytest.raises(HTTPException) as exc:
+        endpoint._resolve_permission_identity(token)
+    assert exc.value.status_code == 403
+    identity = endpoint._resolve_permission_identity(token, allow_read_only_review=True)
+    assert identity.api_key_id == key_id
+    assert identity.account_id == str(test_user.account_id)
+    assert identity.runtime_session_id == session.id
+    assert identity.flow_execution_id == execution.id
+    assert identity.flow_id == flow.id
+    assert identity.managed_agent_id is None
 
 
 @pytest.mark.parametrize(
