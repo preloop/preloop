@@ -220,6 +220,52 @@ from the edge proxy straight to the gateway. To split that hop from the
 Preloop process itself, measure HTTP to port 8001 and HTTPS on the public
 origin with the same script: [Gateway overhead](../guide/concepts/gateway-overhead.md).
 
+## Strict-Transport-Security (HSTS)
+
+Preloop sends `Strict-Transport-Security` on responses to requests that arrived
+over HTTPS: the request carries `X-Forwarded-Proto: https` (the reverse proxy
+example above sets it), or the connection scheme itself is `https`. Plain HTTP
+requests never get the header. The console nginx adds it for everything it
+serves and proxies, and drops any copy from upstream so a response carries
+exactly one. The API and model gateway add it themselves for traffic that
+reaches them directly, unless the response already has one.
+
+This is on by default. Installs that upgrade to this release and serve HTTPS
+start sending a one-year policy.
+
+| Env var (Compose: `console`, `api`, `gateway`) | Helm value | Default | Meaning |
+|---|---|---|---|
+| `HSTS_ENABLED` | `securityHeaders.hsts.enabled` | `true` | Master switch. `false` sends no header. |
+| `HSTS_MAX_AGE` | `securityHeaders.hsts.maxAge` | `31536000` | Policy lifetime in seconds. |
+| `HSTS_INCLUDE_SUBDOMAINS` | `securityHeaders.hsts.includeSubDomains` | `false` | Appends `; includeSubDomains`. |
+| `HSTS_PRELOAD` | `securityHeaders.hsts.preload` | `false` | Appends `; preload`. |
+
+With Docker Compose, set them in `.env` next to `docker-compose.yaml`; the
+shipped Compose files forward them to the `console`, `api` and `gateway`
+services. Helm passes `securityHeaders.hsts` to all three.
+
+!!! warning
+    A browser that has seen the header refuses plain HTTP for the host until
+    `max-age` expires, and turning HSTS off later does not clear policies
+    browsers already cached. For a first rollout on a host that may go back to
+    HTTP, start with a short `HSTS_MAX_AGE` (for example `300`) and raise it
+    once HTTPS is stable.
+
+    `includeSubDomains` applies the policy to every subdomain of the host,
+    including ones Preloop does not serve. Enable it only when all of them
+    serve HTTPS. `preload` asks browsers to hard-code the policy and is
+    difficult to undo; it requires `includeSubDomains` and a `max-age` of at
+    least `31536000`. The API refuses to start and `helm template` fails when
+    `preload` is set without both. Preloop never submits a domain to the
+    preload list.
+
+Check it:
+
+```bash
+curl -sI https://preloop.example.com/ | grep -i strict-transport-security
+curl -sI https://preloop.example.com/api/v1/health | grep -i strict-transport-security
+```
+
 ## Related
 
 - [Gateway overhead](../guide/concepts/gateway-overhead.md)
