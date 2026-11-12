@@ -10,6 +10,9 @@ data:
     # TLS terminates in front of this nginx (it listens on 80 only).
     {{- include "preloop.nginxHstsMap" . | nindent 4 }}
 
+    # Content-Security-Policy (#2280), from .Values.securityHeaders.csp.
+    {{- include "preloop.nginxCspMap" . | nindent 4 }}
+
     server {
         listen 80;
         server_name _;
@@ -36,12 +39,17 @@ data:
 
         # Web analytics: inject the tracking snippet into every HTML response
         # at serve time. Runtime-configurable per environment via values —
-        # see the `analytics` block in values.yaml. The inline stub queues
-        # custom events (window.plausible) fired before the script loads.
+        # see the `analytics` block in values.yaml. /analytics-queue.js (a
+        # static file in the console build, not inline code, so the
+        # Content-Security-Policy needs no 'unsafe-inline') queues custom
+        # events (window.plausible) fired before the script loads. A
+        # customSnippet's origins must be listed in
+        # securityHeaders.csp.extraScriptSrc, and inline code in it is
+        # blocked under securityHeaders.csp.mode=enforce.
         {{- if .Values.analytics.customSnippet }}
         sub_filter '</head>' '{{ .Values.analytics.customSnippet }}</head>';
         {{- else }}
-        sub_filter '</head>' '<script>window.plausible=window.plausible||function(){(window.plausible.q=window.plausible.q||[]).push(arguments)}</script><script defer data-domain="{{ .Values.analytics.domain }}" src="{{ .Values.analytics.scriptUrl }}"></script></head>';
+        sub_filter '</head>' '<script src="/analytics-queue.js"></script><script defer data-domain="{{ .Values.analytics.domain }}" src="{{ .Values.analytics.scriptUrl }}"></script></head>';
         {{- end }}
         sub_filter_once on;
         sub_filter_types text/html;

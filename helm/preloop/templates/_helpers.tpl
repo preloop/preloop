@@ -328,8 +328,104 @@ add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header Referrer-Policy $preloop_referrer_policy always;
 add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=(), microphone=(self)" always;
-add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+add_header Content-Security-Policy $preloop_csp always;
+add_header Content-Security-Policy-Report-Only $preloop_csp_report_only always;
 add_header Strict-Transport-Security $preloop_hsts always;
+{{- end }}
+
+{{/*
+Space-separated extra CSP sources from a values key, validated and normalised
+(#2280). Only host sources are accepted (https://cdn.example.com,
+*.example.com, 127.0.0.1:4000): keywords, quotes, bare schemes such as
+"https:" and a bare "*" would reopen what the policy closes or break out of
+the header value. Same rule as frontend/docker/15-preloop-csp.envsh.
+Call with (list "<values key>" <value>).
+*/}}
+{{- define "preloop.cspSources" -}}
+{{- $key := index . 0 -}}
+{{- $raw := index . 1 | default "" | toString -}}
+{{- $source := `([a-z][a-z0-9+.-]*://)?(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:([0-9]+|\*))?(/[A-Za-z0-9._~%/-]*)?` -}}
+{{- $sources := list -}}
+{{- range splitList " " (regexReplaceAll `\s+` $raw " ") -}}
+{{- if . -}}
+{{- if not (regexMatch (printf "^%s$" $source) .) -}}
+{{- fail (printf "%s must be space-separated host sources such as https://cdn.example.com, got %q" $key $raw) -}}
+{{- end -}}
+{{- $sources = append $sources . -}}
+{{- end -}}
+{{- end -}}
+{{- join " " $sources -}}
+{{- end }}
+
+{{/*
+Origin (scheme://host[:port]) of analytics.scriptUrl, or "" when analytics is
+off or a customSnippet replaces the built-in tag. The built-in tag loads its
+script from this origin and the Plausible-style script posts events back to
+it, so it goes into both script-src and connect-src.
+*/}}
+{{- define "preloop.analyticsOrigin" -}}
+{{- $a := .Values.analytics -}}
+{{- if and $a.enabled (not $a.customSnippet) $a.scriptUrl -}}
+{{- $url := urlParse $a.scriptUrl -}}
+{{- if or (not $url.scheme) (not $url.host) -}}
+{{- fail (printf "analytics.scriptUrl must be an absolute URL such as https://traffic.example.com/js/script.js, got %q" $a.scriptUrl) -}}
+{{- end -}}
+{{- printf "%s://%s" $url.scheme $url.host -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+http-context maps for the console Content-Security-Policy (#2280), from
+.Values.securityHeaders.csp. Keep the policy identical to the one in
+frontend/docker/nginx.conf.template (backend/tests check parity).
+
+  report-only  legacy Content-Security-Policy plus the new policy as
+               Content-Security-Policy-Report-Only (default)
+  enforce      the new policy as Content-Security-Policy, nothing else
+  legacy       the legacy Content-Security-Policy only
+
+The new policy covers what this nginx serves from the console build. A
+response proxied from the API ($upstream_addr is set) keeps the legacy
+header in every mode: the API's own HTML pages are not covered by the
+console's violation sweep.
+*/}}
+{{- define "preloop.nginxCspMap" -}}
+{{- $csp := .Values.securityHeaders.csp | default dict -}}
+{{- $mode := $csp.mode | default "report-only" | toString -}}
+{{- if not (has $mode (list "report-only" "enforce" "legacy")) -}}
+{{- fail (printf "securityHeaders.csp.mode must be one of report-only, enforce, legacy, got %q" $mode) -}}
+{{- end -}}
+{{- $analytics := include "preloop.cspSources" (list "analytics.scriptUrl" (include "preloop.analyticsOrigin" .)) -}}
+{{- $scriptSrc := list "'self'" -}}
+{{- $connectSrc := list "'self'" "ws:" "wss:" "data:" -}}
+{{- if $analytics -}}
+{{- $scriptSrc = append $scriptSrc $analytics -}}
+{{- $connectSrc = append $connectSrc $analytics -}}
+{{- end -}}
+{{- with include "preloop.cspSources" (list "securityHeaders.csp.extraScriptSrc" $csp.extraScriptSrc) -}}
+{{- $scriptSrc = append $scriptSrc . -}}
+{{- end -}}
+{{- with include "preloop.cspSources" (list "securityHeaders.csp.extraConnectSrc" $csp.extraConnectSrc) -}}
+{{- $connectSrc = append $connectSrc . -}}
+{{- end -}}
+map "" $preloop_csp_policy {
+    default "default-src 'self'; script-src {{ join " " $scriptSrc }}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src {{ join " " $connectSrc }}; media-src 'self' blob:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
+}
+
+map $upstream_addr $preloop_csp_console {
+    "" 1;
+    default 0;
+}
+
+map "{{ $mode }}:$preloop_csp_console" $preloop_csp {
+    "enforce:1" $preloop_csp_policy;
+    default "default-src 'self' http: https: data: blob: 'unsafe-inline'";
+}
+
+map "{{ $mode }}:$preloop_csp_console" $preloop_csp_report_only {
+    "report-only:1" $preloop_csp_policy;
+    default "";
+}
 {{- end }}
 
 {{/*

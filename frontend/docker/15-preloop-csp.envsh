@@ -1,0 +1,56 @@
+#!/bin/sh
+# Content-Security-Policy settings for the console nginx (#2280).
+#
+# The nginx image's entrypoint sources *.envsh files before it runs envsubst
+# on the templates, so an `exit` here stops the container before nginx starts
+# and the variables exported here reach nginx.conf.template.
+#
+#   CSP_MODE               report-only (default) | enforce | legacy
+#   CSP_EXTRA_SCRIPT_SRC   space-separated origins appended to script-src
+#   CSP_EXTRA_CONNECT_SRC  space-separated origins appended to connect-src
+#
+# Extra sources must be host sources (https://cdn.example.com,
+# *.example.com, 127.0.0.1:4000). Keywords, quotes, bare schemes such as
+# "https:" and a bare "*" are refused: they would reopen what the policy
+# closes, or break out of the header value.
+#
+# Sourced, not executed: keep every name prefixed and touch no positional
+# parameters or shell options of the entrypoint.
+
+preloop_csp_fail() {
+    echo "15-preloop-csp.envsh: $1" >&2
+    exit 1
+}
+
+CSP_MODE="${CSP_MODE:-report-only}"
+case "$CSP_MODE" in
+    report-only | enforce | legacy) ;;
+    *)
+        preloop_csp_fail "CSP_MODE must be one of report-only, enforce, legacy (got '$CSP_MODE')"
+        ;;
+esac
+export CSP_MODE
+
+preloop_csp_source='([a-z][a-z0-9+.-]*://)?(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:([0-9]+|\*))?(/[A-Za-z0-9._~%/-]*)?'
+
+# Prints the normalised list (single spaces, no leading or trailing space).
+preloop_csp_sources() {
+    preloop_csp_list=$(printf '%s' "$2" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+    if [ -n "$preloop_csp_list" ] && ! printf '%s' "$preloop_csp_list" |
+        grep -Eq "^${preloop_csp_source}( ${preloop_csp_source})*\$"; then
+        return 1
+    fi
+    printf '%s' "$preloop_csp_list"
+}
+
+preloop_csp_script_extra=$(preloop_csp_sources CSP_EXTRA_SCRIPT_SRC "${CSP_EXTRA_SCRIPT_SRC:-}") ||
+    preloop_csp_fail "CSP_EXTRA_SCRIPT_SRC must be space-separated host sources such as https://cdn.example.com (got '${CSP_EXTRA_SCRIPT_SRC:-}')"
+preloop_csp_connect_extra=$(preloop_csp_sources CSP_EXTRA_CONNECT_SRC "${CSP_EXTRA_CONNECT_SRC:-}") ||
+    preloop_csp_fail "CSP_EXTRA_CONNECT_SRC must be space-separated host sources such as https://events.example.com (got '${CSP_EXTRA_CONNECT_SRC:-}')"
+
+PRELOOP_CSP_SCRIPT_SRC="'self'${preloop_csp_script_extra:+ $preloop_csp_script_extra}"
+PRELOOP_CSP_CONNECT_SRC="'self' ws: wss: data:${preloop_csp_connect_extra:+ $preloop_csp_connect_extra}"
+export PRELOOP_CSP_SCRIPT_SRC PRELOOP_CSP_CONNECT_SRC
+
+unset -f preloop_csp_fail preloop_csp_sources
+unset preloop_csp_source preloop_csp_list preloop_csp_script_extra preloop_csp_connect_extra

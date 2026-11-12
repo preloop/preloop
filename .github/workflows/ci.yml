@@ -743,6 +743,12 @@ jobs:
       - name: Run tests
         run: npm run test
 
+      # Builds the console with a SaaS fixture brand and loads every route
+      # under the enforced Content-Security-Policy (#2280), analytics off and
+      # on; fails on any CSP violation.
+      - name: CSP violation sweep
+        run: npm run test:csp
+
   # ==========================================================================
   # Runtime Plugin Tests (Hermes + OpenClaw)
   # ==========================================================================
