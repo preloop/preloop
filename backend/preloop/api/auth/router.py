@@ -1027,8 +1027,13 @@ async def forgot_password(
     Returns:
         The same neutral message whether or not the address is registered.
     """
-    check_resend_rate_limit(
-        get_client_ip(request) or "", reset_data.email.strip().lower()
+    from starlette.concurrency import run_in_threadpool
+
+    # The shared limiter does store I/O; keep it off the event loop.
+    await run_in_threadpool(
+        check_resend_rate_limit,
+        get_client_ip(request) or "",
+        reset_data.email.strip().lower(),
     )
     for person in crud_person.list_by_email(db, email=reset_data.email):
         if person.identity_status == "quarantined":

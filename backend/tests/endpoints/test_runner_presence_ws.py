@@ -207,3 +207,48 @@ def test_rest_runner_response_carries_presence(
     for body in (detail.json(), row):
         assert body["presence"] == "asleep"
         assert body["presence_since"] is not None
+
+
+@pytest.mark.asyncio
+async def test_sleep_holds_a_remote_session_and_wake_resumes_it(
+    db_session: Session, ws_runner: models.FlowRunner, test_user, monkeypatch
+) -> None:
+    """#1509 over the websocket: going_to_sleep, a held turn, then a wake."""
+    from preloop.services import runner_sessions as svc
+
+    row = svc.request_session(
+        db_session,
+        runner=ws_runner,
+        actor=test_user,
+        harness="copilot_cli",
+        model=None,
+        workspace={"kind": "authorized_directory", "id": "dir_1"},
+    )
+    svc.apply_runner_session_message(
+        db_session,
+        ws_runner,
+        {"type": "session_state", "remote_session_id": str(row.id), "state": "idle"},
+    )
+    websocket, _ = _socket(
+        monkeypatch,
+        ws_runner,
+        [{"type": "heartbeat", "concurrency": 1}, {"type": "going_to_sleep"}],
+        [],
+    )
+    await runners.runner_ws(websocket, ws_runner.id, db_session)
+    db_session.expire_all()
+    row = db_session.get(models.RunnerRemoteSession, row.id)
+    assert row.state == "runner_away"
+    turn_id = svc.queue_turn(db_session, row, actor=test_user, text="go on")
+
+    sent: List[Dict[str, Any]] = []
+    saved = _fresh(db_session, ws_runner.id)
+    websocket, _ = _socket(
+        monkeypatch, saved, [{"type": "heartbeat", "concurrency": 1}], sent
+    )
+    await runners.runner_ws(websocket, ws_runner.id, db_session)
+    db_session.expire_all()
+    row = db_session.get(models.RunnerRemoteSession, row.id)
+    assert row.state == "idle"
+    turns = [m for m in sent if m.get("type") == "session_turn"]
+    assert [m["turn_id"] for m in turns] == [turn_id]

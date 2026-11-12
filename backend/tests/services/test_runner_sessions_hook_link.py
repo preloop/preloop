@@ -624,5 +624,6 @@ def test_sweeper_end_folds_a_late_sibling(db_session, runner, test_user):
     assert svc.sweep_runner_sessions(db_session, now=later) == 1
 
     db_session.refresh(row)
-    assert row.end_reason == "runner_offline"
+    # A started session whose runner stayed away past the window (#1509).
+    assert row.end_reason == "runner_away_timeout"
     _only_session_ended(db_session, row)

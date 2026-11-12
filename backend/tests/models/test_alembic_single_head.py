@@ -575,4 +575,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert retire.down_revision == "20261203_session_keys_idx"
     dispatch_sink = script.get_revision("20261205_ci_dispatch_sink")
     assert dispatch_sink.down_revision == "20261204_ci_principal_retire"
-    assert script.get_heads() == ["20261205_ci_dispatch_sink"]
+    away_since = script.get_revision("20261206_session_away_since")
+    assert away_since.down_revision == "20261205_ci_dispatch_sink"
+    assert script.get_heads() == ["20261206_session_away_since"]

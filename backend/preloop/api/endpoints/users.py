@@ -439,6 +439,45 @@ def update_user(
     return _build_admin_user_response(db, updated_user)
 
 
+@router.post("/users/{user_id}/sessions/revoke-all")
+@require_permission("manage_users")
+def revoke_member_sessions(
+    user_id: UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Session = Depends(get_db_session),
+) -> dict[str, int]:
+    """Sign a member out of this account without changing other memberships.
+
+    JWT generations, CLI session revocation and the audit record commit
+    together. API keys and runner credentials remain independently managed.
+    """
+    from preloop.models.crud import crud_cli_session
+    from preloop.services.auth_audit import record_auth_event
+
+    user = crud_user.get(db, id=user_id, account_id=str(current_user.account_id))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        generation = crud_user.bump_auth_generation(
+            db, user_id, fanout=False, commit=False
+        )
+        crud_cli_session.revoke_all(db, user_id=user_id, commit=False)
+        record_auth_event(
+            db,
+            action="auth.sessions.revoked",
+            user=current_user,
+            resource_type="user",
+            resource_id=user_id,
+            details={"reason_code": "admin_member_sign_out"},
+            commit=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"auth_generation": generation}
+
+
 @router.post("/users/{user_id}/deactivate", status_code=status.HTTP_204_NO_CONTENT)
 @require_permission("manage_users")
 def deactivate_user(

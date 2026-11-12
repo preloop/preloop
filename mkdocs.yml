@@ -195,6 +195,7 @@ nav:
 
   - Sessions, search and audit:
       - Fleet Map: guide/fleet-map.md
+      - Device fleet: guide/device-fleet.md
       - Session artifacts: guide/artifacts.md
       - Session search for agents: guide/agent-session-search.md
       - Saved session searches: guide/session-saved-searches.md

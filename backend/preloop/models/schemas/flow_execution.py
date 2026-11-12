@@ -311,7 +311,7 @@ class FlowExecutionBase(BaseModel):
         description=(
             "Why a harness-routed run (agent_config.harness) is waiting, "
             "failed or fell back: no_runner_with_harness, harness_signed_out, "
-            "harness_disabled, model_not_available, runner_offline, "
+            "harness_disabled, model_not_available, runner_offline, runner_asleep, "
             "owner_has_no_runner, queue_timeout, fell_back_to_server. Null "
             "once a runner took the run and for every other execution."
         ),
@@ -481,7 +481,7 @@ class FlowExecutionListResponse(ExecutionModelProjection):
         description=(
             "Why a harness-routed run (agent_config.harness) is waiting, "
             "failed or fell back: no_runner_with_harness, harness_signed_out, "
-            "harness_disabled, model_not_available, runner_offline, "
+            "harness_disabled, model_not_available, runner_offline, runner_asleep, "
             "owner_has_no_runner, queue_timeout, fell_back_to_server. Null "
             "once a runner took the run and for every other execution."
         ),

@@ -38,6 +38,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _watch_user(websocket: WebSocket, user: models.User) -> str | None:
+    """Track the credential actually used by header/query authentication."""
+    token = _bearer_token(websocket) or websocket.query_params.get("token")
+    return manager.watch_user_connection(websocket, user, token)
+
+
 async def _resolve_token_user(token: str) -> Optional[models.User]:
     """Validate a token using a short-lived database session."""
 
@@ -256,6 +262,7 @@ async def websocket_endpoint(websocket: WebSocket):
         f"(connection_id={connection_id}, type={client_type})"
     )
 
+    revocation_id = _watch_user(websocket, user)
     try:
         while True:
             # Wait for a message from the client (e.g., a pong response)
@@ -304,6 +311,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Error in WebSocket session {session.id}: {e}", exc_info=True)
     finally:
+        await manager.unwatch_user_connection(revocation_id)
         manager.disconnect(connection_id)
         try:
             await session_manager.end_session(session.id)
@@ -394,6 +402,7 @@ async def flow_execution_websocket(
     # Connect to NATS event bus
     event_bus = EventBus()
     nats_sub = None
+    revocation_id = _watch_user(websocket, user)
 
     try:
         await event_bus.connect()
@@ -508,6 +517,7 @@ async def flow_execution_websocket(
         await websocket.send_json({"error": f"Connection error: {e}"})
 
     finally:
+        await manager.unwatch_user_connection(revocation_id)
         if "send_lock" in locals() and not snapshot_sent and send_lock.locked():
             send_lock.release()
         # Cleanup
@@ -588,6 +598,7 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
     ready = asyncio.Event()
     stopped = asyncio.Event()
     send_lock = asyncio.Lock()
+    revocation_id = _watch_user(websocket, user)
 
     async def forward(msg: Msg) -> None:
         if stopped.is_set():
@@ -667,6 +678,7 @@ async def flow_lifecycle_websocket(websocket: WebSocket, flow_id: uuid.UUID) -> 
     except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     finally:
+        await manager.unwatch_user_connection(revocation_id)
         ready.set()
         if subscription is not None:
             await subscription.unsubscribe()
@@ -726,6 +738,7 @@ async def unified_websocket(websocket: WebSocket):
     # Start heartbeat monitoring
     heartbeat_task = None
     manager_connection_id = None
+    revocation_id = None
 
     try:
         # Register connection with the existing WebSocket manager for broadcast compatibility
@@ -734,6 +747,7 @@ async def unified_websocket(websocket: WebSocket):
                 websocket, str(user.account_id)
             )
             await _set_topic_visibility(manager_connection_id, user)
+            revocation_id = _watch_user(websocket, user)
         else:
             # For anonymous users, register without account filtering
             manager_connection_id = str(session.connection_id)
@@ -806,6 +820,8 @@ async def unified_websocket(websocket: WebSocket):
 
                     await session_manager.upgrade_session(session.id, auth_user)
                     user = auth_user
+                    await manager.unwatch_user_connection(revocation_id)
+                    revocation_id = None
 
                     # Re-register with manager for account-based broadcasts
                     subscribed_topics = (
@@ -826,6 +842,9 @@ async def unified_websocket(websocket: WebSocket):
                         websocket, str(user.account_id)
                     )
                     await _set_topic_visibility(manager_connection_id, user)
+                    revocation_id = manager.watch_user_connection(
+                        websocket, user, token
+                    )
                     for topic in subscribed_topics:
                         manager.subscribe(manager_connection_id, topic)
 
@@ -1022,6 +1041,7 @@ async def unified_websocket(websocket: WebSocket):
             )
     finally:
         # Cleanup
+        await manager.unwatch_user_connection(revocation_id)
         if heartbeat_task:
             heartbeat_task.cancel()
 
@@ -1268,6 +1288,7 @@ async def runtime_session_websocket(websocket: WebSocket, runtime_session_id: st
         approvals_visible=decision["approvals_visible"],
     )
     await audit(SESSION_ATTACH_AUDIT_ATTACHED)
+    revocation_id = manager.watch_user_connection(websocket, user, token)
     try:
         await websocket.send_json(
             {
@@ -1293,5 +1314,6 @@ async def runtime_session_websocket(websocket: WebSocket, runtime_session_id: st
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        await manager.unwatch_user_connection(revocation_id)
         manager.disconnect(connection_id)
         await audit(SESSION_ATTACH_AUDIT_DETACHED)

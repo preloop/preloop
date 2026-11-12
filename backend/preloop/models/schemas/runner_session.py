@@ -30,6 +30,9 @@ RunnerSessionState = Literal[
     "failed",
 ]
 RUNNER_SESSION_STATES = frozenset(get_args(RunnerSessionState))
+#: Server-side state (#1509): the hosting runner is asleep or offline. Never
+#: sent by a runner, so it is not part of ``RunnerSessionState``.
+RUNNER_AWAY_STATE = "runner_away"
 TERMINAL_SESSION_STATES = frozenset({"ended", "failed"})
 
 RunnerSessionRejectionCode = Literal[
@@ -50,6 +53,7 @@ RUNNER_SESSION_END_REASONS = frozenset(
         "stopped_on_host",
         "idle_timeout",
         "runner_offline",
+        "runner_away_timeout",
         "killed_by_kill_switch",
         "harness_exited",
         "max_duration",

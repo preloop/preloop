@@ -684,7 +684,13 @@ def _runner_session_control_mode(
     """
     from preloop.models.crud import crud_runner_remote_session
     from preloop.services.runner_service import is_online
-    from preloop.services.runner_sessions import runner_session_turns_path
+    from preloop.services.runner_sessions import (
+        AWAY_FROM_STATES,
+        RUNNER_AWAY,
+        away_window_expired,
+        runner_away_window,
+        runner_session_turns_path,
+    )
 
     row = crud_runner_remote_session.get_by_runtime_session(
         db, account_id=account_id, runtime_session_id=session.id
@@ -705,6 +711,34 @@ def _runner_session_control_mode(
             kind=kind,
         )
     runner = db.get(models.FlowRunner, row.runner_id)
+    away = (
+        runner_away_window(row, runner)
+        if row.state in (RUNNER_AWAY, *AWAY_FROM_STATES)
+        else None
+    )
+    if row.state == RUNNER_AWAY and away_window_expired(row):
+        # Past the deadline a held turn would be dropped; keep the line as
+        # a note. The sweep ends the session.
+        return SessionControlMode(
+            "note",
+            "session_ended",
+            "the runner stayed away past the resume window; the session is "
+            "ending and a line is kept as a note",
+            kind=kind,
+        )
+    if away is not None:
+        # #1509: a started session keeps taking turns while its runner is
+        # asleep or offline; the turn is held and runs on reconnect.
+        until = away["resume_until"].replace(tzinfo=UTC).isoformat()
+        return SessionControlMode(
+            "command",
+            RUNNER_AWAY,
+            f"the runner hosting this session is {away['presence']}; a line is "
+            f"held and starts the next turn when it reconnects, if it does by "
+            f"{until}",
+            kind=kind,
+            send_path=runner_session_turns_path(session.id),
+        )
     if runner is None or not is_online(runner):
         return SessionControlMode(
             "note",

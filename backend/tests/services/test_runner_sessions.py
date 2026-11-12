@@ -343,19 +343,44 @@ def test_reconnect_report_for_server_ended_session_gets_stop(
     ]
 
 
+def _went_offline(db: Session, runner: models.FlowRunner) -> None:
+    """The socket dropped just now without a sleep signal."""
+    runner.status = "offline"
+    runner.last_heartbeat = datetime.now(timezone.utc)
+    db.add(runner)
+    db.commit()
+
+
 def test_sweeper_offline_runner_after_idle_timeout(db_session, runner, test_user):
     row = _start(db_session, runner, test_user)
     svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    _went_offline(db_session, runner)
+    now = _naive_now()
+    # Within the idle timeout the session waits as runner_away (#1509).
+    assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=10)) == 0
+    db_session.refresh(row)
+    assert row.state == "runner_away"
+    assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=31)) == 1
+    db_session.refresh(row)
+    assert row.state == "ended" and row.end_reason == "runner_away_timeout"
+    assert _actions(db_session, row)[-1] == "runner_session.ended"
+
+
+def test_sweeper_ends_unstarted_session_of_offline_runner(
+    db_session, runner, test_user
+):
+    """A start the runner never confirmed keeps the runner_offline end."""
+    row = _start(db_session, runner, test_user)
     runner.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
     db_session.add(runner)
     db_session.commit()
     now = _naive_now()
-    # Within the idle timeout a reconnecting runner resumes the session.
     assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=10)) == 0
+    db_session.refresh(row)
+    assert row.state == "requested"
     assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=31)) == 1
     db_session.refresh(row)
-    assert row.state == "ended" and row.end_reason == "runner_offline"
-    assert _actions(db_session, row)[-1] == "runner_session.ended"
+    assert row.end_reason == "runner_offline"
 
 
 def test_state_frame_lowers_idle_timeout_only(db_session, runner, test_user):
@@ -387,22 +412,29 @@ def test_sweeper_uses_host_lowered_idle_timeout(db_session, runner, test_user):
     svc.apply_runner_session_message(
         db_session, runner, _state(row, "idle", idle_timeout_seconds=60)
     )
-    runner.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
-    db_session.add(runner)
-    db_session.commit()
+    _went_offline(db_session, runner)
     now = _naive_now()
     assert svc.sweep_runner_sessions(db_session, now=now + timedelta(seconds=30)) == 0
     assert svc.sweep_runner_sessions(db_session, now=now + timedelta(seconds=90)) == 1
     db_session.refresh(row)
-    assert row.state == "ended" and row.end_reason == "runner_offline"
+    assert row.state == "ended" and row.end_reason == "runner_away_timeout"
 
 
 def test_sweeper_online_runner_gets_grace(db_session, runner, test_user):
     row = _start(db_session, runner, test_user)
     svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
     now = _naive_now()
-    assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=31)) == 0
-    assert svc.sweep_runner_sessions(db_session, now=now + timedelta(minutes=36)) == 1
+
+    def sweep_at(minutes: int) -> int:
+        # The runner keeps heartbeating, so it is online at the swept time.
+        when = now + timedelta(minutes=minutes)
+        runner.last_heartbeat = when.replace(tzinfo=timezone.utc)
+        db_session.add(runner)
+        db_session.commit()
+        return svc.sweep_runner_sessions(db_session, now=when)
+
+    assert sweep_at(31) == 0
+    assert sweep_at(36) == 1
     db_session.refresh(row)
     assert row.end_reason == "idle_timeout"
 
@@ -451,8 +483,20 @@ def test_control_mode_for_runner_sessions(db_session, runner, test_user):
     runner.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
     db_session.add(runner)
     db_session.commit()
-    offline = resolve_session_control_mode(
+    away = resolve_session_control_mode(
         db_session, account_id=str(test_user.account_id), session=runtime
+    )
+    # #1509: a started session holds the next turn for the sleeping runner.
+    assert (away.mode, away.reason_code) == ("command", "runner_away")
+    assert away.send_path == f"/api/v1/runner-sessions/{runtime.id}/turns"
+    assert "offline" in away.reason
+
+    unstarted = _start(db_session, runner, test_user)
+    unstarted_runtime = db_session.get(
+        models.RuntimeSession, unstarted.runtime_session_id
+    )
+    offline = resolve_session_control_mode(
+        db_session, account_id=str(test_user.account_id), session=unstarted_runtime
     )
     assert (offline.mode, offline.reason_code) == ("note", "control_offline")
 

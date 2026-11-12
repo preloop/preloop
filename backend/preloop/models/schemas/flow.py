@@ -1840,7 +1840,9 @@ class FlowBase(BaseModel):
         ``harness`` must map to ``agent_type`` (copilot_cli -> copilot,
         cursor_cli -> cursor); ``harness_fallback`` is queue,
         fallback_server (with ``fallback_model_identifier``) or fail;
-        ``harness_queue_timeout_seconds`` is 60..86400. An update without
+        ``harness_queue_timeout_seconds`` is 60..86400; ``offline_policy``
+        is fail or reroute (``queue`` is refused) and needs ``harness`` and
+        ``runner_id``. An update without
         ``agent_type`` is checked by the endpoint against the stored flow.
         """
         if isinstance(self, FlowResponse) or not isinstance(self.agent_config, dict):

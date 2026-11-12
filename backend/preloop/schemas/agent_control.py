@@ -158,6 +158,9 @@ class RuntimeSessionControlResponse(BaseModel):
             "no_control_plugin",
             "control_offline",
             "terminal_session",
+            # Command mode (#1509): the runner hosting a remote session is
+            # asleep or offline; a turn is held until it reconnects.
+            "runner_away",
         ]
     ] = None
     reason: Optional[str] = None
