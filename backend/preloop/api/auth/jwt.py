@@ -1101,6 +1101,7 @@ def get_user_from_token_if_valid_sync(
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
             reject_revoked_token(db_session, user, token_data)
+            user._auth_token_data = token_data
             return user
 
     except SQLAlchemyPoolTimeout:

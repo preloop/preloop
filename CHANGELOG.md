@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-12
+
 ### Fixed
 
+- console(security): the app shell (`/`, `/console/`, `/login` and every SPA
+  route), static assets, `/admin` and `/api/` responses now carry the security
+  headers. nginx dropped the server-level headers in every location that set
+  its own cache or CORS headers, so only prerendered pages had them (#2278).
+  The set is defined once per config (Docker snippet, Helm named template).
+  `Referrer-Policy` is now `strict-origin-when-cross-origin`, a
+  `Permissions-Policy` is added and the deprecated `X-XSS-Protection` is
+  removed. The `Content-Security-Policy` value is unchanged.
+- cli, gateway: Claude Code onboarded through Preloop now reaches newly
+  released Fable models. On Claude Code 2.1.321 and later (the first build
+  with a built-in fable default) with subscription OAuth, onboarding and
+  `preloop agents refresh` no longer write the `ANTHROPIC_DEFAULT_FABLE_MODEL`
+  pair or a Fable custom model option, so the picker follows Claude Code's own
+  newest Fable. Older builds, API-key accounts and `--pin-model-families` keep
+  the pair, and refresh now moves it to the newest admitted Fable release and
+  warns when a newer one is not admitted. Refresh imports a newer family
+  release from the live Anthropic list even when an older one is already in
+  the catalog, and appends it to the agent's allowed models when those name an
+  older release of the same family. The gateway's allowed-models 403 now names
+  the allowed older release and `preloop agents refresh` as the fix.
 - ci(release): the Windows Defender release gate no longer fails on detections
   unrelated to our artifacts, such as GitHub's hosted-runner provisioning
   daemon `provjobd.exe` flagged as Trojan:Win32/Gracing.I by signature
@@ -17,6 +39,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Detections touching the release artifacts, their file names or processes
   started from them, and loss of real-time protection still fail. The runner
   setup adds a single exclusion for the runner agent's temp daemon.
+
+### Added
+
+- security: `Strict-Transport-Security` from the console nginx, API and
+  gateway on requests that arrived over HTTPS (#2279). Configure with
+  `HSTS_ENABLED`, `HSTS_MAX_AGE`, `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD`
+  (Helm: `securityHeaders.hsts`). See `docs/operations/tls.md`.
+
+### Behavior changes
+
+- **HSTS is on by default for HTTPS installs.** After upgrading, any install
+  served over HTTPS sends `Strict-Transport-Security: max-age=31536000`, and
+  browsers then refuse plain HTTP for that host for a year. Set
+  `HSTS_ENABLED=false` (Helm `securityHeaders.hsts.enabled=false`) to opt out,
+  or a short `HSTS_MAX_AGE` for a first rollout. Plain-HTTP installs are
+  unaffected. The API refuses to start, and `helm template` fails, when
+  `HSTS_PRELOAD=true` is set without `HSTS_INCLUDE_SUBDOMAINS=true` and a
+  `HSTS_MAX_AGE` of at least 31536000.
+- **Console referrer and permissions headers.** `Referrer-Policy` changes from
+  `no-referrer-when-downgrade` to `strict-origin-when-cross-origin`, so
+  cross-origin requests no longer see full console URLs. `Permissions-Policy`
+  disables camera, geolocation, payment and USB, and limits the microphone to
+  the console's own origin.
 
 ## [1.0.1] - 2026-11-09
 

@@ -125,6 +125,7 @@ def _ws_env(db_session, token_user):
         sm.end_session = AsyncMock()
         sm.update_activity = MagicMock()
         mgr.connect_with_account = AsyncMock(return_value="m")
+        mgr.unwatch_user_connection = AsyncMock()
         mgr.get_subscriptions = MagicMock(return_value=set())
         mgr.active_connections = {}
         yield nats

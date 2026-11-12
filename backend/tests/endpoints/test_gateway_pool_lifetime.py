@@ -42,7 +42,10 @@ class GatewayPoolFixture:
 @pytest.fixture
 def gateway_pool(db_engine: Engine) -> Generator[GatewayPoolFixture, None, None]:
     """Seed committed synthetic rows visible to separate HTTP request sessions."""
-    engine = create_engine(db_engine.url, pool_size=1, max_overflow=0, pool_timeout=0.2)
+    # Concurrent response-policy reads briefly share this single slot. Allow
+    # ordinary query/scheduler latency on busy CI workers, while staying well
+    # below the provider's 10-second barriers so a retained connection fails.
+    engine = create_engine(db_engine.url, pool_size=1, max_overflow=0, pool_timeout=2)
     suffix = uuid4().hex
     with Session(engine) as db:
         account = crud_account.create(

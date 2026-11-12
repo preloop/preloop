@@ -638,7 +638,8 @@ def test_enforce_or_raise_names_model_and_allowlist_when_not_allowed(
     assert exc_info.value.message == (
         "Model 'vendor/alpha-chat' is not in this agent's allowed models "
         "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
-        "console or pick an allowed model."
+        "console or pick an allowed model, then run `preloop agents refresh` "
+        "to update the local model pins."
     )
 
 

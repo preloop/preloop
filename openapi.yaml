@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 1.0.1
+  version: 1.0.2
 paths:
   /api/v1/overview/bootstrap:
     get:
@@ -24516,6 +24516,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminUserResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/users/{user_id}/sessions/revoke-all:
+    post:
+      tags:
+      - Users
+      summary: Revoke Member Sessions
+      description: 'Sign a member out of this account without changing other memberships.
+
+
+        JWT generations, CLI session revocation and the audit record commit
+
+        together. API keys and runner credentials remain independently managed.'
+      operationId: revoke_member_sessions_api_v1_users__user_id__sessions_revoke_all_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+                title: Response Revoke Member Sessions Api V1 Users  User Id  Sessions
+                  Revoke All Post
         '422':
           description: Validation Error
           content:
