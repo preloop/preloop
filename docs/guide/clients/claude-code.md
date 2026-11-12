@@ -154,7 +154,11 @@ Useful flags (see `preloop agents onboard --help`):
 
 <!-- TODO screenshot: `claude-mcp-list-connected.png` -->
 
-Stock families follow Claude Code defaults. With subscription OAuth and Claude family autoregistration enabled, new Anthropic releases need no manual refresh: after a Claude Code update, the gateway registers first-used identifiers against the agent's subscription credential. Fable and custom models retain explicit mappings.
+Stock families follow Claude Code defaults. With subscription OAuth and Claude family autoregistration enabled, new Anthropic releases need no manual refresh: after a Claude Code update, the gateway registers first-used identifiers against the agent's subscription credential. Custom models retain explicit mappings.
+
+Fable follows the same rule on Claude Code 2.1.321 and later, the first build with a built-in fable default: with subscription OAuth and no `--pin-model-families`, onboarding and refresh write no `ANTHROPIC_DEFAULT_FABLE_MODEL` pair and no Fable custom model option, so `/model fable` asks for Claude Code's own newest Fable id and the gateway registers it on first use. On older Claude Code builds, API-key accounts, or with `--pin-model-families`, the Fable pair is kept; `preloop agents refresh` moves it to the newest Fable release the agent may use and prints a warning when a newer release exists that is not yet in the account catalog or the agent's allowed models.
+
+If the agent's allowed models name an older release of a Claude family (for example `anthropic/claude-fable-5-1`), refresh and onboarding add the newer release they bind and print the addition. An allowed-models list that does not name the family is left alone. The gateway does not change allowed models on its own; a request for a newer release of an allowed family is denied with a 403 that names the allowed release and suggests `preloop agents refresh`.
 
 Anthropic API-key credentials do not support this automatic registration. For API-key accounts, pass `--pin-model-families` on onboard or refresh to retain catalog-backed stock family pins, or run `preloop models sync` to populate new identifiers before selecting them. Use the same flag when gateway family autoregistration is disabled. The choice persists across later runs; `preloop agents refresh "claude code" --pin-model-families=false` clears it. With explicit pins enabled, refresh verifies family upgrades against the live provider list.
 

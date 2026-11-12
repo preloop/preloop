@@ -11,6 +11,12 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **Privacy:** Screened text is never logged or stored. Flagged chunks log score, outcome, matched rule names, and caller chunk coordinates only.
 *   **Rollout Semantics:** Shadow vs enforce and fail-closed error handling live on the caller's side (per QM's contract); Preloop only scores.
 
+## Response security headers
+
+*   **Header set:** The console nginx sends `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), microphone=(self)` (the talk composer records audio), `Content-Security-Policy` and, on HTTPS requests, `Strict-Transport-Security`, all with `always` so error responses carry them too. `X-XSS-Protection` is not sent: current browsers ignore it.
+*   **One definition per config:** nginx drops server-level `add_header` directives in any `location` or `if` block that declares its own `add_header`, which used to strip the set from the SPA shell, static assets, `/admin` and `/api/`. The set now lives in `frontend/docker/security-headers.conf` (Docker image, copied to `/etc/nginx/snippets/`) and the `preloop.nginxSecurityHeaders` named template in `helm/preloop/templates/_helpers.tpl`. Both configs include it at server level and in every block that sets headers. `backend/tests/test_nginx_security_headers.py` enforces coverage and Docker/Helm parity; `backend/tests/test_nginx_headers_smoke.py` (opt-in, `PRELOOP_NGINX_SMOKE=1`) checks real nginx responses.
+*   **HSTS:** An http-context `map` turns `X-Forwarded-Proto`/`$scheme` into `$preloop_hsts`, empty for plain HTTP or when disabled, so nginx omits the header. nginx hides upstream copies (`proxy_hide_header`) so proxied responses carry one. `preloop.api.middleware.hsts.HSTSMiddleware`, the outermost API/gateway middleware, adds the header on HTTPS requests that bypass the console and leaves an existing header alone. Settings and the preload guard are in [TLS](../operations/tls.md#strict-transport-security-hsts).
+
 ## Secret Service
 *   **Purpose:** Provider-agnostic custody and resolution of model credentials.
 *   **Built-in Backend:** `local_encrypted` for encrypted-at-rest credentials stored in Preloop-managed storage.

@@ -1,3 +1,37 @@
+# Strict-Transport-Security (#2279). TLS always terminates in front of this
+# nginx (it listens on 80 only), so "arrived over HTTPS" means the terminator
+# set X-Forwarded-Proto: https, or the scheme itself is https. The HSTS_*
+# values come from the environment through envsubst (defaults in the
+# Dockerfile). An empty $preloop_hsts means nginx sends no header.
+map "${HSTS_ENABLED}" $preloop_hsts_enabled {
+    "~*^(true|1|yes|on)$" 1;
+    default 0;
+}
+
+map "${HSTS_INCLUDE_SUBDOMAINS}" $preloop_hsts_subdomains {
+    "~*^(true|1|yes|on)$" "; includeSubDomains";
+    default "";
+}
+
+map "${HSTS_PRELOAD}" $preloop_hsts_preload {
+    "~*^(true|1|yes|on)$" "; preload";
+    default "";
+}
+
+# Referrer-Policy default for the shared header set. When a proxied upstream
+# already sent one (the API uses no-referrer where the URL carries an OAuth
+# code or a signed token), yield "" so nginx adds no second, weaker policy.
+map $upstream_http_referrer_policy $preloop_referrer_policy {
+    "" "strict-origin-when-cross-origin";
+    default "";
+}
+
+map "$preloop_hsts_enabled:$http_x_forwarded_proto:$scheme" $preloop_hsts {
+    "~*^1:https" "max-age=${HSTS_MAX_AGE}$preloop_hsts_subdomains$preloop_hsts_preload";
+    "~*^1:[^:]*:https$" "max-age=${HSTS_MAX_AGE}$preloop_hsts_subdomains$preloop_hsts_preload";
+    default "";
+}
+
 server {
     listen 80;
     server_name localhost;
@@ -9,12 +43,15 @@ server {
     # override with NGINX_RESOLVER when running outside Docker's default bridge.
     resolver ${NGINX_RESOLVER} ipv6=off valid=30s;
 
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+    # Security headers. Every block below that declares its own add_header
+    # must include this snippet again: nginx does not inherit add_header into
+    # such blocks (#2278).
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # Only this nginx sets HSTS; drop any copy from an upstream so proxied
+    # responses never carry two. No location may declare proxy_hide_header,
+    # or this server-level one stops applying there.
+    proxy_hide_header Strict-Transport-Security;
 
     # Root directory for static files
     root /usr/share/nginx/html;
@@ -73,6 +110,7 @@ server {
         proxy_read_timeout 300s;
 
         # CORS headers for API requests
+        include /etc/nginx/snippets/security-headers.conf;
         add_header 'Access-Control-Allow-Origin' '*' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
         add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
@@ -80,6 +118,7 @@ server {
 
         # Handle preflight requests
         if ($request_method = 'OPTIONS') {
+            include /etc/nginx/snippets/security-headers.conf;
             add_header 'Access-Control-Allow-Origin' '*';
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
             add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization';
@@ -245,12 +284,14 @@ server {
 
     # Missing assets must return 404, including extensions outside the regex below.
     location ^~ /admin/assets/ {
+        include /etc/nginx/snippets/security-headers.conf;
         expires 1y;
         add_header Cache-Control "public, immutable";
         try_files $uri =404;
     }
 
     location = /admin/index.html {
+        include /etc/nginx/snippets/security-headers.conf;
         # OSS images have no admin build. Stop here instead of redirecting again.
         try_files $uri =404;
         add_header Cache-Control "no-cache, no-store, must-revalidate";
@@ -260,6 +301,7 @@ server {
 
     # Static files with caching
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        include /etc/nginx/snippets/security-headers.conf;
         expires 1y;
         add_header Cache-Control "public, immutable";
         try_files $uri =404;
@@ -327,6 +369,7 @@ server {
 
     # Disable caching for index.html
     location = /index.html {
+        include /etc/nginx/snippets/security-headers.conf;
         add_header Cache-Control "no-cache, no-store, must-revalidate";
         add_header Pragma "no-cache";
         add_header Expires "0";

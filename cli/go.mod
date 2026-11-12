@@ -2,14 +2,14 @@ module github.com/preloop/preloop/cli
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/gorilla/websocket v1.5.3
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
 	github.com/yosuke-furukawa/json5 v0.1.1
 	github.com/zalando/go-keyring v0.2.8

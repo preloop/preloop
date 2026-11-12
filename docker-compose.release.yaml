@@ -82,6 +82,11 @@ services:
       # QR pairing and CORS. Set by scripts/install-oss.sh (PRELOOP_URL).
       PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # Strict-Transport-Security on HTTPS requests; see docs/operations/tls.md.
+      HSTS_ENABLED: ${HSTS_ENABLED:-true}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
+      HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
       # Public signup. Set false to close registration (invite-only); the
       # install script does this once the first user exists.
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
@@ -132,6 +137,11 @@ services:
       PRELOOP_SERVICE_ROLE: gateway
       PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # Strict-Transport-Security on HTTPS requests; see docs/operations/tls.md.
+      HSTS_ENABLED: ${HSTS_ENABLED:-true}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
+      HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
       # OTLP export (traces + metrics). Off unless OTLP_ENABLED and
       # OTLP_ENDPOINT are set in .env. See docs/guide/observability-otlp.md.
       OTLP_ENABLED: ${OTLP_ENABLED:-false}
@@ -234,6 +244,11 @@ services:
       # nobody can even log in.
       API_URL: http://api:8000
       GATEWAY_URL: http://gateway:8000
+      # Strict-Transport-Security on HTTPS requests; see docs/operations/tls.md.
+      HSTS_ENABLED: ${HSTS_ENABLED:-true}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
+      HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
 
 volumes:
   postgres-data:

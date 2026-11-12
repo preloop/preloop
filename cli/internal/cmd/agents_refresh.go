@@ -50,10 +50,17 @@ Per agent kind:
                 and family autoregistration enabled, new ids register on
                 first use after a Claude Code update. API-key accounts
                 should use --pin-model-families or run preloop models sync
-                before selecting newly released ids. The custom model
-                option and the Fable pair (Fable has no built-in Claude
-                Code default) are kept, and a non-family pin is preserved
-                verbatim while it stays authorized. Newly released Anthropic
+                before selecting newly released ids. On Claude Code
+                2.1.321+ with subscription OAuth the Fable pair (and a
+                Fable custom model option) is dropped too, because those
+                builds ship a built-in fable default. Older builds and
+                API-key accounts keep the Fable pair; it moves to the
+                newest Fable release the agent may use, with a warning
+                when a newer release is not yet admitted. A non-family pin
+                is preserved verbatim while it stays authorized. When the
+                agent's allowed models name an older release of a family,
+                the newer bound release is added to them (allowed models
+                that do not name the family are never widened). Newly released Anthropic
                 family models are still imported into the account catalog and
                 bound to this agent. Pass --pin-model-families (or onboard
                 with it) for API-key accounts or a gateway whose family
@@ -91,7 +98,7 @@ Examples:
 
 func init() {
 	agentsCmd.AddCommand(agentsRefreshCmd)
-	agentsRefreshCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; persisted in the local enrollment state)")
+	agentsRefreshCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; persisted in the local enrollment state)")
 }
 
 // managedModelRefreshOutcome is the result of rewriting one agent config's
@@ -319,16 +326,23 @@ func refreshAgentManagedModels(
 	// Claude Code first pulls newly released Anthropic family models into the
 	// account catalog (and binds them to this agent) with the same idempotent
 	// machinery onboarding uses, so the local rewrite below can see them.
+	options := claudeRefreshOptions{Live: live, PinModelFamilies: pinModelFamilies}
 	if isClaudeCodeAgent(agent) && client != nil {
 		accountModels, bindings = syncClaudeFamilyCatalogForRefresh(
-			client, agent, doc, accountModels, bindings, output,
+			client, agent, doc, accountModels, bindings, live, output,
 		)
+		options = claudeRefreshGovernance(client, agent, accountModels, bindings, options, output)
 	}
 
 	// Verify candidate family pins against the provider's live model list
 	// before writing them: a catalog row that Anthropic 404s must not become
 	// the pin. executeAgentsRefresh fetches that list once per run.
-	outcome, err := refreshManagedModelDocument(agent, doc, accountModels, bindings, live, pinModelFamilies)
+	outcome, err := refreshManagedModelDocumentWithOptions(agent, doc, accountModels, bindings, options)
+	if len(options.AllowlistAdded) > 0 {
+		outcome.Notes = append(outcome.Notes, fmt.Sprintf(
+			"allowed models: added %s", strings.Join(options.AllowlistAdded, ", "),
+		))
+	}
 	if err != nil || outcome.SkipReason != "" || outcome.Doc == nil {
 		return outcome, err
 	}
@@ -360,12 +374,84 @@ func refreshManagedModelDocument(
 	live claudeLiveModelList,
 	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
+	return refreshManagedModelDocumentWithOptions(
+		agent, doc, accountModels, bindings,
+		claudeRefreshOptions{Live: live, PinModelFamilies: pinModelFamilies},
+	)
+}
+
+// claudeRefreshOptions carries the Claude Code specific inputs of one
+// refresh: the live Anthropic list, the persisted pinning choice, the agent's
+// governance allowlist, and whether Fable follows Claude Code's own default.
+type claudeRefreshOptions struct {
+	Live             claudeLiveModelList
+	PinModelFamilies bool
+	// Allowed is the agent's governance allowed_models (empty means
+	// unrestricted or unknown). Family pins never point at a model it denies.
+	Allowed []string
+	// AllowlistAdded lists aliases this refresh appended to Allowed.
+	AllowlistAdded []string
+	// FableBuiltinDefault drops the Fable pair like the stock families.
+	FableBuiltinDefault bool
+}
+
+// claudeRefreshGovernance extends the agent's allowlist with newer releases of
+// families it already allows, records the resulting allowlist, and decides
+// whether Fable follows Claude Code's built-in default. Best effort: a
+// governance read failure leaves the allowlist unknown (no filtering).
+func claudeRefreshGovernance(
+	client *api.Client,
+	agent AgentConfig,
+	accountModels []aiModelResponse,
+	bindings []managedAgentModelBindingSummary,
+	options claudeRefreshOptions,
+	output io.Writer,
+) claudeRefreshOptions {
+	primary := findClaudeRefreshPrimaryModel(accountModels, bindings)
+	subscriptionOAuth := primary != nil &&
+		strings.EqualFold(strings.TrimSpace(primary.CredentialType), anthropicClaudeCodeOAuthCredentialType)
+	if subscriptionOAuth && !options.PinModelFamilies {
+		options.FableBuiltinDefault = claudeFableFollowsBuiltinDefault(
+			claudeCodeInstalledVersion(), subscriptionOAuth, options.PinModelFamilies,
+		)
+	}
+
+	managedAgent, err := getManagedAgentForDiscovered(client, agent)
+	if err != nil || managedAgent == nil {
+		return options
+	}
+	authorized := authorizedGatewayModelAliases(accountModels, bindings)
+	candidates := make([]string, 0, len(claudeModelFamilies))
+	for _, family := range claudeModelFamilies {
+		if alias := newestAuthorizedFamilyAlias(family, authorized); alias != "" {
+			candidates = append(candidates, alias)
+		}
+	}
+	added, allowed, err := extendAllowlistWithFamilySiblings(client, managedAgent.ID, candidates)
+	if err != nil {
+		fmt.Fprintf(output, "  Note: could not read or update this agent's allowed models: %s\n", firstErrorLine(err)) //nolint:errcheck
+	}
+	printAllowlistAdditions(output, added)
+	options.Allowed = allowed
+	options.AllowlistAdded = added
+	return options
+}
+
+// refreshManagedModelDocumentWithOptions is refreshManagedModelDocument with
+// the full Claude Code refresh inputs.
+func refreshManagedModelDocumentWithOptions(
+	agent AgentConfig,
+	doc map[string]interface{},
+	accountModels []aiModelResponse,
+	bindings []managedAgentModelBindingSummary,
+	options claudeRefreshOptions,
+) (managedModelRefreshOutcome, error) {
 	if isExtensionHarness(agent) {
 		return refreshHarnessModelDocument(agent, doc, accountModels, bindings)
 	}
 	switch {
 	case isClaudeCodeAgent(agent):
-		return refreshClaudeManagedModelDocumentWithLive(agent, doc, accountModels, bindings, live, pinModelFamilies)
+		return refreshClaudeManagedModelDocumentWithOptions(agent, doc, accountModels, bindings, options)
 	case isOpenCodeAgent(agent):
 		return refreshOpenCodeManagedModelDocument(agent, doc, accountModels, bindings)
 	case isOpenClawAgent(agent):
@@ -740,6 +826,27 @@ func refreshClaudeManagedModelDocumentWithLive(
 	live claudeLiveModelList,
 	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
+	return refreshClaudeManagedModelDocumentWithOptions(
+		agent, doc, accountModels, bindings,
+		claudeRefreshOptions{Live: live, PinModelFamilies: pinModelFamilies},
+	)
+}
+
+// refreshClaudeManagedModelDocumentWithOptions rewrites the Claude Code
+// model pins. Family pins are chosen from the aliases the agent is both
+// authorized for and admitted to by its governance allowlist; a newer family
+// release the agent cannot use yet produces a warning instead of a silent
+// stale pin.
+func refreshClaudeManagedModelDocumentWithOptions(
+	agent AgentConfig,
+	doc map[string]interface{},
+	accountModels []aiModelResponse,
+	bindings []managedAgentModelBindingSummary,
+	options claudeRefreshOptions,
+) (managedModelRefreshOutcome, error) {
+	live := options.Live
+	pinModelFamilies := options.PinModelFamilies
+	fableBuiltin := options.FableBuiltinDefault
 	env, ok := asObjectMap(doc["env"])
 	if !ok {
 		return managedModelRefreshOutcome{
@@ -770,6 +877,17 @@ func refreshClaudeManagedModelDocumentWithLive(
 	before := claudeManagedModelAliasesFromEnv(env)
 	warnings := []string{}
 	notes := []string{}
+	catalogAuthorized := authorized
+	if admitted := filterAliasesByAllowlist(authorized, options.Allowed, accountModels); len(admitted) > 0 {
+		authorized = admitted
+	} else {
+		// Never write an empty model config: when the allowlist admits none
+		// of the authorized aliases, refresh from the catalog set and say so.
+		warnings = append(warnings, fmt.Sprintf(
+			"this agent's allowed models (%s) admit none of its authorized models; refreshing from the catalog, but gateway requests will be denied until the allowed models are updated in the Preloop console",
+			formatAllowedModelsList(options.Allowed),
+		))
+	}
 
 	// Resolve every family pin first, with live verification, so the
 	// selection and the ANTHROPIC_DEFAULT_*_MODEL keys always agree. The
@@ -781,8 +899,15 @@ func refreshClaudeManagedModelDocumentWithLive(
 		alias, note := resolveClaudeFamilyPin(
 			family, lookupString(env, family.envKey), authorized, live,
 		)
-		if note != "" && (pinModelFamilies || !claudeFamilyIsStock(family)) {
+		if note != "" && (pinModelFamilies || !claudeFamilyIsStockWith(family, fableBuiltin)) {
 			notes = append(notes, note)
+		}
+		if pinModelFamilies || !claudeFamilyIsStockWith(family, fableBuiltin) {
+			if warning := claudeNewerFamilyNotAdmittedWarning(
+				family, alias, catalogAuthorized, options.Allowed, live,
+			); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 		if alias == "" {
 			continue
@@ -798,7 +923,7 @@ func refreshClaudeManagedModelDocumentWithLive(
 	removedStockPins := []string{}
 	if !pinModelFamilies {
 		for _, family := range claudeModelFamilies {
-			if !claudeFamilyIsStock(family) {
+			if !claudeFamilyIsStockWith(family, fableBuiltin) {
 				continue
 			}
 			if alias := strings.TrimSpace(lookupString(env, family.envKey)); alias != "" {
@@ -846,7 +971,11 @@ func refreshClaudeManagedModelDocumentWithLive(
 		}
 	}
 
-	plan := managedMCPEnrollmentPlan{Agent: agent, ManagedDocument: doc}
+	plan := managedMCPEnrollmentPlan{
+		Agent:                     agent,
+		ManagedDocument:           doc,
+		ClaudeFableBuiltinDefault: fableBuiltin,
+	}
 	plan, err := applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases, pinModelFamilies)
 	if err != nil {
 		return managedModelRefreshOutcome{}, err
@@ -899,6 +1028,7 @@ func syncClaudeFamilyCatalogForRefresh(
 	doc map[string]interface{},
 	accountModels []aiModelResponse,
 	bindings []managedAgentModelBindingSummary,
+	live claudeLiveModelList,
 	output io.Writer,
 ) ([]aiModelResponse, []managedAgentModelBindingSummary) {
 	if output == nil {
@@ -948,9 +1078,7 @@ func syncClaudeFamilyCatalogForRefresh(
 	for _, family := range claudeModelFamilies {
 		// Same resolution chain onboarding uses: agent bindings, account
 		// catalog, the live Anthropic models API, then the built-in GA table.
-		resolved := normalizeGatewayModelAlias(
-			resolveClaudeSelectionGatewayModelAlias(family.selector, accountModels, bindings),
-		)
+		resolved := claudeRefreshFamilyTargetAlias(family, accountModels, bindings, live)
 		if resolved == "" {
 			continue
 		}
@@ -1026,6 +1154,30 @@ func syncClaudeFamilyCatalogForRefresh(
 		}
 	}
 	return accountModels, bindings
+}
+
+// claudeRefreshFamilyTargetAlias resolves the alias refresh should import and
+// bind for one Claude family.
+//
+// resolveClaudeSelectionGatewayModelAlias is catalog-first: it only consults
+// the live Anthropic list when the catalog and bindings hold no row for the
+// family. Once an older release (claude-fable-5-1) was in the catalog, a new
+// release (claude-fable-5-2) was therefore never imported. A strictly newer id
+// from the live list, fetched once per refresh with the local Anthropic
+// credential, now wins over the catalog's newest row.
+func claudeRefreshFamilyTargetAlias(
+	family claudeModelFamily,
+	accountModels []aiModelResponse,
+	bindings []managedAgentModelBindingSummary,
+	live claudeLiveModelList,
+) string {
+	resolved := normalizeGatewayModelAlias(
+		resolveClaudeSelectionGatewayModelAlias(family.selector, accountModels, bindings),
+	)
+	if newer := newestFamilyAliasInLiveList(family, live); claudeFamilyAliasIsNewer(newer, resolved) {
+		return newer
+	}
+	return resolved
 }
 
 // findClaudeRefreshPrimaryModel picks the account model whose credential new
