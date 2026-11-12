@@ -40,7 +40,9 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    TypeVar,
 )
+from types import SimpleNamespace
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote as urllib_quote
@@ -177,6 +179,7 @@ from preloop.services.upstream_errors import (
     classify_recorded_error,
     classify_upstream_error,
     is_gateway_translation_error,
+    is_retryable_passthrough_rejection,
     is_retryable_upstream_failure,
 )
 from preloop.services.gateway_error_alerts import (
@@ -737,6 +740,65 @@ def _upstream_retry_delay_seconds(
 def _sleep_before_upstream_retry(seconds: float) -> None:
     """Sleep hook tests can patch without freezing the suite."""
     time.sleep(seconds)
+
+
+_PassthroughResultT = TypeVar("_PassthroughResultT")
+
+
+class _AnthropicPassthroughRejectionError(Exception):
+    """An Anthropic OAuth passthrough attempt answered with HTTP >= 400.
+
+    Carries the raw rejection (status, body, headers) so the retry loop can
+    decide before the error is normalized; normalization may raise an admin
+    alert, which only the final attempt is allowed to do. The upstream
+    response is already closed when this is raised.
+    """
+
+    def __init__(self, status_code: int, body_text: str, headers: Any) -> None:
+        self.status_code = status_code
+        self.body_text = body_text
+        self.headers = headers
+        # ``classify_upstream_error`` reads Retry-After from ``response``.
+        self.response = SimpleNamespace(headers=headers)
+        _, message, error_type = _parse_anthropic_passthrough_error_body(
+            status_code, body_text
+        )
+        self.message = message
+        self.error_type = error_type
+        super().__init__(message)
+
+
+def _parse_anthropic_passthrough_error_body(
+    status_code: Any, body_text: str
+) -> tuple[int, str, Optional[str]]:
+    """Normalize an Anthropic error status and pull message/type from its body.
+
+    Args:
+        status_code: Upstream HTTP status (coerced to a 4xx/5xx int).
+        body_text: Raw upstream response body.
+
+    Returns:
+        Tuple of (status code, message, error type or None).
+    """
+    try:
+        status = int(status_code)
+    except (TypeError, ValueError):
+        status = 502
+    if status < 400 or status > 599:
+        status = 502
+    message = (body_text or "").strip() or "Anthropic upstream error"
+    error_type: Optional[str] = None
+    try:
+        parsed = json.loads(body_text)
+        error = parsed.get("error") if isinstance(parsed, dict) else None
+        if isinstance(error, dict):
+            message = str(error.get("message") or message)
+            raw_type = error.get("type")
+            error_type = str(raw_type) if raw_type else None
+    except (TypeError, ValueError):
+        # Body is not JSON; fall back to the generic upstream message.
+        pass
+    return status, message, error_type
 
 
 _ANTHROPIC_OAUTH_ENV_LOCK = threading.Lock()
@@ -7229,24 +7291,9 @@ class OpenAIGatewayService:
         status_code: int, body_text: str, *, ai_model: Optional[GatewayModel] = None
     ) -> ModelGatewayAPIError:
         """Map an upstream Anthropic error body to a gateway error."""
-        try:
-            status_code = int(status_code)
-        except (TypeError, ValueError):
-            status_code = 502
-        if status_code < 400 or status_code > 599:
-            status_code = 502
-        message = (body_text or "").strip() or "Anthropic upstream error"
-        error_type: Optional[str] = None
-        try:
-            parsed = json.loads(body_text)
-            error = parsed.get("error") if isinstance(parsed, dict) else None
-            if isinstance(error, dict):
-                message = str(error.get("message") or message)
-                raw_type = error.get("type")
-                error_type = str(raw_type) if raw_type else None
-        except (TypeError, ValueError):
-            # Body is not JSON; fall back to the generic upstream message.
-            pass
+        status_code, message, error_type = _parse_anthropic_passthrough_error_body(
+            status_code, body_text
+        )
         # A local client renewal revokes the gateway's copy at once. The raw
         # upstream text makes the client ask for /login although the local
         # login is fine; name the sync that recovers the shared lineage.
@@ -7309,45 +7356,51 @@ class OpenAIGatewayService:
 
         guard_unmetered_hosted_call(ai_model, account_id=self.auth_context.account_id)
         self.release_db_for_wait()
-        try:
-            response = _anthropic_passthrough_http_client().post(
-                url,
-                headers=headers,
-                json=body,
-            )
-        except httpx.HTTPError as exc:
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=502,
-                message=f"Gateway upstream error: {exc}",
-            ) from exc
-        try:
-            # Anthropic sends ratelimit headers on successes too; that success
-            # signal is the subscription headroom observation (#136).
-            self._capture_rate_limit_headers(response.headers)
-            if response.status_code >= 400:
-                raise self._anthropic_passthrough_upstream_error(
-                    response.status_code, response.text, ai_model=ai_model
-                )
+
+        def _attempt() -> Dict[str, Any]:
             try:
-                response_payload = response.json()
-            except ValueError as exc:
-                raise ModelGatewayAPIError(
-                    provider="anthropic",
-                    status_code=502,
-                    message="Gateway upstream error: invalid JSON from upstream",
-                ) from exc
-            if not isinstance(response_payload, dict):
-                raise ModelGatewayAPIError(
-                    provider="anthropic",
-                    status_code=502,
-                    message=(
-                        "Gateway upstream error: unexpected upstream response shape"
-                    ),
+                response = _anthropic_passthrough_http_client().post(
+                    url,
+                    headers=headers,
+                    json=body,
                 )
-            return response_payload
-        finally:
-            response.close()
+            except httpx.HTTPError as exc:
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message=f"Gateway upstream error: {exc}",
+                ) from exc
+            try:
+                # Anthropic sends ratelimit headers on successes too; that
+                # success signal is the subscription headroom observation (#136).
+                self._capture_rate_limit_headers(response.headers)
+                if response.status_code >= 400:
+                    raise _AnthropicPassthroughRejectionError(
+                        response.status_code, response.text, response.headers
+                    )
+                try:
+                    response_payload = response.json()
+                except ValueError as exc:
+                    raise ModelGatewayAPIError(
+                        provider="anthropic",
+                        status_code=502,
+                        message="Gateway upstream error: invalid JSON from upstream",
+                    ) from exc
+                if not isinstance(response_payload, dict):
+                    raise ModelGatewayAPIError(
+                        provider="anthropic",
+                        status_code=502,
+                        message=(
+                            "Gateway upstream error: unexpected upstream response shape"
+                        ),
+                    )
+                return response_payload
+            finally:
+                response.close()
+
+        return self._run_anthropic_oauth_passthrough_attempts(
+            _attempt, ai_model=ai_model
+        )
 
     def _open_anthropic_oauth_passthrough_stream(
         self,
@@ -7375,27 +7428,105 @@ class OpenAIGatewayService:
         guard_unmetered_hosted_call(ai_model, account_id=self.auth_context.account_id)
         self.release_db_for_wait()
         client = _anthropic_passthrough_http_client()
-        try:
-            request = client.build_request("POST", url, headers=headers, json=body)
-            response = client.send(request, stream=True)
-        except httpx.HTTPError as exc:
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=502,
-                message=f"Gateway upstream error: {exc}",
-            ) from exc
-        self._capture_rate_limit_headers(response.headers)
-        if response.status_code >= 400:
+
+        def _attempt() -> tuple[httpx.Client, httpx.Response]:
             try:
-                body_text = response.read().decode("utf-8", errors="replace")
+                request = client.build_request("POST", url, headers=headers, json=body)
+                response = client.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message=f"Gateway upstream error: {exc}",
+                ) from exc
+            self._capture_rate_limit_headers(response.headers)
+            if response.status_code >= 400:
+                try:
+                    body_text = response.read().decode("utf-8", errors="replace")
+                except Exception:
+                    body_text = ""
+                finally:
+                    response.close()
+                raise _AnthropicPassthroughRejectionError(
+                    response.status_code, body_text, response.headers
+                )
+            # Accepted: from here on the stream is never reopened, so a
+            # first-read failure or in-band error cannot replay output.
+            return client, response
+
+        return self._run_anthropic_oauth_passthrough_attempts(
+            _attempt, ai_model=ai_model
+        )
+
+    def _run_anthropic_oauth_passthrough_attempts(
+        self,
+        attempt: Callable[[], _PassthroughResultT],
+        *,
+        ai_model: Optional[GatewayModel] = None,
+    ) -> _PassthroughResultT:
+        """Run one passthrough attempt budget, retrying explicit transient rejections.
+
+        Retries only HTTP 502/503/504/529 rejections that
+        ``is_retryable_passthrough_rejection`` allows, within the shared
+        ``MODEL_GATEWAY_UPSTREAM_RETRY_*`` budget and backoff. Transport
+        failures and every other error surface on the first occurrence (the
+        upstream may already have processed the request). Intermediate
+        rejections are never normalized, so they raise no admin alert; the
+        final one goes through the usual mapper and alert path.
+
+        Args:
+            attempt: Zero-arg callable that performs one upstream request and
+                raises ``_AnthropicPassthroughRejectionError`` on HTTP >= 400.
+            ai_model: Resolved upstream model for error mapping.
+
+        Returns:
+            The value returned by the first accepted attempt.
+
+        Raises:
+            ModelGatewayAPIError: The final attempt's mapped error.
+        """
+        max_attempts = _upstream_retry_max_attempts()
+        for attempt_index in range(max_attempts):
+            if attempt_index:
+                # A later attempt's outcome must not carry the failed
+                # attempt's relayed headers or rate-limit observation.
+                self.upstream_response_headers = None
+                self._last_rate_limit_snapshot = None
+            try:
+                result = attempt()
+            except _AnthropicPassthroughRejectionError as rejection:
+                if attempt_index >= max_attempts - 1 or (
+                    not is_retryable_passthrough_rejection(rejection, rejection.headers)
+                ):
+                    self._last_upstream_retry_count += attempt_index
+                    raise self._anthropic_passthrough_upstream_error(
+                        rejection.status_code,
+                        rejection.body_text,
+                        ai_model=ai_model,
+                    ) from None
+                delay = _upstream_retry_delay_seconds(
+                    attempt_index,
+                    retry_after_seconds=_upstream_retry_after_hint_seconds(rejection),
+                )
+                logger.warning(
+                    "Retrying Anthropic OAuth passthrough after transient upstream "
+                    "rejection (attempt %s/%s, status=%s, error_type=%s, "
+                    "delay=%.2fs)",
+                    attempt_index + 1,
+                    max_attempts,
+                    rejection.status_code,
+                    rejection.error_type,
+                    delay,
+                )
+                self.release_db_for_wait(ai_model)
+                _sleep_before_upstream_retry(delay)
+                continue
             except Exception:
-                body_text = ""
-            finally:
-                response.close()
-            raise self._anthropic_passthrough_upstream_error(
-                response.status_code, body_text, ai_model=ai_model
-            )
-        return client, response
+                self._last_upstream_retry_count += attempt_index
+                raise
+            self._last_upstream_retry_count += attempt_index
+            return result
+        raise AssertionError("unreachable: passthrough attempt budget exhausted")
 
     def _anthropic_passthrough_event_stream(
         self,

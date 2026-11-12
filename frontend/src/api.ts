@@ -6260,6 +6260,7 @@ export interface RuntimeSessionControl {
     | 'no_control_plugin'
     | 'control_offline'
     | 'terminal_session'
+    | 'runner_away'
     | null;
   reason: string | null;
   /** `turn` when a line starts an agent turn, `note` when it is a note. */
@@ -7934,6 +7935,19 @@ export async function updateUser(
     throw new Error(extractErrorMessage(errorData, 'Failed to update user'));
   }
   return response.json();
+}
+
+export async function revokeMemberSessions(userId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/users/${userId}/sessions/revoke-all`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to sign member out')
+    );
+  }
 }
 
 export async function deactivateUser(userId: string): Promise<void> {

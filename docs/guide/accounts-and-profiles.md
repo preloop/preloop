@@ -84,6 +84,35 @@ falls back to another account's tokens.
 The gated groups are hidden from `preloop --help` unless the server reports
 their capability. Running one anyway prints which capability is off.
 
+## Sign out everywhere
+
+In **Settings → Security**, choose **Sign out everywhere** to end your
+browser and CLI login sessions across all your account memberships. The CLI
+equivalent is `preloop auth logout --all`. Existing access and refresh tokens
+stop working, and you can sign in again with your normal sign-in method.
+
+To sign another member out of the current account, open **Settings → Users**,
+use their row's action menu and choose **Sign out everywhere**. The confirmation
+names the member and explains the scope. With role-based access control, this
+requires `manage_users`, the same permission used to deactivate a membership.
+In the open-source edition, every active account member has these permissions.
+The action is audited and leaves the membership active. Sessions in the
+person's other accounts remain valid.
+
+Live browser connections and CLI session viewers close when the revocation
+event arrives. If delivery is unavailable, they check again every minute;
+database outages can delay that check. The socket closes with code `4401`,
+and signing in again creates a new valid session.
+
+API keys, managed-agent credentials and runner tokens are separate: signing
+someone out does not rotate or revoke them or stop their runners. Manage those
+credentials separately when needed. Removing a member is a different action
+that also revokes their account access and personal credentials.
+
+Security settings list individual CLI logins and let you revoke one. Browser
+sessions are not listed individually; **Sign out everywhere** ends all of them
+within the action's scope.
+
 ## Endpoint contract for the extension
 
 All paths are under `/api/v1`. A 404 on a collection means "capability off" to

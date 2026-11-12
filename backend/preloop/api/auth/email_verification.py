@@ -22,7 +22,6 @@ anonymous resends from the login page.
 """
 
 import logging
-import time
 from typing import Dict, Optional
 
 from fastapi import HTTPException, status
@@ -30,6 +29,11 @@ from fastapi import HTTPException, status
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_person
+from preloop.services.rate_limit import (
+    AUTH_EMAIL_SEND,
+    enforce_all_or_none,
+    reset_memory_store,
+)
 from sqlalchemy.orm import Session
 
 UserModel = models.User
@@ -46,8 +50,6 @@ EMAIL_NOT_VERIFIED_MESSAGE = (
 RESEND_RATE_LIMITED_MESSAGE = (
     "Too many verification emails requested. Wait a few minutes and try again."
 )
-
-_resend_buckets: dict[str, list[float]] = {}
 
 
 def resend_max_per_window() -> int:
@@ -140,12 +142,19 @@ def enforce_verified_email(user: UserModel, db: Session | None = None) -> None:
 
 
 def reset_resend_rate_limit() -> None:
-    """Drop every resend bucket. For tests and for a process restart."""
-    _resend_buckets.clear()
+    """Drop the in-process limiter counters (tests).
+
+    The resend budget lives in the shared limiter (rule ``auth.email_send``);
+    with the Postgres store a restart no longer resets it.
+    """
+    reset_memory_store()
 
 
 def check_resend_rate_limit(*keys: str) -> None:
     """Consume one resend from each supplied bucket key.
+
+    Blocking (the shared store does I/O); async callers go through the
+    threadpool.
 
     Args:
         keys: Bucket identities, e.g. the client IP and the target address.
@@ -153,31 +162,13 @@ def check_resend_rate_limit(*keys: str) -> None:
             into one bucket.
 
     Raises:
-        HTTPException: 429 when any key is out of budget. No key is charged
-            when one refuses, so a refused request does not eat the budget.
+        HTTPException: 429 ``rate_limited`` with ``Retry-After`` when any key
+            is out of budget. No key is charged when one refuses, so a
+            refused request does not eat the budget.
     """
-    now = time.monotonic()
-    max_per_window = resend_max_per_window()
-    window_start = now - resend_window_seconds()
-    live = {
-        key: [t for t in _resend_buckets.get(key, []) if t > window_start]
-        for key in keys
-        if key
-    }
-    for key, bucket in live.items():
-        if len(bucket) >= max_per_window:
-            _resend_buckets[key] = bucket
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=RESEND_RATE_LIMITED_MESSAGE,
-            )
-    for key, bucket in live.items():
-        bucket.append(now)
-        _resend_buckets[key] = bucket
-
-    # Opportunistic cleanup so the map cannot grow without bound.
-    if len(_resend_buckets) > 10_000:
-        for stale in [
-            k for k, v in _resend_buckets.items() if not v or v[-1] <= window_start
-        ]:
-            _resend_buckets.pop(stale, None)
+    enforce_all_or_none(
+        AUTH_EMAIL_SEND,
+        keys,
+        default=(resend_max_per_window(), resend_window_seconds()),
+        detail=RESEND_RATE_LIMITED_MESSAGE,
+    )

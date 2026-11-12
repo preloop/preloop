@@ -174,6 +174,25 @@ describe('runner-session-controls', () => {
     expect(posts('/turns')).to.have.length(0);
   });
 
+  it('holds the turn for a sleeping laptop instead of an error', async () => {
+    controlBody = control({
+      reason_code: 'runner_away',
+      reason: 'the runner hosting this session is asleep',
+    });
+    const el = await mount();
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="control-mode-hint"]')!
+        .textContent
+    ).to.contain('Your laptop is asleep or offline: your message is held');
+    const sent = sinon.spy();
+    el.addEventListener(RUNNER_TURN_SENT_EVENT, sent);
+    const box = await type(el, 'Continue when you wake');
+    box.shadowRoot.querySelector('[data-testid="note-send"]').click();
+    await waitUntil(() => sent.called, 'turn sent');
+    expect(posts(`/runner-sessions/${RUNNER}/turns`)).to.have.length(1);
+    expect(posts('/operator-notes')).to.have.length(0);
+  });
+
   it('ignores a command send path outside the runner turn endpoint', async () => {
     controlBody = control({
       send_path: `/api/v1/agents/${RUNNER}/control/prompts`,

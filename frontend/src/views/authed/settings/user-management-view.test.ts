@@ -31,6 +31,8 @@ describe('UserManagementView', () => {
       usersFail?: boolean;
       createFails?: boolean;
       advancedRoles?: boolean;
+      revokeFails?: boolean;
+      permissions?: string[];
     } = {}
   ) {
     const featureEnabled = opts.featureEnabled !== false;
@@ -39,10 +41,13 @@ describe('UserManagementView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('/auth/users/me')) {
-          return new Response(JSON.stringify({ permissions: null }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({ permissions: opts.permissions ?? null }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
         }
         const method = (init?.method || 'GET').toUpperCase();
 
@@ -68,6 +73,12 @@ describe('UserManagementView', () => {
 
         if (url.includes('/deactivate') && method === 'POST') {
           return json({ ...opts.users?.[0], is_active: false });
+        }
+
+        if (url.endsWith('/sessions/revoke-all') && method === 'POST') {
+          return opts.revokeFails
+            ? json({ detail: 'Could not end sessions' }, 500)
+            : json({ auth_generation: 1 });
         }
 
         if (url.includes('/api/v1/users') && method === 'POST') {
@@ -108,6 +119,7 @@ describe('UserManagementView', () => {
     localStorage.clear();
     invalidateApiCaches();
     resetConfirmDialogForTests();
+    document.querySelectorAll('sl-alert').forEach((alert) => alert.remove());
   });
 
   it('shows the not-available message when feature is disabled', async () => {
@@ -381,6 +393,69 @@ describe('UserManagementView', () => {
       .getCalls()
       .filter((call) => String(call.args[0]).includes('/deactivate'));
 
+  it('confirms account-scoped sign-out and reports success after the request', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const element = await mountWithUser();
+    const action = element.shadowRoot!.querySelector(
+      '[data-action="revoke-sessions"]'
+    ) as HTMLElement;
+    const requests = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).endsWith('/users/user-1/sessions/revoke-all')
+        );
+    action.click();
+    const prompt = await answerConfirmDialog(false);
+    expect(prompt).to.contain('Sign this member out everywhere?');
+    expect(prompt).to.contain('this account on all devices');
+    expect(prompt).to.contain(
+      'Other account memberships, API keys and runners are unaffected'
+    );
+    expect(requests()).to.have.length(0);
+    action.click();
+    await answerConfirmDialog(true);
+    await waitUntil(() => requests().length === 1);
+    expect(requests()[0].args[1].method).to.equal('POST');
+    await waitUntil(() =>
+      Boolean(document.querySelector('sl-alert[variant="success"]'))
+    );
+    expect(
+      document.querySelector('sl-alert[variant="success"]')!.textContent
+    ).to.contain('signed out of this account');
+    expect(deactivateCalls()).to.have.length(0);
+  });
+
+  it('reports a failed sign-out without claiming success', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser], revokeFails: true });
+    const element = await mountWithUser();
+    const pending = element.handleRevokeSessions(sampleUser as any);
+    await answerConfirmDialog(true);
+    await pending;
+    expect(
+      document.querySelector('sl-alert[variant="danger"]')!.textContent
+    ).to.contain('Could not end sessions');
+    expect(document.querySelector('sl-alert[variant="success"]')).to.equal(
+      null
+    );
+  });
+
+  it('disables member sign-out when manage_users is denied', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser], permissions: [] });
+    const element = await mountWithUser();
+    const action = element.shadowRoot!.querySelector(
+      '[data-action="revoke-sessions"]'
+    ) as HTMLElement;
+    await waitUntil(() => action.hasAttribute('disabled'));
+    await element.handleRevokeSessions(sampleUser as any);
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).endsWith('/sessions/revoke-all'))
+    ).to.equal(false);
+    expect(document.querySelector('confirm-dialog')).to.equal(null);
+  });
+
   it('asks in the console dialog before deactivating, and explains why', async () => {
     fetchStub = createFetchStub({ users: [sampleUser] });
     const nativeConfirm = sinon.stub(window, 'confirm');
@@ -420,6 +495,7 @@ describe('UserManagementView', () => {
     expect(labels).to.deep.equal([
       'Manage roles',
       'Edit account membership',
+      'Sign out everywhere',
       'Deactivate account membership',
     ]);
   });

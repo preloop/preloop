@@ -33,7 +33,8 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Callable, Optional, Union
+from functools import partial
+from typing import Any, Callable, Optional, Sequence, Union
 
 from fastapi import HTTPException, Request, WebSocket, status
 from starlette.concurrency import run_in_threadpool
@@ -71,15 +72,28 @@ class Rule:
         """Whether this rule needs an identity under the current configuration."""
         return _enabled() and self.effective()[0] > 0
 
-    def effective(self) -> tuple[int, int]:
-        """Return ``(limit, window_s)`` after applying the env override."""
+    def effective(self, default: Optional[tuple[int, int]] = None) -> tuple[int, int]:
+        """Return ``(limit, window_s)`` after applying the env override.
+
+        Args:
+            default: ``(limit, window_s)`` to use instead of the rule's own
+                defaults when ``RATE_LIMIT_<RULE>`` is unset. Rules that
+                predate this module pass the value of their original setting
+                here so its name and default keep working.
+
+        Returns:
+            The limit and window in force for this check.
+        """
+        base_limit, base_window = (
+            default if default is not None else (self.limit, self.window_s)
+        )
         raw = os.getenv(self.env_name, "").strip()
         if not raw:
-            return self.limit, self.window_s
+            return base_limit, base_window
         try:
             limit_s, _, window_s = raw.partition("/")
             limit = int(limit_s)
-            window = int(window_s) if window_s else self.window_s
+            window = int(window_s) if window_s else base_window
             if limit < 0 or window <= 0:
                 raise ValueError(raw)
             return limit, window
@@ -87,7 +101,7 @@ class Rule:
             logger.error(
                 "Ignoring invalid %s; expected <limit>/<seconds>", self.env_name
             )
-            return self.limit, self.window_s
+            return base_limit, base_window
 
 
 # Defaults: EE #66 design proposal unless noted. Keep in sync with
@@ -104,17 +118,33 @@ OAUTH_REGISTER = Rule("oauth.register", 10, 3600)
 OAUTH_AUTHORIZE = Rule("oauth.authorize", 60, 60)
 APPROVAL_PUBLIC_IP = Rule("approval.public.ip", 30, 60)
 APPROVAL_PUBLIC_REQUEST = Rule("approval.public.request", 10, 60)
+# Limits that predate this module and moved onto it unchanged. Their callers
+# pass the original setting as the default (WEBAUTHN_CHALLENGE_RATE_LIMIT,
+# EMAIL_VERIFICATION_RESEND_LIMIT / _WINDOW, PRELOOP_OTLP_INGEST_RATE_LIMIT),
+# so the numbers below only document those defaults.
+# Passkey challenge generation per client address.
+AUTH_PASSKEY_CHALLENGE = Rule("auth.passkey_challenge", 30, 60)
+# Verification resend and forgot-password mail, one budget per client address
+# and one per target address.
+AUTH_EMAIL_SEND = Rule("auth.email_send", 3, 900)
+# OTLP telemetry ingest per API key.
+TELEMETRY_OTLP_INGEST = Rule("telemetry.otlp_ingest", 600, 60)
+# Admin test push notifications per user.
+NOTIFICATIONS_TEST_PUSH = Rule("notifications.test_push", 5, 60)
 
 
 class RateLimitExceeded(HTTPException):
     """429 with ``Retry-After`` and the stable ``rate_limited`` code."""
 
-    def __init__(self, rule: Rule, retry_after: int) -> None:
+    def __init__(
+        self, rule: Rule, retry_after: int, detail: Optional[str] = None
+    ) -> None:
         self.rule = rule
         self.retry_after = max(1, int(retry_after))
         super().__init__(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many requests. Try again in {self.retry_after} seconds.",
+            detail=detail
+            or f"Too many requests. Try again in {self.retry_after} seconds.",
             headers={"Retry-After": str(self.retry_after)},
         )
 
@@ -448,7 +478,13 @@ def _with_fallback(
         return _fallback_store.hit(key, window_s, now)
 
 
-def enforce(rule: Rule, identity: Optional[str]) -> None:
+def enforce(
+    rule: Rule,
+    identity: Optional[str],
+    *,
+    default: Optional[tuple[int, int]] = None,
+    detail: Optional[str] = None,
+) -> None:
     """Count one request for ``identity`` under ``rule``; 429 when over budget.
 
     Blocking (the Postgres store does I/O); call from sync code or through
@@ -458,13 +494,17 @@ def enforce(rule: Rule, identity: Optional[str]) -> None:
         rule: The budget to charge.
         identity: Who is charged. Empty or ``None`` skips the check, so a
             missing identity never merges every caller into one bucket.
+        default: ``(limit, window_s)`` replacing the rule's defaults; see
+            :meth:`Rule.effective`.
+        detail: Refusal message replacing the generic one, for endpoints
+            whose clients already show their own text.
 
     Raises:
         RateLimitExceeded: When this request exceeds the budget.
     """
     if not identity or not _enabled():
         return
-    limit, window_s = rule.effective()
+    limit, window_s = rule.effective(default)
     if limit <= 0:
         return
     now = _clock()
@@ -473,21 +513,33 @@ def enforce(rule: Rule, identity: Optional[str]) -> None:
     if count > limit:
         retry_after = int(window_end - now) + 1
         _record_hit(rule, key, retry_after)
-        raise RateLimitExceeded(rule, retry_after)
+        raise RateLimitExceeded(rule, retry_after, detail)
 
 
-def check_without_counting(rule: Rule, identity: Optional[str]) -> None:
+def check_without_counting(
+    rule: Rule,
+    identity: Optional[str],
+    *,
+    default: Optional[tuple[int, int]] = None,
+    detail: Optional[str] = None,
+) -> None:
     """Raise when ``identity`` has already used the budget; count nothing.
 
     Pair with :func:`record` for failure-only rules such as
-    ``auth.login.user``.
+    ``auth.login.user``, or to check several identities before charging any.
+
+    Args:
+        rule: The budget to check.
+        identity: Who is checked; empty or ``None`` skips the check.
+        default: ``(limit, window_s)`` replacing the rule's defaults.
+        detail: Refusal message replacing the generic one.
 
     Raises:
         RateLimitExceeded: When the budget is already used up.
     """
     if not identity or not _enabled():
         return
-    limit, window_s = rule.effective()
+    limit, window_s = rule.effective(default)
     if limit <= 0:
         return
     now = _clock()
@@ -496,26 +548,77 @@ def check_without_counting(rule: Rule, identity: Optional[str]) -> None:
     if count >= limit:
         retry_after = int(window_end - now) + 1
         _record_hit(rule, key, retry_after)
-        raise RateLimitExceeded(rule, retry_after)
+        raise RateLimitExceeded(rule, retry_after, detail)
 
 
-def record(rule: Rule, identity: Optional[str]) -> None:
-    """Count one event for ``identity`` without refusing (failure-only rules)."""
+def record(
+    rule: Rule,
+    identity: Optional[str],
+    *,
+    default: Optional[tuple[int, int]] = None,
+) -> None:
+    """Count one event for ``identity`` without refusing.
+
+    Args:
+        rule: The budget to charge.
+        identity: Who is charged; empty or ``None`` counts nothing.
+        default: ``(limit, window_s)`` replacing the rule's defaults.
+    """
     if not identity or not _enabled():
         return
-    limit, window_s = rule.effective()
+    limit, window_s = rule.effective(default)
     if limit <= 0:
         return
     _with_fallback(rule, "hit", _key(rule, identity), window_s, _clock())
 
 
-async def enforce_async(rule: Rule, identity: Optional[str]) -> None:
+def enforce_all_or_none(
+    rule: Rule,
+    identities: Sequence[str],
+    *,
+    default: Optional[tuple[int, int]] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """Charge every identity once, or none of them when any is out of budget.
+
+    Used where one request is budgeted under several identities (client
+    address and target address): a refused request must not spend the budget
+    of the identities that still had room. The check and the charge are two
+    store calls, so concurrent requests can overshoot by the number of
+    requests in flight; that is the same trade the failure-only login rule
+    makes.
+
+    Args:
+        rule: The budget to charge.
+        identities: Who is charged. Empty entries are ignored.
+        default: ``(limit, window_s)`` replacing the rule's defaults.
+        detail: Refusal message replacing the generic one.
+
+    Raises:
+        RateLimitExceeded: When any identity has already used its budget.
+    """
+    live = list(dict.fromkeys(identity for identity in identities if identity))
+    for identity in live:
+        check_without_counting(rule, identity, default=default, detail=detail)
+    for identity in live:
+        record(rule, identity, default=default)
+
+
+async def enforce_async(
+    rule: Rule,
+    identity: Optional[str],
+    *,
+    default: Optional[tuple[int, int]] = None,
+    detail: Optional[str] = None,
+) -> None:
     """Enforce a budget off the event loop, including Enterprise SAML callbacks.
 
     The Enterprise SSO plugin awaits this helper before processing a SAML
     callback. Keep the shared-store I/O in a worker thread for async callers.
     """
-    await run_in_threadpool(enforce, rule, identity)
+    await run_in_threadpool(
+        partial(enforce, rule, identity, default=default, detail=detail)
+    )
 
 
 def login_failure_identity(
@@ -588,12 +691,15 @@ __all__ = [
     "install_rate_limit_handler",
     "APPROVAL_PUBLIC_IP",
     "APPROVAL_PUBLIC_REQUEST",
+    "AUTH_EMAIL_SEND",
     "AUTH_LOGIN_IP",
     "AUTH_LOGIN_USER",
+    "AUTH_PASSKEY_CHALLENGE",
     "AUTH_REFRESH",
     "AUTH_REGISTER",
     "AUTH_RESET_PASSWORD",
     "MemoryStore",
+    "NOTIFICATIONS_TEST_PUSH",
     "OAUTH_AUTHORIZE",
     "OAUTH_REGISTER",
     "OAUTH_TOKEN",
@@ -602,9 +708,11 @@ __all__ = [
     "RateLimitExceeded",
     "RateLimitStoreError",
     "Rule",
+    "TELEMETRY_OTLP_INGEST",
     "check_without_counting",
     "client_ip_for_rate_limit",
     "enforce",
+    "enforce_all_or_none",
     "enforce_async",
     "limit_by_ip",
     "limit_by_path_param_and_ip",

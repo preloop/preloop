@@ -20,9 +20,12 @@ from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     HOST_EXEC_LEASE_KEY,
+    harness_entry_billing,
     lease_job,
     mark_queued_or_fail,
+    runner_away_reason,
     runner_blocked_notice,
+    runner_harness_entry,
     runner_wait_notice,
     unwrap_agent_config,
     workspace_owner_runner_id,
@@ -35,8 +38,12 @@ from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
     HOST_EXEC_WORKSPACE_KEY,
     ISOLATED_PUBLICATION_UNAVAILABLE,
+    OFFLINE_POLICY_MILESTONE,
+    OFFLINE_POLICY_REROUTE,
     ROUTING_QUEUE_TIMEOUT,
+    ROUTING_RUNNER_ASLEEP,
     harness_fallback_mode,
+    offline_policy_mode,
     harness_pinned_runner_id,
     harness_queue_timeout_seconds,
     host_exec_harness_selector,
@@ -60,6 +67,10 @@ from .runner_launch import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class OfflinePolicyError(ValueError):
+    """``offline_policy`` failed the run: its pinned runner is away (#1508)."""
 
 
 def _clone_mapping(git_clone_config: Any) -> Optional[Mapping[str, Any]]:
@@ -173,6 +184,12 @@ class RemoteRunnerExecutor(AgentExecutor):
         )
         await self._owner_consent_outcome(outcome, execution_id)
         execution = crud_flow_execution.get(self.db, id=execution_id)
+        if runner is None and execution is not None:
+            # Fails at once (offline_policy fail) or leases elsewhere
+            # (reroute) when the pinned runner is asleep or offline.
+            runner = await self._apply_offline_policy(
+                execution, payload, outcome, owner_id=owner_id
+            )
         if runner:
             if execution:
                 if payload.get("_publication"):
@@ -409,6 +426,21 @@ class RemoteRunnerExecutor(AgentExecutor):
                 except ValueError:
                     self._fail_owner_consent(execution)
                     return AgentStatus.FAILED
+                if runner is None:
+                    try:
+                        runner = await self._apply_offline_policy(
+                            execution, payload, outcome, owner_id=owner_id
+                        )
+                    except OfflinePolicyError as exc:
+                        execution.status = "FAILED"
+                        execution.error_message = str(exc)
+                        execution.end_time = datetime.now(timezone.utc)
+                        self.db.add(execution)
+                        self.db.commit()
+                        return AgentStatus.FAILED
+                    except ValueError:
+                        self._fail_owner_consent(execution)
+                        return AgentStatus.FAILED
                 if runner or (
                     payload.get(HOST_EXEC_LEASE_KEY)
                     and outcome.get("routing_reason") != execution.routing_reason
@@ -759,6 +791,150 @@ class RemoteRunnerExecutor(AgentExecutor):
         if not payload.get(HOST_EXEC_LEASE_KEY):
             return None
         return harness_pinned_runner_id(self._flow_agent_config())
+
+    async def _apply_offline_policy(
+        self,
+        execution: Any,
+        payload: Dict[str, Any],
+        outcome: Dict[str, Any],
+        *,
+        owner_id: Optional[UUID],
+    ) -> Any:
+        """Apply ``agent_config.offline_policy`` to an unleased pinned run.
+
+        Fires only for a harness run pinned with ``agent_config.runner_id``
+        whose runner is ``asleep`` or ``offline`` by presence (#1506), and
+        not for a host-bound continuation (its local state lives on that
+        one machine) or a run waiting on an owner decision.
+
+        ``fail`` (the default) fails the run in this routing cycle with
+        ``runner_asleep`` or ``runner_offline``. ``reroute`` leases the run
+        to another runner the flow's author may use, with the same harness,
+        model and billing path; it never falls back to hosted compute. When
+        no such runner can take it now, the run fails with the same reason.
+        Either way a ``milestone`` entry on the execution timeline names
+        the policy that fired.
+
+        Args:
+            execution: The unleased execution.
+            payload: Lease payload of this attempt.
+            outcome: Lease outcome; replaced by the reroute lease outcome.
+            owner_id: Runner a persisted-workspace continuation is bound to.
+
+        Returns:
+            The runner a reroute leased the run to, or None when the policy
+            does not apply or a reroute waits on that runner's owner.
+
+        Raises:
+            OfflinePolicyError: The policy failed the run.
+            ValueError: The reroute runner's owner declined the run.
+        """
+        pin = self._harness_pin(payload)
+        if (
+            pin is None
+            or owner_id is not None
+            or outcome.get("consent_status") == "pending"
+        ):
+            return None
+        pinned = crud_flow_runner.get_fresh(self.db, runner_id=pin)
+        reason = runner_away_reason(pinned)
+        if reason is None:
+            return None
+        policy = offline_policy_mode(self._flow_agent_config())
+        harness = str(payload[HOST_EXEC_LEASE_KEY].get("harness") or "")
+        name = getattr(pinned, "name", None) or str(pin)
+        away = "asleep" if reason == ROUTING_RUNNER_ASLEEP else "offline"
+        detail = ""
+        if policy == OFFLINE_POLICY_REROUTE:
+            rerouted: Dict[str, Any] = {}
+            runner = lease_job(
+                self.db,
+                account_id=self.account_id,
+                pool=self.pool,
+                execution_id=execution.id,
+                payload=payload,
+                outcome=rerouted,
+                reroute_from=pin,
+                required_billing=harness_entry_billing(
+                    runner_harness_entry(pinned, harness)
+                ),
+            )
+            await self._owner_consent_outcome(rerouted, execution.id)
+            outcome.clear()
+            outcome.update(rerouted)
+            if runner is not None:
+                self._log_offline_policy(
+                    execution,
+                    policy=policy,
+                    reason=reason,
+                    message=(
+                        f"Runner {name} is {away}; offline policy reroute moved "
+                        f"the run to {getattr(runner, 'name', None) or runner.id}"
+                    ),
+                    from_runner_id=pin,
+                    to_runner_id=runner.id,
+                )
+                self.db.commit()
+                return runner
+            if rerouted.get("consent_status") == "pending":
+                return None
+            detail = (
+                "; no other runner you may use can take it with harness "
+                f"{harness} ({rerouted.get('routing_reason') or 'no free slot'})"
+            )
+        message = (
+            f"Runner {name} is {away} ({reason}); offline policy {policy} "
+            f"failed the run{detail}"
+        )
+        execution.routing_reason = reason
+        execution.error_message = message
+        self.db.add(execution)
+        self._log_offline_policy(
+            execution,
+            policy=policy,
+            reason=reason,
+            message=message,
+            from_runner_id=pin,
+        )
+        self.db.commit()
+        raise OfflinePolicyError(message)
+
+    def _log_offline_policy(
+        self,
+        execution: Any,
+        *,
+        policy: str,
+        reason: str,
+        message: str,
+        from_runner_id: UUID,
+        to_runner_id: Optional[UUID] = None,
+    ) -> None:
+        """Write the timeline entry naming the offline policy that fired.
+
+        Args:
+            execution: The execution the policy applied to.
+            policy: ``fail`` or ``reroute``.
+            reason: ``runner_asleep`` or ``runner_offline``.
+            message: Human-readable line for the timeline.
+            from_runner_id: The pinned runner that is away.
+            to_runner_id: Where a reroute leased the run, if it did.
+        """
+        crud_flow_execution.append_log(
+            self.db,
+            execution_id=str(execution.id),
+            log_data={
+                "type": "milestone",
+                "message": message,
+                "metadata": {
+                    "milestone": OFFLINE_POLICY_MILESTONE,
+                    "offline_policy": policy,
+                    "reason": reason,
+                    "from_runner_id": str(from_runner_id),
+                    "to_runner_id": str(to_runner_id) if to_runner_id else None,
+                },
+            },
+            commit=False,
+        )
 
     def _owner_runner_id(self, execution: Any) -> Tuple[Optional[UUID], bool]:
         """Runner pinned by a persisted-workspace continuation, if any.

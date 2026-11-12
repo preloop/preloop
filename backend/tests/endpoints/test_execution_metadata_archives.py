@@ -351,6 +351,8 @@ async def test_legacy_websocket_preserves_denials_without_archives(
     socket = SimpleNamespace(
         accept=AsyncMock(),
         scope={"state": {"user": user}},
+        headers={},
+        query_params={},
         send_json=AsyncMock(),
         close=AsyncMock(),
         receive_json=AsyncMock(side_effect=WebSocketDisconnect()),
