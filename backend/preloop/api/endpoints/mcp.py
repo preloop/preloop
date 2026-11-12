@@ -786,6 +786,39 @@ def _review_receipt_execution_id(db: Session, current_user: Any) -> str | None:
     return str(execution_id) if execution is not None else None
 
 
+def _review_receipt_repository(
+    project_path: Optional[str],
+    owner: Optional[str],
+    repo: Optional[str],
+    project_obj: Any,
+) -> Optional[str]:
+    """Repository path a review receipt is recorded under (#2208).
+
+    The gate matches receipts against the path in the triggering PR/MR URL.
+    A GitLab project named by its numeric id resolves the project (the id is
+    its tracker identifier) but never matches that path, so a numeric id (or
+    any value equal to the project's tracker identifier) is replaced by the
+    resolved project's path (its slug, ``path_with_namespace`` on GitLab).
+    A path the agent passed is kept as given.
+
+    Args:
+        project_path: Project path or id parsed from the PR identifier.
+        owner: Owner parsed from the identifier.
+        repo: Repository parsed from the identifier.
+        project_obj: The project the identifier resolved to.
+
+    Returns:
+        The repository path, or None when none is known.
+    """
+    slug = getattr(project_obj, "slug", None)
+    slug = slug.strip() if isinstance(slug, str) and slug.strip() else None
+    identifier = getattr(project_obj, "identifier", None)
+    given = project_path.strip() if isinstance(project_path, str) else ""
+    if given.isdigit() or (identifier is not None and given == str(identifier)):
+        return slug or given
+    return given or (f"{owner}/{repo}" if owner and repo else None) or slug
+
+
 def _record_review_receipt(
     db: Session,
     *,
@@ -2583,10 +2616,8 @@ async def update_pull_request(
     receipt_execution_id = (
         _review_receipt_execution_id(db, current_user) if review_action else None
     )
-    receipt_repository = (
-        project_path
-        or (f"{owner}/{repo}" if owner and repo else None)
-        or getattr(project_obj, "slug", None)
+    receipt_repository = _review_receipt_repository(
+        project_path, owner, repo, project_obj
     )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()

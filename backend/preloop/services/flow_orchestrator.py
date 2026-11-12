@@ -6731,6 +6731,7 @@ class FlowExecutionOrchestrator:
             REVIEW_PUBLICATION_INCOMPLETE,
             REVIEW_PUBLICATION_RESULT_KEY,
             STATUS_NOT_PUBLISHED,
+            STATUS_UNVERIFIED,
             evaluate_review_publication,
             trigger_pull_request,
         )
@@ -6755,6 +6756,15 @@ class FlowExecutionOrchestrator:
                     head_sha=head,
                 )
 
+            def list_review_activity() -> Any:
+                from preloop.models.crud import crud_runtime_session_activity
+
+                return crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                    self.db,
+                    account_id=account_id,
+                    flow_execution_id=self.execution_log.id,
+                )
+
             outcome = evaluate_review_publication(
                 receipts,
                 repository=repository,
@@ -6762,6 +6772,7 @@ class FlowExecutionOrchestrator:
                 head_sha=head_sha,
                 artifact=merged_result,
                 find_prior_receipt=find_prior,
+                list_review_activity=list_review_activity,
             )
         except Exception:
             logger.error(
@@ -6779,6 +6790,13 @@ class FlowExecutionOrchestrator:
             merged_result = {}
         merged_result[REVIEW_PUBLICATION_RESULT_KEY] = outcome
         self.execution_logger.log_milestone("review_publication", dict(outcome))
+        if outcome["status"] == STATUS_UNVERIFIED:
+            logger.warning(
+                "Execution %s has no review publication receipt; tool activity "
+                "shows the review was delivered, recording it as unverified "
+                "(API and worker builds may differ)",
+                getattr(self.execution_log, "id", None),
+            )
         if final_status == "SUCCEEDED" and outcome["status"] == STATUS_NOT_PUBLISHED:
             final_status = "FAILED"
             agent_result = {

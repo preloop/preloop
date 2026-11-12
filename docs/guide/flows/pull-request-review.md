@@ -14,7 +14,11 @@ field when the repository cannot hold `.preloop/review-policy.md`.
 
 For an ephemeral checkout, leave `git_clone_config.source_branch` and the
 repository's `branch` / `source_branch` overrides unset to follow the triggering
-PR or MR. Do not enable `use_remote_default` for this purpose. GitLab MR hooks
+PR or MR. On the flow form these are the **Source branch** field and each
+repository's **Branch** field; both are blank by default, and the form shows a
+warning when a reviewer flow pins either of them. A pinned value is not a
+default: it replaces the trigger's branch on every run. Do not enable `use_remote_default`
+for this purpose. GitLab MR hooks
 provide the head commit in `object_attributes.last_commit.id` (or `sha`); MR
 note hooks provide it under `merge_request`. When that commit is present, the
 executor checks it out before creating the review branch, even if the initial
@@ -326,9 +330,17 @@ is serving, and use `required: false` to opt out.
 With the check on, the MCP `update_pull_request` tool records a receipt only
 after an approve, request-changes or comment review succeeds on the triggering
 pull request. At the end of the run the result carries
-`result.review_publication` (`published`, `already_reviewed` or
+`result.review_publication` (`published`, `already_reviewed`, `unverified` or
 `not_published`). A run that claimed success without a receipt fails with
-`review_publication_incomplete` and keeps its report. The agent's own
+`review_publication_incomplete` and keeps its report, with one exception for
+API and worker builds that differ during a deploy: when the run holds no
+receipt at all but the gateway's own record of its tool calls shows a
+succeeded `update_pull_request` review on the triggering pull request, the run
+passes with `unverified` (reason `receipt_unavailable`) and the worker logs a
+warning. `unverified` is not `published`: nothing proves which head was
+reviewed. A receipt for another pull request or head still fails the run.
+Receipts are recorded under the project's path, also when the agent named a
+GitLab project by its numeric id. The agent's own
 `review_posted` claim, the success line and a zero exit code never satisfy the
 check. GitLab and Bitbucket receipts do not carry the reviewed head, so they
 prove delivery for the current run but cannot justify skipping a head that was

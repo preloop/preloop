@@ -109,9 +109,11 @@ describe('PreloopFlowForm copy', () => {
     expect(field('Git author email')?.getAttribute('placeholder')).to.equal(
       'git@preloop.ai'
     );
-    expect(field('Source branch')?.getAttribute('placeholder')).to.equal(
-      'main'
-    );
+    // A blank source branch follows the trigger's branch, so a "main"
+    // placeholder would read as the default and invite pinning it.
+    expect(
+      field('Source branch (optional)')?.hasAttribute('placeholder')
+    ).to.equal(false);
 
     // Untouched, the keys stay absent so the server default applies, as
     // before the defaults moved to placeholders.

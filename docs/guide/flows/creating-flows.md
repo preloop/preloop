@@ -458,9 +458,17 @@ Used for git commits made by the agent.
 
 **3. Branch Configuration**
 ```yaml
-Source Branch: main  # Branch to checkout
+Source Branch:       # optional; blank follows the trigger's branch
 Target Branch:       # Branch to create for commits (auto-generated if empty)
 ```
+
+**Source branch** is optional, and blank is usually right. Blank means "use
+the branch from the trigger payload": for a pull or merge request, its source
+branch. A value pins every run to that branch, whatever branch the trigger
+names. Pin a branch only for flows that always work on the same branch, such
+as a scheduled sweep of `main`. A pull request reviewer must leave it blank, or
+every review starts from the pinned branch instead of the change under review;
+the form warns when a reviewer flow pins a branch.
 
 **4. Pull Request / Merge Request**
 - Toggle **Create Pull Request** to ON
@@ -491,7 +499,8 @@ bindings.
 - **Project:** (optional) Select a repository project from that tracker
 - **Repository URL:** (optional - leave empty to use trigger project)
 - **Clone Path:** Where to clone (e.g., `/workspace`)
-- **Branch:** (optional) Override the flow source branch for this repository
+- **Branch:** (optional) Pin this repository to a branch. Blank uses the flow
+  source branch, or the trigger's branch when that is blank too
 
 **Example 1: Single Repo (from trigger)**
 ```yaml

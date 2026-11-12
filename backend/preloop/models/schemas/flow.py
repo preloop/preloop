@@ -263,6 +263,9 @@ class ReviewPublication(BaseModel):
     a success sentinel or a zero exit code never satisfy it. A deliberate
     no-post run (``review_action: null``, no ``blocker``) passes only when an
     earlier run already holds a receipt for the same pull request and head.
+    A run with no receipt whose server-recorded tool activity shows a
+    succeeded review on the triggering pull request passes as
+    ``unverified`` (API/worker version skew, #2208), never as published.
     """
 
     model_config = ConfigDict(extra="forbid")

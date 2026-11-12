@@ -361,3 +361,48 @@ async def test_bitbucket_receipt_records_the_summary_comment_id(
     [receipt] = _receipts(db_session, test_user, execution_id)
     assert receipt.provider == "bitbucket"
     assert receipt.provider_review_id == expected
+
+
+def _gitlab_project() -> SimpleNamespace:
+    # GitLab projects store the numeric id as ``identifier`` and the
+    # ``path_with_namespace`` as ``slug``.
+    return SimpleNamespace(identifier="4242", slug="example-group/example-project")
+
+
+@pytest.mark.parametrize(
+    ("project_path", "owner", "repo", "expected"),
+    [
+        # A numeric GitLab project id resolves to the project's path.
+        ("4242", None, None, "example-group/example-project"),
+        (" 4242 ", None, None, "example-group/example-project"),
+        # A path the agent passed is kept as given.
+        (
+            "example-group/example-project",
+            "example-group",
+            "example-project",
+            "example-group/example-project",
+        ),
+        (
+            "example-group/sub/project",
+            "example-group/sub",
+            "project",
+            "example-group/sub/project",
+        ),
+        # Nothing parsed: the resolved project's path.
+        (None, None, None, "example-group/example-project"),
+    ],
+)
+def test_receipt_repository_resolves_numeric_gitlab_ids(
+    project_path, owner, repo, expected
+):
+    assert (
+        mcp._review_receipt_repository(project_path, owner, repo, _gitlab_project())
+        == expected
+    )
+
+
+def test_receipt_repository_keeps_numeric_id_without_resolved_path():
+    # No path to resolve to: record what was given, so the gate fails closed
+    # rather than inventing a target.
+    project = SimpleNamespace(identifier="4242", slug=None)
+    assert mcp._review_receipt_repository("4242", None, None, project) == "4242"
