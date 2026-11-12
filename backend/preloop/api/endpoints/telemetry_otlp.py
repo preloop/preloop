@@ -15,11 +15,8 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
-import time
-from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -32,34 +29,39 @@ from preloop.api.auth.key_scopes import (
 from preloop.models.crud import crud_account, crud_api_key, crud_telemetry_ingest
 from preloop.models.db.session import get_db_session
 from preloop.services import otlp_telemetry as otlp
+from preloop.services import rate_limit
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 #: Requests per key per minute. Exporters back off on 429 + Retry-After.
+#: Enforced by the shared limiter (rule ``telemetry.otlp_ingest``), so every
+#: API replica draws from one budget per key; ``RATE_LIMIT_TELEMETRY_OTLP_INGEST``
+#: overrides it like any rule.
 RATE_LIMIT_PER_MINUTE = int(os.environ.get("PRELOOP_OTLP_INGEST_RATE_LIMIT", "600"))
-_RATE_WINDOW_SECONDS = 60.0
-_rate_lock = threading.Lock()
-_rate_hits: Dict[str, Deque[float]] = {}
+_RATE_WINDOW_SECONDS = 60
 
 
 def reset_rate_limits() -> None:
-    """Clear the in-process rate limit windows (tests)."""
-    with _rate_lock:
-        _rate_hits.clear()
+    """Clear the in-process limiter counters (tests)."""
+    rate_limit.reset_memory_store()
 
 
-def _rate_limited(key_id: str, now: Optional[float] = None) -> Optional[int]:
-    """Record a hit; return Retry-After seconds when over the limit."""
-    now = time.monotonic() if now is None else now
-    with _rate_lock:
-        hits = _rate_hits.setdefault(key_id, deque())
-        while hits and hits[0] <= now - _RATE_WINDOW_SECONDS:
-            hits.popleft()
-        if len(hits) >= RATE_LIMIT_PER_MINUTE:
-            return max(1, int(hits[0] + _RATE_WINDOW_SECONDS - now) + 1)
-        hits.append(now)
+def _rate_limited(key_id: str) -> Optional[int]:
+    """Charge one export to ``key_id``; return Retry-After seconds when over.
+
+    Blocking (the shared store does I/O); the export handler runs in the
+    threadpool.
+    """
+    try:
+        rate_limit.enforce(
+            rate_limit.TELEMETRY_OTLP_INGEST,
+            key_id,
+            default=(RATE_LIMIT_PER_MINUTE, _RATE_WINDOW_SECONDS),
+        )
+    except rate_limit.RateLimitExceeded as exc:
+        return exc.retry_after
     return None
 
 

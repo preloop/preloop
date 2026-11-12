@@ -7,6 +7,7 @@ from preloop.services.model_allowlist import (
     format_model_not_allowed_detail,
     is_model_not_allowed_detail,
     normalize_allowed_models,
+    older_claude_family_sibling,
     requested_model_label,
     resolve_allowed_model_ids,
 )
@@ -98,7 +99,8 @@ def test_format_model_not_allowed_detail_lists_at_most_five_entries():
     assert detail == (
         "Model 'vendor/alpha-chat' is not in this agent's allowed models "
         "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
-        "console or pick an allowed model."
+        "console or pick an allowed model, then run `preloop agents refresh` "
+        "to update the local model pins."
     )
     assert is_model_not_allowed_detail(detail)
     assert not is_model_not_allowed_detail("Model gateway budget exceeded")
@@ -106,3 +108,43 @@ def test_format_model_not_allowed_detail_lists_at_most_five_entries():
     long_detail = format_model_not_allowed_detail("x", [f"m{i}" for i in range(7)])
     assert "(m0, m1, m2, m3, m4, ...)" in long_detail
     assert "m5" not in long_detail
+
+
+def test_format_model_not_allowed_detail_names_newer_claude_family_release():
+    detail = format_model_not_allowed_detail(
+        "anthropic/claude-fable-5-2",
+        [
+            "anthropic/claude-fable-5-1",
+            "anthropic/claude-haiku-5-5",
+            "anthropic/claude-opus-5-5",
+        ],
+    )
+    assert is_model_not_allowed_detail(detail)
+    assert "newer release of 'anthropic/claude-fable-5-1'" in detail
+    assert "preloop agents refresh <agent>" in detail
+
+
+def test_format_model_not_allowed_detail_generic_when_family_not_allowed():
+    detail = format_model_not_allowed_detail(
+        "anthropic/claude-fable-5-2", ["anthropic/claude-opus-5-5"]
+    )
+    assert "newer release" not in detail
+    assert "preloop agents refresh" in detail
+
+
+def test_older_claude_family_sibling_rules():
+    allowed = [
+        "claude-fable-5",
+        "anthropic/claude-fable-5-1-20261001",
+        "anthropic/claude-opus-5-5",
+    ]
+    assert (
+        older_claude_family_sibling("claude-fable-5-2[1m]", allowed)
+        == "anthropic/claude-fable-5-1-20261001"
+    )
+    # Same version (snapshot date only) is not a newer release.
+    assert older_claude_family_sibling("claude-opus-5-5-20261101", allowed) is None
+    # An older request than the allowlist is not a newer release either.
+    assert older_claude_family_sibling("claude-opus-5-1", allowed) is None
+    assert older_claude_family_sibling("openai/gpt-5.4", allowed) is None
+    assert older_claude_family_sibling("claude-sonnet-5-5", allowed) is None

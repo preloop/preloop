@@ -618,9 +618,14 @@ def test_flow_execution_credential_park_is_sent_as_a_parked_deny(client):
         flow_execution_id=execution_id,
     )
     decide = AsyncMock(return_value=("park", "Paused for approval", "req-9", False))
+
+    def resolve_review_identity(_token, *, allow_read_only_review=False):
+        assert allow_read_only_review is True
+        return identity
+
     with (
         patch.object(
-            agent_permission, "_resolve_permission_identity", lambda _t: identity
+            agent_permission, "_resolve_permission_identity", resolve_review_identity
         ),
         patch.object(agent_permission, "request_agent_permission", decide),
     ):

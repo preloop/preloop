@@ -285,8 +285,13 @@ async def test_permission_hook_lands_on_runner_session(
     hs = str(uuid.uuid4())
     _go_idle(db_session, runner, row, hs)
     identity = _identity(db_session, test_user)
+
+    def resolve_review_identity(_token, *, allow_read_only_review=False):
+        assert allow_read_only_review is True
+        return identity
+
     monkeypatch.setattr(
-        agent_permission, "_resolve_permission_identity", lambda token: identity
+        agent_permission, "_resolve_permission_identity", resolve_review_identity
     )
     from fastapi import Response
 

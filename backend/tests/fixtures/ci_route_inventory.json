@@ -521,6 +521,7 @@
   "POST /api/v1/users/bulk-delete": "deny",
   "POST /api/v1/users/me/change-password": "deny",
   "POST /api/v1/users/{user_id}/deactivate": "deny",
+  "POST /api/v1/users/{user_id}/sessions/revoke-all": "deny",
   "POST /api/v1/webhooks/flows/{flow_id}/{webhook_secret}": "deny",
   "POST /approval/{request_id}/{route}": "deny",
   "POST /gemini/v1beta/models/{model_name:path}:generateContent": "deny",

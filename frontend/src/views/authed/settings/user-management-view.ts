@@ -9,6 +9,7 @@ import {
   createUser,
   updateUser,
   deactivateUser,
+  revokeMemberSessions,
   getRoles,
   getUserRoles,
   assignUserRole,
@@ -36,7 +37,7 @@ import { hasCapability } from '../../../capabilities';
 import type { Subaccount } from '../../../hierarchy-api';
 import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dialog';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
-import { confirmDialog } from '../../../components/confirm-dialog';
+import { confirmDialog, showToast } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
 import { userHref } from '../../../utils/user-href';
 import { formatLocalDateTime, formatRelativeTime } from '../../../utils/date';
@@ -329,6 +330,31 @@ export class UserManagementView extends LitElement {
     } catch (error) {
       this.dialogError =
         error instanceof Error ? error.message : 'Failed to update user';
+    }
+  }
+
+  async handleRevokeSessions(user: User) {
+    if (!this.editPermissions.allows('manage_users')) return;
+    const confirmed = await confirmDialog({
+      title: 'Sign this member out everywhere?',
+      message: `Sign ${this.displayName(user)} out of this account on all devices?`,
+      detail:
+        'Their browser and CLI login sessions end, including live connections. They can sign in again. Other account memberships, API keys and runners are unaffected.',
+      confirmLabel: 'Sign out everywhere',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await revokeMemberSessions(user.id);
+      showToast(
+        `${this.displayName(user)} signed out of this account.`,
+        'success'
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'Failed to sign member out',
+        'danger'
+      );
     }
   }
 
@@ -625,6 +651,15 @@ export class UserManagementView extends LitElement {
                     </sl-menu-item>`
                   : nothing
               }
+              <sl-menu-item
+                data-action="revoke-sessions"
+                ?disabled=${!canManage}
+                title=${canManage ? '' : 'Requires manage_users'}
+                @click=${() => this.handleRevokeSessions(user)}
+              >
+                <sl-icon slot="prefix" name="box-arrow-right"></sl-icon>
+                Sign out everywhere
+              </sl-menu-item>
               <sl-divider></sl-divider>
               <sl-menu-item
                 class="danger-item"
