@@ -28,6 +28,10 @@ Content-Type: application/json
 | `oauth.authorize` | `GET /oauth/authorize` | client address | 60 / 60 s |
 | `approval.public.ip` | `GET /approval/{id}/data`, `POST /approval/{id}/{action}` | client address | 30 / 60 s |
 | `approval.public.request` | same | approval request and client address | 10 / 60 s |
+| `auth.passkey_challenge` | `POST /api/v1/auth/webauthn/register/options`, `POST /api/v1/auth/webauthn/authenticate/options` | client address¹ | 30 / 60 s (`WEBAUTHN_CHALLENGE_RATE_LIMIT`) |
+| `auth.email_send` | `POST /api/v1/auth/resend-verification`, `POST /api/v1/auth/forgot-password` (one budget for both) | client address¹, and separately the target address | 3 / 900 s (`EMAIL_VERIFICATION_RESEND_LIMIT`, `EMAIL_VERIFICATION_RESEND_WINDOW`) |
+| `telemetry.otlp_ingest` | `POST /api/v1/telemetry/otlp/v1/{metrics,logs,traces}` | API key | 600 / 60 s (`PRELOOP_OTLP_INGEST_RATE_LIMIT`) |
+| `notifications.test_push` | `POST /api/v1/notification-preferences/me/test-push` | user | 5 / 60 s |
 
 `auth.login.user` counts wrong-password attempts for one account (a username
 and an email of the same person share it) from one client address, and is
@@ -37,8 +41,17 @@ guessing from elsewhere cannot lock the real user out; users behind the same
 NAT as the guesser can be throttled for the rest of the window. There is no
 lockout beyond the window. Passkeys and single sign-on are not affected.
 
-Forgot-password, verification resend, passkey challenges and OTLP ingest keep
-their existing limits and settings.
+The last four rules predate the shared limiter and moved onto it with their
+defaults, setting names and keys unchanged. Their original settings (in
+brackets above) still set the limit; `RATE_LIMIT_<RULE>` overrides them like
+any rule. `auth.email_send` charges the client address and the target address
+together: a request refused on either is not charged to the other.
+Refusals keep each endpoint's own message in `detail`. OTLP ingest keeps the
+OTLP status envelope (`{"code": 429, "message": "Rate limit exceeded"}`) with
+`Retry-After`, because exporters parse that body.
+
+¹ These two rules key on the leftmost `X-Forwarded-For` address, as before,
+not on the trusted-proxy walk described below.
 
 ## Configuration
 
@@ -48,8 +61,13 @@ their existing limits and settings.
 | `RATE_LIMIT_BACKEND` | `postgres` | `postgres` shares counters across API replicas; `memory` keeps them per process |
 | `RATE_LIMIT_<RULE>` | see table | `<limit>/<seconds>`; the rule name upper-cased with dots as underscores, for example `RATE_LIMIT_AUTH_LOGIN_IP=20/60`. `0/60` turns one rule off |
 | `RATE_LIMIT_TRUSTED_PROXIES` | loopback and private ranges | comma-separated CIDRs of proxies allowed to add `X-Forwarded-For` hops |
+| `WEBAUTHN_CHALLENGE_RATE_LIMIT` | `30` | requests per minute for `auth.passkey_challenge` (read at startup) |
+| `EMAIL_VERIFICATION_RESEND_LIMIT`, `EMAIL_VERIFICATION_RESEND_WINDOW` | `3`, `900` | budget and window in seconds for `auth.email_send` |
+| `PRELOOP_OTLP_INGEST_RATE_LIMIT` | `600` | requests per minute per key for `telemetry.otlp_ingest` (read at startup) |
 
-With the Helm chart, set these through `extraEnv`, for example:
+The Helm chart has no dedicated rate-limit values: like other API tuning
+settings, these are set through `extraEnv`, which reaches the API pods, for
+example:
 
 ```yaml
 extraEnv:

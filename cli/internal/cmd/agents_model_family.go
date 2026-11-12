@@ -91,8 +91,10 @@ func claudeFamilyForSelector(selector string) (claudeModelFamily, bool) {
 // keys unset, and the gateway's Claude-family autoregister serves whatever id
 // the installed Claude Code binary asks for.
 //
-// Fable is deliberately excluded: Claude Code has no built-in fable default,
-// so its env pair is the only way to route `/model fable` through the gateway.
+// Fable is excluded here because Claude Code builds older than 2.1.321 have
+// no built-in fable default, so its env pair is the only way to route
+// `/model fable` through the gateway. claudeFamilyIsStockWith adds Fable when
+// the installed build has one (see agents_claude_fable_default.go).
 var claudeStockFamilySelectors = map[string]bool{
 	"opus":   true,
 	"sonnet": true,

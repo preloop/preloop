@@ -179,6 +179,7 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     assert actual["GET /api/v1/auth/api-keys"] == "deny"
     assert actual["GET /api/v1/fleet/code-activity"] == "deny"
     assert actual["GET /api/v1/delivery-reports/attention"] == "deny"
+    assert actual["POST /api/v1/users/{user_id}/sessions/revoke-all"] == "deny"
     assert actual["POST /api/v1/chat/setup"] == "deny"
     assert actual["POST /api/v1/chat/setup/{draft_id}/finish"] == "deny"
     assert actual["POST /api/v1/chat/setup/slack/oauth"] == "deny"

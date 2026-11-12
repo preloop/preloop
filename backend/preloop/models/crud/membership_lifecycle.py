@@ -107,6 +107,9 @@ def offboard_record(
     now = datetime.now(UTC)
     user.is_active = False
     user.auth_generation += 1
+    from preloop.models.crud.auth_revocation import stage_revocation
+
+    stage_revocation(db, user_id=user.id, generation=user.auth_generation)
     user.offboarded_at = now
     counts = {
         "session_generations": 1,

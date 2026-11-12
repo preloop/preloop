@@ -11,6 +11,12 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **Privacy:** Screened text is never logged or stored. Flagged chunks log score, outcome, matched rule names, and caller chunk coordinates only.
 *   **Rollout Semantics:** Shadow vs enforce and fail-closed error handling live on the caller's side (per QM's contract); Preloop only scores.
 
+## Response security headers
+
+*   **Header set:** The console nginx sends `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), microphone=(self)` (the talk composer records audio), `Content-Security-Policy` and, on HTTPS requests, `Strict-Transport-Security`, all with `always` so error responses carry them too. `X-XSS-Protection` is not sent: current browsers ignore it.
+*   **One definition per config:** nginx drops server-level `add_header` directives in any `location` or `if` block that declares its own `add_header`, which used to strip the set from the SPA shell, static assets, `/admin` and `/api/`. The set now lives in `frontend/docker/security-headers.conf` (Docker image, copied to `/etc/nginx/snippets/`) and the `preloop.nginxSecurityHeaders` named template in `helm/preloop/templates/_helpers.tpl`. Both configs include it at server level and in every block that sets headers. `backend/tests/test_nginx_security_headers.py` enforces coverage and Docker/Helm parity; `backend/tests/test_nginx_headers_smoke.py` (opt-in, `PRELOOP_NGINX_SMOKE=1`) checks real nginx responses.
+*   **HSTS:** An http-context `map` turns `X-Forwarded-Proto`/`$scheme` into `$preloop_hsts`, empty for plain HTTP or when disabled, so nginx omits the header. nginx hides upstream copies (`proxy_hide_header`) so proxied responses carry one. `preloop.api.middleware.hsts.HSTSMiddleware`, the outermost API/gateway middleware, adds the header on HTTPS requests that bypass the console and leaves an existing header alone. Settings and the preload guard are in [TLS](../operations/tls.md#strict-transport-security-hsts).
+
 ## Secret Service
 *   **Purpose:** Provider-agnostic custody and resolution of model credentials.
 *   **Built-in Backend:** `local_encrypted` for encrypted-at-rest credentials stored in Preloop-managed storage.
@@ -55,7 +61,8 @@ Preloop implements authentication and multi-tenancy:
   user. Tokens minted before the claim existed are treated as generation 0,
   so one bump also invalidates them. API keys and runner tokens are
   unchanged. `preloop auth logout --all` and the console Sign out everywhere
-  control call that endpoint.
+  control call that endpoint. Canonical identity revocation bumps the person's
+  generation and every linked membership's generation together.
 - `POST /auth/logout` is the console's server-side sign out. It runs the
   registered H9 `SessionHook.on_logout` (from `preloop.plugins.account_hooks`)
   with the current token's claims and returns `redirect_url`: a same-origin
@@ -88,6 +95,60 @@ Preloop implements authentication and multi-tenancy:
   (console tokens, CLI tokens from before `cli_session`) gets 400
   `unsupported_token_type` pointing at `POST /auth/sessions/revoke-all`
   instead of a false success.
+
+### Session revocation and live connections
+
+The database is authoritative. Identity changes (including password reset,
+address changes and verification, suspension and self-service sign-out) bump
+the canonical person's generation and its membership generations. Membership
+offboarding affects only that account. SSO enforcement increments the matching
+memberships' `non_sso_auth_generation`; the installed authentication policy
+decides which sessions remain valid.
+
+`POST /api/v1/users/{user_id}/sessions/revoke-all` uses the existing
+`manage_users` permission and an account-scoped lookup. It bumps only that
+membership's generation, without invoking cross-membership revoke fan-out,
+revokes its CLI session rows and writes `auth.sessions.revoked` in one
+transaction. It leaves the membership active so the person can sign in again.
+Roles are enforced by the commercial RBAC plugin; core retains its existing
+full-access-per-member model within an account.
+
+| Credential or connection | Self-service sign-out everywhere | Admin member sign-out |
+|---|---|---|
+| Console and CLI access/refresh JWTs | All linked memberships | Selected account membership |
+| CLI session records | Revoked across linked memberships | Revoked for selected membership |
+| Live JWT WebSockets | Closed with code `4401` when revoked | Same, scoped to selected membership |
+| API keys, agent-control credentials and runner tokens | Unchanged | Unchanged |
+| Anonymous WebSockets | Unchanged | Unchanged |
+
+The live JWT registry covers unified and legacy console sockets, execution and
+flow-lifecycle streams, runtime-session attach, and desktop viewers. It is
+separate from the account broadcast registry so tracking a lifecycle stream
+never subscribes it to unrelated account events. API-key-authenticated viewers,
+desktop host connections, managed-agent control sockets and runner sockets
+keep their separate credential lifecycle. Offboarding has its own, broader
+credential teardown; sign-out does not perform offboarding.
+
+Generation-writing CRUD stages only membership IDs and generation numbers on
+the transaction. The application's `services/auth_revocation.py` commit hook
+publishes `auth.revoked` through the bounded realtime publisher after the root
+transaction commits. Rolled-back transactions/savepoints publish nothing.
+This also covers plugin-owned transactions that call core CRUD. Every API
+replica subscribes without a NATS queue group. A notification re-runs
+`reject_revoked_token` against fresh database state for the named JWT sockets,
+so delayed notifications cannot close a newer login or an exempt SSO session.
+
+Each JWT socket also rechecks immediately on registration and every 60 seconds,
+independent of client traffic. A missed event, disconnected NATS publisher or
+full publisher queue therefore falls back to the next database check. A
+transient database failure is logged and retried on the next interval; no
+within-one-minute guarantee is possible while the database is unavailable.
+Handlers remove their watcher tasks on disconnect. Individual CLI-session and
+extension revocations are also detected by this periodic check.
+
+There is no browser-session inventory or single-browser-session revocation
+table. See [account and profile controls](../guide/accounts-and-profiles.md)
+for the console actions and credential boundaries.
 
 ### Restricted CI identity foundation
 
@@ -252,7 +313,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Input validation for all parameters via Pydantic models
 - [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy tracker API-key rows; staged schema migrations remove legacy webhook and AI-model key columns)
 - [x] Sensitive data masked in logs (see Redaction Policy below)
-- [x] Rate limiting on auth, OAuth and public approval endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md)); older per-process limiters (passkey challenges, email resend, OTLP ingest) not yet migrated
+- [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
 - [ ] 2FA/MFA support for user accounts
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)

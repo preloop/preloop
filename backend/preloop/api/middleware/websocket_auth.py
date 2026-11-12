@@ -165,6 +165,9 @@ class WebSocketAuthMiddleware:
                 user = crud_user.get(db, id=user_id)
                 if user and user.is_active:
                     reject_revoked_token(db, user, token_data)
+                    # Preserve already-verified claims for the live watcher;
+                    # the JWT can expire while the handler finishes setup.
+                    user._auth_token_data = token_data
                     return detach_user(db, user)
                 return None
 
