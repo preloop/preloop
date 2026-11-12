@@ -83,6 +83,47 @@ def mode_map(variable: str, text: str) -> Dict[str, str]:
     return entries
 
 
+def console_flag(text: str, key: str) -> str:
+    """Evaluate the ``$preloop_csp_console`` map for ``$upstream_addr:$uri``.
+
+    nginx checks the map's regex keys in order and falls back to ``default``;
+    the keys here are plain PCRE that Python's ``re`` reads the same way.
+    """
+    match = re.search(
+        r'map "\$upstream_addr:\$uri" \$preloop_csp_console \{(.*?)\n\}',
+        text,
+        re.DOTALL,
+    )
+    assert match, "no $preloop_csp_console map keyed on $upstream_addr:$uri"
+    default = None
+    for raw_key, value in re.findall(
+        r'^\s*("[^"]*"|default)\s+(\S+);\s*$', match.group(1), re.MULTILINE
+    ):
+        if raw_key == "default":
+            default = value
+            continue
+        pattern = raw_key.strip('"')
+        assert pattern.startswith("~"), f"non-regex key {pattern}"
+        if re.search(pattern[1:], key):
+            return value
+    assert default is not None
+    return default
+
+
+# (``$upstream_addr:$uri``, expected flag): 1 gets the new policy.
+CONSOLE_FLAG_CASES = [
+    (":/index.html", "1"),
+    (":/vs/aws-agentcore.html", "1"),
+    (":/assets/main.js", "1"),
+    (":/administrator.html", "1"),
+    (":/admin", "0"),
+    (":/admin/index.html", "0"),
+    (":/admin/assets/app.js", "0"),
+    ("10.0.0.5:80:/api/v1/health", "0"),
+    ("10.0.0.5:80:/approval/abc", "0"),
+]
+
+
 def run_envsh(env: Dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Source the envsh the way the nginx entrypoint does and print its output."""
     script = (
@@ -134,13 +175,11 @@ def test_docker_maps_pick_headers_per_mode() -> None:
     """protects=acceptance criteria 1 and 2 of #2280 (report-only keeps the
     legacy header and adds the new one; enforce sends only the new one;
     legacy only the old one); fails_when=a mode sends the wrong header set,
-    or a proxied API response gets the new policy; no_claim=nginx map
-    evaluation at runtime (smoke test)."""
+    or a proxied API response or the /admin SPA gets the new policy;
+    no_claim=nginx map evaluation at runtime (smoke test)."""
     text = DOCKER_TEMPLATE.read_text()
-    assert re.search(
-        r'map \$upstream_addr \$preloop_csp_console \{\s*""\s+1;\s*default\s+0;',
-        text,
-    )
+    for key, flag in CONSOLE_FLAG_CASES:
+        assert console_flag(text, key) == flag, key
     enforcing = mode_map("preloop_csp", text)
     report_only = mode_map("preloop_csp_report_only", text)
     assert enforcing == {

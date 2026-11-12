@@ -358,19 +358,24 @@ Call with (list "<values key>" <value>).
 {{- end }}
 
 {{/*
-Origin (scheme://host[:port]) of analytics.scriptUrl, or "" when analytics is
-off or a customSnippet replaces the built-in tag. The built-in tag loads its
-script from this origin and the Plausible-style script posts events back to
-it, so it goes into both script-src and connect-src.
+Origin of analytics.scriptUrl for the CSP, or "" when analytics is off, a
+customSnippet replaces the built-in tag, or the URL is same-origin. The
+built-in tag loads its script from this origin and the Plausible-style
+script posts events back to it, so it goes into both script-src and
+connect-src. https://traffic.example.com/js/script.js gives
+https://traffic.example.com; a protocol-relative //cdn.example.com/s.js
+gives the host source cdn.example.com; a relative /js/script.js (a tracker
+proxied under the console's own domain) gives "", since 'self' covers it.
 */}}
 {{- define "preloop.analyticsOrigin" -}}
 {{- $a := .Values.analytics -}}
 {{- if and $a.enabled (not $a.customSnippet) $a.scriptUrl -}}
 {{- $url := urlParse $a.scriptUrl -}}
-{{- if or (not $url.scheme) (not $url.host) -}}
-{{- fail (printf "analytics.scriptUrl must be an absolute URL such as https://traffic.example.com/js/script.js, got %q" $a.scriptUrl) -}}
-{{- end -}}
+{{- if and $url.scheme $url.host -}}
 {{- printf "%s://%s" $url.scheme $url.host -}}
+{{- else if $url.host -}}
+{{- $url.host -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -384,10 +389,10 @@ frontend/docker/nginx.conf.template (backend/tests check parity).
   enforce      the new policy as Content-Security-Policy, nothing else
   legacy       the legacy Content-Security-Policy only
 
-The new policy covers what this nginx serves from the console build. A
-response proxied from the API ($upstream_addr is set) keeps the legacy
-header in every mode: the API's own HTML pages are not covered by the
-console's violation sweep.
+The new policy covers what this nginx serves from the console build.
+Responses proxied from the API ($upstream_addr is set) and the separate
+admin SPA under /admin keep the legacy header in every mode: the console's
+violation sweep loads neither.
 */}}
 {{- define "preloop.nginxCspMap" -}}
 {{- $csp := .Values.securityHeaders.csp | default dict -}}
@@ -412,8 +417,12 @@ map "" $preloop_csp_policy {
     default "default-src 'self'; script-src {{ join " " $scriptSrc }}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src {{ join " " $connectSrc }}; media-src 'self' blob:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
 }
 
-map $upstream_addr $preloop_csp_console {
-    "" 1;
+# 1 for what nginx serves from the console build, 0 for proxied responses
+# ($upstream_addr set) and the separate admin SPA under /admin, which the
+# console's violation sweep does not load.
+map "$upstream_addr:$uri" $preloop_csp_console {
+    "~^:/admin(/|$)" 0;
+    "~^:" 1;
     default 0;
 }
 

@@ -282,7 +282,7 @@ def test_hsts_only_over_https_and_exactly_once(
     ]
 
 
-STATIC_PATHS = ("/", "/console/", "/login", "/admin/", "/assets/app.js")
+STATIC_PATHS = ("/", "/console/", "/login", "/assets/app.js")
 
 
 @pytest.mark.parametrize("path", STATIC_PATHS)
@@ -313,14 +313,17 @@ def test_csp_headers_per_mode_on_console_responses(
     assert _values(headers, "content-security-policy-report-only") == []
 
 
+@pytest.mark.parametrize("path", ("/api/v1/health", "/admin/", "/admin/console"))
 @pytest.mark.parametrize("label", ("default", "enforce", "legacy"))
-def test_proxied_api_responses_keep_the_legacy_csp(
-    stack: Dict[str, int], label: str
+def test_proxied_and_admin_responses_keep_the_legacy_csp(
+    stack: Dict[str, int], label: str, path: str
 ) -> None:
-    """protects=the API's own pages, which the console sweep does not cover;
-    fails_when=a proxied response gets the new policy in any mode;
-    no_claim=the real API (a stub upstream stands in)."""
-    _, headers = _request(stack[label], "/api/v1/health")
+    """protects=the API's own pages and the separate admin SPA, which the
+    console sweep does not load; fails_when=a proxied or /admin response gets
+    the new policy in any mode; no_claim=the real API and admin build (a stub
+    upstream and a stub admin/index.html stand in)."""
+    status, headers = _request(stack[label], path)
+    assert status == 200, path
     assert _values(headers, "content-security-policy") == [LEGACY_CSP]
     assert _values(headers, "content-security-policy-report-only") == []
 

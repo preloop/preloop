@@ -18,7 +18,9 @@ from tests.helm.chart_helpers import (
     resolve_values_path,
 )
 from tests.test_nginx_csp import (
+    CONSOLE_FLAG_CASES,
     LEGACY_CSP,
+    console_flag,
     directives,
     docker_effective_policy,
     needs_sh,
@@ -100,8 +102,9 @@ def test_rendered_maps_pick_headers_per_mode(
 ) -> None:
     """protects=acceptance criteria 1 and 2 of #2280 on Kubernetes installs;
     fails_when=a mode renders the wrong value for either header on console
-    responses, or proxied responses lose the legacy header; no_claim=nginx
-    map evaluation at runtime (the Docker smoke test runs real nginx)."""
+    responses, or proxied responses or the /admin SPA lose the legacy
+    header; no_claim=nginx map evaluation at runtime (the Docker smoke test
+    runs real nginx)."""
     conf = _conf([f"securityHeaders.csp.mode={mode}"])
     csp = _mode_map(conf, "preloop_csp")
     ro = _mode_map(conf, "preloop_csp_report_only")
@@ -109,13 +112,12 @@ def test_rendered_maps_pick_headers_per_mode(
     hit = f"{mode}:1"
     assert csp.get(hit, csp["default"]) == enforcing
     assert ro.get(hit, ro["default"]) == report_only
-    # Proxied responses ($preloop_csp_console = 0) keep the legacy header only.
+    # Proxied responses and /admin ($preloop_csp_console = 0) keep the legacy
+    # header only.
     assert csp["default"] == f'"{LEGACY_CSP}"'
     assert ro["default"] == '""'
-    assert re.search(
-        r'map \$upstream_addr \$preloop_csp_console \{\s*""\s+1;\s*default\s+0;',
-        conf,
-    )
+    for key, flag in CONSOLE_FLAG_CASES:
+        assert console_flag(conf, key) == flag, key
 
 
 def test_rendered_enforced_script_src_has_no_inline_or_scheme_sources() -> None:
@@ -164,7 +166,8 @@ def test_analytics_origin_and_bootstrap_file() -> None:
     injected = sub_filter.group(1)
     assert injected.startswith('<script src="/analytics-queue.js"></script>')
     assert "window.plausible" not in injected
-    assert re.findall(r"<script[^>]*>", injected) == [
+    # Case-insensitive: an upper-case <SCRIPT> tag would run inline too.
+    assert re.findall(r"<script\b[^>]*>", injected, re.IGNORECASE) == [
         '<script src="/analytics-queue.js">',
         '<script defer data-domain="console.example.test" '
         'src="https://traffic.example.test/js/script.js">',
@@ -244,3 +247,31 @@ def test_helm_and_docker_send_the_same_policy(
     build the extra sources differently; no_claim=analytics (Docker has no
     analytics injection)."""
     assert _policy(_conf(strings=helm)) == docker_effective_policy(env)
+
+
+@pytest.mark.parametrize(
+    ("script_url", "origin"),
+    [
+        ("/js/script.js", None),
+        ("//cdn.example.test/js/script.js", "cdn.example.test"),
+        ("http://127.0.0.1:8000/js/script.js", "http://127.0.0.1:8000"),
+    ],
+)
+def test_analytics_script_url_forms(script_url: str, origin: str | None) -> None:
+    """protects=analytics configurations that rendered before this change: a
+    tracker proxied under the console's domain (relative URL) and a
+    protocol-relative URL; fails_when=either fails the render, a relative URL
+    adds a source, or a protocol-relative one loses its host;
+    no_claim=that the tracker is reachable at that URL."""
+    conf = _conf(
+        [
+            "analytics.enabled=true",
+            "analytics.domain=console.example.test",
+            f"analytics.scriptUrl={script_url}",
+        ]
+    )
+    found = dict(directives(_policy(conf)))
+    extra = f" {origin}" if origin else ""
+    assert found["script-src"] == f"'self'{extra}"
+    assert found["connect-src"] == f"'self' ws: wss: data:{extra}"
+    assert f'src="{script_url}"' in conf
