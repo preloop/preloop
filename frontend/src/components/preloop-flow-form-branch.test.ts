@@ -98,10 +98,10 @@ describe('PreloopFlowForm checkout branch fields', () => {
     const alert = warning(element);
     expect(alert).to.exist;
     expect(alert!.getAttribute('variant')).to.equal('warning');
-    expect(alert!.textContent).to.include('master');
-    expect(alert!.textContent).to.include(
-      "pull or merge request's source branch"
-    );
+    const text = (alert!.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.include('pins master');
+    expect(text).to.include('When the trigger carries no head commit');
+    expect(text).to.include("pull or merge request's source branch");
   });
 
   it('warns as soon as a branch is typed and clears when it is removed', async () => {
@@ -155,5 +155,33 @@ describe('PreloopFlowForm checkout branch fields', () => {
         repositories: [{ branch: 'main' }, { branch: '' }, { branch: 'dev' }],
       })
     ).to.deep.equal(['main', 'dev']);
+  });
+
+  async function submittedGit(
+    element: PreloopFlowForm
+  ): Promise<Record<string, unknown>> {
+    const listener = sandbox.spy();
+    element.addEventListener('flow-submit', listener);
+    await (element as any).handleFormSubmit(new Event('submit'));
+    expect(listener.callCount).to.equal(1);
+    return listener.firstCall.args[0].detail.flow.git_clone_config;
+  }
+
+  it('saves a blank or cleared source branch as null, not the server default', async () => {
+    const blank = await mount(reviewerFlow({}));
+    expect((await submittedGit(blank)).source_branch).to.equal(null);
+    fixtureCleanup();
+
+    const cleared = await mount(reviewerFlow({ source_branch: 'master' }));
+    const control = sourceBranch(cleared);
+    control.value = '  ';
+    control.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    await cleared.updateComplete;
+    expect((await submittedGit(cleared)).source_branch).to.equal(null);
+  });
+
+  it('saves a pinned source branch as typed', async () => {
+    const element = await mount(reviewerFlow({ source_branch: 'release/1.0' }));
+    expect((await submittedGit(element)).source_branch).to.equal('release/1.0');
   });
 });

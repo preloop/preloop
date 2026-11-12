@@ -123,7 +123,9 @@ describe('PreloopFlowForm copy', () => {
     const git = listener.firstCall.args[0].detail.flow.git_clone_config;
     expect(git).to.not.have.property('git_user_name');
     expect(git).to.not.have.property('git_user_email');
-    expect(git).to.not.have.property('source_branch');
+    // A blank source branch is sent as null so it follows the trigger's
+    // branch; an absent key would take the server's `main` default (#2211).
+    expect(git.source_branch).to.equal(null);
   });
 
   it('offers "Add new tracker" in sentence case', async () => {

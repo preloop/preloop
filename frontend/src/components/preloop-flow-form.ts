@@ -1732,7 +1732,12 @@ export class PreloopFlowForm extends LitElement {
 
   /** Explicit repositories imply cloning to legacy executors, even if disabled. */
   private composedGitCloneConfig(): GitCloneConfig {
-    const config = this.flow.git_clone_config || { enabled: false };
+    let config = this.flow.git_clone_config || { enabled: false };
+    if (config.enabled && !(config.source_branch || '').trim()) {
+      // Blank means "follow the trigger's branch" (#2211). Send an explicit
+      // null: an absent key takes the server's `main` default and pins it.
+      config = { ...config, source_branch: null };
+    }
     return !config.enabled && config.repositories?.length
       ? { ...config, repositories: [] }
       : config;
@@ -4570,9 +4575,10 @@ export class PreloopFlowForm extends LitElement {
       style="grid-column: 1 / -1;"
     >
       <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-      This reviewer flow pins ${names}. Every run starts from that branch
-      instead of the pull or merge request's source branch, so the review can
-      see the wrong code. Clear the branch fields to review each change.
+      This reviewer flow pins ${names}. When the trigger carries no head commit,
+      runs start from that branch instead of the pull or merge request's source
+      branch, so the review can see the wrong code. Clear the branch fields to
+      review each change.
     </sl-alert>`;
   }
 

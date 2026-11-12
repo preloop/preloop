@@ -464,7 +464,8 @@ Target Branch:       # Branch to create for commits (auto-generated if empty)
 
 **Source branch** is optional, and blank is usually right. Blank means "use
 the branch from the trigger payload": for a pull or merge request, its source
-branch. A value pins every run to that branch, whatever branch the trigger
+branch. The form saves a blank field as `null`; a flow created through the API
+with `source_branch` omitted gets `main`, so send `null` explicitly there. A value pins every run to that branch, whatever branch the trigger
 names. Pin a branch only for flows that always work on the same branch, such
 as a scheduled sweep of `main`. A pull request reviewer must leave it blank, or
 every review starts from the pinned branch instead of the change under review;
