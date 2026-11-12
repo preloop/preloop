@@ -173,6 +173,23 @@ analytics:
   # Must not contain single quotes (nginx sub_filter delimiter).
   customSnippet: ""
 
+# Response security headers sent by the console nginx and the API.
+securityHeaders:
+  # Strict-Transport-Security, sent only on requests that arrived over HTTPS
+  # (X-Forwarded-Proto: https or an https scheme). Browsers cache the policy
+  # for maxAge seconds and refuse plain HTTP for the host meanwhile: use a
+  # short maxAge for a first rollout on a host that may go back to HTTP.
+  # See docs/operations/tls.md.
+  hsts:
+    enabled: true
+    maxAge: 31536000
+    # Applies the policy to every subdomain too. Only enable when all of them
+    # serve HTTPS.
+    includeSubDomains: false
+    # Requires includeSubDomains=true and maxAge >= 31536000; the chart
+    # refuses to render otherwise. Does not submit anything to the preload list.
+    preload: false
+
 # Image pull secrets
 imagePullSecrets: []
 

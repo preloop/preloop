@@ -610,7 +610,8 @@ def test_derive_outcome_treats_allowlist_denial_as_budget_denied():
     detail = (
         "Model 'vendor/alpha-chat' is not in this agent's allowed models "
         "(Alpha Chat). Edit the agent's governance in the Preloop console or "
-        "pick an allowed model."
+        "pick an allowed model, then run `preloop agents refresh` to update "
+        "the local model pins."
     )
     assert ModelGatewayEventEmitter._derive_outcome(403, detail) == "budget_denied"
 

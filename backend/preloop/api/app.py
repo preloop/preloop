@@ -1726,6 +1726,13 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RestrictedCiAuthMiddleware)
 
+    # HSTS settings are validated here so an invalid HSTS_PRELOAD combination
+    # refuses to start the service (#2279). The middleware is registered after
+    # plugin middlewares below so it stays outermost.
+    from preloop.api.middleware.hsts import HSTSMiddleware, HSTSSettings
+
+    hsts_settings = HSTSSettings.from_env()
+
     # --- Local API docs assets ---
     # Serve the pinned Swagger UI and ReDoc bundles from the API origin so the
     # documentation pages render on air-gapped installs and under a strict CSP
@@ -1931,6 +1938,10 @@ def create_app() -> FastAPI:
             app.dependency_overrides.update(plugin.get_dependencies())
             for middleware in plugin.get_middlewares():
                 app.add_middleware(middleware)
+
+    # Last added is outermost in Starlette: every response, including early
+    # denials from core or plugin middlewares, gets HSTS on HTTPS requests.
+    app.add_middleware(HSTSMiddleware, settings=hsts_settings)
 
     if is_api_role:
         if plugin_manager is None:

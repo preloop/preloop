@@ -12,6 +12,10 @@ services:
     environment:
       - API_URL=http://backend:8000
       - MOCK_API=false
+      - HSTS_ENABLED=${HSTS_ENABLED:-true}
+      - HSTS_MAX_AGE=${HSTS_MAX_AGE:-31536000}
+      - HSTS_INCLUDE_SUBDOMAINS=${HSTS_INCLUDE_SUBDOMAINS:-false}
+      - HSTS_PRELOAD=${HSTS_PRELOAD:-false}
     depends_on:
       - backend
     networks:

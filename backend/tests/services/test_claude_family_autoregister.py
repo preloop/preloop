@@ -610,3 +610,90 @@ def test_verified_outcome_is_positive_cached(db_session, test_user, monkeypatch)
     assert first == "verified"
     assert second == "verified"
     assert calls == ["claude-sonnet-4-9"]
+
+
+def _set_agent_allowlist(db_session, test_user, agent, allowed: list[str]) -> None:
+    from preloop.models.crud import crud_account
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_MANAGED_AGENTS,
+        set_subject_governance,
+    )
+
+    account = crud_account.get(db_session, id=test_user.account_id)
+    meta = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+        subject_id=str(agent.id),
+        config={"allowed_models": allowed},
+    )
+    crud_account.update(db_session, db_obj=account, obj_in={"meta_data": meta})
+
+
+def _agent_allowlist(db_session, test_user, agent) -> list[str]:
+    from preloop.models.crud import crud_account
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_MANAGED_AGENTS,
+        get_subject_governance,
+    )
+
+    account = crud_account.get(db_session, id=test_user.account_id)
+    db_session.refresh(account)
+    config = get_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+        subject_id=str(agent.id),
+    )
+    return list(config.get("allowed_models") or [])
+
+
+def test_autoregistered_newer_release_denied_with_refresh_remediation(
+    db_session, test_user
+):
+    """A new release of an allowed family is registered but still denied.
+
+    The gateway never widens a governance allowlist on the request path. The
+    403 must say the model is a newer release of an allowed one and name
+    ``preloop agents refresh`` as the fix, so the operator is not left with
+    the generic denial.
+    """
+    agent, _pinned, service = _enrolled_service(db_session, test_user)
+    _set_agent_allowlist(db_session, test_user, agent, [PINNED_ALIAS])
+    service = OpenAIGatewayService(db_session, service.auth_context)
+
+    resolved = service._resolve_requested_model(
+        "anthropic/claude-fable-5-1", provider="anthropic"
+    )
+    assert resolved.model_identifier == "claude-fable-5-1"
+
+    with pytest.raises(ModelGatewayAPIError) as err:
+        service._raise_if_model_not_allowed(
+            resolved, {"model": "anthropic/claude-fable-5-1"}
+        )
+    assert err.value.status_code == 403
+    detail = str(err.value.message)
+    assert "is not in this agent's allowed models" in detail
+    assert f"newer release of '{PINNED_ALIAS}'" in detail
+    assert "preloop agents refresh" in detail
+    assert _agent_allowlist(db_session, test_user, agent) == [PINNED_ALIAS]
+
+
+def test_autoregistered_model_outside_allowed_family_gets_generic_denial(
+    db_session, test_user
+):
+    """An allowlist that does not name the family keeps the generic denial."""
+    agent, _pinned, service = _enrolled_service(db_session, test_user)
+    _set_agent_allowlist(
+        db_session, test_user, agent, [PINNED_ALIAS, "anthropic/claude-opus-5-5"]
+    )
+    service = OpenAIGatewayService(db_session, service.auth_context)
+
+    resolved = service._resolve_requested_model(
+        "anthropic/claude-haiku-5-5", provider="anthropic"
+    )
+    with pytest.raises(ModelGatewayAPIError) as err:
+        service._raise_if_model_not_allowed(
+            resolved, {"model": "anthropic/claude-haiku-5-5"}
+        )
+    detail = str(err.value.message)
+    assert "newer release" not in detail
+    assert "preloop agents refresh" in detail

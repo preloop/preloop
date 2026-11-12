@@ -22,7 +22,10 @@ from preloop.api.auth.jwt import (
     _runtime_session_id_from_api_key,
 )
 from preloop.api.loop_safety import run_db_off_loop
-from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
+from preloop.api.auth.key_scopes import (
+    enforce_runtime_api_key_scope,
+    is_read_only_review_api_key,
+)
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
@@ -97,12 +100,23 @@ def _flow_id_from_context(context: dict) -> Optional[UUID]:
         return None
 
 
-def _resolve_permission_identity(token: str) -> PermissionIdentity:
+def _resolve_permission_identity(
+    token: str, *, allow_read_only_review: bool = False
+) -> PermissionIdentity:
     """Authenticate in one worker-owned session, closed before approval waits."""
     with get_session_factory()() as db:
         api_key = crud_api_key.get_by_key(db, key=token)
-        user = _authenticate_with_api_key(db, api_key, allow_managed_agent=True)
-        enforce_runtime_api_key_scope(api_key)
+        restricted_review = allow_read_only_review and is_read_only_review_api_key(
+            api_key
+        )
+        user = _authenticate_with_api_key(
+            db,
+            api_key,
+            allow_managed_agent=True,
+            allow_read_only_review=restricted_review,
+        )
+        if not restricted_review:
+            enforce_runtime_api_key_scope(api_key)
         managed_agent = _managed_agent_for_api_key(db, api_key)
         runtime_session = None
         runtime_session_id = _runtime_session_id_from_api_key(api_key)
@@ -132,6 +146,22 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
                     detail="Token is not bound to a managed agent or active flow execution",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+        # Only permission-check and own-request expiry opt in. A review key
+        # gains no general runtime access and still needs an exact live binding.
+        if restricted_review and not (
+            api_key.scopes == ["mcp:read"]
+            and context.get("allowed_mcp_tools") == []
+            and context.get("allowed_mcp_servers") == []
+            and managed_agent is None
+            and _flow_id_from_context(context) is not None
+            and _flow_execution_id_from_context(context) is not None
+            and principal.get("type") == "flow_execution"
+            and principal.get("id") == str(context.get("flow_execution_id"))
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Read-only native permission credential binding is invalid",
+            )
         return PermissionIdentity(
             account_id=str(api_key.account_id),
             user_id=user.id,
@@ -727,7 +757,9 @@ async def agent_permission_check(
 
     # Preserve the existing credential/binding checks, but keep all ORM access
     # and pool waits off the event loop. No session survives this await.
-    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    identity = await run_db_off_loop(
+        lambda: _resolve_permission_identity(token, allow_read_only_review=True)
+    )
     if identity.runtime_session_id is None and identity.managed_agent_id is not None:
         # A durable hook credential names the agent but no session. Without a
         # session, a note sent to the agent's session is never claimed here,
@@ -996,7 +1028,9 @@ async def expire_approval_by_hook(
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = authorization.split(" ", 1)[1].strip()
-    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    identity = await run_db_off_loop(
+        lambda: _resolve_permission_identity(token, allow_read_only_review=True)
+    )
     if not await run_db_off_loop(lambda: _owned_approval_exists(identity, approval_id)):
         raise HTTPException(status_code=404, detail="Approval request not found")
 
