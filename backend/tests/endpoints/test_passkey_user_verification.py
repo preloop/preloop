@@ -204,3 +204,24 @@ def test_options_request_required_and_rollback_switch_restores_preferred(
     assert login["options"]["userVerification"] == "preferred"
     response, _ = _authenticate(user, Authenticator(), user_verified=False)
     assert response.status_code == 200, response.text
+
+
+def test_passkey_only_person_is_asked_for_uv_while_switch_is_off(
+    user, monkeypatch: pytest.MonkeyPatch
+):
+    """protects=registration options match what verification enforces for a
+    passkey-only person while the rollback switch is off;
+    fails_when=options say "preferred" or a no-UV attestation is stored for them;
+    no_claim=browser behaviour; the DB is a MagicMock with patched CRUD."""
+    monkeypatch.setenv("PASSKEYS_REQUIRE_USER_VERIFICATION", "false")
+    user.passkey_only = True
+    with patch("preloop.api.auth.webauthn_router.crud_webauthn_credential") as crud:
+        crud.list_for_person.return_value = []
+        register = client.post("/auth/webauthn/register/options").json()
+    assert register["options"]["authenticatorSelection"]["userVerification"] == (
+        "required"
+    )
+    response, crud = _register(user, Authenticator(), user_verified=False)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == UV_CODE
+    crud.create.assert_not_called()

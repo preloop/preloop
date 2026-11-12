@@ -331,7 +331,11 @@ def registration_options(
         exclude_credentials=exclude,
         authenticator_selection=AuthenticatorSelectionCriteria(
             resident_key=ResidentKeyRequirement.REQUIRED,
-            user_verification=_user_verification(),
+            user_verification=(
+                UserVerificationRequirement.REQUIRED
+                if _uv_required_for(db, person.id)
+                else UserVerificationRequirement.PREFERRED
+            ),
         ),
     )
 
