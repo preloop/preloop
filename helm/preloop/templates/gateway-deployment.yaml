@@ -288,6 +288,7 @@ spec:
             - name: GITLAB_OAUTH_BASE_URL
               value: {{ .Values.gitlabOauth.baseUrl | quote }}
             {{- end }}
+            {{- include "preloop.hstsEnv" . | nindent 12 }}
             {{- include "preloop.extraEnv" . | nindent 12 }}
             {{- with include "preloop.otlpEnv" . }}
             {{- . | nindent 12 }}

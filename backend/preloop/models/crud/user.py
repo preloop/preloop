@@ -475,7 +475,9 @@ class CRUDUser(CRUDBase[models.User]):
         db.refresh(user)
         return user
 
-    def bump_auth_generation(self, db: Session, user_id: Any) -> int:
+    def bump_auth_generation(
+        self, db: Session, user_id: Any, *, fanout: bool = True, commit: bool = True
+    ) -> int:
         """Atomically increment the user's JWT generation and return it.
 
         When a revoke fan-out is registered (account hook H2), the rows it
@@ -484,6 +486,9 @@ class CRUDUser(CRUDBase[models.User]):
         Args:
             db: Database session.
             user_id: User whose outstanding JWT sessions should be revoked.
+            fanout: Include extension-selected memberships. Account-scoped
+                administrative revocation disables this explicitly.
+            commit: Commit here, or let the caller include its audit record.
 
         Returns:
             The new ``auth_generation`` value.
@@ -491,6 +496,8 @@ class CRUDUser(CRUDBase[models.User]):
         Raises:
             ValueError: If no user exists with ``user_id``.
         """
+        from preloop.models.crud.auth_revocation import stage_revocation
+
         stmt = (
             update(models.User)
             .where(models.User.id == user_id)
@@ -501,8 +508,13 @@ class CRUDUser(CRUDBase[models.User]):
         row = result.first()
         if row is None:
             raise ValueError(f"User {user_id} not found")
-        self._bump_fanned_out_generations(db, user_id)
-        db.commit()
+        stage_revocation(db, user_id=user_id, generation=int(row[0]))
+        if fanout:
+            self._bump_fanned_out_generations(db, user_id)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return int(row[0])
 
     def _bump_fanned_out_generations(self, db: Session, user_id: Any) -> None:
@@ -511,6 +523,7 @@ class CRUDUser(CRUDBase[models.User]):
         Without a registered fan-out this does nothing and issues no query.
         """
         from preloop.plugins.account_hooks import get_revoke_fanout
+        from preloop.models.crud.auth_revocation import stage_revocation
 
         fanout = get_revoke_fanout()
         if fanout is None:
@@ -519,12 +532,15 @@ class CRUDUser(CRUDBase[models.User]):
         others.discard(str(user_id))
         if not others:
             return
-        db.execute(
+        changed = db.execute(
             update(models.User)
             .where(models.User.id.in_([uuid.UUID(other) for other in others]))
             .values(auth_generation=models.User.auth_generation + 1)
             .execution_options(synchronize_session=False)
-        )
+            .returning(models.User.id, models.User.auth_generation)
+        ).all()
+        for affected_id, generation in changed:
+            stage_revocation(db, user_id=affected_id, generation=generation)
 
 
 # Create instance

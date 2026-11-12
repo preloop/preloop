@@ -60,6 +60,7 @@ from preloop.api.auth.jwt import (
 from preloop.models.crud import crud_audit_log, crud_person, crud_webauthn_credential
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
+from preloop.services.rate_limit import AUTH_PASSKEY_CHALLENGE, enforce
 from preloop.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -92,39 +93,36 @@ def _require_enabled() -> None:
 # ---------------------------------------------------------------------------
 # The challenge endpoints sign a JWT per call, and /authenticate/options is
 # unauthenticated, so an anonymous caller could burn CPU on JWT signing and
-# option generation. Simple in-process sliding-window per-IP throttle; the
-# tokens are stateless so there is no storage to exhaust, only CPU to protect.
-# Multi-replica deployments get N x the budget, which is acceptable for this
-# purpose (protecting compute, not enforcing a strict global quota).
+# option generation. Throttled per client address on the shared limiter
+# (rule ``auth.passkey_challenge``), so every API replica draws from one
+# budget. ``WEBAUTHN_CHALLENGE_RATE_LIMIT`` keeps setting the per-minute
+# limit; ``RATE_LIMIT_AUTH_PASSKEY_CHALLENGE`` overrides it like any rule.
 
 _RATE_LIMIT_MAX_CALLS = int(os.getenv("WEBAUTHN_CHALLENGE_RATE_LIMIT", "30"))
 _RATE_LIMIT_WINDOW_SECONDS = 60
+# Counters live in the shared limiter now. Kept empty so code that cleared
+# the old in-process map keeps working; nothing reads it.
 _rate_buckets: dict[str, list[float]] = {}
+_CHALLENGE_RATE_LIMITED_MESSAGE = (
+    "Too many passkey challenge requests; try again shortly"
+)
 
 
 def _check_challenge_rate_limit(request: Request) -> None:
-    import time
+    """Charge one challenge to the caller's address; 429 when over budget.
 
-    ip = get_client_ip(request)
-    now = time.monotonic()
-    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+    Args:
+        request: Incoming request; keyed by :func:`get_client_ip` as before.
 
-    bucket = [t for t in _rate_buckets.get(ip, []) if t > window_start]
-    if len(bucket) >= _RATE_LIMIT_MAX_CALLS:
-        _rate_buckets[ip] = bucket
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many passkey challenge requests; try again shortly",
-        )
-    bucket.append(now)
-    _rate_buckets[ip] = bucket
-
-    # Opportunistic cleanup so the map cannot grow unbounded across many IPs.
-    if len(_rate_buckets) > 10_000:
-        for stale_ip in [
-            k for k, v in _rate_buckets.items() if not v or v[-1] <= window_start
-        ]:
-            _rate_buckets.pop(stale_ip, None)
+    Raises:
+        RateLimitExceeded: 429 ``rate_limited`` with ``Retry-After``.
+    """
+    enforce(
+        AUTH_PASSKEY_CHALLENGE,
+        get_client_ip(request),
+        default=(_RATE_LIMIT_MAX_CALLS, _RATE_LIMIT_WINDOW_SECONDS),
+        detail=_CHALLENGE_RATE_LIMITED_MESSAGE,
+    )
 
 
 def _rp_id(request: Request) -> str:

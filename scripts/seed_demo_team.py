@@ -925,10 +925,28 @@ class Seeder:
 
     def agent_activity(self) -> None:
         """Agentic sessions with tool, work_ref, approval and model activity."""
+        # The weekly and monthly budget cards are sized from the current
+        # period's spend. Early in a week or month that bucket may hold only
+        # minutes of random usage, so the first sessions are pinned to it.
+        # They start at least two hours before ``now`` when the period allows,
+        # so their calls do not spill into the next period.
+        pinned = {
+            0: ("claude_code", get_period_start(self.now, BudgetPeriod.weekly)),
+            1: ("codex", get_period_start(self.now, BudgetPeriod.monthly)),
+        }
+        by_key = {a.key: a for a in AGENTS}
         for n in range(self.days * 4 * self.scale):
-            spec = self.rng.choice(AGENTS)
+            if n in pinned:
+                key, period_start = pinned[n]
+                assert period_start is not None
+                spec = by_key[key]
+                at = self._when(
+                    period_start, max(period_start, self.now - timedelta(hours=2))
+                )
+            else:
+                spec = self.rng.choice(AGENTS)
+                at = self._when(self.start)
             agent_id = self.agent_ids[spec.key]
-            at = self._when(self.start)
             session_id = sid("agent-session", n)
             open_prs = [p for p in self.prs if p.created <= at]
             open_issues = [i for i in self.issues if i.created <= at] or self.issues

@@ -6,10 +6,10 @@ description: The open-source AI agent control plane and software factory. MCP fi
 type: application
 
 # Chart version
-version: 1.0.1
+version: 1.0.2
 
 # Application version
-appVersion: "1.0.1"
+appVersion: "1.0.2"
 
 # Keywords for the chart
 keywords:

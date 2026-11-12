@@ -7936,6 +7936,19 @@ export async function updateUser(
   return response.json();
 }
 
+export async function revokeMemberSessions(userId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/users/${userId}/sessions/revoke-all`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to sign member out')
+    );
+  }
+}
+
 export async function deactivateUser(userId: string): Promise<void> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/users/${userId}/deactivate`,

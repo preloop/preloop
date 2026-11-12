@@ -43,6 +43,8 @@ def owners(db: Session, *, account_id: UUID) -> list[models.User]:
 
 def revoke_non_sso(db: Session, *, account_id: UUID, domains: set[str]) -> int:
     """Bump matching memberships only, without changing the canonical person."""
+    from preloop.models.crud.auth_revocation import stage_revocation
+
     domains = {canonical_domain(domain) for domain in domains}
     domains.discard("")
     rows = list(
@@ -58,6 +60,9 @@ def revoke_non_sso(db: Session, *, account_id: UUID, domains: set[str]) -> int:
     for user, email in rows:
         if email_domain(email) in domains:
             user.non_sso_auth_generation += 1
+            stage_revocation(
+                db, user_id=user.id, generation=user.non_sso_auth_generation
+            )
             count += 1
     db.flush()
     return count
