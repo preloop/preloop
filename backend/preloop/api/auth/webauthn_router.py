@@ -111,6 +111,21 @@ _UV_REQUIRED_MESSAGE = (
 )
 
 
+def _uv_required_for(db: Session, person_id: uuid.UUID) -> bool:
+    """Whether this person's ceremonies must carry the UV flag.
+
+    The rollback switch never weakens a person who opted into passkey-only
+    sign-in: they enabled it under the UV requirement, and with their
+    password refused, a passkey without UV would be their only factor.
+    """
+    if user_verification_required():
+        return True
+    return any(
+        is_passkey_only(membership)
+        for membership in crud_person.list_memberships(db, person_id=person_id)
+    )
+
+
 def _raise_if_user_not_verified(error: Exception) -> None:
     """Map the library's missing-UV-flag rejection to a stable 400 code."""
     if "user verification is required" in str(error).lower():
@@ -358,7 +373,7 @@ def registration_verify(
             expected_challenge=payload["challenge_bytes"],
             expected_rp_id=_rp_id(request),
             expected_origin=_expected_origin(request),
-            require_user_verification=user_verification_required(),
+            require_user_verification=_uv_required_for(db, person.id),
         )
     except InvalidRegistrationResponse as e:
         logger.warning(f"Passkey registration verification failed: {e}")
@@ -513,7 +528,7 @@ def _authentication_verify(
             expected_origin=_expected_origin(request),
             credential_public_key=base64.urlsafe_b64decode(public_key_padded),
             credential_current_sign_count=cred.sign_count,
-            require_user_verification=user_verification_required(),
+            require_user_verification=_uv_required_for(db, cred.person_id),
         )
     except InvalidAuthenticationResponse as e:
         logger.warning(f"Passkey authentication verification failed: {e}")
@@ -739,10 +754,17 @@ def _require_fresh_passkey_session(request: Request, user: User) -> dict:
     Raises:
         HTTPException: 403 ``passkey_sign_in_required`` otherwise.
     """
+    from preloop.api.auth.jwt import decode_token
     from preloop.services.authentication_policy import request_authentication_context
 
     try:
         claims = request_authentication_context(request, user)
+        # A CLI login token (sid) is bound to its cli_session row; reissuing
+        # an unbound console pair from it would escape per-login revocation,
+        # the same reason /auth/refresh refuses sid tokens.
+        bearer = request.headers.get("authorization", "").partition(" ")[2]
+        if decode_token(bearer).sid is not None:
+            claims = {}
     except HTTPException:
         claims = {}
     auth_time = claims.get("auth_time")

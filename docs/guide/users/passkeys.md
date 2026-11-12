@@ -67,4 +67,13 @@ fall back to `preferred` verification, and nobody can newly turn on
 passkey-only sign-in until it is set back. Users who already turned it on stay
 enforced and keep signing in with their passkey.
 
+The UV requirement stays on for anyone who already turned on passkey-only
+sign-in, even while the switch is off: with their password refused, a
+passkey without verification would be their only factor.
+
+Do not set `PASSKEYS_ENABLED=false` while any user has passkey-only sign-in
+turned on: their password is refused and the passkey endpoints no longer
+exist, so they cannot sign in at all. Run `scripts/reset_passkey_only.py` for
+each of them first.
+
 Details: [Security architecture, passkey sign-in](../../architecture/security.md#passkey-sign-in).

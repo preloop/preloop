@@ -404,7 +404,11 @@ need no migration; the flag is checked on every ceremony.
 `PASSKEYS_REQUIRE_USER_VERIFICATION=false` (default true) is the rollback
 switch: it restores `preferred` for security keys without a PIN, and while it
 is off passkey-only sign-in cannot be newly enabled (409
-`user_verification_disabled`).
+`user_verification_disabled`). Persons with a passkey-only membership keep
+the UV requirement while the switch is off. `PASSKEYS_ENABLED=false` locks
+passkey-only users out entirely; reset them first. Changing the setting
+refuses CLI login tokens (`sid`), so a reissued pair cannot escape
+per-login revocation.
 
 **Passkey-only sign-in.** A user can require a passkey for their own
 membership (`user.passkey_only`, `GET`/`PUT /api/v1/auth/webauthn/passkey-only`).

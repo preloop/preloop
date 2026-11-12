@@ -164,11 +164,12 @@ def _enforce_core_policy(
     if sign_in_method_allowed(user, methods):
         return
     if purpose in _SIGN_IN_PURPOSES:
+        from preloop.services.audit.service import AuditActionType
         from preloop.services.auth_audit import record_auth_event
 
         record_auth_event(
             db,
-            action="auth.passkey_only.login_refused",
+            action=AuditActionType.PASSKEY_ONLY_LOGIN_REFUSED,
             user=user,
             resource_type="user",
             resource_id=user.id,

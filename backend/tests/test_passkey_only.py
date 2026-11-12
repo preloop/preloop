@@ -289,6 +289,36 @@ class TestSwitch:
             decode_token(response.json()["access_token"])
         )
 
+    def test_cli_login_token_cannot_change_the_setting(self, api, db_session):
+        """protects=a CLI login token (sid) cannot mint an unbound console pair;
+        fails_when=a fresh passkey CLI token enables the setting or gets tokens;
+        no_claim=the CLI OAuth flow itself (the sid token is minted directly
+        against a real cli_session row)."""
+        from preloop.models.crud import crud_cli_session
+
+        user = _user(db_session)
+        _passkey(db_session, user)
+        session = crud_cli_session.create(
+            db_session, user_id=user.id, refresh_jti=uuid.uuid4().hex
+        )
+        token = create_access_token(
+            data={"sub": str(user.id), "scopes": [], "sid": str(session.id)},
+            auth_generation=user.auth_generation,
+            auth_context=_context(user, ["passkey"]),
+        )
+
+        response = api.put(
+            "/api/v1/auth/webauthn/passkey-only",
+            json={"enabled": True},
+            headers=_bearer(token),
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"]["code"] == "passkey_sign_in_required"
+        assert "access_token" not in response.json()
+        db_session.refresh(user)
+        assert user.passkey_only is False
+
     def test_enable_without_a_passkey_is_refused(self, api, db_session):
         """protects=nobody locks themselves out with zero passkeys;
         fails_when=enable succeeds or returns anything but 409 no_passkey_registered;
@@ -572,6 +602,34 @@ class TestSignInPaths:
 
 
 class TestPasskeySignIn:
+    def test_rollback_switch_keeps_uv_for_passkey_only_users(
+        self, api, db_session, monkeypatch
+    ):
+        """protects=PASSKEYS_REQUIRE_USER_VERIFICATION=false never drops the second
+        factor of a passkey-only user;
+        fails_when=an assertion without the UV flag signs a passkey-only user in
+        while the switch is off;
+        no_claim=real authenticator hardware (a software key signs real data)."""
+        monkeypatch.setenv("PASSKEYS_REQUIRE_USER_VERIFICATION", "false")
+        user = _user(db_session, passkey_only=True)
+        authenticator = Authenticator()
+        _passkey(db_session, user, authenticator)
+        options = api.post("/api/v1/auth/webauthn/authenticate/options").json()
+        challenge_token = options["challenge_token"]
+
+        response = api.post(
+            "/api/v1/auth/webauthn/authenticate/verify",
+            json={
+                "credential": authenticator.assert_(
+                    decode_challenge(challenge_token), user_verified=False
+                ),
+                "challenge_token": challenge_token,
+            },
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["code"] == "passkey_user_verification_required"
+
     def test_passkey_sign_in_still_works(self, api, db_session):
         """protects=a passkey-only user signs in with their passkey;
         fails_when=a valid, user-verified assertion is refused or its tokens lack
