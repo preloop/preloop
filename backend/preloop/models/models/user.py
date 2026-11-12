@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -205,6 +206,17 @@ class User(Base):
     # Selective SSO enforcement revokes only non-SSO sessions for this membership.
     non_sso_auth_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+
+    # Passkey-only sign-in (#2281). While true, password, email-link, chat
+    # and social sign-in are refused for this membership; passkey and SSO
+    # sign-in are unchanged. Set through crud_user.set_passkey_only only.
+    passkey_only: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+        comment="Refuse password, email-link, chat and social sign-in",
     )
 
     # Account hierarchy (#986). One membership is one user row; a person

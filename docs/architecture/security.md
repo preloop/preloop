@@ -314,7 +314,8 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy tracker API-key rows; staged schema migrations remove legacy webhook and AI-model key columns)
 - [x] Sensitive data masked in logs (see Redaction Policy below)
 - [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
-- [ ] 2FA/MFA support for user accounts
+- [x] Passkeys that verify the user (device plus PIN or biometric), and per-user passkey-only sign-in (see Passkey sign-in below)
+- [ ] TOTP codes, recovery codes and account-wide MFA enforcement
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
@@ -391,6 +392,55 @@ migration does not backfill and refuses downgrade while retained snapshots exist
 ## Account kill switch
 
 The [account kill switch](../guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
+
+## Passkey sign-in
+
+Passkey registration and sign-in request `userVerification: "required"` and
+verify the user-verification (UV) flag in the authenticator data. A passkey
+sign-in therefore proves two factors: the device holding the key and the PIN
+or biometric that unlocked it. An attestation or assertion without the UV flag
+is refused with 400 `passkey_user_verification_required`. Stored credentials
+need no migration; the flag is checked on every ceremony.
+`PASSKEYS_REQUIRE_USER_VERIFICATION=false` (default true) is the rollback
+switch: it restores `preferred` for security keys without a PIN, and while it
+is off passkey-only sign-in cannot be newly enabled (409
+`user_verification_disabled`).
+
+**Passkey-only sign-in.** A user can require a passkey for their own
+membership (`user.passkey_only`, `GET`/`PUT /api/v1/auth/webauthn/passkey-only`).
+Changing it in either direction needs a session whose `amr` contains
+`passkey` and whose `auth_time` is at most 10 minutes old (403
+`passkey_sign_in_required`), so a password thief cannot switch it off and a
+session from before the UV requirement cannot switch it on. Enabling needs at
+least one passkey (409 `no_passkey_registered`), bumps the membership's
+non-SSO generation (`non_sso_auth_generation`) so every other non-SSO session
+ends, live WebSocket connections included, and returns a fresh token pair for
+the current session. The last passkey of a person with a passkey-only
+membership cannot be deleted (409 `last_passkey_required`); enable and delete
+lock the person and user rows in the same order.
+
+Enforcement lives in `preloop.services.authentication_policy`
+(`sign_in_method_allowed`), which every sign-in path reaches through
+`new_authentication` or `authorize_authentication`:
+
+| Path | Passkey-only behaviour |
+|---|---|
+| `/auth/token`, `/auth/token/json`, MCP OAuth consent form | Correct password: 401 `password_login_disabled`, no tokens. Wrong password: the usual generic error, so the setting is not revealed |
+| Email link (`/auth/verify-email`), chat exchange, social sign-in | 401 `password_login_disabled`, no tokens |
+| Account switch from a weaker session | Refused the same way |
+| Password reset | Changes the password, never signs in, never clears the setting |
+| Passkey, SSO (OIDC, SAML) | Unchanged |
+| API keys, runner tokens | Unchanged; the CLI signs in through the browser |
+
+Core also refuses non-SSO sessions whose `nsg` claim is behind the
+membership's non-SSO generation, with or without a policy plugin.
+
+Lost device: an operator runs `python scripts/reset_passkey_only.py --email
+<address> --reason <text>` in the API container. It clears the setting, ends
+the user's non-SSO sessions and writes `auth.passkey_only.reset`. There is no
+self-service recovery by email, which would reduce the account to one factor.
+Audit events `auth.passkey_only.enabled`, `.disabled`, `.login_refused` and
+`.reset` carry the user id and bounded fields only, never credential material.
 
 ## Audit collection and authentication audit
 

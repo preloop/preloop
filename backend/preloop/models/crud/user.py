@@ -3,7 +3,7 @@
 import uuid
 from typing import Any, List, Optional, cast
 
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
@@ -516,6 +516,67 @@ class CRUDUser(CRUDBase[models.User]):
         else:
             db.flush()
         return int(row[0])
+
+    def lock(self, db: Session, *, user_id: Any) -> Optional[models.User]:
+        """Load one membership row under ``SELECT ... FOR UPDATE``.
+
+        Passkey-only enable and passkey deletion both take this lock, so a
+        concurrent enable and last-passkey delete cannot both succeed.
+
+        Args:
+            db: Database session; the lock lasts until its transaction ends.
+            user_id: Membership to lock.
+
+        Returns:
+            The locked, refreshed row, or ``None`` when it does not exist.
+        """
+        return db.scalars(
+            select(models.User)
+            .where(models.User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).first()
+
+    def set_passkey_only(
+        self,
+        db: Session,
+        *,
+        user: models.User,
+        enabled: bool,
+        end_sessions: bool,
+        commit: bool = True,
+    ) -> int:
+        """Set ``passkey_only``, optionally ending the user's non-SSO sessions.
+
+        Ending sessions bumps ``non_sso_auth_generation`` and stages a live
+        revocation event, so open WebSocket connections of those sessions are
+        rechecked and closed after commit.
+
+        Args:
+            db: Database session. The caller should hold :meth:`lock`.
+            user: Membership row to change.
+            enabled: New value of the flag.
+            end_sessions: Bump the non-SSO generation as well.
+            commit: Commit here, or leave the transaction to the caller.
+
+        Returns:
+            The membership's non-SSO generation after the change.
+        """
+        from preloop.models.crud.auth_revocation import stage_revocation
+
+        user.passkey_only = enabled
+        if end_sessions:
+            user.non_sso_auth_generation = (user.non_sso_auth_generation or 0) + 1
+            stage_revocation(
+                db, user_id=user.id, generation=user.non_sso_auth_generation
+            )
+        db.add(user)
+        if commit:
+            db.commit()
+            db.refresh(user)
+        else:
+            db.flush()
+        return int(user.non_sso_auth_generation or 0)
 
     def _bump_fanned_out_generations(self, db: Session, user_id: Any) -> None:
         """Bump the rows a registered revoke fan-out (H2) names, same transaction.

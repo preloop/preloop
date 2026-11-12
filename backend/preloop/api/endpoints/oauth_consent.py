@@ -316,7 +316,25 @@ async def consent_submit(
 
         require_active_identity(db, user)
         enforce_verified_email(user, db)
-        auth_context = new_authentication(db, user, method="password")
+        try:
+            auth_context = new_authentication(db, user, method="password")
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("code") != "password_login_disabled":
+                raise
+            # Passkey-only account: the console consent page (passkey
+            # session) is the way in; this form never issues a code.
+            return _render_error_response(
+                "This account signs in with a passkey. Sign in to the "
+                "console with your passkey and authorize from there.",
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                code_challenge=code_challenge,
+                state=state,
+                scopes=scopes,
+                redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
+                resource=resource,
+            )
 
         # Create authorization code
         scope_list = scopes.split() if scopes else []
