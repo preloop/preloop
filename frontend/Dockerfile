@@ -23,6 +23,7 @@ FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 # Copy built application
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -33,6 +34,12 @@ ENV MOCK_API=false
 # DNS for the variable proxy_pass targets. Docker's embedded resolver; override
 # when this image runs somewhere without it.
 ENV NGINX_RESOLVER=127.0.0.11
+# Strict-Transport-Security for requests that arrived over HTTPS (see
+# docs/operations/tls.md). On by default; HSTS_ENABLED=false opts out.
+ENV HSTS_ENABLED=true
+ENV HSTS_MAX_AGE=31536000
+ENV HSTS_INCLUDE_SUBDOMAINS=false
+ENV HSTS_PRELOAD=false
 
 # Expose port
 EXPOSE 80

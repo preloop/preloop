@@ -82,6 +82,11 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       DEBUG: 'true'
+      # Strict-Transport-Security on HTTPS requests; see docs/operations/tls.md.
+      HSTS_ENABLED: ${HSTS_ENABLED:-true}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
+      HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
       SECRET_KEY: ${SECRET_KEY:-development_secret_key_do_not_use_in_production}
       SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256
@@ -131,6 +136,11 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       DEBUG: 'true'
+      # Strict-Transport-Security on HTTPS requests; see docs/operations/tls.md.
+      HSTS_ENABLED: ${HSTS_ENABLED:-true}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
+      HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
       SECRET_KEY: ${SECRET_KEY:-development_secret_key_do_not_use_in_production}
       SECURITY__ENCRYPTION_KEY: ${SECURITY__ENCRYPTION_KEY:-}
       JWT_ALGORITHM: HS256

@@ -1,9 +1,12 @@
 """The demo team seed is deterministic, idempotent and visible to the readers."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Optional
 
+import pytest
 from sqlalchemy.orm import Session
 
+from preloop.api.endpoints import budget as budget_endpoint
 from preloop.api.endpoints.budget import _policies_to_response
 from preloop.models.crud import (
     crud_account,
@@ -23,10 +26,32 @@ from scripts.seed_demo_team import (
 
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
 
+#: Seed clocks across the calendar week, including both ends of a Monday:
+#: the budget cards read the current week's bucket, which is nearly empty
+#: early on a Monday unless the seed fills it.
+SEED_CLOCKS = (
+    datetime(2026, 11, 9, 0, 30, tzinfo=UTC),  # Monday, just after the week starts
+    datetime(2026, 11, 9, 23, 30, tzinfo=UTC),  # Monday, late
+    datetime(2026, 11, 11, 12, 0, tzinfo=UTC),  # Wednesday noon
+    datetime(2026, 11, 15, 23, 30, tzinfo=UTC),  # Sunday, just before the week ends
+    datetime(2026, 12, 1, 0, 30, tzinfo=UTC),  # first half hour of a month
+)
 
-def _seed(db: Session) -> dict[str, int]:
+
+def _freeze_budget_clock(monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+    """Make the budget reader see ``now`` as the current instant."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz: Optional[object] = None) -> "_Frozen":  # type: ignore[override]
+            return cls.fromtimestamp(now.timestamp(), tz=tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(budget_endpoint, "datetime", _Frozen)
+
+
+def _seed(db: Session, now: datetime = NOW) -> dict[str, int]:
     remove_demo_account(db)
-    seeder = Seeder(db, days=7, scale=1, seed=7, now=NOW)
+    seeder = Seeder(db, days=7, scale=1, seed=7, now=now)
     seeder.create_people("not-a-real-password")
     seeder.build()
     counts = seeder.write()
@@ -55,9 +80,15 @@ def test_build_is_deterministic_for_a_seed() -> None:
     }
 
 
-def test_seed_is_idempotent_and_reaches_cost_readers(db_session: Session) -> None:
-    first = _seed(db_session)
-    second = _seed(db_session)
+@pytest.mark.parametrize("now", SEED_CLOCKS, ids=lambda d: d.strftime("%a-%m%d-%H%M"))
+def test_seed_is_idempotent_and_reaches_cost_readers(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, now: datetime
+) -> None:
+    # The seed and the budget reader must agree on "now"; otherwise the test
+    # depends on the wall clock (it read an empty week after the fixed clock's).
+    _freeze_budget_clock(monkeypatch, now)
+    first = _seed(db_session, now)
+    second = _seed(db_session, now)
     assert first == second
     assert first["pull_request"] == 20 and first["issue"] == 25
 
@@ -65,14 +96,14 @@ def test_seed_is_idempotent_and_reaches_cost_readers(db_session: Session) -> Non
     assert account is not None
     summary = ModelGatewayUsageService(db_session).get_account_summary(
         account=account,
-        start_date=NOW - timedelta(days=8),
-        end_date=NOW + timedelta(days=1),
+        start_date=now - timedelta(days=8),
+        end_date=now + timedelta(days=1),
         include_breakdown=False,
     )
     assert summary.total_requests == first["api_usage"]
     assert summary.estimated_cost > 0
 
-    since, until = NOW - timedelta(days=8), NOW + timedelta(days=1)
+    since, until = now - timedelta(days=8), now + timedelta(days=1)
     links = execution_links(
         db_session, account_id=ACCOUNT_ID, since=since, until=until, limit=5000
     )
