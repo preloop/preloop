@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- models: audit model creation, updates, deletion and credential set,
+  replacement, rotation and removal without key material. First provider API-key
+  rejections now notify account owners once per episode and emit
+  `ai_model.credential_rejected`. Provider billing `402` responses mark credentials
+  with `upstream_billing_rejected`; acceptance or key replacement clears the
+  mark. Before any clone or container, flows probe a model with a standing auth
+  rejection and refuse with `409 model_credentials_rejected` only when the
+  provider rejects authentication again. Successful probes clear the mark;
+  inconclusive probes allow the run. Healthy models and billing marks are never
+  probed. Restricted CI returns only the model name and code.
+
 - gateway: an error the upstream model provider produced now says so. A
   provider-reported 401, 402, 403 or 404 used to reach the client at
   Preloop's URL as the provider's bare sentence (for example `User not

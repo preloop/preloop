@@ -14,6 +14,8 @@ from typing import Any, Mapping, Optional
 
 ENVELOPE_VERSION = "1"
 
+EVENT_AI_MODEL_CREDENTIAL_REJECTED = "ai_model.credential_rejected"
+
 EVENT_APPROVAL_CREATED = "approval.created"
 EVENT_APPROVAL_DECIDED = "approval.decided"
 EVENT_POLICY_DENIED = "policy.denied"
@@ -37,6 +39,7 @@ EVENT_AGENT_ONBOARDED = "agent.onboarded"
 
 # Everything an endpoint may subscribe to.
 EVENT_TYPES_V1: tuple[str, ...] = (
+    EVENT_AI_MODEL_CREDENTIAL_REJECTED,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_POLICY_DENIED,
@@ -56,6 +59,9 @@ EVENT_TYPES_V1: tuple[str, ...] = (
 # catalogue endpoint so the list an operator picks from cannot drift from
 # the list the outbox actually routes.
 EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
+    EVENT_AI_MODEL_CREDENTIAL_REJECTED: (
+        "A provider first rejected a customer model API key for authentication or billing."
+    ),
     EVENT_APPROVAL_CREATED: "An approval request was raised for a tool call.",
     EVENT_APPROVAL_DECIDED: (
         "An approval request reached a terminal state: approved, declined, "

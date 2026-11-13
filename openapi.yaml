@@ -14136,6 +14136,40 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ai-models/{model_id}/credentials:
+    delete:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Remove AI Model Credential
+      description: Detach this model's credential without rotating a shared secret.
+      operationId: remove_ai_model_credential_api_v1_ai_models__model_id__credentials_delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/credentials/marker:
     get:
       tags:
@@ -18693,6 +18727,9 @@ paths:
           content:
             application/json:
               schema: {}
+        '409':
+          description: A model key failed its authentication probe (model_credentials_rejected),
+            or execution conflicts with a flow admission policy.
         '422':
           description: Validation Error
           content:
@@ -26446,7 +26483,7 @@ components:
           title: Credentials Status
           description: Status of the model's credential secret. `error` means the
             last OAuth refresh failed, or the provider rejected the stored API key
-            (HTTP 401) on its last use.
+            for authentication (HTTP 401) or billing (HTTP 402) on its last use.
         credentials_last_error:
           anyOf:
           - type: string
@@ -26460,7 +26497,8 @@ components:
           - type: 'null'
           title: Credentials Last Error Code
           description: Error code from the last credential refresh attempt, or `upstream_auth_rejected`
-            for a rejected API key
+            for an authentication rejection or `upstream_billing_rejected` for a billing
+            rejection
         credentials_last_failed_at:
           anyOf:
           - type: string
@@ -55328,7 +55366,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

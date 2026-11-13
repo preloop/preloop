@@ -1,5 +1,6 @@
 """CRUD operations for SecretReference."""
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 from uuid import UUID
@@ -7,11 +8,23 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
+from preloop.models.models.secret_reference import (
+    UPSTREAM_AUTH_REJECTION_KEY,
+    UPSTREAM_BILLING_REJECTION_KEY,
+)
 from .base import CRUDBase
 
 #: A burst of rejected requests rewrites the secret row at most this often.
 UPSTREAM_AUTH_REJECTION_MIN_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
+class CredentialRejectionOutcome:
+    """A serialized verdict, including whether a new episode started."""
+
+    written: bool = False
+    first_rejection: bool = False
+    rejection: Optional[dict[str, Any]] = None
 
 
 class CRUDSecretReference(CRUDBase[models.SecretReference]):
@@ -120,7 +133,7 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         message: str,
         now: datetime,
         commit: bool = True,
-    ) -> bool:
+    ) -> CredentialRejectionOutcome:
         """Record that the provider rejected a model's stored API key.
 
         The first rejection keeps its time in ``first_rejected_at`` until the
@@ -141,7 +154,7 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
             commit: Commit after writing; False leaves it to the caller.
 
         Returns:
-            True when the row was written.
+            Whether a row was written and a new rejection episode started.
         """
         secret = self._lock_for_ai_model(
             db, ai_model_id=ai_model_id, secret_id=secret_id, version=version
@@ -149,8 +162,18 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         if secret is None:
             if commit:
                 db.rollback()
-            return False
-        previous = secret.upstream_auth_rejection
+            return CredentialRejectionOutcome()
+        key = (
+            UPSTREAM_BILLING_REJECTION_KEY
+            if status_code == 402
+            else UPSTREAM_AUTH_REJECTION_KEY
+        )
+        candidate = (secret.meta_data or {}).get(key)
+        previous = (
+            candidate
+            if isinstance(candidate, dict) and candidate.get("last_rejected_at")
+            else None
+        )
         if previous is not None:
             try:
                 last = datetime.fromisoformat(str(previous["last_rejected_at"]))
@@ -163,11 +186,16 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
             ):
                 if commit:
                     db.rollback()
-                return False
+                return CredentialRejectionOutcome()
         stamp = now.isoformat()
         secret.meta_data = {
-            **(secret.meta_data if isinstance(secret.meta_data, dict) else {}),
-            UPSTREAM_AUTH_REJECTION_KEY: {
+            **{
+                name: value
+                for name, value in (secret.meta_data or {}).items()
+                if name
+                not in {UPSTREAM_AUTH_REJECTION_KEY, UPSTREAM_BILLING_REJECTION_KEY}
+            },
+            key: {
                 "provider": provider,
                 "status_code": status_code,
                 "message": message,
@@ -180,7 +208,11 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
             db.commit()
         else:
             db.flush()
-        return True
+        return CredentialRejectionOutcome(
+            written=True,
+            first_rejection=previous is None,
+            rejection=dict(secret.meta_data[key]),
+        )
 
     def clear_upstream_auth_rejection(
         self,
@@ -209,14 +241,14 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         secret = self._lock_for_ai_model(
             db, ai_model_id=ai_model_id, secret_id=secret_id, version=version
         )
-        if secret is None or secret.upstream_auth_rejection is None:
+        if secret is None or secret.upstream_credential_rejection is None:
             if commit:
                 db.rollback()
             return False
         secret.meta_data = {
             key: value
             for key, value in (secret.meta_data or {}).items()
-            if key != UPSTREAM_AUTH_REJECTION_KEY
+            if key not in {UPSTREAM_AUTH_REJECTION_KEY, UPSTREAM_BILLING_REJECTION_KEY}
         }
         secret.last_verified_at = now
         db.add(secret)

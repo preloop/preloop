@@ -432,3 +432,32 @@ def test_parked_checkpoint_is_not_served_as_the_final_result(
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "result_pending"
     assert "checkpoint" not in response.text
+
+
+def test_rejected_model_response_exposes_only_name_and_code(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The restricted principal cannot read provider detail or secret identity."""
+    from preloop.services.model_routing import ModelCredentialsRejectedError
+
+    _, _, token = provision(db_session, ci_resources)
+    trigger = AsyncMock(
+        side_effect=ModelCredentialsRejectedError(
+            "Review model", "Private provider detail"
+        )
+    )
+    monkeypatch.setattr(flows, "trigger_ci_review", trigger)
+    response = client.post(
+        f"/api/v1/flows/{ci_resources[2].id}/trigger",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"pr_number": 7, "head_sha": "a" * 40},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "model_credentials_rejected",
+        "model_name": "Review model",
+    }
+    assert "Private provider detail" not in response.text
