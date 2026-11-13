@@ -911,6 +911,7 @@ async def test_sweep_lists_due_retries_and_unclaimed_finished_runs(
     assert (world.account.id, failed.id) in store.due_execution_ids(world.db)
     unclaimed = finished(world, who)
     unclaimed.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime(2020, 1, 1)
     world.db.commit()
     found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
     assert (world.account.id, unclaimed.id) in found
@@ -1228,55 +1229,6 @@ def test_opt_in_is_rejected_for_personal_token_and_non_github_trackers(
 
 
 # --- identities are never silently upgraded --------------------------------
-
-
-def test_identity_snapshot_records_the_opt_in_and_breaks_when_it_changes(
-    world: SimpleNamespace,
-) -> None:
-    who = identity(world, world.projects[0])
-    assert who.principal.repository_binding["platform_review"] == [
-        "review:comment",
-        "status",
-    ]
-    assert who.principal.repository_binding["ci_project_selection"] is True
-    config = dict(world.flow.git_clone_config)
-    # Widening comments to approvals invalidates the identity.
-    config["platform_review"] = {**OPT_IN, "verdict_actions": {"pass": "approve"}}
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    # So does turning the opt-in off, and back on it works again.
-    config = dict(config)
-    config.pop("platform_review")
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    config = dict(config)
-    config["platform_review"] = OPT_IN
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is not None
-
-
-@pytest.mark.asyncio
-async def test_identity_provisioned_before_the_opt_in_cannot_cause_a_post(
-    world: SimpleNamespace,
-) -> None:
-    config = dict(world.flow.git_clone_config)
-    opted_out = dict(config)
-    opted_out.pop("platform_review")
-    world.flow.git_clone_config = opted_out
-    world.db.commit()
-    who = identity(world, world.projects[0])
-    assert "platform_review" not in who.principal.repository_binding
-    execution = finished(world, who)
-    world.flow.git_clone_config = config
-    world.db.commit()
-    # The old key no longer authenticates, and its finished run is not posted.
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    outcome = await publish(world, execution, explicit=True)
-    assert outcome is not None and outcome["reason"] == "admission_revoked"
-    assert world.github.calls == []
 
 
 # --- lease profile ----------------------------------------------------------
@@ -1766,23 +1718,321 @@ def test_dispatch_authorization_accepts_only_trigger_or_publish(
         )
 
 
-def test_sweep_never_reaches_back_to_runs_of_identities_that_predate_the_opt_in(
-    world: SimpleNamespace,
-) -> None:
+# --- posting settings never invalidate an identity -------------------------
+
+
+def _set_review(world: SimpleNamespace, block: Any) -> None:
     config = dict(world.flow.git_clone_config)
-    opted_out = dict(config)
-    opted_out.pop("platform_review")
-    world.flow.git_clone_config = opted_out
-    world.db.commit()
-    old = finished(world, identity(world, world.projects[0]))
-    old.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    if block is None:
+        config.pop("platform_review", None)
+    else:
+        config["platform_review"] = block
     world.flow.git_clone_config = config
     world.db.commit()
-    new = finished(world, identity(world, world.projects[1]))
-    new.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+
+def _dedicated(world: SimpleNamespace) -> None:
+    """Turn the fixture flow into a dedicated flow for the first project."""
+    project = world.projects[0]
+    config = dict(world.flow.git_clone_config)
+    config.pop("ci_project_selection")
+    config["repositories"] = [
+        repo for repo in config["repositories"] if repo["project_id"] == str(project.id)
+    ]
+    world.flow.git_clone_config = config
+    world.flow.trigger_project_ids = [str(project.id)]
+    world.db.commit()
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_existing_identity_survives_adding_changing_and_removing_posting(
+    world: SimpleNamespace, client: TestClient, shared: bool
+) -> None:
+    if not shared:
+        _dedicated(world)
+    _set_review(world, None)
+    who = identity(world, world.projects[0])
+    assert "platform_review" not in who.principal.repository_binding
+    execution = finished(world, who)
+    headers = {"Authorization": f"Bearer {who.token}"}
+    path = f"/api/v1/flows/executions/{execution.id}"
+    blocks = [
+        OPT_IN,
+        {**OPT_IN, "verdict_actions": {"pass": "approve"}},
+        {"enabled": True},
+        {"enabled": False},
+        None,
+    ]
+    for block in blocks:
+        _set_review(world, block)
+        assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+        for suffix in ("", "/result"):
+            response = client.get(path + suffix, headers=headers)
+            assert response.status_code == 200, (block, response.text)
+        # Dispatch (what a trigger and a launch re-check) still authorizes.
+        assert crud.crud_ci_execution.authorize_dispatch(world.db, execution=execution)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [True, False])
+async def test_first_run_after_enabling_posts_with_the_existing_identity(
+    world: SimpleNamespace, shared: bool
+) -> None:
+    if not shared:
+        _dedicated(world)
+    _set_review(world, None)
+    project = world.projects[0]
+    who = identity(world, project)
+    _set_review(world, OPT_IN)
+    execution = finished(world, who)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert len(world.github.statuses[(project.slug, HEAD)]) == 1
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [None, ["review:comment", "status"], ["review:approve", "review:comment"]],
+)
+def test_snapshot_written_by_an_earlier_release_is_honoured(
+    world: SimpleNamespace, recorded: list[str] | None
+) -> None:
+    """1.0.x wrote no posting key; the first posting release wrote a list."""
+    who = identity(world, world.projects[0])
+    snapshot = dict(who.principal.repository_binding)
+    assert set(snapshot) == {
+        "slug",
+        "tracker_type",
+        "tracker_url",
+        "organization_id",
+        "publication_mode",
+        "ci_project_selection",
+    }
+    if recorded is not None:
+        snapshot["platform_review"] = recorded
+    who.principal.repository_binding = snapshot
+    world.db.commit()
+    for block in (OPT_IN, None):
+        _set_review(world, block)
+        assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["project_removed", "selection_mode", "publication_mode", "tracker", "slug"],
+)
+def test_what_must_invalidate_an_identity_still_does(
+    world: SimpleNamespace, change: str
+) -> None:
+    project, other = world.projects
+    who = identity(world, project)
+    config = dict(world.flow.git_clone_config)
+    if change == "project_removed":
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] != str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(other.id)]
+    elif change == "selection_mode":
+        config.pop("ci_project_selection")
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] == str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(project.id)]
+    elif change == "publication_mode":
+        config["publication_mode"] = "legacy"
+        config.pop("ci_project_selection")
+        config.pop("platform_review")
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] == str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(project.id)]
+    elif change == "tracker":
+        config["repositories"] = [
+            {**r, "tracker_id": str(uuid4())}
+            if r["project_id"] == str(project.id)
+            else r
+            for r in config["repositories"]
+        ]
+    else:
+        project.slug = "example/renamed"
+    world.flow.git_clone_config = config
+    world.db.commit()
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
+
+
+@pytest.mark.asyncio
+async def test_broken_posting_settings_block_posting_but_not_the_identity(
+    world: SimpleNamespace,
+) -> None:
+    who = identity(world, world.projects[0])
+    execution = finished(world, who)
+    world.flow.validate_result = False
+    world.db.commit()
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["reason"] == "configuration_invalid"
+    assert world.github.calls == []
+    world.flow.validate_result = True
+    _set_review(world, {"enabled": True, "status": {"verdict_states": {}}})
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+    again = await publish(world, execution, explicit=True)
+    assert again is not None and again["reason"] == "configuration_invalid"
+    assert world.github.calls == []
+
+
+def test_publish_action_is_added_to_an_existing_key_in_place(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_EXECUTION, CiAction.READ_RESULT)
+    grant = CiGrant(
+        version=1, project_id=project.id, flow_id=world.flow.id, actions=base
+    )
+    principal, key, token = crud.crud_ci_principal.provision(
+        world.db, actor=world.owner, name="Existing", grant=grant
+    )
+    context = crud.crud_ci_principal.authenticate(world.db, token=token)
+    execution = finished(world, SimpleNamespace(context=context))
+    headers = {"Authorization": f"Bearer {token}"}
+    path = f"/api/v1/flows/executions/{execution.id}/platform-review"
+    assert client.post(path, headers=headers).status_code == 403
+    wider = CiGrant(
+        version=1,
+        project_id=project.id,
+        flow_id=world.flow.id,
+        actions=(*base, CiAction.PUBLISH_REVIEW),
+    )
+    # Widening the grant alone does not widen a key that is already issued.
+    crud.crud_ci_principal.change(
+        world.db, actor=world.owner, principal_id=principal.id, grant=grant
+    )
+    assert client.post(path, headers=headers).status_code == 403
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=wider,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == [a.value for a in (*base, CiAction.PUBLISH_REVIEW)]
+    assert key.is_active is True
+    posted = client.post(path, headers=headers)
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["platform_review"]["status"] == "posted"
+    # The same token still does what it did before.
+    assert (
+        client.get(path.removesuffix("/platform-review"), headers=headers).status_code
+        == 200
+    )
+
+
+def test_extending_keys_needs_a_widening_grant_and_adds_nothing_else(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_EXECUTION)
+    grant = CiGrant(
+        version=1, project_id=project.id, flow_id=world.flow.id, actions=base
+    )
+    principal, key, _ = crud.crud_ci_principal.provision(
+        world.db,
+        actor=world.owner,
+        name="Narrow key",
+        grant=grant,
+        key_actions=(CiAction.TRIGGER,),
+    )
+    with pytest.raises(ValueError):
+        crud.crud_ci_principal.change(
+            world.db, actor=world.owner, principal_id=principal.id, extend_keys=True
+        )
+    with pytest.raises(ValueError):
+        crud.crud_ci_principal.change(
+            world.db,
+            actor=world.owner,
+            principal_id=principal.id,
+            grant=CiGrant(
+                version=1,
+                project_id=project.id,
+                flow_id=world.flow.id,
+                actions=(CiAction.TRIGGER,),
+            ),
+            extend_keys=True,
+        )
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=CiGrant(
+            version=1,
+            project_id=project.id,
+            flow_id=world.flow.id,
+            actions=(*base, CiAction.PUBLISH_REVIEW),
+        ),
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    # Only the newly granted action is added; the key's narrower ceiling for
+    # actions the grant already had (execution:read) is kept.
+    assert key.ci_actions == ["flow:trigger", "execution:review:publish"]
+
+
+def test_sweep_does_not_reach_back_before_the_flow_was_last_saved(
+    world: SimpleNamespace,
+) -> None:
+    who = identity(world, world.projects[0])
+    before = finished(world, who)
+    before.end_time = datetime(2019, 6, 1)
+    after = finished(world, who)
+    after.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime.now(timezone.utc) - timedelta(minutes=30)
     world.db.commit()
     found = crud.crud_platform_review_publication.unclaimed_execution_ids(
-        world.db, finished_within=timedelta(hours=24)
+        world.db, finished_within=timedelta(days=36500)
     )
-    assert (world.account.id, new.id) in found
-    assert (world.account.id, old.id) not in found
+    assert (world.account.id, after.id) in found
+    assert (world.account.id, before.id) not in found
+
+
+def test_admin_update_extends_keys_and_requires_a_grant(
+    world: SimpleNamespace,
+) -> None:
+    from pydantic import ValidationError
+
+    from preloop.schemas.ci_administration import CiAdminUpdate
+
+    with pytest.raises(ValidationError):
+        CiAdminUpdate.model_validate({"extend_keys": True})
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_RESULT)
+    principal, key, _ = crud.crud_ci_principal.provision(
+        world.db,
+        actor=world.owner,
+        name="Admin path",
+        grant=CiGrant(
+            version=1, project_id=project.id, flow_id=world.flow.id, actions=base
+        ),
+    )
+    payload = CiAdminUpdate.model_validate(
+        {
+            "grant": {
+                "version": 1,
+                "project_id": str(project.id),
+                "flow_id": str(world.flow.id),
+                "actions": [*[a.value for a in base], "execution:review:publish"],
+            },
+            "extend_keys": True,
+        }
+    )
+    crud.crud_ci_administration.change(
+        world.db, actor=world.owner, principal_id=principal.id, payload=payload
+    )
+    world.db.refresh(key)
+    assert key.ci_actions[-1] == "execution:review:publish"
+    audited = (
+        world.db.query(models.AuditLog)
+        .filter(models.AuditLog.action == "ci_identity_extend_key")
+        .count()
+    )
+    assert audited == 1

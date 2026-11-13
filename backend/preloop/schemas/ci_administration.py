@@ -41,6 +41,10 @@ class CiAdminUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     grant: CiGrant | None = None
     enabled: StrictBool | None = None
+    # With a grant that adds actions: also add those actions to the
+    # identity's active keys, in place. The token already stored in CI keeps
+    # working and gains exactly the added actions; nothing is reissued.
+    extend_keys: StrictBool | None = None
 
     @model_validator(mode="after")
     def require_change(self) -> "CiAdminUpdate":
@@ -48,6 +52,8 @@ class CiAdminUpdate(BaseModel):
             getattr(self, name) is None for name in self.model_fields_set
         ):
             raise ValueError("Provide a non-null grant or enabled state")
+        if self.extend_keys is not None and self.grant is None:
+            raise ValueError("extend_keys requires a grant")
         return self
 
 

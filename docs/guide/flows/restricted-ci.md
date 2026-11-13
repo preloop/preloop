@@ -800,15 +800,42 @@ after that the publish call below adds the status without posting the review
 again. Personal access token trackers, GitLab and Bitbucket are refused when
 you save the opt-in.
 
-### Existing identities must be provisioned again
+### Existing identities keep working
 
-A CI identity records which provider writes its flow can cause when it is
-provisioned. After you turn `platform_review` on, add `status`, or add
-`approve` or `request_changes`, the flow's existing identities stop
-authenticating (401) until you provision new ones and replace the keys in
-your CI. This is deliberate: an identity created for a flow that could not
-write is never silently upgraded. Retire the old identities
-([Retiring an identity](#retiring-an-identity)).
+Turning `platform_review` on, changing it or turning it off does not touch
+the flow's CI identities. Their keys keep triggering and reading exactly as
+before, and the first run after you enable posting is posted. Preloop posts
+with a token of its own, so an identity gains no authority from the flow
+posting.
+
+The one new thing an identity can be allowed to do is ask Preloop to publish
+its own finished execution again (below). That needs the action
+`execution:review:publish`, which an administrator adds to an existing
+identity in place, without a new identity or a new key:
+
+```sh
+curl -fsS -X PATCH -H "Authorization: Bearer $PRELOOP_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$PRELOOP_URL/api/v1/ci-identities/$IDENTITY_ID" \
+  -d '{"grant": {"version": 1, "project_id": "<project id>", "flow_id": "<flow id>",
+       "actions": ["flow:trigger", "execution:read", "execution:result:read",
+                   "execution:stop", "execution:review:publish"]},
+       "extend_keys": true}'
+```
+
+`grant.actions` is the complete new list. `extend_keys: true` also adds the
+actions this change adds to the identity's active keys, so the token already
+stored in your CI gains exactly those actions. Without it only keys issued
+afterwards carry them.
+
+What does invalidate an identity (it then answers 401 until you provision a
+new one): its project is removed from the flow's allowlist, the flow changes
+between dedicated and shared selection, the repository entry changes tracker
+or the repository's provider identity or path changes, `publication_mode`
+changes, or the flow stops being a supported read-only review executor
+(another agent type or runner pool, MCP tools added). Disabling the flow
+suspends its identities until it is enabled again. Prompt, model, limits and
+the result schema never affect an identity.
 
 ### The posting record
 

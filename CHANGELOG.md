@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references or HTML). `POST /api/v1/flows/executions/{id}/platform-review`
   publishes a finished review again without a model run (new CI action
   `execution:review:publish`), and the execution, its result and
-  `flow.execution.finished` carry a `platform_review` record. Turning the
-  opt-in on requires provisioning the flow's CI identities again. GitHub App
+  `flow.execution.finished` carry a `platform_review` record. Existing CI
+  identities keep working when the opt-in is turned on. GitHub App
   trackers only. Adds the `platform_review_publication` table (migration
   `20261208_platform_review`). See `docs/architecture/platform-posted-review.md`.
 - restricted CI: one hosted read-only review flow can be shared by several
@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- flows: turning `platform_review` on, changing it or turning it off no
+  longer invalidates the flow's existing CI identities. The first release of
+  platform-posted review recorded the flow's posting capabilities in each
+  identity's provisioning snapshot, so enabling posting made every existing
+  key answer 401 until new identities were provisioned. Posting is done by
+  Preloop with its own token and gives an identity no authority, so the
+  snapshot no longer includes it (a stored key from that release is
+  ignored), and posting settings are validated when the flow is saved and
+  before each publication instead of when an identity authenticates.
+  `PATCH /api/v1/ci-identities/{id}` accepts `extend_keys: true` to add the
+  actions a grant change adds (for example `execution:review:publish`) to
+  the identity's active keys in place, without rotation.
 
 - flows: a hosted Codex run whose native permission hook would be refused now
   fails before it starts. Before launch the execution's runtime credential is

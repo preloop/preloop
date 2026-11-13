@@ -1096,6 +1096,7 @@ async def _publish_claimed(
         raise PlatformReviewError("binding_changed")
     try:
         validate_read_only_flow(flow)
+        validate_platform_review_flow(flow)
     except ValueError:
         raise PlatformReviewError("configuration_invalid") from None
     selected = [

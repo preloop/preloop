@@ -213,9 +213,9 @@ exponential backoff (1, 2, 4, ... minutes, capped at one hour) for at most
 six attempts. The same sweep takes over a claim that was left `publishing`
 for more than ten minutes (a cancelled attempt, a worker that died), and
 publishes finished executions that no worker claimed, for example after an
-operator stop. It considers only executions of CI identities that were
-provisioned with the opt-in on, so turning the opt-in on never reaches back
-to earlier runs. A pending retry of a flow that has since opted out is
+operator stop. It considers only executions that finished after the flow
+was last saved, so turning the opt-in on never reaches back to earlier runs
+(the explicit publish call still can). A pending retry of a flow that has since opted out is
 closed with `platform_review_disabled`. After the attempts are used, or for
 a non-retryable reason, an explicit publish call retries.
 
@@ -228,15 +228,28 @@ that mode. Saving the opt-in also requires `validate_result: true`, a
 tracker for every repository (a personal access token cannot be limited to
 one repository and two permissions).
 
-A CI identity records, when it is provisioned, which provider writes its flow
-can cause (`repository_binding.platform_review`, for example
-`["review:comment", "status"]`), next to `publication_mode` and
-`ci_project_selection`. Authentication compares that snapshot with the flow.
-Turning the opt-in on, adding a status, or adding `approve` or
-`request_changes` therefore stops existing identities from authenticating
-until an administrator provisions new ones. An identity is never silently
-upgraded to a flow that writes, and a run triggered before the change is not
-posted.
+The flow's posting settings are not part of a CI identity. An identity's
+provisioning snapshot records its repository, tracker, `publication_mode`
+and selection mode; `platform_review` is not in it, and the block is not
+validated when an identity authenticates. Turning posting on, changing it or
+turning it off leaves every existing identity valid for what it could
+already do. This is safe because the identity gains nothing: the write is
+made by the control plane with its own per-publication token, on a target
+taken from the execution's binding, and only an administrator who may edit
+the flow can turn it on. (The first release of this feature did record the
+posting capabilities in the snapshot and invalidated identities when they
+changed. That key is now ignored when a stored snapshot is compared, so
+identities provisioned by that release keep working.)
+
+The only identity-facing addition is the explicit publish call, behind the
+separate action `execution:review:publish`. An administrator adds it to an
+existing identity with `PATCH /api/v1/ci-identities/{id}` (`grant` with the
+added action and `extend_keys: true`), which widens the grant and the
+identity's active keys in place; nothing is reissued.
+
+Broken posting settings (for example `validate_result` turned off later)
+stop posting with `configuration_invalid`; they do not affect triggering or
+reading.
 
 ## Threats and tests
 
@@ -253,14 +266,14 @@ posted.
 | 9 | Retries, restarts or republish calls duplicate the review | claim row, recorded writes, nonce adoption | `test_duplicate_delivery_and_republish_post_once`, `test_live_claim_blocks_a_concurrent_attempt`, `test_lost_response_after_posting_is_adopted_not_reposted`, `test_review_with_a_foreign_marker_is_not_adopted` |
 | 10 | What GitHub holds differs from what was sent | read-back of actor, target and content | `test_read_back_mismatch_is_recorded_and_never_cleared_by_a_retry` |
 | 11 | A posting failure corrupts or hides the review result | isolation, bounded retry, explicit recovery | `test_posting_failure_leaves_status_and_result_untouched_then_recovers`, `test_automatic_retries_are_bounded`, `test_unexpected_error_during_publication_is_recorded_not_raised`, `test_completion_path_swallows_a_publication_crash` |
-| 12 | An existing identity is silently upgraded to a flow that writes | provisioning snapshot | `test_identity_snapshot_records_the_opt_in_and_breaks_when_it_changes`, `test_identity_provisioned_before_the_opt_in_cannot_cause_a_post` |
+| 12 | Enabling posting hands an identity new authority, or breaks it | posting uses the control plane's own token; the snapshot ignores posting settings; republish needs an explicit action added by an administrator | `test_existing_identity_survives_adding_changing_and_removing_posting`, `test_first_run_after_enabling_posts_with_the_existing_identity`, `test_snapshot_written_by_an_earlier_release_is_honoured`, `test_what_must_invalidate_an_identity_still_does`, `test_publish_action_is_added_to_an_existing_key_in_place`, `test_broken_posting_settings_block_posting_but_not_the_identity` |
 | 13 | A CI key turns the opt-in on, or publishes without the action | flow routes deny CI keys; `execution:review:publish` | `test_ci_identity_cannot_enable_the_opt_in`, `test_publish_needs_the_explicit_action` |
 | 14 | The opt-in is used with a credential that cannot be narrowed | save-time and publish-time tracker check | `test_opt_in_is_rejected_for_personal_token_and_non_github_trackers`, `test_opt_in_is_accepted_in_read_only_mode_only` |
 | 15 | Access continues after admission is removed | dispatch authorization re-run before every attempt | `test_project_removed_from_the_flow_revokes_posting`, `test_disabled_identity_revokes_posting`, `test_identity_with_neither_trigger_nor_publish_cannot_cause_a_post` |
 | 16 | An approval is posted without anyone asking for it | explicit `verdict_actions` only | `test_approve_and_request_changes_only_by_explicit_mapping` |
 | 17 | The App lacks `statuses: write` and the status is silently dropped | review-only lease, recorded reason | `test_missing_statuses_permission_posts_the_review_and_says_why` |
 | 19 | A cancelled attempt or dead worker leaves a review unposted forever | interrupted attempts are recorded retryable; stale claims are taken over | `test_attempt_cancelled_after_the_claim_is_completed_by_the_next_sweep`, `test_claim_abandoned_by_a_dead_worker_is_due_and_completed` |
-| 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to identities provisioned with the opt-in | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_never_reaches_back_to_runs_of_identities_that_predate_the_opt_in` |
+| 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to runs that finished after the flow was last saved | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_does_not_reach_back_before_the_flow_was_last_saved` |
 | 18 | With the opt-in off anything changes | no claim, no lease, no call | `test_opt_in_off_mints_no_lease_and_makes_no_call`, `test_completion_path_does_nothing_without_the_opt_in_or_a_ci_binding` |
 
 ## GitHub App permissions

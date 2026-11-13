@@ -33146,6 +33146,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Enabled
+        extend_keys:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Extend Keys
       additionalProperties: false
       type: object
       title: CiAdminUpdate
