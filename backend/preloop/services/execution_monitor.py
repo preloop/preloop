@@ -101,6 +101,13 @@ class ExecutionMonitor:
                     "Error sweeping deferred merge audits: %s", e, exc_info=True
                 )
 
+            try:
+                from preloop.services.platform_review import sweep_platform_reviews
+
+                await sweep_platform_reviews()
+            except Exception as e:
+                logger.error("Error sweeping platform reviews: %s", e, exc_info=True)
+
             # Wait before next check
             try:
                 await asyncio.sleep(self.check_interval)

@@ -27,6 +27,7 @@ from .gateway_identity_provider import (
 from .ci_principal import CiPrincipal
 from .execution_result_grant import ExecutionResultGrant
 from .review_publication_receipt import ReviewPublicationReceipt
+from .platform_review_publication import PlatformReviewPublication
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
@@ -322,6 +323,7 @@ __all__ = [
     "FlowExecution",
     "ExecutionResultGrant",
     "ReviewPublicationReceipt",
+    "PlatformReviewPublication",
     "ExecutionRealtimeCursor",
     "FlowRunner",
     "FlowRunnerAssignment",
