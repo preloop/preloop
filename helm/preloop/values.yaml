@@ -170,7 +170,10 @@ analytics:
   scriptUrl: ""
   # Escape hatch for platforms that need a different snippet (e.g. Matomo):
   # raw HTML injected before </head> instead of the Plausible-style script tag.
-  # Must not contain single quotes (nginx sub_filter delimiter).
+  # Must not contain single quotes (nginx sub_filter delimiter). List the
+  # origins it loads from in securityHeaders.csp.extraScriptSrc (and
+  # extraConnectSrc); inline code in it is blocked once
+  # securityHeaders.csp.mode is enforce.
   customSnippet: ""
 
 # Response security headers sent by the console nginx and the API.
@@ -189,6 +192,20 @@ securityHeaders:
     # Requires includeSubDomains=true and maxAge >= 31536000; the chart
     # refuses to render otherwise. Does not submit anything to the preload list.
     preload: false
+  # Content-Security-Policy for what the console nginx serves from the console
+  # build. See docs/architecture/security.md.
+  csp:
+    # report-only: keep the legacy enforcing header and send the new policy as
+    #   Content-Security-Policy-Report-Only (browsers log violations, block
+    #   nothing). enforce: send only the new policy. legacy: only the old
+    #   header. Any other value fails the render.
+    mode: report-only
+    # Space-separated host sources appended to script-src, e.g. the origins a
+    # custom analytics snippet loads from. The analytics.scriptUrl origin is
+    # added automatically when analytics is on without a customSnippet.
+    extraScriptSrc: ""
+    # Same for connect-src (fetch, XHR, WebSocket, beacon targets).
+    extraConnectSrc: ""
 
 # Image pull secrets
 imagePullSecrets: []

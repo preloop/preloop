@@ -1,8 +1,11 @@
-"""Real-nginx smoke test for console security headers and HSTS (#2278, #2279).
+"""Real-nginx smoke test for console security headers, HSTS and CSP.
+
+Covers #2278, #2279 and #2280.
 
 Runs the production nginx image (same digest as ``frontend/Dockerfile``) with
 the repo's ``nginx.conf``, ``nginx.conf.template`` and ``security-headers.conf``
-mounted where the Dockerfile puts them, a stub static tree, and a stub API
+and ``15-preloop-csp.envsh`` mounted where the Dockerfile puts them, a stub
+static tree, and a stub API
 upstream that itself sends ``Strict-Transport-Security``. Requests go over
 real HTTP.
 
@@ -25,6 +28,7 @@ from typing import Dict, Iterator, List, Tuple
 
 import pytest
 
+from tests.test_nginx_csp import ENVSH, LEGACY_CSP, docker_effective_policy
 from tests.test_nginx_security_headers import (
     DOCKER_SNIPPET,
     DOCKER_TEMPLATE,
@@ -45,9 +49,7 @@ SECURITY = {
     "permissions-policy": (
         "camera=(), geolocation=(), payment=(), usb=(), microphone=(self)"
     ),
-    "content-security-policy": (
-        "default-src 'self' http: https: data: blob: 'unsafe-inline'"
-    ),
+    "content-security-policy": LEGACY_CSP,
 }
 STUB_API_CONF = """
 server {
@@ -111,6 +113,8 @@ def _start_console(tmp: Path, network: str, name: str, env: Dict[str, str]) -> i
         f"{DOCKER_TEMPLATE}:/etc/nginx/templates/default.conf.template:ro",
         "-v",
         f"{DOCKER_SNIPPET}:/etc/nginx/snippets/security-headers.conf:ro",
+        "-v",
+        f"{ENVSH}:/docker-entrypoint.d/15-preloop-csp.envsh:ro",
         "-v",
         f"{html}:/usr/share/nginx/html:ro",
         _nginx_image(),
@@ -182,6 +186,14 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Dict[str, int]]:
                 "custom",
                 {"HSTS_MAX_AGE": "63072000", "HSTS_INCLUDE_SUBDOMAINS": "true"},
             ),
+            (
+                "enforce",
+                {
+                    "CSP_MODE": "enforce",
+                    "CSP_EXTRA_SCRIPT_SRC": "https://example.test",
+                },
+            ),
+            ("legacy", {"CSP_MODE": "legacy"}),
         ):
             name = f"preloop-smoke-{label}-{suffix}"
             names.append(name)
@@ -268,3 +280,75 @@ def test_hsts_only_over_https_and_exactly_once(
     assert _values(headers, "strict-transport-security") == [
         "max-age=63072000; includeSubDomains"
     ]
+
+
+STATIC_PATHS = ("/", "/console/", "/login", "/assets/app.js")
+
+
+@pytest.mark.parametrize("path", STATIC_PATHS)
+def test_csp_headers_per_mode_on_console_responses(
+    stack: Dict[str, int], path: str
+) -> None:
+    """protects=acceptance criteria 1, 2 and 5 of #2280 with real nginx and
+    the real entrypoint: report-only adds the new policy next to the legacy
+    header, enforce sends only the new policy (with an extra script origin),
+    legacy only the old header; fails_when=a mode sends a missing, extra or
+    different CSP header on the SPA shell, a page or an asset; no_claim=the
+    built frontend bundle (a stub static tree stands in)."""
+    new_policy = docker_effective_policy({})
+    _, headers = _request(stack["default"], path)
+    assert _values(headers, "content-security-policy") == [LEGACY_CSP]
+    assert _values(headers, "content-security-policy-report-only") == [new_policy]
+
+    _, headers = _request(stack["enforce"], path)
+    assert _values(headers, "content-security-policy") == [
+        docker_effective_policy(
+            {"CSP_MODE": "enforce", "CSP_EXTRA_SCRIPT_SRC": "https://example.test"}
+        )
+    ]
+    assert _values(headers, "content-security-policy-report-only") == []
+
+    _, headers = _request(stack["legacy"], path)
+    assert _values(headers, "content-security-policy") == [LEGACY_CSP]
+    assert _values(headers, "content-security-policy-report-only") == []
+
+
+@pytest.mark.parametrize("path", ("/api/v1/health", "/admin/", "/admin/console"))
+@pytest.mark.parametrize("label", ("default", "enforce", "legacy"))
+def test_proxied_and_admin_responses_keep_the_legacy_csp(
+    stack: Dict[str, int], label: str, path: str
+) -> None:
+    """protects=the API's own pages and the separate admin SPA, which the
+    console sweep does not load; fails_when=a proxied or /admin response gets
+    the new policy in any mode; no_claim=the real API and admin build (a stub
+    upstream and a stub admin/index.html stand in)."""
+    status, headers = _request(stack[label], path)
+    assert status == 200, path
+    assert _values(headers, "content-security-policy") == [LEGACY_CSP]
+    assert _values(headers, "content-security-policy-report-only") == []
+
+
+def test_unknown_csp_mode_stops_the_container() -> None:
+    """protects=acceptance criterion 6 of #2280 for the Docker image;
+    fails_when=nginx starts with an unknown CSP_MODE; no_claim=none beyond
+    protects."""
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-e",
+            "CSP_MODE=strict",
+            "-v",
+            f"{ENVSH}:/docker-entrypoint.d/15-preloop-csp.envsh:ro",
+            _nginx_image(),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "CSP_MODE must be one of report-only, enforce, legacy" in (
+        result.stdout + result.stderr
+    )

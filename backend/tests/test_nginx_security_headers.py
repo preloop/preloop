@@ -30,8 +30,8 @@ HELM_INCLUDE = re.compile(
     r'(\{\{|\u27e6)-?\s*include\s+"preloop\.nginxSecurityHeaders"'
 )
 
-# The header set from #2278 plus HSTS from #2279. The CSP value is unchanged on
-# purpose: tightening it is #2280.
+# The header set from #2278 plus HSTS from #2279. Both CSP headers come from
+# the CSP_MODE maps (#2280, see tests/test_nginx_csp.py for their values).
 EXPECTED_HEADERS: Dict[str, str] = {
     "X-Frame-Options": '"SAMEORIGIN"',
     "X-Content-Type-Options": '"nosniff"',
@@ -41,9 +41,8 @@ EXPECTED_HEADERS: Dict[str, str] = {
     "Permissions-Policy": (
         '"camera=(), geolocation=(), payment=(), usb=(), microphone=(self)"'
     ),
-    "Content-Security-Policy": (
-        "\"default-src 'self' http: https: data: blob: 'unsafe-inline'\""
-    ),
+    "Content-Security-Policy": "$preloop_csp",
+    "Content-Security-Policy-Report-Only": "$preloop_csp_report_only",
     "Strict-Transport-Security": "$preloop_hsts",
 }
 

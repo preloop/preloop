@@ -32,6 +32,43 @@ map "$preloop_hsts_enabled:$http_x_forwarded_proto:$scheme" $preloop_hsts {
     default "";
 }
 
+# Content-Security-Policy (#2280). 15-preloop-csp.envsh validates CSP_MODE
+# and the extra sources and builds PRELOOP_CSP_SCRIPT_SRC and
+# PRELOOP_CSP_CONNECT_SRC; the container does not start on a bad value.
+#
+#   report-only  legacy Content-Security-Policy plus the new policy as
+#                Content-Security-Policy-Report-Only (default)
+#   enforce      the new policy as Content-Security-Policy, nothing else
+#   legacy       the legacy Content-Security-Policy only
+#
+# The new policy covers what this nginx serves from the console build.
+# Responses proxied from the API ($upstream_addr is set) and the separate
+# admin SPA under /admin keep the legacy header in every mode: the console's
+# violation sweep loads neither. Keep the policy identical to
+# "preloop.nginxCspMap" in helm/preloop/templates/_helpers.tpl.
+map "" $preloop_csp_policy {
+    default "default-src 'self'; script-src ${PRELOOP_CSP_SCRIPT_SRC}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ${PRELOOP_CSP_CONNECT_SRC}; media-src 'self' blob:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
+}
+
+# 1 for what nginx serves from the console build, 0 for proxied responses
+# ($upstream_addr set) and the separate admin SPA under /admin, which the
+# console's violation sweep does not load.
+map "$upstream_addr:$uri" $preloop_csp_console {
+    "~^:/admin(/|$)" 0;
+    "~^:" 1;
+    default 0;
+}
+
+map "${CSP_MODE}:$preloop_csp_console" $preloop_csp {
+    "enforce:1" $preloop_csp_policy;
+    default "default-src 'self' http: https: data: blob: 'unsafe-inline'";
+}
+
+map "${CSP_MODE}:$preloop_csp_console" $preloop_csp_report_only {
+    "report-only:1" $preloop_csp_policy;
+    default "";
+}
+
 server {
     listen 80;
     server_name localhost;

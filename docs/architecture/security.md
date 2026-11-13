@@ -17,6 +17,40 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **One definition per config:** nginx drops server-level `add_header` directives in any `location` or `if` block that declares its own `add_header`, which used to strip the set from the SPA shell, static assets, `/admin` and `/api/`. The set now lives in `frontend/docker/security-headers.conf` (Docker image, copied to `/etc/nginx/snippets/`) and the `preloop.nginxSecurityHeaders` named template in `helm/preloop/templates/_helpers.tpl`. Both configs include it at server level and in every block that sets headers. `backend/tests/test_nginx_security_headers.py` enforces coverage and Docker/Helm parity; `backend/tests/test_nginx_headers_smoke.py` (opt-in, `PRELOOP_NGINX_SMOKE=1`) checks real nginx responses.
 *   **HSTS:** An http-context `map` turns `X-Forwarded-Proto`/`$scheme` into `$preloop_hsts`, empty for plain HTTP or when disabled, so nginx omits the header. nginx hides upstream copies (`proxy_hide_header`) so proxied responses carry one. `preloop.api.middleware.hsts.HSTSMiddleware`, the outermost API/gateway middleware, adds the header on HTTPS requests that bypass the console and leaves an existing header alone. Settings and the preload guard are in [TLS](../operations/tls.md#strict-transport-security-hsts).
 
+## Console Content-Security-Policy
+
+The console nginx replaces the old permissive policy (`default-src 'self' http: https: data: blob: 'unsafe-inline'`, which allowed scripts from any origin and inline scripts) with explicit directives:
+
+```
+default-src 'self';
+script-src 'self' {analytics origin} {extra script sources};
+style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: https:;
+font-src 'self' data:;
+connect-src 'self' ws: wss: data: {analytics origin} {extra connect sources};
+media-src 'self' blob:;
+worker-src 'self' blob:;
+frame-src https://www.youtube-nocookie.com;
+object-src 'none';
+base-uri 'self';
+form-action 'self';
+frame-ancestors 'self'
+```
+
+*   **Why each exception:** `style-src 'unsafe-inline'` is needed by Lit components and inline style attributes. `connect-src data:` is needed because Shoelace fetches its built-in system icons as `data:` URLs. `frame-src` allows the privacy-enhanced video embeds on the landing page. `media-src` has no remote hosts, so blog `hero_video` files must be served from the console's own origin (see `frontend/BLOG.md`). `script-src` never contains `'unsafe-inline'` or a scheme source.
+*   **Modes:** `CSP_MODE` (Docker and Compose) or `securityHeaders.csp.mode` (Helm).
+    *   `report-only` (default in this release): the legacy enforcing `Content-Security-Policy` stays, and the new policy is sent as `Content-Security-Policy-Report-Only`. Browsers log violations of the new policy in the developer console and block nothing.
+    *   `enforce`: only the new policy, as `Content-Security-Policy`.
+    *   `legacy`: only the old header, as before. This is the rollback setting.
+    Any other value stops the console container before nginx starts (`frontend/docker/15-preloop-csp.envsh`, sourced by the nginx entrypoint) and fails `helm template`. Both list the three valid values.
+*   **Scope:** The new policy applies to what nginx serves from the console build: the SPA shell, prerendered pages and assets. Responses proxied from the API (`/api/`, `/approval/`, `/oauth/`, `/invitations/accept` and the other proxied paths) keep the legacy header in every mode, because the API's own HTML pages are not covered by the console's violation sweep. The separate admin SPA under `/admin` (shipped by the enterprise image) keeps the legacy header for the same reason. Both need their own sweep before they get the new policy. API JSON responses and the docs site are out of scope.
+*   **Extra sources:** `CSP_EXTRA_SCRIPT_SRC` / `securityHeaders.csp.extraScriptSrc` and `CSP_EXTRA_CONNECT_SRC` / `securityHeaders.csp.extraConnectSrc` take space-separated host sources (`https://cdn.example.com`, `*.example.com`, `127.0.0.1:4000`) appended to `script-src` and `connect-src`. Keywords, quotes, bare schemes such as `https:`, a bare `*` and anything else that is not a host source are refused at startup or render time. A browser error reporter enabled at build time (`VITE_SENTRY_DSN`) needs its ingest origin in the connect sources before switching to `enforce`.
+*   **Analytics:** With `analytics.enabled`, the Helm chart injects `<script src="/analytics-queue.js">` (a static file in the console build that queues `window.plausible` events) and the tracker tag, and adds the origin of `analytics.scriptUrl` to `script-src` and `connect-src`. A relative `scriptUrl` (a tracker proxied under the console's own domain) adds nothing, since `'self'` covers it. A protocol-relative one adds its host. No inline script is injected.
+*   **Custom analytics snippet:** `analytics.customSnippet` is raw HTML the chart cannot inspect, so no origin is added for it. Operators using it must list its origins in `securityHeaders.csp.extraScriptSrc` (and `extraConnectSrc` for where it sends events). Inline code in the snippet is blocked under `enforce`; move it to a file served from a listed origin first.
+*   **No inline script in the console:** the loading indicator (`/app-loading.js`) and the brand configuration (a JSON data block read by `/brand-config.js`) are files. JSON-LD blocks are data and need no change. The console has no inline event handler attributes or `javascript:` URLs.
+*   **Tests:** `backend/tests/test_nginx_csp.py` (Docker template and envsh), `backend/tests/helm/test_nginx_csp_render.py` (rendered Helm, Docker/Helm parity) and the opt-in real-nginx `backend/tests/test_nginx_headers_smoke.py`. `npm run test:csp` in `frontend/` builds the console with a SaaS fixture brand (`frontend/tests/csp/`) and loads every route of the console router, the landing page, a blog post, a `/vs/` page and a `/resources/` page under the enforced policy, with analytics off and on against a local stub tracker, failing on any `securitypolicyviolation` event or CSP console error.
+*   **Next step:** A later release flips the default to `enforce` once the sweep has been green on `main` for a release.
+
 ## Secret Service
 *   **Purpose:** Provider-agnostic custody and resolution of model credentials.
 *   **Built-in Backend:** `local_encrypted` for encrypted-at-rest credentials stored in Preloop-managed storage.

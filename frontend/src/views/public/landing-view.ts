@@ -1702,9 +1702,14 @@ export class LandingView extends LitElement {
                                 !this._showVideo[index] && slide.videoUrl
                                   ? html`
                                       <a
-                                        href="javascript:void(0)"
+                                        href="#"
                                         class="watch-video-link mt-3 d-inline-block"
-                                        @click=${() => this._playVideo(index)}
+                                        @click=${(event: Event) => {
+                                          // No javascript: URL: the CSP
+                                          // blocks it (#2280).
+                                          event.preventDefault();
+                                          this._playVideo(index);
+                                        }}
                                         style="margin-top: 2rem; font-size: 1.1rem; color: var(--sl-color-primary-400); text-decoration: none; font-weight: 500;"
                                       >
                                         <sl-icon

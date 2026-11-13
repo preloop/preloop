@@ -32,7 +32,10 @@ hero_video:
 
 At least one of `mp4` or `webm` is required, along with non-empty `alt` text
 (the video's accessible label). `caption` is optional. All values must be
-non-empty strings. WebM is offered first when both formats are present.
+non-empty strings. Serve the files from this site (`/assets/blog/...`): the
+console's Content-Security-Policy allows media from its own origin only, so an
+absolute URL on another host is blocked once the policy is enforced. WebM is
+offered first when both formats are present.
 Invalid video metadata produces a build warning and leaves the image hero.
 Provide `og_image` as the poster and static reduced-motion fallback; the build
 warns if it is missing and uses the brand's default social image for the video

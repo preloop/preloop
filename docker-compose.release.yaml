@@ -249,6 +249,10 @@ services:
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-31536000}
       HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
       HSTS_PRELOAD: ${HSTS_PRELOAD:-false}
+      # Content-Security-Policy; see docs/architecture/security.md.
+      CSP_MODE: ${CSP_MODE:-report-only}
+      CSP_EXTRA_SCRIPT_SRC: ${CSP_EXTRA_SCRIPT_SRC:-}
+      CSP_EXTRA_CONNECT_SRC: ${CSP_EXTRA_CONNECT_SRC:-}
 
 volumes:
   postgres-data:
