@@ -239,6 +239,29 @@ def cache_covered_condition(usage_model: Any = ApiUsage) -> Any:
     )
 
 
+def reported_total_tokens(usage_model: Any = ApiUsage) -> Any:
+    """Per-row total tokens for reporting, never below prompt + completion.
+
+    The gateway stores input cache inclusive (#1955) but keeps the provider's
+    own ``total_tokens``, which some providers report without the cached
+    prompt, and some rows carry no total at all. Summing that column let an
+    execution read 309k total against 556k prompt. Reporting takes the larger
+    of the stored total and prompt + completion per row. The stored column,
+    and everything that prices from it, is unchanged.
+
+    Args:
+        usage_model: Usage model or an ORM alias of it.
+
+    Returns:
+        A SQL expression to wrap in ``sum()``.
+    """
+    stored = func.coalesce(usage_model.total_tokens, 0)
+    parts = func.coalesce(usage_model.prompt_tokens, 0) + func.coalesce(
+        usage_model.completion_tokens, 0
+    )
+    return case((stored < parts, parts), else_=stored)
+
+
 def cache_split_columns(usage_model: Any = ApiUsage) -> list:
     """Return the aggregate columns backing the cache half of token figures.
 
@@ -3261,7 +3284,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                     "completion_tokens"
                 ),
-                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+                func.coalesce(func.sum(reported_total_tokens()), 0).label(
+                    "total_tokens"
+                ),
                 # Left un-coalesced on purpose: NULL means "unknown", not zero.
                 func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
                 func.count(ApiUsage.estimated_cost).label("priced_requests"),

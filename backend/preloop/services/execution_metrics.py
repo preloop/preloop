@@ -171,6 +171,7 @@ def get_execution_totals(
         cache_split_columns,
         cache_split_from_row,
         exclude_replay_usage_condition,
+        reported_total_tokens,
     )
     from preloop.models.models.api_usage import ApiUsage
     from preloop.models.models.flow_execution import FlowExecution
@@ -253,7 +254,7 @@ def get_execution_totals(
             func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                 "completion_tokens"
             ),
-            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(reported_total_tokens()), 0).label("total_tokens"),
             func.max(ApiUsage.updated_at).label("priced_at"),
             *cache_split_columns(),
         )

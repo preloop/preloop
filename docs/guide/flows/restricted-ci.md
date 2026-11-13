@@ -327,8 +327,15 @@ not run: the review pauses, an approval request appears in **Approvals**, and
 the run resumes on approval (the command may then run once) or ends `FAILED`
 with `approval_denied` or `approval_timeout`. The read-only mode is not special:
 if reviewers should never pause, write the rules so review commands do not
-need approval. In the hosted container, Codex in the read-only sandbox runs
-with its shell disabled, so there are no native commands to gate. Other hosted
+need approval. In the hosted container, Codex in the read-only sandbox still
+runs shell commands (`git log`, `git diff`, `rg` and the like): Preloop starts it
+with `--disable shell_tool`, but the Codex CLI keeps its command execution tool,
+so a review can read the checkout with ordinary commands. Every such command
+runs inside Codex's read-only sandbox, which blocks writes and network access.
+The Preloop `PreToolUse` hook is not installed for read-only runs, so native
+command rules (deny or approval-required) are not applied to these commands;
+the sandbox is the boundary, and model, MCP and gateway calls are still
+governed and metered by Preloop. Other hosted
 Codex runs install the same Preloop `PreToolUse` hook in the container and
 pause the same way; a hosted Codex run that has such a rule but cannot
 install the hook is refused before Codex starts with `approval_unavailable`.
@@ -467,6 +474,10 @@ preloop ci revoke PRINCIPAL_ID KEY_ID
 preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
 preloop ci retire PRINCIPAL_ID
 ```
+
+`preloop ci retire` ships with CLI 1.0.0. An older CLI answers `unknown
+command "retire"`: upgrade it, or call
+`POST /api/v1/ci-identities/{id}/retire` with a human API token.
 
 The CLI reserves a new exclusive file with mode `0600` before requesting a
 secret. Existing files and symlinks fail before issuance. Stdout contains only

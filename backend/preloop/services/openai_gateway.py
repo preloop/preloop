@@ -46,6 +46,7 @@ from types import SimpleNamespace
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote as urllib_quote
+from urllib.parse import urlsplit
 
 import httpx
 import litellm
@@ -597,6 +598,48 @@ def _openrouter_usage_accounting_enabled() -> bool:
 def _is_openrouter_upstream(ai_model: GatewayModel) -> bool:
     """Whether this model's traffic terminates at OpenRouter."""
     return is_openrouter_model(ai_model)
+
+
+#: Hosts whose chat API accepts ``response_format={"type": "json_object"}``
+#: but rejects ``json_schema`` with an HTTP 400 ("This response_format type is
+#: unavailable now"), although LiteLLM's catalog lists schema support.
+_JSON_OBJECT_ONLY_HOSTS = frozenset({"api.deepseek.com"})
+_JSON_OBJECT_ONLY_MODEL_PREFIXES = ("deepseek/",)
+
+
+def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
+    """Whether the resolved upstream supports JSON mode but not JSON schemas."""
+    api_base = kwargs.get("api_base")
+    if isinstance(api_base, str) and api_base.strip():
+        try:
+            host = urlsplit(api_base.strip()).hostname
+        except ValueError:
+            return False
+        return (host or "").lower() in _JSON_OBJECT_ONLY_HOSTS
+    model = str(kwargs.get("model") or "").lower()
+    return model.startswith(_JSON_OBJECT_ONLY_MODEL_PREFIXES)
+
+
+def _json_schema_as_json_mode(
+    messages: List[Dict[str, Any]], json_schema: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Return ``messages`` with the schema stated as a system instruction.
+
+    Used when an upstream only offers JSON mode: the model is told the exact
+    schema, the provider guarantees syntactically valid JSON, and the flow's
+    existing result validation still checks the document against the schema.
+    The caller's list is never mutated.
+    """
+    schema = json_schema.get("schema") if isinstance(json_schema, dict) else None
+    name = json_schema.get("name") if isinstance(json_schema, dict) else None
+    instruction = (
+        "Respond with a single JSON object only, no prose and no code fences. "
+        "It must validate against this JSON Schema"
+        + (f" ({name})" if isinstance(name, str) and name else "")
+        + ":\n"
+        + json.dumps(schema if schema is not None else {}, sort_keys=True)
+    )
+    return [{"role": "system", "content": instruction}, *messages]
 
 
 def _bedrock_region(ai_model: GatewayModel) -> Optional[str]:
@@ -8712,6 +8755,16 @@ class OpenAIGatewayService:
                     ),
                 )
             kwargs["response_format"] = response_format
+            if response_format.get(
+                "type"
+            ) == "json_schema" and _upstream_supports_json_object_only(kwargs):
+                # Translate rather than refuse: JSON mode plus the schema in
+                # the instructions. The flow result validation still enforces
+                # the schema on whatever the model returns.
+                kwargs["response_format"] = {"type": "json_object"}
+                kwargs["messages"] = _json_schema_as_json_mode(
+                    kwargs["messages"], response_format.get("json_schema") or {}
+                )
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.

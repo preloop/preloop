@@ -2380,7 +2380,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """
         if not roots and not root_texts:
             return []
-        from preloop.models.crud.api_usage import exclude_replay_usage_condition
+        from preloop.models.crud.api_usage import (
+            exclude_replay_usage_condition,
+            reported_total_tokens,
+        )
         from preloop.models.models.api_usage import ApiUsage
 
         resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
@@ -2412,7 +2415,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         usage = (
             select(
                 func.count(ApiUsage.id).label("requests"),
-                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
+                func.coalesce(func.sum(reported_total_tokens()), 0).label("tokens"),
                 func.round(cast(func.sum(ApiUsage.estimated_cost), Numeric), 4).label(
                     "cost"
                 ),
