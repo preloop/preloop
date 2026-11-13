@@ -427,6 +427,7 @@ async def test_existing_execution_recovery_never_probes_a_rejected_key(
         """Expose only the already-running execution to recovery."""
         return [execution] if kwargs["status"] == "RUNNING" else []
 
+    # Observe provider work even if recovery imported the public probe by alias.
     with (
         patch(
             "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
@@ -442,7 +443,7 @@ async def test_existing_execution_recovery_never_probes_a_rejected_key(
         patch.object(execution_recovery, "FlowExecutionOrchestrator"),
         patch.object(service, "_resume_monitoring_task", new=AsyncMock()),
         patch(
-            "preloop.services.model_credential_probe.probe_rejected_model_credentials",
+            "preloop.services.model_credential_probe._probe_rejected_model_credentials",
             side_effect=AssertionError("Recovery must not probe credentials"),
         ) as probe,
     ):
