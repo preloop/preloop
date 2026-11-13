@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import (
@@ -142,6 +143,9 @@ class CiAdminIdentityRead(BaseModel):
     retired: bool = False
     credential_version: int
     grant: CiGrant
+    # Fixed when the identity is provisioned. ``shared`` means the flow admits
+    # several projects; the identity is still bound to ``grant.project_id`` only.
+    binding_mode: Literal["dedicated", "shared"] = "dedicated"
     repository_identifier: str
     repository_slug: str
     tracker_type: str
@@ -177,4 +181,48 @@ class CiAdminCapabilities(BaseModel):
     can_view: bool
     can_manage: bool
     supported_actions: list[CiAction]
-    binding: str = "One account-local project and its dedicated hosted flow"
+    binding: str = (
+        "One account-local project per identity, on that project's dedicated "
+        "hosted flow or on a shared read-only review flow that admits the project"
+    )
+    binding_modes: list[Literal["dedicated", "shared"]] = ["dedicated", "shared"]
+
+
+class CiSharedFlowUpdate(BaseModel):
+    """The complete project allowlist of one shared read-only review flow.
+
+    The list replaces the current allowlist. Each project must be an active
+    project of the caller's account whose owning tracker is a GitHub App
+    installation; Preloop derives the repository and its tracker from the
+    project, so no repository URL or tracker is accepted here.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    project_ids: tuple[UUID, ...] = Field(min_length=1, max_length=100)
+
+    @field_validator("project_ids")
+    @classmethod
+    def unique_projects(cls, project_ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        """Reject duplicates rather than normalize them."""
+        if len(set(project_ids)) != len(project_ids):
+            raise ValueError("Shared flow projects must be unique")
+        return project_ids
+
+
+class CiSharedFlowProject(BaseModel):
+    """One admitted project and how many live identities are bound to it."""
+
+    project_id: UUID
+    name: str | None
+    repository_slug: str | None
+    identities: int
+
+
+class CiSharedFlowRead(BaseModel):
+    """Administrator view of a flow's restricted CI project allowlist."""
+
+    flow_id: UUID
+    name: str
+    binding_mode: Literal["dedicated", "shared"]
+    read_only: bool
+    projects: list[CiSharedFlowProject]
