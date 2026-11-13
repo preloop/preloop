@@ -185,6 +185,8 @@ func TestCIRequestPaths(t *testing.T) {
 		{"issue", "POST", "/principal/keys"}, {"rotate", "POST", "/principal/keys/key/rotate"},
 		{"revoke", "DELETE", "/principal/keys/key"}, {"subscribe", "POST", "/principal/subscriptions"},
 		{"retire", "POST", "/principal/retire"},
+		{"shared-flow", "GET", "/shared-flows/principal"},
+		{"share-flow", "PUT", "/shared-flows/principal"},
 	} {
 		args := []string{}
 		if strings.Contains(test.path, "principal") {
@@ -204,5 +206,60 @@ func TestCISafeMetadataKeepsRetired(t *testing.T) {
 	out := ciSafeMetadata(map[string]interface{}{"retired": true, "hidden": "x"})
 	if got := out.(map[string]interface{}); got["retired"] != true || got["hidden"] != nil {
 		t.Fatalf("retired must reach stdout, unknown fields must not: %v", got)
+	}
+}
+
+func TestCIShareFlowSendsAllowlistAndPrintsSafeMetadata(t *testing.T) {
+	var got []struct{ method, path, body string }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = append(got, struct{ method, path, body string }{r.Method, r.URL.Path, string(raw)})
+		_, _ = w.Write([]byte(`{"flow_id":"synthetic-flow","name":"Review","binding_mode":"shared","read_only":true,"projects":[{"project_id":"synthetic-project","name":"One","repository_slug":"example/one","identities":1,"hidden":"x"}],"git_clone_config":{"hidden":"x"}}`))
+	}))
+	defer server.Close()
+	pointCLIAt(t, server.URL)
+	FlagToken = ""
+	t.Setenv("PRELOOP_TOKEN", "synthetic-human-token")
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	flow := "00000000-0000-4000-8000-000000000003"
+	input := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.WriteFile(input, []byte(`{"project_ids":["00000000-0000-4000-8000-000000000004"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	command := newCICommand("share-flow")
+	command.SetOut(&output)
+	command.SetArgs([]string{flow, "--input", input})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	command = newCICommand("shared-flow")
+	command.SetOut(&output)
+	command.SetArgs([]string{flow})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].method != http.MethodPut || got[0].path != "/api/v1/ci-identities/shared-flows/"+flow ||
+		!strings.Contains(got[0].body, "project_ids") || got[1].method != http.MethodGet || got[1].body != "" {
+		t.Fatalf("unexpected requests: %v", got)
+	}
+	text := output.String()
+	for _, want := range []string{`"binding_mode":"shared"`, `"read_only":true`, `"identities":1`, `"repository_slug":"example/one"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout misses %s: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "hidden") {
+		t.Fatal("unknown fields must not reach stdout")
+	}
+	missing := newCICommand("share-flow")
+	missing.SetArgs([]string{flow})
+	if err := missing.Execute(); err == nil || len(got) != 2 {
+		t.Fatal("share-flow without --input must fail before any request")
+	}
+	invalid := newCICommand("shared-flow")
+	invalid.SetArgs([]string{"not-a-uuid"})
+	if err := invalid.Execute(); err == nil || len(got) != 2 {
+		t.Fatal("a non-UUID flow must fail before any request")
 	}
 }

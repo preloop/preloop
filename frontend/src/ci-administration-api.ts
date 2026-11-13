@@ -37,6 +37,11 @@ export interface CiIdentity {
   retired?: boolean;
   credential_version: number;
   grant: CiGrant;
+  /**
+   * Fixed at provisioning. `shared`: the flow admits several projects; the
+   * identity is still bound to `grant.project_id` only.
+   */
+  binding_mode?: 'dedicated' | 'shared';
   repository_identifier: string;
   repository_slug: string;
   tracker_type: string;
@@ -53,6 +58,7 @@ export interface CiPreview {
   repository_identifier: string;
   repository_slug: string;
   tracker_type: string;
+  binding_mode?: 'dedicated' | 'shared';
   /** `server`, or the named private pool of a read-only host-profile review. */
   runner_pool: string;
 }

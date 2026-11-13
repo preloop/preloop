@@ -104,18 +104,40 @@ export class CiIdentitiesView extends LitElement {
       if (lifecycle === this.lifecycle) this.loading = false;
     }
   }
-  private dedicatedFlows(): Flow[] {
+  /** A flow whose only project and only repository is the selected project. */
+  private dedicatedFlow(flow: Flow): boolean {
+    return (
+      flow.trigger_project_ids?.length === 1 &&
+      flow.trigger_project_ids[0] === this.projectId &&
+      flow.git_clone_config?.repositories?.length === 1 &&
+      flow.git_clone_config.repositories[0].project_id === this.projectId
+    );
+  }
+  /**
+   * A shared read-only review flow whose allowlist admits the selected
+   * project. Mirrors the backend binding: read-only mode, the project among
+   * the trigger projects, and exactly one repository entry for it.
+   */
+  private sharedFlow(flow: Flow): boolean {
+    const config = flow.git_clone_config;
+    return (
+      config?.ci_project_selection === true &&
+      config.publication_mode === 'read_only' &&
+      flow.trigger_project_ids?.includes(this.projectId) === true &&
+      (config.repositories ?? []).filter(
+        (repository) => repository.project_id === this.projectId
+      ).length === 1
+    );
+  }
+  private eligibleFlows(): Flow[] {
     return this.flows.filter(
       (flow) =>
         flow.id &&
         flow.account_id &&
         flow.is_enabled === true &&
         (flow.runner_pool === 'server' || this.privateReadOnlyReview(flow)) &&
-        flow.trigger_project_ids?.length === 1 &&
-        flow.trigger_project_ids[0] === this.projectId &&
         flow.git_clone_config?.enabled === true &&
-        flow.git_clone_config.repositories?.length === 1 &&
-        flow.git_clone_config.repositories[0].project_id === this.projectId
+        (this.sharedFlow(flow) || this.dedicatedFlow(flow))
     );
   }
   /**
@@ -194,7 +216,7 @@ export class CiIdentitiesView extends LitElement {
     } catch {
       if (lifecycle === this.lifecycle)
         this.error =
-          'The request could not be completed. Refresh permissions and verify the dedicated flow, grant and credential lifetime.';
+          'The request could not be completed. Refresh permissions and verify the flow binding, grant and credential lifetime.';
     } finally {
       if (lifecycle === this.lifecycle) this.busy = false;
     }
@@ -469,8 +491,10 @@ export class CiIdentitiesView extends LitElement {
       </style>
       <h1>CI identities</h1>
       <p>
-        Each identity owns one project's dedicated hosted flow and its own
-        executions and completion callbacks. Rotating a key preserves that
+        Each identity is bound to one project and one flow: the project's
+        dedicated hosted flow, or a shared read-only review flow that admits the
+        project. It owns only its own executions and completion callbacks, never
+        those of another project on the same flow. Rotating a key preserves that
         ownership.
       </p>
       ${this.loading ? html`<p data-loading role="status">Loading restricted CI setup…</p>` : nothing}
@@ -516,7 +540,7 @@ export class CiIdentitiesView extends LitElement {
                       </select></label
                     >
                     <label
-                      >Dedicated hosted flow<select
+                      >Flow (dedicated, or shared read-only review)<select
                         id="ci-flow"
                         .value=${this.flowId}
                         @change=${(event: Event) => {
@@ -527,10 +551,10 @@ export class CiIdentitiesView extends LitElement {
                         }}
                       >
                         <option value="">Select flow</option>
-                        ${this.dedicatedFlows().map((flow) => html`<option value=${flow.id!}>${flow.name}</option>`)}
+                        ${this.eligibleFlows().map((flow) => html`<option value=${flow.id!}>${flow.name}${this.sharedFlow(flow) ? ' (shared review flow)' : ''}</option>`)}
                       </select></label
                     >
-                    ${this.projectId && !this.dedicatedFlows().length ? html`<p>Configure an enabled server-hosted flow bound to this project and its single repository first.</p>` : nothing}
+                    ${this.projectId && !this.eligibleFlows().length ? html`<p>Configure an enabled server-hosted flow bound to this project and its single repository first, or admit this project to a shared read-only review flow.</p>` : nothing}
                     ${this.actionChoices(
                       this.actions,
                       CI_ACTIONS,
@@ -559,7 +583,7 @@ export class CiIdentitiesView extends LitElement {
                     >
                       Preview grant
                     </button>
-                    ${this.preview ? html`<p id="ci-preview-summary">Validated ${this.preview.tracker_type} repository ${this.preview.repository_slug}; ${this.preview.runner_pool === 'server' ? 'hosted flow' : `flow on private runner pool ${this.preview.runner_pool}:`} ${this.preview.grant.flow_id}.</p>` : nothing}
+                    ${this.preview ? html`<p id="ci-preview-summary">Validated ${this.preview.tracker_type} repository ${this.preview.repository_slug}; ${this.preview.runner_pool === 'server' ? 'hosted flow' : `flow on private runner pool ${this.preview.runner_pool}:`} ${this.preview.grant.flow_id}.${this.preview.binding_mode === 'shared' ? ' Shared review flow: this identity can start and read reviews of this repository only.' : ''}</p>` : nothing}
                     <button
                       id="ci-create"
                       ?disabled=${this.busy || !!this.secret || !this.name.trim() || !this.preview}
@@ -586,7 +610,8 @@ export class CiIdentitiesView extends LitElement {
                         <p>
                           Identity: <code>${identity.id}</code><br />Project:
                           <code>${identity.grant.project_id}</code><br />Flow:
-                          <code>${identity.grant.flow_id}</code>
+                          <code>${identity.grant.flow_id}</code><br />Binding:
+                          ${identity.binding_mode === 'shared' ? 'shared review flow, this project only' : 'dedicated flow'}
                         </p>
                         <p>Actions: ${identity.grant.actions.join(', ')}</p>
                         ${this.manage ? this.controls(identity) : nothing}

@@ -13,10 +13,17 @@ from preloop.schemas.ai_model import (
     AIModelUpdate,
     AIModelCredentialRotateRequest,
 )
+from preloop.services.audit import service as audit_service
 from tests.conftest import maybe_await
 
 KEY = "sk-synthetic-credential-never-allowed-in-audit"
 REPLACEMENT = "sk-synthetic-replacement-never-allowed-in-audit"
+
+
+@pytest.fixture(autouse=True)
+def enabled_audit_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Own an enabled collector regardless of preceding application shutdowns."""
+    monkeypatch.setattr(audit_service, "_audit_service", audit_service.AuditService())
 
 
 @pytest.mark.asyncio

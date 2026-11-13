@@ -9,8 +9,15 @@ import pytest
 from sqlalchemy.orm import Session
 
 from preloop.models import crud, models
+from preloop.services.audit import service as audit_service
 from preloop.services.model_credential_probe import probe_rejected_model_credentials
 from tests.services.test_model_credential_health import STORED_KEY, _stored_model
+
+
+@pytest.fixture(autouse=True)
+def enabled_audit_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Own an enabled collector regardless of preceding application shutdowns."""
+    monkeypatch.setattr(audit_service, "_audit_service", audit_service.AuditService())
 
 
 def _marked_model(db: Session, account_id: Any, **overrides: Any) -> models.AIModel:
