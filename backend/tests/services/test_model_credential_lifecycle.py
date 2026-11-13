@@ -382,3 +382,73 @@ async def test_no_progress_retry_probes_only_the_final_selection(
             no_progress_escalation={"reasoning_effort": "high"},
         )
         probe.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_existing_execution_recovery_never_probes_a_rejected_key(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Reattaching to a running container is not admission for a new execution."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from preloop.agents.base import AgentStatus
+    from preloop.services import execution_recovery
+
+    model = _stored_model(db_session, test_user.account_id)
+    model.credentials_secret.meta_data = {
+        UPSTREAM_AUTH_REJECTION_KEY: {
+            "last_rejected_at": datetime.now(timezone.utc).isoformat(),
+            "status_code": 401,
+        }
+    }
+    db_session.flush()
+    flow = SimpleNamespace(
+        id=uuid4(),
+        ai_model_id=model.id,
+        agent_type="codex",
+        agent_config={},
+        account_id=test_user.account_id,
+    )
+    execution = SimpleNamespace(
+        id=uuid4(),
+        flow_id=flow.id,
+        flow=flow,
+        status="RUNNING",
+        agent_session_reference="synthetic-existing-session",
+        trigger_event_details={},
+    )
+    executor = MagicMock()
+    executor.get_status = AsyncMock(return_value=AgentStatus.RUNNING)
+    executor.aclose = AsyncMock()
+    service = execution_recovery.ExecutionRecoveryService()
+
+    def running_executions(db: Session, **kwargs: Any) -> list[Any]:
+        """Expose only the already-running execution to recovery."""
+        return [execution] if kwargs["status"] == "RUNNING" else []
+
+    # Observe provider work even if recovery imported the public probe by alias.
+    with (
+        patch(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            return_value=False,
+        ),
+        patch.object(
+            execution_recovery.crud_flow_execution,
+            "get_multi",
+            side_effect=running_executions,
+        ),
+        patch.object(execution_recovery, "get_nats_client", new=AsyncMock()),
+        patch("preloop.agents.create_executor_for_execution", return_value=executor),
+        patch.object(execution_recovery, "FlowExecutionOrchestrator"),
+        patch.object(service, "_resume_monitoring_task", new=AsyncMock()),
+        patch(
+            "preloop.services.model_credential_probe._probe_rejected_model_credentials",
+            side_effect=AssertionError("Recovery must not probe credentials"),
+        ) as probe,
+    ):
+        assert await service.recover_orphaned_executions(db_session) == 1
+        await asyncio.gather(*service.recovery_tasks)
+        probe.assert_not_called()
+    assert execution.status == "RUNNING"
+    assert model.credentials_rejected is True
