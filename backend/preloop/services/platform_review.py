@@ -14,6 +14,7 @@ Design note and threat model: ``docs/architecture/platform-posted-review.md``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -29,12 +30,15 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models import crud, models
+from preloop.models.crud.platform_review_publication import CLAIM_STALE_AFTER
 from preloop.models.models.platform_review_publication import (
     STATE_FAILED,
     STATE_POSTED,
+    STATE_PUBLISHING,
     STATE_SKIPPED,
 )
 from preloop.schemas.ci_execution import CiReviewBinding
+from preloop.schemas.ci_principal import CiAction
 from preloop.services.flow_result_schema import validate_result_document
 from preloop.services.publication_credentials import (
     LeaseRefusedError,
@@ -1067,10 +1071,20 @@ async def _publish_claimed(
     from preloop.services.read_only_review import validate_read_only_flow
 
     record = crud.crud_platform_review_publication.record
-    try:
-        binding = crud.crud_ci_execution.authorize_dispatch(db, execution=execution)
-    except PermissionError:
-        raise PlatformReviewError("admission_revoked") from None
+    # The execution's own identity must still be admitted: active, its
+    # project on the flow, its snapshot unchanged, and holding the grant it
+    # used to trigger or the explicit publish action.
+    binding = None
+    for action in (CiAction.TRIGGER, CiAction.PUBLISH_REVIEW):
+        try:
+            binding = crud.crud_ci_execution.authorize_dispatch(
+                db, execution=execution, action=action
+            )
+            break
+        except PermissionError:
+            continue
+    else:
+        raise PlatformReviewError("admission_revoked")
     if (
         binding is None
         or binding.tracker_type != "github"
@@ -1292,6 +1306,8 @@ async def publish_platform_review(
     if execution is None or flow is None:
         raise LookupError("Flow execution not found")
     if platform_review_block(flow.git_clone_config) is None:
+        # A pending retry of a flow that opted out must not stay due forever.
+        _stop_retrying(db, execution.id, "platform_review_disabled")
         if explicit:
             raise PlatformReviewRefusedError("platform_review_disabled")
         return None
@@ -1320,6 +1336,11 @@ async def publish_platform_review(
         return platform_review_projection(db, execution, flow=flow)
     try:
         await _publish_claimed(db, row, flow=flow, execution=execution)
+    except asyncio.CancelledError:
+        # Cut short by the caller's time limit: hand the row to the monitor
+        # instead of leaving it claimed.
+        _fail(db, execution.id, "attempt_interrupted", True)
+        raise
     except PlatformReviewError as error:
         _fail(db, execution.id, error.reason, error.retryable)
     except Exception:
@@ -1327,6 +1348,34 @@ async def publish_platform_review(
         logger.exception("Platform review publication failed for %s", execution.id)
         _fail(db, execution.id, "internal_error", True)
     return platform_review_projection(db, execution, flow=flow)
+
+
+def _stop_retrying(db: Session, execution_id: Any, reason: str) -> None:
+    """Take a failed or abandoned row out of the automatic retry queue."""
+    store = crud.crud_platform_review_publication
+    try:
+        row = store.get_for_execution(db, execution_id=execution_id)
+        if row is None:
+            return
+        stale = datetime.now(timezone.utc).replace(tzinfo=None) - CLAIM_STALE_AFTER
+        abandoned = (
+            row.state == STATE_PUBLISHING
+            and row.claimed_at is not None
+            and row.claimed_at < stale
+        )
+        if not abandoned and not (row.state == STATE_FAILED and row.retryable):
+            return
+        store.record(
+            db,
+            row=row,
+            state=STATE_FAILED,
+            reason=reason[:64],
+            retryable=False,
+            next_attempt_at=None,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("Could not close the publication retry of %s", execution_id)
 
 
 def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
@@ -1444,7 +1493,9 @@ async def sweep_platform_reviews(limit: int = 20) -> int:
     attempted = 0
     try:
         store = crud.crud_platform_review_publication
-        targets = store.due_execution_ids(db=session, limit=limit)
+        targets = store.due_execution_ids(
+            db=session, limit=limit, max_attempts=MAX_AUTOMATIC_ATTEMPTS
+        )
         targets += store.unclaimed_execution_ids(
             db=session, finished_within=timedelta(hours=24), limit=limit
         )

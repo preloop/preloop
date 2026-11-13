@@ -1617,3 +1617,172 @@ def test_finished_event_for_a_separate_publisher_is_unchanged_by_the_opt_in(
     assert set(data) - set(baseline) == {"platform_review"}
     assert (data["platform_review"] is not None) is opted_in
     assert world.github.calls == []
+
+
+# --- review round 1 ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attempt_cancelled_after_the_claim_is_completed_by_the_next_sweep(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    real = platform_review._publish_claimed
+
+    async def hang(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(platform_review, "_publish_claimed", hang)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(publish(world, execution), timeout=0.05)
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    assert row.state == "failed" and row.reason == "attempt_interrupted"
+    assert row.retryable is True and row.next_attempt_at is not None
+    row.next_attempt_at = datetime(2020, 1, 1)
+    world.db.commit()
+    assert (world.account.id, execution.id) in store.due_execution_ids(world.db)
+    monkeypatch.setattr(platform_review, "_publish_claimed", real)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_abandoned_by_a_dead_worker_is_due_and_completed(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    store = crud.crud_platform_review_publication
+    row = store.claim(
+        world.db,
+        account_id=world.account.id,
+        execution_id=execution.id,
+        repository=project.slug,
+        pull_request=7,
+        head_sha=HEAD,
+    )
+    assert store.due_execution_ids(world.db) == []
+    row.claimed_at = datetime(2020, 1, 1)
+    world.db.commit()
+    assert store.due_execution_ids(world.db) == [(world.account.id, execution.id)]
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["attempts"] == 2
+    # An abandoned row that used every attempt waits for an explicit call.
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    row.state, row.claimed_at = "publishing", datetime(2020, 1, 1)
+    row.attempts = platform_review.MAX_AUTOMATIC_ATTEMPTS
+    world.db.commit()
+    assert store.due_execution_ids(world.db) == []
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_flow_that_opted_out_leaves_the_queue(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    world.github.fail[("GET", f"/repos/{project.slug}/pulls/7")] = [500]
+    world.github.fail[("POST", f"/repos/{project.slug}/statuses/{HEAD}")] = [500]
+    await publish(world, execution)
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    row.next_attempt_at = datetime(2020, 1, 1)
+    config = dict(world.flow.git_clone_config)
+    config.pop("platform_review")
+    world.flow.git_clone_config = config
+    world.db.commit()
+    assert store.due_execution_ids(world.db) == [(world.account.id, execution.id)]
+    calls = len(world.github.calls)
+    assert await publish(world, execution) is None
+    assert store.due_execution_ids(world.db) == []
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    assert (row.state, row.reason) == ("failed", "platform_review_disabled")
+    assert row.retryable is False and row.next_attempt_at is None
+    assert len(world.github.calls) == calls
+
+
+def test_identity_narrowed_to_publish_only_can_still_republish(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    project = world.projects[0]
+    who = identity(world, project)
+    execution = finished(world, who)
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=who.principal.id,
+        grant=CiGrant(
+            version=1,
+            project_id=project.id,
+            flow_id=world.flow.id,
+            actions=(CiAction.PUBLISH_REVIEW,),
+        ),
+    )
+    posted = client.post(
+        f"/api/v1/flows/executions/{execution.id}/platform-review",
+        headers={"Authorization": f"Bearer {who.token}"},
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["platform_review"]["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_with_neither_trigger_nor_publish_cannot_cause_a_post(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    who = identity(world, project)
+    execution = finished(world, who)
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=who.principal.id,
+        grant=CiGrant(
+            version=1,
+            project_id=project.id,
+            flow_id=world.flow.id,
+            actions=(CiAction.READ_RESULT,),
+        ),
+    )
+    outcome = await publish(world, execution, explicit=True)
+    assert outcome is not None and outcome["reason"] == "admission_revoked"
+    assert world.github.calls == []
+
+
+def test_dispatch_authorization_accepts_only_trigger_or_publish(
+    world: SimpleNamespace,
+) -> None:
+    execution = finished(world, identity(world, world.projects[0]))
+    with pytest.raises(PermissionError):
+        crud.crud_ci_execution.authorize_dispatch(
+            world.db, execution=execution, action=CiAction.READ_RESULT
+        )
+
+
+def test_sweep_never_reaches_back_to_runs_of_identities_that_predate_the_opt_in(
+    world: SimpleNamespace,
+) -> None:
+    config = dict(world.flow.git_clone_config)
+    opted_out = dict(config)
+    opted_out.pop("platform_review")
+    world.flow.git_clone_config = opted_out
+    world.db.commit()
+    old = finished(world, identity(world, world.projects[0]))
+    old.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.git_clone_config = config
+    world.db.commit()
+    new = finished(world, identity(world, world.projects[1]))
+    new.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.db.commit()
+    found = crud.crud_platform_review_publication.unclaimed_execution_ids(
+        world.db, finished_within=timedelta(hours=24)
+    )
+    assert (world.account.id, new.id) in found
+    assert (world.account.id, old.id) not in found

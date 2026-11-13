@@ -130,8 +130,9 @@ publish endpoint has no request body.
 
 Before any write the step re-runs the dispatch authorization of the
 execution's own identity (`authorize_dispatch`): the identity is active, its
-project is still on the flow's allowlist with the same tracker, and its
-provisioning snapshot still matches the flow. It then reads the pull request
+project is still on the flow's allowlist with the same tracker, its
+provisioning snapshot still matches the flow, and its grant still holds
+`flow:trigger` or `execution:review:publish`. It then reads the pull request
 and requires the provider's pull request id, repository id and repository
 name to equal the binding.
 
@@ -209,9 +210,14 @@ is recorded on the publication row with a stable reason and is visible on the
 execution, its result and the publish endpoint. Retryable failures (GitHub
 unavailable, rate limits) are retried by the execution monitor with
 exponential backoff (1, 2, 4, ... minutes, capped at one hour) for at most
-six attempts. The same sweep publishes finished executions that no worker
-claimed, for example after an operator stop or a worker crash. After that,
-or for a non-retryable reason, an explicit publish call retries.
+six attempts. The same sweep takes over a claim that was left `publishing`
+for more than ten minutes (a cancelled attempt, a worker that died), and
+publishes finished executions that no worker claimed, for example after an
+operator stop. It considers only executions of CI identities that were
+provisioned with the opt-in on, so turning the opt-in on never reaches back
+to earlier runs. A pending retry of a flow that has since opted out is
+closed with `platform_review_disabled`. After the attempts are used, or for
+a non-retryable reason, an explicit publish call retries.
 
 ## Opt-in and identities
 
@@ -250,9 +256,11 @@ posted.
 | 12 | An existing identity is silently upgraded to a flow that writes | provisioning snapshot | `test_identity_snapshot_records_the_opt_in_and_breaks_when_it_changes`, `test_identity_provisioned_before_the_opt_in_cannot_cause_a_post` |
 | 13 | A CI key turns the opt-in on, or publishes without the action | flow routes deny CI keys; `execution:review:publish` | `test_ci_identity_cannot_enable_the_opt_in`, `test_publish_needs_the_explicit_action` |
 | 14 | The opt-in is used with a credential that cannot be narrowed | save-time and publish-time tracker check | `test_opt_in_is_rejected_for_personal_token_and_non_github_trackers`, `test_opt_in_is_accepted_in_read_only_mode_only` |
-| 15 | Access continues after admission is removed | dispatch authorization re-run before every attempt | `test_project_removed_from_the_flow_revokes_posting`, `test_disabled_identity_revokes_posting` |
+| 15 | Access continues after admission is removed | dispatch authorization re-run before every attempt | `test_project_removed_from_the_flow_revokes_posting`, `test_disabled_identity_revokes_posting`, `test_identity_with_neither_trigger_nor_publish_cannot_cause_a_post` |
 | 16 | An approval is posted without anyone asking for it | explicit `verdict_actions` only | `test_approve_and_request_changes_only_by_explicit_mapping` |
 | 17 | The App lacks `statuses: write` and the status is silently dropped | review-only lease, recorded reason | `test_missing_statuses_permission_posts_the_review_and_says_why` |
+| 19 | A cancelled attempt or dead worker leaves a review unposted forever | interrupted attempts are recorded retryable; stale claims are taken over | `test_attempt_cancelled_after_the_claim_is_completed_by_the_next_sweep`, `test_claim_abandoned_by_a_dead_worker_is_due_and_completed` |
+| 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to identities provisioned with the opt-in | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_never_reaches_back_to_runs_of_identities_that_predate_the_opt_in` |
 | 18 | With the opt-in off anything changes | no claim, no lease, no call | `test_opt_in_off_mints_no_lease_and_makes_no_call`, `test_completion_path_does_nothing_without_the_opt_in_or_a_ci_binding` |
 
 ## GitHub App permissions

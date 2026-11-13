@@ -241,9 +241,19 @@ class CRUDCiExecution:
         ).count()
 
     def authorize_dispatch(
-        self, db: Session, *, execution: models.FlowExecution
+        self,
+        db: Session,
+        *,
+        execution: models.FlowExecution,
+        action: CiAction = CiAction.TRIGGER,
     ) -> CiReviewBinding | None:
-        """Recheck stable authority before launch; existing human work is unchanged."""
+        """Recheck stable authority before launch; existing human work is unchanged.
+
+        ``action`` is the grant the execution's identity must still hold. It
+        is ``flow:trigger`` for a launch; the platform-posted review also
+        accepts ``execution:review:publish``. The binding and provenance
+        checks are the same for every action.
+        """
         db.refresh(execution)
         if (
             execution.ci_principal_id is None
@@ -270,8 +280,10 @@ class CRUDCiExecution:
             raise PermissionError("Restricted CI dispatch binding denied")
         if not _valid_event(binding, execution.trigger_event_details):
             raise PermissionError("Restricted CI dispatch provenance denied")
+        if action not in {CiAction.TRIGGER, CiAction.PUBLISH_REVIEW}:
+            raise PermissionError("Restricted CI dispatch denied")
         crud_ci_principal.authorize_principal(
-            db, context=context_from_binding(binding), action=CiAction.TRIGGER
+            db, context=context_from_binding(binding), action=action
         )
         return binding
 

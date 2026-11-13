@@ -674,8 +674,8 @@ changes the execution's status or result. `reason` values include
 `head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
 `verdict_unmapped`, `admission_revoked`, `binding_changed`,
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
-`provider_rejected`, `lease_refused`, `lease_unavailable` and
-`readback_mismatch`. Preloop retries `provider_unavailable` and similar
+`provider_rejected`, `lease_refused`, `lease_unavailable`,
+`attempt_interrupted`, `platform_review_disabled` and `readback_mismatch`. Preloop retries `provider_unavailable` and similar
 transient failures by itself, up to six attempts with growing delays.
 
 ### Publish a finished review again, without a model run
@@ -690,7 +690,8 @@ The call takes no body. It publishes the stored, validated result of that
 execution on the commit it reviewed, or does nothing if it is already there,
 and returns the record above. Use it after a posting failure. It is allowed
 for an account user who may edit flows and for the execution's own CI
-identity when its grant and key include `execution:review:publish`. It
+identity when its grant and key include `execution:review:publish` (the
+identity does not also need `flow:trigger` for this call). It
 answers 409 with `detail.code` `platform_review_disabled`,
 `execution_not_finished` or `no_review_binding` when nothing can be
 published, and 404 for an execution the caller does not own. An execution

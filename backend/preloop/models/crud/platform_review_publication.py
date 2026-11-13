@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -168,23 +168,34 @@ class CRUDPlatformReviewPublication:
         return row
 
     def due_execution_ids(
-        self, db: Session, *, limit: int = 20
+        self, db: Session, *, limit: int = 20, max_attempts: int = 6
     ) -> list[tuple[UUID, UUID]]:
-        """Failed, retryable rows whose backoff elapsed, oldest first.
+        """Rows an automatic attempt should take, oldest first.
+
+        Two kinds: failed, retryable rows whose backoff elapsed, and rows
+        left ``publishing`` by an attempt that was cancelled or whose worker
+        died (claim older than :data:`CLAIM_STALE_AFTER`). Abandoned rows
+        stop being returned once they used ``max_attempts``.
 
         Returns:
             ``(account_id, execution_id)`` pairs.
         """
         model = models.PlatformReviewPublication
+        now = _now()
         rows = (
             db.query(model.account_id, model.execution_id)
             .filter(
-                model.state == STATE_FAILED,
-                model.retryable.is_(True),
-                model.next_attempt_at.isnot(None),
-                model.next_attempt_at <= _now(),
+                or_(
+                    (model.state == STATE_FAILED)
+                    & model.retryable.is_(True)
+                    & model.next_attempt_at.isnot(None)
+                    & (model.next_attempt_at <= now),
+                    (model.state == STATE_PUBLISHING)
+                    & (model.claimed_at < now - CLAIM_STALE_AFTER)
+                    & (model.attempts < max_attempts),
+                )
             )
-            .order_by(model.next_attempt_at.asc())
+            .order_by(func.coalesce(model.next_attempt_at, model.claimed_at).asc())
             .limit(max(1, min(limit, 100)))
             .all()
         )
@@ -196,7 +207,10 @@ class CRUDPlatformReviewPublication:
         """Finished executions of opted-in flows that no attempt has claimed.
 
         Covers a run that reached a terminal status outside the worker that
-        would have published it (an operator stop, a crashed worker).
+        would have published it (an operator stop, a crashed worker). Only
+        executions of an identity that was provisioned with the opt-in on
+        are returned, so turning the opt-in on never reaches back to runs
+        of identities that predate it.
 
         Returns:
             ``(account_id, execution_id)`` pairs, oldest first.
@@ -204,12 +218,15 @@ class CRUDPlatformReviewPublication:
         model = models.PlatformReviewPublication
         execution = models.FlowExecution
         flow = models.Flow
+        principal = models.CiPrincipal
+        snapshot: Any = principal.repository_binding[("platform_review",)].as_json()
         enabled: Any = flow.git_clone_config[
             ("platform_review", "enabled")
         ].as_boolean()
         rows = (
             db.query(flow.account_id, execution.id)
             .join(flow, flow.id == execution.flow_id)
+            .join(principal, principal.id == execution.ci_principal_id)
             .outerjoin(model, model.execution_id == execution.id)
             .filter(
                 model.id.is_(None),
@@ -221,6 +238,7 @@ class CRUDPlatformReviewPublication:
                 # Leave the finishing worker time to publish first.
                 execution.end_time <= _now() - timedelta(minutes=2),
                 enabled.is_(True),
+                snapshot.isnot(None),
             )
             .order_by(execution.end_time.asc())
             .limit(max(1, min(limit, 100)))

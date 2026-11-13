@@ -4,8 +4,9 @@ Revision ID: 20261208_platform_review
 Revises: 20261207_user_passkey_only
 
 One row per execution of a read-only review flow that opted into
-``platform_review``. No existing execution gets a row, so nothing is posted
-for runs that finished before the opt-in.
+``platform_review``. The migration writes no rows. Rows are created only when
+a publication is attempted; the automatic sweep considers only executions of
+CI identities provisioned with the opt-in on.
 """
 
 from typing import Sequence, Union
