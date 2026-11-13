@@ -340,30 +340,6 @@ def validate_platform_review_flow(flow: Any) -> None:
         )
 
 
-def platform_review_capabilities(config: Any) -> list[str] | None:
-    """The provider writes a flow's opt-in can cause, for identity snapshots.
-
-    A CI identity records this list when it is provisioned. An identity whose
-    stored list differs from the flow's current one stops authenticating, so
-    turning the opt-in on, or widening it from comments to approvals or to a
-    commit status, never silently upgrades an existing identity.
-
-    Args:
-        config: The flow's ``git_clone_config``.
-
-    Returns:
-        Sorted capability names, or None when the opt-in is off.
-    """
-    block = platform_review_block(config)
-    if block is None:
-        return None
-    actions = {"comment", *(block.get("verdict_actions") or {}).values()}
-    capabilities = [f"review:{action}" for action in actions]
-    if _status_block(block) is not None:
-        capabilities.append("status")
-    return sorted(capabilities)
-
-
 def validate_platform_review_trackers(
     db: Session, *, account_id: Any, config: Any
 ) -> None:

@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PATCH /api/v1/ci-identities/{id}` accepts `extend_keys: true` to add the
   actions a grant change adds (for example `execution:review:publish`) to
   the identity's active keys in place, without rotation.
+
 - models: audit model creation, updates, deletion and credential set,
   replacement, rotation and removal without key material. First provider API-key
   rejections now notify account owners once per episode and emit
