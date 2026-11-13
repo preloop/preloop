@@ -5410,6 +5410,135 @@ class TestReviewPublicationGate:
         assert log.result["review_publication"]["status"] == "published"
         assert log.result["review_publication"]["review_action"] == action
 
+    @staticmethod
+    def _review_activity(status="succeeded", repo="example-org/example-repo", ref="#7"):
+        """A gateway-recorded ``update_pull_request`` review call."""
+        return SimpleNamespace(
+            id=uuid4(),
+            tool_name="update_pull_request",
+            status=status,
+            metadata_={
+                "work_ref": {
+                    "via": "builtin",
+                    "kind": "pull_request",
+                    "action": "reviewed",
+                    "ref": ref,
+                    "repo": repo,
+                    "review_state": "approved",
+                }
+            },
+        )
+
+    async def _run_with_activity(
+        self, db_session, flow, nats, event, activities, receipt=None
+    ):
+        from preloop.models.crud import crud_runtime_session_activity
+
+        artifact = {"status": "success", "review_action": "approve"}
+        with patch.object(
+            crud_runtime_session_activity,
+            "list_tool_calls_for_flow_execution",
+            return_value=activities,
+        ) as listed:
+            orch = await self._run(
+                db_session, flow, nats, event, artifact, receipt=receipt
+            )
+        return orch, listed
+
+    @pytest.mark.asyncio
+    async def test_no_receipt_with_delivered_review_activity_is_unverified(
+        self, db_session, review_flow, mock_nats_client, pr_event, caplog
+    ):
+        """Version skew (#2208): the API wrote no receipt, the gateway saw the review."""
+        activity = self._review_activity()
+        with caplog.at_level("WARNING", logger="preloop.services.flow_orchestrator"):
+            orch, _ = await self._run_with_activity(
+                db_session, review_flow, mock_nats_client, pr_event, [activity]
+            )
+        log = orch.execution_log
+        assert log.status == "SUCCEEDED"
+        outcome = log.result["review_publication"]
+        assert outcome["status"] == "unverified"
+        assert outcome["status"] != "published"
+        assert outcome["reason"] == "receipt_unavailable"
+        assert outcome["activity_id"] == str(activity.id)
+        assert outcome["head_sha"] == self.HEAD
+        assert "receipt_id" not in outcome
+        assert any("unverified" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.parametrize(
+        "activities",
+        [
+            [],
+            # Another pull request, another repository, a failed or refused
+            # call, a non-review update, and a bare number with no repository.
+            [_review_activity.__func__(ref="#8")],
+            [_review_activity.__func__(repo="example-org/other")],
+            [_review_activity.__func__(status="failed")],
+            [_review_activity.__func__(status="denied")],
+            [_review_activity.__func__(repo=None)],
+        ],
+        ids=["none", "other-pr", "other-repo", "failed", "denied", "no-repo"],
+    )
+    @pytest.mark.asyncio
+    async def test_no_receipt_without_matching_activity_fails(
+        self, db_session, review_flow, mock_nats_client, pr_event, activities
+    ):
+        orch, _ = await self._run_with_activity(
+            db_session, review_flow, mock_nats_client, pr_event, activities
+        )
+        log = orch.execution_log
+        assert log.status == "FAILED"
+        assert log.error_message == "review_publication_incomplete: no_receipt"
+        assert log.result["review_publication"] == {
+            "status": "not_published",
+            "reason": "no_receipt",
+        }
+
+    @pytest.mark.parametrize(
+        ("overrides", "reason"),
+        [
+            ({"pull_request": "8"}, "receipt_for_other_pull_request"),
+            ({"head_sha": "b" * 40}, "receipt_for_other_head"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_receipt_for_other_target_fails_despite_activity(
+        self, db_session, review_flow, mock_nats_client, pr_event, overrides, reason
+    ):
+        orch, _ = await self._run_with_activity(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            [self._review_activity()],
+            receipt=self._receipt(**overrides),
+        )
+        log = orch.execution_log
+        assert log.status == "FAILED"
+        assert log.result["review_publication"] == {
+            "status": "not_published",
+            "reason": reason,
+        }
+
+    @pytest.mark.asyncio
+    async def test_matching_receipt_is_published_without_reading_activity(
+        self, db_session, review_flow, mock_nats_client, pr_event
+    ):
+        orch, listed = await self._run_with_activity(
+            db_session,
+            review_flow,
+            mock_nats_client,
+            pr_event,
+            [self._review_activity()],
+            receipt=self._receipt(),
+        )
+        assert orch.execution_log.status == "SUCCEEDED"
+        assert orch.execution_log.result["review_publication"]["status"] == (
+            "published"
+        )
+        listed.assert_not_called()
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "published", [False, True], ids=["provider-401", "receipt"]

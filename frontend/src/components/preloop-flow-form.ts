@@ -161,6 +161,40 @@ export function showsReviewInstructionsField(
   return slug === REVIEWER_PRESET_SLUG;
 }
 
+/** Help for the flow-level source branch: blank follows the trigger. */
+export const SOURCE_BRANCH_HELP =
+  "Leave blank to use the branch from the trigger: for a pull or merge request, its source branch. A value pins every run to that branch, whatever the trigger's branch is.";
+
+/** Help for a repository's branch: blank falls back to the flow, then the trigger. */
+export const REPOSITORY_BRANCH_HELP =
+  "Leave blank to use the flow source branch, or the trigger's branch when that is blank too. A value pins every run of this repository to that branch.";
+
+/**
+ * Branches a flow pins for its checkout: the flow source branch and any
+ * repository branch, trimmed, without blanks or repeats.
+ */
+export function pinnedCheckoutBranches(
+  gitCloneConfig:
+    | {
+        source_branch?: string | null;
+        repositories?: Array<{ branch?: string | null }> | null;
+      }
+    | null
+    | undefined
+): string[] {
+  if (!gitCloneConfig) return [];
+  const values = [
+    gitCloneConfig.source_branch,
+    ...(gitCloneConfig.repositories || []).map((repo) => repo?.branch),
+  ];
+  const pinned: string[] = [];
+  for (const value of values) {
+    const branch = typeof value === 'string' ? value.trim() : '';
+    if (branch && !pinned.includes(branch)) pinned.push(branch);
+  }
+  return pinned;
+}
+
 /**
  * Approval windows are set in hours and days, not seconds.
  *
@@ -1664,7 +1698,7 @@ export class PreloopFlowForm extends LitElement {
                   label="Branch (optional)"
                   data-repository-field="branch"
                   .value=${repo.branch || ''}
-                  help-text="Leave blank to use the flow source branch."
+                  help-text=${REPOSITORY_BRANCH_HELP}
                   @sl-input=${(event: Event) => {
                     repo.branch =
                       (event.target as HTMLInputElement).value || undefined;
@@ -1698,7 +1732,12 @@ export class PreloopFlowForm extends LitElement {
 
   /** Explicit repositories imply cloning to legacy executors, even if disabled. */
   private composedGitCloneConfig(): GitCloneConfig {
-    const config = this.flow.git_clone_config || { enabled: false };
+    let config = this.flow.git_clone_config || { enabled: false };
+    if (config.enabled && !(config.source_branch || '').trim()) {
+      // Blank means "follow the trigger's branch" (#2211). Send an explicit
+      // null: an absent key takes the server's `main` default and pins it.
+      config = { ...config, source_branch: null };
+    }
     return !config.enabled && config.repositories?.length
       ? { ...config, repositories: [] }
       : config;
@@ -4505,6 +4544,44 @@ export class PreloopFlowForm extends LitElement {
     return showsReviewInstructionsField(this.flow, this.resolvedPresetSlug());
   }
 
+  /** A pull request reviewer flow: the reviewer preset, or a gated review. */
+  private isReviewerFlow(): boolean {
+    if (this.resolvedPresetSlug() === REVIEWER_PRESET_SLUG) return true;
+    const block = (
+      this.flow.git_clone_config as
+        { review_publication?: { required?: unknown } } | undefined
+    )?.review_publication;
+    return block?.required === true;
+  }
+
+  /**
+   * Warn a reviewer flow that a pinned branch replaces the PR/MR branch.
+   *
+   * A reviewer must check out the change it reviews. A pinned branch makes
+   * every run start from that branch instead of the pull or merge request's
+   * source branch, so the agent reviews the wrong code.
+   */
+  private renderPinnedBranchWarning() {
+    if (!this.isReviewerFlow()) return nothing;
+    const pinned = pinnedCheckoutBranches(this.flow.git_clone_config);
+    if (pinned.length === 0) return nothing;
+    const names = pinned.map(
+      (branch, index) => html`${index ? ', ' : ''}<code>${branch}</code>`
+    );
+    return html`<sl-alert
+      variant="warning"
+      open
+      data-pinned-branch-warning
+      style="grid-column: 1 / -1;"
+    >
+      <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+      This reviewer flow pins ${names}. When the trigger carries no head commit,
+      runs start from that branch instead of the pull or merge request's source
+      branch, so the review can see the wrong code. Clear the branch fields to
+      review each change.
+    </sl-alert>`;
+  }
+
   private clearReviewInstructions(): void {
     this.flow = { ...this.flow, review_instructions: null };
     this.requestUpdate();
@@ -5285,16 +5362,19 @@ export class PreloopFlowForm extends LitElement {
                       ></sl-input>
 
                       <sl-input
-                        label="Source branch"
-                        placeholder="main"
+                        label="Source branch (optional)"
+                        data-git="source_branch"
                         .value=${this.flow.git_clone_config?.source_branch || ''}
+                        help-text=${SOURCE_BRANCH_HELP}
                         @sl-input=${(e: any) => {
                           this.flow.git_clone_config = {
                             ...this.flow.git_clone_config,
                             source_branch: e.target.value,
                           };
+                          this.requestUpdate();
                         }}
                       ></sl-input>
+                      ${this.renderPinnedBranchWarning()}
 
                       <div style="grid-column: 1 / -1;">
                         <sl-checkbox

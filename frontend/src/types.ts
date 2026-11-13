@@ -12,7 +12,8 @@ export interface GitCloneConfig {
   repositories?: GitCloneRepository[];
   git_user_name?: string;
   git_user_email?: string;
-  source_branch?: string;
+  /** Null or absent follows the trigger's branch; a value pins every run. */
+  source_branch?: string | null;
   target_branch?: string;
   create_pull_request?: boolean;
   pull_request_title?: string;

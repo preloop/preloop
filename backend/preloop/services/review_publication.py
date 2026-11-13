@@ -22,6 +22,14 @@ head (GitLab and Bitbucket do not report one) never satisfy a skip: they
 cannot show that this head was reviewed, so on those providers the reviewer
 must post again.
 
+Version skew (#2208): the gate runs in the worker and the receipt is written
+by the API. When the execution holds no receipt at all but the server-recorded
+tool activity shows a succeeded ``update_pull_request`` review call for the
+triggering pull request, the outcome is ``unverified`` with reason
+``receipt_unavailable`` and the run is not failed. ``unverified`` is never
+reported as ``published``. A receipt for another pull request or head still
+fails the run.
+
 When the trigger names no pull request the gate accepts any receipt of this
 execution; it still requires a review the code host accepted.
 A trigger that names a pull request must also identify its head; otherwise
@@ -42,8 +50,12 @@ REVIEW_PUBLICATION_INCOMPLETE = "review_publication_incomplete"
 STATUS_PUBLISHED = "published"
 STATUS_ALREADY_REVIEWED = "already_reviewed"
 STATUS_NOT_PUBLISHED = "not_published"
+#: No receipt, but server-recorded tool activity shows the review was
+#: delivered. The run is not failed; the outcome is never "published".
+STATUS_UNVERIFIED = "unverified"
 
 REASON_NO_RECEIPT = "no_receipt"
+REASON_RECEIPT_UNAVAILABLE = "receipt_unavailable"
 REASON_OTHER_TARGET = "receipt_for_other_pull_request"
 REASON_OTHER_HEAD = "receipt_for_other_head"
 REASON_LOOKUP_FAILED = "receipt_lookup_failed"
@@ -128,6 +140,53 @@ def trigger_pull_request(
     return None, None
 
 
+def delivered_review_activity(
+    activities: Iterable[Any],
+    *,
+    repository: Optional[str],
+    pull_request: Optional[str],
+) -> Optional[Any]:
+    """The first succeeded review call for the triggering PR, from tool activity.
+
+    Version skew tolerance (#2208): a worker on a newer build than the API
+    finds no receipt when the API's ``update_pull_request`` tool does not
+    write one yet, although the code host accepted the review. The gateway's
+    own activity row for that call is server-recorded evidence the agent
+    cannot forge. It counts only when the call succeeded, carried a review
+    action, and its classified reference names the triggering repository and
+    pull request number; a bare number with no repository never matches.
+
+    Args:
+        activities: The execution's recorded tool calls (``tool_name``,
+            ``status`` and ``metadata_["work_ref"]``).
+        repository: Triggering repository, normalized.
+        pull_request: Triggering PR number.
+
+    Returns:
+        The matching activity row, or None.
+    """
+    if not repository or not pull_request:
+        return None
+    for activity in activities:
+        if getattr(activity, "tool_name", None) != "update_pull_request":
+            continue
+        if str(getattr(activity, "status", "") or "").lower() != "succeeded":
+            continue
+        metadata = getattr(activity, "metadata_", None)
+        work_ref = metadata.get("work_ref") if isinstance(metadata, Mapping) else None
+        if not isinstance(work_ref, Mapping) or work_ref.get("action") != "reviewed":
+            continue
+        ref = str(work_ref.get("ref") or "")
+        number = ref[1:] if ref[:1] in {"#", "!"} else ""
+        if (
+            normalize_repository(work_ref.get("repo")) == repository
+            and number.isdigit()
+            and str(int(number)) == str(pull_request).strip()
+        ):
+            return activity
+    return None
+
+
 def _deliberate_skip(artifact: Any) -> bool:
     """The preset's explicit no-post decision, with no reported blocker."""
     return (
@@ -148,6 +207,7 @@ def evaluate_review_publication(
     head_sha: Optional[str],
     artifact: Any,
     find_prior_receipt: Callable[[str, str, str], Any],
+    list_review_activity: Optional[Callable[[], Iterable[Any]]] = None,
 ) -> Dict[str, Any]:
     """Decide whether the run delivered its review.
 
@@ -159,6 +219,10 @@ def evaluate_review_publication(
         artifact: The agent's result document (claims only).
         find_prior_receipt: ``(repository, pull_request, head_sha) -> row``
             for a receipt any run recorded on that target.
+        list_review_activity: Lazily reads this execution's server-recorded
+            tool calls. Consulted only when the execution has no receipt;
+            a succeeded review call for the triggering PR then yields
+            ``unverified`` / ``receipt_unavailable`` instead of a failure.
 
     Returns:
         ``{"status": ..., "reason": ..., ...}`` for the stored result.
@@ -199,6 +263,26 @@ def evaluate_review_publication(
             return {
                 "status": STATUS_ALREADY_REVIEWED,
                 "receipt_id": str(getattr(prior, "id", "")) or None,
+                "head_sha": head,
+            }
+    if reason == REASON_NO_RECEIPT and list_review_activity is not None:
+        # Only when this execution holds no receipt at all: a receipt for
+        # another pull request or head is evidence of the wrong review and
+        # still fails the run.
+        activity = delivered_review_activity(
+            list_review_activity(), repository=repository, pull_request=pull_request
+        )
+        if activity is not None:
+            work_ref = (getattr(activity, "metadata_", None) or {}).get("work_ref")
+            return {
+                "status": STATUS_UNVERIFIED,
+                "reason": REASON_RECEIPT_UNAVAILABLE,
+                "activity_id": str(getattr(activity, "id", "")) or None,
+                "review_state": (
+                    work_ref.get("review_state")
+                    if isinstance(work_ref, Mapping)
+                    else None
+                ),
                 "head_sha": head,
             }
     return {"status": STATUS_NOT_PUBLISHED, "reason": reason}
