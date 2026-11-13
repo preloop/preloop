@@ -339,7 +339,16 @@ def estimate_ai_model_usage_cost_detailed(
     approximate (and the Auto Router has no catalog price at all). The
     catalog is the fallback, and ``unpriced`` means nothing could price the
     request.
+
+    ``total_tokens`` is only read by a per-1k price and a prepaid token
+    balance. It is never taken below ``prompt_tokens + completion_tokens``: a
+    provider total that leaves the cached input out, or a stored row written
+    before totals were made consistent, would otherwise under-charge.
     """
+    total_tokens = max(
+        int(total_tokens or 0),
+        max(int(prompt_tokens or 0), 0) + max(int(completion_tokens or 0), 0),
+    )
     configured_pricing = pricing_override or _get_configured_pricing(ai_model)
     if configured_pricing:
         configured_cost = _estimate_cost_from_pricing(
