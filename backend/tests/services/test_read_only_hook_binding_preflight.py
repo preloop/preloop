@@ -157,17 +157,31 @@ def _widen_scope(db: Session, key: models.ApiKey) -> None:
 
 
 def _attach_agent(db: Session, key: models.ApiKey) -> None:
+    from preloop.models.crud import crud_managed_agent
+
+    agent = crud_managed_agent.create_custom_agent(
+        db, account_id=key.account_id, display_name="Synthetic agent", commit=True
+    )
+    assert agent.lifecycle_state == "active"
+    key.context_data = {**key.context_data, "managed_agent_id": str(agent.id)}
+
+
+def _attach_unknown_agent(db: Session, key: models.ApiKey) -> None:
     key.context_data = {**key.context_data, "managed_agent_id": str(key.id)}
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("corrupt", [_widen_scope, _attach_agent])
+@pytest.mark.parametrize(
+    "corrupt,status",
+    [(_widen_scope, 403), (_attach_agent, 403), (_attach_unknown_agent, 401)],
+)
 async def test_invalid_binding_ends_run_before_launch_and_is_refused(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     review_flow: tuple[Any, ...],
     permission_client: TestClient,
     corrupt: Any,
+    status: int,
 ) -> None:
     orch, token = _trigger_and_mint(db_session, monkeypatch, review_flow)
     key = crud.crud_api_key.get_by_key(db_session, key=token)
@@ -175,7 +189,7 @@ async def test_invalid_binding_ends_run_before_launch_and_is_refused(
     db_session.commit()
 
     response = _check(permission_client, token)
-    assert response.status_code in (401, 403), response.text
+    assert response.status_code == status, response.text
 
     executor = MagicMock()
     executor.start = AsyncMock(return_value="never")

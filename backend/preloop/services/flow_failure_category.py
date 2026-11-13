@@ -105,6 +105,11 @@ it*, not about severity:
     hosted Codex container whose Preloop command hook could not be
     installed, or another hosted harness without one), so it was refused
     rather than run ungated.
+``hook_binding_invalid``
+    A hosted Codex run's native command-hook credential was refused by
+    ``POST /api/v1/agents/permission-check`` before launch (for example a
+    read-only review key with a widened scope or an attached managed
+    agent), so the run ended before the container started.
 ``resume_failed``
     A run that parked (for an approval or for its child runs) could not be
     continued: the resume refused the parked run's checkpoint before the
