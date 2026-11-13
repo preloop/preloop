@@ -595,6 +595,51 @@ def test_stream_generate_content_midstream_failure_emits_gemini_error_event(
     )
 
 
+def test_stream_generate_content_terminal_failure_emits_error_with_origin(
+    app, client, db_session, test_user
+):
+    """A terminal mid-stream failure arrives as ``response.failed``; Gemini
+    clients get an error event with the origin, not an empty STOP (#2288)."""
+    from preloop.api.endpoints.gemini_gateway import get_gemini_gateway_auth_context
+
+    _create_gateway_model(db_session, test_user.account_id)
+    app.dependency_overrides[get_gemini_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="gateway-token", user=test_user)
+    )
+
+    class _UpstreamAuthError(Exception):
+        status_code = 401
+        message = "User not found."
+
+    def _failing_stream():
+        yield {"choices": [{"delta": {"content": "Hel"}}]}
+        raise _UpstreamAuthError()
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_failing_stream(),
+    ):
+        response = client.post(
+            "/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+            headers={"x-goog-api-key": "ignored"},
+            json={"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]},
+        )
+
+    payloads = _parse_sse_payloads(response.text)
+    error_payloads = [p for p in payloads if "error" in p]
+    assert error_payloads, f"expected a Gemini error event, got: {payloads!r}"
+    error = error_payloads[-1]["error"]
+    assert "Provider message: User not found." in error["message"]
+    (info,) = error["details"]
+    assert info["metadata"]["origin"] == "upstream"
+    assert info["metadata"]["upstream_status"] == "401"
+    assert not any(
+        candidate.get("finishReason") == "STOP"
+        for p in payloads
+        for candidate in p.get("candidates", [])
+    )
+
+
 def test_gemini_closing_stream_closes_upstream_when_never_consumed() -> None:
     """ASGI 2.3 teardown must close the inner stream even if no chunk was pulled."""
     from preloop.services.gemini_gateway import _GeminiClosingStream

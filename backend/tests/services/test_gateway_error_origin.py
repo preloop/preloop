@@ -37,6 +37,11 @@ _OPENROUTER_404 = (
     '["alibaba"]}}}'
 )
 _SECRET = "sk-abcdefghijklmnopqrstuvwxyz123456"
+_ROUTING_404_MESSAGE = (
+    "Upstream provider openrouter returned HTTP 404 for this request. "
+    "Provider message: No allowed providers are available for the selected "
+    "model. This error came from the upstream provider, not from Preloop."
+)
 _ORIGIN_KEYS = {"origin", "provider", "category", "upstream_status", "request_id"}
 
 _EXPECTED_401_MESSAGE = (
@@ -414,8 +419,9 @@ def _log_404_then_401s(db_session: Session, test_user, flow, execution) -> None:
         flow,
         execution,
         status_code=404,
-        error_class="upstream_routing",
-        detail="No allowed providers are available for the selected model.",
+        # A provider 404 is recorded without an error class.
+        error_class=None,
+        detail=_ROUTING_404_MESSAGE,
         request_id="req-first",
     )
     for index in range(2):
@@ -455,17 +461,17 @@ def test_repeated_failure_reports_the_first_cause_not_the_last(
     # ...but the first cause is the 404, not the later 401.
     assert exc.first_cause is not None
     assert exc.first_cause.to_dict() == {
+        "status": 404,
         "origin": "upstream",
-        "category": "upstream_routing",
         "upstream_status": 404,
         "provider": "openrouter",
-        "message": "No allowed providers are available for the selected model.",
+        "message": _ROUTING_404_MESSAGE,
         "request_id": "req-first",
     }
     assert exc.message.startswith("Repeated upstream failure: 2 identical")
     assert (
-        "First failure in this run: upstream_routing (HTTP 404 from upstream "
-        "provider openrouter): No allowed providers" in exc.message
+        "First failure in this run (HTTP 404 from upstream provider "
+        "openrouter): Upstream provider openrouter returned HTTP 404" in exc.message
     )
     assert "User not found" not in exc.message
 
@@ -532,6 +538,46 @@ def test_first_cause_restarts_after_a_success(db_session: Session, test_user):
     assert cause is not None
     assert cause.status_code == 401
     assert cause.request_id == "req-0"
+    assert cause.origin == "upstream"
+
+
+def test_gateway_side_first_cause_is_not_attributed_upstream(
+    db_session: Session, test_user
+):
+    from preloop.services.flow_execution_limits import (
+        RepeatedUpstreamFailureError,
+        enforce_failure_streak_for_id,
+    )
+
+    flow, execution = _flow_and_execution(db_session, test_user)
+    _log_attempt(
+        db_session,
+        test_user,
+        flow,
+        execution,
+        status_code=500,
+        error_class="gateway_translation_error",
+        detail="Gateway could not translate this request",
+        request_id="req-translate",
+    )
+    for index in range(2):
+        _log_attempt(
+            db_session,
+            test_user,
+            flow,
+            execution,
+            status_code=401,
+            error_class="upstream_auth",
+            detail="User not found.",
+            request_id=f"req-{index}",
+        )
+    with pytest.raises(RepeatedUpstreamFailureError) as caught:
+        enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    cause = caught.value.first_cause.to_dict()
+    assert cause["origin"] == "gateway"
+    assert "upstream_status" not in cause
+    assert "from the Preloop gateway" in caught.value.message
+    assert "from upstream provider" not in caught.value.message
 
 
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
@@ -569,4 +615,25 @@ def test_424_body_carries_first_cause(db_session: Session, test_user, protocol):
     assert body["cause"]["upstream_status"] == 404
     assert body["cause"]["provider"] == "openrouter"
     assert body["cause"]["request_id"] == "req-first"
-    assert "First failure in this run: upstream_routing" in body["message"]
+    assert "First failure in this run (HTTP 404" in body["message"]
+
+
+def test_idp_and_trusted_upstream_401s_say_origin_gateway(monkeypatch):
+    from preloop.services import gateway_upstream_identity
+    from preloop.services.gateway_idp_auth import idp_auth_error
+
+    assert idp_auth_error("expired").to_payload()["error"]["origin"] == "gateway"
+
+    monkeypatch.setattr(
+        gateway_upstream_identity, "is_trusted_upstream_key", lambda _key: True
+    )
+    monkeypatch.setattr(
+        gateway_upstream_identity, "upstream_secret_matches", lambda *_a: False
+    )
+    context = SimpleNamespace(api_key=SimpleNamespace(id="k"))
+    with pytest.raises(ModelGatewayAPIError) as caught:
+        asyncio.run(
+            gateway_upstream_identity.apply_trusted_upstream(context, {}, MagicMock())
+        )
+    assert caught.value.status_code == 401
+    assert caught.value.to_payload()["error"]["origin"] == "gateway"

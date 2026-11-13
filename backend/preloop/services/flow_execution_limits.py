@@ -80,7 +80,13 @@ from preloop.services.flow_failure_category import (
 )
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
+    ERROR_CLASS_NETWORK,
+    ERROR_CLASS_UPSTREAM_AUTH,
+    ERROR_CLASS_UPSTREAM_DISCONNECT,
+    ERROR_CLASS_UPSTREAM_ERROR,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
+    ERROR_CLASS_UPSTREAM_PROTOCOL,
+    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     ERROR_CLASS_UPSTREAM_RATE_LIMITED,
     is_terminal_error_class,
 )
@@ -742,6 +748,21 @@ class FailureStreak:
     threshold: int
 
 
+#: Classes the upstream provider decided; anything else is Preloop's own.
+_UPSTREAM_ERROR_CLASSES = frozenset(
+    {
+        ERROR_CLASS_NETWORK,
+        ERROR_CLASS_UPSTREAM_AUTH,
+        ERROR_CLASS_UPSTREAM_DISCONNECT,
+        ERROR_CLASS_UPSTREAM_ERROR,
+        ERROR_CLASS_UPSTREAM_OVERLOADED,
+        ERROR_CLASS_UPSTREAM_PROTOCOL,
+        ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+    }
+)
+#: Message prefixes of ``upstream_origin_message`` (model_gateway_errors).
+_UPSTREAM_LABEL_PREFIXES = ("Upstream provider ", "The upstream provider ")
 #: Cap on the first cause's provider text carried into the stop summary.
 _MAX_FIRST_CAUSE_DETAIL_CHARS = 600
 
@@ -756,18 +777,38 @@ class FirstFailureCause:
     """
 
     status_code: int
-    error_class: str
+    error_class: Optional[str]
     provider: Optional[str]
     detail: Optional[str]
     request_id: Optional[str]
 
+    @property
+    def origin(self) -> Optional[str]:
+        """Who decided the failure, or ``None`` when the row cannot tell.
+
+        Provider-side classes are ``upstream`` and any other class is
+        Preloop's own. A provider 4xx such as a routing 404 is recorded
+        without a class; it is ``upstream`` when its message carries the
+        gateway's upstream-origin label.
+        """
+        if self.error_class:
+            if self.error_class in _UPSTREAM_ERROR_CLASSES:
+                return "upstream"
+            return "gateway"
+        if self.detail and self.detail.startswith(_UPSTREAM_LABEL_PREFIXES):
+            return "upstream"
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         """The ``cause`` object for the 424 body and the timeline."""
-        cause: dict[str, Any] = {
-            "origin": "upstream",
-            "category": self.error_class,
-            "upstream_status": self.status_code,
-        }
+        cause: dict[str, Any] = {"status": self.status_code}
+        origin = self.origin
+        if origin:
+            cause["origin"] = origin
+        if self.error_class:
+            cause["category"] = self.error_class
+        if origin == "upstream":
+            cause["upstream_status"] = self.status_code
         if self.provider:
             cause["provider"] = self.provider
         if self.detail:
@@ -880,11 +921,13 @@ def repeated_failure_message(
     if first_cause is None:
         return message
     source = f"HTTP {first_cause.status_code}"
-    if first_cause.provider:
+    if first_cause.origin == "gateway":
+        source = f"{source} from the Preloop gateway"
+    elif first_cause.origin == "upstream" and first_cause.provider:
         source = f"{source} from upstream provider {first_cause.provider}"
-    message = (
-        f"{message}. First failure in this run: {first_cause.error_class} ({source})"
-    )
+    if first_cause.error_class:
+        source = f"{first_cause.error_class}, {source}"
+    message = f"{message}. First failure in this run ({source})"
     if first_cause.detail:
         message = f"{message}: {first_cause.detail}"
     return message
@@ -913,7 +956,7 @@ def _read_first_failure_cause(
         except Exception:  # pragma: no cover - rollback is best effort
             logger.debug("Rollback after first-cause read failure failed")
         return None
-    if not row or not row.get("error_class"):
+    if not row:
         return None
     from preloop.utils.secret_scrubbing import scrub_secrets
 
@@ -925,7 +968,7 @@ def _read_first_failure_cause(
     )
     return FirstFailureCause(
         status_code=int(row.get("status_code") or 0),
-        error_class=str(row["error_class"]),
+        error_class=row.get("error_class") or None,
         provider=row.get("provider_name") or None,
         detail=detail or None,
         request_id=row.get("gateway_request_id") or None,

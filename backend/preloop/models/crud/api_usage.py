@@ -1200,10 +1200,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.provider_name,
             ApiUsage.meta_data["error_detail"].astext.label("error_detail"),
             ApiUsage.meta_data["gateway_request_id"].astext.label("gateway_request_id"),
-        ).filter(*scope, ApiUsage.status_code >= 400, ApiUsage.error_class.isnot(None))
+        ).filter(*scope, ApiUsage.status_code >= 400)
         if excluded_error_classes:
+            # A provider 4xx (for example a routing 404) is recorded without
+            # a class, so a NULL class is kept.
             query = query.filter(
-                ApiUsage.error_class.notin_(list(excluded_error_classes))
+                or_(
+                    ApiUsage.error_class.is_(None),
+                    ApiUsage.error_class.notin_(list(excluded_error_classes)),
+                )
             )
         if last_success is not None:
             query = query.filter(ApiUsage.timestamp > last_success)

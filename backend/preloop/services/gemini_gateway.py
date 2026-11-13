@@ -251,10 +251,16 @@ class GeminiGatewayService(OpenAIGatewayService):
                     final_usage = response.get("usage")
                     response_id = response.get("id")
                     model_version = response.get("model") or model_name
-                elif event_type == "error":
+                elif event_type in ("error", "response.failed"):
                     # The upstream OpenAI-compatible stream failed mid-stream
                     # (issue #109). Relay it as a Gemini-native error event and
-                    # stop without emitting the final STOP candidate.
+                    # stop without emitting the final STOP candidate. A
+                    # terminal failure arrives as ``response.failed`` with the
+                    # error nested under ``response``; it used to fall through
+                    # to an empty STOP candidate (#2288).
+                    if event_type == "response.failed":
+                        failed = (parsed.get("response") or {}).get("error")
+                        parsed = failed if isinstance(failed, dict) else {}
                     yield self._sse_event(
                         {
                             "error": {
