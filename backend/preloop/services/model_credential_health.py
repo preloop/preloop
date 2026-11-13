@@ -126,14 +126,11 @@ def record_gateway_credential_outcome(
             " ".join(str(error_detail or "").split()),
             max_chars=_MAX_PROVIDER_MESSAGE_CHARS,
         )
-        credential = {
-            "secret_id": getattr(ai_model, "credentials_secret_id", None),
-            "version": getattr(ai_model, "credentials_version", None),
-        }
         crud_secret_reference.record_upstream_auth_rejection(
             db,
             ai_model_id=model_id,
-            **credential,
+            secret_id=getattr(ai_model, "credentials_secret_id", None),
+            version=getattr(ai_model, "credentials_version", None),
             provider=str(getattr(ai_model, "provider_name", "") or ""),
             status_code=status_code,
             message=message,
