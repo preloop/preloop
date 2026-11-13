@@ -7,19 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from preloop.agents.base import AgentStatus
-from preloop.config import settings
 from preloop.services import execution_recovery
 from preloop.services.execution_recovery import (
     ExecutionRecoveryService,
     _exception_message,
     get_recovery_service,
 )
-
-
-@pytest.fixture(autouse=True)
-def inline_recovery_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise inline monitoring independently of worker-mode configuration."""
-    monkeypatch.setattr(settings, "flow_execution_worker_enabled", False)
 
 
 def _make_execution(
