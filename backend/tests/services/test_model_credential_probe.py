@@ -13,21 +13,32 @@ from preloop.services.model_credential_probe import probe_rejected_model_credent
 from tests.services.test_model_credential_health import STORED_KEY, _stored_model
 
 
+def _marked_model(db: Session, account_id: Any, **overrides: Any) -> models.AIModel:
+    """Build a customer model with an existing authentication rejection."""
+    from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
+
+    model = _stored_model(db, account_id, **overrides)
+    now = datetime.now(timezone.utc).isoformat()
+    model.credentials_secret.meta_data = {
+        UPSTREAM_AUTH_REJECTION_KEY: {
+            "status_code": 401,
+            "provider": "openrouter",
+            "message": "Rejected",
+            "first_rejected_at": now,
+            "last_rejected_at": now,
+        }
+    }
+    db.flush()
+    return model
+
+
 @pytest.mark.parametrize("status", [200, 401, 402, 403, 429, 500, "timeout"])
 def test_openrouter_probe_verdict_and_metering(
     db_session: Session, test_user: models.User, status: int | str
 ) -> None:
     """Only a fresh authentication rejection refuses; success clears the mark."""
-    model = _stored_model(db_session, test_user.account_id)
-    crud.crud_secret_reference.record_upstream_auth_rejection(
-        db_session,
-        ai_model_id=model.id,
-        provider="openrouter",
-        status_code=401,
-        message="Old rejection",
-        now=datetime.now(timezone.utc),
-        commit=True,
-    )
+    model = _marked_model(db_session, test_user.account_id)
+    db_session.commit()
     request = httpx.Request("GET", "https://openrouter.ai/api/v1/key")
     response = httpx.Response(
         status if isinstance(status, int) else 500,
@@ -61,13 +72,16 @@ def test_openrouter_probe_verdict_and_metering(
         assert record.call_args.kwargs["endpoint_kind"] == "credential_probe"
         db_session.refresh(model)
         assert model.credentials_rejected is (status != 200)
+        if status == 402:
+            assert model.credentials_last_error_code == "upstream_billing_rejected"
+            assert model.credentials_secret.upstream_auth_rejection is None
 
 
 def test_other_provider_probe_is_bounded_and_cannot_fallback(
     db_session: Session, test_user: models.User
 ) -> None:
     """An explicit stored key and hard limits override arbitrary model defaults."""
-    model = _stored_model(
+    model = _marked_model(
         db_session,
         test_user.account_id,
         provider_name="openai",
@@ -131,7 +145,7 @@ def test_free_probe_writes_gateway_usage_and_audit(
     test_user: models.User,
 ) -> None:
     """A free provider check still has an ordinary, zero-token ledger entry."""
-    model = _stored_model(db_session, test_user.account_id)
+    model = _marked_model(db_session, test_user.account_id)
     db_session.commit()
     with patch("preloop.services.model_credential_probe.httpx.Client") as client:
         client.return_value.__enter__.return_value.get.return_value = httpx.Response(
@@ -160,13 +174,25 @@ def test_late_probe_rejection_cannot_refuse_a_replaced_key(
     test_user: models.User,
 ) -> None:
     """A provider verdict for the old secret version cannot reject new material."""
-    model = _stored_model(db_session, test_user.account_id)
+    model = _marked_model(db_session, test_user.account_id)
     db_session.commit()
+
+    from preloop.services.openai_gateway import OpenAIGatewayService
+
+    probe_owner: dict[str, Any] = {}
+    build = OpenAIGatewayService._build_completion_kwargs
+
+    def capture(gateway: Any, ai_model: Any, **kwargs: Any) -> dict[str, Any]:
+        """Capture the probe's session so the synthetic rotation shares its owner."""
+        probe_owner.update(db=gateway.db, model=ai_model)
+        return build(gateway, ai_model, **kwargs)
 
     def rotate_while_checking(*args: Any, **kwargs: Any) -> httpx.Response:
         """Replace the key after the probe selected its original material."""
         crud.crud_ai_model.update(
-            db_session, db_obj=model, obj_in={"api_key": "sk-synthetic-replacement"}
+            probe_owner["db"],
+            db_obj=probe_owner["model"],
+            obj_in={"api_key": "sk-synthetic-replacement"},
         )
         return httpx.Response(
             401,
@@ -175,6 +201,12 @@ def test_late_probe_rejection_cannot_refuse_a_replaced_key(
         )
 
     with (
+        patch.object(
+            OpenAIGatewayService,
+            "_build_completion_kwargs",
+            autospec=True,
+            side_effect=capture,
+        ),
         patch("preloop.services.model_credential_probe.httpx.Client") as client,
         patch(
             "preloop.services.openai_gateway.OpenAIGatewayService._record_gateway_request"
@@ -185,4 +217,75 @@ def test_late_probe_rejection_cannot_refuse_a_replaced_key(
         )
         result = probe_rejected_model_credentials(db_session, model=model)
     assert result.auth_rejected is False
+    db_session.refresh(model)
     assert model.credentials_rejected is False
+
+
+@pytest.mark.parametrize("failure", ["usage", "health", "revalidation", "owner_lookup"])
+def test_probe_bookkeeping_failures_allow_admission(
+    db_session: Session,
+    test_user: models.User,
+    failure: str,
+) -> None:
+    """No ledger, audit, outbox or revalidation exception can refuse a trigger."""
+    from contextlib import ExitStack
+
+    model = _marked_model(db_session, test_user.account_id)
+    db_session.commit()
+    with ExitStack() as stack:
+        client = stack.enter_context(
+            patch("preloop.services.model_credential_probe.httpx.Client")
+        )
+        client.return_value.__enter__.return_value.get.return_value = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/key"),
+            json={"error": {"message": "User not found."}},
+        )
+        record = stack.enter_context(
+            patch(
+                "preloop.services.openai_gateway.OpenAIGatewayService._record_gateway_request"
+            )
+        )
+        targets = {
+            "health": "preloop.services.model_credential_probe.record_gateway_credential_outcome",
+            "revalidation": "preloop.services.model_credential_probe.crud.crud_ai_model.get",
+            "owner_lookup": "preloop.services.model_credential_probe.crud.crud_user.get_by_account",
+        }
+        if failure == "usage":
+            record.side_effect = RuntimeError("Synthetic ledger failure")
+        else:
+            stack.enter_context(
+                patch(
+                    targets[failure],
+                    side_effect=RuntimeError("Synthetic storage failure"),
+                )
+            )
+        result = probe_rejected_model_credentials(db_session, model=model)
+    assert result.auth_rejected is False
+
+
+def test_probe_never_commits_or_rolls_back_the_trigger_session(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Probe health/usage transactions must not finish a caller's pending work."""
+    model = _marked_model(db_session, test_user.account_id)
+    db_session.commit()
+    with (
+        patch.object(db_session, "commit", side_effect=AssertionError("Caller commit")),
+        patch.object(
+            db_session, "rollback", side_effect=AssertionError("Caller rollback")
+        ),
+        patch("preloop.services.model_credential_probe.httpx.Client") as client,
+    ):
+        client.return_value.__enter__.return_value.get.return_value = httpx.Response(
+            200,
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/key"),
+            json={"data": {}},
+        )
+        result = probe_rejected_model_credentials(db_session, model=model)
+    assert result.auth_rejected is False
+    rows = crud.crud_api_usage.get_multi(
+        db_session, account_id=str(test_user.account_id)
+    )
+    assert len(rows) == 1

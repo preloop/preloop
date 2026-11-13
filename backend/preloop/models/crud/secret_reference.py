@@ -168,7 +168,8 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
             if status_code == 402
             else UPSTREAM_AUTH_REJECTION_KEY
         )
-        candidate = (secret.meta_data or {}).get(key)
+        meta = secret.meta_data if isinstance(secret.meta_data, dict) else {}
+        candidate = meta.get(key)
         previous = (
             candidate
             if isinstance(candidate, dict) and candidate.get("last_rejected_at")
@@ -191,7 +192,7 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         secret.meta_data = {
             **{
                 name: value
-                for name, value in (secret.meta_data or {}).items()
+                for name, value in meta.items()
                 if name
                 not in {UPSTREAM_AUTH_REJECTION_KEY, UPSTREAM_BILLING_REJECTION_KEY}
             },

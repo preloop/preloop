@@ -18,6 +18,7 @@ from preloop.services.model_gateway_errors import extract_upstream_error_detail
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.upstream_errors import (
     classify_upstream_error,
+    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
 )
 from preloop.utils.jsonb_sanitize import sanitize_string
@@ -35,7 +36,7 @@ class CredentialProbeResult:
     message: str = ""
 
 
-def probe_rejected_model_credentials(
+def _probe_rejected_model_credentials(
     db: Session, *, model: models.AIModel
 ) -> CredentialProbeResult:
     """Test exactly this model's stored key and record ordinary gateway usage.
@@ -147,7 +148,11 @@ def probe_rejected_model_credentials(
         if isinstance(exc, httpx.HTTPStatusError) and attempted:
             status = exc.response.status_code
             raw_detail = exc.response.text
-            error_class = classify_recorded_error(status, raw_detail)
+            error_class = (
+                ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED
+                if status == 402
+                else classify_recorded_error(status, raw_detail)
+            )
         raw = (
             raw_detail.replace(key, "[REDACTED]")
             if key
@@ -193,3 +198,41 @@ def probe_rejected_model_credentials(
         and error_class == "upstream_auth",
         message=message or "Provider rejected the API key.",
     )
+
+
+def probe_rejected_model_credentials(
+    db: Session, *, model: models.AIModel
+) -> CredentialProbeResult:
+    """Recheck a marked key, allowing admission if probe bookkeeping fails.
+
+    Args:
+        db: Trigger session, before execution insertion.
+        model: Customer model with a standing authentication rejection.
+
+    Returns:
+        A fresh authentication verdict, or an inconclusive result when provider
+        access, usage recording, health storage or credential revalidation fails.
+    """
+    if model.account_id is None:
+        return CredentialProbeResult()
+    try:
+        # Usage and health writers commit their own facts. Never give them the
+        # trigger's session: a lifecycle controller may have uncommitted state.
+        with Session(bind=db.get_bind()) as probe_db:
+            current = crud.crud_ai_model.get_for_account(
+                probe_db, id=model.id, account_id=model.account_id
+            )
+            if (
+                current is None
+                or current.credential_type != "api_key"
+                or current.credentials_secret is None
+                or current.credentials_secret.upstream_auth_rejection is None
+            ):
+                return CredentialProbeResult()
+            return _probe_rejected_model_credentials(probe_db, model=current)
+    except Exception:
+        # The owned session rolls back and closes before this handler runs.
+        # Backend/ledger exceptions may contain sensitive arguments, so do not
+        # print them or their traceback into an alert or log.
+        logger.warning("Credential probe bookkeeping unavailable; allowing execution")
+        return CredentialProbeResult()

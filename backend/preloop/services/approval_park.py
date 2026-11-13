@@ -39,6 +39,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 
 logger = logging.getLogger(__name__)
@@ -500,8 +501,10 @@ async def _start_resume_execution(
 
     # Pin the model and harness of the run being continued: a native session
     # cannot be restored into a different harness.
-    details = prepare_execution_routing(
-        db, flow, details, source_execution=parked, pin_kind="continuation"
+    details = await run_db_off_loop(
+        lambda: prepare_execution_routing(
+            db, flow, details, source_execution=parked, pin_kind="continuation"
+        )
     )
     execution = crud_flow_execution.create(
         db,

@@ -272,3 +272,113 @@ def test_routing_refuses_before_principal_validation(
         with pytest.raises(ModelCredentialsRejectedError):
             prepare_execution_routing(db_session, flow, {})
         principal.assert_not_called()
+
+
+@pytest.mark.parametrize("metadata", [[], ["legacy"], "legacy"])
+@pytest.mark.parametrize("status", [401, 402])
+def test_rejection_replaces_non_dictionary_secret_metadata(
+    db_session: Session,
+    test_user: models.User,
+    metadata: Any,
+    status: int,
+) -> None:
+    """Legacy/plugin JSON values cannot prevent the provider verdict being stored."""
+    model = _stored_model(db_session, test_user.account_id)
+    model.credentials_secret.meta_data = metadata
+    db_session.flush()
+    outcome = crud.crud_secret_reference.record_upstream_auth_rejection(
+        db_session,
+        ai_model_id=model.id,
+        provider="openrouter",
+        status_code=status,
+        message="Rejected",
+        now=datetime.now(timezone.utc),
+        commit=False,
+    )
+    assert outcome.first_rejection is True
+    assert model.credentials_upstream_rejection["status_code"] == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matrix", [False, True])
+async def test_async_triggers_probe_on_a_worker_thread(
+    db_session: Session,
+    test_user: models.User,
+    matrix: bool,
+) -> None:
+    """Marked-key I/O must never run on the ASGI loop, including matrix cells."""
+    import threading
+    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.model_credential_probe import CredentialProbeResult
+    from tests.services.test_model_routing import _usable_model, _flow, _patch_dispatch
+
+    model = _usable_model(db_session, test_user.account_id, name="Review model")
+    flow = _flow(db_session, test_user, ai_model_id=model.id)
+    model.credentials_secret.meta_data = {
+        UPSTREAM_AUTH_REJECTION_KEY: {
+            "last_rejected_at": datetime.now(timezone.utc).isoformat(),
+            "status_code": 401,
+        }
+    }
+    db_session.flush()
+    loop_thread = threading.get_ident()
+
+    def check_thread(*args: Any, **kwargs: Any) -> CredentialProbeResult:
+        """Represent a blocking provider check with an inconclusive verdict."""
+        assert threading.get_ident() != loop_thread
+        return CredentialProbeResult()
+
+    nats, dispatch = _patch_dispatch()
+    with (
+        nats,
+        dispatch,
+        patch(
+            "preloop.services.model_credential_probe.probe_rejected_model_credentials",
+            side_effect=check_thread,
+        ) as probe,
+    ):
+        service = FlowTriggerService(db_session)
+        if matrix:
+            await service.trigger_flow_matrix(flow_id=flow.id, matrix=[{}, {}])
+        else:
+            await service.trigger_flow(flow_id=flow.id)
+        assert probe.call_count == (2 if matrix else 1)
+
+
+@pytest.mark.asyncio
+async def test_no_progress_retry_probes_only_the_final_selection(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """An effort-only escalation cannot probe the same rejected key twice."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.model_credential_probe import CredentialProbeResult
+    from tests.services.test_model_routing import _usable_model, _flow, _patch_dispatch
+
+    model = _usable_model(db_session, test_user.account_id, name="Review model")
+    flow = _flow(db_session, test_user, ai_model_id=model.id)
+    nats, dispatch = _patch_dispatch()
+    with nats, dispatch:
+        source = await FlowTriggerService(db_session).trigger_flow(flow_id=flow.id)
+    model.credentials_secret.meta_data = {
+        UPSTREAM_AUTH_REJECTION_KEY: {
+            "last_rejected_at": datetime.now(timezone.utc).isoformat(),
+            "status_code": 401,
+        }
+    }
+    db_session.flush()
+    nats, dispatch = _patch_dispatch()
+    with (
+        nats,
+        dispatch,
+        patch(
+            "preloop.services.model_credential_probe.probe_rejected_model_credentials",
+            return_value=CredentialProbeResult(),
+        ) as probe,
+    ):
+        await FlowTriggerService(db_session).trigger_flow(
+            flow_id=flow.id,
+            retry_of_execution_id=source["id"],
+            no_progress_escalation={"reasoning_effort": "high"},
+        )
+        probe.assert_called_once()

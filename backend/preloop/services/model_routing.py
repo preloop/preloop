@@ -857,6 +857,7 @@ def prepare_execution_routing(
     source_execution: Optional[models.FlowExecution] = None,
     authorized_matrix: Optional[Dict[str, Any]] = None,
     pin_kind: Optional[str] = None,
+    check_credentials: bool = True,
 ) -> Dict[str, Any]:
     """Resolve trusted routing and reject an incompatible runtime principal."""
     details = _prepare_execution_routing(
@@ -867,7 +868,8 @@ def prepare_execution_routing(
         authorized_matrix=authorized_matrix,
         pin_kind=pin_kind,
     )
-    validate_execution_model_credentials(db, flow, details)
+    if check_credentials:
+        validate_execution_model_credentials(db, flow, details)
     validate_execution_model_principal(db, flow, details)
     return details
 
@@ -1110,6 +1112,7 @@ def apply_no_progress_escalation(
     ai_model_id = escalation.get("ai_model_id")
     reasoning_effort = escalation.get("reasoning_effort")
     if not ai_model_id and not reasoning_effort:
+        validate_execution_model_credentials(db, flow, details)
         return details
 
     record = dict(details.get(ROUTING_RECORD_KEY) or {})

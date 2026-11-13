@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.a2a.delegation import DelegationShapeError, task_state_for_status
 from preloop.config import settings
 from preloop.models.crud import (
@@ -919,8 +920,10 @@ async def _start_resume_execution(
 
     # Pin the model and harness of the run being continued: a native session
     # cannot be restored into a different harness.
-    details = prepare_execution_routing(
-        db, flow, details, source_execution=parked, pin_kind="continuation"
+    details = await run_db_off_loop(
+        lambda: prepare_execution_routing(
+            db, flow, details, source_execution=parked, pin_kind="continuation"
+        )
     )
     execution = crud_flow_execution.create(
         db,
