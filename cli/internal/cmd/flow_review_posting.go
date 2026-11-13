@@ -26,7 +26,7 @@ var (
 	reviewStatusContextPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,99}$`)
 	// reviewVerdictPattern is the server's _VERDICT_RE.
 	reviewVerdictPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$`)
-	reviewCommitStates         = map[string]bool{"success": true, "failure": true, "error": true}
+	reviewCommitStates   = map[string]bool{"success": true, "failure": true, "error": true}
 )
 
 // reviewPostingFlags holds the flags shared by enable and set-states.
