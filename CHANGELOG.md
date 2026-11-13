@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- gateway: a model whose own API key the provider rejects (upstream `401`) is
+  now marked on the model itself. The gateway records the provider, its
+  message and the time of the first and latest rejection on the stored
+  credential; `GET /api/v1/ai-models` then reports `credentials_status: error`
+  with `credentials_last_error_code: upstream_auth_rejected`, and the console
+  Models view shows the model as failing with "Rotate the API key for this
+  model." The mark clears when the provider accepts the key again or the key
+  is replaced or rotated. Previously a revoked or wrong-account key failed
+  every run with a 401 while the model still read `active`. Subscription
+  logins, `403` answers and deployment-provided models are unaffected.
+
 ## [1.0.2] - 2026-11-12
 
 ### Fixed
