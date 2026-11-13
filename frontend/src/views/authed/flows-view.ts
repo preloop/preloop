@@ -2180,6 +2180,7 @@ export class FlowsView extends LitElement {
             <sl-icon name="lightning"></sl-icon>${row.triggerLabel}
           </span>
           ${this.renderScheduleStat(row.source)}
+          ${modelHealthMarker(row.source)}
           <span
             class="stat-item"
             title=${`In the last ${this.rangeLabel}${this.sampleNote}`}
