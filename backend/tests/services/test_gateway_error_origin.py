@@ -348,11 +348,11 @@ def test_upstream_routing_404_states_origin_without_reclassifying():
 def test_gateway_inferred_5xx_wording_unchanged():
     """Only provider-reported 401-404 gain the label; 5xx keep theirs."""
 
-    class _NoStatus(Exception):
+    class _NoStatusError(Exception):
         pass
 
     err = OpenAIGatewayService._normalize_upstream_error(
-        "openai", _NoStatus("upstream exploded"), ai_model=_model()
+        "openai", _NoStatusError("upstream exploded"), ai_model=_model()
     )
     assert "Provider message" not in err.message
 
