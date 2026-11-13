@@ -172,7 +172,16 @@ rule on every request, so turning the setting off stops later requests of a
 running execution with `model_not_authorized`. Successful admission does not
 guarantee future credential health.
 
-`credentials_status: active` describes the secret's state.
+`credentials_status` describes credential health: `error` with
+`credentials_last_error_code: upstream_auth_rejected` means the provider rejected
+the stored API key, while `upstream_billing_rejected` means it returned a billing
+`402`. An accepted request or key replacement/rotation clears either mark.
+Account owners receive one email per rejection episode, and subscribers receive
+`ai_model.credential_rejected`. Before starting a flow on an auth-marked model,
+Preloop probes that model's stored key: success clears the mark, another auth
+rejection returns `409 model_credentials_rejected`, and an inconclusive result
+allows the run. Billing marks do not prevent runs. Unmarked models are never
+probed. See [credential health](../concepts/model-gateway.md#a-rejected-api-key-marks-its-model).
 `supports_server_side_generation` describes Preloop's own generation
 eligibility (for example summaries); it is not an executor compatibility API.
 `GET /api/v1/ai-models/{id}/owner-flow-use` reports whether the opt-in applies

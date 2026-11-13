@@ -1048,3 +1048,44 @@ def test_bindings_persisted_without_base_revision_stay_valid() -> None:
     ).model_dump(mode="json")
     stored.pop("base_sha")
     assert CiReviewBinding.model_validate(stored).base_sha is None
+
+
+def test_rejected_model_refuses_before_execution_and_clone(
+    db_session: Session, ci_resources: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restricted CI routing must reject before inserting or minting execution work."""
+    from preloop.models import models
+    from preloop.models.crud.base import CRUDBase
+    from preloop.services.model_credential_probe import CredentialProbeResult
+    from preloop.services.model_routing import ModelCredentialsRejectedError
+    from tests.services.test_model_credential_health import _stored_model
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    _, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    flow = ci_resources[2]
+    model = _stored_model(db_session, context.account_id)
+    CRUDBase(models.Flow).update(
+        db_session, db_obj=flow, obj_in={"ai_model_id": model.id}
+    )
+    crud.crud_secret_reference.record_upstream_auth_rejection(
+        db_session,
+        ai_model_id=model.id,
+        provider="openrouter",
+        status_code=401,
+        message="User not found.",
+        now=datetime.now(timezone.utc),
+        commit=True,
+    )
+    with (
+        patch(
+            "preloop.services.model_credential_probe.probe_rejected_model_credentials",
+            return_value=CredentialProbeResult(True, "User not found."),
+        ),
+        patch.object(crud.crud_ci_execution, "create") as create,
+    ):
+        with pytest.raises(ModelCredentialsRejectedError):
+            service._prepare_execution(db_session, context, review_binding(context))
+        create.assert_not_called()
+        assert crud.crud_flow_execution.get_by_flow(db_session, flow_id=flow.id) == []

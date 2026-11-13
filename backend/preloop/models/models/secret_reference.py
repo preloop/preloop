@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 #: Written by the model gateway on an upstream 401, removed when the provider
 #: next accepts the key and whenever the key is replaced or rotated.
 UPSTREAM_AUTH_REJECTION_KEY = "upstream_auth_rejection"
+UPSTREAM_BILLING_REJECTION_KEY = "upstream_billing_rejection"
 
 
 class SecretReference(Base):
@@ -64,6 +65,18 @@ class SecretReference(Base):
         if not isinstance(self.meta_data, dict):
             return None
         rejection = self.meta_data.get(UPSTREAM_AUTH_REJECTION_KEY)
+        if not isinstance(rejection, dict) or not rejection.get("last_rejected_at"):
+            return None
+        return rejection
+
+    @property
+    def upstream_credential_rejection(self) -> Optional[Dict[str, Any]]:
+        """Return the standing authentication or billing rejection."""
+        if self.upstream_auth_rejection is not None:
+            return self.upstream_auth_rejection
+        if not isinstance(self.meta_data, dict):
+            return None
+        rejection = self.meta_data.get(UPSTREAM_BILLING_REJECTION_KEY)
         if not isinstance(rejection, dict) or not rejection.get("last_rejected_at"):
             return None
         return rejection

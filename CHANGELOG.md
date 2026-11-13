@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PATCH /api/v1/ci-identities/{id}` accepts `extend_keys: true` to add the
   actions a grant change adds (for example `execution:review:publish`) to
   the identity's active keys in place, without rotation.
+- models: audit model creation, updates, deletion and credential set,
+  replacement, rotation and removal without key material. First provider API-key
+  rejections now notify account owners once per episode and emit
+  `ai_model.credential_rejected`. Provider billing `402` responses mark credentials
+  with `upstream_billing_rejected`; acceptance or key replacement clears the
+  mark. Before any clone or container, flows probe a model with a standing auth
+  rejection and refuse with `409 model_credentials_rejected` only when the
+  provider rejects authentication again. Successful probes clear the mark;
+  inconclusive probes allow the run. Healthy models and billing marks are never
+  probed. Restricted CI returns only the model name and code.
 
 - flows: a hosted Codex run whose native permission hook would be refused now
   fails before it starts. Before launch the execution's runtime credential is

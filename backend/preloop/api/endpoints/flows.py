@@ -107,6 +107,7 @@ from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.model_routing import (
     ModelRoutingError,
+    ModelCredentialsRejectedError,
 )
 from preloop.services.model_routing import (
     model_usable_for_agent as _model_usable_for_agent,
@@ -3285,6 +3286,14 @@ def _validate_matrix(
 @router.post(
     "/flows/{flow_id}/trigger",
     summary="Trigger a restricted CI review or a test execution",
+    responses={
+        409: {
+            "description": (
+                "A model key failed its authentication probe (model_credentials_rejected), "
+                "or execution conflicts with a flow admission policy."
+            )
+        }
+    },
 )
 @require_permission("execute_flows", ci_action=CiAction.TRIGGER)
 async def trigger_flow_execution(
@@ -3350,6 +3359,10 @@ async def trigger_flow_execution(
             if error.execution_id is not None:
                 detail["execution_id"] = str(error.execution_id)
             raise HTTPException(503, detail) from None
+        except ModelCredentialsRejectedError as exc:
+            raise HTTPException(
+                409, {"code": exc.code, "model_name": exc.model_name}
+            ) from None
         except ModelRoutingError:
             raise HTTPException(
                 422, "Restricted CI server model binding unavailable"
@@ -3411,6 +3424,8 @@ async def trigger_flow_execution(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ModelCredentialsRejectedError as exc:
+            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
         except (ModelRoutingError, RunnerCapabilityError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except FlowHaltActiveError:
@@ -3430,6 +3445,8 @@ async def trigger_flow_execution(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelCredentialsRejectedError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -3521,6 +3538,8 @@ async def retry_flow_execution(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelCredentialsRejectedError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -4274,6 +4293,8 @@ async def trigger_flow_via_webhook(
         )
     except ReadOnlyHumanTriggerError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelCredentialsRejectedError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
