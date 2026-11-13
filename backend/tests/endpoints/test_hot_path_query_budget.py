@@ -38,11 +38,12 @@ PASSWORD = "query-budget-pass-1"
 #: the landing row selects and gates the membership again. Authentication
 #: outcomes add one final audit INSERT and one membership reload after commit.
 #: The audit row is not re-read: no caller needs it. The failed-login rate
-#: limit (EE #66) adds one person lookup before the password check, so a
+#: limit adds one person lookup before the password check, so a
 #: username and an email of one person share one failure budget. Measured at
-#: 16 for one active membership; the two audit INSERTs and zero loop SQL are
-#: asserted below.
-LOGIN_STATEMENTS = 16
+#: 17 for one active membership: one additional factor read is required to
+#: decide whether to challenge a password login. That read, the two audit
+#: INSERTs, zero hook queries and zero loop SQL are asserted below.
+LOGIN_STATEMENTS = 17
 #: Statements issued by one warm, priced chat completion without policies.
 #: 24 on the base without the hooks (main at 179298d7): the three price
 #: override lookups each start with a ``has_table`` check.
@@ -130,6 +131,7 @@ def test_password_sign_in_query_count(
     assert response.status_code == 200, response.text
     assert statements.from_hooks == []
     assert statements.from_event_loop == []
+    assert sum("FROM user_mfa_factor" in statement for statement in statements) == 1
     assert (
         sum(
             statement.lstrip().upper().startswith("INSERT INTO AUDIT_LOG")

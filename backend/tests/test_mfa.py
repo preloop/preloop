@@ -476,7 +476,9 @@ def test_reset_script(
 
     sso = _access(user, ["sso", "oidc"], sso_connection_id=str(uuid.uuid4()))
     assert main(["--email", user.email, "--reason", "lost device"], sessions) == 0
-    assert user.email not in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        "Authenticator sign-in turned off; non-SSO sessions have ended.\n"
+    )
     assert crud_mfa.factor(db_session, user.id) is None
     assert crud_mfa.remaining(db_session, user.id) == 0
     assert (
