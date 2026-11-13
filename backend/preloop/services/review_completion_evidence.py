@@ -57,7 +57,7 @@ def result_availability(execution: Any) -> str:
         return "available"
     # Historical writers put runtime facts in result even without a file.
     # Preserve arbitrary historical documents; these keys are platform-owned.
-    metadata = {"container_termination"}
+    metadata = {"container_termination", "_private_publication"}
     if isinstance(document, dict) and document and set(document) <= metadata:
         validation = getattr(execution, "result_schema_validation", None)
         if not isinstance(validation, dict) or validation.get("valid") is not True:

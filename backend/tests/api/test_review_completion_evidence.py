@@ -516,11 +516,23 @@ def test_terminal_capture_in_progress_is_409_then_captured_result_is_200(
 
 
 @pytest.mark.parametrize("capture_state", [None, "absent"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"container_termination": {"reason": "Error", "exit_code": 1}},
+        {"_private_publication": {"phase": "prepared"}},
+        {
+            "container_termination": {"reason": "Error", "exit_code": 1},
+            "_private_publication": {"phase": "prepared"},
+        },
+    ],
+)
 def test_controller_metadata_without_an_artifact_is_404(
     db_session: Session,
     ci_resources: tuple[Any, ...],
     client: TestClient,
     capture_state: str | None,
+    metadata: dict[str, Any],
 ) -> None:
     """Termination metadata is not proof that result.json was captured."""
     _, _, token, _, execution = owned_run(db_session, ci_resources)
@@ -534,8 +546,8 @@ def test_controller_metadata_without_an_artifact_is_404(
         db_session,
         db_obj=execution,
         obj_in={
-            "status": "FAILED",
-            "result": {"container_termination": {"reason": "Error", "exit_code": 1}},
+            "status": "STOPPED" if "_private_publication" in metadata else "FAILED",
+            "result": metadata,
         },
     )
     response = client.get(
@@ -543,6 +555,11 @@ def test_controller_metadata_without_an_artifact_is_404(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 404, response.text
+    from preloop.models.crud.ci_subscription import _result_ready
+    from preloop.services.review_completion_evidence import completion_projection
+
+    assert _result_ready(execution) is False
+    assert completion_projection(execution)["result_captured"]["result_sha256"] is None
 
 
 @pytest.mark.parametrize(

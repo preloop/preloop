@@ -912,7 +912,8 @@ it now. `GET .../result` answers:
   capture settles;
 - `404` when the execution does not exist for the caller, or finished without
   reporting a result and capture has settled. Controller-only termination
-  metadata is not a result artifact; historical PR/publication outputs remain
+  metadata or private publication policy state is not a result artifact;
+  historical PR/publication outputs remain
   readable without a schema or capture provenance. A settled 404 does not change
   merely because delayed artifact capture finishes; that interval uses 409.
 
