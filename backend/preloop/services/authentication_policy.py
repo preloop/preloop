@@ -197,11 +197,19 @@ def authorize_authentication(
     claims: Mapping[str, Any] | None,
     purpose: AuthenticationPurpose,
     source_ip: str | None = None,
+    channel_action: bool = False,
 ) -> dict[str, Any]:
-    """Ask the installed policy to authorize this exact membership/context."""
+    """Authorize membership/context, with an internal paired-channel seam.
+
+    ``channel_action`` is only for the broker's preauthorized internal transport;
+    it is not a client claim. Core revocation and edition exchange policy still
+    apply, and no strong authentication assurance is granted.
+    """
     context = authentication_claims(claims)
     _enforce_core_policy(db, user, context, purpose=purpose, source_ip=source_ip)
-    if purpose in {"login", "exchange", "switch"}:
+    if channel_action and (purpose != "exchange" or context.get("amr") != ["chat"]):
+        raise HTTPException(401, "Invalid channel authentication context")
+    if purpose in {"login", "exchange", "switch"} and not channel_action:
         from preloop.services.mfa import require_challenge
 
         require_challenge(db, user, context)

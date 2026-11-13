@@ -595,3 +595,17 @@ claim must reauthenticate before it satisfies step-up, even if the server's
 UV setting has since changed. Step-up options and verification both carry the
 signed `step_up` mode and current account/session generation. A consumed
 assertion challenge cannot be exchanged again.
+
+Passkey registration also requires a recent console authentication, rejects
+API keys and CLI-bound sessions, and rechecks revocation under the membership
+lock. Existing factor holders must prove a strong factor; first-factor setup
+accepts a fresh sign-in so enrollment cannot deadlock.
+
+Paired chat commands use the existing channel principal, resource permissions
+and eligibility checks. Their internal short-lived transport token is an
+paired-channel exchange, not an interactive chat sign-in; only the internal
+broker can select this path. It retains core and edition exchange checks, does
+not trigger an interactive TOTP challenge, and does not grant OTP assurance. Interactive chat sign-in remains challenged.
+The legacy OAuth password-consent form redirects enrolled users to console
+sign-in while preserving the authorization request, without exposing a challenge
+in the URL. Password login activity and success audits wait for MFA completion.

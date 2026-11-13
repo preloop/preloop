@@ -142,6 +142,21 @@ export class StepUpDialog extends LitElement {
       ${this.methods.includes('passkey') ? html`<sl-button ?disabled=${this.busy} @click=${() => this.verify('passkey')}>Use a passkey</sl-button>` : nothing}
       ${this.methods.includes('sso') ? html`<sl-button @click=${this.sso}>Continue with single sign-on</sl-button>` : nothing}
       ${
+        this.methods.includes('login')
+          ? html`<sl-button
+              @click=${() => {
+                localStorage.setItem(
+                  'loginRedirect',
+                  location.pathname + location.search
+                );
+                this.finish(false);
+                Router.go('/login');
+              }}
+              >Sign in again</sl-button
+            >`
+          : nothing
+      }
+      ${
         this.methods.includes('enroll')
           ? html`<p>
                 Set up an authenticator app or passkey in Security settings

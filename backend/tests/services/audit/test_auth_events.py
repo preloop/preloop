@@ -115,6 +115,9 @@ def test_password_routes_record_one_final_outcome(path: str, outcome: str) -> No
             "preloop.api.auth.router.authenticate_user",
             authentication,
         ),
+        # Activity accounting now runs after the final authentication gate;
+        # this fixture isolates the final auth outcome, not cohort activity.
+        patch("preloop.api.auth.router._record_successful_login"),
         patch("preloop.api.auth.router._landing_row", gate),
         patch("preloop.api.auth.router.crud_person.resolve_login", return_value=person),
         patch(

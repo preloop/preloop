@@ -1159,7 +1159,9 @@ async def _audited_password_login(
     succeeded = False
     reason_code = "invalid_credentials"
     try:
-        user = await authenticate_user(username, password, source_ip=source_ip, db=db)
+        user = await authenticate_user(
+            username, password, source_ip=source_ip, db=db, record_success=False
+        )
         if user is not None:
             reason_code = "identity_or_policy_rejected"
             user = await _landing_row(user, db)
@@ -1174,6 +1176,7 @@ async def _audited_password_login(
                     db, user, method="password", source_ip=source_ip
                 )
             )
+            await run_db_off_loop(lambda: _record_successful_login(db, user, source_ip))
             succeeded = True
         return user, auth_context
     except Exception as exc:
@@ -2458,7 +2461,12 @@ def get_api_usage(
 
 
 async def authenticate_user(
-    username: str, password: str, db: Session, source_ip: Optional[str] = None
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: Optional[str] = None,
+    *,
+    record_success: bool = True,
 ) -> Optional[UserModel]:
     """Authenticate a user.
 
@@ -2473,17 +2481,21 @@ async def authenticate_user(
     from preloop.api.loop_safety import run_db_off_loop
 
     return await run_db_off_loop(
-        lambda: _authenticate_user_sync(username, password, db, source_ip)
+        lambda: _authenticate_user_sync(
+            username, password, db, source_ip, record_success=record_success
+        )
     )
 
 
 def _authenticate_user_sync(
-    username: str, password: str, db: Session, source_ip: Optional[str] = None
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: Optional[str] = None,
+    *,
+    record_success: bool = True,
 ) -> Optional[UserModel]:
     """Verify credentials and record login using one sequential worker owner."""
-    from datetime import datetime, timezone
-    import threading
-
     session = db
 
     try:
@@ -2503,6 +2515,18 @@ def _authenticate_user_sync(
     if user is None:
         return None
     require_active_identity(session, user)
+    if record_success:
+        _record_successful_login(session, user, source_ip)
+    return user
+
+
+def _record_successful_login(
+    session: Session, user: UserModel, source_ip: Optional[str] = None
+) -> None:
+    """Record activity and notifications only after authentication completes."""
+    from datetime import datetime, timezone
+    import threading
+
     # Capture old last_login before updating (for inactivity notification)
     old_last_login = user.last_login
 
@@ -2558,7 +2582,6 @@ def _authenticate_user_sync(
     # The audit insert commits and expires user fields. Token construction
     # reads them immediately after this worker returns to the event loop.
     _ = user.id, user.account_id, user.username, user.email, user.is_active
-    return user
 
 
 @router.post("/complete-onboarding", response_model=Token)

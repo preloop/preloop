@@ -191,7 +191,10 @@ def confirm(
 
 @router.post("/verify", response_model=TokenPair)
 def verify(
-    body: VerifyRequest, response: Response, db: Session = Depends(get_db_session)
+    body: VerifyRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Exchange a single-use challenge, atomically consuming its proof."""
     from preloop.api.auth.email_verification import enforce_verified_email
@@ -230,6 +233,15 @@ def verify(
     )
     context = mfa.upgrade_context(db, user, claims)
     db.commit()
+    from preloop.api.auth.router import _record_successful_login
+    from preloop.services.auth_audit import record_login_event
+    from preloop.utils.request import get_client_ip
+
+    source_ip = get_client_ip(request)
+    _record_successful_login(db, user, source_ip)
+    record_login_event(
+        db, user=user, method=claims["amr"][0], succeeded=True, source_ip=source_ip
+    )
     response.headers["Cache-Control"] = "no-store"
     return mfa.token_pair(user, context)
 

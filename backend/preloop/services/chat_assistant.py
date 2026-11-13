@@ -225,7 +225,11 @@ class ChatBroker:
                 "auth_account_id": str(user.account_id),
                 "nsg": non_sso_generation(user),
             },
+            # This is an internal transport for an already paired channel
+            # action, not an interactive sign-in or console session exchange.
+            # Keep core revocation/passkey-only and edition exchange checks.
             purpose="exchange",
+            channel_action=True,
         )
         token = create_access_token(
             {"sub": str(user.id)},

@@ -9,7 +9,10 @@ and you.
 
 ## Add a passkey
 
-Open **Settings > Security** and choose **Add passkey**. Your browser or
+Open **Settings > Security** and choose **Add passkey**. Adding a passkey
+requires a console session and authentication within the last ten minutes.
+If you already have a passkey or authenticator app, confirm with a strong
+factor when prompted. For your first factor, sign in again if prompted. Your browser or
 operating system asks you to confirm with your PIN, fingerprint or face. A
 security key without a PIN is refused with "This security key did not verify
 you. Set a PIN or biometric on it, or register a different passkey."

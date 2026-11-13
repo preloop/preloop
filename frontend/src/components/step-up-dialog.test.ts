@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './step-up-dialog';
 import type { StepUpDialog } from './step-up-dialog';
 import { fetchWithAuth } from '../api';
+import { Router } from '../router';
 
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -101,5 +102,23 @@ describe('Shared step-up', () => {
         .getCalls()
         .filter((call) => call.args[0] === '/api/v1/sensitive').length
     ).to.equal(1);
+  });
+  // protects=first-factor bootstrap has a usable fresh-login path;
+  // fails_when=login method leaves no action; no_claim=server is stubbed.
+  it('returns to login when the first factor needs fresh authentication', async () => {
+    const navigate = sinon.stub(Router, 'go');
+    const dialog = await fixture<StepUpDialog>(
+      html`<step-up-dialog></step-up-dialog>`
+    );
+    const result = dialog.ask(['login']);
+    await dialog.updateComplete;
+    Array.from(dialog.shadowRoot!.querySelectorAll<HTMLElement>('sl-button'))
+      .find((button) => button.textContent?.includes('Sign in again'))!
+      .click();
+    expect(await result).to.equal(false);
+    expect(navigate.calledWith('/login')).to.equal(true);
+    expect(localStorage.getItem('loginRedirect')).to.equal(
+      location.pathname + location.search
+    );
   });
 });

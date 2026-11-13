@@ -313,6 +313,33 @@ class PasskeySummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _registration_session(request: Request, user: User, db: Session) -> User:
+    """Require fresh console proof before installing a persistent credential."""
+    from preloop.api.auth.mfa_router import person_session, _lock_session
+    from preloop.models.crud import mfa as crud_mfa
+    from preloop.services.authentication_policy import check_recent_strong_auth
+    from preloop.services.mfa import clock
+
+    person_session(request, user)
+    user, context = _lock_session(db, user, request)
+    if crud_mfa.enabled(db, user.id) or crud_webauthn_credential.list_for_person(
+        db, person_id=user.person_id
+    ):
+        check_recent_strong_auth(db, user, context, 600)
+    else:
+        # First-factor bootstrap must remain reachable without a strong factor.
+        auth_time = context.get("auth_time")
+        if (
+            not context.get("amr")
+            or type(auth_time) is not int
+            or not 0 <= int(clock()) - auth_time <= 600
+        ):
+            raise HTTPException(
+                401, detail={"code": "step_up_required", "methods": ["login"]}
+            )
+    return user
+
+
 @router.post(
     "/register/options",
     response_model=RegistrationOptionsResponse,
@@ -325,6 +352,7 @@ def registration_options(
     """Begin passkey registration for the signed-in user."""
     _require_enabled()
     _check_challenge_rate_limit(request)
+    current_user = _registration_session(request, current_user, db)
 
     person = require_active_identity(db, current_user)
     existing = crud_webauthn_credential.list_for_person(db, person_id=person.id)
@@ -370,6 +398,7 @@ def registration_verify(
 ) -> PasskeySummary:
     """Complete passkey registration and store the credential."""
     _require_enabled()
+    current_user = _registration_session(request, current_user, db)
 
     person = require_active_identity(db, current_user, lock=True)
     payload = _read_challenge_token(body.challenge_token, "register")

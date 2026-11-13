@@ -1555,6 +1555,13 @@ class TestPasswordReset:
 class TestLoginFlows:
     """Tests for login flows."""
 
+    @pytest.fixture(autouse=True)
+    def mocked_activity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Password verification is mocked here, including its extracted activity write."""
+        monkeypatch.setattr(
+            "preloop.api.auth.router._record_successful_login", lambda *a: None
+        )
+
     def test_login_form_success(self):
         """Test successful login with form data."""
         mock_user = MagicMock(spec=User)

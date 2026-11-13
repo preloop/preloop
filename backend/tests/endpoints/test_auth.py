@@ -157,6 +157,7 @@ def test_register_disabled(db_session_mock):
 
 def test_login_success():
     with (
+        patch("preloop.api.auth.router._record_successful_login"),
         patch("preloop.api.auth.router.authenticate_user") as mock_authenticate_user,
         patch(
             "preloop.api.auth.router._landing_row", side_effect=lambda user, db: user
