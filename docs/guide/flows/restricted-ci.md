@@ -333,23 +333,13 @@ from this.
 Rules that require approval pause this run. A command that matches one does
 not run: the review pauses, an approval request appears in **Approvals**, and
 the run resumes on approval (the command may then run once) or ends `FAILED`
-with `approval_denied` or `approval_timeout`. On a private-runner host the
-read-only mode is not special: if reviewers should never pause, write the rules so review commands do not
-need approval.
-
-Read-only hosted Codex runs are the exception to this. In the hosted
-container, Codex in the read-only sandbox still runs shell commands (`git log`,
-`git diff`, `rg` and the like). Preloop starts it with `--disable shell_tool`,
-but the Codex CLI keeps its command execution tool. These commands run inside
-Codex's read-only sandbox, which blocks writes and network access but not
-reads. The Preloop `PreToolUse` hook is not installed for read-only runs, so
-native command rules (deny or approval-required) do not apply to them: a deny
-rule does not stop a read-only review from reading a file in the checkout.
-Model, MCP and gateway calls are still governed and metered by Preloop.
-
-Other hosted Codex runs install the same Preloop `PreToolUse` hook in the container and
-pause the same way; a hosted Codex run that has such a rule but cannot
-install the hook is refused before Codex starts with `approval_unavailable`.
+with `approval_denied` or `approval_timeout`. The read-only mode is not special:
+if reviewers should never pause, write the rules so review commands do not
+need approval. Hosted Codex runs install the Preloop permission hook, so deny
+and approval rules apply to their shell commands. With `sandbox_type:
+read-only`, Codex has no shell tool at all. A hosted Codex run that has such
+a rule but cannot install the hook is refused before Codex starts with
+`approval_unavailable`.
 Other hosted harnesses have no native hook and are refused before launch with
 `approval_unavailable` when such a rule applies.
 

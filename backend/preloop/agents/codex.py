@@ -638,9 +638,8 @@ fi
         session_blocks = self._build_cli_session_blocks(execution_context)
 
         # Native shell commands go through the Preloop PreToolUse hook, as on
-        # a private-runner host profile. Read-only runs get no hook: Codex is
-        # started with --disable shell_tool but can still run commands, which
-        # stay confined by the read-only sandbox (no writes, no network).
+        # a private-runner host profile. ``sandbox_type: read-only`` has no
+        # shell tool, so it gets no hook; read-only publication does not.
         from .codex_native_hook import (
             codex_agent_user_block,
             codex_native_hook_block,

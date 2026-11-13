@@ -20,9 +20,10 @@ This block gives the hosted run the same gate. Before Codex starts it:
    container is single-use and its configuration is ours to write);
 4. re-reads ``hooks/list`` and requires the hook to be enabled and trusted.
 
-No hook is installed for read-only runs. They pass ``--disable shell_tool``,
-but Codex can still run commands there; the read-only sandbox (no writes, no
-network) is their only boundary, and native command rules do not apply.
+The read-only sandbox (``agent_config.sandbox_type: read-only``) is untouched:
+it disables the shell tool, so it has no native commands to gate and no hook
+is installed there. A ``publication_mode: read_only`` review in the default
+``exec`` sandbox gets the hook like any other hosted run.
 
 When any native deny or approval-required rule applies to the flow, a hook
 that could not be installed fails the run before Codex starts with
