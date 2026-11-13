@@ -38,6 +38,7 @@ from preloop.schemas.ai_model import (
     AIModelsOverviewResponse,
     AIModelUpdate,
     AIModelInUseDetail,
+    AIModelInUseResponse,
     AIModelUsedByResponse,
     AvailableModelsRequest,
     AvailableModelsResponse,
@@ -1125,7 +1126,7 @@ def set_ai_model_owner_flow_use(
     summary="Delete AI Model",
     responses={
         409: {
-            "model": AIModelInUseDetail,
+            "model": AIModelInUseResponse,
             "description": "Flows still select the model; pass force=true",
         }
     },

@@ -115,6 +115,12 @@ class AIModelInUseDetail(BaseModel):
     )
 
 
+class AIModelInUseResponse(BaseModel):
+    """The 409 body as sent: FastAPI wraps the refusal in ``detail``."""
+
+    detail: AIModelInUseDetail
+
+
 # Keys the credential resolver reads for each subscription-OAuth type. Codex
 # needs the ChatGPT account id on every upstream call, and the server refreshes
 # its single-use token, so refresh and expiry are mandatory. Claude Code also

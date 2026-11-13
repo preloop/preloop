@@ -59,8 +59,11 @@ def flow_links(
         flows: Flows already scoped to the caller's account.
 
     Returns:
-        Links for the visible flows, sorted by name.
+        Links for the visible flows, sorted by name; empty when the caller
+        does not hold ``view_flows``.
     """
+    if not _can_view_consumers(db, user, "view_flows"):
+        return []
     visible = filter_viewable(db, user, VISIBLE_FLOW, flows)
     last_runs = crud.crud_flow_execution.get_last_runs_for_flows(
         db, [flow.id for flow in visible]

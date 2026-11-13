@@ -17,6 +17,7 @@ import {
   disabledSentence,
   enabledFlows,
   flowCountsLabel,
+  refusalSentence,
 } from '../../../utils/model-consumers';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -44,6 +45,7 @@ import '../../../components/add-ai-model-modal';
 import {
   createModelPriceOverride,
   deleteAIModel,
+  ModelInUseError,
   deleteModelPriceOverride,
   dismissAttentionItem,
   getAttentionDismissals,
@@ -290,6 +292,8 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private isDeleteConfirmOpen = false;
+  /** The server's refusal of the delete; confirming again forces. */
+  private deleteRefusal: ModelInUseError | null = null;
 
   /** Set when the URL asked for the price editor before the price arrived. */
   private pendingPricingEdit = false;
@@ -2056,6 +2060,7 @@ export class AIModelDetailView extends LitElement {
     if (!this.model) {
       return;
     }
+    this.deleteRefusal = null;
     this.isDeleteConfirmOpen = true;
   };
 
@@ -2069,14 +2074,22 @@ export class AIModelDetailView extends LitElement {
       return;
     }
     try {
-      // The dialog named the flows that use the model; confirming is the
-      // decision to leave them without one.
-      const flows = enabledFlows(this.usedBy?.flows ?? []).length;
-      await deleteAIModel(this.model.id, { force: flows > 0 });
+      // The server decides what blocks: the first click never forces, and
+      // only a confirmation made after its refusal does.
+      await deleteAIModel(this.model.id, {
+        force: Boolean(this.deleteRefusal),
+      });
       this.isDeleteConfirmOpen = false;
+      this.deleteRefusal = null;
       Router.go('/console/ai-models');
     } catch (error) {
+      if (error instanceof ModelInUseError && !this.deleteRefusal) {
+        this.deleteRefusal = error;
+        this.requestUpdate();
+        return;
+      }
       this.isDeleteConfirmOpen = false;
+      this.deleteRefusal = null;
       this.error =
         error instanceof Error ? error.message : 'Failed to delete model';
     }
@@ -3471,11 +3484,7 @@ export class AIModelDetailView extends LitElement {
             ?disabled=${!this.editPermissions.allows('delete_ai_models')}
             variant="danger"
             @click=${this.confirmDelete}
-            >${
-              enabledFlows(this.usedBy?.flows ?? []).length
-                ? 'Delete anyway'
-                : 'Delete'
-            }</sl-button
+            >${this.deleteRefusal ? 'Delete anyway' : 'Delete'}</sl-button
           ></sl-tooltip
         >
       </sl-dialog>
@@ -3507,6 +3516,29 @@ export class AIModelDetailView extends LitElement {
 
   /** Name the flows a delete would leave without a model. */
   private renderDeleteConsumers() {
+    const refusal = this.deleteRefusal;
+    if (refusal) {
+      return html`<p data-testid="delete-model-consumers">
+          ${refusalSentence(refusal.flowCount, refusal.flows.length)}
+        </p>
+        ${
+          refusal.disabledFlowCount
+            ? html`<p data-testid="delete-model-disabled">
+                ${disabledSentence(refusal.disabledFlowCount)}
+              </p>`
+            : nothing
+        }
+        <ul class="used-by-list">
+          ${refusal.flows.map(
+            (flow) =>
+              html`<li>
+                <a href=${`/console/flows/${encodeURIComponent(flow.id)}`}
+                  >${flow.name}</a
+                >
+              </li>`
+          )}
+        </ul>`;
+    }
     const all = this.usedBy?.flows ?? [];
     const flows = enabledFlows(all);
     const disabled = all.length - flows.length;

@@ -1055,6 +1055,29 @@ describe('AIModelDetailView', () => {
     );
   });
 
+  /** The server refuses the first delete with its own counts, then accepts. */
+  function stubRefusingDelete(refusal: Record<string, unknown>): string[] {
+    const deletes: string[] = [];
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) =>
+          String(url).startsWith('/api/v1/ai-models/model-1')
+        ),
+        sinon.match.has('method', 'DELETE')
+      )
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        deletes.push(url);
+        if (url.endsWith('force=true'))
+          return new Response(null, { status: 204 });
+        return new Response(
+          JSON.stringify({ detail: { code: 'model_in_use', ...refusal } }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+    return deletes;
+  }
+
   it('names the flows a delete would orphan and forces only after that', async () => {
     usedByBody = {
       agents: [],
@@ -1083,18 +1106,26 @@ describe('AIModelDetailView', () => {
       expect(consumers.textContent).to.contain('Used by 1 flow');
       expect(root.querySelector('sl-dialog a[href="/console/flows/flow-9"]')).to
         .exist;
-      const confirm = Array.from(
-        root.querySelectorAll('sl-dialog sl-button[variant="danger"]')
-      ).find((button) => button.textContent?.includes('Delete anyway'));
-      expect(confirm).to.exist;
 
+      const deletes = stubRefusingDelete({
+        message: '3 enabled flows still use this model.',
+        flow_count: 3,
+        disabled_flow_count: 0,
+        flows: [{ id: 'flow-9', name: 'Review flow' }],
+      });
       await (element as any).confirmDelete();
-
-      const deletes = fetchStub
-        .getCalls()
-        .filter((call) => (call.args[1]?.method || '') === 'DELETE')
-        .map((call) => String(call.args[0]));
-      expect(deletes).to.deep.equal(['/api/v1/ai-models/model-1?force=true']);
+      await element.updateComplete;
+      // The server's count wins over the visible list.
+      expect(
+        root.querySelector('[data-testid="delete-model-consumers"]')!
+          .textContent
+      ).to.contain('Used by 3 flows');
+      expect((element as any).isDeleteConfirmOpen).to.equal(true);
+      await (element as any).confirmDelete();
+      expect(deletes).to.deep.equal([
+        '/api/v1/ai-models/model-1',
+        '/api/v1/ai-models/model-1?force=true',
+      ]);
     } finally {
       usedByBody = { agents: [], flows: [], truncated: false };
       (Router.go as sinon.SinonStub).restore();
@@ -1142,18 +1173,20 @@ describe('AIModelDetailView', () => {
         root.querySelector('[data-testid="delete-model-disabled"]')!.textContent
       ).to.contain('1 disabled flow');
 
-      usedByBody.flows = [usedByBody.flows[1]];
-      (element as any).usedBy = {
-        ...(element as any).usedBy,
-        flows: [{ id: 'flow-8', name: 'Paused flow', is_enabled: false }],
-        enabled_flow_count: 0,
-        disabled_flow_count: 1,
-      };
+      // Only disabled flows remain: the server accepts the first delete.
+      const deletes: string[] = [];
+      fetchStub
+        .withArgs(
+          sinon.match((url: unknown) =>
+            String(url).startsWith('/api/v1/ai-models/model-1')
+          ),
+          sinon.match.has('method', 'DELETE')
+        )
+        .callsFake(async (input: RequestInfo | URL) => {
+          deletes.push(String(input));
+          return new Response(null, { status: 204 });
+        });
       await (element as any).confirmDelete();
-      const deletes = fetchStub
-        .getCalls()
-        .filter((call) => (call.args[1]?.method || '') === 'DELETE')
-        .map((call) => String(call.args[0]));
       expect(deletes).to.deep.equal(['/api/v1/ai-models/model-1']);
     } finally {
       usedByBody = { agents: [], flows: [], truncated: false };

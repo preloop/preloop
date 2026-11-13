@@ -559,3 +559,56 @@ async def test_model_read_states_credential_expiry_to_admins_only(
             ai_models.get_ai_model(model_id=model.id, db=db_session, current_user=owner)
         )
     assert ai_models.AIModelRead.model_validate(member).credentials_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_delete_and_rotation_hide_flows_without_view_flows(
+    db_session: Session, ci_resources: Any
+) -> None:
+    """Holding the model permission alone never reveals flow names."""
+    owner, _, flow, _ = ci_resources
+    secret = _secret(db_session, owner.account_id)
+    model = _model(db_session, owner.account_id, "Gated", secret.id)
+    _bind(db_session, flow, model)
+    secret.version = 2
+    secret.rotated_at = datetime.now(timezone.utc)
+
+    def lacks_view_flows(db: Any, user: Any, permission: str) -> bool:
+        return permission != "view_flows"
+
+    with patch(
+        "preloop.services.ai_model_usage_links._can_view_consumers",
+        side_effect=lacks_view_flows,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await _delete(db_session, model, owner)
+        with patch.object(ai_models, "get_secret_service") as service:
+            service.return_value.rotate_secret_reference.return_value = secret
+            rotated = await maybe_await(
+                ai_models.rotate_ai_model_credential(
+                    model_id=model.id,
+                    body=ai_models.AIModelCredentialRotateRequest(api_key="sk-new"),
+                    db=db_session,
+                    current_user=owner,
+                )
+            )
+
+    assert exc.value.detail["flow_count"] == 1
+    assert exc.value.detail["flows"] == []
+    assert rotated.affected_flows == []
+    assert "Example review" not in json.dumps(exc.value.detail)
+
+
+def test_openapi_documents_the_409_inside_detail() -> None:
+    """The spec matches the wire: FastAPI wraps the refusal in ``detail``."""
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(ai_models.router, prefix="/api/v1")
+    spec = app.openapi()
+    ref = spec["paths"]["/api/v1/ai-models/{model_id}"]["delete"]["responses"]["409"][
+        "content"
+    ]["application/json"]["schema"]["$ref"]
+    schema = spec["components"]["schemas"][ref.rsplit("/", 1)[-1]]
+    assert schema["required"] == ["detail"]
+    assert schema["properties"]["detail"]["$ref"].endswith("/AIModelInUseDetail")

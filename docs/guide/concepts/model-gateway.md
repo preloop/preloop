@@ -156,7 +156,7 @@ Rotating a credential (`POST /api/v1/ai-models/{model_id}/credentials/rotate`) r
 
 1. Read `GET /api/v1/ai-models/{model_id}/used-by`. Repoint every listed flow, and every CI identity's flow, at the replacement model.
 2. If the key is shared (`shared_credential_models` is not empty), rotate it rather than removing it, and check `affected_flows` in the rotation response.
-3. Delete the model. While any **enabled** flow of the account still selects it, `DELETE /api/v1/ai-models/{model_id}` answers `409` with `{"code": "model_in_use", "flow_count", "disabled_flow_count", "flows"}` and changes nothing. Disabled flows cannot fail now, so they do not block the delete, but they still lose the model. `?force=true` deletes anyway. Either way, the flows that had it as their own model are left without one, report `model_health.status: missing`, and the audit entry for the delete lists every one of them, enabled or disabled, under `orphaned_flows`. Routing, label and retry rules that named the model are listed in the audit entry too but are not rewritten.
+3. Delete the model. While any **enabled** flow of the account still selects it, `DELETE /api/v1/ai-models/{model_id}` answers `409` with `{"detail": {"code": "model_in_use", "flow_count", "disabled_flow_count", "flows"}}` and changes nothing. Disabled flows cannot fail now, so they do not block the delete, but they still lose the model. `?force=true` deletes anyway. Either way, the flows that had it as their own model are left without one, report `model_health.status: missing`, and the audit entry for the delete lists every one of them, enabled or disabled, under `orphaned_flows`. Routing, label and retry rules that named the model are listed in the audit entry too but are not rewritten.
 
 ---
 

@@ -27,3 +27,12 @@ export function flowCountsLabel(
   const head = `${enabled} enabled flow${enabled === 1 ? '' : 's'}`;
   return disabled ? `${head} · ${disabled} disabled` : head;
 }
+
+/**
+ * What the server's 409 says, from its own counts: every enabled flow
+ * counts, though the caller may see only some of them.
+ */
+export function refusalSentence(flowCount: number, shown: number): string {
+  const head = consumersSentence(flowCount);
+  return shown < flowCount ? `${head} You can see ${shown} of them.` : head;
+}

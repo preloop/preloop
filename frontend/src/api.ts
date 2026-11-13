@@ -4721,13 +4721,23 @@ export async function synthesizeSpeech(
 
 /** A delete refused because flows still select the model (409 model_in_use). */
 export class ModelInUseError extends Error {
+  /** Every enabled flow of the account that selects the model. */
   readonly flowCount: number;
+  /** Disabled flows that will lose the model but do not block. */
+  readonly disabledFlowCount: number;
+  /** The enabled flows this caller can see; may be fewer than flowCount. */
   readonly flows: AIModelFlowLink[];
 
-  constructor(message: string, flowCount: number, flows: AIModelFlowLink[]) {
+  constructor(
+    message: string,
+    flowCount: number,
+    flows: AIModelFlowLink[],
+    disabledFlowCount = 0
+  ) {
     super(message);
     this.name = 'ModelInUseError';
     this.flowCount = flowCount;
+    this.disabledFlowCount = disabledFlowCount;
     this.flows = flows;
   }
 }
@@ -4755,7 +4765,8 @@ export async function deleteAIModel(
       throw new ModelInUseError(
         extractErrorMessage(errorData, 'Flows still use this model'),
         Number(detail.flow_count) || 0,
-        Array.isArray(detail.flows) ? detail.flows : []
+        Array.isArray(detail.flows) ? detail.flows : [],
+        Number(detail.disabled_flow_count) || 0
       );
     }
     throw new Error(

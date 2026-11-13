@@ -13630,7 +13630,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelInUseDetail'
+                $ref: '#/components/schemas/AIModelInUseResponse'
         '422':
           description: Validation Error
           content:
@@ -26364,6 +26364,15 @@ components:
       - flow_count
       title: AIModelInUseDetail
       description: Body of the 409 a delete returns while flows still select the model.
+    AIModelInUseResponse:
+      properties:
+        detail:
+          $ref: '#/components/schemas/AIModelInUseDetail'
+      type: object
+      required:
+      - detail
+      title: AIModelInUseResponse
+      description: 'The 409 body as sent: FastAPI wraps the refusal in ``detail``.'
     AIModelOverviewItem:
       properties:
         ai_model_id:

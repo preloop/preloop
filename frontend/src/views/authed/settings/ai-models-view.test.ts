@@ -546,8 +546,9 @@ describe('AIModelsView', () => {
           JSON.stringify({
             detail: {
               code: 'model_in_use',
-              message: '1 flow still uses this model.',
-              flow_count: 1,
+              message: '3 enabled flows still use this model.',
+              flow_count: 3,
+              disabled_flow_count: 2,
               flows: [{ id: 'flow-9', name: 'Review flow' }],
             },
           }),
@@ -567,7 +568,13 @@ describe('AIModelsView', () => {
     expect((element as any).isDeleteConfirmOpen).to.equal(true);
     expect(
       root.querySelector('[data-testid="delete-model-consumers"]')!.textContent
-    ).to.contain('Used by 1 flow');
+    ).to.contain('Used by 3 flows');
+    expect(
+      root.querySelector('[data-testid="delete-model-consumers"]')!.textContent
+    ).to.contain('You can see 1 of them');
+    expect(
+      root.querySelector('[data-testid="delete-model-disabled"]')!.textContent
+    ).to.contain('2 disabled flows');
     expect(root.querySelector('sl-dialog a[href="/console/flows/flow-9"]')).to
       .exist;
 
