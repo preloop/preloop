@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- flows: a hosted Codex run whose native permission hook would be refused now
+  fails before it starts. Before launch the execution's runtime credential is
+  checked with the same identity rules `POST /api/v1/agents/permission-check`
+  applies, and a credential the hook could not use ends the run `FAILED` with
+  the new `hook_binding_invalid` category: no container, no model calls, no
+  startup receipt. Previously such a run started, and every native command
+  was denied with HTTP 403 while the model kept spending calls. The read-only
+  review startup receipt gains an additive `agent_cli` field
+  (`{"name": "codex", "version": "x.y.z"}`) taken from the version line the
+  container prints before the agent starts, or null when none was seen
+  (part of #2264).
+
 - gateway: an error the upstream model provider produced now says so. A
   provider-reported 401, 402, 403 or 404 used to reach the client at
   Preloop's URL as the provider's bare sentence (for example `User not

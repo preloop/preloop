@@ -173,6 +173,9 @@ FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
 FAILURE_CATEGORY_APPROVAL_DENIED = "approval_denied"
 FAILURE_CATEGORY_APPROVAL_TIMEOUT = "approval_timeout"
 FAILURE_CATEGORY_APPROVAL_UNAVAILABLE = "approval_unavailable"
+#: A hosted run was refused before launch because the runtime credential
+#: its native command hook would present is refused by permission-check.
+FAILURE_CATEGORY_HOOK_BINDING_INVALID = "hook_binding_invalid"
 #: A parked run's continuation failed (or refused its checkpoint).
 FAILURE_CATEGORY_RESUME_FAILED = "resume_failed"
 #: A private-runner host CLI produced model output without any request
@@ -206,6 +209,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_APPROVAL_DENIED,
     FAILURE_CATEGORY_APPROVAL_TIMEOUT,
     FAILURE_CATEGORY_APPROVAL_UNAVAILABLE,
+    FAILURE_CATEGORY_HOOK_BINDING_INVALID,
     FAILURE_CATEGORY_RESUME_FAILED,
     FAILURE_CATEGORY_GATEWAY_BYPASSED,
     FAILURE_CATEGORY_TIMEOUT,
