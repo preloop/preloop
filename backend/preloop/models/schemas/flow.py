@@ -279,6 +279,69 @@ class ReviewPublication(BaseModel):
     )
 
 
+class PlatformReviewStatus(BaseModel):
+    """Commit status Preloop sets on the reviewed commit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    context: str = Field(
+        default="preloop/review",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,99}$",
+        description=(
+            "Status context name. Keep it stable so a branch protection rule "
+            "can require it."
+        ),
+    )
+    verdict_states: Dict[str, Literal["success", "failure", "error"]] = Field(
+        min_length=1,
+        description=(
+            "Explicit state for every verdict the flow's result_schema "
+            "admits. A verdict without an entry is never posted."
+        ),
+    )
+    incomplete_state: Optional[Literal["error", "failure"]] = Field(
+        default=None,
+        description=(
+            "State set, with a neutral description, when the run stopped, "
+            "failed or returned no valid result, so a required status is not "
+            "left waiting. Omit to post nothing for such runs."
+        ),
+    )
+
+
+class PlatformReview(BaseModel):
+    """Preloop posts the validated result of a read-only review itself.
+
+    The run stays ``publication_mode: read_only``. After it finishes and its
+    result passed ``result_schema``, the control plane posts one pull request
+    review and, optionally, one commit status on the reviewed commit, using a
+    GitHub App token it mints for that one repository and never hands to the
+    run. Valid only with ``publication_mode: read_only``, ``validate_result``
+    on and a ``result_schema`` that declares a required string ``verdict``
+    with an enum.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="Turn the posting on")
+    action: Literal["comment"] = Field(
+        default="comment",
+        description="Review action used unless verdict_actions maps the verdict",
+    )
+    verdict_actions: Optional[
+        Dict[str, Literal["comment", "approve", "request_changes"]]
+    ] = Field(
+        default=None,
+        description=(
+            "Explicit review action per verdict. Without an entry the review "
+            "is a comment; approve and request_changes are never implied."
+        ),
+    )
+    status: Optional[PlatformReviewStatus] = Field(
+        default=None, description="Commit status to set; omit for none"
+    )
+
+
 class FollowUpFiling(BaseModel):
     """File the follow ups a human approved as issues in the tracker.
 
@@ -513,6 +576,14 @@ class GitCloneConfig(BaseModel):
     ci_project_selection: bool = Field(
         default=False,
         description="For read_only restricted CI, select only the principal's repository from the administrator-approved project list.",
+    )
+    platform_review: Optional[PlatformReview] = Field(
+        default=None,
+        description=(
+            "For read_only review: Preloop posts the validated result as a "
+            "pull request review and a commit status on the reviewed commit. "
+            "The run itself gets no write credential."
+        ),
     )
     publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(
         default=None,

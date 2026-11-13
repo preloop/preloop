@@ -346,6 +346,16 @@ check. GitLab and Bitbucket receipts do not carry the reviewed head, so they
 prove delivery for the current run but cannot justify skipping a head that was
 already reviewed. Details: [Flows architecture](../../architecture/flows.md#review-publication-receipts).
 
+## Read-only review posted by Preloop
+
+A restricted CI review that runs with `publication_mode: "read_only"` has no
+tracker tools, so the delivery check above does not apply to it. Such a flow
+can opt into `git_clone_config.platform_review` instead: after the run
+finishes and its result passed the flow's result schema, Preloop posts the
+review and a commit status on the reviewed commit with a GitHub App token
+that never reaches the run. See
+[Review and status posted by Preloop](restricted-ci.md#review-and-status-posted-by-preloop).
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`

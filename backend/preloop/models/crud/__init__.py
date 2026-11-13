@@ -5,6 +5,7 @@ from .observation_verification import crud_observation_verification
 # Create CRUD instances for each model
 from .callback_receipt import crud_callback_key_binding, crud_callback_receipt
 from .review_publication_receipt import crud_review_publication_receipt
+from .platform_review_publication import crud_platform_review_publication
 from .mcp_inventory import crud_mcp_inventory
 from .support import crud_support
 from .rate_limit import crud_rate_limit
@@ -357,6 +358,7 @@ __all__ = [
     "crud_callback_key_binding",
     "crud_callback_receipt",
     "crud_review_publication_receipt",
+    "crud_platform_review_publication",
     "crud_ci_administration",
     "crud_chat",
     "CRUDManagedOAuth",

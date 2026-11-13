@@ -456,6 +456,26 @@ def flow_execution_finished_data(
     }
 
 
+def _platform_review(db: Any, execution: Any, flow: Any) -> Optional[dict[str, Any]]:
+    """What Preloop posted on the pull request so far; null without the opt-in.
+
+    The event is queued once per terminal status. A review posted by a later
+    retry or an explicit publish call is read from the execution, not from a
+    second event.
+    """
+    try:
+        from preloop.services.platform_review import (
+            platform_review_block,
+            platform_review_projection,
+        )
+
+        if platform_review_block(getattr(flow, "git_clone_config", None)) is None:
+            return None
+        return platform_review_projection(db, execution, flow=flow)
+    except Exception:
+        return None
+
+
 def emit_flow_execution_finished(
     db: Any,
     execution: Any,
@@ -468,13 +488,15 @@ def emit_flow_execution_finished(
     execution_id = getattr(execution, "id", None)
     if execution_id is None:
         return
+    data = flow_execution_finished_data(
+        execution, flow, status=status, failure_category=failure_category
+    )
+    data["platform_review"] = _platform_review(db, execution, flow)
     outbox.enqueue_event(
         db,
         account_id=getattr(flow, "account_id", None),
         event_type=EVENT_FLOW_EXECUTION_FINISHED,
-        data=flow_execution_finished_data(
-            execution, flow, status=status, failure_category=failure_category
-        ),
+        data=data,
         occurred_at=getattr(execution, "end_time", None),
         # Keyed on the terminal status: a retried execution keeps its id, and
         # a run that fails then succeeds is two facts, not one.

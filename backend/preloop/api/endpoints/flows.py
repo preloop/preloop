@@ -282,6 +282,50 @@ def _pinned_harness(agent_config: Any) -> Optional[str]:
     return harness if isinstance(harness, str) else None
 
 
+def _reject_invalid_platform_review(
+    db: Session,
+    *,
+    account_id: Any,
+    git_clone_config: Any,
+    result_schema: Any,
+    validate_result: Any,
+) -> None:
+    """Refuse a ``platform_review`` opt-in that could not post safely.
+
+    Checked on the configuration the flow will have after the save: the
+    result must be validated against a schema with a closed, fully mapped
+    ``verdict``, and every repository must belong to a GitHub App tracker.
+
+    Raises:
+        HTTPException: 422 with the reason.
+    """
+    from types import SimpleNamespace
+
+    from preloop.services.platform_review import (
+        validate_platform_review_flow,
+        validate_platform_review_trackers,
+    )
+
+    config = (
+        git_clone_config.model_dump()
+        if hasattr(git_clone_config, "model_dump")
+        else git_clone_config
+    )
+    if not isinstance(config, dict):
+        return
+    try:
+        validate_platform_review_flow(
+            SimpleNamespace(
+                git_clone_config=config,
+                result_schema=result_schema,
+                validate_result=validate_result,
+            )
+        )
+        validate_platform_review_trackers(db, account_id=account_id, config=config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _reject_unusable_runner_pin(
     agent_config: Any, *, db: Optional[Session], current_user: Any
 ) -> None:
@@ -407,6 +451,13 @@ def create_flow(
 
     _validate_flow_model_binding(
         db, flow_in.agent_type, flow_in.ai_model_id, current_user.account_id
+    )
+    _reject_invalid_platform_review(
+        db,
+        account_id=current_user.account_id,
+        git_clone_config=flow_in.git_clone_config,
+        result_schema=flow_in.result_schema,
+        validate_result=flow_in.validate_result,
     )
     _reject_host_exec_flow(
         agent_type=flow_in.agent_type,
@@ -1749,6 +1800,75 @@ def get_execution_result_export(
         _result_export_error(exc)
 
 
+@router.post(
+    "/flows/executions/{execution_id}/platform-review",
+    responses={
+        404: {"description": "No such execution for this caller."},
+        409: {
+            "description": (
+                "Nothing can be published for this execution: the flow has "
+                "not opted in, the execution has not finished, or it has no "
+                "restricted CI review binding. ``detail.code`` names which."
+            )
+        },
+    },
+)
+@require_permission("edit_flows", ci_action=CiAction.PUBLISH_REVIEW)
+def publish_execution_platform_review(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+) -> Dict[str, Any]:
+    """Publish, or publish again, a finished review without running the model.
+
+    Posts the stored, validated result of a finished read-only review as a
+    pull request review and commit status on the commit the execution
+    reviewed. The target comes from the execution's own binding; the request
+    has no body and cannot name a repository, pull request or commit.
+
+    The call is idempotent. A review or status that was already posted for
+    the execution is not posted again; the response is the current
+    ``platform_review`` record. Use it after a posting failure, or when a run
+    finished while posting was unavailable.
+
+    Allowed for an account user who may edit flows, and for the execution's
+    own restricted CI identity when it holds ``execution:review:publish``.
+    """
+    from preloop.services.platform_review import (
+        PlatformReviewRefusedError,
+        publish_platform_review,
+    )
+    from preloop.tools.utils import run_async
+
+    if isinstance(current_user, CiAuthorizationContext):
+        execution = _owned_ci_execution(
+            db, current_user, execution_id, CiAction.PUBLISH_REVIEW
+        )
+        account_id = current_user.account_id
+        execution_id = execution.id
+    else:
+        ensure_permission_in_oss(db, current_user, "edit_flows")
+        account_id = current_user.account_id
+    try:
+        projection = run_async(
+            publish_platform_review(
+                db, account_id=account_id, execution_id=execution_id, explicit=True
+            )
+        )
+    except LookupError:
+        raise HTTPException(404, "Flow execution not found") from None
+    except PlatformReviewRefusedError as exc:
+        raise HTTPException(
+            exc.status_code,
+            detail={
+                "code": exc.reason,
+                "message": "Nothing can be published for this execution",
+            },
+        ) from None
+    return {"execution_id": str(execution_id), "platform_review": projection}
+
+
 def _result_export_error(exc: Exception) -> NoReturn:
     """Keep provider details and source contents out of denial responses."""
     status = (
@@ -1902,7 +2022,16 @@ def get_flow_execution_result(
         # Capture-time check against the flow result schema (#868); null
         # when the flow sets none.
         "schema_validation": _public_schema_validation(execution),
+        # What Preloop posted on the pull request; null without the opt-in.
+        "platform_review": _platform_review_of(db, execution),
     }
+
+
+def _platform_review_of(db: Session, execution: Any) -> Optional[Dict[str, Any]]:
+    """The posted-review record of an execution, or None."""
+    from preloop.services.platform_review import platform_review_projection
+
+    return platform_review_projection(db, execution)
 
 
 RESULT_PENDING_CODE = "result_pending"
@@ -3580,6 +3709,27 @@ def update_flow(
                 flow_in.tools_customized = True
                 # Clear update notification since they're making their own changes
                 flow_in.preset_update_available = False
+
+    _reject_invalid_platform_review(
+        db,
+        account_id=current_user.account_id,
+        git_clone_config=(
+            flow_in.git_clone_config
+            if "git_clone_config" in flow_in.model_fields_set
+            else flow.git_clone_config
+        ),
+        result_schema=(
+            flow_in.result_schema
+            if "result_schema" in flow_in.model_fields_set
+            else flow.result_schema
+        ),
+        validate_result=(
+            flow_in.validate_result
+            if "validate_result" in flow_in.model_fields_set
+            and flow_in.validate_result is not None
+            else flow.validate_result
+        ),
+    )
 
     if flow_in.agent_config is not None:
         try:
