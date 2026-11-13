@@ -753,6 +753,7 @@ flow that has `publication_mode: "read_only"`, `validate_result: true` and a
 | Key | Meaning |
 | --- | --- |
 | `enabled` | Turns posting on. |
+| `enabled_at` | Read-only. Set by Preloop when posting is turned on; runs that finished before it are not published automatically (the publish call below still can). |
 | `verdict_actions` | Optional map from verdict to `comment`, `approve` or `request_changes`. Without an entry the review is a comment. An approval is never implied. |
 | `status` | Optional. Omit it to post the review only. |
 | `status.context` | Status name, default `preloop/review`. Keep it stable so a branch protection rule can require it. |

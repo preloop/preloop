@@ -417,7 +417,8 @@ class CRUDCiPrincipal:
         actions this change adds to the grant are also added to the
         identity's active keys, in place: no new identity, no rotation, the
         token in the caller's CI keeps working and gains exactly those
-        actions. Requires a grant and the authority to widen it.
+        actions. Requires a grant. When the grant adds nothing (a repeated
+        call, a narrowing) no key is touched.
         """
         principal = self.get(
             db, account_id=actor.account_id, principal_id=principal_id, lock=True
@@ -444,8 +445,16 @@ class CRUDCiPrincipal:
             or grant.flow_id != principal.flow_id
         ):
             raise ValueError("CI binding is immutable; provision a new identity")
-        if extend_keys and (grant is None or operation != "change"):
-            raise ValueError("Extending keys requires a grant that adds actions")
+        if extend_keys and grant is None:
+            raise ValueError("Extending keys requires a grant")
+        # What this change adds to the grant. Empty for a repeated call or a
+        # narrowing one: extending keys is then a no-op, never an error, and
+        # a non-empty list always went through the widening authorization.
+        added = (
+            [a for a in grant.actions if a not in current.actions]
+            if grant is not None
+            else []
+        )
         try:
             if grant is not None:
                 principal.grant = grant.model_dump(mode="json")
@@ -453,8 +462,7 @@ class CRUDCiPrincipal:
                 principal.is_active = enabled
             operation = "disable" if enabled is False else "change"
             self._audit(db, actor=actor, principal=principal, operation=operation)
-            if extend_keys and grant is not None:
-                added = [a for a in grant.actions if a not in current.actions]
+            if extend_keys and added:
                 keys = (
                     db.query(models.ApiKey)
                     .populate_existing()

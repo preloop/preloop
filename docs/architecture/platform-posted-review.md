@@ -213,9 +213,11 @@ exponential backoff (1, 2, 4, ... minutes, capped at one hour) for at most
 six attempts. The same sweep takes over a claim that was left `publishing`
 for more than ten minutes (a cancelled attempt, a worker that died), and
 publishes finished executions that no worker claimed, for example after an
-operator stop. It considers only executions that finished after the flow
-was last saved, so turning the opt-in on never reaches back to earlier runs
-(the explicit publish call still can). A pending retry of a flow that has since opted out is
+operator stop. It considers only executions that finished after posting
+was turned on (the server sets `platform_review.enabled_at` when the block
+is saved enabled and keeps it across later saves), so turning the opt-in on
+never reaches back to earlier runs and an unrelated flow edit drops nothing.
+The explicit publish call can still publish an earlier run. A pending retry of a flow that has since opted out is
 closed with `platform_review_disabled`. After the attempts are used, or for
 a non-retryable reason, an explicit publish call retries.
 
@@ -273,7 +275,7 @@ reading.
 | 16 | An approval is posted without anyone asking for it | explicit `verdict_actions` only | `test_approve_and_request_changes_only_by_explicit_mapping` |
 | 17 | The App lacks `statuses: write` and the status is silently dropped | review-only lease, recorded reason | `test_missing_statuses_permission_posts_the_review_and_says_why` |
 | 19 | A cancelled attempt or dead worker leaves a review unposted forever | interrupted attempts are recorded retryable; stale claims are taken over | `test_attempt_cancelled_after_the_claim_is_completed_by_the_next_sweep`, `test_claim_abandoned_by_a_dead_worker_is_due_and_completed` |
-| 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to runs that finished after the flow was last saved | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_does_not_reach_back_before_the_flow_was_last_saved` |
+| 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to runs that finished after posting was enabled | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_is_bounded_by_when_posting_was_enabled_not_by_later_saves`, `test_enabled_at_is_set_by_the_server_and_kept_across_saves` |
 | 18 | With the opt-in off anything changes | no claim, no lease, no call | `test_opt_in_off_mints_no_lease_and_makes_no_call`, `test_completion_path_does_nothing_without_the_opt_in_or_a_ci_binding` |
 
 ## GitHub App permissions

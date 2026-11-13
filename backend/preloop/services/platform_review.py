@@ -167,7 +167,13 @@ def validate_platform_review_block(block: Any) -> None:
         return
     if not isinstance(block, Mapping) or not isinstance(block.get("enabled"), bool):
         raise ValueError("platform_review must be an object with a boolean enabled")
-    unknown = set(block) - {"enabled", "action", "verdict_actions", "status"}
+    unknown = set(block) - {
+        "enabled",
+        "action",
+        "verdict_actions",
+        "status",
+        "enabled_at",
+    }
     if unknown:
         raise ValueError("platform_review has unsupported keys")
     if block.get("action", "comment") != "comment":
@@ -221,6 +227,33 @@ def validate_platform_review_block(block: Any) -> None:
         raise ValueError(
             "platform_review.status.incomplete_state must be error or failure"
         )
+
+
+def stamp_enabled_at(config: Any, previous: Any) -> None:
+    """Record, on a flow being saved, when posting was turned on.
+
+    The stamp bounds the automatic sweep: a run that finished before posting
+    was enabled is not published by it. It is server-owned: a value in the
+    submitted block is replaced, an already enabled flow keeps its stamp
+    across unrelated saves, and turning posting off clears it.
+
+    Args:
+        config: The submitted ``GitCloneConfig`` (mutated in place), or None.
+        previous: The stored ``git_clone_config`` of the flow, if any.
+    """
+    block = getattr(config, "platform_review", None)
+    if block is None:
+        return
+    if block.enabled is not True:
+        block.enabled_at = None
+        return
+    before = platform_review_block(previous) or {}
+    kept = before.get("enabled_at")
+    block.enabled_at = (
+        kept
+        if isinstance(kept, str) and kept
+        else datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    )
 
 
 def verdict_enum(schema: Any) -> list[str] | None:

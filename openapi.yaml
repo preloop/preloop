@@ -46258,6 +46258,15 @@ components:
           - $ref: '#/components/schemas/PlatformReviewStatus'
           - type: 'null'
           description: Commit status to set; omit for none
+        enabled_at:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$
+          - type: 'null'
+          title: Enabled At
+          description: Set by the server when posting is turned on (UTC); a value
+            sent by a client is replaced. Runs that finished before it are not published
+            automatically.
       additionalProperties: false
       type: object
       title: PlatformReview

@@ -1947,19 +1947,17 @@ def test_extending_keys_needs_a_widening_grant_and_adds_nothing_else(
         crud.crud_ci_principal.change(
             world.db, actor=world.owner, principal_id=principal.id, extend_keys=True
         )
-    with pytest.raises(ValueError):
-        crud.crud_ci_principal.change(
-            world.db,
-            actor=world.owner,
-            principal_id=principal.id,
-            grant=CiGrant(
-                version=1,
-                project_id=project.id,
-                flow_id=world.flow.id,
-                actions=(CiAction.TRIGGER,),
-            ),
-            extend_keys=True,
-        )
+    # A grant that adds nothing extends nothing, and is not an error.
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=grant,
+        enabled=True,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == ["flow:trigger"]
     crud.crud_ci_principal.change(
         world.db,
         actor=world.owner,
@@ -1976,23 +1974,91 @@ def test_extending_keys_needs_a_widening_grant_and_adds_nothing_else(
     # Only the newly granted action is added; the key's narrower ceiling for
     # actions the grant already had (execution:read) is kept.
     assert key.ci_actions == ["flow:trigger", "execution:review:publish"]
+    # Repeating the documented call is a no-op, not an error.
+    wider = CiGrant(
+        version=1,
+        project_id=project.id,
+        flow_id=world.flow.id,
+        actions=(*base, CiAction.PUBLISH_REVIEW),
+    )
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=wider,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == ["flow:trigger", "execution:review:publish"]
 
 
-def test_sweep_does_not_reach_back_before_the_flow_was_last_saved(
+def test_sweep_is_bounded_by_when_posting_was_enabled_not_by_later_saves(
     world: SimpleNamespace,
 ) -> None:
+    from preloop.models.schemas.flow import GitCloneConfig as Config
+
     who = identity(world, world.projects[0])
     before = finished(world, who)
     before.end_time = datetime(2019, 6, 1)
     after = finished(world, who)
     after.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-    world.flow.updated_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    # Posting was enabled half an hour ago; the flow was saved again since
+    # (an unrelated edit), after the run finished.
+    config = dict(world.flow.git_clone_config)
+    enabled = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=30)
+    config["platform_review"] = {**OPT_IN, "enabled_at": enabled.isoformat()}
+    Config.model_validate(config)
+    world.flow.git_clone_config = config
+    world.flow.updated_at = datetime.now(timezone.utc) + timedelta(hours=1)
     world.db.commit()
-    found = crud.crud_platform_review_publication.unclaimed_execution_ids(
+    store = crud.crud_platform_review_publication
+    found = store.unclaimed_execution_ids(
         world.db, finished_within=timedelta(days=36500)
     )
     assert (world.account.id, after.id) in found
     assert (world.account.id, before.id) not in found
+    # A block stored without a stamp falls back to the flow's last save.
+    config = dict(config)
+    config["platform_review"] = OPT_IN
+    world.flow.git_clone_config = config
+    world.flow.updated_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    world.db.commit()
+    assert (
+        store.unclaimed_execution_ids(world.db, finished_within=timedelta(days=36500))
+        == []
+    )
+
+
+def test_enabled_at_is_set_by_the_server_and_kept_across_saves() -> None:
+    from preloop.models.schemas.flow import GitCloneConfig as Config
+
+    submitted = Config.model_validate(
+        _clone(platform_review={**OPT_IN, "enabled_at": "1999-01-01T00:00:00"})
+    )
+    platform_review.stamp_enabled_at(submitted, None)
+    first = submitted.platform_review.enabled_at
+    assert first is not None and not first.startswith("1999")
+    stored = submitted.model_dump()
+    # An unrelated save, with or without a client-sent value, keeps the stamp.
+    for sent in (None, "2001-01-01T00:00:00"):
+        again = Config.model_validate(
+            _clone(platform_review={**OPT_IN, "enabled_at": sent})
+        )
+        platform_review.stamp_enabled_at(again, stored)
+        assert again.platform_review.enabled_at == first
+    # Off clears it; on again starts a new period.
+    off = Config.model_validate(
+        _clone(platform_review={"enabled": False, "enabled_at": first})
+    )
+    platform_review.stamp_enabled_at(off, stored)
+    assert off.platform_review.enabled_at is None
+    on = Config.model_validate(_clone())
+    platform_review.stamp_enabled_at(on, off.model_dump())
+    assert on.platform_review.enabled_at is not None
+    platform_review.stamp_enabled_at(
+        Config.model_validate(_clone(platform_review=None)), stored
+    )
+    platform_review.validate_platform_review_block(on.model_dump()["platform_review"])
 
 
 def test_admin_update_extends_keys_and_requires_a_grant(
