@@ -1118,7 +1118,12 @@ def test_operator_check_passes_against_two_identities_on_one_flow(
         tokens={"A": pair.token_a, "B": pair.token_b},
         projects={"A": str(shared.project_a.id), "B": str(shared.project_b.id)},
     )
-    assert results and all(passed for passed, _ in results), results
+    # No receipt exists in this fixture, so that check is skipped, not passed.
+    skipped = [text for passed, text in results if passed is None]
+    assert len(skipped) == 2 and all("no startup receipt" in t for t in skipped)
+    assert all(passed is not False for passed, _ in results), results
+    assert sum(1 for passed, _ in results if passed is True) >= 20
+    assert any("rejected for its extra field" in text for _, text in results)
     text = repr(results)
     assert pair.token_a not in text and pair.token_b not in text
     # Both directions of the cross-read were actually probed.
@@ -1156,7 +1161,7 @@ def test_operator_check_reports_a_sideways_read() -> None:
         tokens={"A": "token-a", "B": "token-b"},
         projects={"A": project_a, "B": project_b},
     )
-    failed = [description for passed, description in results if not passed]
+    failed = [description for passed, description in results if passed is False]
     assert len(failed) == 6, failed
     assert all("cannot read" in description for description in failed)
 
@@ -1305,3 +1310,114 @@ def test_release_gate_script_runs_the_two_repository_case(
         gate.main()
     # Refused by the shared-flow check itself (identical tokens), not pytest.
     assert "two different CI tokens" in str(refused.value.code)
+
+
+def test_operator_check_does_not_pass_what_it_could_not_probe() -> None:
+    """No executions, no receipts and a credential refusal are all skipped."""
+    script = _verify_script()
+    flow, project_a, project_b = str(uuid4()), str(uuid4()), str(uuid4())
+
+    def empty(
+        token: str, method: str, path: str, body: dict[str, Any] | None
+    ) -> tuple[int, Any]:
+        if path.endswith("/executions?limit=100"):
+            return 200, []
+        return 403, None
+
+    results = script.run_checks(
+        empty,
+        flow=flow,
+        tokens={"A": "token-a", "B": "token-b"},
+        projects={"A": project_a, "B": project_b},
+    )
+    skipped = [text for passed, text in results if passed is None]
+    assert len(skipped) == 6
+    assert sum("cannot test the project override" in text for text in skipped) == 2
+    assert sum("no startup receipt" in text for text in skipped) == 2
+    assert sum("no execution of" in text for text in skipped) == 2
+    assert not [text for passed, text in results if passed is False]
+
+    def ignores_extra_field(
+        token: str, method: str, path: str, body: dict[str, Any] | None
+    ) -> tuple[int, Any]:
+        if method == "POST":
+            return 200, {"id": str(uuid4())}
+        return empty(token, method, path, body)
+
+    results = script.run_checks(
+        ignores_extra_field,
+        flow=flow,
+        tokens={"A": "token-a", "B": "token-b"},
+        projects={"A": project_a, "B": project_b},
+    )
+    failed = [text for passed, text in results if passed is False]
+    assert len(failed) == 2 and all("was not rejected" in text for text in failed)
+
+
+@pytest.mark.parametrize("case", ["tracker", "project", "organization", "slug"])
+def test_project_that_cannot_be_scoped_is_refused_from_the_allowlist(
+    db_session: Session,
+    api: TestClient,
+    actor: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    """A non-App tracker, an inactive project or organisation, or no slug."""
+    account = _account(db_session)
+    actor["user"] = account.owner
+    if case == "tracker":
+        checked: list[Any] = []
+
+        def not_an_app(tracker: Any) -> None:
+            checked.append(tracker.id)
+            raise ValueError("synthetic: not a GitHub App installation")
+
+        monkeypatch.setattr(
+            publication_credentials, "validate_publication_tracker", not_an_app
+        )
+    elif case == "project":
+        account.project_b.is_active = False
+    elif case == "organization":
+        other = crud.crud_organization.create(
+            db_session,
+            obj_in={
+                "name": "Inactive",
+                "identifier": str(uuid4()),
+                "tracker_id": account.tracker_id,
+                "is_active": False,
+            },
+        )
+        account.project_b.organization_id = other.id
+    else:
+        account.project_b.slug = None
+    db_session.commit()
+    before = copy.deepcopy(account.flow.git_clone_config)
+    response = api.put(
+        f"{ADMIN}/shared-flows/{account.flow.id}",
+        json={"project_ids": [str(account.project_a.id), str(account.project_b.id)]},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == SHARED_FLOW_PROJECT_REFUSED
+    if case == "tracker":
+        assert checked == [account.tracker_id]
+    db_session.refresh(account.flow)
+    assert account.flow.git_clone_config == before
+    assert account.flow.trigger_project_ids == [str(account.project_a.id)]
+
+
+def test_inactive_tracker_refuses_every_project_on_it(
+    db_session: Session, api: TestClient, actor: dict[str, Any]
+) -> None:
+    account = _account(db_session)
+    actor["user"] = account.owner
+    tracker = crud.crud_tracker.get(
+        db_session, id=account.tracker_id, account_id=str(account.owner.account_id)
+    )
+    tracker.is_active = False
+    db_session.commit()
+    response = api.put(
+        f"{ADMIN}/shared-flows/{account.flow.id}",
+        json={"project_ids": [str(account.project_a.id)]},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == SHARED_FLOW_PROJECT_REFUSED

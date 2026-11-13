@@ -416,7 +416,10 @@ PRELOOP_CI_TOKEN_A=... PRELOOP_CI_TOKEN_B=... python \
   --flow FLOW_ID --project-a PROJECT_A_ID --project-b PROJECT_B_ID
 ```
 
-It prints one `PASS` or `FAIL` line per check: each token lists only
+It prints one `PASS`, `FAIL` or `SKIP` line per check and exits 0 only when
+every check passed (1 on a failure, 2 when a check was skipped because there
+was nothing to probe, for example before the first review or with a key that
+lacks `flow:trigger`). The checks: each token lists only
 executions of its own project on the shared flow, every startup receipt names
 the admitted head commit, neither token can read the flow, its allowlist or
 the identity list, a trigger that names the other project is refused, and

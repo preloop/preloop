@@ -11,7 +11,8 @@ created.
         --flow FLOW_ID --project-a PROJECT_A_ID --project-b PROJECT_B_ID
 
 Tokens are read from the environment only and are never printed. The exit
-status is 0 when every check passed and 1 otherwise.
+status is 0 when every check passed, 1 when a check failed, and 2 when nothing
+failed but a check was skipped because there was nothing to probe yet.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def run_checks(
     flow: str,
     tokens: dict[str, str],
     projects: dict[str, str],
-) -> list[tuple[bool, str]]:
+) -> list[tuple[bool | None, str]]:
     """Run every sideways-access check for two identities on one flow.
 
     Args:
@@ -113,13 +114,15 @@ def run_checks(
         projects: The project id each identity is bound to, by label.
 
     Returns:
-        ``(passed, description)`` for each check, in order. Descriptions
-        never contain a token.
+        ``(passed, description)`` for each check, in order. ``passed`` is
+        None when the check could not be made (nothing to probe yet); such a
+        check proves nothing and is printed as ``SKIP``. Descriptions never
+        contain a token.
     """
-    results: list[tuple[bool, str]] = []
+    results: list[tuple[bool | None, str]] = []
 
-    def check(passed: bool, description: str) -> None:
-        results.append((bool(passed), description))
+    def check(passed: bool | None, description: str) -> None:
+        results.append((None if passed is None else bool(passed), description))
 
     owned: dict[str, list[str]] = {}
     for label, token in tokens.items():
@@ -151,9 +154,14 @@ def run_checks(
                 receipt.get("commit") == row.get("head_sha")
                 and receipt.get("checkout_verified") is True
                 for row, receipt in receipts
-            ),
+            )
+            if receipts
+            else None,
             f"{label}: every startup receipt names the admitted head commit "
-            f"({len(receipts)} receipts)",
+            f"({len(receipts)} receipts)"
+            if receipts
+            else f"{label}: no startup receipt to check yet; run one review "
+            "for this repository and repeat",
         )
         owned[label] = [
             str(row["id"]) for row in listed if isinstance(row, dict) and row.get("id")
@@ -178,16 +186,27 @@ def run_checks(
                 "project_id": projects[other],
             },
         )
+        # 422 is the answer to the extra field itself. A 401 or 403 also
+        # means nothing was started, but comes from the credential (for
+        # example a key without flow:trigger), so it proves nothing about the
+        # override and is reported as skipped.
         check(
-            status in {403, 422},
-            f"{label}: a trigger naming project {other} is refused before any "
-            f"execution exists (HTTP {status})",
+            True if status == 422 else None if status in {401, 403} else False,
+            f"{label}: a trigger naming project {other} is rejected for its "
+            f"extra field before any execution exists (HTTP {status})"
+            if status == 422
+            else f"{label}: cannot test the project override, the trigger was "
+            f"refused for the credential (HTTP {status}); use a key that "
+            "holds flow:trigger"
+            if status in {401, 403}
+            else f"{label}: a trigger naming project {other} was not rejected "
+            f"(HTTP {status})",
         )
     for label, token in tokens.items():
         other = next(name for name in tokens if name != label)
         if not owned[other]:
             check(
-                True,
+                None,
                 f"{label}: no execution of {other} to probe yet; run one "
                 "review per repository and repeat for the cross-read checks",
             )
@@ -212,7 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         argv: Arguments, defaulting to the process arguments.
 
     Returns:
-        0 when every check passed, 1 otherwise.
+        0 when every check passed, 1 when one failed, 2 when none failed but
+        at least one was skipped.
     """
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--url", required=True, help="Preloop origin")
@@ -242,11 +262,17 @@ def main(argv: list[str] | None = None) -> int:
             "B": arguments.project_b.lower(),
         },
     )
+    words = {True: "PASS  ", False: "FAIL  ", None: "SKIP  "}
     for passed, description in results:
-        print(("PASS  " if passed else "FAIL  ") + description)
-    failed = sum(1 for passed, _ in results if not passed)
-    print(f"{len(results) - failed} passed, {failed} failed")
-    return 1 if failed else 0
+        print(words[passed] + description)
+    failed = sum(1 for passed, _ in results if passed is False)
+    skipped = sum(1 for passed, _ in results if passed is None)
+    print(
+        f"{len(results) - failed - skipped} passed, {failed} failed, {skipped} skipped"
+    )
+    if skipped and not failed:
+        print("Skipped checks prove nothing; the run is incomplete.")
+    return 1 if failed else 2 if skipped else 0
 
 
 if __name__ == "__main__":
