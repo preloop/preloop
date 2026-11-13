@@ -10,6 +10,7 @@ import {
   flowStatusOf,
   flowTriggerSummary,
   loadInitialFlowsViewMode,
+  modelHealthMarker,
   sortFlowListRows,
   type FlowListRow,
 } from './flows-view';
@@ -17,6 +18,40 @@ import { invalidateApiCaches } from '../../api';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
+
+describe('modelHealthMarker', () => {
+  async function render(health: unknown) {
+    return fixture(
+      html`<div>${modelHealthMarker({ model_health: health } as any)}</div>`
+    );
+  }
+
+  it('flags a deleted model and a failing key, and stays quiet otherwise', async () => {
+    const missing = await render({
+      status: 'missing',
+      code: 'model_deleted',
+      model_id: 'm-1',
+    });
+    const badge = missing.querySelector('[data-testid="flow-model-health"]')!;
+    expect(badge.textContent).to.contain('Model deleted');
+    expect(badge.getAttribute('variant')).to.equal('warning');
+
+    const failing = await render({
+      status: 'error',
+      code: 'upstream_auth_rejected',
+      model_id: 'm-2',
+    });
+    const chip = failing.querySelector('[data-testid="flow-model-health"]')!;
+    expect(chip.textContent).to.contain('Model key failing');
+    expect(chip.getAttribute('title')).to.contain('upstream_auth_rejected');
+
+    for (const health of [null, { status: 'ok', code: null, model_id: 'm' }]) {
+      const quiet = await render(health);
+      expect(quiet.querySelector('[data-testid="flow-model-health"]')).to.not
+        .exist;
+    }
+  });
+});
 
 describe('FlowsView', () => {
   let fetchStub: sinon.SinonStub;

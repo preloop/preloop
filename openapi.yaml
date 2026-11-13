@@ -13586,7 +13586,18 @@ paths:
       - AI Models
       - AI Models
       summary: Delete AI Model
-      description: Delete an AI Model by its ID.
+      description: 'Delete an AI Model by its ID.
+
+
+        While any flow of the account selects the model (its own model, a routing
+
+        or label rule, or the retry model), the delete is refused with 409
+
+        ``model_in_use`` and the flows the caller can see. ``force=true`` deletes
+
+        anyway: each flow that had the model as its own records which model it
+
+        lost, and the audit entry names every orphaned flow.'
       operationId: delete_ai_model_api_v1_ai_models__model_id__delete
       security:
       - bearerAuth: []
@@ -13598,6 +13609,17 @@ paths:
           type: string
           format: uuid
           title: Model Id
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Delete even though flows select the model. Those flows are
+            left without a model and are named in the audit entry.
+          default: false
+          title: Force
+        description: Delete even though flows select the model. Those flows are left
+          without a model and are named in the audit entry.
       responses:
         '204':
           description: Successful Response
@@ -25845,6 +25867,47 @@ components:
       type: object
       title: AIModelCatalogSyncResponse
       description: Per-provider results of one model-catalog sync run.
+    AIModelCiIdentityLink:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        flow_id:
+          type: string
+          title: Flow Id
+        is_active:
+          type: boolean
+          title: Is Active
+        retired:
+          type: boolean
+          title: Retired
+          default: false
+        active_key_count:
+          type: integer
+          title: Active Key Count
+          default: 0
+        key_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Key Expires At
+          description: Soonest expiry among the identity's active keys; null when
+            no active key expires
+      type: object
+      required:
+      - id
+      - name
+      - flow_id
+      - is_active
+      title: AIModelCiIdentityLink
+      description: 'A restricted CI identity bound to a flow that uses this model.
+
+
+        Carries lifetime metadata only, never key material.'
     AIModelCreate:
       properties:
         name:
@@ -26115,6 +26178,18 @@ components:
           type: integer
           title: Shared Model Count
           description: Models of this account that resolve the rotated secret
+        affected_models:
+          items:
+            $ref: '#/components/schemas/AIModelSharedCredentialLink'
+          type: array
+          title: Affected Models
+          description: Every model of the account that resolves the rotated secret
+        affected_flows:
+          items:
+            $ref: '#/components/schemas/AIModelFlowLink'
+          type: array
+          title: Affected Flows
+          description: Visible flows that select any of the affected models
       type: object
       required:
       - secret_id
@@ -26132,6 +26207,25 @@ components:
         name:
           type: string
           title: Name
+        is_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Enabled
+          description: Whether the flow can be triggered
+        last_execution_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Execution At
+          description: Start time of the flow's most recent run
+        last_execution_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Execution Status
+          description: Status of the flow's most recent run
       type: object
       required:
       - id
@@ -26732,6 +26826,26 @@ components:
       - model_identifier
       title: AIModelRead
       description: Schema for reading AIModel entries, including timestamps.
+    AIModelSharedCredentialLink:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        credentials_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credentials Status
+      type: object
+      required:
+      - id
+      - name
+      title: AIModelSharedCredentialLink
+      description: Another model of the account that resolves the same credential
+        secret.
     AIModelUpdate:
       properties:
         name:
@@ -26875,6 +26989,18 @@ components:
             $ref: '#/components/schemas/AIModelFlowLink'
           type: array
           title: Flows
+        ci_identities:
+          items:
+            $ref: '#/components/schemas/AIModelCiIdentityLink'
+          type: array
+          title: Ci Identities
+          description: Restricted CI identities bound to the listed flows
+        shared_credential_models:
+          items:
+            $ref: '#/components/schemas/AIModelSharedCredentialLink'
+          type: array
+          title: Shared Credential Models
+          description: Other models that use the same stored credential
         truncated:
           type: boolean
           title: Truncated
@@ -38690,6 +38816,33 @@ components:
         ``config`` is empty and every execution of the flow is governed by the
 
         account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
+    FlowModelHealth:
+      properties:
+        status:
+          type: string
+          enum:
+          - ok
+          - error
+          - missing
+          title: Status
+          description: 'missing: the model was deleted out from under the flow; error:
+            the model''s credential failed (credentials_status error)'
+        code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+          description: credentials_last_error_code, or model_deleted
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+      type: object
+      required:
+      - status
+      title: FlowModelHealth
+      description: Whether a flow's own model can serve a run, read from the model.
     FlowNotifications:
       properties:
         on_failure:
@@ -38992,6 +39145,10 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        model_health:
+          anyOf:
+          - $ref: '#/components/schemas/FlowModelHealth'
+          - type: 'null'
         effective_limits:
           additionalProperties:
             additionalProperties: true
@@ -39076,6 +39233,10 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        model_health:
+          anyOf:
+          - $ref: '#/components/schemas/FlowModelHealth'
+          - type: 'null'
         agent_type:
           type: string
           title: Agent Type
@@ -55768,7 +55929,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

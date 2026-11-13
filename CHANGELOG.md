@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- models: deleting a model that flows still select is refused with `409
+  model_in_use` and the flows, unless `force=true`. Before, the delete
+  silently cleared each flow's model and left routing, label and retry rules
+  pointing at a model that no longer existed. A forced delete records on
+  each flow which model it lost and names every orphaned flow in the audit
+  entry. `GET /ai-models/{id}/used-by` now also returns each flow's enabled
+  state and last run, the CI identities bound to those flows (no key
+  material) and the other models sharing the credential; credential rotation
+  returns the affected models and flows. Flow responses gain `model_health`
+  (`missing` or `error` with the credential error code), and the Flows list
+  marks those rows. The console names the flows in the delete confirmation.
+
 - models: audit model creation, updates, deletion and credential set,
   replacement, rotation and removal without key material. First provider API-key
   rejections now notify account owners once per episode and emit

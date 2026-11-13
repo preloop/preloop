@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { Router } from '../../../router';
 import { getAccountRuntimeSessionActivityTimeline } from '../../../api';
 
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
@@ -1052,6 +1053,52 @@ describe('AIModelDetailView', () => {
     expect(dialog?.getAttribute('label') || (dialog as any).label).to.contain(
       'Delete model'
     );
+  });
+
+  it('names the flows a delete would orphan and forces only after that', async () => {
+    usedByBody = {
+      agents: [],
+      flows: [{ id: 'flow-9', name: 'Review flow' }],
+      truncated: false,
+    };
+    sinon.stub(Router, 'go');
+    try {
+      const element = (await fixture(
+        html`<ai-model-detail-view
+          .modelId=${'model-1'}
+        ></ai-model-detail-view>`
+      )) as AIModelDetailView;
+      const root = element.shadowRoot!;
+      await waitUntil(
+        () => (element as any).usedBy?.flows.length === 1,
+        'used-by did not load',
+        { timeout: 5000 }
+      );
+      (element as any).isDeleteConfirmOpen = true;
+      element.requestUpdate();
+      await element.updateComplete;
+      const consumers = root.querySelector(
+        '[data-testid="delete-model-consumers"]'
+      )!;
+      expect(consumers.textContent).to.contain('Used by 1 flow');
+      expect(root.querySelector('sl-dialog a[href="/console/flows/flow-9"]')).to
+        .exist;
+      const confirm = Array.from(
+        root.querySelectorAll('sl-dialog sl-button[variant="danger"]')
+      ).find((button) => button.textContent?.includes('Delete anyway'));
+      expect(confirm).to.exist;
+
+      await (element as any).confirmDelete();
+
+      const deletes = fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1]?.method || '') === 'DELETE')
+        .map((call) => String(call.args[0]));
+      expect(deletes).to.deep.equal(['/api/v1/ai-models/model-1?force=true']);
+    } finally {
+      usedByBody = { agents: [], flows: [], truncated: false };
+      (Router.go as sinon.SinonStub).restore();
+    }
   });
 
   it('sets the header Delete apart as an outline action', async () => {

@@ -968,6 +968,20 @@ class CRUDAIModel(CRUDBase[AIModel]):
             .count()
         )
 
+    def list_sharing_secret(
+        self, db: Session, *, secret_id: uuid.UUID, account_id: uuid.UUID
+    ) -> list[AIModel]:
+        """List an account's models that resolve the given credential secret."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.credentials_secret_id == secret_id,
+                self.model.account_id == account_id,
+            )
+            .order_by(self.model.name.asc(), self.model.id.asc())
+            .all()
+        )
+
     def _delete_unreferenced_credential_secret(
         self, db: Session, secret_id: uuid.UUID
     ) -> None:

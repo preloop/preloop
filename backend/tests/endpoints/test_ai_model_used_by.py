@@ -52,7 +52,9 @@ async def test_consumers_are_scoped_to_the_authenticated_membership() -> None:
         )
         assert response.agents == response.flows == []
         readable.assert_called_once_with(db=db, model_id=model_id, current_user=user)
-        consumers.assert_called_once_with(db, user=user, model_id=str(model_id))
+        consumers.assert_called_once_with(
+            db, user=user, model_id=str(model_id), credentials_secret_id=None
+        )
 
 
 def test_real_model_consumer_endpoint_reads_configuration_without_traffic(
@@ -102,5 +104,7 @@ def test_real_model_consumer_endpoint_reads_configuration_without_traffic(
             {"id": configured_id, "name": "Configured agent", "agent_kind": "codex"}
         ],
         "flows": [],
+        "ci_identities": [],
+        "shared_credential_models": [],
         "truncated": False,
     }

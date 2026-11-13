@@ -522,6 +522,64 @@ describe('AIModelsView', () => {
     resetConfirmDialogForTests();
   });
 
+  it('names the flows when the server refuses a delete, then forces', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(() => !(element as any).isLoading, 'models did not load', {
+      timeout: 5000,
+    });
+    const deletes: string[] = [];
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) =>
+          String(url).startsWith('/api/v1/ai-models/model-1')
+        ),
+        sinon.match.has('method', 'DELETE')
+      )
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        deletes.push(url);
+        if (url.endsWith('force=true'))
+          return new Response(null, { status: 204 });
+        return new Response(
+          JSON.stringify({
+            detail: {
+              code: 'model_in_use',
+              message: '1 flow still uses this model.',
+              flow_count: 1,
+              flows: [{ id: 'flow-9', name: 'Review flow' }],
+            },
+          }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+    const model = (element as any).models.find(
+      (row: AIModel) => row.id === 'model-1'
+    );
+    (element as any).openDeleteConfirm(model);
+    await element.updateComplete;
+
+    await (element as any).deleteModel();
+    await element.updateComplete;
+
+    const root = element.shadowRoot!;
+    expect((element as any).isDeleteConfirmOpen).to.equal(true);
+    expect(
+      root.querySelector('[data-testid="delete-model-consumers"]')!.textContent
+    ).to.contain('Used by 1 flow');
+    expect(root.querySelector('sl-dialog a[href="/console/flows/flow-9"]')).to
+      .exist;
+
+    await (element as any).deleteModel();
+
+    expect(deletes).to.deep.equal([
+      '/api/v1/ai-models/model-1',
+      '/api/v1/ai-models/model-1?force=true',
+    ]);
+    expect((element as any).isDeleteConfirmOpen).to.equal(false);
+  });
+
   it('switches from list rows to cards', async () => {
     const element = (await fixture(
       html`<ai-models-view></ai-models-view>`
