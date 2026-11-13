@@ -12,7 +12,12 @@ import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../../router';
-import { consumersSentence } from '../../../utils/model-consumers';
+import {
+  consumersSentence,
+  disabledSentence,
+  enabledFlows,
+  flowCountsLabel,
+} from '../../../utils/model-consumers';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -1341,7 +1346,7 @@ export class AIModelDetailView extends LitElement {
           ${
             usedBy
               ? html`<div class="meta-line">
-                  ${`${usedBy.agents.length} agent${usedBy.agents.length === 1 ? '' : 's'} · ${usedBy.flows.length} flow${usedBy.flows.length === 1 ? '' : 's'} configured`}
+                  ${`${usedBy.agents.length} agent${usedBy.agents.length === 1 ? '' : 's'} · ${flowCountsLabel(usedBy.flows)}`}
                 </div>`
               : nothing
           }
@@ -2066,7 +2071,7 @@ export class AIModelDetailView extends LitElement {
     try {
       // The dialog named the flows that use the model; confirming is the
       // decision to leave them without one.
-      const flows = this.usedBy?.flows.length ?? 0;
+      const flows = enabledFlows(this.usedBy?.flows ?? []).length;
       await deleteAIModel(this.model.id, { force: flows > 0 });
       this.isDeleteConfirmOpen = false;
       Router.go('/console/ai-models');
@@ -3384,6 +3389,7 @@ export class AIModelDetailView extends LitElement {
                               <strong>Upstream credentials:</strong>
                               ${this.model.has_api_key ? 'Configured' : 'Missing'}
                             </span>
+                            ${this.renderCredentialLifetime()}
                             ${
                               this.managedAgentDisplayName
                                 ? html`
@@ -3465,20 +3471,55 @@ export class AIModelDetailView extends LitElement {
             ?disabled=${!this.editPermissions.allows('delete_ai_models')}
             variant="danger"
             @click=${this.confirmDelete}
-            >${this.usedBy?.flows.length ? 'Delete anyway' : 'Delete'}</sl-button
+            >${
+              enabledFlows(this.usedBy?.flows ?? []).length
+                ? 'Delete anyway'
+                : 'Delete'
+            }</sl-button
           ></sl-tooltip
         >
       </sl-dialog>
     `;
   }
 
+  /** When the stored login expires and when Preloop last wrote it. */
+  private renderCredentialLifetime() {
+    const expires = this.model?.credentials_expires_at;
+    const refreshed = this.model?.credentials_last_verified_at;
+    if (!this.model?.has_api_key || (!expires && !refreshed)) return nothing;
+    const when = (value: string) => this.formatDateTime(value);
+    return html`<span data-testid="credential-lifetime">
+      ${
+        expires
+          ? html`<strong>Login expires:</strong>
+              <span title=${expires}>${when(expires)}</span>`
+          : nothing
+      }
+      ${expires && refreshed ? ' · ' : nothing}
+      ${
+        refreshed
+          ? html`<strong>Last refreshed:</strong>
+              <span title=${refreshed}>${when(refreshed)}</span>`
+          : nothing
+      }
+    </span>`;
+  }
+
   /** Name the flows a delete would leave without a model. */
   private renderDeleteConsumers() {
-    const flows = this.usedBy?.flows ?? [];
-    if (!flows.length) return nothing;
+    const all = this.usedBy?.flows ?? [];
+    const flows = enabledFlows(all);
+    const disabled = all.length - flows.length;
+    const disabledNote = disabled
+      ? html`<p data-testid="delete-model-disabled">
+          ${disabledSentence(disabled)}
+        </p>`
+      : nothing;
+    if (!flows.length) return disabledNote;
     return html`<p data-testid="delete-model-consumers">
         ${consumersSentence(flows.length)}
       </p>
+      ${disabledNote}
       <ul class="used-by-list">
         ${flows.map(
           (flow) =>

@@ -106,5 +106,7 @@ def test_real_model_consumer_endpoint_reads_configuration_without_traffic(
         "flows": [],
         "ci_identities": [],
         "shared_credential_models": [],
+        "enabled_flow_count": 0,
+        "disabled_flow_count": 0,
         "truncated": False,
     }

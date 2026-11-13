@@ -5010,6 +5010,8 @@ export async function getAIModelUsedBy(
     shared_credential_models: Array.isArray(body.shared_credential_models)
       ? body.shared_credential_models
       : [],
+    enabled_flow_count: Number(body.enabled_flow_count) || 0,
+    disabled_flow_count: Number(body.disabled_flow_count) || 0,
     truncated: body.truncated === true,
   };
 }

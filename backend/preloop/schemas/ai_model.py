@@ -83,6 +83,12 @@ class AIModelUsedByResponse(BaseModel):
         default_factory=list,
         description="Other models that use the same stored credential",
     )
+    enabled_flow_count: int = Field(
+        default=0, description="Listed flows that can run and would break"
+    )
+    disabled_flow_count: int = Field(
+        default=0, description="Listed flows that are disabled and cannot run"
+    )
     truncated: bool = False
 
 
@@ -92,10 +98,20 @@ class AIModelInUseDetail(BaseModel):
     code: Literal["model_in_use"] = "model_in_use"
     message: str
     flow_count: int = Field(
-        description="All flows of the account that select the model, visible or not"
+        description=(
+            "Enabled flows of the account that select the model, visible or "
+            "not; only these block the delete"
+        )
+    )
+    disabled_flow_count: int = Field(
+        default=0,
+        description=(
+            "Disabled flows that select the model. They do not block the "
+            "delete; it marks them and names them in the audit entry"
+        ),
     )
     flows: list[AIModelFlowLink] = Field(
-        default_factory=list, description="The flows the caller can see"
+        default_factory=list, description="The enabled flows the caller can see"
     )
 
 
@@ -490,6 +506,15 @@ class AIModelInDBBase(BaseModel):
     credentials_version: Optional[int] = Field(
         None,
         description="Rotation counter of the credential secret (1 = never rotated)",
+    )
+    credentials_expires_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When the stored subscription login's access token expires, from "
+            "the bundle's `expires`. Single-model read only, for account "
+            "admins and the model's editors; null otherwise or when the "
+            "credential has no expiry (API keys)"
+        ),
     )
     credentials_rotated_at: Optional[datetime] = Field(
         None, description="When the credential material was last replaced"

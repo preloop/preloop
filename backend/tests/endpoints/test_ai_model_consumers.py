@@ -7,6 +7,7 @@ a shared key reports every model and flow it reaches; each flow states
 whether its model can serve a run.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
@@ -458,3 +459,103 @@ async def test_delete_check_reads_every_matching_flow(
         if call.kwargs.get("action") == "deleted"
     ]
     assert len(deleted[0]["old_value"]["orphaned_flows"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_used_by_counts_enabled_and_disabled_flows_apart(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, flow, _ = ci_resources
+    model = _model(db_session, owner.account_id, "Split")
+    _bind(db_session, flow, model)
+    _flow(db_session, owner.account_id, "Paused one", model, enabled=False)
+    _flow(db_session, owner.account_id, "Paused two", model, enabled=False)
+
+    response = await _used_by(db_session, model, owner)
+
+    assert (response.enabled_flow_count, response.disabled_flow_count) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_only_for_enabled_flows_and_audits_disabled_ones(
+    db_session: Session, ci_resources: Any
+) -> None:
+    """A disabled flow cannot break now, so it does not block the delete.
+
+    It still loses the model, so it is marked and named in the audit entry.
+    """
+    owner, _, flow, _ = ci_resources
+    model = _model(db_session, owner.account_id, "Mostly idle")
+    _bind(db_session, flow, model)
+    paused = _flow(db_session, owner.account_id, "Paused", model, enabled=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, model, owner)
+    assert exc.value.detail["flow_count"] == 1
+    assert exc.value.detail["disabled_flow_count"] == 1
+    assert [f["name"] for f in exc.value.detail["flows"]] == ["Example review"]
+
+    flow.is_enabled = False
+    db_session.flush()
+    with patch("preloop.utils.audit._get_audit_service") as service:
+        response = await _delete(db_session, model, owner)
+
+    assert response.status_code == 204
+    deleted = [
+        call.kwargs
+        for call in service.return_value.log_configuration_change.call_args_list
+        if call.kwargs.get("action") == "deleted"
+    ]
+    assert {f["name"] for f in deleted[0]["old_value"]["orphaned_flows"]} == {
+        "Example review",
+        "Paused",
+    }
+    db_session.expire_all()
+    assert crud.crud_flow.get(db_session, id=paused.id).model_health["status"] == (
+        "missing"
+    )
+
+
+def _oauth_model(db: Session, owner: models.User, expires_ms: int) -> Any:
+    from preloop.services.secret_service import get_secret_service
+
+    secret = get_secret_service().create_local_secret_reference(
+        db,
+        account_id=owner.account_id,
+        name=f"oauth-{uuid4()}",
+        secret_kind="ai_model_credentials",
+        secret_value=json.dumps(
+            {
+                "type": "oauth_anthropic_claude_code",
+                "access": "synthetic-access",
+                "refresh": "synthetic-refresh",
+                "expires": expires_ms,
+            }
+        ),
+    )
+    model = _model(db, owner.account_id, "Subscription", secret.id)
+    return model, secret
+
+
+@pytest.mark.asyncio
+async def test_model_read_states_credential_expiry_to_admins_only(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, _, _ = ci_resources
+    expires = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
+    model, _ = _oauth_model(db_session, owner, int(expires.timestamp() * 1000))
+
+    read = await maybe_await(
+        ai_models.get_ai_model(model_id=model.id, db=db_session, current_user=owner)
+    )
+
+    body = read.model_dump(mode="json")
+    assert body["credentials_expires_at"] == "2026-12-01T12:00:00Z"
+    assert body["credentials_last_verified_at"] is not None
+    assert "synthetic" not in json.dumps(body)
+
+    with patch.object(ai_models, "_can_see_credential_lifetime", return_value=False):
+        member = await maybe_await(
+            ai_models.get_ai_model(model_id=model.id, db=db_session, current_user=owner)
+        )
+    assert ai_models.AIModelRead.model_validate(member).credentials_expires_at is None

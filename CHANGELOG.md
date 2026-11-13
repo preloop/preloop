@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns the affected models and flows. Flow responses gain `model_health`
   (`missing` or `error` with the credential error code), and the Flows list
   marks those rows. The console names the flows in the delete confirmation.
+  Only enabled flows block a delete; disabled ones are counted apart
+  (`enabled_flow_count`, `disabled_flow_count`) and are still marked and
+  audited when the delete goes ahead. The model read gains
+  `credentials_expires_at` for subscription logins (admins and editors only),
+  shown on the model page with the last refresh time.
 
 - models: audit model creation, updates, deletion and credential set,
   replacement, rotation and removal without key material. First provider API-key

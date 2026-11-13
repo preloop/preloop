@@ -1101,6 +1101,91 @@ describe('AIModelDetailView', () => {
     }
   });
 
+  it('tells enabled flows from disabled ones and forces only for enabled', async () => {
+    usedByBody = {
+      agents: [],
+      flows: [
+        { id: 'flow-9', name: 'Live flow', is_enabled: true } as any,
+        { id: 'flow-8', name: 'Paused flow', is_enabled: false } as any,
+      ],
+      truncated: false,
+    };
+    (usedByBody as any).enabled_flow_count = 1;
+    (usedByBody as any).disabled_flow_count = 1;
+    sinon.stub(Router, 'go');
+    try {
+      const element = (await fixture(
+        html`<ai-model-detail-view
+          .modelId=${'model-1'}
+        ></ai-model-detail-view>`
+      )) as AIModelDetailView;
+      const root = element.shadowRoot!;
+      await waitUntil(
+        () => (element as any).usedBy?.flows.length === 2,
+        'used-by did not load',
+        { timeout: 5000 }
+      );
+      await element.updateComplete;
+      expect(
+        root.querySelector('[data-testid="model-used-by"]')!.textContent
+      ).to.contain('1 enabled flow · 1 disabled');
+      (element as any).isDeleteConfirmOpen = true;
+      element.requestUpdate();
+      await element.updateComplete;
+      const consumers = root.querySelector(
+        '[data-testid="delete-model-consumers"]'
+      )!;
+      expect(consumers.textContent).to.contain('Used by 1 flow');
+      expect(root.querySelector('sl-dialog a[href="/console/flows/flow-8"]')).to
+        .not.exist;
+      expect(
+        root.querySelector('[data-testid="delete-model-disabled"]')!.textContent
+      ).to.contain('1 disabled flow');
+
+      usedByBody.flows = [usedByBody.flows[1]];
+      (element as any).usedBy = {
+        ...(element as any).usedBy,
+        flows: [{ id: 'flow-8', name: 'Paused flow', is_enabled: false }],
+        enabled_flow_count: 0,
+        disabled_flow_count: 1,
+      };
+      await (element as any).confirmDelete();
+      const deletes = fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1]?.method || '') === 'DELETE')
+        .map((call) => String(call.args[0]));
+      expect(deletes).to.deep.equal(['/api/v1/ai-models/model-1']);
+    } finally {
+      usedByBody = { agents: [], flows: [], truncated: false };
+      (Router.go as sinon.SinonStub).restore();
+    }
+  });
+
+  it('states when the stored login expires and was last refreshed', async () => {
+    modelPayload = {
+      ...modelPayload,
+      has_api_key: true,
+      credentials_expires_at: '2026-12-01T12:00:00Z',
+      credentials_last_verified_at: '2026-11-13T09:00:00Z',
+    };
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(
+      () =>
+        element.shadowRoot!.querySelector(
+          '[data-testid="credential-lifetime"]'
+        ),
+      'credential lifetime did not render',
+      { timeout: 5000 }
+    );
+    const text = element.shadowRoot!.querySelector(
+      '[data-testid="credential-lifetime"]'
+    )!.textContent!;
+    expect(text).to.contain('Login expires');
+    expect(text).to.contain('Last refreshed');
+  });
+
   it('sets the header Delete apart as an outline action', async () => {
     const element = (await fixture(
       html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`

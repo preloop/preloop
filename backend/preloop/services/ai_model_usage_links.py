@@ -261,5 +261,7 @@ def configured_model_consumers(
         secret_id=credentials_secret_id,
         exclude_model_id=model_id,
     )
+    result.enabled_flow_count = sum(1 for flow in result.flows if flow.is_enabled)
+    result.disabled_flow_count = len(result.flows) - result.enabled_flow_count
     result.agents.sort(key=lambda item: (item.name.casefold(), item.id))
     return result

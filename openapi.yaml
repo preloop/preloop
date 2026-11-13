@@ -13589,15 +13589,17 @@ paths:
       description: 'Delete an AI Model by its ID.
 
 
-        While any flow of the account selects the model (its own model, a routing
+        While any enabled flow of the account selects the model (its own model, a
 
-        or label rule, or the retry model), the delete is refused with 409
+        routing or label rule, or the retry model), the delete is refused with
 
-        ``model_in_use`` and the flows the caller can see. ``force=true`` deletes
+        409 ``model_in_use`` and the enabled flows the caller can see. Disabled
 
-        anyway: each flow that had the model as its own records which model it
+        flows do not block it. ``force=true`` deletes anyway. Either way, each
 
-        lost, and the audit entry names every orphaned flow.'
+        flow that had the model as its own records which model it lost, and the
+
+        audit entry names every orphaned flow, enabled or not.'
       operationId: delete_ai_model_api_v1_ai_models__model_id__delete
       security:
       - bearerAuth: []
@@ -26272,14 +26274,20 @@ components:
         flow_count:
           type: integer
           title: Flow Count
-          description: All flows of the account that select the model, visible or
-            not
+          description: Enabled flows of the account that select the model, visible
+            or not; only these block the delete
+        disabled_flow_count:
+          type: integer
+          title: Disabled Flow Count
+          description: Disabled flows that select the model. They do not block the
+            delete; it marks them and names them in the audit entry
+          default: 0
         flows:
           items:
             $ref: '#/components/schemas/AIModelFlowLink'
           type: array
           title: Flows
-          description: The flows the caller can see
+          description: The enabled flows the caller can see
       type: object
       required:
       - message
@@ -26757,6 +26765,16 @@ components:
           - type: 'null'
           title: Credentials Version
           description: Rotation counter of the credential secret (1 = never rotated)
+        credentials_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Credentials Expires At
+          description: When the stored subscription login's access token expires,
+            from the bundle's `expires`. Single-model read only, for account admins
+            and the model's editors; null otherwise or when the credential has no
+            expiry (API keys)
         credentials_rotated_at:
           anyOf:
           - type: string
@@ -26964,6 +26982,16 @@ components:
           type: array
           title: Shared Credential Models
           description: Other models that use the same stored credential
+        enabled_flow_count:
+          type: integer
+          title: Enabled Flow Count
+          description: Listed flows that can run and would break
+          default: 0
+        disabled_flow_count:
+          type: integer
+          title: Disabled Flow Count
+          description: Listed flows that are disabled and cannot run
+          default: 0
         truncated:
           type: boolean
           title: Truncated

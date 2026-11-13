@@ -682,7 +682,55 @@ def get_ai_model(
                 db, account_id=current_user.account_id, model_kind=model.model_kind
             ),
         )
-    return model
+    expires_at = (
+        _credential_expires_at(db, model)
+        if _can_see_credential_lifetime(db, current_user)
+        else None
+    )
+    if expires_at is None:
+        return model
+    read = AIModelRead.model_validate(model)
+    read.credentials_expires_at = expires_at
+    return read
+
+
+def _can_see_credential_lifetime(db: Session, user: User) -> bool:
+    """Account admins and the model's editors may see when a login expires."""
+    from preloop.utils.permissions import user_holds_permission
+
+    return bool(getattr(user, "is_superuser", False)) or user_holds_permission(
+        db, user, "edit_ai_models"
+    )
+
+
+def _credential_expires_at(db: Session, model: AIModel) -> Optional[datetime]:
+    """Read a subscription login's expiry without refreshing or returning it.
+
+    Args:
+        db: Database session.
+        model: Account model whose stored credential is inspected.
+
+    Returns:
+        The access token's expiry in UTC, or None for API keys, external
+        references and bundles without a usable ``expires``.
+    """
+    if not getattr(model, "credentials_secret_id", None):
+        return None
+    try:
+        resolved = get_secret_service().resolve_ai_model_credentials(
+            model, db=db, allow_refresh=False
+        )
+    except (ValueError, LookupError, RuntimeError):
+        return None
+    if (
+        resolved is None
+        or resolved.credential_type not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+    ):
+        return None
+    expires_ms = _coerce_expires_ms(resolved.payload or {})
+    if expires_ms is None:
+        return None
+    return datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
 
 
 @router.get(
@@ -1100,11 +1148,12 @@ def delete_ai_model(
 ) -> Response:
     """Delete an AI Model by its ID.
 
-    While any flow of the account selects the model (its own model, a routing
-    or label rule, or the retry model), the delete is refused with 409
-    ``model_in_use`` and the flows the caller can see. ``force=true`` deletes
-    anyway: each flow that had the model as its own records which model it
-    lost, and the audit entry names every orphaned flow.
+    While any enabled flow of the account selects the model (its own model, a
+    routing or label rule, or the retry model), the delete is refused with
+    409 ``model_in_use`` and the enabled flows the caller can see. Disabled
+    flows do not block it. ``force=true`` deletes anyway. Either way, each
+    flow that had the model as its own records which model it lost, and the
+    audit entry names every orphaned flow, enabled or not.
     """
     from preloop.models.crud import crud_flow
     from preloop.services.ai_model_usage_links import flow_links
@@ -1122,19 +1171,23 @@ def delete_ai_model(
             with_agent_config=True,
         )
     )
-    if consumers and not force:
-        count = len(consumers)
+    # A disabled flow cannot fail now, so only enabled ones block. Disabled
+    # ones still lose the model: they are marked and audited below.
+    enabled = [flow for flow in consumers if flow.is_enabled]
+    if enabled and not force:
+        count = len(enabled)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=AIModelInUseDetail(
                 message=(
-                    f"{count} flow{'' if count == 1 else 's'} still "
+                    f"{count} enabled flow{'' if count == 1 else 's'} still "
                     f"use{'s' if count == 1 else ''} this model. Point them at "
                     "another model, or delete with force=true to leave them "
                     "without one."
                 ),
                 flow_count=count,
-                flows=flow_links(db, user=current_user, flows=consumers),
+                disabled_flow_count=len(consumers) - count,
+                flows=flow_links(db, user=current_user, flows=enabled),
             ).model_dump(mode="json"),
         )
     previous = _model_audit_state(model)

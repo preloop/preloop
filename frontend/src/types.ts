@@ -235,6 +235,8 @@ export interface AIModel {
   credentials_last_error_code?: string | null;
   credentials_last_failed_at?: string | null;
   credentials_last_verified_at?: string | null;
+  /** Subscription login expiry; admins and editors only, else null. */
+  credentials_expires_at?: string | null;
   api_endpoint?: string;
   model_identifier: string;
   alias?: string;
@@ -2199,6 +2201,9 @@ export interface AIModelUsedByResponse {
     name: string;
     credentials_status: string | null;
   }[];
+  /** Listed flows that can run, and those that are disabled. */
+  enabled_flow_count?: number;
+  disabled_flow_count?: number;
   truncated: boolean;
 }
 

@@ -4,3 +4,26 @@ export function consumersSentence(count: number): string {
     ? 'Used by 1 flow. Deleting it leaves that flow without a model.'
     : `Used by ${count} flows. Deleting it leaves them without a model.`;
 }
+
+/** The sentence for disabled flows, which do not block a delete. */
+export function disabledSentence(count: number): string {
+  return `${count} disabled flow${count === 1 ? '' : 's'} also select${count === 1 ? 's' : ''} it and will lose ${count === 1 ? 'its' : 'their'} model; ${count === 1 ? 'it does' : 'they do'} not block the delete.`;
+}
+
+/** Flows that can run, so a delete would break them now. */
+export function enabledFlows<T extends { is_enabled?: boolean | null }>(
+  flows: T[]
+): T[] {
+  // An older server sends no state; treat its flows as enabled.
+  return flows.filter((flow) => flow.is_enabled !== false);
+}
+
+/** "2 enabled flows · 1 disabled" for the Used by header. */
+export function flowCountsLabel(
+  flows: { is_enabled?: boolean | null }[]
+): string {
+  const enabled = enabledFlows(flows).length;
+  const disabled = flows.length - enabled;
+  const head = `${enabled} enabled flow${enabled === 1 ? '' : 's'}`;
+  return disabled ? `${head} · ${disabled} disabled` : head;
+}
