@@ -246,6 +246,49 @@ describe('restricted CI settings view', () => {
             { ...flow, id: 'shared', account_id: null },
             { ...flow, id: 'disabled', is_enabled: false },
             { ...flow, id: 'other', trigger_project_ids: ['project-b'] },
+            {
+              ...flow,
+              id: 'shared-review',
+              name: 'Shared review',
+              agent_type: 'codex',
+              trigger_project_ids: ['project-a', 'project-b'],
+              git_clone_config: {
+                enabled: true,
+                publication_mode: 'read_only',
+                ci_project_selection: true,
+                repositories: [
+                  { project_id: 'project-a', tracker_id: 'tracker-a' },
+                  { project_id: 'project-b', tracker_id: 'tracker-a' },
+                ],
+              },
+            },
+            {
+              ...flow,
+              id: 'shared-without-project',
+              agent_type: 'codex',
+              trigger_project_ids: ['project-b', 'project-c'],
+              git_clone_config: {
+                enabled: true,
+                publication_mode: 'read_only',
+                ci_project_selection: true,
+                repositories: [
+                  { project_id: 'project-b', tracker_id: 'tracker-a' },
+                  { project_id: 'project-c', tracker_id: 'tracker-a' },
+                ],
+              },
+            },
+            {
+              ...flow,
+              id: 'multi-project-not-shared',
+              trigger_project_ids: ['project-a', 'project-b'],
+              git_clone_config: {
+                enabled: true,
+                repositories: [
+                  { project_id: 'project-a', tracker_id: 'tracker-a' },
+                  { project_id: 'project-b', tracker_id: 'tracker-a' },
+                ],
+              },
+            },
           ],
         },
       ]),
@@ -256,7 +299,10 @@ describe('restricted CI settings view', () => {
       [...element.querySelectorAll('#ci-flow option')].map(
         (option) => (option as HTMLOptionElement).value
       )
-    ).to.eql(['', 'flow-a', 'host-review', 'host-wrapped']);
+    ).to.eql(['', 'flow-a', 'host-review', 'host-wrapped', 'shared-review']);
+    expect(
+      element.querySelector('#ci-flow option[value=shared-review]')!.textContent
+    ).to.contain('(shared review flow)');
     expect(
       (element.querySelector('#ci-create') as HTMLButtonElement).disabled
     ).to.equal(true);
@@ -276,6 +322,47 @@ describe('restricted CI settings view', () => {
     expect(
       (element.querySelector('#ci-create') as HTMLButtonElement).disabled
     ).to.equal(true);
+  });
+  it('states the binding of a shared identity as one project', async () => {
+    api = mockApi({
+      routes: routes([
+        {
+          path: BASE,
+          body: [
+            identity,
+            { ...identity, id: 'principal-b', binding_mode: 'shared' },
+          ],
+        },
+        {
+          path: BASE + '/preview',
+          method: 'POST',
+          body: {
+            grant,
+            repository_identifier: 'repo-a',
+            repository_slug: 'example/repository',
+            tracker_type: 'github',
+            runner_pool: 'server',
+            binding_mode: 'shared',
+          },
+        },
+      ]),
+    });
+    const element = await render();
+    const cards = [...element.querySelectorAll('[data-principal]')];
+    expect(cards[0].textContent).to.contain('Binding:');
+    expect(cards[0].textContent).to.contain('dedicated flow');
+    expect(cards[1].textContent).to.contain(
+      'shared review flow, this project only'
+    );
+    expect(element.textContent!.replace(/\s+/g, ' ')).to.contain(
+      'never those of another project on the same flow'
+    );
+    await selectGrant(element);
+    button(element, 'Preview grant').click();
+    await waitUntil(() => !!element.querySelector('#ci-preview-summary'));
+    expect(
+      element.querySelector('#ci-preview-summary')!.textContent
+    ).to.contain('reviews of this repository only');
   });
   it('discloses a new token once and removes it on close/disconnect without storage', async () => {
     api = mockApi({

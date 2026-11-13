@@ -1,8 +1,11 @@
 # Native restricted CI setup
 
 Restricted CI credentials are available in OSS for an account's human owner.
-They identify a stable machine principal bound to one project and an approved
-hosted flow. They are not account keys with scope strings. Existing account keys
+They identify a stable machine principal bound to one project and one approved
+hosted flow. The flow is either dedicated to that project, as described next,
+or a [shared read-only review flow](#shared-read-only-review-flows) that an
+administrator has opened to several projects of the account; either way the
+identity reaches its own project only. They are not account keys with scope strings. Existing account keys
 remain broader; adding a scope or renaming one never converts it. There is no
 OIDC or federation exchange in this version.
 
@@ -346,16 +349,163 @@ marked `gateway_metered: true`.
 
 ## Shared read-only review flows
 
-An administrator can explicitly set `git_clone_config.ci_project_selection: true`
-together with `publication_mode: read_only`. List the approved project IDs in
-`trigger_project_ids` and exactly one repository entry for each project, using its
-owning tracker ID. Repository URLs and duplicate projects are rejected. Each CI
-principal is still bound to exactly one project. Admission verifies that project's
-current provider identity; launch selects only its repository and mints only its
-read lease. Caller payloads cannot select another repository. Removing the
-principal's repository invalidates its authority. The selection mode is snapshotted
-when provisioning, so changing an existing dedicated identity to shared mode needs
-explicit reprovisioning.
+One read-only review flow can serve several projects of the same account. Use
+this when the repositories should be reviewed with the same prompt, model,
+limits and result schema and you do not want one flow per repository. Supported
+from Preloop 1.1.0 (the selection itself exists since 1.0.0; the allowlist API,
+CLI commands and console support are new).
+
+What stays the same: each CI identity is bound to exactly one project. It can
+start a review only for that project's repository and can read, list and stop
+only its own executions. Another identity on the same flow, its executions,
+results, startup receipts and tool evidence, and the list of admitted projects
+are not visible to it. The trigger body is still exactly `pr_number` and
+`head_sha`; Preloop selects the repository, the revision and the clone source
+from the identity's project. Nothing per pull request is written to the flow.
+
+The boundary is the account. A tracker organisation is not an access boundary
+in Preloop, and a flow cannot admit a project of another account. To keep
+groups of repositories apart, give each group its own shared flow (each flow
+admits only its own projects) or its own account.
+
+### Configure two repositories on one flow
+
+1. Create one read-only review flow as described in
+   [Read-only native GitHub App review](#read-only-native-github-app-review):
+   `git_clone_config.enabled: true`, `publication_mode: "read_only"`, Codex,
+   no MCP tools. Each repository must be a synced project on a GitHub App
+   tracker of this account.
+2. As the account owner, set the flow's project allowlist. The list is the
+   complete allowlist and replaces the previous one. Save it as
+   `projects.json`:
+
+   ```json
+   {
+     "project_ids": [
+       "00000000-0000-4000-8000-000000000001",
+       "00000000-0000-4000-8000-000000000004"
+     ]
+   }
+   ```
+
+   ```sh
+   preloop ci share-flow FLOW_ID --input projects.json
+   preloop ci shared-flow FLOW_ID
+   ```
+
+   The API is `PUT /api/v1/ci-identities/shared-flows/{flow_id}` and
+   `GET` on the same path, for human administrators only. Preloop writes
+   `ci_project_selection: true`, the trigger projects and one clone repository
+   per project, taking each repository and tracker from the project itself. It
+   accepts no repository URL, tracker or wildcard.
+3. Provision one identity per project, each with its own grant
+   (`project_id` of that repository, `flow_id` of the shared flow), with
+   `preloop ci preview` and `preloop ci create` or in **Settings → CI
+   identities**, where the flow is listed as "(shared review flow)". The
+   identity reports `binding_mode: "shared"`.
+4. In each repository, store that repository's own token and use the
+   [workflow example](#operator-run-github-actions-example) unchanged: the same
+   `PRELOOP_FLOW_ID` in both, each with its own `PRELOOP_PROJECT_ID` and
+   `PRELOOP_CI_TOKEN`.
+
+Check the isolation yourself with both tokens. The script starts no review:
+
+```sh
+PRELOOP_CI_TOKEN_A=... PRELOOP_CI_TOKEN_B=... python \
+  scripts/verify_restricted_ci.py shared-flow --url https://preloop.example \
+  --flow FLOW_ID --project-a PROJECT_A_ID --project-b PROJECT_B_ID
+```
+
+It prints one `PASS`, `FAIL` or `SKIP` line per check and exits 0 only when
+every check passed (1 on a failure, 2 when a check was skipped because there
+was nothing to probe, for example before the first review or with a key that
+lacks `flow:trigger`). The checks: each token lists only
+executions of its own project on the shared flow, every startup receipt names
+the admitted head commit, neither token can read the flow, its allowlist or
+the identity list, a trigger that names the other project is refused, and
+neither token can read the other's execution, result or tool evidence. Run one
+review per repository first so that the cross-read checks have something to
+probe. The checks pass on 1.0.x as well, where the selection already exists.
+
+### Move a working dedicated identity to a shared flow
+
+An identity cannot be converted: its project, flow and binding mode are fixed
+when it is provisioned. Move a repository without interrupting its reviews by
+running both side by side:
+
+1. Leave the dedicated flow and its identity as they are.
+2. Create a second read-only review flow with the same prompt, model and
+   limits, and admit the repositories with `preloop ci share-flow`.
+3. Provision a new identity for the repository on the shared flow
+   (`preloop ci preview`, then `preloop ci create`). The old and the new
+   identity both work; each lists only its own executions.
+4. In the repository, replace `PRELOOP_FLOW_ID` and `PRELOOP_CI_TOKEN` with
+   the shared flow and the new token, and run one review to confirm it.
+5. Retire the old identity with `preloop ci retire PRINCIPAL_ID`. Its
+   execution history is kept, and the dedicated flow can then be deleted.
+
+### Without the allowlist API (Preloop 1.0.x)
+
+Releases before 1.1.0 have the same selection but no `share-flow` command. Set
+it with the human `PUT /api/v1/flows/{flow_id}` endpoint instead: list the
+admitted projects in `trigger_project_ids` and give each exactly one entry in
+`git_clone_config.repositories` with its owning tracker, next to
+`"publication_mode": "read_only"` and `"ci_project_selection": true`:
+
+```json
+{
+  "trigger_project_ids": [
+    "00000000-0000-4000-8000-000000000001",
+    "00000000-0000-4000-8000-000000000004"
+  ],
+  "git_clone_config": {
+    "enabled": true,
+    "publication_mode": "read_only",
+    "ci_project_selection": true,
+    "repositories": [
+      {"project_id": "00000000-0000-4000-8000-000000000001",
+       "tracker_id": "00000000-0000-4000-8000-000000000002"},
+      {"project_id": "00000000-0000-4000-8000-000000000004",
+       "tracker_id": "00000000-0000-4000-8000-000000000002"}
+    ]
+  }
+}
+```
+
+The two lists must name the same projects, without duplicates and without a
+repository URL, or every identity on the flow is denied. `preloop ci
+capabilities` on those releases still prints the older one-project wording;
+the behaviour described on this page is the contract.
+
+### Rules and refusals
+
+- `409` from `share-flow` means one of: the flow is not an enabled read-only
+  review flow; a listed project is not an active project of this account on a
+  GitHub App tracker (the answer is the same for a project that does not
+  exist); or the flow is dedicated and still has identities bound to it.
+- An identity's binding mode is fixed when it is provisioned. To turn a
+  dedicated flow into a shared one, retire its identities first
+  (`preloop ci retire`), share the flow, then provision new identities.
+  Editing the flow JSON by hand to flip the mode denies the existing
+  identities instead of converting them.
+- A project that is not on the allowlist cannot get an identity on the flow.
+- Removing a project denies every identity bound to it from its next request:
+  reads return 401, a pending run is refused at dispatch and no clone lease is
+  minted for it. A run that is already cloning or running finishes on its
+  read-only, repository-scoped lease, which expires in about an hour. Adding
+  the project back restores the same identities.
+- Revoking a key, letting it expire, or retiring an identity affects that
+  identity only.
+- A shared flow must be a read-only review. A flow that can push, open pull
+  requests or use MCP tools cannot be shared.
+- Every admitted project gets the same prompt, model, limits and setup
+  commands, and the flow's capacity and budget are shared between them.
+- A review clones exactly one repository. Admitting extra read-only context
+  repositories for a review is designed but not available yet; see the
+  [architecture chapter](../../architecture/shared-ci-review-flows.md).
+
+The threat model, with the test that covers each case, is in
+[Shared review flows for restricted CI](../../architecture/shared-ci-review-flows.md).
 
 ## Own-execution tool evidence
 
