@@ -25,7 +25,12 @@ class CiAction(str, Enum):
 
 
 class CiGrant(BaseModel):
-    """Exactly one account-local project and its dedicated flow."""
+    """Exactly one account-local project and one flow.
+
+    The flow is either dedicated to the project or a shared read-only review
+    flow whose administrator-set allowlist admits the project. A grant never
+    names more than one project.
+    """
 
     model_config = ConfigDict(
         extra="forbid", frozen=True, revalidate_instances="always"

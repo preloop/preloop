@@ -1013,6 +1013,9 @@ class FlowExecutionOrchestrator:
         self._read_only_startup_seen = False
         self._read_only_setup_failed = False
         self._startup_receipt: Optional[Dict[str, Any]] = None
+        # CLI name and version from the harness version line, observed
+        # before the agent started (never taken from the pinned constant).
+        self._agent_cli: Optional[Dict[str, str]] = None
         # One-shot completion-confirmation round (layer 2): at most one nudge
         # per execution, across all attempts. Set the moment a nudge is
         # considered, so even an errored nudge is never repeated.
@@ -1284,6 +1287,8 @@ class FlowExecutionOrchestrator:
         The startup line counts only before the agent starts; anything the
         agent prints later cannot author it. A setup failure line at any
         time withdraws the receipt (it can only make the receipt weaker).
+        The first harness version line seen before the agent starts names
+        the CLI recorded on the receipt.
         """
         commit = getattr(self, "_read_only_admitted_commit", None)
         if not commit:
@@ -1291,6 +1296,13 @@ class FlowExecutionOrchestrator:
         from preloop.services.read_only_review import read_only_startup_line
         from preloop.utils.workspace_snapshot import SETUP_FAILED_MARKER
 
+        if not self._agent_exec_started and getattr(self, "_agent_cli", None) is None:
+            from preloop.services.read_only_review import harness_cli_from_line
+
+            cli = harness_cli_from_line(line)
+            if cli is not None:
+                self._agent_cli = cli
+                return
         if line.startswith(SETUP_FAILED_MARKER):
             if not self._read_only_setup_failed:
                 self._read_only_setup_failed = True
@@ -1317,6 +1329,7 @@ class FlowExecutionOrchestrator:
             str(self._read_only_admitted_commit),
             setup_completed=True,
             agent_started_at=datetime.now(timezone.utc).isoformat(),
+            agent_cli=getattr(self, "_agent_cli", None),
         )
         self._persist_startup_receipt()
 
@@ -4853,6 +4866,7 @@ class FlowExecutionOrchestrator:
                 agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
             ):
                 self._refuse_hosted_approval_gap(execution_context)
+                self._refuse_invalid_hook_binding(execution_context)
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)
@@ -7987,6 +8001,68 @@ class FlowExecutionOrchestrator:
             raise AgentStartError(
                 reason, category=FAILURE_CATEGORY_APPROVAL_UNAVAILABLE
             )
+
+    def _refuse_invalid_hook_binding(self, execution_context: Dict[str, Any]) -> None:
+        """Refuse a hosted Codex launch whose hook credential would be refused.
+
+        Hosted Codex installs the Preloop PreToolUse hook unless the shell is
+        locked, and the hook presents the execution's runtime credential to
+        ``POST /api/v1/agents/permission-check``. When that endpoint would
+        refuse the credential, every native command is denied and the run
+        spends model calls on commands that cannot execute (#2264). This runs
+        the same identity resolution before the container starts, so such a
+        run ends with ``hook_binding_invalid`` and no model call. A read-only
+        review with no runtime credential at all is refused the same way; it
+        must never start with its hook failing open.
+
+        Args:
+            execution_context: Launch context carrying ``account_api_token``.
+
+        Raises:
+            AgentStartError: With ``hook_binding_invalid`` when the credential
+                is missing (read-only review) or refused.
+        """
+        from fastapi import HTTPException
+
+        from preloop.agents.errors import AgentStartError
+        from preloop.api.endpoints.agent_permission import (
+            resolve_permission_identity_in_session,
+        )
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_HOOK_BINDING_INVALID,
+        )
+
+        flow = getattr(self, "flow", None)
+        agent_type = str(self.agent_type or getattr(flow, "agent_type", None) or "")
+        config = execution_context.get("agent_config") or {}
+        if agent_type != "codex" or (
+            isinstance(config, dict) and config.get("sandbox_type") == "read-only"
+        ):
+            return
+        token = execution_context.get("account_api_token")
+        message = (
+            "Native permission credential binding is invalid for this "
+            "execution: the Preloop command hook would be refused by "
+            "permission-check ({cause}), so the agent was not started"
+        )
+        if not token:
+            if execution_context.get("read_only_review") or (
+                self._read_only_review_mode()
+            ):
+                raise AgentStartError(
+                    message.format(cause="no runtime credential was minted"),
+                    category=FAILURE_CATEGORY_HOOK_BINDING_INVALID,
+                )
+            return
+        try:
+            resolve_permission_identity_in_session(
+                self.db, str(token), allow_read_only_review=True
+            )
+        except HTTPException as exc:
+            raise AgentStartError(
+                message.format(cause=f"HTTP {exc.status_code}: {exc.detail}"),
+                category=FAILURE_CATEGORY_HOOK_BINDING_INVALID,
+            ) from None
 
     def _is_platform_park_resume(self, resume: Dict[str, Any]) -> bool:
         """Whether ``_resume`` continues a parked run the platform resumed.
