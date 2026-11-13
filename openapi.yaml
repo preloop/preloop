@@ -26328,26 +26328,31 @@ components:
           - type: string
           - type: 'null'
           title: Credentials Status
-          description: Status of the model's credential secret
+          description: Status of the model's credential secret. `error` means the
+            last OAuth refresh failed, or the provider rejected the stored API key
+            (HTTP 401) on its last use.
         credentials_last_error:
           anyOf:
           - type: string
           - type: 'null'
           title: Credentials Last Error
-          description: Summary of the last credential refresh error
+          description: Summary of the last credential refresh error or provider rejection
+            of the stored API key
         credentials_last_error_code:
           anyOf:
           - type: string
           - type: 'null'
           title: Credentials Last Error Code
-          description: Error code from the last credential refresh attempt
+          description: Error code from the last credential refresh attempt, or `upstream_auth_rejected`
+            for a rejected API key
         credentials_last_failed_at:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Credentials Last Failed At
-          description: Timestamp of the last failed credential refresh
+          description: Timestamp of the last failed credential refresh or provider
+            rejection
         credentials_last_verified_at:
           anyOf:
           - type: string

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -13,6 +13,11 @@ from .base import Base
 if TYPE_CHECKING:
     from .account import Account
     from .ai_model import AIModel
+
+#: ``meta_data`` key holding the provider's last rejection of a stored API key.
+#: Written by the model gateway on an upstream 401, removed when the provider
+#: next accepts the key and whenever the key is replaced or rotated.
+UPSTREAM_AUTH_REJECTION_KEY = "upstream_auth_rejection"
 
 
 class SecretReference(Base):
@@ -52,6 +57,16 @@ class SecretReference(Base):
     ai_models: Mapped[List["AIModel"]] = relationship(
         "AIModel", back_populates="credentials_secret"
     )
+
+    @property
+    def upstream_auth_rejection(self) -> Optional[Dict[str, Any]]:
+        """The provider's standing rejection of this stored API key, if any."""
+        if not isinstance(self.meta_data, dict):
+            return None
+        rejection = self.meta_data.get(UPSTREAM_AUTH_REJECTION_KEY)
+        if not isinstance(rejection, dict) or not rejection.get("last_rejected_at"):
+            return None
+        return rejection
 
     def __repr__(self) -> str:
         return (

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import Boolean, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -165,15 +165,45 @@ class AIModel(Base):
         return self.has_api_key and not self.is_principal_bound_oauth
 
     @property
-    def credentials_status(self) -> Optional[str]:
-        """Status of the configured credential secret, if any."""
+    def credentials_upstream_rejection(self) -> Optional[Dict[str, Any]]:
+        """The provider's standing rejection of the stored API key, if any.
+
+        Recorded by the model gateway when the provider answers 401 for this
+        credential, and removed when the provider next accepts it or the key
+        is replaced or rotated.
+        """
         if self.credentials_secret:
+            return self.credentials_secret.upstream_auth_rejection
+        return None
+
+    @property
+    def credentials_rejected(self) -> bool:
+        """Whether the provider currently rejects the stored API key."""
+        return self.credentials_upstream_rejection is not None
+
+    @property
+    def credentials_status(self) -> Optional[str]:
+        """Status of the configured credential secret, if any.
+
+        ``error`` covers both a failed OAuth refresh (stored on the secret)
+        and an API key the provider rejected on its last use.
+        """
+        if self.credentials_secret:
+            if self.credentials_secret.status == "active" and self.credentials_rejected:
+                return "error"
             return self.credentials_secret.status
         return None
 
     @property
     def credentials_last_error(self) -> Optional[str]:
-        """Summary of the last credential refresh error, if any."""
+        """Summary of the last credential refresh error or key rejection."""
+        rejection = self.credentials_upstream_rejection
+        if rejection is not None and self.credentials_status == "error":
+            from preloop.services.model_credential_health import (
+                credential_rejection_summary,
+            )
+
+            return credential_rejection_summary(rejection)
         if (
             self.credentials_status == "error"
             and self.credentials_secret
@@ -184,7 +214,13 @@ class AIModel(Base):
 
     @property
     def credentials_last_error_code(self) -> Optional[str]:
-        """Error code from the last credential refresh attempt, if any."""
+        """Error code from the last refresh attempt or key rejection."""
+        if self.credentials_rejected and self.credentials_status == "error":
+            from preloop.services.model_credential_health import (
+                UPSTREAM_AUTH_REJECTED_CODE,
+            )
+
+            return UPSTREAM_AUTH_REJECTED_CODE
         if (
             self.credentials_status == "error"
             and self.credentials_secret
@@ -196,7 +232,13 @@ class AIModel(Base):
 
     @property
     def credentials_last_failed_at(self) -> Optional[datetime]:
-        """Timestamp of the last failed credential refresh attempt, if any."""
+        """Timestamp of the last failed refresh or provider rejection."""
+        rejection = self.credentials_upstream_rejection
+        if rejection is not None and self.credentials_status == "error":
+            try:
+                return datetime.fromisoformat(str(rejection["last_rejected_at"]))
+            except (KeyError, ValueError):
+                return None
         if (
             self.credentials_status == "error"
             and self.credentials_secret
