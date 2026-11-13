@@ -1552,6 +1552,71 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/agents/managed-config/bundles:
+    get:
+      tags:
+      - Managed bundles
+      summary: List Bundles
+      description: Read active bundles and the real active generated count for this
+        account.
+      operationId: list_bundles_api_v1_agents_managed_config_bundles_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleRegistryResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    post:
+      tags:
+      - Managed bundles
+      summary: Register Bundle
+      description: 'Register manifest metadata, superseding only the caller''s app/platform.
+
+
+        Registration neither enrolls devices nor generates expectations. The
+
+        optional fleet generator must join registered bundles to matching evidence.'
+      operationId: register_bundle_api_v1_agents_managed_config_bundles_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BundleManifest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleRevisionResponse'
+        '409':
+          description: Retired revision or conflicting manifest metadata
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/discovery-salt:
     get:
       tags:
@@ -32257,6 +32322,138 @@ components:
       - results
       title: BulkDeleteUsersResponse
       description: Per-user results of a bulk deletion request.
+    BundleManifest:
+      properties:
+        schema:
+          type: string
+          const: preloop.managed-hook-bundle.v1
+          title: Schema
+        app_id:
+          type: string
+          const: claude-code
+          title: App Id
+        platform:
+          type: string
+          enum:
+          - darwin
+          - linux
+          - windows
+          title: Platform
+        policy_revision_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Policy Revision Hash
+        artifact:
+          type: string
+          const: managed-settings.json
+          title: Artifact
+        keys:
+          items:
+            type: string
+            const: hooks.PreToolUse
+          type: array
+          maxItems: 1
+          minItems: 1
+          title: Keys
+        target_locations:
+          items:
+            type: string
+            maxLength: 2000
+          type: array
+          maxItems: 32
+          title: Target Locations
+        managed_source:
+          type: string
+          maxLength: 2000
+          title: Managed Source
+        documented_semantics:
+          type: string
+          maxLength: 2000
+          title: Documented Semantics
+        verification:
+          type: string
+          const: unverified
+          title: Verification
+        prerequisites:
+          items:
+            type: string
+            maxLength: 2000
+          type: array
+          maxItems: 32
+          title: Prerequisites
+        omitted_capabilities:
+          items:
+            type: string
+            maxLength: 2000
+          type: array
+          maxItems: 32
+          title: Omitted Capabilities
+        references:
+          items:
+            type: string
+            maxLength: 2000
+          type: array
+          maxItems: 32
+          title: References
+      additionalProperties: false
+      type: object
+      required:
+      - schema
+      - app_id
+      - platform
+      - policy_revision_hash
+      - artifact
+      - keys
+      - target_locations
+      - managed_source
+      - documented_semantics
+      - verification
+      - prerequisites
+      - omitted_capabilities
+      - references
+      title: BundleManifest
+      description: Allowlisted manifest only; rendered policy and credentials are
+        excluded.
+    BundleRegistryResponse:
+      properties:
+        bundles:
+          items:
+            $ref: '#/components/schemas/BundleRevisionResponse'
+          type: array
+          title: Bundles
+        generated_count:
+          type: integer
+          title: Generated Count
+      type: object
+      required:
+      - bundles
+      - generated_count
+      title: BundleRegistryResponse
+      description: Account-scoped registry, with an uncapped generated expectation
+        count.
+    BundleRevisionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        manifest:
+          $ref: '#/components/schemas/BundleManifest'
+        registered_at:
+          type: string
+          format: date-time
+          title: Registered At
+        generated_count:
+          type: integer
+          title: Generated Count
+      type: object
+      required:
+      - id
+      - manifest
+      - registered_at
+      - generated_count
+      title: BundleRevisionResponse
+      description: An active registered revision and its active generated row count.
     CallableFlowEntry:
       properties:
         flow:

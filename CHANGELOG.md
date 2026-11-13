@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Managed hook exports include a deterministic policy revision. The optional
+  `--register` flag records secret-free manifest metadata in the selected
+  account; exports remain offline by default. A new account-scoped registry
+  and control-expectation store support evidence-based fleet generation,
+  preserving manual expectations and retiring superseded bundle rows.
+
 ### Fixed
 
 - gateway: an error the upstream model provider produced now says so. A

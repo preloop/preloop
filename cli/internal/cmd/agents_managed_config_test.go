@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -294,5 +297,82 @@ func TestNormalCommandStillSelectsProfileAndAccount(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Errorf("non-offline selection missing %q: %s", expected, output)
 		}
+	}
+}
+
+func TestManagedBundleRevisionHashesArtifact(t *testing.T) {
+	var previous string
+	for _, timeout := range []int{300, 300, 301} {
+		files, err := renderClaudeManagedBundle("linux", "/opt/preloop/bin/preloop", timeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest managedBundleManifest
+		if err := json.Unmarshal(files[1].data, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(files[0].data)
+		if manifest.PolicyRevisionHash != hex.EncodeToString(digest[:]) {
+			t.Fatal("revision must hash exact artifact bytes including final LF")
+		}
+		if timeout == 301 && manifest.PolicyRevisionHash == previous {
+			t.Fatal("changed policy retained revision")
+		}
+		previous = manifest.PolicyRevisionHash
+	}
+}
+
+func TestManagedBundleRegister(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			testenv.SetTempHome(t)
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != "/api/v1/agents/managed-config/bundles" || r.Method != "POST" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("Authorization") != "Bearer synthetic-token" {
+					t.Error("missing auth")
+				}
+				var payload map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				if payload["app_id"] != "claude-code" || payload["platform"] != "linux" || payload["policy_revision_hash"] == "" {
+					t.Error("incomplete manifest")
+				}
+				if _, ok := payload["hooks"]; ok {
+					t.Error("sent policy content")
+				}
+				w.WriteHeader(status)
+				fmt.Fprint(w, `{}`)
+			}))
+			defer server.Close()
+			t.Setenv("PRELOOP_TOKEN", "synthetic-token")
+			t.Setenv("PRELOOP_URL", server.URL)
+			command := newAgentsManagedConfigCmd()
+			var out bytes.Buffer
+			command.SetOut(&out)
+			output := filepath.Join(t.TempDir(), "bundle")
+			command.SetArgs([]string{"claude-code", "--output", output, "--cli-path", "/opt/preloop/bin/preloop", "--platform", "linux", "--register"})
+			err := command.Execute()
+			if (err != nil) != (status == http.StatusForbidden) {
+				t.Fatalf("unexpected error %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("requests = %d", calls)
+			}
+			preview, readErr := os.ReadFile(filepath.Join(output, "preview.txt"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if strings.Contains(string(preview), "This export is offline") {
+				t.Fatal("registered export claims offline")
+			}
+			if status == http.StatusForbidden && strings.Contains(out.String(), "Registered bundle") {
+				t.Fatal("failed registration reported success")
+			}
+		})
 	}
 }

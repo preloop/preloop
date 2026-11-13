@@ -1055,6 +1055,9 @@ def _register_control_plane_routes(
     app.include_router(
         agent_enrollment.router, prefix="/api/v1", tags=["Agent enrollment"]
     )
+    from preloop.api.endpoints import managed_bundle
+
+    app.include_router(managed_bundle.router, prefix="/api/v1")
     # Before account.router: its "/agents/{agent_id}" routes would otherwise
     # capture "/agents/discovery-candidates".
     app.include_router(

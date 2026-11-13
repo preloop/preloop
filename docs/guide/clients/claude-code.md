@@ -272,6 +272,33 @@ Use an absolute executable path on the target device; Windows requires a local
 exceed the separately provisioned approval wait budget plus process headroom;
 the exporter accepts 30–3600 seconds and does not query account defaults.
 
+`manifest.json` includes `policy_revision_hash`: lowercase SHA-256 of the
+exact UTF-8 bytes written to `managed-settings.json`, including two-space JSON
+indentation and the final LF. The manifest and preview are excluded. Identical
+rendered policy bytes produce the same revision; changing the executable path,
+hook timeout or rendered shell invocation changes it.
+
+Add `--register` to explicitly authenticate with the selected CLI account and
+POST the revision and allowlisted manifest metadata to
+`/api/v1/agents/managed-config/bundles`. This is the only network step; telemetry
+and update checks remain disabled for this command. `--profile`, `--account`,
+`--token`, and `--url` select the usual CLI session. Policy content and credentials
+are never sent. The output is written first: if registration fails, the command
+exits unsuccessfully and the exported bundle remains available for review. Retry
+with `--overwrite --register`. The preview records that registration was requested;
+the command result confirms success or failure. Without `--register`, the offline
+behavior above applies.
+
+Registration is idempotent for identical metadata. A new revision supersedes only
+the same account/app/platform, retiring its previous generated expectations.
+Changed metadata under the same revision and replays of retired revisions return
+409. Registration is an operator declaration, not installation or verification.
+The optional fleet generator must find workstation evidence for the matching app
+and platform before writing expectations. `agents onboard` user configuration
+alone generates none. `GET /api/v1/agents/managed-config/bundles` returns current
+registrations and the active generated count (zero until a generator writes rows).
+See the [storage and generator contract](../../architecture/managed-bundles.md).
+
 The overlay emits only `hooks.PreToolUse`, with matcher `*`, invoking the existing
 `agents permission-hook --source claude-code` adapter. Provision each executing
 user/device's hook credential separately through the current

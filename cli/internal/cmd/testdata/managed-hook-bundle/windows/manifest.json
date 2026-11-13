@@ -1,4 +1,5 @@
 {
+  "policy_revision_hash": "00f4313678908971c4a00cc36288aaa12abc60a8418c52b858f535ded8e2d66e",
   "schema": "preloop.managed-hook-bundle.v1",
   "app_id": "claude-code",
   "platform": "windows",
