@@ -859,7 +859,7 @@ def prepare_execution_routing(
     pin_kind: Optional[str] = None,
     check_credentials: bool = True,
 ) -> Dict[str, Any]:
-    """Resolve trusted routing and reject an incompatible runtime principal."""
+    """Resolve routing and validate admission only for newly triggered work."""
     details = _prepare_execution_routing(
         db,
         flow,
@@ -868,7 +868,10 @@ def prepare_execution_routing(
         authorized_matrix=authorized_matrix,
         pin_kind=pin_kind,
     )
-    if check_credentials:
+    # Controller-authorized continuations keep doing already-admitted work.
+    # Retry creates new work and must still test a previously rejected key.
+    continuation = source_execution is not None and pin_kind == "continuation"
+    if check_credentials and not continuation:
         validate_execution_model_credentials(db, flow, details)
     validate_execution_model_principal(db, flow, details)
     return details
