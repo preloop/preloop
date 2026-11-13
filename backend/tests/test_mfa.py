@@ -447,9 +447,14 @@ def test_email_link_and_chat_exchange(
     assert refused.value.detail["code"] == "mfa_required"
 
 
-def test_reset_script(api: TestClient, db_session: Session, now: list[float]) -> None:
+def test_reset_script(
+    api: TestClient,
+    db_session: Session,
+    now: list[float],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """protects=operator reset clears factors, revokes non-SSO and audits once;
-    fails_when=proofs or sessions survive or unknown email exits zero;
+    fails_when=proofs or sessions survive, unknown email exits zero or output echoes email;
     no_claim=main is invoked in-process against the real database."""
     from collections.abc import Generator
     import importlib.util
@@ -471,6 +476,7 @@ def test_reset_script(api: TestClient, db_session: Session, now: list[float]) ->
 
     sso = _access(user, ["sso", "oidc"], sso_connection_id=str(uuid.uuid4()))
     assert main(["--email", user.email, "--reason", "lost device"], sessions) == 0
+    assert user.email not in capsys.readouterr().out
     assert crud_mfa.factor(db_session, user.id) is None
     assert crud_mfa.remaining(db_session, user.id) == 0
     assert (
@@ -486,6 +492,7 @@ def test_reset_script(api: TestClient, db_session: Session, now: list[float]) ->
         main(["--email", "nobody@example.com", "--reason", "lost device"], sessions)
         == 1
     )
+    assert "nobody@example.com" not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("user_verified", [True, False])

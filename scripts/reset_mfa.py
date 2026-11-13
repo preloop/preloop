@@ -101,11 +101,11 @@ def main(
     finally:
         sessions.close()
     if count == 0:
-        print(f"No user found with email {args.email}", file=sys.stderr)
+        print("No user found with the supplied email address.", file=sys.stderr)
         return 1
     print(
-        f"Authenticator sign-in turned off for {count} membership(s) of "
-        f"{args.email}; their non-SSO sessions have ended."
+        f"Authenticator sign-in turned off for {count} membership(s); "
+        "their non-SSO sessions have ended."
     )
     return 0
 
