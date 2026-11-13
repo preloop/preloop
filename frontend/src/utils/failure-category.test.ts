@@ -35,6 +35,7 @@ describe('failure-category', () => {
       'approval_denied',
       'approval_timeout',
       'approval_unavailable',
+      'hook_binding_invalid',
       'resume_failed',
       'gateway_bypassed',
       'timeout',

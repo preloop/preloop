@@ -98,6 +98,25 @@ def test_projection_result_and_rotation(
     assert detail.status_code == 200, detail.text
     assert detail.json()["startup_receipt"]["checkout_verified"] is True
     assert detail.json()["startup_receipt"]["commit"] == "a" * 40
+    # A run that never printed the version line reports null.
+    assert detail.json()["startup_receipt"]["agent_cli"] is None
+    crud.crud_flow_execution.record_startup_receipt(
+        db_session,
+        execution_id=execution.id,
+        receipt={
+            "commit": "a" * 40,
+            "checkout_verified": True,
+            "setup_completed": True,
+            "agent_started_at": "2030-01-01T00:00:00+00:00",
+            "lease_revoked": None,
+            "agent_cli": {"name": "codex", "version": "0.153.4"},
+        },
+    )
+    detail = client.get(f"/api/v1/flows/executions/{execution_id}", headers=headers)
+    assert detail.json()["startup_receipt"]["agent_cli"] == {
+        "name": "codex",
+        "version": "0.153.4",
+    }
     listing = client.get("/api/v1/flows/executions", headers=headers)
     assert listing.status_code == 200, listing.text
     assert "startup_receipt" in listing.text
@@ -111,6 +130,7 @@ def test_projection_result_and_rotation(
     }
     assert result.json()["project_id"] == str(context.project_id)
     assert result.json()["head_sha"] == "a" * 40
+    assert result.json()["startup_receipt"]["agent_cli"]["version"] == "0.153.4"
     assert "synthetic-secret" not in result.text
     _, rotated = crud.crud_ci_principal.rotate(
         db_session,

@@ -385,6 +385,7 @@ records one of these categories:
 | `gateway_bypassed` | A private-runner Codex or Claude Code run produced model output without a gateway request. A flow can opt out with `agent_config.allow_unmetered_host_model: true` (never in read-only review). |
 | `approval_denied`, `approval_timeout` | A command matched a `require_approval` rule, the run parked on an approval request, and the request was refused or expired. On approval the run resumes with that command allowed once. |
 | `approval_unavailable` | An approval-required rule applies but the hosted harness could not install the Preloop hook that enforces it. |
+| `hook_binding_invalid` | A hosted Codex run's native hook credential would be refused by `POST /api/v1/agents/permission-check`, so the run ended before the container started. No model call was made. |
 | `review_publication_incomplete` | The flow requires a delivered review (`git_clone_config.review_publication.required`) and the code host never accepted one. See [Pull request review](pull-request-review.md#review-delivery-check). |
 
 ---

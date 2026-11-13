@@ -15,6 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import (
     _authenticate_with_api_key,
@@ -105,84 +106,107 @@ def _resolve_permission_identity(
 ) -> PermissionIdentity:
     """Authenticate in one worker-owned session, closed before approval waits."""
     with get_session_factory()() as db:
-        api_key = crud_api_key.get_by_key(db, key=token)
-        restricted_review = allow_read_only_review and is_read_only_review_api_key(
-            api_key
+        return resolve_permission_identity_in_session(
+            db, token, allow_read_only_review=allow_read_only_review
         )
-        user = _authenticate_with_api_key(
+
+
+def resolve_permission_identity_in_session(
+    db: Session, token: str, *, allow_read_only_review: bool = False
+) -> PermissionIdentity:
+    """Resolve the identity ``permission-check`` grants a runtime credential.
+
+    Shared by the endpoint and the hosted launch preflight, so a credential
+    the native hook will present is judged by the same rules before the
+    agent starts as on every hook call.
+
+    Args:
+        db: Database session the caller owns.
+        token: Runtime API key the hook presents.
+        allow_read_only_review: Accept an exactly bound read-only review key.
+
+    Returns:
+        The resolved permission identity.
+
+    Raises:
+        HTTPException: 401 or 403 when the credential is refused.
+    """
+    api_key = crud_api_key.get_by_key(db, key=token)
+    restricted_review = allow_read_only_review and is_read_only_review_api_key(api_key)
+    user = _authenticate_with_api_key(
+        db,
+        api_key,
+        allow_managed_agent=True,
+        allow_read_only_review=restricted_review,
+    )
+    if not restricted_review:
+        enforce_runtime_api_key_scope(api_key)
+    managed_agent = _managed_agent_for_api_key(db, api_key)
+    runtime_session = None
+    runtime_session_id = _runtime_session_id_from_api_key(api_key)
+    if runtime_session_id is not None:
+        runtime_session = crud_runtime_session.get_account_session(
             db,
-            api_key,
-            allow_managed_agent=True,
-            allow_read_only_review=restricted_review,
+            account_id=api_key.account_id,
+            runtime_session_id=runtime_session_id,
         )
-        if not restricted_review:
-            enforce_runtime_api_key_scope(api_key)
-        managed_agent = _managed_agent_for_api_key(db, api_key)
-        runtime_session = None
-        runtime_session_id = _runtime_session_id_from_api_key(api_key)
-        if runtime_session_id is not None:
-            runtime_session = crud_runtime_session.get_account_session(
-                db,
-                account_id=api_key.account_id,
-                runtime_session_id=runtime_session_id,
-            )
-        context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
-        principal = context.get("runtime_principal")
-        principal = principal if isinstance(principal, dict) else {}
-        if managed_agent is None or context.get("flow_execution_id"):
-            # Flow keys are ephemeral and account-scoped, and must name the
-            # exact execution session they were issued for. Ordinary API keys
-            # still cannot use this native approval endpoint.
-            execution_id = context.get("flow_execution_id")
-            if not (
-                execution_id
-                and runtime_session is not None
-                and runtime_session.session_source_type == "flow_execution"
-                and runtime_session.session_source_id == str(execution_id)
-                and runtime_session.ended_at is None
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token is not bound to a managed agent or active flow execution",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-        # Only permission-check and own-request expiry opt in. A review key
-        # gains no general runtime access and still needs an exact live binding.
-        if restricted_review and not (
-            api_key.scopes == ["mcp:read"]
-            and context.get("allowed_mcp_tools") == []
-            and context.get("allowed_mcp_servers") == []
-            and managed_agent is None
-            and _flow_id_from_context(context) is not None
-            and _flow_execution_id_from_context(context) is not None
-            and principal.get("type") == "flow_execution"
-            and principal.get("id") == str(context.get("flow_execution_id"))
+    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    principal = context.get("runtime_principal")
+    principal = principal if isinstance(principal, dict) else {}
+    if managed_agent is None or context.get("flow_execution_id"):
+        # Flow keys are ephemeral and account-scoped, and must name the
+        # exact execution session they were issued for. Ordinary API keys
+        # still cannot use this native approval endpoint.
+        execution_id = context.get("flow_execution_id")
+        if not (
+            execution_id
+            and runtime_session is not None
+            and runtime_session.session_source_type == "flow_execution"
+            and runtime_session.session_source_id == str(execution_id)
+            and runtime_session.ended_at is None
         ):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Read-only native permission credential binding is invalid",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token is not bound to a managed agent or active flow execution",
+                headers={"WWW-Authenticate": "Bearer"},
             )
-        return PermissionIdentity(
-            account_id=str(api_key.account_id),
-            user_id=user.id,
-            api_key_id=api_key.id,
-            managed_agent_id=managed_agent.id if managed_agent else None,
-            runtime_session_id=runtime_session.id
-            if runtime_session
-            else runtime_session_id,
-            flow_id=_flow_id_from_context(context),
-            flow_execution_id=_flow_execution_id_from_context(context),
-            runtime_principal_type=principal.get("type")
-            or getattr(managed_agent, "session_source_type", None),
-            runtime_principal_id=principal.get("id")
-            or getattr(managed_agent, "session_source_id", None),
-            managed_agent_name=(
-                getattr(managed_agent, "display_name", None)
-                or getattr(managed_agent, "name", None)
-                or (runtime_session.runtime_principal_name if runtime_session else None)
-                or "Agent"
-            ),
+    # Only permission-check and own-request expiry opt in. A review key
+    # gains no general runtime access and still needs an exact live binding.
+    if restricted_review and not (
+        api_key.scopes == ["mcp:read"]
+        and context.get("allowed_mcp_tools") == []
+        and context.get("allowed_mcp_servers") == []
+        and managed_agent is None
+        and _flow_id_from_context(context) is not None
+        and _flow_execution_id_from_context(context) is not None
+        and principal.get("type") == "flow_execution"
+        and principal.get("id") == str(context.get("flow_execution_id"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Read-only native permission credential binding is invalid",
         )
+    return PermissionIdentity(
+        account_id=str(api_key.account_id),
+        user_id=user.id,
+        api_key_id=api_key.id,
+        managed_agent_id=managed_agent.id if managed_agent else None,
+        runtime_session_id=runtime_session.id
+        if runtime_session
+        else runtime_session_id,
+        flow_id=_flow_id_from_context(context),
+        flow_execution_id=_flow_execution_id_from_context(context),
+        runtime_principal_type=principal.get("type")
+        or getattr(managed_agent, "session_source_type", None),
+        runtime_principal_id=principal.get("id")
+        or getattr(managed_agent, "session_source_id", None),
+        managed_agent_name=(
+            getattr(managed_agent, "display_name", None)
+            or getattr(managed_agent, "name", None)
+            or (runtime_session.runtime_principal_name if runtime_session else None)
+            or "Agent"
+        ),
+    )
 
 
 def _origin_matches_principal(
