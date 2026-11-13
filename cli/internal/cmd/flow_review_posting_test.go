@@ -311,3 +311,20 @@ func TestReviewPostingPublishPostsAndExplainsARefusal(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestVerdictEnumOfAppliesTheServerValueRule(t *testing.T) {
+	schema := func(values ...any) map[string]any {
+		return map[string]any{
+			"required":   []any{"verdict"},
+			"properties": map[string]any{"verdict": map[string]any{"type": "string", "enum": values}},
+		}
+	}
+	if got := verdictEnumOf(schema("pass", "fail")); len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	for _, bad := range []any{"pass!", "PASS/FAIL", strings.Repeat("a", 65), ""} {
+		if got := verdictEnumOf(schema("pass", bad)); got != nil {
+			t.Fatalf("%q accepted: %v", bad, got)
+		}
+	}
+}

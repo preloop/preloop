@@ -54,6 +54,13 @@ describe('platform review helpers', () => {
       verdictEnum({ ...SCHEMA, properties: { verdict: { type: 'string' } } })
     ).to.equal(null);
     expect(verdictEnum(null)).to.equal(null);
+    // Same value rule as the server: a value it would refuse is no enum.
+    expect(
+      verdictEnum({
+        ...SCHEMA,
+        properties: { verdict: { type: 'string', enum: ['pass', 'pass!'] } },
+      })
+    ).to.equal(null);
     expect(verdictEnum([])).to.equal(null);
   });
 

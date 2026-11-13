@@ -3635,6 +3635,7 @@ export class FlowExecutionView extends LitElement {
       execution.error_message ||
       execution.result ||
       execution.model_output_summary ||
+      execution.platform_review ||
       (execution.actions_taken_summary || []).length > 0;
 
     if (!hasAnything) {

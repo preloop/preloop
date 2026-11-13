@@ -46,6 +46,8 @@ export interface PlatformReviewRecord {
 
 export const DEFAULT_STATUS_CONTEXT = 'preloop/review';
 export const STATUS_CONTEXT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,99}$/;
+/** The server's `_VERDICT_RE`: values a verdict enum may hold. */
+export const VERDICT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
 export const COMMIT_STATES: CommitState[] = ['success', 'failure', 'error'];
 
 /**
@@ -63,7 +65,8 @@ export function verdictEnum(schema: unknown): string[] | null {
     return null;
   if (verdict.type !== 'string' || !Array.isArray(verdict.enum)) return null;
   const values = verdict.enum.filter(
-    (value: unknown): value is string => typeof value === 'string' && !!value
+    (value: unknown): value is string =>
+      typeof value === 'string' && VERDICT_PATTERN.test(value)
   );
   if (!values.length || values.length !== verdict.enum.length) return null;
   return values;

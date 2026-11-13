@@ -24,6 +24,8 @@ const defaultReviewStatusContext = "preloop/review"
 
 var (
 	reviewStatusContextPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,99}$`)
+	// reviewVerdictPattern is the server's _VERDICT_RE.
+	reviewVerdictPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$`)
 	reviewCommitStates         = map[string]bool{"success": true, "failure": true, "error": true}
 )
 
@@ -492,7 +494,7 @@ func verdictEnumOf(schema any) []string {
 	var out []string
 	for _, value := range values {
 		text, ok := value.(string)
-		if !ok || text == "" {
+		if !ok || !reviewVerdictPattern.MatchString(text) {
 			return nil
 		}
 		out = append(out, text)
