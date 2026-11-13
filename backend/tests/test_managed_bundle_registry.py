@@ -258,6 +258,22 @@ def test_registry_api_account_isolation_and_validation(
     response = client.post(url, json=data)
     assert response.status_code == 200, response.text
     assert response.json()["generated_count"] == 0
+    from preloop.models.crud import crud_audit_log
+
+    audits = crud_audit_log.get_multi(
+        db_session,
+        account_id=str(test_user.account_id),
+        resource_type="registered_bundle_revision",
+    )
+    assert len(audits) == 1
+    assert audits[0].user_id == test_user.id
+    assert audits[0].details["config_type"] == "managed_bundle"
+    _, filtered_total = crud_audit_log.get_grouped_by_correlation(
+        db_session,
+        account_id=test_user.account_id,
+        event_type_filter=["config:managed_bundle"],
+    )
+    assert filtered_total == 1
     assert client.get(url).json()["generated_count"] == 0
     assert len(client.get(url).json()["bundles"]) == 1
     for extra in [
@@ -272,11 +288,20 @@ def test_registry_api_account_isolation_and_validation(
     foreign = crud_account.create(
         db_session, obj_in={"organization_name": "Separate account", "is_active": True}
     )
-    from types import SimpleNamespace
+    from preloop.models.crud import crud_user
 
-    app.dependency_overrides[get_current_active_user] = lambda: SimpleNamespace(
-        account_id=foreign.id
+    foreign_user = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": foreign.id,
+            "username": "other-user",
+            "email": "other@example.com",
+            "hashed_password": "synthetic-password-hash",
+            "is_active": True,
+            "email_verified": True,
+        },
     )
+    app.dependency_overrides[get_current_active_user] = lambda: foreign_user
     assert client.get(url).json() == {"bundles": [], "generated_count": 0}
     assert (
         client.post(url, json={**data, "policy_revision_hash": "d" * 64}).status_code

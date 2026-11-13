@@ -19,7 +19,12 @@ class CRUDBundleRevision:
     """Serialize registration and generation with the account's evidence lock."""
 
     def register(
-        self, db: Session, *, account_id: UUID, manifest: BundleManifest
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        manifest: BundleManifest,
+        user_id: UUID | None = None,
     ) -> models.RegisteredBundleRevision:
         """Register idempotently, retiring the prior scope and generated rows.
 
@@ -78,10 +83,12 @@ class CRUDBundleRevision:
             db,
             account_id=account_id,
             action="configuration_change",
+            user_id=user_id,
             resource_type="registered_bundle_revision",
             resource_id=str(row.id),
             status="success",
             details={
+                "config_type": "managed_bundle",
                 "app_id": row.app_id,
                 "platform": row.platform,
                 "policy_revision_hash": row.policy_revision_hash,

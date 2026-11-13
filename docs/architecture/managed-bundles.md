@@ -25,7 +25,9 @@ per account/app/platform. An identical registration is idempotent. New registrat
 retires the prior revision and its active bundle-origin expectations in one
 transaction. Other platforms, accounts and manual rows are untouched. Changed
 metadata for an existing hash or replaying a retired revision raises a conflict;
-there is no implicit rollback through replay. Historical rows retain `retired_at`.
+there is no implicit rollback through replay. Historical rows retain `retired_at`. Registration audit entries include the
+authenticated `user_id` and `config_type="managed_bundle"` for timeline filtering;
+trusted system callers may omit the optional CRUD `user_id`.
 
 GET returns active `bundles`, their `generated_count`, and an account-wide
 `generated_count`. Counts include all active `origin="bundle"` rows, without a

@@ -51,7 +51,10 @@ def register_bundle(
     """
     try:
         row = crud_bundle_revision.register(
-            db, account_id=current_user.account_id, manifest=manifest
+            db,
+            account_id=current_user.account_id,
+            manifest=manifest,
+            user_id=current_user.id,
         )
         db.commit()
     except ValueError as exc:
