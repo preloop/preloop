@@ -168,3 +168,29 @@ def test_require_approval_rule_parks_a_read_only_review(
     db_session.expire_all()
     execution = crud.crud_flow_execution.get(db_session, id=orch.execution_log.id)
     assert execution.park_request_id is not None, (execution.status, body)
+
+
+def test_read_only_review_launch_installs_the_hook_under_a_deny_rule(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    review_flow: tuple[Any, ...],  # noqa: F811
+) -> None:
+    """Pin the documented claim to the launch: the review gets the hook."""
+    from preloop.agents.codex import CodexAgent
+
+    orch, token = _trigger_and_mint(db_session, monkeypatch, review_flow)
+    key = crud.crud_api_key.get_by_key(db_session, key=token)
+    _shell_rule(db_session, key.account_id, "deny")
+    context = {
+        "prompt": "Review the pull request",
+        "execution_id": str(orch.execution_log.id),
+        "flow_name": orch.flow.name,
+        "agent_config": dict(orch.flow.agent_config or {}),
+    }
+
+    orch._refuse_hosted_approval_gap(context)
+
+    assert context["native_hook_required"] is True
+    script = CodexAgent({})._build_codex_script(context)
+    assert "Preloop native command policy" in script
+    assert "--disable shell_tool" not in script
