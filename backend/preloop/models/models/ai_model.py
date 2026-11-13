@@ -173,7 +173,7 @@ class AIModel(Base):
         is replaced or rotated.
         """
         if self.credentials_secret:
-            return self.credentials_secret.upstream_auth_rejection
+            return self.credentials_secret.upstream_credential_rejection
         return None
 
     @property
@@ -218,9 +218,14 @@ class AIModel(Base):
         if self.credentials_rejected and self.credentials_status == "error":
             from preloop.services.model_credential_health import (
                 UPSTREAM_AUTH_REJECTED_CODE,
+                UPSTREAM_BILLING_REJECTED_CODE,
             )
 
-            return UPSTREAM_AUTH_REJECTED_CODE
+            return (
+                UPSTREAM_BILLING_REJECTED_CODE
+                if self.credentials_upstream_rejection.get("status_code") == 402
+                else UPSTREAM_AUTH_REJECTED_CODE
+            )
         if (
             self.credentials_status == "error"
             and self.credentials_secret

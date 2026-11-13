@@ -385,13 +385,37 @@ async def test_simultaneous_deliveries_create_exactly_one_execution(
             session = Session(bind=db_engine)
             try:
                 service = FlowTriggerService(session)
-                flow_row = session.get(models.Flow, flow_id)
                 await barrier.wait()
-                await deliver(service, flow_row, event)
+                await service.process_event(copy.deepcopy(event))
             finally:
                 session.close()
 
-        await asyncio.gather(worker(), worker())
+        from preloop.models import crud
+        from preloop.services import flow_execution_dispatcher
+
+        def selected_flow(db: Session, **kwargs: Any) -> list[models.Flow]:
+            """Resolve the shared fixture through each worker's own session."""
+            selected = crud.crud_flow.get(db, id=flow_id)
+            assert selected is not None
+            return [selected]
+
+        original_worker_mode = flow_execution_dispatcher.flow_execution_worker_enabled
+        with (
+            patch(
+                "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
+                side_effect=selected_flow,
+            ),
+            patch(
+                "preloop.services.flow_trigger_service.get_nats_client",
+                new=AsyncMock(return_value=None),
+            ),
+            without_in_process_run(),
+        ):
+            await asyncio.gather(worker(), worker())
+        assert (
+            flow_execution_dispatcher.flow_execution_worker_enabled
+            is original_worker_mode
+        )
         check = Session(bind=db_engine)
         try:
             assert len(executions_for(check, flow_id)) == 1

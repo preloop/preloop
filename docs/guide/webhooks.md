@@ -82,6 +82,7 @@ Every request body is one JSON object with exactly these keys:
 | `agent.note_delivered` | That note reaches the agent at a turn boundary | same fields plus `delivered_at`, `delivery_channel` (`gateway`, `hook`, `claude_channel`, `claude_message`), `turn_index` |
 | `cra.reportable_vulnerability` | A CRA audit found an actively exploited vulnerability that its own evidence says affects the product | `cve`, `actively_exploited`, `exploited_evidence`, `affected`, `vex_status`, `discovered_at`, `deadlines`, `status`, `assessment`, `kev_snapshot_date`, `kev_source_url` |
 | `agent.discovered` | Opt-in workstation discovery reports an agent tool that was not reported before | `candidate_id`, `agent_kind`, `agent_version`, `workstation_fingerprint` (salted hash), `config_path_hash` (salted hash), `mcp_server_count`, `enrolled`, `os_family`, `status`, `first_seen_at` |
+| `ai_model.credential_rejected` | A provider first rejects a customer model API key for authentication or billing | `ai_model_id`, `model_name`, `reference_id`, `provider`, `code` (`upstream_auth_rejected`, `upstream_billing_rejected`), sanitized `message`, `first_rejected_at`, `remedy` |
 | `agent.onboarded` | A managed-agent enrollment is validated for the first time | `agent_id`, `agent_name`, `agent_kind`, `source_type` (`discovered`, `custom`), `outcome` (`created`, `relinked`, `merged`), `enrollment_id`, `owner_user_id`, `actor_user_id`, `gateway_routed`, `mcp_rewritten`, `mcp_server_count` |
 
 `agent.discovered` fires once per new candidate row; a workstation that reports
