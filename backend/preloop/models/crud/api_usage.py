@@ -1159,6 +1159,65 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in rows
         ]
 
+    def get_first_gateway_failure(
+        self,
+        db: Session,
+        *,
+        execution_id: Union[uuid.UUID, str],
+        excluded_error_classes: Sequence[str] = (),
+    ) -> Optional[Dict[str, Any]]:
+        """Return the earliest failure since the execution's last success.
+
+        The repeated-upstream-failure breaker (#1336) reports the trailing
+        streak; this is the failure that started the run of failures, so the
+        stop summary names the first cause and not only the last (#2288).
+
+        Args:
+            db: Database session.
+            execution_id: The flow execution whose attempts to read.
+            excluded_error_classes: Classes that are not upstream failures
+                (client cancels, budget refusals) and are skipped.
+
+        Returns:
+            A dict with ``status_code``, ``error_class``, ``provider_name``,
+            ``error_detail`` and ``gateway_request_id``, or ``None`` when the
+            execution has no such failure.
+        """
+        if not execution_id:
+            return None
+        scope = (
+            ApiUsage.flow_execution_id == execution_id,
+            ApiUsage.action_type == "model_gateway",
+        )
+        last_success = (
+            db.query(func.max(ApiUsage.timestamp))
+            .filter(*scope, ApiUsage.status_code < 400)
+            .scalar()
+        )
+        query = db.query(
+            ApiUsage.status_code,
+            ApiUsage.error_class,
+            ApiUsage.provider_name,
+            ApiUsage.meta_data["error_detail"].astext.label("error_detail"),
+            ApiUsage.meta_data["gateway_request_id"].astext.label("gateway_request_id"),
+        ).filter(*scope, ApiUsage.status_code >= 400, ApiUsage.error_class.isnot(None))
+        if excluded_error_classes:
+            query = query.filter(
+                ApiUsage.error_class.notin_(list(excluded_error_classes))
+            )
+        if last_success is not None:
+            query = query.filter(ApiUsage.timestamp > last_success)
+        row = query.order_by(ApiUsage.timestamp.asc(), ApiUsage.id.asc()).first()
+        if row is None:
+            return None
+        return {
+            "status_code": row.status_code,
+            "error_class": row.error_class,
+            "provider_name": row.provider_name,
+            "error_detail": row.error_detail,
+            "gateway_request_id": row.gateway_request_id,
+        }
+
     def get_user_usage(
         self,
         db: Session,

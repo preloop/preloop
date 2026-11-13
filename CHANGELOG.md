@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- gateway: an error the upstream model provider produced now says so. A
+  provider-reported 401, 402, 403 or 404 used to reach the client at
+  Preloop's URL as the provider's bare sentence (for example `User not
+  found.`), which read like Preloop rejecting the client's own key. The
+  message now names the provider and status and quotes the provider's
+  sentence as its message, and every gateway error body gains additive
+  `origin` (`upstream` or `gateway`), `provider`, `category`,
+  `upstream_status` and `request_id` fields (Gemini: `google.rpc.ErrorInfo`
+  metadata), including streaming error events. Preloop's own client-auth 401s
+  carry `origin: gateway`. A run stopped with `repeated_upstream_failure` now
+  reports its first failure as the cause in the 424 body (`error.cause`), the
+  execution's error message and the timeline milestone, instead of only the
+  stop reason. Status codes, retry and terminal behaviour and `error_class`
+  values are unchanged (#2288).
+
 ## [1.0.2] - 2026-11-12
 
 ### Fixed

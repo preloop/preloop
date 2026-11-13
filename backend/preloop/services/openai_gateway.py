@@ -158,10 +158,12 @@ from preloop.services.model_gateway_denials import (
     is_budget_denial,
 )
 from preloop.services.model_gateway_errors import (
+    ORIGIN_LABELLED_UPSTREAM_STATUSES,
     GatewayProvider,
     ModelGatewayAPIError,
     extract_upstream_error_detail,
     summarize_upstream_body_for_alert,
+    upstream_origin_message,
 )
 from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.upstream_errors import (
@@ -6374,7 +6376,10 @@ class OpenAIGatewayService:
             raise
         except Exception as exc:
             raise self._normalize_upstream_error(
-                "openai", exc, ai_model=ai_model
+                "openai",
+                exc,
+                ai_model=ai_model,
+                request_id=getattr(self, "_gateway_request_id", None),
             ) from exc
 
         def event_stream() -> Iterator[str]:
@@ -6602,7 +6607,10 @@ class OpenAIGatewayService:
             raise
         except Exception as exc:
             raise self._normalize_upstream_error(
-                "openai", exc, ai_model=ai_model
+                "openai",
+                exc,
+                ai_model=ai_model,
+                request_id=getattr(self, "_gateway_request_id", None),
             ) from exc
 
         def event_stream() -> Iterator[str]:
@@ -8691,7 +8699,11 @@ class OpenAIGatewayService:
         if isinstance(last_exc, ModelGatewayAPIError):
             raise last_exc
         raise self._normalize_upstream_error(
-            provider, last_exc, ai_model=ai_model, purpose=purpose
+            provider,
+            last_exc,
+            ai_model=ai_model,
+            purpose=purpose,
+            request_id=getattr(self, "_gateway_request_id", None),
         ) from last_exc
 
     def _call_litellm(
@@ -9132,7 +9144,11 @@ class OpenAIGatewayService:
         else:
             self._capture_rate_limit_headers(headers_from_exception(exc))
             error = self._normalize_upstream_error(
-                provider, exc, ai_model=ai_model, streaming=True
+                provider,
+                exc,
+                ai_model=ai_model,
+                streaming=True,
+                request_id=getattr(self, "_gateway_request_id", None),
             )
         if error.error_class in (
             ERROR_CLASS_NETWORK,
@@ -9165,6 +9181,10 @@ class OpenAIGatewayService:
                 error_class=ERROR_CLASS_UPSTREAM_DISCONNECT,
                 retry_after_seconds=error.retry_after_seconds,
                 terminal=error.terminal,
+                origin=error.origin,
+                upstream_provider=error.upstream_provider,
+                upstream_status=error.upstream_status,
+                request_id=error.request_id,
             )
         return error
 
@@ -9225,6 +9245,7 @@ class OpenAIGatewayService:
                         "error": {
                             "code": code,
                             "message": gateway_error.message,
+                            **gateway_error.origin_fields(),
                         },
                     },
                 }
@@ -9235,6 +9256,7 @@ class OpenAIGatewayService:
                 "code": code,
                 "message": gateway_error.message,
                 "param": gateway_error.param,
+                **gateway_error.origin_fields(),
             }
         )
 
@@ -9878,12 +9900,27 @@ class OpenAIGatewayService:
         ai_model: Optional[GatewayModel] = None,
         streaming: bool = False,
         purpose: _GatewayCallPurpose = "gateway",
+        request_id: Optional[str] = None,
     ) -> ModelGatewayAPIError:
         """Map an upstream exception to a classified ModelGatewayAPIError.
 
         Uses ``classify_upstream_error`` so connection-refused, rate-limit,
         quota-exhausted, overloaded, and auth failures get distinct HTTP
         statuses and ``error_class`` values (#116, #118, #114 gateway half).
+        Provider-reported 401/402/403/404 messages name the upstream as their
+        source, and every result carries ``origin`` fields (#2288).
+
+        Args:
+            provider: The client-facing gateway protocol.
+            exc: The upstream (or translation) exception.
+            ai_model: The resolved upstream model, for attribution.
+            streaming: Whether the failure happened on a streaming call.
+            purpose: ``gateway`` for client traffic; other purposes skip
+                admin alerting.
+            request_id: The gateway request id to expose for correlation.
+
+        Returns:
+            The classified, client-facing gateway error.
         """
         if is_gateway_translation_error(exc):
             # Our translation broke before the provider saw a request. Do
@@ -9912,6 +9949,9 @@ class OpenAIGatewayService:
                 code=ERROR_CLASS_GATEWAY_TRANSLATION,
                 error_class=ERROR_CLASS_GATEWAY_TRANSLATION,
                 terminal=True,
+                origin="gateway",
+                upstream_provider=getattr(ai_model, "provider_name", None),
+                request_id=request_id,
             )
         raw_message = (
             getattr(exc, "message", None)
@@ -9934,6 +9974,27 @@ class OpenAIGatewayService:
         # the message is labeled a gateway upstream error instead of passing
         # provider wording through as if it were authoritative.
         status_is_inferred = not getattr(exc, "status_code", None)
+        reported_status = getattr(exc, "status_code", None)
+        if not isinstance(reported_status, int) or isinstance(reported_status, bool):
+            reported_status = None
+        provider_label = (
+            getattr(ai_model, "provider_name", None) or upstream_detail.provider_name
+        )
+        # A principal-bound OAuth 401 already carries Preloop's own recovery
+        # text (sync the shared login), not the provider's sentence; quoting
+        # it as "Provider message" would misattribute it.
+        keeps_recovery_text = provider == "anthropic" and (
+            getattr(ai_model, "credential_type", None)
+            in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+        )
+
+        def _origin_labelled(status: int) -> Optional[str]:
+            """The labelled message for a provider-reported 4xx, else None."""
+            if status not in ORIGIN_LABELLED_UPSTREAM_STATUSES:
+                return None
+            if status == 401 and keeps_recovery_text:
+                return None
+            return upstream_origin_message(provider_label, status, surfaced_message)
 
         if classified is not None:
             status_code = classified.status_code
@@ -9957,7 +10018,7 @@ class OpenAIGatewayService:
             ):
                 message = f"Gateway upstream error: {surfaced_message}"
             else:
-                message = surfaced_message
+                message = _origin_labelled(status_code) or surfaced_message
 
             if classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 error_type = error_type or "upstream_disconnect"
@@ -9984,6 +10045,8 @@ class OpenAIGatewayService:
             message = surfaced_message
             if status_code >= 500 and status_is_inferred:
                 message = f"Gateway upstream error: {message}"
+            elif not status_is_inferred:
+                message = _origin_labelled(status_code) or message
 
         is_disconnect = classified is not None and (
             classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT
@@ -10102,6 +10165,10 @@ class OpenAIGatewayService:
             ),
             terminal=classified.terminal if classified is not None else False,
             provider_detail=upstream_detail.provider_detail,
+            origin="upstream",
+            upstream_provider=provider_label,
+            upstream_status=reported_status,
+            request_id=request_id,
         )
 
     @staticmethod
@@ -12120,6 +12187,11 @@ class OpenAIGatewayService:
                 code=REPEATED_UPSTREAM_FAILURE_CODE,
                 error_class=exc.streak.error_class,
                 terminal=True,
+                # Preloop refused this request; the upstream failure that
+                # started the run is carried as the nested cause (#2288).
+                origin="gateway",
+                request_id=getattr(self, "_gateway_request_id", None),
+                cause=exc.first_cause.to_dict() if exc.first_cause else None,
             ) from exc
 
     def _check_budget(

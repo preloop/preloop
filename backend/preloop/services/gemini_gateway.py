@@ -16,10 +16,44 @@ from preloop.services.model_gateway_denials import (
     is_budget_denial,
     reraise_as_budget_denial,
 )
-from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.model_gateway_errors import (
+    ModelGatewayAPIError,
+    gemini_origin_details,
+)
 from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.openai_gateway import OpenAIGatewayService, gateway_database_scope
+
+#: Origin fields (#2288) copied from a Responses error event into the Gemini one.
+_RELAYED_ORIGIN_FIELDS = (
+    "origin",
+    "provider",
+    "category",
+    "upstream_status",
+    "request_id",
+    "cause",
+)
+
+
+def _gemini_origin_details(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Relay a Responses error event's origin fields as google.rpc details.
+
+    Args:
+        event: The parsed Responses ``error`` event.
+
+    Returns:
+        ``{"details": [ErrorInfo]}`` in the shape ``ModelGatewayAPIError``
+        renders for Gemini, or ``{}`` when the event carries no origin.
+    """
+    fields = {key: event[key] for key in _RELAYED_ORIGIN_FIELDS if key in event}
+    if "origin" not in fields:
+        return {}
+    code = event.get("code")
+    return {
+        "details": gemini_origin_details(
+            fields, fallback_reason=str(code) if code else None
+        )
+    }
 
 
 def _as_gemini_denial(exc: ModelGatewayAPIError) -> ModelGatewayAPIError:
@@ -45,6 +79,11 @@ def _as_gemini_denial(exc: ModelGatewayAPIError) -> ModelGatewayAPIError:
         error_class=exc.error_class,
         retry_after_seconds=exc.retry_after_seconds,
         terminal=exc.terminal,
+        origin=exc.origin,
+        upstream_provider=exc.upstream_provider,
+        upstream_status=exc.upstream_status,
+        request_id=exc.request_id,
+        cause=exc.cause,
     )
     extra = getattr(exc, "extra_response_headers", None)
     if extra:
@@ -223,6 +262,7 @@ class GeminiGatewayService(OpenAIGatewayService):
                                 "message": parsed.get("message")
                                 or "Gateway upstream error",
                                 "status": "INTERNAL",
+                                **_gemini_origin_details(parsed),
                             }
                         }
                     )

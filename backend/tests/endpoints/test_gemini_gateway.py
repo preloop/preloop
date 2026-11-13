@@ -436,6 +436,15 @@ def test_generate_content_returns_gemini_error_for_missing_auth(client):
             "code": 401,
             "message": "Missing API key",
             "status": "UNAUTHENTICATED",
+            # Preloop, not the upstream, rejected the request (#2288).
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "UNAUTHENTICATED",
+                    "domain": "preloop.ai",
+                    "metadata": {"origin": "gateway"},
+                }
+            ],
         }
     }
 
