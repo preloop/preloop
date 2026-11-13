@@ -40,6 +40,8 @@ from tests.credential_fixtures import ai_model_with_secret
 
 STORED_KEY = "sk-or-v1-synthetic-key-that-is-never-sent-anywhere"
 
+_real_record = type(crud_secret_reference).record_upstream_auth_rejection
+
 
 def _stored_model(db: Session, account_id, **overrides) -> models.AIModel:
     fields = {
@@ -241,9 +243,141 @@ def test_long_provider_message_is_trimmed_before_it_is_stored() -> None:
         )
     kwargs = crud.record_upstream_auth_rejection.call_args.kwargs
     assert kwargs["message"].startswith("User not found. x")
-    assert len(kwargs["message"]) == 200
+    # 200 kept characters plus the sanitizer's note of how many were dropped.
+    assert kwargs["message"][:200].endswith("x")
+    assert 200 < len(kwargs["message"]) < 260
     assert kwargs["provider"] == "openrouter"
     assert kwargs["status_code"] == 401
+
+
+def test_provider_message_is_made_safe_for_jsonb(
+    db_session: Session, test_user
+) -> None:
+    """A NUL or lone surrogate in the provider body must not lose the record."""
+    model = _stored_model(db_session, test_user.account_id)
+    snapshot = GatewayModelSnapshot.from_model(model)
+
+    with patch(
+        "preloop.models.crud.secret_reference.CRUDSecretReference"
+        ".record_upstream_auth_rejection",
+        autospec=True,
+        side_effect=lambda self, db, **kw: _real_record(self, db, commit=False, **kw),
+    ):
+        record_gateway_credential_outcome(
+            db_session,
+            ai_model=snapshot,
+            status_code=401,
+            error_class="upstream_auth",
+            error_detail="User\x00 not found.\ud800",
+            credential_type="api_key",
+        )
+    db_session.flush()
+    db_session.refresh(model)
+
+    assert model.credentials_status == "error"
+    assert model.credentials_upstream_rejection["message"] == "User not found."
+
+
+def test_account_row_marked_hosted_is_not_tracked() -> None:
+    """Billing treats ``meta_data.hosted`` as operator-paid; so must this."""
+    model = ai_model_with_secret(
+        id=uuid4(),
+        account_id=uuid4(),
+        name="Hosted model",
+        provider_name="deepseek",
+        model_identifier="deepseek-flash",
+        meta_data={"hosted": True},
+        api_key=STORED_KEY,
+    )
+
+    secret_crud = _record_through_gateway(
+        GatewayModelSnapshot.from_model(model),
+        status_code=401,
+        error_class="upstream_auth",
+        credential_type="api_key",
+    )
+
+    secret_crud.record_upstream_auth_rejection.assert_not_called()
+
+
+def test_late_401_from_the_old_key_does_not_mark_a_rotated_key(
+    db_session: Session, test_user
+) -> None:
+    model = _stored_model(db_session, test_user.account_id)
+    in_flight = GatewayModelSnapshot.from_model(model)
+    assert in_flight.credentials_secret_id == model.credentials_secret_id
+    assert in_flight.credentials_version == 1
+
+    get_secret_service().rotate_secret_reference(
+        db_session,
+        secret_id=model.credentials_secret_id,
+        account_id=test_user.account_id,
+        secret_value="sk-or-v1-synthetic-replacement-key",
+    )
+
+    written = crud_secret_reference.record_upstream_auth_rejection(
+        db_session,
+        ai_model_id=model.id,
+        secret_id=in_flight.credentials_secret_id,
+        version=in_flight.credentials_version,
+        provider="openrouter",
+        status_code=401,
+        message="User not found.",
+        now=datetime.now(timezone.utc),
+        commit=False,
+    )
+    db_session.refresh(model)
+
+    assert written is False
+    assert model.credentials_status == "active"
+
+
+def test_late_success_from_the_old_key_does_not_clear_a_new_keys_rejection(
+    db_session: Session, test_user
+) -> None:
+    model = _stored_model(db_session, test_user.account_id)
+    in_flight = GatewayModelSnapshot.from_model(model)
+    get_secret_service().rotate_secret_reference(
+        db_session,
+        secret_id=model.credentials_secret_id,
+        account_id=test_user.account_id,
+        secret_value="sk-or-v1-synthetic-replacement-key",
+    )
+    assert _reject(db_session, model, now=datetime.now(timezone.utc)) is True
+
+    cleared = crud_secret_reference.clear_upstream_auth_rejection(
+        db_session,
+        ai_model_id=model.id,
+        secret_id=in_flight.credentials_secret_id,
+        version=in_flight.credentials_version,
+        now=datetime.now(timezone.utc),
+        commit=False,
+    )
+    db_session.refresh(model)
+
+    assert cleared is False
+    assert model.credentials_status == "error"
+
+
+def test_verdict_for_a_replaced_secret_row_is_ignored(
+    db_session: Session, test_user
+) -> None:
+    model = _stored_model(db_session, test_user.account_id)
+
+    written = crud_secret_reference.record_upstream_auth_rejection(
+        db_session,
+        ai_model_id=model.id,
+        secret_id=uuid4(),
+        version=1,
+        provider="openrouter",
+        status_code=401,
+        message="User not found.",
+        now=datetime.now(timezone.utc),
+        commit=False,
+    )
+
+    assert written is False
+    assert model.credentials_status == "active"
 
 
 def _record_through_gateway(
@@ -366,6 +500,8 @@ def test_gateway_records_an_upstream_401_against_the_models_key() -> None:
     secret_crud.record_upstream_auth_rejection.assert_called_once()
     kwargs = secret_crud.record_upstream_auth_rejection.call_args.kwargs
     assert kwargs["ai_model_id"] == snapshot.id
+    assert kwargs["secret_id"] == snapshot.credentials_secret_id
+    assert kwargs["version"] == snapshot.credentials_version
     assert kwargs["provider"] == "openrouter"
     assert kwargs["status_code"] == 401
     assert kwargs["message"] == "User not found."
@@ -380,10 +516,10 @@ def test_gateway_clears_the_rejection_when_the_provider_accepts_the_key() -> Non
     )
 
     secret_crud.clear_upstream_auth_rejection.assert_called_once()
-    assert (
-        secret_crud.clear_upstream_auth_rejection.call_args.kwargs["ai_model_id"]
-        == snapshot.id
-    )
+    kwargs = secret_crud.clear_upstream_auth_rejection.call_args.kwargs
+    assert kwargs["ai_model_id"] == snapshot.id
+    assert kwargs["secret_id"] == snapshot.credentials_secret_id
+    assert kwargs["version"] == snapshot.credentials_version
     secret_crud.record_upstream_auth_rejection.assert_not_called()
 
 

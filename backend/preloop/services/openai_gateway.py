@@ -11116,6 +11116,7 @@ class OpenAIGatewayService:
                 error_class=error_class,
                 error_detail=error_detail,
                 credential_type=self._last_upstream_credential_type,
+                hosted=model_billing_is_hosted(ai_model),
             )
         except Exception as exc:  # noqa: BLE001 - never break recording
             self._rollback_activity_recording(

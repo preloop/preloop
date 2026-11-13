@@ -74,10 +74,22 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         )
 
     def _lock_for_ai_model(
-        self, db: Session, *, ai_model_id: UUID
+        self,
+        db: Session,
+        *,
+        ai_model_id: UUID,
+        secret_id: Optional[UUID],
+        version: Optional[int],
     ) -> Optional[models.SecretReference]:
-        """Lock the credential secret a model currently points at."""
-        return (
+        """Lock the credential secret a request used, if it is still current.
+
+        ``secret_id`` and ``version`` name the stored material the request
+        resolved. When the model has since been pointed at another secret, or
+        the material was rotated, the request's verdict is about a key that is
+        no longer stored and ``None`` is returned. Callers that pass ``None``
+        for both accept whatever the model points at now.
+        """
+        secret = (
             db.query(self.model)
             .join(
                 models.AIModel,
@@ -88,12 +100,21 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
             .with_for_update(of=self.model)
             .one_or_none()
         )
+        if secret is None:
+            return None
+        if secret_id is not None and secret.id != secret_id:
+            return None
+        if version is not None and (secret.version or 1) != version:
+            return None
+        return secret
 
     def record_upstream_auth_rejection(
         self,
         db: Session,
         *,
         ai_model_id: UUID,
+        secret_id: Optional[UUID] = None,
+        version: Optional[int] = None,
         provider: str,
         status_code: int,
         message: str,
@@ -109,7 +130,10 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
 
         Args:
             db: Database session.
-            ai_model_id: Model whose current credential was rejected.
+            ai_model_id: Model whose credential was rejected.
+            secret_id: Secret row the rejected request resolved, if known.
+            version: Rotation counter of that material, if known. A verdict
+                for material that is no longer stored is ignored.
             provider: Provider name that answered.
             status_code: Upstream HTTP status.
             message: Provider message, already trimmed by the caller.
@@ -119,7 +143,9 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         Returns:
             True when the row was written.
         """
-        secret = self._lock_for_ai_model(db, ai_model_id=ai_model_id)
+        secret = self._lock_for_ai_model(
+            db, ai_model_id=ai_model_id, secret_id=secret_id, version=version
+        )
         if secret is None:
             if commit:
                 db.rollback()
@@ -161,6 +187,8 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
         db: Session,
         *,
         ai_model_id: UUID,
+        secret_id: Optional[UUID] = None,
+        version: Optional[int] = None,
         now: datetime,
         commit: bool = True,
     ) -> bool:
@@ -168,14 +196,19 @@ class CRUDSecretReference(CRUDBase[models.SecretReference]):
 
         Args:
             db: Database session.
-            ai_model_id: Model whose current credential was accepted.
+            ai_model_id: Model whose credential was accepted.
+            secret_id: Secret row the accepted request resolved, if known.
+            version: Rotation counter of that material, if known. An accepted
+                request with material that is no longer stored clears nothing.
             now: Time of the accepted request, stored as ``last_verified_at``.
             commit: Commit after writing; False leaves it to the caller.
 
         Returns:
             True when a rejection was removed.
         """
-        secret = self._lock_for_ai_model(db, ai_model_id=ai_model_id)
+        secret = self._lock_for_ai_model(
+            db, ai_model_id=ai_model_id, secret_id=secret_id, version=version
+        )
         if secret is None or secret.upstream_auth_rejection is None:
             if commit:
                 db.rollback()

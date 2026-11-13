@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
 from preloop.services.upstream_errors import ERROR_CLASS_UPSTREAM_AUTH
+from preloop.utils.jsonb_sanitize import sanitize_string
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +94,14 @@ def record_gateway_credential_outcome(
     error_class: Optional[str],
     error_detail: Optional[str],
     credential_type: Optional[str],
+    hosted: bool = False,
 ) -> None:
     """Record what one gateway request proved about the model's API key.
 
     Only customer-owned models with an API-key credential are tracked. A
-    platform-owned (hosted) model's key is the operator's concern and must not
-    show up as a customer's credential problem.
+    deployment-provided model's key is the operator's concern and must not
+    show up as a customer's credential problem: that covers system models
+    (no owning account) and account rows marked ``hosted``.
 
     Args:
         db: The gateway's own short bookkeeping session. Each write commits.
@@ -107,21 +110,33 @@ def record_gateway_credential_outcome(
         error_class: Recorded error class, if the request failed.
         error_detail: Provider message recorded for the failure.
         credential_type: Credential type the gateway sent upstream.
+        hosted: The model is deployment-provided (operator-paid), by the same
+            rule billing uses. Its key is never a customer's to rotate.
     """
-    if credential_type != "api_key":
+    if credential_type != "api_key" or hosted:
         return
     model_id = getattr(ai_model, "id", None)
     if model_id is None or getattr(ai_model, "account_id", None) is None:
         return
 
     if status_code == 401 and error_class == ERROR_CLASS_UPSTREAM_AUTH:
-        message = " ".join(str(error_detail or "").split())
+        # Provider bodies can carry NUL or lone surrogates, which PostgreSQL
+        # refuses in JSONB; an unsanitized message would lose the record.
+        message = sanitize_string(
+            " ".join(str(error_detail or "").split()),
+            max_chars=_MAX_PROVIDER_MESSAGE_CHARS,
+        )
+        credential = {
+            "secret_id": getattr(ai_model, "credentials_secret_id", None),
+            "version": getattr(ai_model, "credentials_version", None),
+        }
         crud_secret_reference.record_upstream_auth_rejection(
             db,
             ai_model_id=model_id,
+            **credential,
             provider=str(getattr(ai_model, "provider_name", "") or ""),
             status_code=status_code,
-            message=message[:_MAX_PROVIDER_MESSAGE_CHARS],
+            message=message,
             now=datetime.now(timezone.utc),
         )
         return
@@ -130,5 +145,7 @@ def record_gateway_credential_outcome(
         crud_secret_reference.clear_upstream_auth_rejection(
             db,
             ai_model_id=model_id,
+            secret_id=getattr(ai_model, "credentials_secret_id", None),
+            version=getattr(ai_model, "credentials_version", None),
             now=datetime.now(timezone.utc),
         )
