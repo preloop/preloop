@@ -167,7 +167,8 @@ inputs and your own validator instead.
   "checkout_verified": true,
   "setup_completed": true,
   "agent_started_at": "2030-01-01T00:00:00+00:00",
-  "lease_revoked": true
+  "lease_revoked": true,
+  "agent_cli": {"name": "codex", "version": "0.153.4"}
 }
 ```
 
@@ -181,7 +182,11 @@ failure is reported. `lease_revoked` is null until terminal cleanup, then
 records whether GitHub confirmed revocation of every read lease. The receipt
 is null when startup did not complete. A private runner review reports its
 runner receipt in the same shape with `executor: "private_runner"` and its
-`sandbox`. The receipt describes the controller's observation of the
+`sandbox`. `agent_cli` names the CLI and the version the container printed
+(`codex --version`) before the agent started; it is null when no version line
+was seen before the start marker, and always null for a private runner, whose
+runner does not report it yet. Fields are only ever added to `version: 1`, so
+ignore keys you do not know. The receipt describes the controller's observation of the
 container's own output; setup commands run repository code inside that same
 container, so treat it as the platform's assertion, not an independent
 attestation. The completion callback body is unchanged; fetch `GET /api/v1/flows/executions/{id}` or
@@ -337,6 +342,17 @@ pause the same way; a hosted Codex run that has such a rule but cannot
 install the hook is refused before Codex starts with `approval_unavailable`.
 Other hosted harnesses have no native hook and are refused before launch with
 `approval_unavailable` when such a rule applies.
+
+Before a hosted Codex container that installs the hook starts, Preloop checks
+the execution's runtime credential with the same rules
+`POST /api/v1/agents/permission-check` applies on every hook call. If the hook
+would be refused (for example a read-only review key with a widened scope, an
+attached managed agent, or no runtime credential at all), the run ends
+`FAILED` with `hook_binding_invalid` before the container starts: no model
+call is made and no startup receipt is issued. The error message names the
+refusal. This rule applies whether or not a deny or approval rule exists. It
+points at a server-side binding fault, not at your CI configuration; retry
+once, and report the execution ID if it repeats.
 
 Limits of a host run compared with the hosted container: the Codex sandbox and
 the approval hook are the only boundaries between the review and the runner
