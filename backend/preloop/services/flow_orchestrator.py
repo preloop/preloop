@@ -3683,23 +3683,39 @@ class FlowExecutionOrchestrator:
             )
             or AUTO_RUNNER_POOL
         )
-        runners = crud_flow_runner.find_matching(
+        everyone = crud_flow_runner.find_matching(
             self.db, account_id=self.flow.account_id, pool=pool, online_only=False
         )
+        runners = everyone
         pin = harness_pinned_runner_id(config)
         if pin is not None:
             runners = [row for row in runners if row.id == pin]
+        flow_id = str(self.flow.id) if getattr(self.flow, "id", None) else None
+        model_identifier = host_exec_model_identifier(kind, config)
         eligible, reason = harness_routing_reason(
             self.db,
             runners,
             account_id=self.flow.account_id,
             harness=harness,
-            model=host_exec_model_identifier(kind, config),
+            model=model_identifier,
             pool=pool,
             pinned_runner_id=pin,
-            flow_id=(str(self.flow.id) if getattr(self.flow, "id", None) else None),
+            flow_id=flow_id,
         )
         if eligible:
+            return
+        if self._offline_reroute_available(
+            everyone,
+            config=config,
+            pin=pin,
+            pinned=runners[0] if runners else None,
+            harness=harness,
+            model=model_identifier,
+            pool=pool,
+            flow_id=flow_id,
+        ):
+            # offline_policy=reroute (#1508) to another authorized runner
+            # beats the hosted fallback; the lease does the reroute.
             return
         wanted = str(config.get("fallback_model_identifier") or "").strip()
         model = resolve_fallback_server_model(
@@ -3726,6 +3742,84 @@ class FlowExecutionOrchestrator:
             self.execution_log.billing_mode = BILLING_MODE_METERED
             self.db.add(self.execution_log)
             self.db.commit()
+
+    def _offline_reroute_available(
+        self,
+        runners: List[Any],
+        *,
+        config: Dict[str, Any],
+        pin: Any,
+        pinned: Any,
+        harness: str,
+        model: Optional[str],
+        pool: str,
+        flow_id: Optional[str],
+    ) -> bool:
+        """Whether ``offline_policy=reroute`` has a runner to move the run to.
+
+        Args:
+            runners: Every runner in the pool, online or not.
+            config: The flow's unwrapped agent_config.
+            pin: ``agent_config.runner_id``, if any.
+            pinned: The pinned runner row, if it is in the pool.
+            harness: Harness of the run.
+            model: Harness model, if pinned.
+            pool: Resolved runner pool.
+            flow_id: The flow id.
+
+        Returns:
+            True when the pinned runner is away and another authorized
+            runner with the same harness, model and billing could take the
+            lease now (free slot, not paused, consent, host profile and
+            authorized directory), so the explicit hosted fallback is not
+            skipped for a reroute that would then find nobody.
+        """
+        from preloop.services.host_exec import (
+            OFFLINE_POLICY_REROUTE,
+            host_exec_effective_profile,
+            host_exec_workspace,
+            offline_policy_mode,
+        )
+        from preloop.services.runner_service import (
+            harness_entry_billing,
+            harness_routing_reason,
+            runner_away_reason,
+            runner_can_take_lease_now,
+            runner_harness_entry,
+        )
+
+        if pin is None or offline_policy_mode(config) != OFFLINE_POLICY_REROUTE:
+            return False
+        if runner_away_reason(pinned) is None:
+            return False
+        kind = self.agent_type or self.flow.agent_type
+        workspace = host_exec_workspace(config)
+        profile = host_exec_effective_profile(kind, config)
+        takers = [
+            runner
+            for runner in runners
+            if runner_can_take_lease_now(
+                runner,
+                profile=profile,
+                agent_type=kind,
+                workspace_id=workspace.get("id") if workspace else None,
+                harness=harness,
+            )
+        ]
+        eligible, _reason = harness_routing_reason(
+            self.db,
+            takers,
+            account_id=self.flow.account_id,
+            harness=harness,
+            model=model,
+            pool=pool,
+            flow_id=flow_id,
+            reroute_from=pin,
+            required_billing=harness_entry_billing(
+                runner_harness_entry(pinned, harness)
+            ),
+        )
+        return eligible > 0
 
     async def _prepare_execution_context(
         self, *, resolved_prompt: Optional[str] = None
@@ -6731,6 +6825,7 @@ class FlowExecutionOrchestrator:
             REVIEW_PUBLICATION_INCOMPLETE,
             REVIEW_PUBLICATION_RESULT_KEY,
             STATUS_NOT_PUBLISHED,
+            STATUS_UNVERIFIED,
             evaluate_review_publication,
             trigger_pull_request,
         )
@@ -6755,6 +6850,15 @@ class FlowExecutionOrchestrator:
                     head_sha=head,
                 )
 
+            def list_review_activity() -> Any:
+                from preloop.models.crud import crud_runtime_session_activity
+
+                return crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                    self.db,
+                    account_id=account_id,
+                    flow_execution_id=self.execution_log.id,
+                )
+
             outcome = evaluate_review_publication(
                 receipts,
                 repository=repository,
@@ -6762,6 +6866,7 @@ class FlowExecutionOrchestrator:
                 head_sha=head_sha,
                 artifact=merged_result,
                 find_prior_receipt=find_prior,
+                list_review_activity=list_review_activity,
             )
         except Exception:
             logger.error(
@@ -6779,6 +6884,13 @@ class FlowExecutionOrchestrator:
             merged_result = {}
         merged_result[REVIEW_PUBLICATION_RESULT_KEY] = outcome
         self.execution_logger.log_milestone("review_publication", dict(outcome))
+        if outcome["status"] == STATUS_UNVERIFIED:
+            logger.warning(
+                "Execution %s has no review publication receipt; tool activity "
+                "shows the review was delivered, recording it as unverified "
+                "(API and worker builds may differ)",
+                getattr(self.execution_log, "id", None),
+            )
         if final_status == "SUCCEEDED" and outcome["status"] == STATUS_NOT_PUBLISHED:
             final_status = "FAILED"
             agent_result = {

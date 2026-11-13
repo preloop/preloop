@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from preloop.services.model_gateway_errors import provider_message_from_label
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
 from preloop.services.upstream_errors import ERROR_CLASS_UPSTREAM_AUTH
@@ -122,8 +123,11 @@ def record_gateway_credential_outcome(
     if status_code == 401 and error_class == ERROR_CLASS_UPSTREAM_AUTH:
         # Provider bodies can carry NUL or lone surrogates, which PostgreSQL
         # refuses in JSONB; an unsanitized message would lose the record.
+        # The recorded detail is the client-facing message, which names the
+        # upstream origin (#2288); the credential keeps the provider's own
+        # sentence, as the summary already says who rejected the key.
         message = sanitize_string(
-            " ".join(str(error_detail or "").split()),
+            " ".join(str(provider_message_from_label(error_detail) or "").split()),
             max_chars=_MAX_PROVIDER_MESSAGE_CHARS,
         )
         crud_secret_reference.record_upstream_auth_rejection(

@@ -80,7 +80,13 @@ from preloop.services.flow_failure_category import (
 )
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
+    ERROR_CLASS_NETWORK,
+    ERROR_CLASS_UPSTREAM_AUTH,
+    ERROR_CLASS_UPSTREAM_DISCONNECT,
+    ERROR_CLASS_UPSTREAM_ERROR,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
+    ERROR_CLASS_UPSTREAM_PROTOCOL,
+    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     ERROR_CLASS_UPSTREAM_RATE_LIMITED,
     is_terminal_error_class,
 )
@@ -700,6 +706,11 @@ _UNCOUNTED_ERROR_CLASSES = frozenset(
         "hosted_credit_reserved",
     }
 )
+#: Recorded outcomes that are not upstream failures at all; never a cause.
+_NOT_UPSTREAM_ERROR_CLASSES = _UNCOUNTED_ERROR_CLASSES - {
+    ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+    ERROR_CLASS_UPSTREAM_OVERLOADED,
+}
 
 
 @dataclass(frozen=True)
@@ -737,15 +748,92 @@ class FailureStreak:
     threshold: int
 
 
+#: Classes the upstream provider decided; anything else is Preloop's own.
+_UPSTREAM_ERROR_CLASSES = frozenset(
+    {
+        ERROR_CLASS_NETWORK,
+        ERROR_CLASS_UPSTREAM_AUTH,
+        ERROR_CLASS_UPSTREAM_DISCONNECT,
+        ERROR_CLASS_UPSTREAM_ERROR,
+        ERROR_CLASS_UPSTREAM_OVERLOADED,
+        ERROR_CLASS_UPSTREAM_PROTOCOL,
+        ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+    }
+)
+#: Message prefixes of ``upstream_origin_message`` (model_gateway_errors).
+_UPSTREAM_LABEL_PREFIXES = ("Upstream provider ", "The upstream provider ")
+#: Cap on the first cause's provider text carried into the stop summary.
+_MAX_FIRST_CAUSE_DETAIL_CHARS = 600
+
+
+@dataclass(frozen=True)
+class FirstFailureCause:
+    """The failure that started a run of failures (#2288).
+
+    The breaker trips on the trailing streak; this is what the run's first
+    failing call reported, so the stop summary never replaces the original
+    cause with a later error.
+    """
+
+    status_code: int
+    error_class: Optional[str]
+    provider: Optional[str]
+    detail: Optional[str]
+    request_id: Optional[str]
+
+    @property
+    def origin(self) -> Optional[str]:
+        """Who decided the failure, or ``None`` when the row cannot tell.
+
+        Provider-side classes are ``upstream`` and any other class is
+        Preloop's own. A provider 4xx such as a routing 404 is recorded
+        without a class; it is ``upstream`` when its message carries the
+        gateway's upstream-origin label.
+        """
+        if self.error_class:
+            if self.error_class in _UPSTREAM_ERROR_CLASSES:
+                return "upstream"
+            return "gateway"
+        if self.detail and self.detail.startswith(_UPSTREAM_LABEL_PREFIXES):
+            return "upstream"
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The ``cause`` object for the 424 body and the timeline."""
+        cause: dict[str, Any] = {"status": self.status_code}
+        origin = self.origin
+        if origin:
+            cause["origin"] = origin
+        if self.error_class:
+            cause["category"] = self.error_class
+        if origin == "upstream":
+            cause["upstream_status"] = self.status_code
+        if self.provider:
+            cause["provider"] = self.provider
+        if self.detail:
+            cause["message"] = self.detail
+        if self.request_id:
+            cause["request_id"] = self.request_id
+        return cause
+
+
 class RepeatedUpstreamFailureError(Exception):
     """A run's model calls kept failing identically; stop it."""
 
     category = FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
 
-    def __init__(self, message: str, *, streak: FailureStreak) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        streak: FailureStreak,
+        first_cause: Optional[FirstFailureCause] = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.streak = streak
+        self.first_cause = first_cause
 
 
 def parse_failure_streak_threshold(agent_config: Optional[Mapping[str, Any]]) -> int:
@@ -810,38 +898,111 @@ def evaluate_failure_streak(
     )
 
 
-def repeated_failure_message(streak: FailureStreak) -> str:
-    """The readable sentence stored on the execution and sent to the agent."""
-    return (
+def repeated_failure_message(
+    streak: FailureStreak, first_cause: Optional[FirstFailureCause] = None
+) -> str:
+    """The readable sentence stored on the execution and sent to the agent.
+
+    Args:
+        streak: The tripped streak (why the run stopped).
+        first_cause: The run's first failure (why it started failing), kept
+            so a later error never stands in for the original cause.
+
+    Returns:
+        The stop summary.
+    """
+    message = (
         f"Repeated upstream failure: {streak.count} identical "
         f"{streak.error_class} (HTTP {streak.status_code}) failures in a row "
         "for the same model request; the gateway stopped the run instead of "
         f"retrying it (limit {streak.threshold}, set "
         f"agent_config.limits.{MAX_CONSECUTIVE_IDENTICAL_FAILURES_KEY} to change it)"
     )
+    if first_cause is None:
+        return message
+    source = f"HTTP {first_cause.status_code}"
+    if first_cause.origin == "gateway":
+        source = f"{source} from the Preloop gateway"
+    elif first_cause.origin == "upstream" and first_cause.provider:
+        source = f"{source} from upstream provider {first_cause.provider}"
+    if first_cause.error_class:
+        source = f"{first_cause.error_class}, {source}"
+    message = f"{message}. First failure in this run ({source})"
+    if first_cause.detail:
+        message = f"{message}: {first_cause.detail}"
+    return message
+
+
+def _read_first_failure_cause(
+    db: Session, execution_id: str
+) -> Optional[FirstFailureCause]:
+    """Read the run's first failure since its last success. Never raises."""
+    try:
+        from preloop.models.crud import crud_api_usage
+
+        row = crud_api_usage.get_first_gateway_failure(
+            db,
+            execution_id=execution_id,
+            excluded_error_classes=sorted(_NOT_UPSTREAM_ERROR_CLASSES),
+        )
+    except Exception:  # noqa: BLE001 - the refusal matters more than the cause
+        logger.warning(
+            "Could not read the first failure cause for %s",
+            execution_id,
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:  # pragma: no cover - rollback is best effort
+            logger.debug("Rollback after first-cause read failure failed")
+        return None
+    if not row:
+        return None
+    from preloop.utils.secret_scrubbing import scrub_secrets
+
+    raw_detail = row.get("error_detail")
+    detail = (
+        (scrub_secrets(str(raw_detail)) or "")[:_MAX_FIRST_CAUSE_DETAIL_CHARS]
+        if raw_detail
+        else None
+    )
+    return FirstFailureCause(
+        status_code=int(row.get("status_code") or 0),
+        error_class=row.get("error_class") or None,
+        provider=row.get("provider_name") or None,
+        detail=detail or None,
+        request_id=row.get("gateway_request_id") or None,
+    )
 
 
 def _append_breaker_milestone(
-    db: Session, execution: Any, streak: FailureStreak, message: str
+    db: Session,
+    execution: Any,
+    streak: FailureStreak,
+    message: str,
+    first_cause: Optional[FirstFailureCause] = None,
 ) -> None:
     """Persist the trip to the execution timeline. Never raises."""
     try:
         from preloop.models.crud import crud_flow_execution
 
+        metadata: dict[str, Any] = {
+            "milestone": REPEATED_UPSTREAM_FAILURE_MILESTONE,
+            "error_class": streak.error_class,
+            "status_code": streak.status_code,
+            "attempts": streak.count,
+            "threshold": streak.threshold,
+            "request_fingerprint": streak.request_fingerprint,
+        }
+        if first_cause is not None:
+            metadata["first_cause"] = first_cause.to_dict()
         crud_flow_execution.append_log(
             db,
             execution_id=execution.id,
             log_data={
                 "type": "milestone",
                 "message": message,
-                "metadata": {
-                    "milestone": REPEATED_UPSTREAM_FAILURE_MILESTONE,
-                    "error_class": streak.error_class,
-                    "status_code": streak.status_code,
-                    "attempts": streak.count,
-                    "threshold": streak.threshold,
-                    "request_fingerprint": streak.request_fingerprint,
-                },
+                "metadata": metadata,
             },
         )
     except Exception:  # noqa: BLE001 - the refusal matters more than the log
@@ -915,14 +1076,19 @@ def enforce_failure_streak_for_id(db: Session, *, execution_id: Any) -> None:
         return
     if streak is None:
         return
-    message = repeated_failure_message(streak)
+    first_cause = _read_first_failure_cause(db, str(execution_uuid))
+    message = repeated_failure_message(streak, first_cause)
     if str(getattr(execution, "status", "") or "").upper() not in TERMINAL_STATUSES:
-        _fail_once_with_milestone(db, execution, streak, message)
-    raise RepeatedUpstreamFailureError(message, streak=streak)
+        _fail_once_with_milestone(db, execution, streak, message, first_cause)
+    raise RepeatedUpstreamFailureError(message, streak=streak, first_cause=first_cause)
 
 
 def _fail_once_with_milestone(
-    db: Session, execution: Any, streak: FailureStreak, message: str
+    db: Session,
+    execution: Any,
+    streak: FailureStreak,
+    message: str,
+    first_cause: Optional[FirstFailureCause] = None,
 ) -> None:
     """Move the run to FAILED and log the milestone, once across requests.
 
@@ -942,7 +1108,7 @@ def _fail_once_with_milestone(
         if not moved:
             db.rollback()
             return
-        _append_breaker_milestone(db, execution, streak, message)
+        _append_breaker_milestone(db, execution, streak, message, first_cause)
         db.refresh(execution)
     except Exception:  # noqa: BLE001 - annotation never fails the refusal
         logger.exception(

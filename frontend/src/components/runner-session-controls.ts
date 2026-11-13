@@ -158,6 +158,10 @@ export class RunnerSessionControls extends LitElement {
 
   private modeLine(): string {
     if (this.commandTarget) {
+      if (this.control?.reason_code === 'runner_away') {
+        // #1509: the session waits for the host instead of failing.
+        return 'Your laptop is asleep or offline: your message is held and starts the next turn when it reconnects.';
+      }
       return "Runner online: your message starts the agent's next turn.";
     }
     if (this.controlError) {

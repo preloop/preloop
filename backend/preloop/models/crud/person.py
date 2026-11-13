@@ -237,6 +237,8 @@ class CRUDPerson:
 
     @staticmethod
     def _bump(db: Session, person: models.Person) -> None:
+        from preloop.models.crud.auth_revocation import stage_revocation
+
         person.auth_generation += 1
         memberships = select(models.User.id).where(models.User.person_id == person.id)
         for token_type in (models.OAuthMCPAccessToken, models.OAuthMCPRefreshToken):
@@ -258,11 +260,14 @@ class CRUDPerson:
             )
             .values(revoked_at=datetime.now(timezone.utc))
         )
-        db.execute(
+        changed = db.execute(
             update(models.User)
             .where(models.User.person_id == person.id)
             .values(auth_generation=models.User.auth_generation + 1)
-        )
+            .returning(models.User.id, models.User.auth_generation)
+        ).all()
+        for user_id, generation in changed:
+            stage_revocation(db, user_id=user_id, generation=generation)
 
     @staticmethod
     def _finish(db: Session, person: models.Person, commit: bool) -> models.Person:

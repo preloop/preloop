@@ -8,9 +8,12 @@ from preloop.services.review_publication import (
     REASON_NO_RECEIPT,
     REASON_OTHER_HEAD,
     REASON_OTHER_TARGET,
+    REASON_RECEIPT_UNAVAILABLE,
     STATUS_ALREADY_REVIEWED,
     STATUS_NOT_PUBLISHED,
     STATUS_PUBLISHED,
+    STATUS_UNVERIFIED,
+    delivered_review_activity,
     evaluate_review_publication,
     parse_pull_request_url,
     review_publication_required,
@@ -234,3 +237,100 @@ def test_bitbucket_trigger_rejects_a_receipt_for_another_pull_request() -> None:
         pull_request=target[1],
     )
     assert outcome["status"] == STATUS_NOT_PUBLISHED
+
+
+def _activity(status="succeeded", tool="update_pull_request", **work_ref):
+    ref = {"action": "reviewed", "ref": "#7", "repo": REPO}
+    ref.update(work_ref)
+    return SimpleNamespace(
+        id="a1", tool_name=tool, status=status, metadata_={"work_ref": ref}
+    )
+
+
+def _evaluate_with_activity(receipts, activities, **target):
+    calls = []
+
+    def listed():
+        calls.append(1)
+        return activities
+
+    kwargs = dict(repository=REPO, pull_request="7", head_sha=HEAD)
+    kwargs.update(target)
+    outcome = evaluate_review_publication(
+        receipts,
+        artifact={},
+        find_prior_receipt=lambda *_a: None,
+        list_review_activity=listed,
+        **kwargs,
+    )
+    return outcome, len(calls)
+
+
+def test_no_receipt_with_delivered_review_is_unverified_not_published() -> None:
+    outcome, _ = _evaluate_with_activity([], [_activity(review_state="approved")])
+    assert outcome == {
+        "status": STATUS_UNVERIFIED,
+        "reason": REASON_RECEIPT_UNAVAILABLE,
+        "activity_id": "a1",
+        "review_state": "approved",
+        "head_sha": HEAD,
+    }
+    assert outcome["status"] != STATUS_PUBLISHED
+
+
+def test_gitlab_merge_request_activity_matches_by_path() -> None:
+    outcome, _ = _evaluate_with_activity(
+        [],
+        [_activity(ref="!4", repo="Group/Sub/Project")],
+        repository="group/sub/project",
+        pull_request="4",
+    )
+    assert outcome["status"] == STATUS_UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "activity",
+    [
+        _activity(ref="#8"),
+        _activity(repo="example-org/other"),
+        _activity(repo=None),
+        _activity(status="failed"),
+        _activity(status="denied"),
+        _activity(status=None),
+        _activity(tool="get_pull_request"),
+        _activity(action="pull_request_updated"),
+        SimpleNamespace(
+            id="a2", tool_name="update_pull_request", status="succeeded", metadata_=None
+        ),
+    ],
+)
+def test_activity_that_is_not_a_delivered_review_still_fails(activity) -> None:
+    outcome, _ = _evaluate_with_activity([], [activity])
+    assert outcome == {"status": STATUS_NOT_PUBLISHED, "reason": REASON_NO_RECEIPT}
+
+
+def test_activity_never_rescues_a_receipt_for_another_target_or_head() -> None:
+    for overrides, reason in (
+        ({"pull_request": "8"}, REASON_OTHER_TARGET),
+        ({"head_sha": "d" * 40}, REASON_OTHER_HEAD),
+    ):
+        outcome, calls = _evaluate_with_activity([_receipt(**overrides)], [_activity()])
+        assert outcome == {"status": STATUS_NOT_PUBLISHED, "reason": reason}
+        assert calls == 0
+
+
+def test_activity_is_not_read_when_a_receipt_matches() -> None:
+    outcome, calls = _evaluate_with_activity([_receipt()], [_activity()])
+    assert outcome["status"] == STATUS_PUBLISHED
+    assert calls == 0
+
+
+def test_activity_needs_a_triggering_pull_request() -> None:
+    outcome, _ = _evaluate_with_activity(
+        [], [_activity()], repository=None, pull_request=None, head_sha=None
+    )
+    assert outcome == {"status": STATUS_NOT_PUBLISHED, "reason": REASON_NO_RECEIPT}
+    assert (
+        delivered_review_activity([_activity()], repository=None, pull_request="7")
+        is None
+    )

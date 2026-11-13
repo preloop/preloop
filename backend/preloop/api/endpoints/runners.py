@@ -61,6 +61,7 @@ from preloop.services.runner_sessions import (
     apply_runner_session_message,
     end_sessions_for_kill_switch,
     flows_or_tools_halted,
+    mark_sessions_away,
     pending_runner_messages,
 )
 from preloop.services.runner_workspace_credentials import (
@@ -1630,6 +1631,7 @@ async def runner_ws(
                 crud_flow_runner.set_presence_signals(db, runner, sleeping=True)
                 if _refresh_presence(db, runner):
                     emit_runner_updated(runner, db)
+                _mark_sessions_away(db, runner)
                 release_transaction(db)
                 await websocket.send_json({"type": "ack"})
                 continue
@@ -1664,6 +1666,24 @@ async def runner_ws(
                 if row:
                     _refresh_presence(db, row)
                     emit_runner_updated(row, db)
+
+
+def _mark_sessions_away(db: Session, runner: FlowRunner) -> None:
+    """Show the runner's remote sessions as ``runner_away`` (#1509).
+
+    Best effort: the sweep marks them within a minute or two if this fails.
+    A plain disconnect is left to the sweep, so a network blip that
+    reconnects at once does not flap the session state.
+
+    Args:
+        db: Database session.
+        runner: A runner that just said ``going_to_sleep``.
+    """
+    try:
+        mark_sessions_away(db, runner)
+    except Exception:  # noqa: BLE001 - the sweep repeats it
+        logger.exception("Marking sessions away failed for runner %s", runner.id)
+        db.rollback()
 
 
 async def push_job_to_runner(runner_id: UUID, job: Dict[str, Any]) -> bool:

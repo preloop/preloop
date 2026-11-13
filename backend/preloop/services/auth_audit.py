@@ -40,6 +40,8 @@ _SAFE_FIELDS = frozenset(
         "enforce",
         "session_max_age_seconds",
         "was_verified",
+        "reason",
+        "passkey_count",
     }
 )
 
@@ -190,7 +192,9 @@ def record_auth_event(
             resource_id=str(resource_id or person_id)
             if resource_id or person_id
             else None,
-            status="failure" if action.endswith((".failed", ".blocked")) else "success",
+            status="failure"
+            if action.endswith((".failed", ".blocked", ".login_refused"))
+            else "success",
             ip_address=source_ip,
             details=clean,
             commit=False,
@@ -251,6 +255,11 @@ def login_failure_reason(error: Exception, *, method: str) -> str:
     """Classify failures without retaining response text or exception payloads."""
     if not isinstance(error, HTTPException):
         return "internal_error"
+    detail = error.detail if isinstance(error.detail, dict) else {}
+    if error.status_code == 401 and detail.get("code") == "password_login_disabled":
+        # The credential was correct; the account requires a passkey. Not a
+        # failed guess, so it must not spend the failed-login budget.
+        return "password_login_disabled"
     if error.status_code == 404:
         return f"{method}_disabled"
     if error.status_code == 400:

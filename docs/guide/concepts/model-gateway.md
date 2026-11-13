@@ -48,6 +48,7 @@ If you use Claude Code with a **Pro/Max subscription** instead of an API key, Pr
 - **No context optimization on this traffic.** Message-level context optimizations are deliberately not applied: rewriting blocks would break byte-fidelity and destroy the prompt-cache prefix. See [Session Optimization](../cost/session-optimization.md#what-optimization-cannot-do-subscription-oauth-traffic).
 - **The credential does not leak to other agents.** The OAuth token lives on one AI model in your account, and gateway calls resolve models per authenticated subject with per-agent attribution: another agent cannot ride a Claude Code subscription credential.
 - **Validation is surfaced honestly.** Onboarding sends a direct gateway route/accounting probe using managed configuration; it does not launch the application. If the provider throttles it or refuses on billing/quota grounds, the agent stays enrolled but shows an **unverified** badge in the console (and a Reason in `preloop agents list`/onboarding summaries) until `preloop agents validate <agent> --live` passes. A successful probe verifies the direct route and accounting; application behavior remains unverified.
+- **Brief provider overloads are retried.** When Anthropic answers an explicit `502`, `503`, `504` or `529` that the gateway classifies as transient, the gateway retries the same request (same body, credential and headers) with jittered exponential backoff, honouring `Retry-After` up to `MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS`. A provider `x-should-retry: false` or a terminal classification stops it. Nothing else is retried: not `429`, auth or revoked-token errors, validation errors, quota or policy denials, and not transport failures or timeouts (Anthropic may already have processed the request). A stream is never reopened once Anthropic has accepted it. The budget is `MODEL_GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS` total attempts (default 3); set it to `1` to turn retries off. If every attempt fails, the client gets the last attempt's error, mapped exactly as a single failed attempt would be (a final `504` is reported as `502`, like any other unclassified provider 5xx), with that attempt's error message and `x-should-retry` / rate-limit headers. The request still records one usage row, with `meta_data.upstream_retries` holding the number of extra attempts. Claude Code runs its own retries on top of this, so one client request can reach Anthropic up to three times by default, and Claude Code's retries multiply that. These retries absorb short overloads; they cannot hide a long Anthropic outage.
 
 ---
 
@@ -182,6 +183,29 @@ Requests from a trusted upstream (the Claude apps gateway) that carry a develope
 
 !!! warning "Migrating from `403` budget denials"
     Before this change a budget hard limit returned `403` (`permission_error`), the same status as a policy denial. Integrations that match `403` to detect an exhausted budget must match `429` with `billing_error` (Anthropic), `insufficient_quota` (OpenAI) or `RESOURCE_EXHAUSTED` (Gemini) instead. To tell a Preloop budget denial from an upstream rate limit, check `x-should-retry: false`, `error.preloop_code` on the OpenAI router, or the `Model gateway budget exceeded` message prefix.
+
+### Who produced an error
+
+An error from the gateway can come from Preloop itself (for example a missing or rejected Preloop key) or from the upstream model provider (for example the provider rejecting the credential configured for the model). The HTTP status is the same in both cases, so the error body says which one it was:
+
+| Field | Meaning |
+|---|---|
+| `origin` | `gateway` when Preloop decided, `upstream` when the model provider did |
+| `provider` | The upstream provider configured for the model, for example `openrouter` |
+| `category` | The upstream error class, the same value as the `X-Preloop-Error-Class` header |
+| `upstream_status` | The HTTP status the provider reported |
+| `request_id` | The gateway request id recorded on the run's usage row |
+| `cause` | On a `424` `repeated_upstream_failure`: the first failure of the run (`origin`, `provider`, `category`, `upstream_status`, `message`, `request_id`), so a later error never stands in for the original cause |
+
+The OpenAI and Anthropic routers put these keys inside `error`, next to `message`, and in the `error` / `response.failed` streaming events. The Gemini router carries them as `google.rpc.ErrorInfo` metadata (string values, `domain: preloop.ai`) in `error.details`.
+
+A provider-reported 401, 402, 403 or 404 names the provider in the message and quotes its own sentence unchanged, for example:
+
+```text
+Upstream provider openrouter rejected the provider credential configured for this model (HTTP 401). Provider message: User not found. This is not a rejection of your Preloop credentials.
+```
+
+The provider's wording is passed through as the provider's message; it does not by itself say which account or key the provider evaluated.
 
 ---
 

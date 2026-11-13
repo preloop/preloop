@@ -218,4 +218,56 @@ describe('PreloopFlowForm harness + model picker', () => {
     expect(config.harness).to.equal(undefined);
     expect(config.runner_id).to.equal(undefined);
   });
+
+  it('offers the offline policy only for a pinned runner', async () => {
+    const element = await mount({
+      name: 'Review on seats',
+      prompt_template: 'review',
+      agent_type: 'copilot',
+      agent_config: { harness: 'copilot_cli' },
+    });
+    const root = element.shadowRoot!;
+    expect(root.querySelector('[data-offline-policy]')).to.equal(null);
+    (element as any).setHarnessRoutingKey('runner_id', LAPTOP);
+    await element.updateComplete;
+    const select = root.querySelector(
+      '[data-offline-policy]'
+    ) as HTMLSelectElement;
+    expect(select).to.exist;
+    expect(select.value).to.equal('fail');
+    const options = [...select.querySelectorAll('sl-option')].map((node) =>
+      node.getAttribute('value')
+    );
+    expect(options).to.deep.equal(['fail', 'reroute']);
+  });
+
+  it('stores reroute and drops it with the runner pin', async () => {
+    const element = await mount({
+      name: 'Review on seats',
+      prompt_template: 'review',
+      agent_type: 'copilot',
+      agent_config: { harness: 'copilot_cli', runner_id: LAPTOP },
+    });
+    const select = element.shadowRoot!.querySelector(
+      '[data-offline-policy]'
+    ) as HTMLSelectElement;
+    select.value = 'reroute';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await element.updateComplete;
+    expect((element as any).composedAgentConfig().offline_policy).to.equal(
+      'reroute'
+    );
+    select.value = 'fail';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await element.updateComplete;
+    expect((element as any).composedAgentConfig().offline_policy).to.equal(
+      undefined
+    );
+    (element as any).setHarnessRoutingKey('offline_policy', 'reroute');
+    (element as any).setHarnessRoutingKey('runner_id', null);
+    await element.updateComplete;
+    const config = (element as any).composedAgentConfig();
+    expect(config.runner_id).to.equal(undefined);
+    expect(config.offline_policy).to.equal(undefined);
+  });
 });

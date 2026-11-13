@@ -39,12 +39,28 @@ def _error(code: str, message: str) -> Exception:
     return RunnerSessionError(code, message)
 
 
-def to_record(row: models.RunnerRemoteSession) -> Any:
-    """The endpoint's view of one stored session."""
+def _aware(value: Optional[datetime]) -> Optional[datetime]:
+    return value.replace(tzinfo=timezone.utc) if value is not None else None
+
+
+def to_record(
+    row: models.RunnerRemoteSession, runner: Optional[models.FlowRunner] = None
+) -> Any:
+    """The endpoint's view of one stored session.
+
+    Args:
+        row: The session.
+        runner: Its runner, for the ``runner_away`` window (#1509).
+    """
     from preloop.api.endpoints.runner_sessions import RemoteSessionRecord
 
     workspace = dict(row.workspace or {})
     workspace.setdefault("label", row.workspace_label)
+    away = (
+        sessions.runner_away_window(row, runner)
+        if row.state == sessions.RUNNER_AWAY
+        else None
+    )
     return RemoteSessionRecord(
         session_id=str(row.runtime_session_id or row.id),
         remote_session_id=str(row.id),
@@ -61,6 +77,9 @@ def to_record(row: models.RunnerRemoteSession) -> Any:
         started_at=row.started_at or row.requested_at,
         last_activity_at=row.last_activity_at,
         end_reason=row.end_reason,
+        runner_presence=away["presence"] if away else None,
+        away_since=_aware(away["away_since"]) if away else None,
+        resume_until=_aware(away["resume_until"]) if away else None,
     )
 
 
@@ -96,11 +115,19 @@ class RunnerRemoteSessionService:
         rows = crud_runner_remote_session.list_for_runner(
             db, runner_id=runner_id, limit=limit
         )
-        return [to_record(row) for row in rows]
+        runner = crud_flow_runner.get(db, id=runner_id) if rows else None
+        return [to_record(row, runner) for row in rows]
 
     def get(self, db: Session, *, session_id: str) -> Optional[Any]:
         row = crud_runner_remote_session.get_by_reference(db, session_ref=session_id)
-        return to_record(row) if row is not None else None
+        if row is None:
+            return None
+        runner = (
+            crud_flow_runner.get(db, id=row.runner_id)
+            if row.state == sessions.RUNNER_AWAY
+            else None
+        )
+        return to_record(row, runner)
 
     def _row(self, db: Session, record: Any) -> models.RunnerRemoteSession:
         row = crud_runner_remote_session.get_for_account(

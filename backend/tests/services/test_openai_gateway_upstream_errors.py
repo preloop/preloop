@@ -342,15 +342,22 @@ def test_normalize_upstream_error_caps_message_length():
         "openai",
         _FakeHTTPError(long_message, status_code=404),
     )
-    assert len(err.message) <= 500
+    # The provider text is capped at 400 chars; the origin label (#2288)
+    # adds a fixed sentence around it.
+    assert "x" * 401 not in err.message
+    assert len(err.message) <= 600
 
 
-def test_normalize_plain_message_unchanged():
-    """Messages with no litellm wrapping pass through as before."""
+def test_normalize_plain_message_kept_verbatim_inside_origin_label():
+    """Unwrapped provider text is quoted as-is, labelled as the provider's."""
     err = OpenAIGatewayService._normalize_upstream_error(
         "openai", _FakeHTTPError("model not found", status_code=404)
     )
-    assert err.message == "model not found"
+    assert err.message == (
+        "The upstream provider returned HTTP 404 for this request. Provider "
+        "message: model not found. This error came from the upstream provider, "
+        "not from Preloop."
+    )
     assert err.to_payload()["error"].get("provider_detail") is None
 
 
@@ -393,16 +400,16 @@ def test_normalize_gemini_error_lifts_google_envelope():
     err = OpenAIGatewayService._normalize_upstream_error(
         "gemini", _FakeHTTPError(_GEMINI_AUTH_BLOB, status_code=401)
     )
-    assert err.message == "API key not valid. Please pass a valid API key."
+    assert "Provider message: API key not valid. Please pass a valid API key." in (
+        err.message
+    )
     # None of the envelope scaffolding may reach the user.
     assert "GeminiException" not in err.message
     assert "litellm." not in err.message
     assert "type.googleapis.com" not in err.message
     assert "API_KEY_INVALID" not in err.message
     assert "generativelanguage.googleapis.com" not in err.message
-    assert err.to_payload()["error"]["message"] == (
-        "API key not valid. Please pass a valid API key."
-    )
+    assert err.to_payload()["error"]["message"] == err.message
 
 
 def test_normalize_gemini_quota_error_surfaces_sentence_and_hint():
@@ -420,11 +427,15 @@ def test_normalize_gemini_quota_error_surfaces_sentence_and_hint():
     # The provider marker is kept on the error object as a short hint...
     assert err.provider_detail == "gemini"
     # ...but deliberately does NOT appear in the Gemini response body, which
-    # must stay Google's native {code, message, status} envelope. Only the
-    # OpenAI-shaped payload carries provider_detail.
+    # stays Google's native envelope: {code, message, status} plus the
+    # origin fields (#2288) as a google.rpc ErrorInfo in ``details``.
     payload = err.to_payload()
-    assert set(payload["error"]) == {"code", "message", "status"}
+    assert set(payload["error"]) == {"code", "message", "status", "details"}
     assert payload["error"]["code"] == 429
+    (info,) = payload["error"]["details"]
+    assert info["@type"] == "type.googleapis.com/google.rpc.ErrorInfo"
+    assert info["metadata"]["origin"] == "upstream"
+    assert "provider_detail" not in str(payload)
 
 
 class TestNotifyAdminsTraceScrubbing:

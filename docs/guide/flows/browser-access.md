@@ -122,10 +122,24 @@ operator cookies or a signed-in browser profile in the execution. `--isolated`
 starts Chromium with an empty profile, and nothing in `enable.sh` copies a
 host browser state.
 
-A fixture site the agent can log in to is specified in
-[issue #905](https://github.com/preloop/preloop/issues/905). Use placeholders
-such as `jane@example.com` and `fixture-pass`. That fixture is not part of
-this page.
+`environments/fixture-site/` is a generic site to test against, with
+synthetic credentials only (`jane@example.com` / `fixture-pass`). The example
+profile runs it as the `fixture-site` sidecar on port 8080. Besides the login
+pages it has `/escape` (a redirect to `169.254.169.254`), `/offsite` (a
+redirect to `https://example.org/`) and `/slow` (answers after 30 seconds).
+
+`scripts/tests/browser_fixture_flow.py` is a model-free QA flow over that
+site. It starts the browser MCP server from the harness config `enable.sh`
+wrote, signs in, checks that "Welcome, Jane Doe" is visible, then tries a
+non-allowlisted origin, the metadata redirect and a navigation past a 5 second
+tool timeout, and checks that no Chromium process is left after the server
+closes. It writes `result.json` (`url`, `pass`, up to five `notes`,
+`checked_at`), capped at 4 KiB with the password redacted. The flow only
+reports what the browser saw; the caller checks the proxy log for the
+matching denials. Run it on the host with
+`pytest backend/tests/services/test_browser_fixture_flow.py`, or in a
+Docker-hosted executor with
+`scripts/tests/flow_environment_integration.py --browser`.
 
 ## Docker vs Kubernetes
 

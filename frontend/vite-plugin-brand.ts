@@ -991,10 +991,17 @@ export function brandPlugin(
             .legal_disclaimer || '',
       };
 
+      // A JSON data block plus a static loader, not an inline script: the
+      // Content-Security-Policy allows no inline script (#2280). The loader
+      // is a classic script, so window.BRAND_CONFIG is set before any module
+      // runs, as before. `<` is escaped so the JSON cannot close the block.
       const brandScript = `
-  <script>
-    window.BRAND_CONFIG = ${JSON.stringify(runtimeConfig, null, 2)};
-  </script>`;
+  <script id="preloop-brand-config" type="application/json">${JSON.stringify(
+    runtimeConfig,
+    null,
+    2
+  ).replace(/</g, '\\u003c')}</script>
+  <script src="/brand-config.js" vite-ignore></script>`;
 
       html = html.replace('</head>', `${brandScript}\n</head>`);
 

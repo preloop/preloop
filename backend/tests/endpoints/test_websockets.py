@@ -31,6 +31,7 @@ class TestUnifiedWebSocket:
         mock_manager.connect_with_account = async_mock_connect
         mock_manager.disconnect = MagicMock()
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
 
         # Mock session cleanup (async function)
         async_mock_end_session = AsyncMock()
@@ -130,6 +131,7 @@ class TestUnifiedWebSocket:
         mock_session_manager.end_session = async_mock_end_session
 
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
         mock_manager.disconnect = MagicMock()
 
         # Connect with invalid token - should get anonymous session
@@ -170,6 +172,7 @@ class TestUnifiedWebSocket:
 
         # Mock manager for anonymous connection
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
         mock_manager.disconnect = MagicMock()
 
         # Mock session cleanup
@@ -253,6 +256,7 @@ class TestUnifiedWebSocket:
         mock_session_manager.end_session = async_mock_end_session
 
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
         mock_manager.disconnect = MagicMock()
 
         with client.websocket_connect(
@@ -290,6 +294,7 @@ class TestUnifiedWebSocket:
 
         # Mock manager to raise exception when setting active_connections
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
         mock_manager.disconnect = MagicMock()
 
         # Mock session cleanup (async function)
@@ -339,6 +344,7 @@ class TestUnifiedWebSocket:
         mock_session_manager.sessions = {}
 
         mock_manager.active_connections = {}
+        mock_manager.unwatch_user_connection = AsyncMock()
         mock_manager.disconnect = MagicMock()
 
         # WebSocket whose transport died between accept() and the handshake send

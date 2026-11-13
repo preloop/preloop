@@ -281,10 +281,13 @@ def test_create_message_maps_upstream_status_to_anthropic_error(db_session, test
             )
 
     assert exc.value.status_code == 401
-    assert exc.value.to_payload() == {
-        "type": "error",
-        "error": {
-            "type": "authentication_error",
-            "message": "Invalid provider credential",
-        },
-    }
+    payload = exc.value.to_payload()
+    assert payload["type"] == "error"
+    assert payload["error"]["type"] == "authentication_error"
+    # The provider's sentence is quoted and its origin stated (#2288).
+    assert (
+        "Provider message: Invalid provider credential."
+        in (payload["error"]["message"])
+    )
+    assert payload["error"]["origin"] == "upstream"
+    assert payload["error"]["upstream_status"] == 401

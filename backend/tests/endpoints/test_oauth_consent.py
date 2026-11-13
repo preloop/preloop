@@ -254,6 +254,53 @@ class TestConsentPagePost:
         assert response.status_code == 302
         assert "code=auth_code_xyz" in response.headers["location"]
 
+    def test_passkey_only_user_gets_no_code_from_the_password_form(self, client):
+        """protects=the MCP consent password form is not a way around
+        passkey-only sign-in; fails_when=a correct password for a passkey-only
+        user yields an authorization code or a redirect;
+        no_claim=the database (CRUD and the audit write are mocked)."""
+        user = MagicMock()
+        user.id = uuid4()
+        user.account_id = uuid4()
+        user.username = "testuser"
+        user.hashed_password = "hashed"
+        user.is_active = True
+        user.passkey_only = True
+        mock_provider = MagicMock()
+
+        with (
+            patch(
+                "preloop.api.endpoints.oauth_consent._validate_client_and_redirect",
+                return_value={"error": None, "client_name": "Test Client"},
+            ),
+            patch("preloop.api.endpoints.oauth_consent.get_db_session") as mock_gen,
+            patch("preloop.models.crud.crud_user") as mock_crud_user,
+            patch("preloop.api.auth.jwt.verify_password", return_value=True),
+            patch(
+                "preloop.api.endpoints.oauth_consent._get_oauth_provider",
+                return_value=mock_provider,
+            ),
+            patch("preloop.services.auth_audit.record_auth_event"),
+        ):
+            mock_gen.return_value = iter([MagicMock()])
+            mock_crud_user.get_by_username.return_value = user
+
+            response = client.post(
+                "/mcp/authorize/consent",
+                data={
+                    "client_id": "c1",
+                    "redirect_uri": "http://localhost/cb",
+                    "code_challenge": "ch",
+                    "username": "testuser",
+                    "password": "pass123",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code != 302
+        assert "signs in with a passkey" in response.text
+        mock_provider.create_authorization_code_for_user.assert_not_called()
+
     def test_successful_manual_cli_login_renders_copy_paste_code(self, client):
         user = MagicMock()
         user.id = uuid4()

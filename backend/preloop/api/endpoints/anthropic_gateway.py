@@ -79,6 +79,7 @@ async def get_anthropic_gateway_auth_context(
             provider="anthropic",
             status_code=401,
             message="Missing API key",
+            origin="gateway",
         )
 
     if not x_api_key:
@@ -95,6 +96,7 @@ async def get_anthropic_gateway_auth_context(
             provider="anthropic",
             status_code=401,
             message="Invalid authentication credentials",
+            origin="gateway",
         )
     auth_context = await apply_trusted_upstream(auth_context, request.headers, db)
     from preloop.services.host_exec_gateway import (

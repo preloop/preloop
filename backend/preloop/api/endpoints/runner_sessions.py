@@ -86,7 +86,11 @@ CHECKOUT_PROVIDERS: Dict[str, str] = {
     "bitbucket": "bitbucket_cloud",
 }
 #: Session states in which the session still counts against the limit.
-ACTIVE_STATES = frozenset({"requested", "starting", "idle", "running", "stopping"})
+#: ``runner_away`` (#1509) keeps its slot; a turn sent then is held until
+#: the runner reconnects.
+ACTIVE_STATES = frozenset(
+    {"requested", "starting", "idle", "running", "stopping", "runner_away"}
+)
 ONLINE_RUNNER_STATUSES = frozenset({"online", "busy"})
 AUDIT_RESOURCE_TYPE = "runner_session"
 
@@ -236,6 +240,13 @@ class RunnerSessionListItem(BaseModel):
     started_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     end_reason: Optional[str] = None
+    #: Set while ``state`` is ``runner_away`` (#1509): ``asleep`` or
+    #: ``offline``, when the runner went away, and until when a reconnect
+    #: resumes the session. After ``resume_until`` it ends with
+    #: ``runner_away_timeout``.
+    runner_presence: Optional[str] = None
+    away_since: Optional[datetime] = None
+    resume_until: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +271,9 @@ class RemoteSessionRecord:
     started_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     end_reason: Optional[str] = None
+    runner_presence: Optional[str] = None
+    away_since: Optional[datetime] = None
+    resume_until: Optional[datetime] = None
     #: Frames a service's sync ``persist_*`` step prepared for the async
     #: send. Never persisted.
     outgoing: List[Dict[str, Any]] = field(default_factory=list, repr=False)
@@ -747,6 +761,9 @@ def _record_to_item(record: RemoteSessionRecord) -> RunnerSessionListItem:
         started_at=record.started_at,
         last_activity_at=record.last_activity_at,
         end_reason=record.end_reason,
+        runner_presence=record.runner_presence,
+        away_since=record.away_since,
+        resume_until=record.resume_until,
     )
 
 

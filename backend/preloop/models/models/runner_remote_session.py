@@ -11,7 +11,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 #: States in which a session still holds a slot on its runner.
-RUNNER_SESSION_LIVE_STATES = ("requested", "starting", "idle", "running", "stopping")
+#: ``runner_away`` (#1509): the hosting runner is asleep or offline; the
+#: session resumes when it reconnects inside the resume window.
+RUNNER_SESSION_LIVE_STATES = (
+    "requested",
+    "starting",
+    "idle",
+    "running",
+    "stopping",
+    "runner_away",
+)
 
 
 class RunnerRemoteSession(Base):
@@ -74,6 +83,9 @@ class RunnerRemoteSession(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: When the runner went away (#1509); set with ``runner_away``, cleared
+    #: on resume. The resume deadline is this plus ``idle_timeout_seconds``.
+    away_since: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     @property
     def is_live(self) -> bool:

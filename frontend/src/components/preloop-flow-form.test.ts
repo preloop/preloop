@@ -109,9 +109,11 @@ describe('PreloopFlowForm copy', () => {
     expect(field('Git author email')?.getAttribute('placeholder')).to.equal(
       'git@preloop.ai'
     );
-    expect(field('Source branch')?.getAttribute('placeholder')).to.equal(
-      'main'
-    );
+    // A blank source branch follows the trigger's branch, so a "main"
+    // placeholder would read as the default and invite pinning it.
+    expect(
+      field('Source branch (optional)')?.hasAttribute('placeholder')
+    ).to.equal(false);
 
     // Untouched, the keys stay absent so the server default applies, as
     // before the defaults moved to placeholders.
@@ -121,7 +123,9 @@ describe('PreloopFlowForm copy', () => {
     const git = listener.firstCall.args[0].detail.flow.git_clone_config;
     expect(git).to.not.have.property('git_user_name');
     expect(git).to.not.have.property('git_user_email');
-    expect(git).to.not.have.property('source_branch');
+    // A blank source branch is sent as null so it follows the trigger's
+    // branch; an absent key would take the server's `main` default (#2211).
+    expect(git.source_branch).to.equal(null);
   });
 
   it('offers "Add new tracker" in sentence case', async () => {

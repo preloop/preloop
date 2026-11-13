@@ -24,6 +24,11 @@ FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker/security-headers.conf /etc/nginx/snippets/security-headers.conf
+# Sourced by the nginx entrypoint before envsubst: validates the CSP_* values
+# below and refuses to start on a bad one. The entrypoint skips it unless it
+# is executable, so set the mode here rather than trust the checkout's.
+COPY docker/15-preloop-csp.envsh /docker-entrypoint.d/15-preloop-csp.envsh
+RUN chmod 755 /docker-entrypoint.d/15-preloop-csp.envsh
 
 # Copy built application
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -40,6 +45,12 @@ ENV HSTS_ENABLED=true
 ENV HSTS_MAX_AGE=31536000
 ENV HSTS_INCLUDE_SUBDOMAINS=false
 ENV HSTS_PRELOAD=false
+# Content-Security-Policy (see docs/architecture/security.md). report-only
+# sends the new policy as Content-Security-Policy-Report-Only next to the
+# legacy enforcing header; enforce and legacy are the other two modes.
+ENV CSP_MODE=report-only
+ENV CSP_EXTRA_SCRIPT_SRC=""
+ENV CSP_EXTRA_CONNECT_SRC=""
 
 # Expose port
 EXPOSE 80

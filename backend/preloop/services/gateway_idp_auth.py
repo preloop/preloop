@@ -119,6 +119,7 @@ def idp_auth_error(reason: str) -> ModelGatewayAPIError:
         message=f"Invalid identity provider token ({reason})",
         error_type="authentication_error",
         code=reason,
+        origin="gateway",
     )
     error.extra_response_headers = {  # type: ignore[attr-defined]
         "WWW-Authenticate": f'Bearer error="invalid_token", error_description="{reason}"'

@@ -19,7 +19,7 @@ The default private-runner job is still `docker run` of the flow image (or a cus
 
 ## Review publication receipts
 
-A pull request review flow can require that its review was delivered (EE #202): `git_clone_config.review_publication.required: true` on the flow itself (the Pull Request Reviewer preset carries the block for flows created from it; an existing flow without the block is never gated, whatever its source preset says). The MCP `update_pull_request` tool writes a `review_publication_receipt` row only after the code host accepted a review (`approve`, `request_changes` or `comment`), bound to the account, the execution named by the calling credential, provider, repository, PR number, the reviewed head SHA when the provider reports one (GitHub `commit_id`), action and provider review id. Reactions and metadata edits write nothing. At the end of the run `FlowExecutionOrchestrator._apply_review_publication_gate` looks for a receipt for this execution and the triggering PR and head, and stores the outcome in `result.review_publication` (`published`, `already_reviewed` or `not_published` with a reason). A SUCCEEDED run with `not_published` becomes FAILED with `review_publication_incomplete: <reason>` and the `publication_missing` category; the agent's report and blocker stay in the result. The agent's `review_posted` claim, the success sentinel and a zero exit code never satisfy the gate. A deliberate no-post run (`review_action: null`, no `blocker`) passes as `already_reviewed` only when an earlier run of the account holds a receipt for the same PR and head. A receipt that fails to persist is logged at error level and the run fails for want of it.
+A pull request review flow can require that its review was delivered (EE #202): `git_clone_config.review_publication.required: true` on the flow itself (the Pull Request Reviewer preset carries the block for flows created from it; an existing flow without the block is never gated, whatever its source preset says). The MCP `update_pull_request` tool writes a `review_publication_receipt` row only after the code host accepted a review (`approve`, `request_changes` or `comment`), bound to the account, the execution named by the calling credential, provider, repository, PR number, the reviewed head SHA when the provider reports one (GitHub `commit_id`), action and provider review id. Reactions and metadata edits write nothing. At the end of the run `FlowExecutionOrchestrator._apply_review_publication_gate` looks for a receipt for this execution and the triggering PR and head, and stores the outcome in `result.review_publication` (`published`, `already_reviewed`, `unverified` (see version skew below) or `not_published` with a reason). A SUCCEEDED run with `not_published` becomes FAILED with `review_publication_incomplete: <reason>` and the `publication_missing` category; the agent's report and blocker stay in the result. The agent's `review_posted` claim, the success sentinel and a zero exit code never satisfy the gate. A deliberate no-post run (`review_action: null`, no `blocker`) passes as `already_reviewed` only when an earlier run of the account holds a receipt for the same PR and head. A receipt that fails to persist is logged at error level and the run fails for want of it, unless the same execution's tool activity shows the delivered review; the gate cannot tell a failed write from version skew, so that case also passes as `unverified` (see version skew below), never as `published`.
 
 `scripts/init_db.py` refreshes the global preset catalog after migrations on
 native, Compose and Helm deployments, without propagating prompt or tool
@@ -37,6 +37,28 @@ fields as webhook events. A trigger naming a PR without its head fails with
 that run. Providers that do not report the reviewed head on their receipt
 (GitLab and Bitbucket) can prove delivery for the current execution and PR,
 but cannot satisfy the head-exact `already_reviewed` skip.
+
+Version skew (#2208). The gate runs in the worker and the receipt is written
+by the API, so during a rolling deploy (or while a new API image fails to
+start) a worker can find no receipt for a review the code host accepted. When
+the execution holds no receipt at all, the gate reads the server-recorded tool
+activity (`crud_runtime_session_activity.list_tool_calls_for_flow_execution`,
+the rows `_describe_incomplete_review` also reads). A succeeded
+`update_pull_request` call whose classified `work_ref` is a review
+(`action: reviewed`) on the triggering repository and PR number yields
+`{"status": "unverified", "reason": "receipt_unavailable", "activity_id",
+"review_state", "head_sha"}`; the run is not failed and a warning is logged.
+A bare PR number with no repository, a failed or refused call, or a call on
+another PR does not match. A receipt for another PR or head is still
+`not_published`, and activity is not read when any receipt exists.
+`unverified` is never reported as `published`: no surface maps it to a
+delivered review.
+
+The receipt's repository is the path the agent passed, except that a numeric
+project id (or any value equal to the resolved project's tracker identifier)
+is replaced by the resolved project's slug, which is `path_with_namespace` on
+GitLab, so it matches the path in the merge request URL
+(`mcp._review_receipt_repository`).
 
 ## Ad-hoc preset runs
 

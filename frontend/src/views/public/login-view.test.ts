@@ -161,6 +161,44 @@ describe('LoginView', () => {
     expect(element.shadowRoot?.querySelector('#resend-verification')).to.exist;
   });
 
+  // protects=a passkey-only user is told how to sign in and lands on the
+  // passkey button; fails_when=the raw code or a generic error is shown, or
+  // focus stays in the password form; no_claim=the server refusal is a stub.
+  it('points a passkey-only account at the passkey button', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/features')) {
+        return Response.json({ features: { passkeys: true } });
+      }
+      return Response.json(
+        {
+          detail: {
+            code: 'password_login_disabled',
+            message: 'This account signs in with a passkey',
+          },
+        },
+        { status: 401 }
+      );
+    });
+    invalidateApiCaches();
+    element = await fixture(html`<login-view></login-view>`);
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('#passkey-sign-in'),
+      'the passkey button never rendered'
+    );
+
+    await submitLogin('bob', 'correct');
+
+    const error = element.shadowRoot?.querySelector('.error-message');
+    expect(error?.textContent).to.contain(
+      'This account signs in with a passkey'
+    );
+    expect(error?.textContent).to.not.contain('password_login_disabled');
+    const button = element.shadowRoot?.querySelector('#passkey-sign-in');
+    expect(element.shadowRoot?.activeElement).to.equal(button);
+    expect(localStorage.getItem('accessToken')).to.equal(null);
+  });
+
   it('shows no resend action for an ordinary wrong password', async () => {
     // The default instance does not require verification at all, so this
     // action must not appear on a normal failed sign-in.

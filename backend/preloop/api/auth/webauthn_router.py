@@ -57,9 +57,16 @@ from preloop.api.auth.jwt import (
     get_current_active_user,
     user_auth_generation,
 )
-from preloop.models.crud import crud_audit_log, crud_person, crud_webauthn_credential
+from preloop.models.crud import (
+    crud_audit_log,
+    crud_person,
+    crud_user,
+    crud_webauthn_credential,
+)
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
+from preloop.services.authentication_policy import is_passkey_only
+from preloop.services.rate_limit import AUTH_PASSKEY_CHALLENGE, enforce
 from preloop.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -79,6 +86,55 @@ def passkeys_enabled() -> bool:
     )
 
 
+def user_verification_required() -> bool:
+    """Whether passkey ceremonies require user verification.
+
+    ``PASSKEYS_REQUIRE_USER_VERIFICATION`` (default true) is a rollback
+    switch: false restores ``preferred`` for security keys without a PIN,
+    and while it is false passkey-only sign-in cannot be enabled.
+    """
+    return os.getenv(
+        "PASSKEYS_REQUIRE_USER_VERIFICATION", "true"
+    ).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _user_verification() -> UserVerificationRequirement:
+    if user_verification_required():
+        return UserVerificationRequirement.REQUIRED
+    return UserVerificationRequirement.PREFERRED
+
+
+_UV_REQUIRED_CODE = "passkey_user_verification_required"
+_UV_REQUIRED_MESSAGE = (
+    "This security key did not verify you. Set a PIN or biometric on it, "
+    "or register a different passkey."
+)
+
+
+def _uv_required_for(db: Session, person_id: uuid.UUID) -> bool:
+    """Whether this person's ceremonies must carry the UV flag.
+
+    The rollback switch never weakens a person who opted into passkey-only
+    sign-in: they enabled it under the UV requirement, and with their
+    password refused, a passkey without UV would be their only factor.
+    """
+    if user_verification_required():
+        return True
+    return any(
+        is_passkey_only(membership)
+        for membership in crud_person.list_memberships(db, person_id=person_id)
+    )
+
+
+def _raise_if_user_not_verified(error: Exception) -> None:
+    """Map the library's missing-UV-flag rejection to a stable 400 code."""
+    if "user verification is required" in str(error).lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": _UV_REQUIRED_CODE, "message": _UV_REQUIRED_MESSAGE},
+        )
+
+
 def _require_enabled() -> None:
     if not passkeys_enabled():
         raise HTTPException(
@@ -92,39 +148,36 @@ def _require_enabled() -> None:
 # ---------------------------------------------------------------------------
 # The challenge endpoints sign a JWT per call, and /authenticate/options is
 # unauthenticated, so an anonymous caller could burn CPU on JWT signing and
-# option generation. Simple in-process sliding-window per-IP throttle; the
-# tokens are stateless so there is no storage to exhaust, only CPU to protect.
-# Multi-replica deployments get N x the budget, which is acceptable for this
-# purpose (protecting compute, not enforcing a strict global quota).
+# option generation. Throttled per client address on the shared limiter
+# (rule ``auth.passkey_challenge``), so every API replica draws from one
+# budget. ``WEBAUTHN_CHALLENGE_RATE_LIMIT`` keeps setting the per-minute
+# limit; ``RATE_LIMIT_AUTH_PASSKEY_CHALLENGE`` overrides it like any rule.
 
 _RATE_LIMIT_MAX_CALLS = int(os.getenv("WEBAUTHN_CHALLENGE_RATE_LIMIT", "30"))
 _RATE_LIMIT_WINDOW_SECONDS = 60
+# Counters live in the shared limiter now. Kept empty so code that cleared
+# the old in-process map keeps working; nothing reads it.
 _rate_buckets: dict[str, list[float]] = {}
+_CHALLENGE_RATE_LIMITED_MESSAGE = (
+    "Too many passkey challenge requests; try again shortly"
+)
 
 
 def _check_challenge_rate_limit(request: Request) -> None:
-    import time
+    """Charge one challenge to the caller's address; 429 when over budget.
 
-    ip = get_client_ip(request)
-    now = time.monotonic()
-    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+    Args:
+        request: Incoming request; keyed by :func:`get_client_ip` as before.
 
-    bucket = [t for t in _rate_buckets.get(ip, []) if t > window_start]
-    if len(bucket) >= _RATE_LIMIT_MAX_CALLS:
-        _rate_buckets[ip] = bucket
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many passkey challenge requests; try again shortly",
-        )
-    bucket.append(now)
-    _rate_buckets[ip] = bucket
-
-    # Opportunistic cleanup so the map cannot grow unbounded across many IPs.
-    if len(_rate_buckets) > 10_000:
-        for stale_ip in [
-            k for k, v in _rate_buckets.items() if not v or v[-1] <= window_start
-        ]:
-            _rate_buckets.pop(stale_ip, None)
+    Raises:
+        RateLimitExceeded: 429 ``rate_limited`` with ``Retry-After``.
+    """
+    enforce(
+        AUTH_PASSKEY_CHALLENGE,
+        get_client_ip(request),
+        default=(_RATE_LIMIT_MAX_CALLS, _RATE_LIMIT_WINDOW_SECONDS),
+        detail=_CHALLENGE_RATE_LIMITED_MESSAGE,
+    )
 
 
 def _rp_id(request: Request) -> str:
@@ -278,7 +331,11 @@ def registration_options(
         exclude_credentials=exclude,
         authenticator_selection=AuthenticatorSelectionCriteria(
             resident_key=ResidentKeyRequirement.REQUIRED,
-            user_verification=UserVerificationRequirement.PREFERRED,
+            user_verification=(
+                UserVerificationRequirement.REQUIRED
+                if _uv_required_for(db, person.id)
+                else UserVerificationRequirement.PREFERRED
+            ),
         ),
     )
 
@@ -320,9 +377,11 @@ def registration_verify(
             expected_challenge=payload["challenge_bytes"],
             expected_rp_id=_rp_id(request),
             expected_origin=_expected_origin(request),
+            require_user_verification=_uv_required_for(db, person.id),
         )
     except InvalidRegistrationResponse as e:
         logger.warning(f"Passkey registration verification failed: {e}")
+        _raise_if_user_not_verified(e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Passkey registration could not be verified",
@@ -384,7 +443,7 @@ def authentication_options(
 
     options = generate_authentication_options(
         rp_id=_rp_id(request),
-        user_verification=UserVerificationRequirement.PREFERRED,
+        user_verification=_user_verification(),
     )
 
     return AuthenticationOptionsResponse(
@@ -473,9 +532,11 @@ def _authentication_verify(
             expected_origin=_expected_origin(request),
             credential_public_key=base64.urlsafe_b64decode(public_key_padded),
             credential_current_sign_count=cred.sign_count,
+            require_user_verification=_uv_required_for(db, cred.person_id),
         )
     except InvalidAuthenticationResponse as e:
         logger.warning(f"Passkey authentication verification failed: {e}")
+        _raise_if_user_not_verified(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Passkey authentication failed",
@@ -613,13 +674,229 @@ def delete_credential(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> None:
-    """Remove one of the signed-in user's passkeys."""
+    """Remove one of the signed-in user's passkeys.
+
+    The person row and this membership row are locked first, in the same
+    order as enabling passkey-only, so a concurrent enable and a delete of
+    the last passkey cannot both succeed.
+
+    Raises:
+        HTTPException: 404 when the passkey is not the caller's; 409
+            ``last_passkey_required`` when a membership of this person
+            requires a passkey and this is the last one.
+    """
     _require_enabled()
-    person = require_active_identity(db, current_user)
+    person = require_active_identity(db, current_user, lock=True)
+    crud_user.lock(db, user_id=current_user.id)
     cred = crud_webauthn_credential.get(db, id=credential_id)
     if cred is None or cred.person_id != person.id or not cred.is_active:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Passkey not found",
         )
+    remaining = crud_webauthn_credential.list_for_person(db, person_id=person.id)
+    requires_passkey = any(
+        is_passkey_only(membership)
+        for membership in crud_person.list_memberships(db, person_id=person.id)
+    )
+    if requires_passkey and len(remaining) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "last_passkey_required",
+                "message": (
+                    "This account requires a passkey to sign in. Register "
+                    "another passkey or turn off passkey-only sign-in first."
+                ),
+            },
+        )
     crud_webauthn_credential.deactivate(db, obj=cred)
+
+
+# ---------------------------------------------------------------------------
+# Passkey-only sign-in (authenticated, settings UI)
+# ---------------------------------------------------------------------------
+
+PASSKEY_SESSION_MAX_AGE_SECONDS = 600
+
+
+class PasskeyOnlyStatus(BaseModel):
+    """Whether passkey-only sign-in is on, and how many passkeys back it."""
+
+    enabled: bool
+    passkey_count: int
+
+
+class PasskeyOnlyUpdate(BaseModel):
+    """Requested passkey-only state."""
+
+    enabled: bool
+
+
+class PasskeyOnlyUpdateResponse(BaseModel):
+    """New state; on enable, a fresh token pair for the current session.
+
+    Enabling ends every other non-SSO session of the user, including the
+    tokens this request was made with, so the console replaces them with the
+    pair returned here (same fields as ``POST /auth/refresh``).
+    """
+
+    enabled: bool
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    token_type: Optional[str] = None
+    expires_in: Optional[int] = None
+
+
+def _detail(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def _require_fresh_passkey_session(request: Request, user: User) -> dict:
+    """Return the session's claims if it is a passkey sign-in under 10 minutes old.
+
+    Raises:
+        HTTPException: 403 ``passkey_sign_in_required`` otherwise.
+    """
+    from preloop.api.auth.jwt import decode_token
+    from preloop.services.authentication_policy import request_authentication_context
+
+    try:
+        claims = request_authentication_context(request, user)
+        # A CLI login token (sid) is bound to its cli_session row; reissuing
+        # an unbound console pair from it would escape per-login revocation,
+        # the same reason /auth/refresh refuses sid tokens.
+        bearer = request.headers.get("authorization", "").partition(" ")[2]
+        if decode_token(bearer).sid is not None:
+            claims = {}
+    except HTTPException:
+        claims = {}
+    auth_time = claims.get("auth_time")
+    now = int(datetime.now(UTC).timestamp())
+    if (
+        "passkey" not in claims.get("amr", [])
+        or type(auth_time) is not int
+        or now - auth_time > PASSKEY_SESSION_MAX_AGE_SECONDS
+        or auth_time > now + 60
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_detail(
+                "passkey_sign_in_required",
+                "Sign in with a passkey in the last 10 minutes to change this setting.",
+            ),
+        )
+    return claims
+
+
+@router.get("/passkey-only", response_model=PasskeyOnlyStatus)
+def get_passkey_only(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> PasskeyOnlyStatus:
+    """Report whether the signed-in user requires a passkey to sign in."""
+    _require_enabled()
+    person = require_active_identity(db, current_user)
+    count = len(crud_webauthn_credential.list_for_person(db, person_id=person.id))
+    return PasskeyOnlyStatus(enabled=is_passkey_only(current_user), passkey_count=count)
+
+
+@router.put("/passkey-only", response_model=PasskeyOnlyUpdateResponse)
+def put_passkey_only(
+    body: PasskeyOnlyUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> PasskeyOnlyUpdateResponse:
+    """Turn passkey-only sign-in on or off for the signed-in user.
+
+    Either direction requires the current session to be a passkey sign-in
+    at most 10 minutes old. Enabling ends every other non-SSO session of the
+    user and returns a fresh token pair for this one.
+
+    Raises:
+        HTTPException: 403 ``passkey_sign_in_required``; 409
+            ``user_verification_disabled`` when enabling while
+            ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false; 409
+            ``no_passkey_registered`` when enabling without a passkey.
+    """
+    from preloop.services.auth_audit import record_auth_event
+    from preloop.services.audit.service import AuditActionType
+
+    _require_enabled()
+    claims = _require_fresh_passkey_session(request, current_user)
+    if body.enabled and not user_verification_required():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_detail(
+                "user_verification_disabled",
+                "Passkey-only sign-in is unavailable while this server does "
+                "not require passkey user verification.",
+            ),
+        )
+
+    person = require_active_identity(db, current_user, lock=True)
+    user = crud_user.lock(db, user_id=current_user.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    count = len(crud_webauthn_credential.list_for_person(db, person_id=person.id))
+    if body.enabled and count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_detail(
+                "no_passkey_registered",
+                "Register a passkey before requiring one to sign in.",
+            ),
+        )
+    changed = is_passkey_only(user) != body.enabled
+    generation = crud_user.set_passkey_only(
+        db,
+        user=user,
+        enabled=body.enabled,
+        end_sessions=body.enabled and changed,
+        commit=False,
+    )
+    if changed:
+        record_auth_event(
+            db,
+            action=AuditActionType.PASSKEY_ONLY_ENABLED
+            if body.enabled
+            else AuditActionType.PASSKEY_ONLY_DISABLED,
+            user=user,
+            resource_type="user",
+            resource_id=user.id,
+            details={"enabled": body.enabled, "passkey_count": count},
+            source_ip=get_client_ip(request),
+            commit=False,
+        )
+    db.commit()
+    db.refresh(user)
+
+    if not (body.enabled and changed):
+        return PasskeyOnlyUpdateResponse(enabled=body.enabled)
+
+    # This session's tokens carry the old non-SSO generation; reissue them
+    # with the same assurance (passkey, original auth_time) and the new one.
+    auth_context = dict(claims)
+    auth_context["nsg"] = generation
+    auth_generation = user_auth_generation(user)
+    access_token = create_access_token(
+        data={"sub": str(user.id), "scopes": []},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        auth_generation=auth_generation,
+        auth_context=auth_context,
+    )
+    refresh_token = create_refresh_token(
+        sub=str(user.id),
+        scopes=[],
+        session_started_at=datetime.fromtimestamp(claims["auth_time"], UTC),
+        auth_generation=auth_generation,
+        auth_context=auth_context,
+    )
+    return PasskeyOnlyUpdateResponse(
+        enabled=True,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )

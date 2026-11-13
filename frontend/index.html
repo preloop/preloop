@@ -128,33 +128,10 @@
 
 <body>
   <lit-app></lit-app>
-  <script>
-    // Inject loading indicator via JS so it never appears in static snapshots
-    // (e.g. Wayback Machine) where JS doesn't execute.
-    (function () {
-      var el = document.createElement('div');
-      el.id = 'app-loading';
-      document.body.prepend(el);
-
-      function removeLoader() {
-        if (!el.parentNode) return;
-        el.classList.add('fade-out');
-        el.addEventListener('transitionend', function () { el.remove(); });
-        // Fallback if transitionend doesn't fire
-        setTimeout(function () { el.remove(); }, 300);
-      }
-
-      // Remove once lit-app is defined
-      if (customElements.get('lit-app')) {
-        removeLoader();
-      } else {
-        customElements.whenDefined('lit-app').then(removeLoader);
-      }
-
-      // Safety timeout — remove after 8s regardless
-      setTimeout(removeLoader, 8000);
-    })();
-  </script>
+  <!-- Loading indicator. A file, not inline code: the Content-Security-Policy
+       allows no inline script. vite-ignore keeps it a classic script that runs
+       here, before the module graph. -->
+  <script src="/app-loading.js" vite-ignore></script>
   <script type="module" src="/src/main.ts"></script>
 </body>
 

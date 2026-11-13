@@ -48,6 +48,7 @@ async def authenticate_request(
             provider="openai",
             status_code=401,
             message="Missing bearer token",
+            origin="gateway",
         )
 
     token = authorization[7:]
@@ -63,6 +64,7 @@ async def authenticate_request(
             provider="openai",
             status_code=401,
             message="Invalid authentication credentials",
+            origin="gateway",
         )
     return auth_context
 

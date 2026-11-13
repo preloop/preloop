@@ -366,6 +366,7 @@ async def apply_trusted_upstream(
             provider=provider,  # type: ignore[arg-type]
             status_code=401,
             message="Invalid or missing upstream secret",
+            origin="gateway",
         )
     identity = read_identity_headers(headers)
     if identity is None:

@@ -89,6 +89,96 @@ def non_sso_generation(user: models.User) -> int:
     return value if type(value) is int and value >= 0 else 0
 
 
+# Methods a passkey-only membership still accepts. SSO sessions carry
+# ``["sso", "oidc"|"saml"]``; the identity provider owns their MFA.
+PASSKEY_ONLY_ALLOWED_METHODS = frozenset({"passkey", "sso", "oidc", "saml"})
+PASSKEY_ONLY_REFUSED_CODE = "password_login_disabled"
+PASSKEY_ONLY_REFUSED_MESSAGE = "This account signs in with a passkey"
+# Purposes that mint a new session or a delegated token; a refusal here is
+# audited. Access and refresh refusals are not (they would repeat per request).
+_SIGN_IN_PURPOSES = frozenset({"login", "switch", "exchange"})
+
+
+def is_passkey_only(user: models.User) -> bool:
+    """Whether this membership refuses every sign-in method but passkey and SSO."""
+    return getattr(user, "passkey_only", False) is True
+
+
+def sign_in_method_allowed(user: models.User, methods: list[str]) -> bool:
+    """Decide whether a session proven by ``methods`` may act as ``user``.
+
+    This is the single helper every sign-in path goes through (via
+    :func:`authorize_authentication`). Identity plugins that mint tokens call
+    :func:`new_authentication`, which applies it for them.
+
+    Args:
+        user: The membership being signed in to.
+        methods: The session's ``amr`` values.
+
+    Returns:
+        False when ``user`` is passkey-only and ``methods`` names only weaker
+        methods; True otherwise. A context with no ``amr`` at all is not a
+        sign-in: it is a server-issued delegation (administrator
+        impersonation, session resume). Such tokens from before the setting
+        was enabled already fail the non-SSO generation check.
+    """
+    if not is_passkey_only(user) or not methods:
+        return True
+    return any(method in PASSKEY_ONLY_ALLOWED_METHODS for method in methods)
+
+
+def passkey_only_refusal() -> HTTPException:
+    """The 401 every refused sign-in path returns for a passkey-only user."""
+    return HTTPException(
+        status_code=401,
+        detail={
+            "code": PASSKEY_ONLY_REFUSED_CODE,
+            "message": PASSKEY_ONLY_REFUSED_MESSAGE,
+        },
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _enforce_core_policy(
+    db: Session,
+    user: models.User,
+    context: Mapping[str, Any],
+    *,
+    purpose: AuthenticationPurpose,
+    source_ip: str | None,
+) -> None:
+    """Apply the core checks that hold with or without a policy plugin.
+
+    * A non-SSO session whose ``nsg`` is behind the membership's non-SSO
+      generation was ended (passkey-only enable, recovery reset) and is
+      refused on access, refresh and exchange.
+    * A passkey-only membership refuses sessions proven by a weaker method.
+    """
+    if (
+        purpose not in {"login", "switch"}
+        and not has_sso_context(context, account_id=user.account_id)
+        and context.get("nsg", 0) < non_sso_generation(user)
+    ):
+        raise HTTPException(status_code=401, detail="Session revoked")
+    methods = list(context.get("amr", []))
+    if sign_in_method_allowed(user, methods):
+        return
+    if purpose in _SIGN_IN_PURPOSES:
+        from preloop.services.audit.service import AuditActionType
+        from preloop.services.auth_audit import record_auth_event
+
+        record_auth_event(
+            db,
+            action=AuditActionType.PASSKEY_ONLY_LOGIN_REFUSED,
+            user=user,
+            resource_type="user",
+            resource_id=user.id,
+            details={"method": methods[0] if methods else "unknown"},
+            source_ip=source_ip,
+        )
+    raise passkey_only_refusal()
+
+
 def authorize_authentication(
     db: Session,
     user: models.User,
@@ -99,6 +189,7 @@ def authorize_authentication(
 ) -> dict[str, Any]:
     """Ask the installed policy to authorize this exact membership/context."""
     context = authentication_claims(claims)
+    _enforce_core_policy(db, user, context, purpose=purpose, source_ip=source_ip)
     gate = get_plugin_manager().get_service("authentication_policy")
     if gate is not None:
         gate.authorize(

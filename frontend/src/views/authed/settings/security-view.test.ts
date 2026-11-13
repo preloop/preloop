@@ -3,6 +3,7 @@ import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
 import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { invalidateApiCaches } from '../../../api';
 import './security-view';
 import type { SecurityView } from './security-view';
 
@@ -333,5 +334,134 @@ describe('SecurityView', () => {
       element.shadowRoot?.querySelector('[data-testid="cli-sessions"]')
         ?.textContent
     ).to.contain('build-host');
+  });
+});
+
+describe('SecurityView passkey-only switch', () => {
+  let fetchStub: sinon.SinonStub;
+  let putBodies: unknown[];
+
+  function token(claims: Record<string, unknown>): string {
+    const body = btoa(JSON.stringify({ sub: 'u1', ...claims }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    return `header.${body}.signature`;
+  }
+
+  function stubServer(enabled: boolean) {
+    putBodies = [];
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method || 'GET').toUpperCase();
+        if (url.endsWith('/features')) {
+          return Response.json({ features: { passkeys: true } });
+        }
+        if (url.endsWith('/auth/webauthn/credentials')) {
+          return Response.json([
+            { id: 'p1', name: 'Laptop', created_at: '2026-11-01T10:00:00Z' },
+          ]);
+        }
+        if (url.endsWith('/auth/webauthn/passkey-only') && method === 'GET') {
+          return Response.json({ enabled, passkey_count: 1 });
+        }
+        if (url.endsWith('/auth/webauthn/passkey-only') && method === 'PUT') {
+          putBodies.push(JSON.parse(String(init?.body)));
+          return Response.json({
+            enabled: true,
+            access_token: 'new-access',
+            refresh_token: 'new-refresh',
+            token_type: 'bearer',
+            expires_in: 1800,
+          });
+        }
+        return Response.json({ detail: `Unhandled: ${url}` }, { status: 500 });
+      });
+  }
+
+  async function render(): Promise<SecurityView> {
+    const element = (await fixture(
+      html`<security-view></security-view>`
+    )) as SecurityView;
+    await waitUntil(
+      () => switchOf(element),
+      'the passkey-only switch never rendered'
+    );
+    return element;
+  }
+
+  function switchOf(element: SecurityView): any {
+    return element.shadowRoot?.querySelector(
+      '[data-testid="passkey-only-switch"]'
+    );
+  }
+
+  afterEach(() => {
+    fetchStub?.restore();
+    localStorage.clear();
+    invalidateApiCaches();
+  });
+
+  // protects=the switch shows what the server says; fails_when=it renders
+  // unchecked for an enabled account or is disabled in a fresh passkey
+  // session; no_claim=the server is a fetch stub.
+  it('reflects the server state in a fresh passkey session', async () => {
+    localStorage.setItem(
+      'accessToken',
+      token({ amr: ['passkey'], auth_time: Math.floor(Date.now() / 1000) })
+    );
+    stubServer(true);
+    const element = await render();
+
+    const control = switchOf(element);
+    expect(control).to.exist;
+    expect(control.checked).to.equal(true);
+    expect(control.disabled).to.equal(false);
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="passkey-only"]')
+        ?.textContent
+    ).to.contain('If you lose every passkey');
+  });
+
+  // protects=a password session cannot flip the setting from the console;
+  // fails_when=the switch is enabled or no reason is shown; no_claim=the
+  // server enforces the same rule (tested in the backend suite).
+  it('is disabled with an explanation in a password session', async () => {
+    localStorage.setItem(
+      'accessToken',
+      token({ amr: ['password'], auth_time: Math.floor(Date.now() / 1000) })
+    );
+    stubServer(false);
+    const element = await render();
+
+    expect(switchOf(element).checked).to.equal(false);
+    expect(switchOf(element).disabled).to.equal(true);
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="passkey-only-reason"]')
+        ?.textContent
+    ).to.contain('Sign in with a passkey');
+  });
+
+  // protects=enabling replaces this session's tokens with the returned pair;
+  // fails_when=no PUT is sent, or the old tokens stay in storage (they stop
+  // working once the setting is on); no_claim=the server is a fetch stub.
+  it('enables and stores the fresh token pair', async () => {
+    localStorage.setItem(
+      'accessToken',
+      token({ amr: ['passkey'], auth_time: Math.floor(Date.now() / 1000) })
+    );
+    stubServer(false);
+    const element = await render();
+
+    const control = switchOf(element);
+    control.checked = true;
+    control.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() => (element as any).passkeyOnly === true);
+
+    expect(putBodies).to.deep.equal([{ enabled: true }]);
+    expect(localStorage.getItem('accessToken')).to.equal('new-access');
+    expect(localStorage.getItem('refreshToken')).to.equal('new-refresh');
   });
 });

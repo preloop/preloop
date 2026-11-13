@@ -304,6 +304,16 @@ export class LoginView extends LitElement {
       } else {
         this.unverifiedEmail = '';
       }
+      // The password was right, but this account requires a passkey. Point
+      // at the one way in that works.
+      if (
+        error instanceof ApiError &&
+        error.code === 'password_login_disabled'
+      ) {
+        this.error = 'This account signs in with a passkey';
+        await this.updateComplete;
+        this.renderRoot.querySelector<HTMLElement>('#passkey-sign-in')?.focus();
+      }
       console.error('Sign in failed', error);
     } finally {
       this.submitting = false;
@@ -421,6 +431,7 @@ export class LoginView extends LitElement {
     if (!this.passkeysEnabled) return nothing;
     return html`
       <sl-button
+        id="passkey-sign-in"
         class="oauth-button"
         variant="default"
         size="large"

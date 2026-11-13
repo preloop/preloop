@@ -112,6 +112,10 @@ jobs:
               - 'helm/**'
               - 'scripts/helm-render-check.sh'
               - 'backend/tests/helm/**'
+              # The console nginx config the chart mirrors, and its tests.
+              - 'frontend/docker/**'
+              - 'frontend/Dockerfile'
+              - 'backend/tests/test_nginx_*.py'
             workflow:
               - '.github/workflows/ci.yml'
               - '.github/actions/setup-ci-python/**'
@@ -438,6 +442,16 @@ jobs:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest backend/tests/helm -q
 
+      # Real nginx (the console image's base) with the repo's templates and
+      # the CSP entrypoint script: proves the CSP_* settings reach nginx
+      # through the entrypoint's envsh -> envsubst chain (#2280), plus the
+      # security headers and HSTS. Needs Docker, which this runner has.
+      - name: Console nginx smoke test
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+          PRELOOP_NGINX_SMOKE: '1'
+        run: python -m pytest backend/tests/test_nginx_headers_smoke.py -q
+
   # Partition complete files before pytest imports tests. Historical durations
   # balance contiguous groups, preserving file/test order and including new files.
   # Coverage is still collected in every shard and combined before the 60% floor.
@@ -742,6 +756,12 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+      # Builds the console with a SaaS fixture brand and loads every route
+      # under the enforced Content-Security-Policy (#2280), analytics off and
+      # on; fails on any CSP violation.
+      - name: CSP violation sweep
+        run: npm run test:csp
 
   # ==========================================================================
   # Runtime Plugin Tests (Hermes + OpenClaw)
