@@ -11604,7 +11604,12 @@ class OpenAIGatewayService:
                 "funding": "platform"
                 if model_billing_is_hosted(ai_model)
                 else "account",
-                "billing_path": "allowance"
+                # Subscription (OAuth) traffic is neither the platform
+                # allowance nor a customer API key; it uses the same name as
+                # its cost_source.
+                "billing_path": "subscription"
+                if cost_source == "subscription"
+                else "allowance"
                 if model_billing_is_hosted(ai_model)
                 else "your_key",
                 "billing_model_id": str(ai_model.id),
