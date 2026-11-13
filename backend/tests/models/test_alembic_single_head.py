@@ -581,4 +581,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert passkey_only.down_revision == "20261206_session_away_since"
     platform_review = script.get_revision("20261208_platform_review")
     assert platform_review.down_revision == "20261207_user_passkey_only"
-    assert script.get_heads() == ["20261208_platform_review"]
+    bundle_registry = script.get_revision("20261113_bundle_registry")
+    assert bundle_registry.down_revision == "20261208_platform_review"
+    assert script.get_heads() == ["20261113_bundle_registry"]

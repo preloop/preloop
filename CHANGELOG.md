@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Managed hook exports include a deterministic policy revision. The optional
+  `--register` flag records secret-free manifest metadata in the selected
+  account; exports remain offline by default. A new account-scoped registry
+  and control-expectation store support evidence-based fleet generation,
+  preserving manual expectations and retiring superseded bundle rows.
+
 - flows: a read-only review flow can have Preloop post the result itself.
   With `git_clone_config.platform_review` (off by default, valid only with
   `publication_mode: read_only`, `validate_result` and a `result_schema` that

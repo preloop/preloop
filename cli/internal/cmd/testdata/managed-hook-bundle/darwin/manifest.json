@@ -1,4 +1,5 @@
 {
+  "policy_revision_hash": "092a29699104263cdb170af4e3c76bf769c11ea7dc53b32b18a21f29004e0afd",
   "schema": "preloop.managed-hook-bundle.v1",
   "app_id": "claude-code",
   "platform": "darwin",

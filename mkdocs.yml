@@ -360,6 +360,7 @@ nav:
       - Technical decisions: architecture/decisions.md
       - 'ADR 0001: API versioning': architecture/decisions/0001-api-versioning.md
       - Agent Control: architecture/agent-control.md
+      - Managed bundles: architecture/managed-bundles.md
       - Tool configuration and approvals: architecture/approvals.md
       - Cost analytics and budgeting: architecture/cost.md
       - Flows: architecture/flows.md

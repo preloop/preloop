@@ -406,3 +406,14 @@ List requires exactly one target. `--wait` polls the single-note route every
 3 on undeliverable or expired, and 4 on timeout. Status and list show receipt
 timestamps and channel; JSON includes the author and note text under the same
 read permission as the API. See [operator notes](operator-notes.md#delivery-receipts).
+
+### Managed hook bundle registration
+
+`preloop agents managed-config claude-code --output ./bundle --platform linux
+--cli-path /opt/preloop/bin/preloop` exports an offline managed hook overlay with a
+SHA-256 policy revision. Add `--register` to record the revision and non-secret
+manifest metadata with the selected account. Registration requires
+`manage_agents`; reading the registry and generated count requires `view_agents`.
+It does not install the bundle or enroll workstations. See
+[managed hook exports](clients/claude-code.md#export-a-managed-hook-overlay) for
+hash bytes, retry behavior and evidence eligibility.

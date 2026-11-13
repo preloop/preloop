@@ -49,8 +49,9 @@ daily version check-in and conversion events). Update notifications are
 suppressed too, as they depend on the check-in response.`,
 
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// Inventory and managed exports are offline, even when validation rejects
-		// conflicting flags. Skip telemetry counters and version/cache work.
+		// Inventory and managed exports skip telemetry and version/cache work,
+		// even when validation rejects conflicting flags. Managed export handles
+		// explicit --register authentication inside its command handler.
 		if isUnattendedEnrollmentCommand(cmd) || isOfflineInventoryCommand(cmd) || isManagedConfigCommand(cmd) || isAllUsersInventoryCommand(cmd) {
 			silenceUsageForRuntimeErrors(cmd)
 			return
