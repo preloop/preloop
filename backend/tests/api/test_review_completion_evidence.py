@@ -38,6 +38,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         "log_shipping",
         "lease_revocation",
         "completion_event_queueing",
+        "completion_event_reported_failure",
     ],
 )
 async def test_captured_result_survives_later_failure(
@@ -109,6 +110,14 @@ async def test_captured_result_survives_later_failure(
             side_effect=RuntimeError("synthetic outbox failure"),
         ):
             orch._emit_execution_finished_webhook("SUCCEEDED", None)
+    elif failure == "completion_event_reported_failure":
+        from preloop.services.event_webhooks.outbox import EnqueueResult
+
+        with patch(
+            "preloop.services.event_webhooks.emitters.outbox.enqueue_event",
+            return_value=EnqueueResult(failed=True),
+        ):
+            orch._emit_execution_finished_webhook("SUCCEEDED", None)
     db_session.expire_all()
     response = client.get(
         f"/api/v1/flows/executions/{execution.id}/result",
@@ -124,7 +133,12 @@ async def test_captured_result_survives_later_failure(
         "source": "native_structured_result",
         "result_sha256": digest(document),
     }
-    assert failure in body["completion"]["post_result_failures"]
+    expected_failure = (
+        "completion_event_queueing"
+        if failure == "completion_event_reported_failure"
+        else failure
+    )
+    assert expected_failure in body["completion"]["post_result_failures"]
     for private_message in (
         "synthetic checkpoint failure",
         "synthetic bus failure",
@@ -333,14 +347,19 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verdict", ["approve", "request-changes"])
+@pytest.mark.parametrize("traceback_logs", [False, True])
 async def test_valid_native_verdict_needs_no_status_or_success_marker(
     db_session: Session,
     ci_resources: tuple[Any, ...],
     monkeypatch: pytest.MonkeyPatch,
     verdict: str,
+    traceback_logs: bool,
 ) -> None:
     """Strict native output confirms completion even when the review rejects code."""
     from tests.test_flow_orchestrator import _confirmation_executor
+
+    from preloop.agents.base import AgentStatus
+    from preloop.agents.container import ContainerAgentExecutor
 
     execution = owned_run(db_session, ci_resources)[-1]
     orch = FlowExecutionOrchestrator(db_session, execution.flow_id, {}, AsyncMock())
@@ -362,13 +381,106 @@ async def test_valid_native_verdict_needs_no_status_or_success_marker(
     monkeypatch.setattr(
         orch, "_sync_runtime_tool_activity_metrics", AsyncMock(return_value=None)
     )
-    result = await orch._monitor_agent_execution(
-        "session", _confirmation_executor(artifact={"verdict": verdict})
-    )
+    executor = _confirmation_executor(artifact={"verdict": verdict})
+    if traceback_logs:
+        container = ContainerAgentExecutor(
+            "codex", {}, "synthetic", use_kubernetes=False
+        )
+        monkeypatch.setattr(
+            container, "get_status", AsyncMock(return_value=AgentStatus.SUCCEEDED)
+        )
+        monkeypatch.setattr(
+            container,
+            "get_logs",
+            AsyncMock(
+                return_value=[
+                    "PRELOOP_AGENT_EXEC_START",
+                    "A checked test reported: Traceback (most recent call last):",
+                    "AssertionError: reviewed code failed its test",
+                ]
+            ),
+        )
+        docker = SimpleNamespace(
+            containers=SimpleNamespace(
+                get=AsyncMock(
+                    return_value=SimpleNamespace(
+                        show=AsyncMock(
+                            return_value={
+                                "State": {
+                                    "Running": False,
+                                    "Status": "exited",
+                                    "ExitCode": 0,
+                                }
+                            }
+                        )
+                    )
+                )
+            )
+        )
+        monkeypatch.setattr(
+            container, "_get_docker_client", AsyncMock(return_value=docker)
+        )
+        executor.get_result = container.get_result
+    result = await orch._monitor_agent_execution("session", executor)
     assert orch._result_schema_validation["valid"] is True
     assert result["status"] == "SUCCEEDED"
     assert not result.get("error_message")
     assert not orch._confirmation_nudge_attempted
+
+
+def test_strict_native_result_stays_valid_after_controller_termination_metadata(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+) -> None:
+    """The schema-valid public artifact excludes later process metadata."""
+    from jsonschema import Draft202012Validator
+
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    schema = {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {"verdict": {"enum": ["approve", "request-changes"]}},
+        "additionalProperties": False,
+    }
+    document = {"verdict": "approve"}
+    crud.crud_flow_execution.record_completion_evidence(
+        db_session,
+        execution_id=execution.id,
+        facts={
+            "capture_state": "captured",
+            "result_captured_at": "2030-01-01T00:00:00Z",
+            "result_source": "native_structured_result",
+            "agent_finished": {"status": "SUCCEEDED", "exit_code": 0},
+        },
+        result=document,
+        validation={"valid": True, "errors": [], "error_count": 0},
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "status": "SUCCEEDED",
+            "result": {
+                **document,
+                "container_termination": {"runtime": "docker", "exit_code": 0},
+            },
+        },
+    )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    Draft202012Validator(schema).validate(body["result"])
+    assert body["result"] == document
+    assert body["result_withheld_paths"] == ["/container_termination"]
+    assert body["completion"]["result_captured"]["result_sha256"] == digest(document)
+    assert body["completion"]["agent_finished"] == {
+        "status": "SUCCEEDED",
+        "exit_code": 0,
+    }
 
 
 def test_terminal_capture_in_progress_is_409_then_captured_result_is_200(
@@ -431,6 +543,39 @@ def test_controller_metadata_without_an_artifact_is_404(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"pr_url": "https://github.com/example/repository/pull/1"},
+        {"published_prs": [{"url": "https://github.com/example/repository/pull/1"}]},
+        {"pending_followup": True, "resume_count": 1},
+    ],
+)
+def test_legacy_outputs_without_schema_or_capture_provenance_remain_readable(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    document: dict[str, Any],
+) -> None:
+    """Historical publication and continuation outputs remain usable results."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    CRUDBase(models.FlowExecution).update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "status": "SUCCEEDED",
+            "result": document,
+            "result_schema_validation": None,
+        },
+    )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == document
 
 
 def test_later_null_result_write_preserves_a_durable_valid_capture(

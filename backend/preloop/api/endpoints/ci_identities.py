@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.models import crud, models
+from preloop.models.crud.ci_administration import CiSharedFlowError
 from preloop.models.db.session import get_db_session
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
@@ -25,6 +26,8 @@ from preloop.schemas.ci_administration import (
     CiAdminRotate,
     CiAdminSubscription,
     CiAdminUpdate,
+    CiSharedFlowRead,
+    CiSharedFlowUpdate,
 )
 from preloop.schemas.webhook_endpoint import (
     WebhookEndpointCreated,
@@ -44,6 +47,9 @@ def _call(operation: Callable[[], T]) -> T:
         raise HTTPException(403, "CI administration denied") from None
     except LookupError:
         raise HTTPException(404, "CI resource not found") from None
+    except CiSharedFlowError as error:
+        # Fixed sentences only; see CiSharedFlowError.
+        raise HTTPException(409, str(error)) from None
     except ValueError:
         raise HTTPException(
             400, "Invalid CI administration request or resource binding"
@@ -95,6 +101,54 @@ def create_identity(
 
     return _call(
         lambda: crud.crud_ci_administration.create(db, actor=actor, payload=payload)
+    )
+
+
+@router.get("/shared-flows/{flow_id}", response_model=CiSharedFlowRead)
+def get_shared_flow(
+    flow_id: UUID,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> CiSharedFlowRead:
+    """Read which projects a flow admits for restricted CI.
+
+    Human administrators only. A CI credential cannot call this route, so an
+    identity cannot learn which other projects share its flow.
+    """
+    return _call(
+        lambda: crud.crud_ci_administration.shared_flow(
+            db, actor=actor, flow_id=flow_id
+        )
+    )
+
+
+@router.put("/shared-flows/{flow_id}", response_model=CiSharedFlowRead)
+def put_shared_flow(
+    flow_id: UUID,
+    payload: CiSharedFlowUpdate,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> CiSharedFlowRead:
+    """Replace the project allowlist of a shared read-only review flow.
+
+    The flow must already be an enabled read-only review flow
+    (``git_clone_config.publication_mode: read_only``) in the caller's
+    account. ``project_ids`` is the complete new allowlist; every project
+    must be an active project of the same account on a GitHub App tracker.
+    Preloop writes one clone repository per project, from the project's own
+    tracker, and the matching trigger projects.
+
+    Admitting a project grants nothing by itself: provision a CI identity for
+    that project and this flow. Each identity stays bound to one project and
+    can start and read only its own executions. Removing a project denies
+    every identity bound to it from its next request on. A dedicated flow
+    that still has identities bound to it is refused with 409; retire them
+    first, because an identity's binding mode is fixed at provisioning.
+    """
+    return _call(
+        lambda: crud.crud_ci_administration.share_flow(
+            db, actor=actor, flow_id=flow_id, payload=payload
+        )
     )
 
 

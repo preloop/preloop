@@ -467,16 +467,12 @@ def emit_flow_execution_finished(
     *,
     status: str,
     failure_category: Optional[str] = None,
-) -> None:
+) -> outbox.EnqueueResult | None:
     """Enqueue ``flow.execution.finished`` in the caller's transaction."""
-    from preloop.services.review_completion_evidence import result_availability
-
-    if result_availability(execution) == "pending":
-        return  # Finalization will queue the completion after capture settles.
     execution_id = getattr(execution, "id", None)
     if execution_id is None:
         return
-    outbox.enqueue_event(
+    return outbox.enqueue_event(
         db,
         account_id=getattr(flow, "account_id", None),
         event_type=EVENT_FLOW_EXECUTION_FINISHED,

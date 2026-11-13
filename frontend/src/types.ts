@@ -19,6 +19,11 @@ export interface GitCloneConfig {
   pull_request_title?: string;
   pull_request_description?: string;
   publication_mode?: 'legacy' | 'isolated' | 'read_only';
+  /**
+   * Read-only review only: the flow is shared by the listed projects and a
+   * restricted CI identity selects just its own project's repository.
+   */
+  ci_project_selection?: boolean;
 }
 
 export interface FlowCustomCommands {

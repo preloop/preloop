@@ -1858,8 +1858,8 @@ def get_flow_execution_result(
       is terminal, capture has settled, and no artifact was reported.
       Controller-only metadata is not a captured result.
 
-    The result is persisted with the terminal status, before
-    ``flow.execution.finished`` is queued, so a caller notified of completion
+    The result is persisted and capture settled before the durable
+    ``flow.execution.finished`` event is delivered, so a caller notified of completion
     never receives 409 for that execution.
 
     ``evidence`` is the persisted receipt when one is bound, else derived

@@ -121,8 +121,8 @@ def test_legacy_missing_evidence_is_not_inferred_from_exit_or_registration() -> 
     assert timing["startup_seconds"] is None
 
 
-def test_completion_event_waits_for_capture_to_settle() -> None:
-    """An externally terminal row cannot announce completion during capture."""
+def test_completion_event_is_durable_while_capture_is_pending() -> None:
+    """The outbox, not an in-memory finalizer, owns deferred delivery."""
     from preloop.services.event_webhooks.emitters import emit_flow_execution_finished
 
     execution = SimpleNamespace(
@@ -137,12 +137,23 @@ def test_completion_event_waits_for_capture_to_settle() -> None:
         emit_flow_execution_finished(
             MagicMock(), execution, SimpleNamespace(), status="FAILED"
         )
-        queue.assert_not_called()
-        execution.startup_receipt["_completion"]["capture_state"] = "absent"
-        emit_flow_execution_finished(
-            MagicMock(), execution, SimpleNamespace(), status="FAILED"
-        )
         queue.assert_called_once()
+
+
+def test_status_timing_projection_does_not_hash_the_result() -> None:
+    """Polling needs only completion facts, not a second artifact projection."""
+    execution = SimpleNamespace(
+        status="FAILED",
+        result={"review": "Completed findings"},
+        startup_receipt={"_completion": {"post_result_failures": ["publication"]}},
+    )
+    with patch(
+        "preloop.services.review_completion_evidence.digest",
+        side_effect=AssertionError("unexpected hash"),
+    ):
+        assert (
+            timings_projection(execution, [])["terminal_cause"] == "post_result_failure"
+        )
 
 
 @pytest.mark.asyncio

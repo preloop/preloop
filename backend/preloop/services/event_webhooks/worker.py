@@ -302,6 +302,10 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
                 db.add(delivery)
                 continue
             probing.add(endpoint.id)
+        if not crud.crud_flow_execution.prepare_completion_delivery(
+            db, delivery=delivery, endpoint=endpoint, now=moment
+        ):
+            continue
         item = prepare_claimed(delivery, endpoint)
         if item is None:
             outbox.record_attempt(

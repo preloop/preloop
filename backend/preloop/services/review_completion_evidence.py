@@ -57,24 +57,7 @@ def result_availability(execution: Any) -> str:
         return "available"
     # Historical writers put runtime facts in result even without a file.
     # Preserve arbitrary historical documents; these keys are platform-owned.
-    metadata = {
-        "container_termination",
-        "native_resume",
-        "continuation",
-        "_private_publication",
-        "trusted_publication",
-        "verification",
-        "report_publication",
-        "publication_missing",
-        "follow_up_filing",
-        "pr_url",
-        "pr_source_branch",
-        "published_prs",
-        "published_prs_truncated",
-        "pending_followup",
-        "pending_followup_comment_url",
-        "resume_count",
-    }
+    metadata = {"container_termination"}
     if isinstance(document, dict) and document and set(document) <= metadata:
         validation = getattr(execution, "result_schema_validation", None)
         if not isinstance(validation, dict) or validation.get("valid") is not True:
@@ -205,7 +188,10 @@ def terminal_cause(execution: Any) -> str | None:
         return "upstream_error"
     if status == "SUCCEEDED":
         return "completed"
-    if completion_projection(execution)["post_result_failures"]:
+    if (
+        set(completion_facts(execution).get("post_result_failures") or [])
+        & POST_RESULT_FAILURES
+    ):
         return "post_result_failure"
     if category in {"agent_no_progress", "no_confirmation"} or (
         getattr(execution, "result", None) is None and category in {None, "unknown"}

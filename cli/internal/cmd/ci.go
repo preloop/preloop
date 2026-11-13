@@ -27,6 +27,8 @@ var ciSafeFields = map[string]bool{
 	"supported_actions": true, "binding": true, "tracker_id": true,
 	"runner_pool": true, "url": true, "enabled": true, "event_types": true,
 	"max_retries": true, "retry_backoff_seconds": true, "timeout_seconds": true,
+	"binding_mode": true, "binding_modes": true, "read_only": true,
+	"projects": true, "identities": true,
 }
 
 func ciSafeMetadata(value interface{}) interface{} {
@@ -55,7 +57,7 @@ func newCICmd() *cobra.Command {
 		Use: "ci", Short: "Human setup for restricted CI identities",
 		Long: "Use your saved human login or PRELOOP_TOKEN. Issued secrets go only to a new 0600 file; safe metadata goes to stdout. CI credentials cannot administer themselves.",
 	}
-	for _, operation := range []string{"capabilities", "list", "show", "preview", "create", "update", "issue", "rotate", "revoke", "retire", "subscribe"} {
+	for _, operation := range []string{"capabilities", "list", "show", "preview", "create", "update", "issue", "rotate", "revoke", "retire", "subscribe", "shared-flow", "share-flow"} {
 		group.AddCommand(newCICommand(operation))
 	}
 	return group
@@ -69,8 +71,14 @@ func newCICommand(operation string) *cobra.Command {
 	} else if operation == "rotate" || operation == "revoke" {
 		argCount = 2
 	}
+	flowOperation := operation == "shared-flow" || operation == "share-flow"
+	if flowOperation {
+		argCount = 1
+	}
 	use := operation
-	if argCount > 0 {
+	if flowOperation {
+		use += " FLOW_ID"
+	} else if argCount > 0 {
 		use += " PRINCIPAL_ID"
 	}
 	if argCount == 2 {
@@ -82,9 +90,15 @@ func newCICommand(operation string) *cobra.Command {
 	} else if operation == "subscribe" {
 		secretName = "secret"
 	}
-	needsBody := operation == "preview" || operation == "create" || operation == "update" || operation == "subscribe"
+	needsBody := operation == "preview" || operation == "create" || operation == "update" || operation == "subscribe" || operation == "share-flow"
+	short := "Restricted CI " + operation
+	if operation == "shared-flow" {
+		short = "Show which projects a flow admits for restricted CI"
+	} else if operation == "share-flow" {
+		short = "Replace the project allowlist of a shared read-only review flow"
+	}
 	cmd := &cobra.Command{
-		Use: use, Short: "Restricted CI " + operation, Args: cobra.ExactArgs(argCount),
+		Use: use, Short: short, Args: cobra.ExactArgs(argCount),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The global plaintext-token flag must not leak credentials into
 			// process lists or shell history for these setup operations.
@@ -93,7 +107,7 @@ func newCICommand(operation string) *cobra.Command {
 			}
 			for _, id := range args {
 				if !ciIDPattern.MatchString(id) {
-					return fmt.Errorf("principal and key identifiers must be UUIDs")
+					return fmt.Errorf("principal, key and flow identifiers must be UUIDs")
 				}
 			}
 			var payload map[string]interface{}
@@ -199,6 +213,10 @@ func ciRequestPath(operation string, args []string) (string, string) {
 		return http.MethodPost, suffix + "/retire"
 	case "subscribe":
 		return http.MethodPost, suffix + "/subscriptions"
+	case "shared-flow":
+		return http.MethodGet, "/shared-flows" + suffix
+	case "share-flow":
+		return http.MethodPut, "/shared-flows" + suffix
 	default:
 		panic("unknown CI administration operation")
 	}

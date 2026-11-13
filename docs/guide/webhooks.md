@@ -316,9 +316,10 @@ from the emitter:
 The owned execution receipt also contains the merge base, changed paths and
 canonical diff byte count. A missing digest is not inferred from the revisions.
 
-The result is stored with the terminal status before the event is queued, so
-`result_ready: true` means the result can be read now. An execution that is
-not yet terminal is never delivered. If an enqueue fails, the execution still
+The event is queued durably even when a stop races result capture. Delivery
+waits without consuming retries until capture settles, then refreshes the
+envelope, so `result_ready: true` means the result can be read now. An execution
+that is not yet terminal is never delivered. If an enqueue fails, the execution still
 completes, the result remains readable and `completion.post_result_failures`
 names `completion_event_queueing`; the failure is also logged at error level; nothing retries it, so a
 publisher that must not miss a review should also handle a missing event, for

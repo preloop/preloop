@@ -2419,6 +2419,7 @@ class ContainerAgentExecutor(AgentExecutor):
             has_error_pattern = self._detect_error_in_logs(logs_text)
 
             # Override status if we detect errors in logs
+            log_failure_override = has_error_pattern and status == AgentStatus.SUCCEEDED
             if has_error_pattern and status == AgentStatus.SUCCEEDED:
                 self.logger.warning(
                     f"Container {session_reference[:12]} exited with code 0 but logs contain critical errors. "
@@ -2435,6 +2436,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
             failure_analysis = None
             if termination.oom_killed:
+                log_failure_override = False
                 status = AgentStatus.FAILED
                 failure_analysis = _oom_failure_analysis(termination)
                 error_message = failure_analysis.message
@@ -2458,6 +2460,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
                 termination=termination,
+                log_failure_override=log_failure_override,
             )
 
         except DockerError as e:
@@ -2507,6 +2510,7 @@ class ContainerAgentExecutor(AgentExecutor):
             has_error_pattern = self._detect_error_in_logs(logs_text)
 
             # Override status if we detect errors in logs
+            log_failure_override = has_error_pattern and status == AgentStatus.SUCCEEDED
             if has_error_pattern and status == AgentStatus.SUCCEEDED:
                 self.logger.warning(
                     f"Job {job_name} succeeded but logs contain critical errors. "
@@ -2568,6 +2572,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
             failure_analysis = None
             if termination is not None and termination.oom_killed:
+                log_failure_override = False
                 status = AgentStatus.FAILED
                 failure_analysis = _oom_failure_analysis(termination)
                 error_message = failure_analysis.message
@@ -2589,6 +2594,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
                 termination=termination,
+                log_failure_override=log_failure_override and exit_code in (None, 0),
             )
 
         except ApiException as e:
