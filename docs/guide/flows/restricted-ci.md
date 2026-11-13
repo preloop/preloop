@@ -776,7 +776,7 @@ What gets posted:
   execution. A finding whose file and line are in the pull request's diff is
   also an inline comment. All text from the result is shown as literal text:
   it cannot mention a user, link anywhere, reference or close an issue, or
-  carry HTML.
+  carry HTML. File paths are shown as code.
 - A commit status on the reviewed SHA with the state mapped from the verdict.
 - Nothing from the result chooses the target. Repository, pull request and
   commit are the ones Preloop bound when it accepted the trigger
@@ -862,8 +862,20 @@ not opted in):
 }
 ```
 
-`status` is `pending` (not attempted yet), `publishing`, `posted`, `skipped`
-(the rules decided nothing is posted) or `failed`. A posting failure never
+`status` says what is on the pull request:
+
+- `posted`: the review is posted (and the status, when configured).
+- `status_only`: a commit status was set and, by rule, no review: the run
+  did not succeed or returned no valid verdict (`reason`
+  `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`), the head
+  moved (`head_moved`) or the pull request is closed. `review` is
+  `"skipped"` and `commit_status` holds the state that was set.
+- `skipped`: nothing was posted, for the same reasons, when no status applies.
+- `failed`: an attempt did not complete; `reason` says why, and `review` and
+  `commit_status` say what is already there.
+- `pending`, `publishing`: not attempted yet, or in progress.
+
+A posting failure never
 changes the execution's status or result. `reason` values include
 `head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
 `verdict_unmapped`, `admission_revoked`, `binding_changed`,
@@ -970,6 +982,12 @@ CI identity, so neither can trigger for, read or cause a post on the other.
       "expires_at": "2030-01-01T00:00:00Z"
     }
     ```
+
+   `execution:review:publish` is only needed for the publish call above,
+   not for posting. It can be granted on Preloop versions that include
+   platform-posted review; on Preloop Cloud and Preloop Enterprise the
+   access-control component must also include that action, otherwise the
+   grant is refused with 403. Leave it out of the list until then.
 
 3. In each repository's CI, on a pull request event, trigger with that
    repository's key and a body of exactly

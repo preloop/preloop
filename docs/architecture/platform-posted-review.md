@@ -96,15 +96,26 @@ Every model-written string goes through `plain_text`:
 2. Control, format, surrogate, private-use and unassigned characters are
    dropped. This removes bidirectional overrides and zero-width characters.
 3. The text is cut to the field's cap.
-4. `&`, `<`, `>` become HTML entities: no tag, comment or character
-   reference survives.
-5. Every other ASCII punctuation character is backslash-escaped: no link,
-   image, emphasis, heading, code span, table, list or quote, and no line
-   that starts with `/`.
-6. A zero-width space is inserted after `@` and `#`, between a URL scheme's
+4. A well-formed inline code span (one pair of backticks on one line, no
+   backtick inside) is kept as a code span, so identifiers the model marked
+   as code read as code. GitHub interprets nothing inside a code span.
+5. Everywhere else, each character that can start or delimit Markdown or
+   HTML (`` \ ` * _ [ ] < > & # @ ~ | ! $ ``) is written as a numeric
+   character reference such as `&#95;`. GitHub shows the character and never
+   treats a reference as markup: no tag, comment, link, image, emphasis,
+   table, strike-through or math. Ordinary text, dots, dashes and
+   parentheses stay as typed, so `calculator.py` reads `calculator.py`.
+6. A character that only matters at the start of a line (list markers,
+   rules, heading underlines, the delimiter of an ordered-list number, a
+   leading `/`) is written as a reference when it is first on its line.
+7. A zero-width space is inserted after `@` and `#`, between a URL scheme's
    `:` and `//`, inside `www.` and inside `GH-<digit>`: no mention, no issue
    or pull request reference (so no closing-keyword target and no
    cross-reference on another issue), no bare-URL autolink.
+
+File paths are shown as code spans (`code_span`): `src/calculator.py:12`.
+A path that contains a backtick cannot be a code span and goes through
+`plain_text` with step 4 off.
 
 Multi-line fields are emitted as block quotes, so no model line starts at
 column zero.
@@ -203,6 +214,23 @@ App bot), target (commit, context) and content (body digest, state). A
 mismatch is recorded as `readback_mismatch` and is never cleared by a retry:
 a person has to look at the pull request.
 
+## The record
+
+`platform_review.status` on the execution says what is on the provider:
+
+| `status` | Review | Commit status | Typical `reason` |
+| --- | --- | --- | --- |
+| `pending` | not attempted yet | not attempted yet | none |
+| `publishing` | attempt in flight | attempt in flight | none |
+| `posted` | posted | posted, or not configured | none |
+| `status_only` | none, by rule | posted | `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`, `head_moved`, `pull_request_closed` |
+| `skipped` | none | none | same reasons, when no status applies |
+| `failed` | see `review` | see `commit_status` | the failure |
+
+`posted` always means a review is on the pull request. A run that did not
+succeed and only received the `incomplete_state` status reads `status_only`
+with `review: "skipped"`, never `posted`.
+
 ## Failure isolation
 
 A posting failure never changes the execution's status or stored result. It
@@ -260,7 +288,7 @@ reading.
 | 1 | The run obtains a write credential | publish lease minted only after the run is terminal, in the control plane; container context holds the read lease only | `test_container_context_of_an_opted_in_flow_has_no_write_credential` |
 | 2 | The lease can push, merge or reach another repository | one repository, no `contents`; GitHub's returned scope must match exactly | `test_publish_lease_is_one_repository_two_permissions_and_revoked`, `test_broader_permission_set_returned_by_github_is_refused`, `test_no_publish_profile_carries_contents`, `test_lease_for_one_repository_cannot_write_to_the_other` |
 | 3 | The lease is used for another call (close, edit, merge) | fixed request allowlist; the tests assert the complete list of writes | `test_valid_result_posts_one_review_and_one_status_on_the_bound_commit` |
-| 4 | A prompt-injected result mentions people, links out, closes issues, hides HTML or commands a bot | fixed template, `plain_text`, caps | `test_plain_text_neutralises_mentions_links_html_and_commands`, `test_rendered_review_contains_no_model_markup_and_respects_caps` |
+| 4 | A prompt-injected result mentions people, links out, closes issues, hides HTML or commands a bot | fixed template, `plain_text`, caps | `test_plain_text_neutralises_mentions_links_html_and_commands`, `test_rendered_review_contains_no_model_markup_and_respects_caps`, `test_paths_render_in_code_spans_without_backslashes`, `test_path_that_could_leave_a_code_span_is_rendered_as_text`, `test_ordinary_text_is_left_readable` |
 | 5 | The result names another pull request, repository or commit | target only from the binding; unknown result fields are not read | `test_result_naming_another_pull_request_is_ignored`, `test_publish_request_cannot_name_a_target` |
 | 6 | Shared flow: project A's run or key posts on, or reads, project B | binding, per-repository lease, principal-owned queries | `test_two_projects_on_one_shared_flow_never_cross`, `test_ci_identity_cannot_publish_another_principals_execution` |
 | 7 | A verdict lands on a commit that was not reviewed | `commit_id` and status SHA from the binding; moved head skips the review | `test_moved_head_skips_the_review_and_keeps_the_status_on_the_reviewed_sha`, `test_closed_pull_request_gets_no_review`, `test_pull_request_identity_mismatch_is_refused` |

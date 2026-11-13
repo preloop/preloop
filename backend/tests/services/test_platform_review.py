@@ -516,8 +516,9 @@ async def test_review_body_is_readable_and_inline_only_for_diff_lines(
     assert f"Reviewed commit `{HEAD}`" in body
     assert "One problem in the parser" in body
     assert "**Findings (2)**" in body
-    assert "\\[high\\] Unchecked length" in body
-    assert "\\[low\\] Naming" in body
+    assert "&#91;high&#93; Unchecked length" in body
+    assert "&#91;low&#93; Naming" in body
+    assert "(`src/parser.py:12`)" in body
     assert "- correctness" in body and "- security" in body
     assert f"/console/flows/executions/{execution.id}" in body
     # Only the finding whose path and line are in the diff is inline.
@@ -1010,22 +1011,34 @@ HOSTILE = (
 )
 
 
+def _visible(markdown: str) -> str:
+    """What GitHub shows: code spans removed, character references decoded."""
+    import html
+
+    return html.unescape(re.sub(r"`[^`\n]*`", "", markdown))
+
+
 def test_plain_text_neutralises_mentions_links_html_and_commands() -> None:
     text = plain_text(HOSTILE, 4000)
-    assert "<" not in text and ">" not in text
-    assert not re.search(r"@[A-Za-z0-9]", text)
-    assert not re.search(r"#\d", text)
-    assert not re.search(r"GH-\d", text)
-    assert "://" not in text and "www." not in text.lower()
+    outside_code = re.sub(r"`[^`\n]*`", "", text)
+    # No character that can open or delimit markup survives as itself, and
+    # every ampersand is one of our numeric references.
+    for char in "[]*_<>|~$!`\\":
+        assert char not in outside_code, char
+    assert not re.search(r"&(?!#\d+;)", outside_code)
+    assert not re.search(r"(?<!&)#", outside_code)
+    shown = _visible(text)
+    assert not re.search(r"@[A-Za-z0-9]", shown)
+    assert not re.search(r"#\d", shown)
+    assert not re.search(r"GH-\d", shown)
+    assert "://" not in shown and "www." not in shown.lower()
     assert "\u202e" not in text
-    assert "&#" not in text
-    # Every Markdown-significant character is escaped.
-    for char in "[]()*`#!":
-        assert not re.search(rf"(?<!\\){re.escape(char)}", text)
-    # No line can start with a slash command.
-    assert not any(line.startswith("/") for line in text.split("\n"))
+    # A model-written character reference is shown literally, not decoded.
+    assert "&#38;&#35;" in text
+    # No line can start with a slash command or a block marker.
+    assert not any(line[:1] in "/-+=#>" for line in text.split("\n"))
     # The words themselves stay readable.
-    assert "octocat" in text and "evil" in text and "lgtm" in text
+    assert "octocat" in shown and "evil" in shown and "lgtm" in shown
 
 
 def test_plain_text_caps_length_and_rejects_non_strings() -> None:
@@ -1066,11 +1079,14 @@ def test_rendered_review_contains_no_model_markup_and_respects_caps() -> None:
     lines = body.split("\n")
     # The marker is ours; no other HTML and no model line at column zero.
     assert lines[0].startswith("<!-- preloop-platform-review v1 ")
-    assert "<" not in "\n".join(lines[1:])
-    assert not re.search(r"@[A-Za-z0-9]", body)
-    assert not re.search(r"(?<!execution=)(?<![0-9a-f-])#\d", body)
-    assert "](" not in body
-    assert "https://evil" not in body and "www.evil" not in body
+    rest = "\n".join(lines[1:])
+    assert "<" not in rest and "\\" not in rest
+    shown = _visible(rest)
+    assert not re.search(r"@[A-Za-z0-9]", shown)
+    assert not re.search(r"#\d", shown)
+    # Inside a code span GitHub interprets nothing; outside, no link syntax.
+    assert "](" not in re.sub(r"`[^`\n]*`", "", body)
+    assert "https://evil" not in shown and "www.evil" not in shown
     assert not any(line.startswith("/") for line in lines)
 
 
@@ -2102,3 +2118,108 @@ def test_admin_update_extends_keys_and_requires_a_grant(
         .count()
     )
     assert audited == 1
+
+
+# --- found by the first live run -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_of_a_run_without_a_review_says_status_only(
+    world: SimpleNamespace,
+) -> None:
+    """No review plus a commit status is never reported as ``posted``."""
+    project = world.projects[0]
+    who = identity(world, project)
+    failed_run = finished(world, who, status="FAILED", valid=None)
+    outcome = await publish(world, failed_run)
+    assert outcome is not None
+    assert outcome["status"] == "status_only"
+    assert outcome["reason"] == "run_not_succeeded"
+    assert outcome["review"] == "skipped" and outcome["review_id"] is None
+    assert outcome["commit_status"] == "error"
+    assert outcome["posted_at"] is not None
+    # Terminal like ``posted``: asking again changes and posts nothing.
+    calls = len(world.github.calls)
+    assert await publish(world, failed_run, explicit=True) == outcome
+    assert len(world.github.calls) == calls
+    # A moved head is the same shape: status on the reviewed commit only.
+    world.github.pulls[(project.slug, 7)]["head"]["sha"] = OTHER_HEAD
+    moved = await publish(world, finished(world, who))
+    assert moved is not None
+    assert (moved["status"], moved["reason"]) == ("status_only", "head_moved")
+    assert moved["review"] == "skipped" and moved["commit_status"] == "failure"
+
+
+@pytest.mark.asyncio
+async def test_record_states_are_consistent_with_what_was_written(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    who = identity(world, project)
+    both = await publish(world, finished(world, who))
+    assert both is not None
+    assert (both["status"], both["reason"]) == ("posted", None)
+    assert both["review"] == "posted" and both["commit_status"] == "failure"
+    _set_review(world, {"enabled": True})
+    review_only = await publish(world, finished(world, who))
+    assert review_only is not None
+    assert (review_only["status"], review_only["reason"]) == ("posted", None)
+    assert review_only["commit_status"] is None
+    nothing = await publish(world, finished(world, who, status="FAILED"))
+    assert nothing is not None
+    assert (nothing["status"], nothing["reason"]) == ("skipped", "run_not_succeeded")
+    assert nothing["review"] == "skipped" and nothing["commit_status"] is None
+    assert nothing["posted_at"] is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "calculator.py",
+        "src/my_module/file-name.test.py",
+        "packages/@scope/pkg/src/[id]/page.tsx",
+        "docs/a (copy)/READ_ME.md",
+        "__init__.py",
+    ],
+)
+def test_paths_render_in_code_spans_without_backslashes(path: str) -> None:
+    body, _ = render_review(
+        {
+            "verdict": "fail",
+            "summary": "See calculator.py and `add_numbers()` in my_module.",
+            "findings": [{"title": "Check __init__.py", "path": path, "line": 3}],
+        },
+        verdict="fail",
+        execution_id=uuid4(),
+        head_sha=HEAD,
+        nonce="n" * 32,
+        inline={},
+    )
+    assert "\\" not in body
+    assert f"`{path}:3`" in body
+    assert "See calculator.py and `add_numbers()` in my" in body
+
+
+def test_ordinary_text_is_left_readable() -> None:
+    assert plain_text("calculator.py returns 1.5 (not 2).", 100) == (
+        "calculator.py returns 1.5 (not 2)."
+    )
+    assert plain_text("Use `snake_case` here", 100) == "Use `snake_case` here"
+    assert "\\" not in plain_text(HOSTILE, 4000)
+
+
+def test_path_that_could_leave_a_code_span_is_rendered_as_text() -> None:
+    body, _ = render_review(
+        {
+            "verdict": "fail",
+            "findings": [{"title": "t", "path": "a`b` @octocat [x](y).py", "line": 1}],
+        },
+        verdict="fail",
+        execution_id=uuid4(),
+        head_sha=HEAD,
+        nonce="n" * 32,
+        inline={},
+    )
+    section = body.split("**Findings")[1]
+    assert "`" not in section.replace("&#96;", "")
+    assert "@octocat" not in section and "](" not in section

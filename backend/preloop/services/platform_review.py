@@ -36,6 +36,7 @@ from preloop.models.models.platform_review_publication import (
     STATE_POSTED,
     STATE_PUBLISHING,
     STATE_SKIPPED,
+    STATE_STATUS_ONLY,
 )
 from preloop.schemas.ci_execution import CiReviewBinding
 from preloop.schemas.ci_principal import CiAction
@@ -89,8 +90,14 @@ MAX_PAGES = 10
 MAX_AUTOMATIC_ATTEMPTS = 6
 _API = "https://api.github.com"
 _ZWSP = "\u200b"
-_PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
-_ENTITIES = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
+#: Characters that can start or delimit Markdown or HTML anywhere in a line.
+#: Each is written as a numeric character reference, which GitHub renders as
+#: the literal character and never treats as markup.
+_MARKUP = frozenset("\\`*_[]<>&#@~|!$")
+#: Characters that only mean something at the start of a line (lists, rules,
+#: setext headings, quotes, slash commands).
+_LINE_START = frozenset("-+=/:.)(%^{}'\",;?")
+_CODE_SPAN = re.compile(r"`([^`\n]{1,200})`")
 
 TERMINAL_STATUSES: frozenset[str] = frozenset(
     {
@@ -387,7 +394,55 @@ def validate_platform_review_trackers(
 # --- rendering -------------------------------------------------------------
 
 
-def plain_text(value: Any, limit: int, *, single_line: bool = False) -> str:
+def _reference(char: str) -> str:
+    return f"&#{ord(char)};"
+
+
+def _encode_text(text: str) -> str:
+    """Encode one run of text that is not inside a code span."""
+    out: list[str] = []
+    for index, char in enumerate(text):
+        if char in _MARKUP:
+            out.append(_reference(char))
+            if char in "@#":
+                out.append(_ZWSP)
+        elif char == ":" and text[index + 1 : index + 3] == "//":
+            out.append(":" + _ZWSP)
+        else:
+            out.append(char)
+    encoded = "".join(out)
+    encoded = re.sub(r"(?i)(www)(\.)", rf"\1{_ZWSP}\2", encoded)
+    return re.sub(r"(?i)\b(GH-)(?=\d)", rf"\1{_ZWSP}", encoded)
+
+
+def _encode_line(line: str, code: bool) -> str:
+    """Encode one line, keeping well-formed inline code spans when allowed."""
+    parts: list[str] = []
+    position = 0
+    for match in _CODE_SPAN.finditer(line) if code else ():
+        inner = match.group(1).strip()
+        if not inner:
+            continue
+        parts.append(_encode_text(line[position : match.start()]))
+        parts.append(f"`{inner}`")
+        position = match.end()
+    parts.append(_encode_text(line[position:]))
+    encoded = "".join(parts)
+    # Nothing model-written may open a block: a list, a rule, a heading
+    # underline, an ordered list, a slash command.
+    if encoded[:1] in _LINE_START:
+        return _reference(encoded[0]) + encoded[1:]
+    ordered = re.match(r"^(\d{1,9})([.)])", encoded)
+    if ordered:
+        return (
+            ordered.group(1) + _reference(ordered.group(2)) + encoded[ordered.end() :]
+        )
+    return encoded
+
+
+def plain_text(
+    value: Any, limit: int, *, single_line: bool = False, code: bool = True
+) -> str:
     """Render untrusted text so GitHub shows it as literal characters.
 
     The rule, in order:
@@ -398,12 +453,20 @@ def plain_text(value: Any, limit: int, *, single_line: bool = False) -> str:
        characters); line breaks are kept, or turned into spaces for a
        single-line field.
     3. The text is cut to ``limit`` characters.
-    4. ``&``, ``<`` and ``>`` become HTML entities, so no tag, comment or
-       character reference survives.
-    5. Every other ASCII punctuation character is backslash-escaped, so no
-       Markdown construct (link, image, emphasis, heading, code, table,
-       list, quote) and no line-leading ``/command`` survives.
-    6. A zero-width space is inserted after ``@`` and ``#``, between a URL
+    4. A well-formed inline code span (one pair of backticks on one line, no
+       backtick inside) is kept as a code span, so identifiers and file names
+       the model marked as code read as code. GitHub interprets nothing
+       inside a code span.
+    5. Everywhere else, every character that can start or delimit Markdown or
+       HTML (``\\ ` * _ [ ] < > & # @ ~ | ! $``) is written as a numeric
+       character reference. GitHub shows the character and never treats a
+       reference as markup, so no tag, comment, link, image, emphasis, code,
+       table, strike-through or math survives, and ordinary text, dots,
+       dashes and parentheses stay as typed.
+    6. A character that only matters at the start of a line (list markers,
+       rules, heading underlines, ordered-list numbers, a leading ``/``) is
+       written as a reference when it is first on its line.
+    7. A zero-width space is inserted after ``@`` and ``#``, between a URL
        scheme's ``:`` and ``//``, inside ``www.`` and inside ``GH-<digit>``,
        so no mention, issue or pull request reference, closing keyword
        target or bare-URL autolink is recognised.
@@ -412,6 +475,7 @@ def plain_text(value: Any, limit: int, *, single_line: bool = False) -> str:
         value: Model-written value.
         limit: Maximum number of source characters kept.
         single_line: Replace line breaks with spaces.
+        code: Keep well-formed inline code spans (step 4).
 
     Returns:
         Markdown source that renders as the literal text.
@@ -428,20 +492,36 @@ def plain_text(value: Any, limit: int, *, single_line: bool = False) -> str:
             kept.append(char)
     text = "".join(kept).strip()
     if len(text) > limit:
-        text = text[: max(limit - 1, 0)].rstrip() + "…"
-    out: list[str] = []
-    for index, char in enumerate(text):
-        if char in _ENTITIES:
-            out.append(_ENTITIES[char])
-        elif char in _PUNCTUATION:
-            out.append("\\" + char)
-            if char in "@#" or (char == ":" and text[index + 1 : index + 3] == "//"):
-                out.append(_ZWSP)
-        else:
-            out.append(char)
-    escaped = "".join(out)
-    escaped = re.sub(r"(?i)(www)(\\\.)", rf"\1{_ZWSP}\2", escaped)
-    return re.sub(r"(?i)\b(GH\\-)(?=\d)", rf"\1{_ZWSP}", escaped)
+        text = text[: max(limit - 1, 0)].rstrip() + "\u2026"
+    return "\n".join(_encode_line(line.strip(), code) for line in text.split("\n"))
+
+
+def code_span(value: Any, limit: int) -> str:
+    """Render a file path or identifier as an inline code span.
+
+    GitHub interprets nothing inside a code span, so the value is shown
+    exactly. A value that could end the span early (a backtick) or is not a
+    single line is rendered through :func:`plain_text` instead.
+
+    Args:
+        value: Model-written path or identifier.
+        limit: Maximum number of characters kept.
+
+    Returns:
+        Markdown source, or the empty string for an unusable value.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = "".join(
+        char
+        for char in value
+        if unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"}
+    ).strip()
+    if not text:
+        return ""
+    if "`" in text or len(text) > limit:
+        return plain_text(value, limit, single_line=True, code=False)
+    return f"`{text}`"
 
 
 def _quote(text: str) -> str:
@@ -475,6 +555,14 @@ def _first_text(source: Mapping[str, Any], names: tuple[str, ...]) -> Any:
     return None
 
 
+def _location(path: Any, line: Any) -> str:
+    """``path:line`` as a code span (the line only when it is a valid number)."""
+    if not isinstance(path, str):
+        return ""
+    valid = type(line) is int and 0 < line < 10**7
+    return code_span(f"{path.strip()}:{line}" if valid else path, 320)
+
+
 def structured_findings(result: Mapping[str, Any]) -> tuple[list[Finding], int]:
     """Read ``findings`` from a validated result.
 
@@ -505,7 +593,7 @@ def structured_findings(result: Mapping[str, Any]) -> tuple[list[Finding], int]:
                     _first_text(item, ("body", "description", "message", "detail")),
                     MAX_FINDING_BODY_CHARS,
                 ),
-                path=plain_text(raw_path, 300, single_line=True) or None,
+                path=_location(raw_path, line) or None,
                 raw_path=raw_path if isinstance(raw_path, str) else None,
                 line=line if type(line) is int and 0 < line < 10**7 else None,
             )
@@ -528,13 +616,10 @@ def execution_url(execution_id: Any) -> str:
 
 
 def _finding_heading(index: int, finding: Finding, *, location: bool) -> str:
-    severity = f"\\[{finding.severity}\\] " if finding.severity else ""
+    severity = f"&#91;{finding.severity}&#93; " if finding.severity else ""
     title = finding.title or "Finding"
-    where = ""
-    if location and finding.path:
-        where = f" ({finding.path}"
-        where += f":{finding.line})" if finding.line else ")"
-    return f"**{index}\\. {severity}{title}**{where}"
+    where = f" ({finding.path})" if location and finding.path else ""
+    return f"**{index}&#46; {severity}{title}**{where}"
 
 
 def diff_lines(files: list[Any]) -> dict[str, set[int]]:
@@ -1235,10 +1320,18 @@ async def _publish_claimed(
         # that a publish call can add the status once the App may set it.
         raise PlatformReviewError("statuses_permission_missing")
     wrote = STATE_POSTED in (row.review_state, row.status_state)
+    if row.review_state == STATE_POSTED:
+        state = STATE_POSTED
+    elif row.status_state == STATE_POSTED:
+        # A commit status without a review (the run did not produce a
+        # postable verdict, or the head moved) is never called ``posted``.
+        state = STATE_STATUS_ONLY
+    else:
+        state = STATE_SKIPPED
     record(
         db,
         row=row,
-        state=STATE_POSTED if wrote else STATE_SKIPPED,
+        state=state,
         reason=row.review_reason
         or (row.status_reason if row.status_reason != "not_configured" else None),
         retryable=False,

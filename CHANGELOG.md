@@ -62,6 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actions a grant change adds (for example `execution:review:publish`) to
   the identity's active keys in place, without rotation.
 
+- flows: the `platform_review` record no longer reports `posted` when no
+  review was posted. A run that did not succeed (or whose head moved) and
+  only received a commit status now reads `status: "status_only"` with the
+  reason and `review: "skipped"`; `posted` always means a review is on the
+  pull request.
+
+- flows: reviews posted by Preloop no longer show stray backslashes
+  (`calculator\.py`). Text from the result is neutralised with character
+  references instead of backslash escapes, so ordinary text reads as typed,
+  and file paths and identifiers marked as code are shown as code. Mentions,
+  links, issue references, HTML and commands from result text stay inert.
+
 - models: audit model creation, updates, deletion and credential set,
   replacement, rotation and removal without key material. First provider API-key
   rejections now notify account owners once per episode and emit
