@@ -295,6 +295,10 @@ class CiExecutionResponse(BaseModel):
         description="Sanitised recorded phase durations in seconds, request counts, effective upstream settings and terminal cause. Unknown boundaries are null.",
     )
 
+    # What Preloop itself posted on the pull request for this execution
+    # (review and commit status); null when the flow has not opted in.
+    platform_review: dict[str, Any] | None = None
+
 
 class CiExecutionResultResponse(CiExecutionResponse):
     """Restricted result envelope, including independent completion facts."""

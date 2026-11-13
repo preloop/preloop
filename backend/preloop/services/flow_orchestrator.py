@@ -9492,6 +9492,46 @@ class FlowExecutionOrchestrator:
                 status,
             )
 
+    async def _publish_platform_review(self) -> None:
+        """Post the validated read-only review and commit status (opt-in).
+
+        The work happens in ``preloop.services.platform_review`` on its own
+        database session with a GitHub App token minted there; the
+        orchestrator, the container and the agent never see that token. A
+        failure is recorded on the publication row and retried by the
+        execution monitor.
+        """
+        try:
+            from preloop.services.platform_review import (
+                platform_review_block,
+                publish_finished_execution,
+            )
+
+            flow = self.flow
+            execution = self.execution_log
+            if (
+                flow is None
+                or execution is None
+                or getattr(execution, "ci_review_binding", None) is None
+                or platform_review_block(getattr(flow, "git_clone_config", None))
+                is None
+            ):
+                return
+            # Bounded so a slow provider cannot hold back the finished
+            # event; an attempt cut short here is picked up by the monitor.
+            await asyncio.wait_for(
+                publish_finished_execution(
+                    account_id=flow.account_id, execution_id=execution.id
+                ),
+                timeout=90,
+            )
+        except Exception:
+            self._record_post_result_failure("publication")
+            logger.exception(
+                "Platform review publication failed for execution %s",
+                getattr(self.execution_log, "id", "unknown"),
+            )
+
     def _emit_execution_finished_webhook(
         self, status: str, failure_category: Optional[str]
     ) -> None:
@@ -9688,6 +9728,12 @@ class FlowExecutionOrchestrator:
             # A webhook subscriber asked for every finish, not just the
             # finishes that also comment on a ticket. Callers persist
             # failure_category on the execution log before this runs.
+            #
+            # A read-only review flow that opted in has its validated result
+            # posted by the control plane first, so the finished event can
+            # say what was posted. Never raises and never touches the status
+            # or result that were just stored.
+            await self._publish_platform_review()
             self._emit_execution_finished_webhook(
                 status, getattr(self.execution_log, "failure_category", None)
             )

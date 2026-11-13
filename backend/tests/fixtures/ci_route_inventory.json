@@ -429,6 +429,7 @@
   "POST /api/v1/flows": "deny",
   "POST /api/v1/flows/executions/{execution_id}/command": "execution:stop",
   "POST /api/v1/flows/executions/{execution_id}/continuation": "deny",
+  "POST /api/v1/flows/executions/{execution_id}/platform-review": "execution:review:publish",
   "POST /api/v1/flows/executions/{execution_id}/publication-credential": "deny",
   "POST /api/v1/flows/executions/{execution_id}/result-export": "deny",
   "POST /api/v1/flows/executions/{execution_id}/retry": "deny",

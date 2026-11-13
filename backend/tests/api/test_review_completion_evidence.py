@@ -39,6 +39,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         "lease_revocation",
         "completion_event_queueing",
         "completion_event_reported_failure",
+        "platform_publication_exception",
     ],
 )
 async def test_captured_result_survives_later_failure(
@@ -104,6 +105,16 @@ async def test_captured_result_survives_later_failure(
             AsyncMock(side_effect=PublicationError("synthetic revoke failure")),
         ):
             await orch._revoke_read_only_review_leases()
+    elif failure == "platform_publication_exception":
+        orch.flow.git_clone_config = {
+            **orch.flow.git_clone_config,
+            "platform_review": {"enabled": True},
+        }
+        with patch(
+            "preloop.services.platform_review.publish_finished_execution",
+            AsyncMock(side_effect=RuntimeError("synthetic publication failure")),
+        ):
+            await orch._publish_platform_review()
     elif failure == "completion_event_queueing":
         with patch(
             "preloop.services.event_webhooks.emitters.emit_flow_execution_finished",
@@ -136,6 +147,8 @@ async def test_captured_result_survives_later_failure(
     expected_failure = (
         "completion_event_queueing"
         if failure == "completion_event_reported_failure"
+        else "publication"
+        if failure == "platform_publication_exception"
         else failure
     )
     assert expected_failure in body["completion"]["post_result_failures"]
@@ -273,11 +286,13 @@ def test_owned_status_distinguishes_terminal_causes_without_a_result(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("publication_failure", [True, False])
 async def test_publication_exception_in_full_lifecycle_preserves_result(
     db_session: Session,
     ci_resources: tuple[Any, ...],
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
+    publication_failure: bool,
 ) -> None:
     _, _, token, _, execution = owned_run(db_session, ci_resources)
     orch = FlowExecutionOrchestrator(db_session, execution.flow_id, {}, AsyncMock())
@@ -285,13 +300,15 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
     orch.flow = crud.crud_flow.get(db_session, id=execution.flow_id)
     orch.flow.result_schema = {
         "type": "object",
-        "required": ["review"],
-        "properties": {"review": {"type": "string"}},
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string", "enum": ["approve", "request-changes"]}
+        },
         "additionalProperties": False,
     }
     orch.flow.validate_result = True
     orch._native_result_effective = True
-    document = {"review": "Completed findings"}
+    document = {"verdict": "approve"}
     executor = SimpleNamespace(
         get_result_artifact=AsyncMock(return_value=document),
         get_evidence_archive=None,
@@ -301,7 +318,12 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
 
     async def finish_agent(context: Any) -> tuple[dict[str, Any], str]:
         result = await orch._capture_result_artifact(executor, "session")
-        return {"status": "SUCCEEDED", "result": result, "exit_code": 0}, "session"
+        return {
+            "status": "SUCCEEDED",
+            "result": result,
+            "exit_code": 0,
+            "container_termination": {"runtime": "docker", "exit_code": 0},
+        }, "session"
 
     for name in (
         "_get_flow_details",
@@ -328,7 +350,9 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
     monkeypatch.setattr(
         orch,
         "_finish_isolated_publication",
-        AsyncMock(side_effect=RuntimeError("synthetic publication failure")),
+        AsyncMock(side_effect=RuntimeError("synthetic publication failure"))
+        if publication_failure
+        else AsyncMock(),
     )
     with patch("preloop.services.model_routing.validate_execution_model_principal"):
         await orch.run()
@@ -338,11 +362,27 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "FAILED"
+    assert body["status"] == ("FAILED" if publication_failure else "SUCCEEDED")
     assert body["result"] == document
     assert body["completion"]["result_valid"] is True
-    assert body["completion"]["post_result_failures"] == ["publication"]
-    assert body["timings"]["terminal_cause"] == "post_result_failure"
+    if publication_failure:
+        assert body["completion"]["post_result_failures"] == ["publication"]
+        assert body["timings"]["terminal_cause"] == "post_result_failure"
+    else:
+        from preloop.services.platform_review import plan_publication
+
+        orch.flow.git_clone_config = {
+            "publication_mode": "read_only",
+            "platform_review": {
+                "enabled": True,
+                "verdict_actions": {"approve": "approve"},
+            },
+        }
+        db_session.refresh(execution)
+        plan = plan_publication(orch.flow, execution)
+        assert plan.reason is None
+        assert plan.review_action == "approve"
+        assert execution.result["container_termination"]["exit_code"] == 0
 
 
 @pytest.mark.asyncio
@@ -661,3 +701,45 @@ def test_completion_points_to_the_publication_packages_projection(
     assert response.json()["completion"]["publication"] == "#/platform_review"
     assert response.json()["completion"]["post_result_failures"] == ["publication"]
     assert response.json()["status"] == "SUCCEEDED"
+
+
+def test_deferred_account_callback_keeps_publication_projection(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness refresh cannot drop the separately recorded publication."""
+    from preloop.services.event_webhooks import emitters
+    from preloop.services.event_webhooks.worker import claim_batch
+    from preloop.utils.encryption import encrypt_value
+
+    _, _, _, _, execution = owned_run(db_session, ci_resources)
+    flow = crud.crud_flow.get(db_session, id=execution.flow_id)
+    endpoint = CRUDBase(models.WebhookEndpoint).create(
+        db_session,
+        obj_in={
+            "account_id": flow.account_id,
+            "url": "https://example.com/completion",
+            "secret_encrypted": encrypt_value("synthetic"),
+            "secret_hint": "synthetic",
+            "event_types": ["flow.execution.finished"],
+            "active": True,
+            "source": "account",
+        },
+    )
+    publication = {"status": "failed", "reason": "provider_unavailable"}
+    monkeypatch.setattr(emitters, "_platform_review", lambda *args: publication)
+    crud.crud_flow_execution.update(
+        db_session, db_obj=execution, obj_in={"status": "SUCCEEDED"}
+    )
+    emitters.emit_flow_execution_finished(
+        db_session, execution, flow, status="SUCCEEDED"
+    )
+    db_session.commit()
+    claimed = claim_batch(db_session, now=datetime.now(timezone.utc))
+    assert len(claimed) == 1
+    delivery = CRUDBase(models.WebhookDelivery).get(
+        db_session, id=claimed[0].delivery_id
+    )
+    assert delivery.endpoint_id == endpoint.id
+    assert delivery.payload["data"]["platform_review"] == publication

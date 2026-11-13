@@ -82,8 +82,11 @@ def test_projection_result_and_rotation(
         "failure_category",
         "startup_receipt",
         "timings",
+        "platform_review",
     }
     assert detail.json()["startup_receipt"] is None
+    # The flow has not opted into platform-posted review.
+    assert detail.json()["platform_review"] is None
     crud.crud_flow_execution.record_startup_receipt(
         db_session,
         execution_id=execution.id,

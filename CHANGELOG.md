@@ -15,6 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controls; result reads distinguish process completion, capture, schema validity
   and publication, with unknown historical observations left null (#2100).
 
+- flows: a read-only review flow can have Preloop post the result itself.
+  With `git_clone_config.platform_review` (off by default, valid only with
+  `publication_mode: read_only`, `validate_result` and a `result_schema` that
+  declares a `verdict` enum), the control plane posts one pull request review
+  and one commit status on the exact commit the run reviewed, after the run
+  is terminal and its result passed the schema. It works for shared flows
+  (`ci_project_selection`): each execution posts only on the repository of
+  its own identity. The run still holds no write credential: Preloop mints a
+  GitHub App token per publication for one repository with `pull_requests:
+  write` and `statuses: write` and no contents permission, uses it for those
+  two writes, reads them back and revokes it. The posted text is rendered
+  from validated result fields as literal text (no mentions, links, issue
+  references or HTML). `POST /api/v1/flows/executions/{id}/platform-review`
+  publishes a finished review again without a model run (new CI action
+  `execution:review:publish`), and the execution, its result and
+  `flow.execution.finished` carry a `platform_review` record. Turning the
+  opt-in on requires provisioning the flow's CI identities again. GitHub App
+  trackers only. Adds the `platform_review_publication` table (migration
+  `20261208_platform_review`). See `docs/architecture/platform-posted-review.md`.
 - restricted CI: one hosted read-only review flow can be shared by several
   projects of an account, while every CI identity stays bound to one project.
   An account administrator sets the flow's project allowlist with

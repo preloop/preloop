@@ -17896,6 +17896,76 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: execution:result-export:read
+  /api/v1/flows/executions/{execution_id}/platform-review:
+    post:
+      tags:
+      - Flows
+      summary: Publish Execution Platform Review
+      description: 'Publish, or publish again, a finished review without running the
+        model.
+
+
+        Posts the stored, validated result of a finished read-only review as a
+
+        pull request review and commit status on the commit the execution
+
+        reviewed. The target comes from the execution''s own binding; the request
+
+        has no body and cannot name a repository, pull request or commit.
+
+
+        The call is idempotent. A review or status that was already posted for
+
+        the execution is not posted again; the response is the current
+
+        ``platform_review`` record. Use it after a posting failure, or when a run
+
+        finished while posting was unavailable.
+
+
+        Allowed for an account user who may edit flows, and for the execution''s
+
+        own restricted CI identity when it holds ``execution:review:publish``.'
+      operationId: publish_execution_platform_review_api_v1_flows_executions__execution_id__platform_review_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Publish Execution Platform Review Api V1 Flows Executions  Execution
+                  Id  Platform Review Post
+        '404':
+          description: No such execution for this caller.
+        '409':
+          description: 'Nothing can be published for this execution: the flow has
+            not opted in, the execution has not finished, or it has no restricted
+            CI review binding. ``detail.code`` names which.'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: execution:review:publish
   /api/v1/flows/executions/{execution_id}/tool-evidence:
     get:
       tags:
@@ -32718,6 +32788,7 @@ components:
       - execution:evidence:read
       - execution:result-export:read
       - execution:stop
+      - execution:review:publish
       - subscription:create
       - subscription:read
       - subscription:update
@@ -33148,6 +33219,12 @@ components:
           description: Sanitised recorded phase durations in seconds, request counts,
             effective upstream settings and terminal cause. Unknown boundaries are
             null.
+        platform_review:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Platform Review
       additionalProperties: false
       type: object
       required:
@@ -33228,6 +33305,12 @@ components:
           description: Sanitised recorded phase durations in seconds, request counts,
             effective upstream settings and terminal cause. Unknown boundaries are
             null.
+        platform_review:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Platform Review
         execution_id:
           type: string
           title: Execution Id
@@ -40725,6 +40808,13 @@ components:
           description: For read_only restricted CI, select only the principal's repository
             from the administrator-approved project list.
           default: false
+        platform_review:
+          anyOf:
+          - $ref: '#/components/schemas/PlatformReview'
+          - type: 'null'
+          description: 'For read_only review: Preloop posts the validated result as
+            a pull request review and a commit status on the reviewed commit. The
+            run itself gets no write credential.'
         publication_approval:
           anyOf:
           - type: boolean
@@ -40874,6 +40964,13 @@ components:
           description: For read_only restricted CI, select only the principal's repository
             from the administrator-approved project list.
           default: false
+        platform_review:
+          anyOf:
+          - $ref: '#/components/schemas/PlatformReview'
+          - type: 'null'
+          description: 'For read_only review: Preloop posts the validated result as
+            a pull request review and a commit status on the reviewed commit. The
+            run itself gets no write credential.'
         publication_approval:
           anyOf:
           - type: boolean
@@ -46248,6 +46345,94 @@ components:
       title: PickupReconciliationRequest
       description: Approve a new revision while naming the exact implementation it
         replaces.
+    PlatformReview:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Turn the posting on
+          default: false
+        action:
+          type: string
+          const: comment
+          title: Action
+          description: Review action used unless verdict_actions maps the verdict
+          default: comment
+        verdict_actions:
+          anyOf:
+          - additionalProperties:
+              type: string
+              enum:
+              - comment
+              - approve
+              - request_changes
+            type: object
+          - type: 'null'
+          title: Verdict Actions
+          description: Explicit review action per verdict. Without an entry the review
+            is a comment; approve and request_changes are never implied.
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/PlatformReviewStatus'
+          - type: 'null'
+          description: Commit status to set; omit for none
+      additionalProperties: false
+      type: object
+      title: PlatformReview
+      description: 'Preloop posts the validated result of a read-only review itself.
+
+
+        The run stays ``publication_mode: read_only``. After it finishes and its
+
+        result passed ``result_schema``, the control plane posts one pull request
+
+        review and, optionally, one commit status on the reviewed commit, using a
+
+        GitHub App token it mints for that one repository and never hands to the
+
+        run. Valid only with ``publication_mode: read_only``, ``validate_result``
+
+        on and a ``result_schema`` that declares a required string ``verdict``
+
+        with an enum.'
+    PlatformReviewStatus:
+      properties:
+        context:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,99}$
+          title: Context
+          description: Status context name. Keep it stable so a branch protection
+            rule can require it.
+          default: preloop/review
+        verdict_states:
+          additionalProperties:
+            type: string
+            enum:
+            - success
+            - failure
+            - error
+          type: object
+          minProperties: 1
+          title: Verdict States
+          description: Explicit state for every verdict the flow's result_schema admits.
+            A verdict without an entry is never posted.
+        incomplete_state:
+          anyOf:
+          - type: string
+            enum:
+            - error
+            - failure
+          - type: 'null'
+          title: Incomplete State
+          description: State set, with a neutral description, when the run stopped,
+            failed or returned no valid result, so a required status is not left waiting.
+            Omit to post nothing for such runs.
+      additionalProperties: false
+      type: object
+      required:
+      - verdict_states
+      title: PlatformReviewStatus
+      description: Commit status Preloop sets on the reviewed commit.
     PolicyDiffItem:
       properties:
         path:

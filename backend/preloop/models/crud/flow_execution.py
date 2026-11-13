@@ -1429,6 +1429,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             flow,
             status=execution.status,
             failure_category=execution.failure_category,
+            db=db,
         )
         delivery.payload = {**delivery.payload, "data": data}
         delivery.last_error = None

@@ -49,7 +49,7 @@ def _binding_mode(repository_binding: Any) -> Literal["dedicated", "shared"]:
 # The machine ceiling includes the explicitly granted own-execution evidence route.
 # Changing enforcement coverage requires explicit contract/rollout review before
 # issuance resumes; extra routes must not silently broaden a deployed ceiling.
-_EXPECTED_V1_MACHINE_ROUTE_COUNT = 12
+_EXPECTED_V1_MACHINE_ROUTE_COUNT = 13
 
 
 class CiSharedFlowError(ValueError):

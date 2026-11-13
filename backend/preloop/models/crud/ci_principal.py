@@ -26,6 +26,7 @@ class CiRepositoryBinding(TypedDict):
     organization_id: str
     publication_mode: NotRequired[str]
     ci_project_selection: NotRequired[bool]
+    platform_review: NotRequired[list[str]]
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,16 @@ class CRUDCiPrincipal:
             extra["publication_mode"] = "read_only"
             if shared:
                 extra["ci_project_selection"] = True
+            from preloop.services.platform_review import (
+                platform_review_capabilities,
+            )
+
+            # Same rule for provider writes made by the control plane: the
+            # identity records which ones its flow could cause when it was
+            # provisioned, and stops authenticating when that set changes.
+            posted = platform_review_capabilities(configuration)
+            if posted is not None:
+                extra["platform_review"] = posted
         return (
             tracker.id,
             project.identifier,

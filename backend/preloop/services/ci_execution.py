@@ -329,7 +329,20 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "end_time": execution.end_time,
         "failure_category": execution.failure_category,
         "startup_receipt": public_startup_receipt(execution),
+        "platform_review": _platform_review(execution),
     }
+
+
+def _platform_review(execution: models.FlowExecution) -> dict[str, Any] | None:
+    """What Preloop posted for this execution; null when the flow opted out."""
+    from sqlalchemy.orm import object_session
+
+    from preloop.services.platform_review import platform_review_projection
+
+    session = object_session(execution)
+    if session is None:
+        return None
+    return platform_review_projection(session, execution)
 
 
 def _prepare_execution(
