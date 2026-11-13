@@ -88,6 +88,10 @@ def test_owner_preview_metadata_rotation_and_replacement(
     )
     assert preview.status_code == 200, preview.text
     assert preview.json()["runner_pool"] == "server"
+    flow = db_session.get(models.Flow, ci_resources[3].flow_id)
+    assert flow is not None
+    # The person previewing recognises a flow by its name, not its UUID.
+    assert preview.json()["flow_name"] == flow.name
     own = create(client, ci_resources)
     pid, kid = own["identity"]["id"], own["key_id"]
     expiry = own["identity"]["keys"][0]["expires_at"]

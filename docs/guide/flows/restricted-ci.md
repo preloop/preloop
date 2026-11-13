@@ -18,9 +18,55 @@ enabled, use `runner_pool: "server"`, and trigger on exactly that project. The
 one exception is a
 [read-only review on a private runner](#read-only-review-on-a-private-runner),
 which names its private pool instead.
-Use the human `PUT /api/v1/flows/{flow_id}` endpoint to set the dedicated clone
-binding. Replace the synthetic IDs below with your disposable resources:
 
+A complete `POST /api/v1/flows` body for a dedicated read-only review flow.
+`name`, `prompt_template` and `agent_config` are required (the API answers 422
+without them). Replace the placeholders with your own IDs:
+
+<!-- example: flow-create -->
+```json
+{
+  "name": "Repository review",
+  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "ai_model_id": "<model id>",
+  "agent_type": "codex",
+  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
+  "runner_pool": "server",
+  "allowed_mcp_tools": [],
+  "allowed_mcp_servers": [],
+  "trigger_project_ids": ["<project id>"],
+  "validate_result": true,
+  "result_schema": {
+    "type": "object",
+    "required": ["review"],
+    "properties": {"review": {"type": "string"}}
+  },
+  "git_clone_config": {
+    "enabled": true,
+    "publication_mode": "read_only",
+    "repositories": [{"project_id": "<project id>", "tracker_id": "<GitHub App tracker id>"}]
+  }
+}
+```
+
+Set `ai_model_id` when you create the flow. A flow saved without a model is
+accepted and then runs on the account's default model, which may not be the
+model, key or budget you meant for reviews. To attach a model to an existing
+flow, or change it, send only that field to `PUT /api/v1/flows/{flow_id}`
+(`GET /api/v1/ai-models` lists the IDs):
+
+<!-- example: flow-update -->
+```json
+{"ai_model_id": "<model id>"}
+```
+
+`GET /api/v1/ai-models/{model_id}/used-by` then lists the flow.
+
+To bind an existing flow instead, use the human `PUT /api/v1/flows/{flow_id}`
+endpoint to set the dedicated clone binding. Replace the synthetic IDs below
+with your disposable resources:
+
+<!-- example: flow-update -->
 ```json
 {
   "runner_pool": "server",
@@ -159,6 +205,7 @@ inputs and your own validator instead.
 `GET /api/v1/flows/executions/{id}` (the status projection) and `GET /api/v1/flows/executions/{id}/result` include
 `startup_receipt`, written by the controller, never by the model:
 
+<!-- example: fragment -->
 ```json
 {
   "version": 1,
@@ -256,6 +303,7 @@ this work; the run waits in the queue for a capable runner.
 3. Add a Codex profile with checkout enabled to
    `~/.preloop/runner-host-profiles.json`:
 
+    <!-- example: fragment -->
     ```json
     {
       "profiles": [
@@ -279,8 +327,10 @@ this work; the run waits in the queue for a capable runner.
    `preloop runner fg --labels review-hosts` (or install it as a service). Run
    `preloop runner inventory --refresh` after editing profiles. In **Runners**
    the profile should list the `host_read_only_review` capability.
-5. **In Preloop**, set the dedicated review flow to:
+5. **In Preloop**, set the dedicated review flow to (with
+   `PUT /api/v1/flows/{flow_id}`):
 
+    <!-- example: flow-update -->
     ```json
     {
       "agent_type": "codex",
@@ -395,6 +445,7 @@ admits only its own projects) or its own account.
    complete allowlist and replaces the previous one. Save it as
    `projects.json`:
 
+   <!-- example: shared-flow -->
    ```json
    {
      "project_ids": [
@@ -468,6 +519,7 @@ admitted projects in `trigger_project_ids` and give each exactly one entry in
 `git_clone_config.repositories` with its owning tracker, next to
 `"publication_mode": "read_only"` and `"ci_project_selection": true`:
 
+<!-- example: flow-update -->
 ```json
 {
   "trigger_project_ids": [
@@ -604,9 +656,34 @@ by default; custom roles can explicitly grant them. View does not imply manage.
 
 CLI setup uses your saved human login or `PRELOOP_TOKEN` from a secret manager.
 These commands reject the plaintext `--token` flag. Never put credentials in
-URLs, shell arguments or JSON request files. Save this public grant as
-`ci-request.json` (use your own synthetic test resource IDs):
+URLs, shell arguments or JSON request files.
 
+The grant is the same for a dedicated and a shared flow: one `project_id` and
+the `flow_id` of the flow that reviews it. On a shared flow the project must be
+on the flow's allowlist (`preloop ci shared-flow FLOW_ID`), and each repository
+gets its own identity with its own `project_id`. Grant only the actions you
+use; add `subscription:create` (and `subscription:read`) only if you will add a
+[completion subscription](#completion-subscriptions).
+
+`preview` takes only `{"grant": ...}`, without `name` or `expires_at`. Save it
+as `ci-preview.json`:
+
+<!-- example: ci-preview -->
+```json
+{
+  "grant": {
+    "version": 1,
+    "project_id": "00000000-0000-4000-8000-000000000001",
+    "flow_id": "00000000-0000-4000-8000-000000000003",
+    "actions": ["flow:trigger", "execution:read", "execution:result:read", "execution:stop"]
+  }
+}
+```
+
+`create` takes the same grant plus a `name` and an optional `expires_at`. Save
+this as `ci-request.json` (use your own synthetic test resource IDs):
+
+<!-- example: ci-create -->
 ```json
 {
   "name": "Hosted review CI",
@@ -620,17 +697,19 @@ URLs, shell arguments or JSON request files. Save this public grant as
 }
 ```
 
-`preview` takes only `{"grant": ...}`, without `name` or `expires_at`:
+`--secret-file` names a new file in a directory you own and only you can
+read. Create that directory once:
 
 ```sh
+mkdir -m 700 ~/ci-secrets
 preloop ci capabilities
 preloop ci preview --input ci-preview.json
-preloop ci create --input ci-request.json --secret-file /private/new-ci-token
+preloop ci create --input ci-request.json --secret-file ~/ci-secrets/new-ci-token
 preloop ci list
 preloop ci show PRINCIPAL_ID
-preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
+preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file ~/ci-secrets/rotated-ci-token
 preloop ci revoke PRINCIPAL_ID KEY_ID
-preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
+preloop ci issue PRINCIPAL_ID --secret-file ~/ci-secrets/replacement-ci-token
 preloop ci retire PRINCIPAL_ID
 ```
 
@@ -641,6 +720,40 @@ move it directly into the repository secret manager and remove the local copy.
 Use a private directory, including on Windows where POSIX mode alone does not
 define access control. Tokens and signing secrets are shown once in the console
 and cleared when the modal closes or the component disconnects.
+
+The error says why a `--secret-file` path cannot be used: the file already
+exists, its directory does not exist, or you cannot create files in that
+directory (for example `/private` on macOS, which belongs to the system).
+
+`PRINCIPAL_ID` is the identity's `id`; `KEY_ID` is the `id` of one of its
+keys. `create`, `issue` and `rotate` print both (`identity.id` and `key_id`),
+and `preloop ci show PRINCIPAL_ID` lists the identity's `keys` with their ids.
+`rotate` and `revoke` need both ids: an identity can hold more than one key,
+so the CLI does not guess which one you mean.
+
+`preview` prints the binding Preloop will record, without issuing anything.
+For a dedicated flow:
+
+<!-- example: fragment -->
+```json
+{
+  "grant": {"version": 1, "project_id": "00000000-0000-4000-8000-000000000001",
+            "flow_id": "00000000-0000-4000-8000-000000000003",
+            "actions": ["flow:trigger", "execution:read", "execution:result:read", "execution:stop"]},
+  "flow_name": "Repository review",
+  "tracker_id": "00000000-0000-4000-8000-000000000002",
+  "repository_identifier": "123456789",
+  "repository_slug": "example/repository",
+  "tracker_type": "github",
+  "binding_mode": "dedicated",
+  "runner_pool": "server"
+}
+```
+
+For a shared flow the same request, with that repository's `project_id` and
+the shared flow's `flow_id`, prints `"binding_mode": "shared"`, the shared
+flow's `flow_name` and the `repository_slug` of that one project. Check that
+`flow_name` and `repository_slug` are the ones you meant before `create`.
 
 Issuance and file storage cannot be a transaction across the server and local
 disk. If a request times out, inspect metadata before retrying. If storage fails
@@ -677,16 +790,43 @@ retired identity changes nothing. Reads show `"retired": true`.
 
 Include only the callback actions you need in the principal grant. For example,
 `subscription:create`, `subscription:read`, `subscription:update`,
-`subscription:delete` and `subscription:secret:rotate`. A human creates the
-endpoint with `preloop ci subscribe PRINCIPAL_ID --input callback.json
---secret-file /private/new-signing-secret`. The request is:
+`subscription:delete` and `subscription:secret:rotate`. The grant must include
+`subscription:create` before you subscribe; without it the CLI stops and names
+the missing action. Add it to an existing identity with
+`preloop ci update PRINCIPAL_ID --input change.json`, where `change.json` holds
+the identity's complete grant with the added action:
 
+<!-- example: ci-update -->
+```json
+{
+  "grant": {
+    "version": 1,
+    "project_id": "00000000-0000-4000-8000-000000000001",
+    "flow_id": "00000000-0000-4000-8000-000000000003",
+    "actions": ["flow:trigger", "execution:read", "execution:result:read", "subscription:create", "subscription:read"]
+  }
+}
+```
+
+A human then creates the endpoint:
+
+```sh
+preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file ~/ci-secrets/new-signing-secret
+```
+
+`callback.json` names one key of the identity and the HTTPS URL of your
+receiver. `description` and `active` are optional:
+
+<!-- example: ci-subscribe -->
 ```json
 {
   "key_id": "00000000-0000-4000-8000-000000000004",
   "url": "https://example.com/preloop-completion"
 }
 ```
+
+The signing secret is written once to the `--secret-file`; store it with your
+receiver. Stdout shows the subscription's `id`, `url` and `event_types`.
 
 `key_id` is a real key belonging to the principal, used only as an audit anchor.
 It may be revoked/expired; it is not the human's authentication. The event filter
@@ -739,6 +879,7 @@ It is off by default. Turn it on with `git_clone_config.platform_review` on a
 flow that has `publication_mode: "read_only"`, `validate_result: true` and a
 `result_schema`. It works with and without `ci_project_selection`.
 
+<!-- example: fragment -->
 ```json
 "platform_review": {
   "enabled": true,
@@ -816,6 +957,7 @@ write is never silently upgraded. Retire the old identities
 `flow.execution.finished` carry `platform_review` (`null` when the flow has
 not opted in):
 
+<!-- example: fragment -->
 ```json
 {
   "status": "posted",
@@ -869,13 +1011,20 @@ disabled is never published by this call either.
 One hosted Codex flow reviews two repositories. Each repository has its own
 CI identity, so neither can trigger for, read or cause a post on the other.
 
-1. Flow (an administrator saves this; project and tracker IDs are yours):
+1. Flow (an administrator saves this with `POST /api/v1/flows`; the model,
+   project and tracker IDs are yours):
 
+    <!-- example: flow-create -->
     ```json
     {
       "name": "Organisation review",
+      "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with verdict, summary and findings.",
+      "ai_model_id": "<model id>",
       "agent_type": "codex",
+      "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
       "runner_pool": "server",
+      "allowed_mcp_tools": [],
+      "allowed_mcp_servers": [],
       "validate_result": true,
       "result_schema": {
         "type": "object",
@@ -924,6 +1073,7 @@ CI identity, so neither can trigger for, read or cause a post on the other.
 2. Two identities, one per repository, each with the grant below and its own
    `project_id`. Store each key as a secret of its own repository only.
 
+    <!-- example: ci-create -->
     ```json
     {
       "name": "Review CI, repository A",
@@ -1009,12 +1159,25 @@ token.
 
 [`restricted-ci-publish.yml`](../../examples/restricted-ci-publish.yml) with
 `scripts/restricted_ci_publish.py` is a `repository_dispatch` publisher. The
-flow uses the native read-only mode described above:
+flow uses the native read-only mode described above (a complete
+`POST /api/v1/flows` body):
 
+<!-- example: flow-create -->
 ```json
 {
+  "name": "Repository review",
+  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "ai_model_id": "<model id>",
   "agent_type": "codex",
+  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
   "runner_pool": "server",
+  "trigger_project_ids": ["<project id>"],
+  "validate_result": true,
+  "result_schema": {
+    "type": "object",
+    "required": ["review"],
+    "properties": {"review": {"type": "string"}}
+  },
   "git_clone_config": {
     "enabled": true,
     "publication_mode": "read_only",
