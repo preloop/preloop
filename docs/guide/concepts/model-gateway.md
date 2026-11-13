@@ -123,6 +123,12 @@ Every gateway request can persist:
 
 The console **Cost**, **Audit > Sessions** and **Models** views read from this ledger.
 
+### A rejected API key marks its model
+
+When a provider answers `401` for a model that uses your own API key, the gateway records that verdict on the model's stored credential: which provider answered, its message, and since when the key has been rejected. The model then reads `credentials_status: error` with `credentials_last_error_code: upstream_auth_rejected` on `GET /api/v1/ai-models`, and the **Models** view marks it as failing with the provider's message and "Rotate the API key for this model."
+
+The mark is about the stored key, not about one request. It stays until the provider accepts a request with that key again, or until you replace or rotate the key, so a key that was revoked or pasted from the wrong provider account is visible on the model itself rather than only as a 401 in each run. Subscription logins keep their own refresh-failure tracking, a `403` is not recorded (it is a permission or region answer), and models served with the deployment's own key are never marked. No key material is stored or shown.
+
 ---
 
 ## Which models an agent sees

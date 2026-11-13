@@ -86,6 +86,15 @@ class GatewayModelSnapshot:
 
     endpoint_type: str = "direct"
     runner_id: UUID | None = None
+    #: The provider rejected the stored API key on its last use. Lets the
+    #: recording path clear that verdict on success without re-reading the
+    #: secret on every request.
+    credentials_rejected: bool = False
+    #: Which stored credential this request resolved: the secret row and its
+    #: rotation counter. A verdict that arrives after the key was replaced or
+    #: rotated is about the old material and must not touch the new one.
+    credentials_secret_id: UUID | None = None
+    credentials_version: int | None = None
 
     @property
     def model_parameters(self) -> dict[str, Any] | None:
@@ -125,6 +134,9 @@ class GatewayModelSnapshot:
             supports_server_side_generation=model.supports_server_side_generation,
             is_default=model.is_default,
             created_at=model.created_at,
+            credentials_rejected=bool(getattr(model, "credentials_rejected", False)),
+            credentials_secret_id=getattr(model, "credentials_secret_id", None),
+            credentials_version=getattr(model, "credentials_version", None),
         )
 
 

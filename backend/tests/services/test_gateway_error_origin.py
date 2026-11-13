@@ -637,3 +637,40 @@ def test_idp_and_trusted_upstream_401s_say_origin_gateway(monkeypatch):
         )
     assert caught.value.status_code == 401
     assert caught.value.to_payload()["error"]["origin"] == "gateway"
+
+
+def test_credential_health_stores_the_provider_sentence_not_the_label():
+    """#2292 keeps the provider's own wording on the model's credential."""
+    from unittest.mock import patch
+
+    from preloop.services.model_credential_health import (
+        record_gateway_credential_outcome,
+    )
+    from preloop.services.model_gateway_errors import provider_message_from_label
+
+    labelled = _raise_through_gateway(_upstream_401()).message
+    assert provider_message_from_label(labelled) == "User not found."
+    routing = _raise_through_gateway(_upstream_404()).message
+    assert provider_message_from_label(routing).startswith("No allowed providers")
+    assert provider_message_from_label("plain text") == "plain text"
+
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        provider_name="openrouter",
+        credentials_rejected=False,
+    )
+    with patch(
+        "preloop.services.model_credential_health.crud_secret_reference"
+    ) as crud:
+        record_gateway_credential_outcome(
+            MagicMock(),
+            ai_model=model,
+            status_code=401,
+            error_class="upstream_auth",
+            error_detail=labelled,
+            credential_type="api_key",
+        )
+    assert crud.record_upstream_auth_rejection.call_args.kwargs["message"] == (
+        "User not found."
+    )

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud.secret_reference import crud_secret_reference
+from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
 from preloop.models import models
 
 from preloop.utils.encryption import decrypt_value, encrypt_value
@@ -544,9 +545,21 @@ class SecretService:
 
     @staticmethod
     def _mark_rotated(secret_ref: SecretReference, now: datetime) -> None:
-        """Record that the stored material or reference was replaced."""
+        """Record that the stored material or reference was replaced.
+
+        A provider rejection recorded for the previous material says nothing
+        about the new one, so it is dropped here.
+        """
         secret_ref.version = (secret_ref.version or 1) + 1
         secret_ref.rotated_at = now
+        if isinstance(secret_ref.meta_data, dict) and (
+            UPSTREAM_AUTH_REJECTION_KEY in secret_ref.meta_data
+        ):
+            secret_ref.meta_data = {
+                key: value
+                for key, value in secret_ref.meta_data.items()
+                if key != UPSTREAM_AUTH_REJECTION_KEY
+            }
 
     def rotate_secret_reference(
         self,

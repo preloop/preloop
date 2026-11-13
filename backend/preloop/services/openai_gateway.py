@@ -149,6 +149,9 @@ from preloop.services.model_gateway_budget import (
     ModelGatewayBudgetService,
 )
 from preloop.services.subject_governance import build_subject_context_from_api_key
+from preloop.services.model_credential_health import (
+    record_gateway_credential_outcome,
+)
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from preloop.services.gateway_upstream_identity import seconds_until
 from preloop.services.model_gateway_denials import (
@@ -11151,6 +11154,42 @@ class OpenAIGatewayService:
         # Internal callers deliberately keep their own transaction/model graph.
         return instance
 
+    def _record_credential_health(
+        self,
+        ai_model: GatewayModel,
+        *,
+        status_code: int,
+        error_class: Optional[str],
+        error_detail: Optional[str],
+    ) -> None:
+        """Keep the provider's verdict on the model's API key, never fatally.
+
+        An upstream 401 on an API-key credential is stored on the credential
+        secret so the model reads as failing until the provider accepts the
+        key again or it is replaced. Bookkeeping only: a failure here must
+        not change the response the client already got.
+
+        Only the HTTP gateway path, which owns a short bookkeeping session,
+        records it. Internal callers keep their own transaction, and a row
+        lock or rollback from here must not reach into it.
+        """
+        if not self._owns_db_session:
+            return
+        try:
+            record_gateway_credential_outcome(
+                self.db,
+                ai_model=ai_model,
+                status_code=status_code,
+                error_class=error_class,
+                error_detail=error_detail,
+                credential_type=self._last_upstream_credential_type,
+                hosted=model_billing_is_hosted(ai_model),
+            )
+        except Exception as exc:  # noqa: BLE001 - never break recording
+            self._rollback_activity_recording(
+                exc, context="model credential health recording"
+            )
+
     def _record_gateway_request_inner(
         self,
         *,
@@ -11448,6 +11487,13 @@ class OpenAIGatewayService:
             str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
         )
         observed_at = usage_row.timestamp
+
+        self._record_credential_health(
+            ai_model,
+            status_code=status_code,
+            error_class=error_class,
+            error_detail=error_detail,
+        )
 
         late_execution_id = runtime_context.get("flow_execution_id")
         if late_execution_id:

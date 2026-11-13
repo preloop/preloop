@@ -214,6 +214,35 @@ def gemini_origin_details(
     ]
 
 
+_ORIGIN_LABEL_RE = re.compile(
+    r"^(?:Upstream provider \S+|The upstream provider) (?:rejected the provider "
+    r"credential configured for this model \(HTTP \d{3}\)|returned HTTP \d{3} "
+    r"for this request)\. Provider message: (?P<message>.*?) (?:This is not a "
+    r"rejection of your Preloop credentials|This error came from the upstream "
+    r"provider, not from Preloop)\.$",
+    re.DOTALL,
+)
+
+
+def provider_message_from_label(text: Optional[str]) -> Optional[str]:
+    """Return the provider's own sentence from an origin-labelled message.
+
+    Inverse of :func:`upstream_origin_message`, for consumers that store the
+    provider's wording on its own (the model's credential health). Text
+    without the label is returned unchanged.
+
+    Args:
+        text: A recorded gateway error message, possibly labelled.
+
+    Returns:
+        The provider's sentence, or ``text`` when it carries no label.
+    """
+    if not text:
+        return text
+    match = _ORIGIN_LABEL_RE.match(text.strip())
+    return match.group("message") if match else text
+
+
 _MAX_ALERT_UPSTREAM_BODY_CHARS = 300
 
 
