@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- flows: hosted read-only reviews record an offline, canonical diff identity
+  before agent startup and include its digest in completion events. Restricted
+  status/result reads add phase timings and aggregated effective gateway request
+  controls; result reads distinguish process completion, capture, schema validity
+  and publication, with unknown historical observations left null (#2100).
+
 ### Fixed
+
+- flows: schema-valid native verdicts confirm completion without an additional
+  status field or success marker. Result reads return `409 result_pending`
+  while capture is unsettled, even after an external terminal transition;
+  controller-only termination metadata no longer masquerades as a captured
+  result (`404` after capture settles).
+
+- flows: commit captured results before artifact transfers and finalization.
+  Checkpoint, quota, log shipping, lease cleanup, callback queueing and publication
+  failures are named separately without hiding completed findings or requiring
+  another model run. Required publication gates still govern flow success (#2100).
 
 - gateway: an error the upstream model provider produced now says so. A
   provider-reported 401, 402, 403 or 404 used to reach the client at

@@ -81,6 +81,7 @@ def test_projection_result_and_rotation(
         "end_time",
         "failure_category",
         "startup_receipt",
+        "timings",
     }
     assert detail.json()["startup_receipt"] is None
     crud.crud_flow_execution.record_startup_receipt(

@@ -229,8 +229,9 @@ class FlowExecution(Base):
     result_schema_validation = Column(JSONB, nullable=True)
     # Controller-written startup receipt for a hosted read-only review:
     # admitted commit, pinned checkout verified, setup completed, agent
-    # started, and later whether the read lease was revoked. Never derived
-    # from agent output; null for every other execution.
+    # started, and later whether the read lease was revoked. Reserved
+    # _phases/_completion members retain controller observations separately
+    # from agent-authored results, including for executions without a checkout.
     startup_receipt = Column(JSONB, nullable=True)
     # Derived legal-hold enforcement flag. The account-visible record (actor,
     # reason, release) is a legal_hold row; this column is what the retention

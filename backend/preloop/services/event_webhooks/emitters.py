@@ -436,6 +436,9 @@ def flow_execution_finished_data(
     failure_category: Optional[str],
 ) -> dict[str, Any]:
     """Body of ``flow.execution.finished``."""
+    from preloop.services.review_diff import review_diff_identity
+
+    diff = review_diff_identity(execution)
     receipt = getattr(execution, "evidence_receipt", None)
     evidence = (
         {key: receipt.get(key) for key in RECEIPT_KEYS if key in receipt}
@@ -449,6 +452,7 @@ def flow_execution_finished_data(
         "status": status,
         "failure_category": failure_category,
         "result_schema_valid": _result_schema_valid(execution),
+        "diff": {"sha256": diff["sha256"]} if diff else None,
         "trigger_type": getattr(execution, "trigger_type", None),
         "started_at": _iso(getattr(execution, "start_time", None)),
         "finished_at": _iso(getattr(execution, "end_time", None)),
@@ -465,6 +469,10 @@ def emit_flow_execution_finished(
     failure_category: Optional[str] = None,
 ) -> None:
     """Enqueue ``flow.execution.finished`` in the caller's transaction."""
+    from preloop.services.review_completion_evidence import result_availability
+
+    if result_availability(execution) == "pending":
+        return  # Finalization will queue the completion after capture settles.
     execution_id = getattr(execution, "id", None)
     if execution_id is None:
         return

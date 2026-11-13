@@ -697,13 +697,31 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             # preserve it in the same transaction as this terminal update.
             with db.no_autoflush:
                 stored = (
-                    db.query(FlowExecution.result)
+                    db.query(
+                        FlowExecution.result,
+                        FlowExecution.result_schema_validation,
+                        FlowExecution.startup_receipt,
+                    )
                     .filter(FlowExecution.id == db_obj.id)
                     .with_for_update()
                     .first()
                 )
             existing = stored[0] if stored is not None else None
             incoming = update_data["result"]
+            if stored is not None and incoming is None and isinstance(existing, dict):
+                validation, receipt = stored[1], stored[2]
+                capture = (
+                    receipt.get("_completion") if isinstance(receipt, dict) else None
+                )
+                if (
+                    isinstance(validation, dict)
+                    and validation.get("valid") is True
+                    and isinstance(capture, dict)
+                    and capture.get("result_captured_at")
+                ):
+                    incoming = existing
+                    if update_data.get("result_schema_validation") is None:
+                        update_data.pop("result_schema_validation", None)
             if isinstance(incoming, dict):
                 incoming = dict(incoming)
                 incoming.pop("_private_publication", None)
@@ -1195,11 +1213,118 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             execution_id: Execution the receipt describes.
             receipt: Bounded receipt fields; never agent output or credentials.
         """
-        execution = self.get(db, id=execution_id)
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
         if execution is None:
             return
-        execution.startup_receipt = dict(receipt)  # type: ignore[assignment]
+        execution.startup_receipt = {  # type: ignore[assignment]
+            **(execution.startup_receipt or {}),
+            **receipt,
+        }
         db.commit()
+
+    def record_completion_evidence(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID,
+        facts: dict[str, Any],
+        result: dict[str, Any] | None = None,
+        validation: dict[str, Any] | None = None,
+    ) -> None:
+        """Commit a captured result independently of later finalization work.
+
+        Args:
+            db: Database session.
+            execution_id: Controller-owned execution.
+            facts: Controller observations, never parsed model claims.
+            result: Captured document, or None to leave it untouched.
+            validation: Capture-time schema outcome for this document.
+        """
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if execution is None:
+            return
+        receipt = dict(execution.startup_receipt or {})
+        completion = dict(receipt.get("_completion") or {})
+        failures = facts.get("post_result_failures")
+        if failures:
+            failures = list(
+                dict.fromkeys(
+                    [*(completion.get("post_result_failures") or []), *failures]
+                )
+            )
+        completion.update(facts)
+        if failures:
+            completion["post_result_failures"] = failures
+        receipt["_completion"] = completion
+        changes: dict[str, Any] = {"startup_receipt": receipt}
+        if result is not None:
+            from preloop.services.flow_pr_binding import merge_result_with_brief
+
+            changes["result"] = merge_result_with_brief(execution.result, result)
+            changes["result_schema_validation"] = validation
+        self.update(db, db_obj=execution, obj_in=changes)
+        db.commit()
+
+    def settle_result_capture(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID,
+        captured: bool = False,
+        source: str | None = None,
+    ) -> None:
+        """Settle capture in the same transaction as a controller terminal write.
+
+        External stop/limit writes leave pending capture alone; only the
+        controller that collected the artifacts calls this method.
+        """
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if execution is None:
+            return
+        receipt = execution.startup_receipt
+        if not isinstance(receipt, dict):
+            return
+        facts = receipt.get("_completion")
+        if not isinstance(facts, dict) or facts.get("capture_state") != "pending":
+            return
+        facts = dict(facts)
+        if captured:
+            # The early commit may have failed. The controller is writing
+            # its retained document in this same terminal transaction.
+            facts.setdefault(
+                "result_captured_at", datetime.now(timezone.utc).isoformat()
+            )
+            if source in {"native_structured_result", "file"}:
+                facts.setdefault("result_source", source)
+        state = (
+            "captured"
+            if captured
+            or (facts.get("result_captured_at") and execution.result is not None)
+            else "absent"
+        )
+        execution.startup_receipt = {
+            **receipt,
+            "_completion": {**facts, "capture_state": state},
+        }
+        db.flush()
 
     def record_native_resume(
         self, db: Session, *, execution_id: uuid.UUID, outcome: dict

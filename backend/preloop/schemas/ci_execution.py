@@ -193,6 +193,83 @@ class CiStopRequest(BaseModel):
     payload: None = None
 
 
+class ReviewEffectiveRequest(BaseModel):
+    """Aggregated controls recorded from resolved upstream requests."""
+
+    model: str | None
+    provider: str | None
+    reasoning_effort: str | None
+    max_output_tokens: int | None
+    request_count: int
+
+
+class ReviewTimings(BaseModel):
+    """Recorded durations in seconds; absent observations remain null."""
+
+    queue_wait_seconds: float | None
+    startup_seconds: float | None
+    clone_seconds: float | None
+    setup_seconds: float | None
+    first_model_response_seconds: float | None
+    first_model_response_unavailable_reason: Literal["not_recorded"] | None
+    model_request_count: int
+    retry_count: int | None
+    total_model_seconds: float
+    finalization_seconds: float | None
+    terminal_cause: (
+        Literal[
+            "completed",
+            "timeout",
+            "budget",
+            "upstream_error",
+            "no_result",
+            "stopped",
+            "post_result_failure",
+            "failed",
+        ]
+        | None
+    )
+    first_causal_upstream_error_class: str | None
+    effective_requests: list[ReviewEffectiveRequest]
+
+
+class ReviewCapturedResult(BaseModel):
+    """Capture evidence; the digest covers the restricted result projection."""
+
+    captured: bool | None
+    source: Literal["native_structured_result", "file"] | None
+    result_sha256: str | None
+
+
+class ReviewAgentFinished(BaseModel):
+    """Observed process outcome, independently of verdict validity."""
+
+    status: str
+    exit_code: int | None
+
+
+class ReviewCompletion(BaseModel):
+    """Independent completion facts, with later failures named separately."""
+
+    agent_finished: ReviewAgentFinished | None
+    result_captured: ReviewCapturedResult
+    result_valid: bool | None
+    publication: Literal["#/platform_review"] | None
+    post_result_failures: list[
+        Literal[
+            "checkpoint_upload",
+            "artifact_quota",
+            "artifact_capture",
+            "artifact_storage",
+            "log_shipping",
+            "lease_revocation",
+            "completion_event_queueing",
+            "publication",
+            "finalization",
+        ]
+    ]
+
+
 class CiExecutionResponse(BaseModel):
     """Owned execution correlation and readiness without runtime internals."""
 
@@ -213,3 +290,17 @@ class CiExecutionResponse(BaseModel):
     # Controller-observed startup receipt for a read-only review; null when
     # startup did not complete or the execution is not a read-only review.
     startup_receipt: dict[str, Any] | None = None
+    timings: ReviewTimings | None = Field(
+        default=None,
+        description="Sanitised recorded phase durations in seconds, request counts, effective upstream settings and terminal cause. Unknown boundaries are null.",
+    )
+
+
+class CiExecutionResultResponse(CiExecutionResponse):
+    """Restricted result envelope, including independent completion facts."""
+
+    execution_id: str
+    result: dict[str, Any]
+    result_withheld_paths: list[str]
+    schema_validation: dict[str, Any] | None
+    completion: ReviewCompletion

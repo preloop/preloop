@@ -17861,12 +17861,13 @@ paths:
         \ the runner captures it as a first-class execution artifact.\n\nStatus codes\
         \ tell the three empty cases apart:\n\n- 404 ``Flow execution not found``:\
         \ no such execution for this caller.\n- 409 with ``detail.code == \"result_pending\"\
-        ``: the execution exists but\n  has not reached a terminal status, so no result\
-        \ is final yet, even\n  when a checkpoint (for example of a parked run) is\
-        \ stored. Retry\n  after the execution finishes; ``detail.status`` is its\
-        \ current status.\n- 404 ``Flow execution did not report a result artifact``:\
-        \ the execution\n  is terminal and reported no result. This will not change.\n\
-        \nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
+        ``: the execution exists but\n  has not reached a terminal status or capture\
+        \ is still pending, so no result is final yet, even\n  when a checkpoint (for\
+        \ example of a parked run) is stored. Retry\n  after the execution finishes;\
+        \ ``detail.status`` is its current status.\n- 404 ``Flow execution did not\
+        \ report a result artifact``: the execution\n  is terminal, capture has settled,\
+        \ and no artifact was reported.\n  Controller-only metadata is not a captured\
+        \ result.\n\nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
         \ is queued, so a caller notified of completion\nnever receives 409 for that\
         \ execution.\n\n``evidence`` is the persisted receipt when one is bound, else\
         \ derived\nfrom the same evidence record the download serves: bounded,\naccount-scoped,\
@@ -17895,16 +17896,19 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                anyOf:
+                - $ref: '#/components/schemas/CiExecutionResultResponse'
+                - type: object
+                  additionalProperties: true
                 title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
                   Id  Result Get
         '404':
           description: The execution does not exist for this caller, or it finished
             without reporting a result artifact.
         '409':
-          description: The execution exists but has not finished. ``detail.code``
-            is ``result_pending`` and ``detail.status`` is the current status.
+          description: The execution is running or result capture is still pending.
+            ``detail.code`` is ``result_pending`` and ``detail.status`` is the current
+            status.
         '422':
           description: Validation Error
           content:
@@ -33007,6 +33011,13 @@ components:
             type: object
           - type: 'null'
           title: Startup Receipt
+        timings:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewTimings'
+          - type: 'null'
+          description: Sanitised recorded phase durations in seconds, request counts,
+            effective upstream settings and terminal cause. Unknown boundaries are
+            null.
       additionalProperties: false
       type: object
       required:
@@ -33023,6 +33034,111 @@ components:
       - failure_category
       title: CiExecutionResponse
       description: Owned execution correlation and readiness without runtime internals.
+    CiExecutionResultResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        repository_identifier:
+          type: string
+          title: Repository Identifier
+        pr_number:
+          type: integer
+          title: Pr Number
+        provider_pr_id:
+          type: string
+          title: Provider Pr Id
+        head_sha:
+          type: string
+          title: Head Sha
+        base_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Sha
+        status:
+          type: string
+          title: Status
+        start_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+        startup_receipt:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Startup Receipt
+        timings:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewTimings'
+          - type: 'null'
+          description: Sanitised recorded phase durations in seconds, request counts,
+            effective upstream settings and terminal cause. Unknown boundaries are
+            null.
+        execution_id:
+          type: string
+          title: Execution Id
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        result_withheld_paths:
+          items:
+            type: string
+          type: array
+          title: Result Withheld Paths
+        schema_validation:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema Validation
+        completion:
+          $ref: '#/components/schemas/ReviewCompletion'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - flow_id
+      - project_id
+      - repository_identifier
+      - pr_number
+      - provider_pr_id
+      - head_sha
+      - status
+      - start_time
+      - end_time
+      - failure_category
+      - execution_id
+      - result
+      - result_withheld_paths
+      - schema_validation
+      - completion
+      title: CiExecutionResultResponse
+      description: Restricted result envelope, including independent completion facts.
     CiGrant:
       properties:
         version:
@@ -47869,6 +47985,126 @@ components:
       type: object
       title: RetentionSettingsUpdate
       description: Full desired state. An omitted class falls back to the default.
+    ReviewAgentFinished:
+      properties:
+        status:
+          type: string
+          title: Status
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+      type: object
+      required:
+      - status
+      - exit_code
+      title: ReviewAgentFinished
+      description: Observed process outcome, independently of verdict validity.
+    ReviewCapturedResult:
+      properties:
+        captured:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Captured
+        source:
+          anyOf:
+          - type: string
+            enum:
+            - native_structured_result
+            - file
+          - type: 'null'
+          title: Source
+        result_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Sha256
+      type: object
+      required:
+      - captured
+      - source
+      - result_sha256
+      title: ReviewCapturedResult
+      description: Capture evidence; the digest covers the restricted result projection.
+    ReviewCompletion:
+      properties:
+        agent_finished:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewAgentFinished'
+          - type: 'null'
+        result_captured:
+          $ref: '#/components/schemas/ReviewCapturedResult'
+        result_valid:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Result Valid
+        publication:
+          anyOf:
+          - type: string
+            const: '#/platform_review'
+          - type: 'null'
+          title: Publication
+        post_result_failures:
+          items:
+            type: string
+            enum:
+            - checkpoint_upload
+            - artifact_quota
+            - artifact_capture
+            - artifact_storage
+            - log_shipping
+            - lease_revocation
+            - completion_event_queueing
+            - publication
+            - finalization
+          type: array
+          title: Post Result Failures
+      type: object
+      required:
+      - agent_finished
+      - result_captured
+      - result_valid
+      - publication
+      - post_result_failures
+      title: ReviewCompletion
+      description: Independent completion facts, with later failures named separately.
+    ReviewEffectiveRequest:
+      properties:
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning Effort
+        max_output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Output Tokens
+        request_count:
+          type: integer
+          title: Request Count
+      type: object
+      required:
+      - model
+      - provider
+      - reasoning_effort
+      - max_output_tokens
+      - request_count
+      title: ReviewEffectiveRequest
+      description: Aggregated controls recorded from resolved upstream requests.
     ReviewPublication:
       properties:
         required:
@@ -47903,6 +48139,96 @@ components:
         succeeded review on the triggering pull request passes as
 
         ``unverified`` (API/worker version skew, #2208), never as published.'
+    ReviewTimings:
+      properties:
+        queue_wait_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Queue Wait Seconds
+        startup_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Startup Seconds
+        clone_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Clone Seconds
+        setup_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Setup Seconds
+        first_model_response_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: First Model Response Seconds
+        first_model_response_unavailable_reason:
+          anyOf:
+          - type: string
+            const: not_recorded
+          - type: 'null'
+          title: First Model Response Unavailable Reason
+        model_request_count:
+          type: integer
+          title: Model Request Count
+        retry_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Retry Count
+        total_model_seconds:
+          type: number
+          title: Total Model Seconds
+        finalization_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Finalization Seconds
+        terminal_cause:
+          anyOf:
+          - type: string
+            enum:
+            - completed
+            - timeout
+            - budget
+            - upstream_error
+            - no_result
+            - stopped
+            - post_result_failure
+            - failed
+          - type: 'null'
+          title: Terminal Cause
+        first_causal_upstream_error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Causal Upstream Error Class
+        effective_requests:
+          items:
+            $ref: '#/components/schemas/ReviewEffectiveRequest'
+          type: array
+          title: Effective Requests
+      type: object
+      required:
+      - queue_wait_seconds
+      - startup_seconds
+      - clone_seconds
+      - setup_seconds
+      - first_model_response_seconds
+      - first_model_response_unavailable_reason
+      - model_request_count
+      - retry_count
+      - total_model_seconds
+      - finalization_seconds
+      - terminal_cause
+      - first_causal_upstream_error_class
+      - effective_requests
+      title: ReviewTimings
+      description: Recorded durations in seconds; absent observations remain null.
     RollbackRequest:
       properties:
         preview_only:
@@ -55328,7 +55654,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
