@@ -96,6 +96,7 @@ class ProviderCatalogSyncResult:
     error: Optional[str] = None
     discovered: int = 0
     added: List[str] = field(default_factory=list)  # gateway aliases added
+    added_model_ids: List[str] = field(default_factory=list)
     skipped_existing: int = 0
     note: Optional[str] = None
 
@@ -183,7 +184,7 @@ def _create_discovered_model(
     """
     nested = db.begin_nested()
     try:
-        crud_ai_model.create_with_account(
+        created_model = crud_ai_model.create_with_account(
             db=db,
             obj_in={
                 "name": identifier,
@@ -218,6 +219,7 @@ def _create_discovered_model(
         )
         return False
     nested.commit()
+    result.added_model_ids.append(str(created_model.id))
     return True
 
 
@@ -408,7 +410,11 @@ def _audit_catalog_sync_run(
     plugin is invoked only for operator runs.
     """
     provider_details = [
-        {"provider": result.provider, "added": result.added}
+        {
+            "provider": result.provider,
+            "added": result.added,
+            "model_ids": result.added_model_ids,
+        }
         for result in summary.providers
         if result.added
     ]
