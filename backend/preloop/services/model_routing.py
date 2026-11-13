@@ -79,6 +79,53 @@ class FlowModelPrincipalError(ModelRoutingError):
     category = "model_config"
 
 
+class ModelCredentialsRejectedError(ModelRoutingError):
+    """A provider confirmed that a customer API key still fails authentication."""
+
+    code = "model_credentials_rejected"
+
+    def __init__(self, model_name: str, provider_message: str) -> None:
+        self.model_name = model_name
+        super().__init__(
+            f"Model '{model_name}': {provider_message} "
+            "replace or rotate the API key for this model."
+        )
+
+
+def validate_execution_model_credentials(
+    db: Session, flow: models.Flow, details: Dict[str, Any]
+) -> None:
+    """Probe marked authentication failures before execution creation.
+
+    Billing rejections never prevent a run: owners can add credits at the
+    provider. Only a fresh provider authentication rejection refuses admission.
+    """
+    _, model_id = resolve_execution_agent_selection(
+        details, flow_agent_type=flow.agent_type, flow_ai_model_id=flow.ai_model_id
+    )
+    if model_id is None:
+        return
+    model = crud_ai_model.get(db, id=str(model_id))
+    if model is None or model.account_id is None or model.credential_type != "api_key":
+        return
+    from preloop.services.model_gateway_budget import is_built_in_hosted_model
+
+    if is_built_in_hosted_model(model):
+        return
+    secret = model.credentials_secret
+    rejection = secret.upstream_auth_rejection if secret is not None else None
+    if not isinstance(rejection, dict):
+        return
+    from preloop.services.model_credential_probe import probe_rejected_model_credentials
+    from preloop.utils.secret_scrubbing import scrub_secrets
+
+    result = probe_rejected_model_credentials(db, model=model)
+    if result.auth_rejected:
+        raise ModelCredentialsRejectedError(
+            scrub_secrets(model.name) or "Model", result.message
+        )
+
+
 def model_has_credential_source(model: models.AIModel) -> bool:
     """True when an AI model row has some way to authenticate at run time."""
     if model.credentials_secret_id:
@@ -810,6 +857,7 @@ def prepare_execution_routing(
     source_execution: Optional[models.FlowExecution] = None,
     authorized_matrix: Optional[Dict[str, Any]] = None,
     pin_kind: Optional[str] = None,
+    check_credentials: bool = True,
 ) -> Dict[str, Any]:
     """Resolve trusted routing and reject an incompatible runtime principal."""
     details = _prepare_execution_routing(
@@ -820,6 +868,8 @@ def prepare_execution_routing(
         authorized_matrix=authorized_matrix,
         pin_kind=pin_kind,
     )
+    if check_credentials:
+        validate_execution_model_credentials(db, flow, details)
     validate_execution_model_principal(db, flow, details)
     return details
 
@@ -1062,6 +1112,7 @@ def apply_no_progress_escalation(
     ai_model_id = escalation.get("ai_model_id")
     reasoning_effort = escalation.get("reasoning_effort")
     if not ai_model_id and not reasoning_effort:
+        validate_execution_model_credentials(db, flow, details)
         return details
 
     record = dict(details.get(ROUTING_RECORD_KEY) or {})
@@ -1104,6 +1155,7 @@ def apply_no_progress_escalation(
     record["source"] = "no_progress_escalation"
     record["reason"] = reason
     details[ROUTING_RECORD_KEY] = record
+    validate_execution_model_credentials(db, flow, details)
     validate_execution_model_principal(db, flow, details)
     logger.info(
         "No-progress retry of %s escalated: model=%s effort=%s",

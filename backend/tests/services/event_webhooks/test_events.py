@@ -14,6 +14,7 @@ import pytest
 from preloop.models.models.webhook_endpoint import WebhookDelivery
 from preloop.services.event_webhooks import emitters, outbox
 from preloop.services.event_webhooks.events import (
+    EVENT_AI_MODEL_CREDENTIAL_REJECTED,
     EVENT_AGENT_DISCOVERED,
     ENVELOPE_VERSION,
     EVENT_AGENT_NOTE_DELIVERED,
@@ -97,6 +98,7 @@ def test_envelope_normalises_a_naive_timestamp_to_utc():
 
 def test_the_v1_catalogue_is_the_documented_list():
     assert EVENT_TYPES_V1 == (
+        EVENT_AI_MODEL_CREDENTIAL_REJECTED,
         EVENT_APPROVAL_CREATED,
         EVENT_APPROVAL_DECIDED,
         EVENT_POLICY_DENIED,

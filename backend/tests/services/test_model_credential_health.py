@@ -25,6 +25,7 @@ from preloop.models import models
 from preloop.models.crud.secret_reference import (
     UPSTREAM_AUTH_REJECTION_MIN_WRITE_INTERVAL,
     crud_secret_reference,
+    CredentialRejectionOutcome,
 )
 from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
 from preloop.schemas.ai_model import AIModelRead
@@ -60,7 +61,9 @@ def _stored_model(db: Session, account_id, **overrides) -> models.AIModel:
     return model
 
 
-def _reject(db: Session, model: models.AIModel, *, now: datetime) -> bool:
+def _reject(
+    db: Session, model: models.AIModel, *, now: datetime
+) -> CredentialRejectionOutcome:
     return crud_secret_reference.record_upstream_auth_rejection(
         db,
         ai_model_id=model.id,
@@ -80,7 +83,7 @@ def test_rejected_api_key_reads_as_a_failing_credential(
     assert model.credentials_last_error is None
 
     rejected_at = datetime(2026, 11, 12, 13, 54, 36, tzinfo=timezone.utc)
-    assert _reject(db_session, model, now=rejected_at) is True
+    assert _reject(db_session, model, now=rejected_at).first_rejection is True
     db_session.refresh(model)
 
     assert model.credentials_rejected is True
@@ -110,11 +113,11 @@ def test_retry_burst_writes_once_and_keeps_the_first_rejection_time(
     model = _stored_model(db_session, test_user.account_id)
     first = datetime(2026, 11, 3, 14, 56, 18, tzinfo=timezone.utc)
 
-    assert _reject(db_session, model, now=first) is True
-    assert _reject(db_session, model, now=first + timedelta(seconds=1)) is False
+    assert _reject(db_session, model, now=first).first_rejection is True
+    assert _reject(db_session, model, now=first + timedelta(seconds=1)).written is False
 
     later = first + UPSTREAM_AUTH_REJECTION_MIN_WRITE_INTERVAL + timedelta(days=9)
-    assert _reject(db_session, model, now=later) is True
+    assert _reject(db_session, model, now=later).written is True
     db_session.refresh(model)
 
     rejection = model.credentials_upstream_rejection
@@ -177,7 +180,7 @@ def test_model_without_a_stored_key_is_left_alone(
 ) -> None:
     model = _stored_model(db_session, test_user.account_id, api_key=None)
 
-    assert _reject(db_session, model, now=datetime.now(timezone.utc)) is False
+    assert _reject(db_session, model, now=datetime.now(timezone.utc)).written is False
     assert model.credentials_status is None
 
 
@@ -192,11 +195,11 @@ def test_model_without_a_stored_key_is_left_alone(
         (401, "upstream_auth", "api_key", False),
         # 403 is a permission or region answer, not a dead key.
         (403, "upstream_auth", "api_key", True),
-        (402, "upstream_quota_exhausted", "api_key", True),
+        (402, "budget_exceeded", "api_key", True),
         (502, "upstream_error", "api_key", True),
     ],
 )
-def test_only_an_upstream_401_on_a_customer_api_key_is_recorded(
+def test_only_upstream_credential_failures_on_customer_api_keys_are_recorded(
     status_code: int,
     error_class: str,
     credential_type: str | None,
@@ -261,7 +264,9 @@ def test_provider_message_is_made_safe_for_jsonb(
         "preloop.models.crud.secret_reference.CRUDSecretReference"
         ".record_upstream_auth_rejection",
         autospec=True,
-        side_effect=lambda self, db, **kw: _real_record(self, db, commit=False, **kw),
+        side_effect=lambda self, db, **kw: _real_record(
+            self, db, **{**kw, "commit": False}
+        ),
     ):
         record_gateway_credential_outcome(
             db_session,
@@ -328,7 +333,7 @@ def test_late_401_from_the_old_key_does_not_mark_a_rotated_key(
     )
     db_session.refresh(model)
 
-    assert written is False
+    assert written.written is False
     assert model.credentials_status == "active"
 
 
@@ -343,7 +348,7 @@ def test_late_success_from_the_old_key_does_not_clear_a_new_keys_rejection(
         account_id=test_user.account_id,
         secret_value="sk-or-v1-synthetic-replacement-key",
     )
-    assert _reject(db_session, model, now=datetime.now(timezone.utc)) is True
+    assert _reject(db_session, model, now=datetime.now(timezone.utc)).written is True
 
     cleared = crud_secret_reference.clear_upstream_auth_rejection(
         db_session,
@@ -376,7 +381,7 @@ def test_verdict_for_a_replaced_secret_row_is_ignored(
         commit=False,
     )
 
-    assert written is False
+    assert written.written is False
     assert model.credentials_status == "active"
 
 
@@ -545,3 +550,18 @@ def test_internal_callers_keep_their_transaction_untouched() -> None:
     )
 
     secret_crud.record_upstream_auth_rejection.assert_not_called()
+
+
+def test_gateway_records_a_billing_402_using_its_actual_error_class() -> None:
+    """Provider billing maps to the upstream-quota usage class, not flow category."""
+    secret_crud = _record_through_gateway(
+        _snapshot(rejected=False),
+        status_code=402,
+        error_class="upstream_quota_exhausted",
+        credential_type="api_key",
+    )
+    secret_crud.record_upstream_auth_rejection.assert_called_once()
+    assert (
+        secret_crud.record_upstream_auth_rejection.call_args.kwargs["status_code"]
+        == 402
+    )

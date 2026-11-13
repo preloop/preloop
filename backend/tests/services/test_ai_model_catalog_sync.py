@@ -126,7 +126,11 @@ async def test_sync_adds_newly_discovered_models_sharing_seed_credential(
     assert details["trigger"] == "manual"
     assert details["total_added"] == 1
     assert details["providers"] == [
-        {"provider": "anthropic", "added": ["anthropic/claude-fable-5-1-20260901"]}
+        {
+            "provider": "anthropic",
+            "added": ["anthropic/claude-fable-5-1-20260901"],
+            "model_ids": [str(mock_crud.create_with_account.return_value.id)],
+        }
     ]
     mock_config_audit.assert_called_once()
 

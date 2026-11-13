@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_feedback
@@ -1061,8 +1062,10 @@ async def _reconcile(
     )
 
     try:
-        event_data = prepare_execution_routing(
-            db, flow, event_data, source_execution=prior, pin_kind="continuation"
+        event_data = await run_db_off_loop(
+            lambda: prepare_execution_routing(
+                db, flow, event_data, source_execution=prior, pin_kind="continuation"
+            )
         )
     except ModelRoutingError:
         logger.warning(
