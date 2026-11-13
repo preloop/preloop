@@ -727,6 +727,239 @@ it now. `GET .../result` answers:
 - `404` when the execution does not exist for the caller, or finished without
   reporting a result. This does not change later.
 
+## Review and status posted by Preloop
+
+A read-only review flow can have Preloop itself post the result: one pull
+request review and one commit status on the commit that was reviewed. The run
+stays read-only. The container, the model and your CI job never hold a GitHub
+write token, and you need no publisher workflow. Design and threat model:
+[Review and status posted by Preloop](../../architecture/platform-posted-review.md).
+
+It is off by default. Turn it on with `git_clone_config.platform_review` on a
+flow that has `publication_mode: "read_only"`, `validate_result: true` and a
+`result_schema`. It works with and without `ci_project_selection`.
+
+```json
+"platform_review": {
+  "enabled": true,
+  "status": {
+    "context": "preloop/review",
+    "verdict_states": {"pass": "success", "fail": "failure"},
+    "incomplete_state": "error"
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `enabled` | Turns posting on. |
+| `verdict_actions` | Optional map from verdict to `comment`, `approve` or `request_changes`. Without an entry the review is a comment. An approval is never implied. |
+| `status` | Optional. Omit it to post the review only. |
+| `status.context` | Status name, default `preloop/review`. Keep it stable so a branch protection rule can require it. |
+| `status.verdict_states` | `success`, `failure` or `error` for every verdict your schema admits. Saving fails if one is missing. |
+| `status.incomplete_state` | Optional `error` or `failure`, set with a neutral description when the run stopped, failed or returned no valid result, so a required status is not left waiting. Without it nothing is posted for such runs. |
+
+What your result must contain. Preloop reads only these fields of the
+validated result; your schema decides which are required beyond `verdict`:
+
+- `verdict`: the schema must declare it as a required string with an `enum`.
+- `summary`: text.
+- `findings`: a list of objects with `severity`, `title`, `body` (or
+  `description`, `message`, `detail`), `path` (or `file`) and `line`.
+- `checked` (or `checks`): a list of short strings saying what was reviewed.
+
+What gets posted:
+
+- A review with the verdict, the summary, every finding with its severity,
+  file and line, what was checked, the reviewed commit and a link to the
+  execution. A finding whose file and line are in the pull request's diff is
+  also an inline comment. All text from the result is shown as literal text:
+  it cannot mention a user, link anywhere, reference or close an issue, or
+  carry HTML.
+- A commit status on the reviewed SHA with the state mapped from the verdict.
+- Nothing from the result chooses the target. Repository, pull request and
+  commit are the ones Preloop bound when it accepted the trigger
+  (`pr_number` and `head_sha`).
+- If the pull request head moved while the review ran, the status is still
+  set on the reviewed commit and the review is not posted
+  (`review_reason: "head_moved"`). Trigger a review of the new head.
+- A run that stopped, failed or returned an invalid result never posts a
+  verdict.
+
+### GitHub App permissions
+
+The GitHub App installation that owns the repository needs **Pull requests:
+Read and write** and, for the status, **Commit statuses: Read and write**.
+For each publication Preloop mints a token for that one repository with
+those two permissions and no contents permission, uses it for the two
+writes, reads both back and revokes it. If the installation does not hold
+**Commit statuses**, the review is still posted and the record says
+`status: "failed"`, `reason: "statuses_permission_missing"`. An organisation
+owner then has to approve the added permission on the App installation;
+after that the publish call below adds the status without posting the review
+again. Personal access token trackers, GitLab and Bitbucket are refused when
+you save the opt-in.
+
+### Existing identities must be provisioned again
+
+A CI identity records which provider writes its flow can cause when it is
+provisioned. After you turn `platform_review` on, add `status`, or add
+`approve` or `request_changes`, the flow's existing identities stop
+authenticating (401) until you provision new ones and replace the keys in
+your CI. This is deliberate: an identity created for a flow that could not
+write is never silently upgraded. Retire the old identities
+([Retiring an identity](#retiring-an-identity)).
+
+### The posting record
+
+`GET /api/v1/flows/executions/{id}`, `GET .../result` and the `data` of
+`flow.execution.finished` carry `platform_review` (`null` when the flow has
+not opted in):
+
+```json
+{
+  "status": "posted",
+  "reason": null,
+  "head_sha": "<reviewed sha>",
+  "review": "posted",
+  "review_id": "2890000001",
+  "review_action": "comment",
+  "review_reason": null,
+  "commit_status": "failure",
+  "status_context": "preloop/review",
+  "status_reason": null,
+  "posted_at": "2030-01-01T00:00:05+00:00",
+  "attempts": 1,
+  "retry_scheduled": false
+}
+```
+
+`status` is `pending` (not attempted yet), `publishing`, `posted`, `skipped`
+(the rules decided nothing is posted) or `failed`. A posting failure never
+changes the execution's status or result. `reason` values include
+`head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
+`verdict_unmapped`, `admission_revoked`, `binding_changed`,
+`statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
+`provider_rejected`, `lease_refused`, `lease_unavailable`,
+`attempt_interrupted`, `platform_review_disabled` and `readback_mismatch`. Preloop retries `provider_unavailable` and similar
+transient failures by itself, up to six attempts with growing delays.
+
+### Publish a finished review again, without a model run
+
+```sh
+curl -fsS -X POST \
+  -H "Authorization: Bearer $PRELOOP_CI_KEY" \
+  "$PRELOOP_URL/api/v1/flows/executions/$EXECUTION_ID/platform-review"
+```
+
+The call takes no body. It publishes the stored, validated result of that
+execution on the commit it reviewed, or does nothing if it is already there,
+and returns the record above. Use it after a posting failure. It is allowed
+for an account user who may edit flows and for the execution's own CI
+identity when its grant and key include `execution:review:publish` (the
+identity does not also need `flow:trigger` for this call). It
+answers 409 with `detail.code` `platform_review_disabled`,
+`execution_not_finished` or `no_review_binding` when nothing can be
+published, and 404 for an execution the caller does not own. An execution
+whose head has moved, whose result is not valid or whose identity was
+disabled is never published by this call either.
+
+### Worked example: one flow for an organisation, two repositories
+
+One hosted Codex flow reviews two repositories. Each repository has its own
+CI identity, so neither can trigger for, read or cause a post on the other.
+
+1. Flow (an administrator saves this; project and tracker IDs are yours):
+
+    ```json
+    {
+      "name": "Organisation review",
+      "agent_type": "codex",
+      "runner_pool": "server",
+      "validate_result": true,
+      "result_schema": {
+        "type": "object",
+        "required": ["verdict", "summary", "findings"],
+        "properties": {
+          "verdict": {"type": "string", "enum": ["pass", "fail"]},
+          "summary": {"type": "string"},
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["severity", "title", "body"],
+              "properties": {
+                "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "path": {"type": "string"},
+                "line": {"type": "integer"}
+              }
+            }
+          },
+          "checked": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "trigger_project_ids": ["<project A id>", "<project B id>"],
+      "git_clone_config": {
+        "enabled": true,
+        "publication_mode": "read_only",
+        "ci_project_selection": true,
+        "repositories": [
+          {"project_id": "<project A id>", "tracker_id": "<GitHub App tracker id>"},
+          {"project_id": "<project B id>", "tracker_id": "<GitHub App tracker id>"}
+        ],
+        "platform_review": {
+          "enabled": true,
+          "status": {
+            "context": "preloop/review",
+            "verdict_states": {"pass": "success", "fail": "failure"},
+            "incomplete_state": "error"
+          }
+        }
+      }
+    }
+    ```
+
+2. Two identities, one per repository, each with the grant below and its own
+   `project_id`. Store each key as a secret of its own repository only.
+
+    ```json
+    {
+      "name": "Review CI, repository A",
+      "grant": {
+        "version": 1,
+        "project_id": "<project A id>",
+        "flow_id": "<flow id>",
+        "actions": [
+          "flow:trigger",
+          "execution:read",
+          "execution:result:read",
+          "execution:stop",
+          "execution:review:publish"
+        ]
+      },
+      "expires_at": "2030-01-01T00:00:00Z"
+    }
+    ```
+
+3. In each repository's CI, on a pull request event, trigger with that
+   repository's key and a body of exactly
+   `{"pr_number": <number>, "head_sha": "<full head sha>"}`. That is the whole
+   job: no checkout, no GitHub write token, no publisher step.
+4. When the run finishes, the review and the `preloop/review` status are on
+   the pull request. Require `preloop/review` in branch protection if you
+   want it to gate merging.
+
+### How this relates to your own publisher
+
+The subscription and `repository_dispatch` routes below stay supported and
+work the same with the opt-in on or off. Use one or the other for posting:
+with both active a pull request gets two reviews. A publisher of your own is
+still the route when you need a review format of your own, a provider other
+than GitHub, or writes Preloop does not make (labels, check runs, threaded
+replies).
+
 ## Completion by GitHub repository_dispatch
 
 Instead of a URL, a human administrator can have Preloop deliver the

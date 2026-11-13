@@ -16,6 +16,7 @@ class CiAction(str, Enum):
     READ_EVIDENCE = "execution:evidence:read"
     READ_RESULT_EXPORT = "execution:result-export:read"
     STOP_EXECUTION = "execution:stop"
+    PUBLISH_REVIEW = "execution:review:publish"
     CREATE_SUBSCRIPTION = "subscription:create"
     READ_SUBSCRIPTION = "subscription:read"
     UPDATE_SUBSCRIPTION = "subscription:update"

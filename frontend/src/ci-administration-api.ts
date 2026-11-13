@@ -8,6 +8,7 @@ export const CI_ACTIONS = [
   'execution:evidence:read',
   'execution:result-export:read',
   'execution:stop',
+  'execution:review:publish',
   'subscription:create',
   'subscription:read',
   'subscription:update',
