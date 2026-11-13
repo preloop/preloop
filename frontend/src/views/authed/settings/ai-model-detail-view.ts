@@ -12,6 +12,7 @@ import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../../router';
+import { consumersSentence } from '../../../utils/model-consumers';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -2063,7 +2064,10 @@ export class AIModelDetailView extends LitElement {
       return;
     }
     try {
-      await deleteAIModel(this.model.id);
+      // The dialog named the flows that use the model; confirming is the
+      // decision to leave them without one.
+      const flows = this.usedBy?.flows.length ?? 0;
+      await deleteAIModel(this.model.id, { force: flows > 0 });
       this.isDeleteConfirmOpen = false;
       Router.go('/console/ai-models');
     } catch (error) {
@@ -3448,6 +3452,7 @@ export class AIModelDetailView extends LitElement {
         @sl-hide=${() => (this.isDeleteConfirmOpen = false)}
       >
         Are you sure you want to delete the model "${this.model?.name}"?
+        ${this.renderDeleteConsumers()}
         <sl-button
           slot="footer"
           @click=${() => (this.isDeleteConfirmOpen = false)}
@@ -3460,10 +3465,29 @@ export class AIModelDetailView extends LitElement {
             ?disabled=${!this.editPermissions.allows('delete_ai_models')}
             variant="danger"
             @click=${this.confirmDelete}
-            >Delete</sl-button
+            >${this.usedBy?.flows.length ? 'Delete anyway' : 'Delete'}</sl-button
           ></sl-tooltip
         >
       </sl-dialog>
     `;
+  }
+
+  /** Name the flows a delete would leave without a model. */
+  private renderDeleteConsumers() {
+    const flows = this.usedBy?.flows ?? [];
+    if (!flows.length) return nothing;
+    return html`<p data-testid="delete-model-consumers">
+        ${consumersSentence(flows.length)}
+      </p>
+      <ul class="used-by-list">
+        ${flows.map(
+          (flow) =>
+            html`<li>
+              <a href=${`/console/flows/${encodeURIComponent(flow.id)}`}
+                >${flow.name}</a
+              >
+            </li>`
+        )}
+      </ul>`;
   }
 }

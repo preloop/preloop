@@ -140,6 +140,7 @@ export interface Flow {
   agent_config?: Record<string, unknown>;
   ai_model_id?: string;
   ai_model_name?: string | null;
+  model_health?: FlowModelHealth | null;
   trigger_event_source?: string;
   trigger_event_types?: string[];
   trigger_organization_id?: string;
@@ -2165,10 +2166,42 @@ export interface ApiKeyGatewayUsageSummaryResponse {
 }
 
 /** Agents and flows configured to use a model; not observed traffic. */
+/** A flow that selects a model, with its state and most recent run. */
+export interface AIModelFlowLink {
+  id: string;
+  name: string;
+  is_enabled?: boolean | null;
+  last_execution_at?: string | null;
+  last_execution_status?: string | null;
+}
+
 export interface AIModelUsedByResponse {
   agents: { id: string; name: string; agent_kind: string | null }[];
-  flows: { id: string; name: string }[];
+  flows: AIModelFlowLink[];
+  /** CI identities bound to the listed flows; metadata only. */
+  ci_identities: {
+    id: string;
+    name: string;
+    flow_id: string;
+    is_active: boolean;
+    retired: boolean;
+    active_key_count: number;
+    key_expires_at: string | null;
+  }[];
+  /** Other models of the account that use the same stored credential. */
+  shared_credential_models: {
+    id: string;
+    name: string;
+    credentials_status: string | null;
+  }[];
   truncated: boolean;
+}
+
+/** Whether a flow's own model can serve a run (null: no model selected). */
+export interface FlowModelHealth {
+  status: 'ok' | 'error' | 'missing';
+  code: string | null;
+  model_id: string | null;
 }
 
 export type AIModelRuntimeSessionListResponse =

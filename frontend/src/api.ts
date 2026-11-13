@@ -86,7 +86,9 @@ import type {
   AIModelsOverviewResponse,
   ApiKeyGatewayUsageSummaryResponse,
   AIModelRuntimeSessionListResponse,
+  AIModelFlowLink,
   AIModelUsedByResponse,
+  FlowModelHealth,
   AIModelGatewayUsageSearchResponse,
   AIModel,
   CostAnalyticsSummaryResponse,
@@ -4717,15 +4719,45 @@ export async function synthesizeSpeech(
   return response.blob();
 }
 
-export async function deleteAIModel(modelId: string) {
+/** A delete refused because flows still select the model (409 model_in_use). */
+export class ModelInUseError extends Error {
+  readonly flowCount: number;
+  readonly flows: AIModelFlowLink[];
+
+  constructor(message: string, flowCount: number, flows: AIModelFlowLink[]) {
+    super(message);
+    this.name = 'ModelInUseError';
+    this.flowCount = flowCount;
+    this.flows = flows;
+  }
+}
+
+/**
+ * Delete a model. Without ``force`` the server refuses with 409 while flows
+ * select the model, thrown here as ``ModelInUseError`` naming them; with it
+ * those flows are left without a model.
+ */
+export async function deleteAIModel(
+  modelId: string,
+  options: { force?: boolean } = {}
+) {
+  const query = options.force ? '?force=true' : '';
   const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/ai-models/${modelId}`,
+    `${REST_API_PREFIX}/ai-models/${modelId}${query}`,
     {
       method: 'DELETE',
     }
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    const detail = errorData?.detail;
+    if (response.status === 409 && detail?.code === 'model_in_use') {
+      throw new ModelInUseError(
+        extractErrorMessage(errorData, 'Flows still use this model'),
+        Number(detail.flow_count) || 0,
+        Array.isArray(detail.flows) ? detail.flows : []
+      );
+    }
     throw new Error(
       extractErrorMessage(errorData, 'Failed to delete AI model')
     );
@@ -4974,6 +5006,10 @@ export async function getAIModelUsedBy(
   return {
     agents: Array.isArray(body.agents) ? body.agents : [],
     flows: Array.isArray(body.flows) ? body.flows : [],
+    ci_identities: Array.isArray(body.ci_identities) ? body.ci_identities : [],
+    shared_credential_models: Array.isArray(body.shared_credential_models)
+      ? body.shared_credential_models
+      : [],
     truncated: body.truncated === true,
   };
 }
@@ -5034,6 +5070,7 @@ export interface FlowSummary {
   trigger_event_types: string[] | null;
   ai_model_id: string | null;
   ai_model_name: string | null;
+  model_health?: FlowModelHealth | null;
   agent_type: string;
   is_enabled: boolean;
   is_preset: boolean;

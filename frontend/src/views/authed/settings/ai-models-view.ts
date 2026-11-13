@@ -10,7 +10,7 @@ import { tableScrollStyles } from '../../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -22,10 +22,16 @@ import {
   restoreAttentionItem,
   updateAIModel,
   deleteAIModel,
+  ModelInUseError,
   DISMISSALS_UNSUPPORTED,
   type AttentionDismissal,
 } from '../../../api';
-import type { AIModel, AIModelOverviewItem } from '../../../types';
+import type {
+  AIModel,
+  AIModelFlowLink,
+  AIModelOverviewItem,
+} from '../../../types';
+import { consumersSentence } from '../../../utils/model-consumers';
 
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -183,6 +189,10 @@ export class AIModelsView extends LitElement {
 
   @state()
   private modelToDelete: AIModel | null = null;
+
+  /** Flows the server named when it refused the delete; confirming forces. */
+  @state()
+  private deleteConsumers: AIModelFlowLink[] | null = null;
 
   @state()
   private modelOverview = new Map<string, AIModelOverviewItem>();
@@ -1893,6 +1903,24 @@ export class AIModelsView extends LitElement {
         @sl-hide=${() => (this.isDeleteConfirmOpen = false)}
       >
         Are you sure you want to delete the model "${this.modelToDelete?.name}"?
+        ${
+          this.deleteConsumers?.length
+            ? html`<p data-testid="delete-model-consumers">
+                  ${consumersSentence(this.deleteConsumers.length)}
+                </p>
+                <ul>
+                  ${this.deleteConsumers.map(
+                    (flow) =>
+                      html`<li>
+                        <a
+                          href=${`/console/flows/${encodeURIComponent(flow.id)}`}
+                          >${flow.name}</a
+                        >
+                      </li>`
+                  )}
+                </ul>`
+            : nothing
+        }
         <sl-button
           slot="footer"
           @click=${() => (this.isDeleteConfirmOpen = false)}
@@ -1905,7 +1933,9 @@ export class AIModelsView extends LitElement {
             ?disabled=${!this.editPermissions.allows('delete_ai_models')}
             variant="danger"
             @click=${this.deleteModel}
-            >Delete</sl-button
+            >${
+              this.deleteConsumers?.length ? 'Delete anyway' : 'Delete'
+            }</sl-button
           ></sl-tooltip
         >
       </sl-dialog>
@@ -1939,6 +1969,7 @@ export class AIModelsView extends LitElement {
     if (model.is_built_in) return;
     if (!this.editPermissions.allows('delete_ai_models')) return;
     this.modelToDelete = model;
+    this.deleteConsumers = null;
     this.isDeleteConfirmOpen = true;
   }
 
@@ -1958,9 +1989,17 @@ export class AIModelsView extends LitElement {
     if (!this.editPermissions.allows('delete_ai_models')) return;
     if (this.modelToDelete) {
       try {
-        await deleteAIModel(this.modelToDelete.id);
+        await deleteAIModel(this.modelToDelete.id, {
+          force: Boolean(this.deleteConsumers?.length),
+        });
         await this.fetchModels();
       } catch (error) {
+        if (error instanceof ModelInUseError && !this.deleteConsumers) {
+          // Keep the dialog open on the flows the server named, so the
+          // second click is a decision made with them in view.
+          this.deleteConsumers = error.flows;
+          if (error.flows.length) return;
+        }
         console.error('Failed to delete model:', error);
         this.error =
           error instanceof Error ? error.message : 'Failed to delete model';
@@ -1968,6 +2007,7 @@ export class AIModelsView extends LitElement {
     }
     this.isDeleteConfirmOpen = false;
     this.modelToDelete = null;
+    this.deleteConsumers = null;
   }
 
   private handleInfoAlertHide() {

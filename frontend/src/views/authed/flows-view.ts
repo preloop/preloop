@@ -85,6 +85,28 @@ import '../../components/view-header';
 
 export { flowTriggerSummary };
 
+/**
+ * A quiet marker for a flow whose own model cannot serve a run: deleted out
+ * from under it, or its key rejected. Nothing for a healthy or unset model.
+ */
+export function modelHealthMarker(flow: Flow) {
+  const health = flow.model_health;
+  if (!health || health.status === 'ok') return nothing;
+  const missing = health.status === 'missing';
+  const label = missing ? 'Model deleted' : 'Model key failing';
+  const title = missing
+    ? 'The model this flow used was deleted. Choose another model.'
+    : `The model's credential failed${health.code ? ` (${health.code})` : ''}. Runs will fail until the key is replaced.`;
+  return html`<sl-badge
+    class="model-health"
+    variant="warning"
+    pill
+    title=${title}
+    data-testid="flow-model-health"
+    >${label}</sl-badge
+  >`;
+}
+
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
 
@@ -1911,6 +1933,7 @@ export class FlowsView extends LitElement {
               <div class="row-subtitle" title=${row.presetLabel}>
                 ${row.presetLabel}
               </div>
+              ${modelHealthMarker(row.source)}
             </div>
           </div>`,
       },

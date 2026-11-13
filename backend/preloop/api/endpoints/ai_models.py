@@ -37,6 +37,7 @@ from preloop.schemas.ai_model import (
     AIModelRead,
     AIModelsOverviewResponse,
     AIModelUpdate,
+    AIModelInUseDetail,
     AIModelUsedByResponse,
     AvailableModelsRequest,
     AvailableModelsResponse,
@@ -698,8 +699,19 @@ def get_ai_model_used_by(
     """List visible, tenant-owned agents and flows configured to use a model."""
     from preloop.services.ai_model_usage_links import configured_model_consumers
 
-    _get_readable_ai_model(db=db, model_id=model_id, current_user=current_user)
-    return configured_model_consumers(db, user=current_user, model_id=str(model_id))
+    model = _get_readable_ai_model(db=db, model_id=model_id, current_user=current_user)
+    own_secret = (
+        model.credentials_secret_id
+        if model.account_id is not None
+        and str(model.account_id) == str(current_user.account_id)
+        else None
+    )
+    return configured_model_consumers(
+        db,
+        user=current_user,
+        model_id=str(model_id),
+        credentials_secret_id=own_secret,
+    )
 
 
 # Both dates omitted means the last 7 days (model_detail_window). One bound
@@ -1068,13 +1080,57 @@ def set_ai_model_owner_flow_use(
 @require_permission("delete_ai_models")
 def delete_ai_model(
     model_id: uuid.UUID,
+    force: Annotated[
+        bool,
+        Query(
+            description=(
+                "Delete even though flows select the model. Those flows are "
+                "left without a model and are named in the audit entry."
+            )
+        ),
+    ] = False,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> Response:
-    """Delete an AI Model by its ID."""
+    """Delete an AI Model by its ID.
+
+    While any flow of the account selects the model (its own model, a routing
+    or label rule, or the retry model), the delete is refused with 409
+    ``model_in_use`` and the flows the caller can see. ``force=true`` deletes
+    anyway: each flow that had the model as its own records which model it
+    lost, and the audit entry names every orphaned flow.
+    """
+    from preloop.models.crud import crud_flow
+    from preloop.services.ai_model_usage_links import flow_links
+
     ensure_permission_in_oss(db, current_user, "delete_ai_models")
     model = _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
+    consumers = list(
+        crud_flow.list_configured_for_model(
+            db, account_id=str(current_user.account_id), model_id=str(model_id)
+        )
+    )
+    if consumers and not force:
+        count = len(consumers)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=AIModelInUseDetail(
+                message=(
+                    f"{count} flow{'' if count == 1 else 's'} still "
+                    f"use{'s' if count == 1 else ''} this model. Point them at "
+                    "another model, or delete with force=true to leave them "
+                    "without one."
+                ),
+                flow_count=count,
+                flows=flow_links(db, user=current_user, flows=consumers),
+            ).model_dump(mode="json"),
+        )
     previous = _model_audit_state(model)
+    if consumers:
+        previous["orphaned_flows"] = [
+            {"id": str(flow.id), "name": flow.name} for flow in consumers
+        ]
+        crud_flow.mark_model_orphaned(db, flows=consumers, model=model)
     crud_ai_model.remove(db=db, id=model_id)
     log_config_change(
         db,
@@ -1328,9 +1384,24 @@ def rotate_ai_model_credential(
         ) from exc
     from preloop.utils.audit import log_config_change
 
+    from preloop.models.crud import crud_flow
+    from preloop.services.ai_model_usage_links import (
+        flow_links,
+        shared_credential_links,
+    )
+
     shared = crud_ai_model.count_sharing_secret(
         db, secret_id=secret.id, account_id=current_user.account_id
     )
+    affected_models = shared_credential_links(
+        db, user=current_user, secret_id=secret.id
+    )
+    affected_flows: dict[str, Any] = {}
+    for affected in affected_models:
+        for flow in crud_flow.list_configured_for_model(
+            db, account_id=str(current_user.account_id), model_id=affected.id
+        ):
+            affected_flows.setdefault(str(flow.id), flow)
     log_config_change(
         db,
         user=current_user,
@@ -1351,6 +1422,10 @@ def rotate_ai_model_credential(
         version=secret.version,
         rotated_at=secret.rotated_at,
         shared_model_count=shared,
+        affected_models=affected_models,
+        affected_flows=flow_links(
+            db, user=current_user, flows=list(affected_flows.values())
+        ),
     )
 
 

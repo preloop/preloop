@@ -62,7 +62,15 @@ class CRUDFlow(CRUDBase[models.Flow]):
         model_ref = {"ai_model_id": model_id}
         return (
             db.query(self.model)
-            .options(load_only(self.model.id, self.model.name, self.model.account_id))
+            .options(
+                load_only(
+                    self.model.id,
+                    self.model.name,
+                    self.model.account_id,
+                    self.model.ai_model_id,
+                    self.model.is_enabled,
+                )
+            )
             .filter(
                 self.model.account_id == account_id,
                 or_(
@@ -78,6 +86,31 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .limit(limit)
             .all()
         )
+
+    def mark_model_orphaned(
+        self, db: Session, *, flows: List[models.Flow], model: models.AIModel
+    ) -> None:
+        """Record on each flow that its selected model is being deleted.
+
+        The database clears ``flow.ai_model_id`` when the model row goes, so
+        the flow keeps ``agent_config.orphaned_model`` to say which model it
+        lost. ``Flow.model_health`` reads it while no model is selected.
+        Flushes only; the caller's delete commits.
+
+        Args:
+            db: Database session.
+            flows: Flows that select the model in any supported field.
+            model: The model being deleted.
+        """
+        marker = {"id": str(model.id), "name": model.name}
+        for flow in flows:
+            if flow.ai_model_id is None or str(flow.ai_model_id) != str(model.id):
+                continue
+            config = dict(flow.agent_config or {})
+            config["orphaned_model"] = marker
+            flow.agent_config = config
+            db.add(flow)
+        db.flush()
 
     def _query_with_ai_model(self, db: Session) -> Query:
         """List queries that serialize ``ai_model_name`` join the model."""
@@ -158,11 +191,18 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     # A short SQL-derived string, not the clone config JSON:
                     # the summary's ci_only flag needs only this key.
                     self.model.publication_mode,
+                    self.model.orphaned_model_id,
                     raiseload=True,
                 ),
-                joinedload(self.model.ai_model).load_only(
-                    models.AIModel.id, models.AIModel.name, raiseload=True
-                ),
+                joinedload(self.model.ai_model)
+                .load_only(
+                    models.AIModel.id,
+                    models.AIModel.name,
+                    models.AIModel.credentials_secret_id,
+                    raiseload=True,
+                )
+                # model_health reads the credential state from the secret.
+                .joinedload(models.AIModel.credentials_secret),
             )
         if account_id and hasattr(self.model, "account_id"):
             shared_ids: list[Any] = []
