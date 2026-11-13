@@ -17,6 +17,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
+from preloop.utils.audit import log_config_change
 from preloop.models.crud import crud_account
 from preloop.schemas.resource_share import SharedResourceRead
 from preloop.schemas.ai_model import (
@@ -286,6 +287,66 @@ def _get_current_account(*, db: Session, current_user: User) -> Account:
     return account
 
 
+# Credential material and external references are deliberately absent. Metadata
+# and model parameters are free-form; only their changed field names are audited.
+_MODEL_AUDIT_FIELDS = (
+    "name",
+    "description",
+    "provider_name",
+    "model_identifier",
+    "model_kind",
+    "endpoint_type",
+    "runner_id",
+    "api_endpoint",
+    "is_default",
+)
+_CREDENTIAL_INPUT_FIELDS = frozenset(
+    {
+        "api_key",
+        "credential_type",
+        "credential_payload",
+        "credentials_secret_id",
+        "credentials_backend_type",
+        "credentials_external_ref",
+        "credentials_meta_data",
+    }
+)
+
+
+def _model_audit_state(model: AIModel) -> Dict[str, Any]:
+    """Snapshot named non-secret model fields for a configuration audit."""
+    from preloop.utils.secret_scrubbing import scrub_secrets
+
+    values: Dict[str, Any] = {"id": str(model.id)}
+    for field in _MODEL_AUDIT_FIELDS:
+        value = getattr(model, field, None)
+        if isinstance(value, uuid.UUID):
+            value = str(value)
+        if isinstance(value, str):
+            value = scrub_secrets(value)
+        values[field] = value
+    values["reference_id"] = (
+        str(model.credentials_secret_id) if model.credentials_secret_id else None
+    )
+    return values
+
+
+def _credential_audit_state(db: Session, model: AIModel) -> Optional[Dict[str, Any]]:
+    """Snapshot only secret identity, storage type, version and sharing count."""
+    secret = getattr(model, "credentials_secret", None)
+    if secret is None:
+        return None
+    return {
+        "ai_model_id": str(model.id),
+        "reference_id": str(secret.id),
+        "backend_type": secret.backend_type,
+        "version": secret.version,
+        "shared_model_count": crud_ai_model.count_sharing_secret(
+            db, secret_id=secret.id, account_id=model.account_id
+        ),
+    }
+
+
 @router.post(
     "/ai-models",
     response_model=AIModelRead,
@@ -312,6 +373,22 @@ def create_ai_model(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="ai_model",
+        action="created",
+        new_value=_model_audit_state(created_model),
+    )
+    credential = _credential_audit_state(db, created_model)
+    if credential is not None:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="secret_reference",
+            action="set",
+            new_value=credential,
+        )
     return created_model
 
 
@@ -824,6 +901,8 @@ def update_ai_model(
         db=db, model_id=model_id, current_user=current_user
     )
 
+    previous = _model_audit_state(db_model)
+    previous_credential = _credential_audit_state(db, db_model)
     obj_in = ai_model_in.dict(exclude_unset=True)
     if "codex_upstream_websocket" in obj_in:
         obj_in = _apply_codex_ws_override(db_model, obj_in)
@@ -838,6 +917,37 @@ def update_ai_model(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    current = _model_audit_state(updated_model)
+    changed = [
+        field
+        for field in current
+        if field != "reference_id" and current[field] != previous[field]
+    ]
+    freeform = sorted(set(obj_in) & {"meta_data", "model_parameters"})
+    if changed or freeform:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="ai_model",
+            action="updated",
+            old_value={"id": str(model_id), **{k: previous[k] for k in changed}},
+            new_value={
+                "id": str(model_id),
+                "changed_fields": changed + freeform,
+                **{k: current[k] for k in changed},
+            },
+        )
+    credential = _credential_audit_state(db, updated_model)
+    material_supplied = any(obj_in.get(k) for k in _CREDENTIAL_INPUT_FIELDS)
+    if credential != previous_credential or material_supplied:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="secret_reference",
+            action="replaced" if previous_credential else "set",
+            old_value=previous_credential,
+            new_value=credential,
+        )
     return updated_model
 
 
@@ -960,12 +1070,19 @@ def delete_ai_model(
     model_id: uuid.UUID,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
-):
+) -> Response:
     """Delete an AI Model by its ID."""
     ensure_permission_in_oss(db, current_user, "delete_ai_models")
-    _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
-
+    model = _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
+    previous = _model_audit_state(model)
     crud_ai_model.remove(db=db, id=model_id)
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="ai_model",
+        action="deleted",
+        old_value=previous,
+    )
 
     # No content returned for HTTP 204
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1062,6 +1179,36 @@ async def sync_ai_model_catalog(
         dry_run=bool(request_in.dry_run) if request_in else False,
         request=request,
     )
+
+    def audit_created_models() -> None:
+        """Audit each imported model and shared credential using safe snapshots."""
+        for result in summary.providers:
+            for model_id in result.added_model_ids:
+                model = crud_ai_model.get(
+                    db, id=model_id, account_id=str(current_user.account_id)
+                )
+                if model is None:
+                    continue
+                log_config_change(
+                    db,
+                    user=current_user,
+                    config_type="ai_model",
+                    action="created",
+                    new_value=_model_audit_state(model),
+                    request=request,
+                )
+                credential = _credential_audit_state(db, model)
+                if credential is not None:
+                    log_config_change(
+                        db,
+                        user=current_user,
+                        config_type="secret_reference",
+                        action="set",
+                        new_value=credential,
+                        request=request,
+                    )
+
+    await run_db_off_loop(audit_created_models)
     return AIModelCatalogSyncResponse(
         providers=[
             AIModelCatalogSyncProviderResult(
@@ -1207,6 +1354,34 @@ def rotate_ai_model_credential(
     )
 
 
+@router.delete(
+    "/ai-models/{model_id}/credentials",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove AI Model Credential",
+    tags=["AI Models"],
+)
+@require_permission("edit_ai_models")
+def remove_ai_model_credential(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Detach this model's credential without rotating a shared secret."""
+    ensure_permission_in_oss(db, current_user, "edit_ai_models")
+    model = _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
+    previous = _credential_audit_state(db, model)
+    crud_ai_model.remove_credential(db, db_obj=model)
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="secret_reference",
+        action="removed",
+        old_value=previous,
+        new_value={"ai_model_id": str(model_id)},
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/ai-models/{model_id}/credentials/marker",
     response_model=AIModelCredentialMarkerResponse,
@@ -1295,6 +1470,8 @@ def export_ai_model_credentials(
     db_model = _get_account_ai_model(
         db=db, model_id=model_id, current_user=current_user, view=True
     )
+    previous_credential = _credential_audit_state(db, db_model)
+    previous_refresh = _credential_last_refresh(db_model)
     service = get_secret_service()
     try:
         resolved = service.resolve_ai_model_credentials(
@@ -1327,6 +1504,26 @@ def export_ai_model_credentials(
         resolved.credential_type,
         current_user.account_id,
         current_user.id,
+    )
+    credential = _credential_audit_state(db, db_model)
+    if (
+        credential != previous_credential
+        or _credential_last_refresh(db_model) != previous_refresh
+    ):
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="secret_reference",
+            action="refreshed",
+            old_value=previous_credential,
+            new_value=credential,
+        )
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="secret_reference",
+        action="exported",
+        new_value=credential,
     )
     refresh = str(payload.get("refresh") or "").strip() or None
     account_id = str(payload.get("account_id") or "").strip() or None

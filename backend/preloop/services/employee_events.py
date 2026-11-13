@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_managed_agent
 from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.services.model_routing import prepare_execution_routing
@@ -178,7 +179,7 @@ async def ingest_employee_event(
             ),
         },
     }
-    event = prepare_execution_routing(db, flow, event)
+    event = await run_db_off_loop(lambda: prepare_execution_routing(db, flow, event))
     execution, duplicate = crud_flow_execution.reserve_employee_event(
         db,
         flow_id=flow.id,

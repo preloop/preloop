@@ -111,3 +111,27 @@ Turning the flag off stops the relay and routes subsequent asynchronous writes
 back to best effort. It does not discard stored intents; enable the flag again
 to resume pending delivery. Delivered intents are deleted, and replay does not
 alter historical audit rows.
+
+## Model configuration and credential lifecycle
+
+Model create, update and delete endpoints record `configuration_change` entries
+with `config_type: ai_model`. Updates list changed fields and old/new values for
+named non-secret configuration fields. Free-form metadata and model parameter
+changes record field names without their potentially sensitive values. Deletion
+retains the model id, name, provider, model identifier and credential reference
+id. Credential set, replacement, rotation and explicit removal use
+`config_type: secret_reference`, recording only reference id, backend type,
+version and the number of models sharing that secret. `DELETE
+/api/v1/ai-models/{id}/credentials` explicitly detaches a credential; a null
+reference in `PUT` retains its existing unchanged behavior. Provider catalog sync
+also records each model it adds with its shared credential reference. Credential
+exports are audited and may refresh an expiring OAuth bundle; that
+replacement also records a `refreshed` entry. Marker reads do not mutate stored
+material.
+
+The first upstream authentication or billing rejection in an episode records
+`ai_model.credential_rejected` directly in the audit log under the secret row
+lock, alongside the stored verdict. It also queues the account webhook event of
+the same name and defers owner email. Repeats do not produce additional notices;
+acceptance or key replacement starts a fresh episode. These records contain the
+sanitized provider sentence and secret identity, never key material.

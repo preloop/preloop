@@ -1279,3 +1279,17 @@ systems: a change immediately after the final preflight can still race the
 external write. Final read-back and grant checks then fail instead of reporting
 current authorized publication success. No live activation or external receipt
 is implied by the synthetic tests.
+
+### Rejected model keys at trigger time
+
+Before creating an execution, clone lease or container, a restricted CI trigger
+checks whether its selected customer model has a standing authentication
+rejection. Only a marked model receives an authenticated probe with that model's
+stored key. Success clears the mark and starts the review. Another upstream
+authentication rejection returns HTTP `409` with
+`detail.code: "model_credentials_rejected"` and `detail.model_name`. The
+restricted response includes no provider sentence, secret reference or key
+material. A human owner can replace or rotate the API key for that model.
+Timeouts, network failures, rate limits and provider `5xx` responses allow the
+review to proceed. Billing rejection marks do not block reviews; unmarked models
+have no extra provider call. Probe calls appear in gateway usage and audit.

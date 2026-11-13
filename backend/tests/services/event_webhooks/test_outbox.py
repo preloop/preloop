@@ -3,6 +3,9 @@
 import random
 import uuid
 from datetime import datetime, timedelta
+from typing import Any, Callable
+from sqlalchemy.orm import Session
+from preloop.models import models
 
 import pytest
 
@@ -523,3 +526,42 @@ def test_endpoint_filter_matching(event_types, event_type, expected):
     from preloop.services.event_webhooks.events import endpoint_wants
 
     assert endpoint_wants(event_types, event_type) is expected
+
+
+def test_credential_rejection_episode_emits_one_account_delivery(
+    db_session: Session,
+    account: models.Account,
+    make_endpoint: Callable[..., Any],
+) -> None:
+    """A real first rejection reaches subscribers, and a repeat cannot duplicate it."""
+    from unittest.mock import patch
+    from preloop.services.gateway_execution import GatewayModelSnapshot
+    from preloop.services.model_credential_health import (
+        record_gateway_credential_outcome,
+    )
+    from tests.services.test_model_credential_health import _stored_model, STORED_KEY
+    from preloop.services.event_webhooks.events import (
+        EVENT_AI_MODEL_CREDENTIAL_REJECTED,
+    )
+
+    make_endpoint(event_types=[EVENT_AI_MODEL_CREDENTIAL_REJECTED])
+    model = _stored_model(db_session, account.id)
+    db_session.commit()
+    snapshot = GatewayModelSnapshot.from_model(model)
+    with patch(
+        "preloop.services.model_credential_alerts.enqueue_credential_rejection_notice"
+    ):
+        for _ in range(2):
+            record_gateway_credential_outcome(
+                db_session,
+                ai_model=snapshot,
+                status_code=401,
+                error_class="upstream_auth",
+                error_detail="User not found.",
+                credential_type="api_key",
+            )
+    rows = _deliveries(db_session, account.id)
+    assert len(rows) == 1
+    assert rows[0].payload["type"] == EVENT_AI_MODEL_CREDENTIAL_REJECTED
+    assert rows[0].payload["data"]["model_name"] == model.name
+    assert STORED_KEY not in str(rows[0].payload)
