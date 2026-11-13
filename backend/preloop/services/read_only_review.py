@@ -458,8 +458,30 @@ def host_read_only_receipt_error(
 #: and setup commands completed, before the agent starts. Any earlier failure
 #: exits the container first, so the line is never printed for it.
 READ_ONLY_STARTUP_MARKER = "PRELOOP_READ_ONLY_STARTUP"
-#: Version of the startup receipt shape.
+#: Version of the startup receipt shape. Fields are only ever added.
 STARTUP_RECEIPT_VERSION = 1
+#: Line a hosted harness prints with its CLI version before the agent starts.
+HARNESS_VERSION_MARKER = "PRELOOP_HARNESS_VERSION"
+_HARNESS_VERSION_RE = re.compile(
+    rf"^{HARNESS_VERSION_MARKER} (codex) codex-cli "
+    r"(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?)$"
+)
+
+
+def harness_cli_from_line(line: str) -> dict[str, str] | None:
+    """Parse the harness version line a hosted container prints.
+
+    Args:
+        line: One stripped agent log line.
+
+    Returns:
+        ``{"name", "version"}`` for a well-formed Codex version line, else
+        None.
+    """
+    match = _HARNESS_VERSION_RE.fullmatch(line) if isinstance(line, str) else None
+    if match is None:
+        return None
+    return {"name": match.group(1), "version": match.group(2)}
 
 
 def read_only_startup_line(commit: str) -> str:
@@ -480,7 +502,11 @@ def read_only_startup_line(commit: str) -> str:
 
 
 def hosted_startup_receipt(
-    commit: str, *, setup_completed: bool, agent_started_at: str | None
+    commit: str,
+    *,
+    setup_completed: bool,
+    agent_started_at: str | None,
+    agent_cli: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the controller-observed startup receipt for a hosted review.
 
@@ -489,6 +515,8 @@ def hosted_startup_receipt(
         setup_completed: Whether the startup chain finished without a setup
             failure being reported.
         agent_started_at: ISO-8601 UTC time the agent start was observed.
+        agent_cli: CLI name and version the container printed before the
+            agent started, or None when no version line was seen.
 
     Returns:
         The receipt stored on ``flow_execution.startup_receipt``.
@@ -501,6 +529,7 @@ def hosted_startup_receipt(
         "setup_completed": setup_completed,
         "agent_started_at": agent_started_at,
         "lease_revoked": None,
+        "agent_cli": dict(agent_cli) if agent_cli else None,
     }
 
 
@@ -527,6 +556,7 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
             "setup_completed": stored.get("setup_completed") is True,
             "agent_started_at": stored.get("agent_started_at"),
             "lease_revoked": stored.get("lease_revoked"),
+            "agent_cli": _stored_agent_cli(stored.get("agent_cli")),
         }
     result = getattr(execution, "result", None)
     runner = (
@@ -547,4 +577,16 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
         "agent_started_at": None,
         "lease_revoked": runner.get("lease_revoked") is True,
         "sandbox": runner.get("sandbox"),
+        # The runner does not report its CLI version yet.
+        "agent_cli": None,
     }
+
+
+def _stored_agent_cli(value: Any) -> dict[str, str] | None:
+    """Project a stored ``agent_cli`` entry; anything malformed is None."""
+    if not isinstance(value, Mapping):
+        return None
+    name, version = value.get("name"), value.get("version")
+    if not isinstance(name, str) or not isinstance(version, str):
+        return None
+    return {"name": name, "version": version}

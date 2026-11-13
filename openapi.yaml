@@ -8172,6 +8172,116 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/ci-identities/shared-flows/{flow_id}:
+    get:
+      tags:
+      - Restricted CI administration
+      summary: Get Shared Flow
+      description: 'Read which projects a flow admits for restricted CI.
+
+
+        Human administrators only. A CI credential cannot call this route, so an
+
+        identity cannot learn which other projects share its flow.'
+      operationId: get_shared_flow_api_v1_ci_identities_shared_flows__flow_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiSharedFlowRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Restricted CI administration
+      summary: Put Shared Flow
+      description: 'Replace the project allowlist of a shared read-only review flow.
+
+
+        The flow must already be an enabled read-only review flow
+
+        (``git_clone_config.publication_mode: read_only``) in the caller''s
+
+        account. ``project_ids`` is the complete new allowlist; every project
+
+        must be an active project of the same account on a GitHub App tracker.
+
+        Preloop writes one clone repository per project, from the project''s own
+
+        tracker, and the matching trigger projects.
+
+
+        Admitting a project grants nothing by itself: provision a CI identity for
+
+        that project and this flow. Each identity stays bound to one project and
+
+        can start and read only its own executions. Removing a project denies
+
+        every identity bound to it from its next request on. A dedicated flow
+
+        that still has identities bound to it is refused with 409; retire them
+
+        first, because an identity''s binding mode is fixed at provisioning.'
+      operationId: put_shared_flow_api_v1_ci_identities_shared_flows__flow_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiSharedFlowUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiSharedFlowRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ci-identities/{principal_id}:
     get:
       tags:
@@ -32862,7 +32972,19 @@ components:
         binding:
           type: string
           title: Binding
-          default: One account-local project and its dedicated hosted flow
+          default: One account-local project per identity, on that project's dedicated
+            hosted flow or on a shared read-only review flow that admits the project
+        binding_modes:
+          items:
+            type: string
+            enum:
+            - dedicated
+            - shared
+          type: array
+          title: Binding Modes
+          default:
+          - dedicated
+          - shared
       type: object
       required:
       - available
@@ -32974,6 +33096,13 @@ components:
           title: Credential Version
         grant:
           $ref: '#/components/schemas/CiGrant'
+        binding_mode:
+          type: string
+          enum:
+          - dedicated
+          - shared
+          title: Binding Mode
+          default: dedicated
         repository_identifier:
           type: string
           title: Repository Identifier
@@ -33284,7 +33413,14 @@ components:
       - flow_id
       - actions
       title: CiGrant
-      description: Exactly one account-local project and its dedicated flow.
+      description: 'Exactly one account-local project and one flow.
+
+
+        The flow is either dedicated to the project or a shared read-only review
+
+        flow whose administrator-set allowlist admits the project. A grant never
+
+        names more than one project.'
     CiResultExportCreate:
       properties:
         pr_number:
@@ -33322,6 +33458,92 @@ components:
       - expires_at
       title: CiResultExportCreate
       description: Expected digest and revisions protect the human's reviewed decision.
+    CiSharedFlowProject:
+      properties:
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        repository_slug:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository Slug
+        identities:
+          type: integer
+          title: Identities
+      type: object
+      required:
+      - project_id
+      - name
+      - repository_slug
+      - identities
+      title: CiSharedFlowProject
+      description: One admitted project and how many live identities are bound to
+        it.
+    CiSharedFlowRead:
+      properties:
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        name:
+          type: string
+          title: Name
+        binding_mode:
+          type: string
+          enum:
+          - dedicated
+          - shared
+          title: Binding Mode
+        read_only:
+          type: boolean
+          title: Read Only
+        projects:
+          items:
+            $ref: '#/components/schemas/CiSharedFlowProject'
+          type: array
+          title: Projects
+      type: object
+      required:
+      - flow_id
+      - name
+      - binding_mode
+      - read_only
+      - projects
+      title: CiSharedFlowRead
+      description: Administrator view of a flow's restricted CI project allowlist.
+    CiSharedFlowUpdate:
+      properties:
+        project_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Project Ids
+      additionalProperties: false
+      type: object
+      required:
+      - project_ids
+      title: CiSharedFlowUpdate
+      description: 'The complete project allowlist of one shared read-only review
+        flow.
+
+
+        The list replaces the current allowlist. Each project must be an active
+
+        project of the caller''s account whose owning tracker is a GitHub App
+
+        installation; Preloop derives the repository and its tracker from the
+
+        project, so no repository URL or tracker is accepted here.'
     CliSessionResponse:
       properties:
         id:
@@ -38357,6 +38579,7 @@ components:
             verification_blocked, tool_error, agent_error, model_stream_idle (timed
             out while the model stream was silent), approval_denied, approval_timeout,
             approval_unavailable (an approval-required rule could not pause the run),
+            hook_binding_invalid (the native hook credential was refused before launch),
             resume_failed (a parked run could not be continued), gateway_bypassed
             (a private-runner host CLI made no request through the Preloop gateway),
             timeout, cancelled, unknown. Null for successful or still-running executions,

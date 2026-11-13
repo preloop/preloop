@@ -15,8 +15,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users; passkey and SSO authentication remain direct. Fresh strong
   authentication now protects passkey removal and passkey-only settings, with
   a shared console step-up dialog and extension hooks for account policies.
+- restricted CI: one hosted read-only review flow can be shared by several
+  projects of an account, while every CI identity stays bound to one project.
+  An account administrator sets the flow's project allowlist with
+  `PUT /api/v1/ci-identities/shared-flows/{flow_id}` or
+  `preloop ci share-flow FLOW_ID --input projects.json` (read it back with
+  `GET` or `preloop ci shared-flow FLOW_ID`); Preloop derives each repository
+  from its project and accepts no URL or tracker. An identity on a shared
+  flow can start reviews only for its own repository and can read, list and
+  stop only its own executions; sibling projects, their executions and the
+  allowlist are not visible to it. Identities, `preloop ci preview` and the
+  console now report `binding_mode` (`dedicated` or `shared`), the console
+  offers shared flows when creating an identity, and
+  `preloop ci capabilities` describes both bindings. Existing one-project
+  identities are unchanged and there is no migration.
+  `scripts/verify_shared_ci_flow.py` checks the isolation against two
+  repositories without starting a review. Extra read-only context
+  repositories for a review are designed but not included
+  (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- flows: a hosted Codex run whose native permission hook would be refused now
+  fails before it starts. Before launch the execution's runtime credential is
+  checked with the same identity rules `POST /api/v1/agents/permission-check`
+  applies, and a credential the hook could not use ends the run `FAILED` with
+  the new `hook_binding_invalid` category: no container, no model calls, no
+  startup receipt. Previously such a run started, and every native command
+  was denied with HTTP 403 while the model kept spending calls. The read-only
+  review startup receipt gains an additive `agent_cli` field
+  (`{"name": "codex", "version": "x.y.z"}`) taken from the version line the
+  container prints before the agent starts, or null when none was seen
+  (part of #2264).
 
 - gateway: an error the upstream model provider produced now says so. A
   provider-reported 401, 402, 403 or 404 used to reach the client at

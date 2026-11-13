@@ -357,6 +357,7 @@ nav:
       - System overview: architecture/overview.md
       - Data model: architecture/data-model.md
       - Durable callback receipts: architecture/callback-receipts.md
+      - Shared review flows for restricted CI: architecture/shared-ci-review-flows.md
       - Technical decisions: architecture/decisions.md
       - 'ADR 0001: API versioning': architecture/decisions/0001-api-versioning.md
       - Agent Control: architecture/agent-control.md
