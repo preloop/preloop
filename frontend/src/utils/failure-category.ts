@@ -128,6 +128,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'A deny or approval rule applies to native commands, and this run could not install the Preloop command hook that enforces it. Check the run log for the setup line, or change the rule.',
   },
+  hook_binding_invalid: {
+    label: 'hook binding invalid',
+    tooltip:
+      'The credential the Preloop command hook would use was refused by the permission check, so the run stopped before the agent started. No model calls were made.',
+  },
   resume_failed: {
     label: 'resume failed',
     tooltip:

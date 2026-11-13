@@ -72,6 +72,7 @@ graph LR
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
+| [Shared review flows for restricted CI](docs/architecture/shared-ci-review-flows.md) | One read-only review flow serving several projects with one project per CI identity: the allowlist, how an execution's project is resolved, the threat model with its tests, and what is not included. |
 | [MCP dispatch provenance](docs/architecture/mcp-dispatch-provenance.md) | The identity-only extension event for completed proxied calls. Optional plugins own inventory interpretation; hook labels and mutable tool-name maps cannot establish server identity. |
 | [Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) | OAuth for external MCP servers Preloop connects to, separate from the inbound MCP authorization server. |
 | [Managed tracker OAuth storage](docs/architecture/managed-oauth-storage.md) | Provider-neutral storage contract for managed tracker OAuth credentials. |

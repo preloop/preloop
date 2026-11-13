@@ -78,9 +78,11 @@ preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
 preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
 preloop ci revoke PRINCIPAL_ID KEY_ID
 preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file /private/new-signing-secret
+preloop ci shared-flow FLOW_ID
+preloop ci share-flow FLOW_ID --input projects.json
 ```
 
-These commands use the saved login or `PRELOOP_TOKEN`. `--token` is rejected, so a plaintext token is not placed on the process command line. A secret is written only to a new exclusive file; stdout is safe metadata. See [Native restricted CI setup](flows/restricted-ci.md).
+These commands use the saved login or `PRELOOP_TOKEN`. `--token` is rejected, so a plaintext token is not placed on the process command line. A secret is written only to a new exclusive file; stdout is safe metadata. `shared-flow` shows which projects a flow admits for restricted CI; `share-flow` replaces that allowlist on a read-only review flow from `{"project_ids": [...]}`. See [Native restricted CI setup](flows/restricted-ci.md).
 
 ## Agents
 

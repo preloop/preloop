@@ -1,9 +1,12 @@
 """Fresh human-only setup and recovery for stable restricted CI identities."""
 
 import logging
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Literal
 from uuid import UUID
 
+from pydantic import ValidationError
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -24,16 +27,56 @@ from preloop.schemas.ci_administration import (
     CiAdminRotate,
     CiAdminSubscription,
     CiAdminUpdate,
+    CiSharedFlowProject,
+    CiSharedFlowRead,
+    CiSharedFlowUpdate,
 )
 from preloop.schemas.ci_principal import CiAction, CiGrant
 from preloop.schemas.ci_subscription import CiSubscriptionCreate
 
 logger = logging.getLogger(__name__)
 
+
+def _binding_mode(repository_binding: Any) -> Literal["dedicated", "shared"]:
+    """Name the provisioning-time binding mode of a repository snapshot."""
+    shared = (
+        isinstance(repository_binding, dict)
+        and repository_binding.get("ci_project_selection") is True
+    )
+    return "shared" if shared else "dedicated"
+
+
 # The machine ceiling includes the explicitly granted own-execution evidence route.
 # Changing enforcement coverage requires explicit contract/rollout review before
 # issuance resumes; extra routes must not silently broaden a deployed ceiling.
 _EXPECTED_V1_MACHINE_ROUTE_COUNT = 12
+
+
+class CiSharedFlowError(ValueError):
+    """A refused allowlist change whose message is safe to return.
+
+    The messages are fixed sentences. They never quote a project, flow or
+    tracker, so a refusal cannot confirm that a resource of another account
+    exists.
+    """
+
+
+SHARED_FLOW_NOT_READ_ONLY = (
+    "Only an enabled read-only review flow (git_clone_config.publication_mode: "
+    "read_only) can be shared between projects"
+)
+SHARED_FLOW_HAS_DEDICATED_IDENTITIES = (
+    "This flow is dedicated and still has CI identities bound to it. Retire "
+    "them first: an identity's binding mode is fixed when it is provisioned"
+)
+SHARED_FLOW_PROJECT_REFUSED = (
+    "Every project must be an active project of this account whose repository "
+    "belongs to a GitHub App tracker"
+)
+SHARED_FLOW_CONTRACT_REFUSED = (
+    "The flow does not satisfy the read-only review contract; see the "
+    "restricted CI guide"
+)
 
 
 class CRUDCiAdministration:
@@ -177,6 +220,7 @@ class CRUDCiAdministration:
             "repository_identifier": identifier,
             "repository_slug": repository["slug"],
             "tracker_type": repository["tracker_type"],
+            "binding_mode": _binding_mode(repository),
             # ``server``, or the named private pool of a read-only review that
             # runs on a Codex host profile (checked by ``_binding``).
             "runner_pool": self._flow_runner_pool(db, actor=actor, grant=grant),
@@ -235,6 +279,7 @@ class CRUDCiAdministration:
             retired=principal.flow_id is None,
             credential_version=principal.credential_version,
             grant=CiGrant.model_validate(principal.grant),
+            binding_mode=_binding_mode(principal.repository_binding),
             repository_identifier=principal.repository_identifier,
             repository_slug=principal.repository_binding["slug"],
             tracker_type=principal.repository_binding["tracker_type"],
@@ -690,6 +735,261 @@ class CRUDCiAdministration:
         )
         db.commit()
         return endpoint, secret
+
+    def _account_projects(
+        self, db: Session, *, account_id: Any, project_ids: Sequence[UUID]
+    ) -> dict[str, tuple[models.Project, models.Tracker]]:
+        """Load active projects of one account with their owning trackers.
+
+        A project of another account, an inactive project and an unknown id
+        are all simply absent from the result.
+        """
+        if not project_ids:
+            return {}
+        rows = (
+            db.query(models.Project, models.Tracker)
+            .join(
+                models.Organization,
+                models.Project.organization_id == models.Organization.id,
+            )
+            .join(models.Tracker, models.Organization.tracker_id == models.Tracker.id)
+            .populate_existing()
+            .filter(
+                models.Project.id.in_(project_ids),
+                models.Tracker.account_id == account_id,
+                models.Project.is_active.is_(True),
+                models.Organization.is_active.is_(True),
+                models.Tracker.is_active.is_(True),
+            )
+            .all()
+        )
+        return {str(project.id): (project, tracker) for project, tracker in rows}
+
+    def _shared_flow_read(self, db: Session, *, flow: models.Flow) -> CiSharedFlowRead:
+        """Project one flow's allowlist for a human administrator."""
+        from preloop.services.read_only_review import read_only_review
+
+        stored = flow.git_clone_config
+        config: dict[str, Any] = stored if isinstance(stored, dict) else {}
+        repositories = config.get("repositories")
+        listed: list[UUID] = []
+        for repo in repositories if isinstance(repositories, list) else []:
+            try:
+                project_id = UUID(str(repo.get("project_id")))
+            except (AttributeError, ValueError):
+                continue
+            if project_id not in listed:
+                listed.append(project_id)
+        known = self._account_projects(
+            db, account_id=flow.account_id, project_ids=listed
+        )
+        counts = dict(
+            db.query(models.CiPrincipal.project_id, func.count(models.CiPrincipal.id))
+            .filter(
+                models.CiPrincipal.account_id == flow.account_id,
+                models.CiPrincipal.flow_id == flow.id,
+                models.CiPrincipal.is_active.is_(True),
+            )
+            .group_by(models.CiPrincipal.project_id)
+            .all()
+        )
+        projects = []
+        for project_id in listed:
+            project = known.get(str(project_id), (None, None))[0]
+            projects.append(
+                CiSharedFlowProject(
+                    project_id=project_id,
+                    name=project.name if project is not None else None,
+                    repository_slug=project.slug if project is not None else None,
+                    identities=int(counts.get(project_id, 0)),
+                )
+            )
+        return CiSharedFlowRead(
+            flow_id=flow.id,
+            name=str(flow.name),
+            binding_mode=_binding_mode(config),
+            read_only=config.get("enabled") is True and read_only_review(config),
+            projects=projects,
+        )
+
+    def _account_flow(
+        self, db: Session, *, actor: models.User, flow_id: UUID, lock: bool
+    ) -> models.Flow:
+        query = (
+            db.query(models.Flow)
+            .populate_existing()
+            .filter(
+                models.Flow.id == flow_id,
+                models.Flow.account_id == actor.account_id,
+            )
+        )
+        if lock:
+            query = query.with_for_update()
+        flow = query.first()
+        if flow is None:
+            raise LookupError("CI flow not found")
+        return flow
+
+    def shared_flow(
+        self, db: Session, *, actor: models.User, flow_id: UUID
+    ) -> CiSharedFlowRead:
+        """Read the restricted CI project allowlist of one account-local flow.
+
+        Args:
+            db: Database session.
+            actor: Human who may view CI administration.
+            flow_id: Flow in the actor's account.
+
+        Returns:
+            The flow's binding mode and admitted projects.
+
+        Raises:
+            PermissionError: The actor may not view CI administration.
+            LookupError: The flow is not in the actor's account.
+        """
+        self._authorize(db, actor=actor, operation="capabilities", grant=None)
+        return self._shared_flow_read(
+            db, flow=self._account_flow(db, actor=actor, flow_id=flow_id, lock=False)
+        )
+
+    def share_flow(
+        self,
+        db: Session,
+        *,
+        actor: models.User,
+        flow_id: UUID,
+        payload: CiSharedFlowUpdate,
+    ) -> CiSharedFlowRead:
+        """Replace the project allowlist of a shared read-only review flow.
+
+        The flow must already be an enabled read-only review flow. Preloop
+        derives one repository entry per project from the project's owning
+        GitHub App tracker and writes the allowlist to the flow's trigger
+        projects and clone repositories together, so the two cannot drift.
+        Admitting a project grants nothing by itself: an identity must still
+        be provisioned for that project. Removing a project takes effect on
+        the next authorization of every identity bound to it.
+
+        Args:
+            db: Database session.
+            actor: Human who may manage CI identities.
+            flow_id: Flow in the actor's account.
+            payload: The complete new allowlist.
+
+        Returns:
+            The stored allowlist.
+
+        Raises:
+            PermissionError: The actor may not manage CI identities.
+            LookupError: The flow is not in the actor's account.
+            CiSharedFlowError: The flow or a project cannot be admitted.
+        """
+        from preloop.models.schemas.flow import GitCloneConfig
+        from preloop.services.publication_credentials import (
+            validate_publication_tracker,
+        )
+        from preloop.services.read_only_review import (
+            read_only_review,
+            validate_read_only_flow,
+        )
+
+        self.require_available(db)
+        self._authorize(
+            db,
+            actor=actor,
+            operation="manage_capabilities",
+            grant=None,
+            audit_operation="share_flow",
+        )
+        flow = self._account_flow(db, actor=actor, flow_id=flow_id, lock=True)
+        try:
+            config = flow.git_clone_config
+            if (
+                not isinstance(config, dict)
+                or config.get("enabled") is not True
+                or not read_only_review(config)
+            ):
+                raise CiSharedFlowError(SHARED_FLOW_NOT_READ_ONLY)
+            if config.get("ci_project_selection") is not True and (
+                db.query(models.CiPrincipal.id)
+                .filter(
+                    models.CiPrincipal.account_id == flow.account_id,
+                    models.CiPrincipal.flow_id == flow.id,
+                )
+                .first()
+                is not None
+            ):
+                raise CiSharedFlowError(SHARED_FLOW_HAS_DEDICATED_IDENTITIES)
+            current = config.get("repositories")
+            existing = {
+                repo["project_id"]: repo
+                for repo in (current if isinstance(current, list) else [])
+                if isinstance(repo, dict) and isinstance(repo.get("project_id"), str)
+            }
+            known = self._account_projects(
+                db, account_id=flow.account_id, project_ids=list(payload.project_ids)
+            )
+            repositories: list[dict[str, Any]] = []
+            for project_id in payload.project_ids:
+                project, tracker = known.get(str(project_id), (None, None))
+                if (
+                    project is None
+                    or tracker is None
+                    or not project.slug
+                    or not project.identifier
+                ):
+                    raise CiSharedFlowError(SHARED_FLOW_PROJECT_REFUSED)
+                try:
+                    validate_publication_tracker(tracker)
+                except ValueError:
+                    raise CiSharedFlowError(SHARED_FLOW_PROJECT_REFUSED) from None
+                kept = existing.get(str(project.id))
+                if (
+                    kept is not None
+                    and kept.get("tracker_id") == str(tracker.id)
+                    and not kept.get("repository_url")
+                ):
+                    repositories.append(dict(kept))
+                else:
+                    repositories.append(
+                        {"project_id": str(project.id), "tracker_id": str(tracker.id)}
+                    )
+            updated = {
+                **config,
+                "ci_project_selection": True,
+                "repositories": repositories,
+            }
+            admitted = [str(project_id) for project_id in payload.project_ids]
+            try:
+                GitCloneConfig.model_validate(updated)
+                flow.git_clone_config = updated
+                flow.trigger_project_ids = admitted
+                validate_read_only_flow(flow)
+            except (ValidationError, ValueError):
+                raise CiSharedFlowError(SHARED_FLOW_CONTRACT_REFUSED) from None
+            CRUDAuditLog(models.AuditLog).log_action(
+                db,
+                account_id=flow.account_id,
+                user_id=actor.id,
+                action="ci_shared_flow_update",
+                resource_type="flow",
+                resource_id=str(flow.id),
+                status="success",
+                commit=False,
+                details={
+                    "flow_id": str(flow.id),
+                    "project_ids": admitted,
+                    "added": sorted(set(admitted) - set(existing)),
+                    "removed": sorted(set(existing) - set(admitted)),
+                },
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return self._shared_flow_read(
+            db, flow=self._account_flow(db, actor=actor, flow_id=flow_id, lock=False)
+        )
 
 
 crud_ci_administration = CRUDCiAdministration()

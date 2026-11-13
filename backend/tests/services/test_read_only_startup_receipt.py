@@ -110,6 +110,58 @@ async def test_receipt_recorded_when_startup_precedes_agent_start() -> None:
     assert receipt["lease_revoked"] is None
 
 
+VERSION_LINE = "PRELOOP_HARNESS_VERSION codex codex-cli 0.153.4"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lines,expected",
+    [
+        (
+            [VERSION_LINE, read_only_startup_line(SHA), AGENT_EXEC_START_MARKER],
+            {"name": "codex", "version": "0.153.4"},
+        ),
+        # Never seen: null, not the pinned constant.
+        ([read_only_startup_line(SHA), AGENT_EXEC_START_MARKER], None),
+        # The agent cannot author it after the start.
+        (
+            [read_only_startup_line(SHA), AGENT_EXEC_START_MARKER, VERSION_LINE],
+            None,
+        ),
+        # Malformed output is not a version.
+        (
+            [
+                "PRELOOP_HARNESS_VERSION codex sh: codex: not found",
+                read_only_startup_line(SHA),
+                AGENT_EXEC_START_MARKER,
+            ],
+            None,
+        ),
+        # The first line before the start wins over a later one.
+        (
+            [
+                VERSION_LINE,
+                "PRELOOP_HARNESS_VERSION codex codex-cli 9.9.9",
+                read_only_startup_line(SHA),
+                AGENT_EXEC_START_MARKER,
+            ],
+            {"name": "codex", "version": "0.153.4"},
+        ),
+    ],
+)
+async def test_receipt_records_observed_cli_version(
+    lines: list[str], expected: dict[str, str] | None
+) -> None:
+    orch, _ = _orchestrator()
+    with patch(
+        "preloop.services.flow_orchestrator.crud_flow_execution.record_startup_receipt"
+    ) as record:
+        await _feed(orch, lines)
+    final = record.call_args.kwargs["receipt"]
+    assert final["agent_cli"] == expected
+    assert final["version"] == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "lines",
@@ -238,7 +290,9 @@ def test_projection_of_hosted_and_private_receipts() -> None:
         "agent_started_at": None,
         "lease_revoked": True,
         "sandbox": "read-only",
+        "agent_cli": None,
     }
+    assert projected["agent_cli"] is None
     none = SimpleNamespace(startup_receipt=None, result={}, ci_review_binding={})
     assert public_startup_receipt(none) is None
 
