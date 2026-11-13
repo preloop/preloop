@@ -103,6 +103,8 @@ def _context(user: models.User, amr: list[str], **overrides: Any) -> dict[str, A
         "auth_nsg": user.non_sso_auth_generation,
         "auth_time": int(time.time()),
     }
+    if "passkey" in amr:
+        context["passkey_uv"] = True
     context.update(overrides)
     return context
 
@@ -190,12 +192,12 @@ class TestSwitch:
         [(["password"], 0), (["passkey"], 11 * 60), (["email_link"], 0)],
         ids=["password-session", "stale-passkey-session", "email-link-session"],
     )
-    def test_change_needs_a_fresh_passkey_session(
+    def test_change_needs_recent_strong_authentication(
         self, api, db_session, amr, age_seconds
     ):
-        """protects=only a passkey sign-in in the last 10 minutes changes the setting;
+        """protects=only strong authentication in the last 10 minutes changes the setting;
         fails_when=a password, email-link or 11-minute-old passkey session gets
-        anything but 403 passkey_sign_in_required, or the column changes;
+        anything but 401 step_up_required, or the column changes;
         no_claim=none beyond protects."""
         user = _user(db_session)
         _passkey(db_session, user)
@@ -207,8 +209,8 @@ class TestSwitch:
                 json={"enabled": enabled},
                 headers=_bearer(token),
             )
-            assert response.status_code == 403, response.text
-            assert response.json()["detail"]["code"] == "passkey_sign_in_required"
+            assert response.status_code == 401, response.text
+            assert response.json()["detail"]["code"] == "step_up_required"
         db_session.refresh(user)
         assert user.passkey_only is False
 
@@ -313,8 +315,8 @@ class TestSwitch:
             headers=_bearer(token),
         )
 
-        assert response.status_code == 403, response.text
-        assert response.json()["detail"]["code"] == "passkey_sign_in_required"
+        assert response.status_code == 401, response.text
+        assert response.json()["detail"] == "Console session required"
         assert "access_token" not in response.json()
         db_session.refresh(user)
         assert user.passkey_only is False
@@ -435,8 +437,11 @@ def test_enable_and_delete_take_the_same_lock(monkeypatch):
     monkeypatch.setattr(webauthn_router.crud_user, "lock", lock)
     monkeypatch.setattr(
         webauthn_router,
-        "_require_fresh_passkey_session",
-        lambda request, member: {"amr": ["passkey"], "auth_time": int(time.time())},
+        "require_recent_strong_auth",
+        lambda age: lambda request, member, db: {
+            "amr": ["passkey"],
+            "auth_time": int(time.time()),
+        },
     )
     monkeypatch.setattr(
         webauthn_router.crud_webauthn_credential,

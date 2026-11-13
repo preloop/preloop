@@ -1044,6 +1044,9 @@ def _register_control_plane_routes(
     # the authentication ceremony must run before the user has a token.
     # Endpoints that need a signed-in user declare it themselves.
     from preloop.api.auth.webauthn_router import router as webauthn_router
+    from preloop.api.auth.mfa_router import router as mfa_router
+
+    app.include_router(mfa_router, prefix="/api/v1/auth/mfa", tags=["Auth", "MFA"])
 
     app.include_router(
         webauthn_router,

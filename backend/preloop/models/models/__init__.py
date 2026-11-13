@@ -215,6 +215,8 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "UserMfaFactor",
+    "UserMfaRecoveryCode",
     "RateLimitBucket",
     "SsoBreakGlassNotice",
     "UpstreamMCPOAuthConnection",
@@ -494,3 +496,4 @@ from .exception_digest import (
 from .rate_limit import RateLimitBucket
 
 from .entitlement_enforcement import EntitlementEnforcementSetting
+from .mfa import UserMfaFactor, UserMfaRecoveryCode

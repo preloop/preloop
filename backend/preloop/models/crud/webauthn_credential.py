@@ -29,6 +29,21 @@ class CRUDWebAuthnCredential(CRUDBase[WebAuthnCredential]):
             .first()
         )
 
+    def lock_active(
+        self, db: Session, *, credential_id: str
+    ) -> Optional[WebAuthnCredential]:
+        """Recheck an active passkey after locking its person and membership."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.credential_id == credential_id,
+                self.model.is_active.is_(True),
+            )
+            .with_for_update()
+            .populate_existing()
+            .first()
+        )
+
     def list_for_person(
         self, db: Session, *, person_id: UUID
     ) -> List[WebAuthnCredential]:

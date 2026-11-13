@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -18,7 +18,17 @@ from preloop.plugins.base import get_plugin_manager
 
 AuthenticationPurpose = Literal["login", "access", "refresh", "switch", "exchange"]
 _METHODS = frozenset(
-    {"password", "passkey", "social", "email_link", "chat", "sso", "oidc", "saml"}
+    {
+        "password",
+        "passkey",
+        "social",
+        "email_link",
+        "chat",
+        "sso",
+        "oidc",
+        "saml",
+        "otp",
+    }
 )
 _UUID_CLAIMS = ("sso_connection_id", "auth_account_id")
 _INTEGER_CLAIMS = ("nsg", "auth_nsg", "auth_time")
@@ -59,12 +69,13 @@ def authentication_claims(claims: Mapping[str, Any] | None) -> dict[str, Any]:
                     status_code=401, detail="Invalid authentication context"
                 )
             result[name] = value
-    if "sso_break_glass" in source:
-        if type(source["sso_break_glass"]) is not bool:
-            raise HTTPException(
-                status_code=401, detail="Invalid authentication context"
-            )
-        result["sso_break_glass"] = source["sso_break_glass"]
+    for name in ("sso_break_glass", "passkey_uv"):
+        if name in source:
+            if type(source[name]) is not bool:
+                raise HTTPException(
+                    status_code=401, detail="Invalid authentication context"
+                )
+            result[name] = source[name]
     return result
 
 
@@ -190,6 +201,10 @@ def authorize_authentication(
     """Ask the installed policy to authorize this exact membership/context."""
     context = authentication_claims(claims)
     _enforce_core_policy(db, user, context, purpose=purpose, source_ip=source_ip)
+    if purpose in {"login", "exchange", "switch"}:
+        from preloop.services.mfa import require_challenge
+
+        require_challenge(db, user, context)
     gate = get_plugin_manager().get_service("authentication_policy")
     if gate is not None:
         gate.authorize(
@@ -299,3 +314,76 @@ def request_authentication_context(request: Any, user: models.User) -> dict[str,
     ):
         raise HTTPException(status_code=401, detail="Person session required")
     return authentication_claims(token_data.claims)
+
+
+def check_recent_strong_auth(
+    db: Session, user: models.User, context: Mapping[str, Any], max_age_seconds: int
+) -> None:
+    """Require bounded fresh assurance and advertise the user's usable factors."""
+    from preloop.models.crud import crud_webauthn_credential, mfa as crud_mfa
+    from preloop.services.mfa import clock, enabled
+
+    methods = set(context.get("amr", []))
+    strong = bool(methods & {"otp", "sso", "oidc", "saml"}) or (
+        "passkey" in methods and context.get("passkey_uv") is True
+    )
+    now = int(clock())
+    auth_time = context.get("auth_time")
+    if strong and type(auth_time) is int and 0 <= now - auth_time <= max_age_seconds:
+        return
+    available = []
+    if enabled() and crud_mfa.enabled(db, user.id):
+        available.append("totp")
+    if crud_webauthn_credential.list_for_person(db, person_id=user.person_id):
+        available.append("passkey")
+    if has_sso_context(context):
+        available.append("sso")
+    raise HTTPException(
+        401, detail={"code": "step_up_required", "methods": available or ["enroll"]}
+    )
+
+
+def require_recent_strong_auth(max_age_seconds: int) -> Any:
+    """Build a reusable session-only FastAPI dependency for sensitive actions.
+
+    Args:
+        max_age_seconds: Maximum age of the most recent strong proof.
+
+    Returns:
+        A dependency returning the verified authentication context.
+    """
+    from preloop.api.auth.jwt import decode_token, get_current_active_user
+    from preloop.models.db.session import get_db_session
+
+    def dependency(
+        request: Request,
+        user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        """Validate the session class before evaluating authentication age."""
+        context = request_authentication_context(request, user)
+        token = decode_token(request.headers.get("authorization", "").partition(" ")[2])
+        if token.sid is not None:
+            raise HTTPException(401, "Console session required")
+        check_recent_strong_auth(db, user, context, max_age_seconds)
+        return context
+
+    return dependency
+
+
+def require_account_step_up(action: str) -> Any:
+    """Expose optional edition policy on a user-session action without enforcing it in OSS."""
+    from preloop.api.auth.jwt import get_current_active_user
+    from preloop.models.db.session import get_db_session
+
+    def dependency(
+        request: Request,
+        user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db_session),
+    ) -> None:
+        """Evaluate policy in a worker thread and leave machine keys unchanged."""
+        from preloop.plugins.account_hooks import enforce_step_up_policy
+
+        enforce_step_up_policy(db, user, request, action)
+
+    return dependency

@@ -25,6 +25,12 @@ from preloop.services.auth_audit import (
 from preloop.services.retention_export import MEMBER_AUDIT, build_period_export
 
 
+@pytest.fixture(autouse=True)
+def no_enrolled_mfa(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing mocked users have no factor; MFA scenarios use PostgreSQL."""
+    monkeypatch.setattr("preloop.models.crud.mfa.factor", lambda db, user_id: None)
+
+
 def test_identity_conflict_is_distinct_from_an_internal_failure() -> None:
     assert (
         login_failure_reason(HTTPException(409, "Ambiguous identity"), method="social")

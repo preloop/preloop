@@ -1191,6 +1191,230 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/auth/mfa/status:
+    get:
+      tags:
+      - Auth
+      - MFA
+      summary: Status
+      description: Read state without disclosing secrets or recovery hashes.
+      operationId: status_api_v1_auth_mfa_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaStatus'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/enroll:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Enroll
+      description: Start or replace a pending enrollment.
+      operationId: enroll_api_v1_auth_mfa_enroll_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Enrollment'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/enroll/confirm:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Confirm
+      description: Confirm possession, issue recovery codes and end other non-SSO
+        sessions.
+      operationId: confirm_api_v1_auth_mfa_enroll_confirm_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmedEnrollment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/verify:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Verify
+      description: Exchange a single-use challenge, atomically consuming its proof.
+      operationId: verify_api_v1_auth_mfa_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/disable:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Disable
+      description: Remove TOTP only after proof and the optional edition removal guard.
+      operationId: disable_api_v1_auth_mfa_disable_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProofRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/recovery-codes:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Regenerate
+      description: Replace every recovery code after a fresh authenticator proof.
+      operationId: regenerate_api_v1_auth_mfa_recovery_codes_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodes'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/step-up:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Step Up
+      description: Refresh strong authentication without requiring a new password
+        sign-in.
+      operationId: step_up_api_v1_auth_mfa_step_up_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/register/options:
     post:
       tags:
@@ -1422,12 +1646,12 @@ paths:
       - Passkeys
       summary: Put Passkey Only
       description: "Turn passkey-only sign-in on or off for the signed-in user.\n\n\
-        Either direction requires the current session to be a passkey sign-in\nat\
-        \ most 10 minutes old. Enabling ends every other non-SSO session of the\n\
-        user and returns a fresh token pair for this one.\n\nRaises:\n    HTTPException:\
-        \ 403 ``passkey_sign_in_required``; 409\n        ``user_verification_disabled``\
-        \ when enabling while\n        ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false;\
-        \ 409\n        ``no_passkey_registered`` when enabling without a passkey."
+        Either direction requires strong authentication at most 10 minutes old. Enabling\
+        \ ends every other non-SSO session of the\nuser and returns a fresh token\
+        \ pair for this one.\n\nRaises:\n    HTTPException: 401 ``step_up_required``;\
+        \ 409\n        ``user_verification_disabled`` when enabling while\n      \
+        \  ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false; 409\n        ``no_passkey_registered``\
+        \ when enabling without a passkey."
       operationId: put_passkey_only_api_v1_auth_webauthn_passkey_only_put
       requestBody:
         content:
@@ -30914,9 +31138,14 @@ components:
             format: uuid
           - type: 'null'
           title: Account Id
+        step_up:
+          type: boolean
+          title: Step Up
+          default: false
       type: object
       title: AuthenticationOptionsRequest
-      description: Optional account destination, signed into the passkey challenge.
+      description: Optional account destination and a session-bound reauthentication
+        flag.
     AuthenticationOptionsResponse:
       properties:
         options:
@@ -30947,6 +31176,10 @@ components:
             format: uuid
           - type: 'null'
           title: Account Id
+        step_up:
+          type: boolean
+          title: Step Up
+          default: false
       type: object
       required:
       - credential
@@ -33127,6 +33360,18 @@ components:
       title: CliSessionResponse
       description: One CLI login session (``preloop auth login``) of the signed-in
         user.
+    CodeRequest:
+      properties:
+        code:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Code
+      type: object
+      required:
+      - code
+      title: CodeRequest
+      description: A bounded authenticator proof.
     CommentCreate:
       properties:
         body:
@@ -33308,6 +33553,34 @@ components:
         \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
         \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
         \ 1000 && args.approved == false\""
+    ConfirmedEnrollment:
+      properties:
+        recovery_codes:
+          items:
+            type: string
+          type: array
+          title: Recovery Codes
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - recovery_codes
+      - access_token
+      - refresh_token
+      - expires_in
+      title: ConfirmedEnrollment
+      description: Proof of enrollment replaces the now-revoked current token pair.
     ConnectionCreate:
       properties:
         provider:
@@ -35609,6 +35882,20 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    Enrollment:
+      properties:
+        secret:
+          type: string
+          title: Secret
+        otpauth_uri:
+          type: string
+          title: Otpauth Uri
+      type: object
+      required:
+      - secret
+      - otpauth_uri
+      title: Enrollment
+      description: The only response that exposes the pending authenticator secret.
     EnrollmentAppCredential:
       properties:
         app:
@@ -44533,6 +44820,20 @@ components:
 
 
         Offboarding a member leaves these working; admins review or rotate them.'
+    MfaStatus:
+      properties:
+        totp_enabled:
+          type: boolean
+          title: Totp Enabled
+        recovery_codes_remaining:
+          type: integer
+          title: Recovery Codes Remaining
+      type: object
+      required:
+      - totp_enabled
+      - recovery_codes_remaining
+      title: MfaStatus
+      description: Non-sensitive factor state.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -46811,6 +47112,25 @@ components:
       type: object
       title: ProjectUpdate
       description: Model for updating a project.
+    ProofRequest:
+      properties:
+        code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Code
+        recovery_code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Recovery Code
+      type: object
+      title: ProofRequest
+      description: Exactly one authenticator or recovery proof.
     PruneRequest:
       properties:
         older_than_days:
@@ -47394,6 +47714,18 @@ components:
       - unmapped_activity_ids
       title: RecordingSync
       description: Independent mapping for one recording, including unavailable artifacts.
+    RecoveryCodes:
+      properties:
+        recovery_codes:
+          items:
+            type: string
+          type: array
+          title: Recovery Codes
+      type: object
+      required:
+      - recovery_codes
+      title: RecoveryCodes
+      description: New recovery codes, shown once and never returned by status.
     RefreshRequest:
       properties:
         refresh_token:
@@ -53945,6 +54277,28 @@ components:
       - expires_in
       title: Token
       description: Token response model.
+    TokenPair:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: TokenPair
+      description: Session token fields shared with the refresh endpoint.
     ToolApprovalConditionCreate:
       properties:
         name:
@@ -55328,7 +55682,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
@@ -55774,6 +56127,32 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifyRequest:
+      properties:
+        code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Code
+        recovery_code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Recovery Code
+        challenge_token:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Challenge Token
+      type: object
+      required:
+      - challenge_token
+      title: VerifyRequest
+      description: Exchange a short-lived sign-in challenge and one proof.
     WebhookCatalogue:
       properties:
         version:

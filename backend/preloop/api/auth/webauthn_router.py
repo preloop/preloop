@@ -56,7 +56,10 @@ from preloop.api.auth.jwt import (
     create_refresh_token,
     get_current_active_user,
     user_auth_generation,
+    get_current_user,
 )
+from preloop.services.authentication_policy import require_recent_strong_auth
+
 from preloop.models.crud import (
     crud_audit_log,
     crud_person,
@@ -212,12 +215,18 @@ def _issue_challenge_token(
     *,
     auth_generation: int = 0,
     account_id: uuid.UUID | None = None,
+    step_up: bool = False,
+    non_sso_generation: int = 0,
 ) -> str:
     """Sign the ceremony challenge into a short-lived stateless token."""
     return jwt.encode(
         {
             "chal": base64.urlsafe_b64encode(challenge).decode().rstrip("="),
+            "jti": str(uuid.uuid4()),
+            "iat": int(datetime.now(UTC).timestamp()),
             "purpose": purpose,
+            "step_up": step_up,
+            "nsg": non_sso_generation,
             "user_id": user_id,
             "gen": auth_generation,
             "account_id": str(account_id) if account_id else None,
@@ -268,9 +277,10 @@ class RegistrationVerifyRequest(BaseModel):
 
 
 class AuthenticationOptionsRequest(BaseModel):
-    """Optional account destination, signed into the passkey challenge."""
+    """Optional account destination and a session-bound reauthentication flag."""
 
     account_id: uuid.UUID | None = None
+    step_up: bool = False
 
 
 class AuthenticationOptionsResponse(BaseModel):
@@ -286,6 +296,7 @@ class AuthenticationVerifyRequest(BaseModel):
     credential: dict
     challenge_token: str
     account_id: uuid.UUID | None = None
+    step_up: bool = False
 
 
 class PasskeySummary(BaseModel):
@@ -435,15 +446,29 @@ def registration_verify(
     response_model=AuthenticationOptionsResponse,
 )
 def authentication_options(
-    request: Request, body: AuthenticationOptionsRequest | None = None
+    request: Request,
+    body: AuthenticationOptionsRequest | None = None,
+    db: Session = Depends(get_db_session),
 ) -> AuthenticationOptionsResponse:
     """Begin passkey sign-in. Discoverable credentials: no username needed."""
     _require_enabled()
     _check_challenge_rate_limit(request)
 
+    stepping_up = body is not None and body.step_up
+    current = None
+    if stepping_up:
+        from preloop.api.auth.mfa_router import person_session
+
+        token = request.headers.get("authorization", "").partition(" ")[2]
+        current = get_current_user(token=token, db=db, request=request)
+        person_session(request, current)
+        if body.account_id != current.account_id:
+            raise HTTPException(401, "Passkey must target the current account")
     options = generate_authentication_options(
         rp_id=_rp_id(request),
-        user_verification=_user_verification(),
+        user_verification=UserVerificationRequirement.REQUIRED
+        if stepping_up
+        else _user_verification(),
     )
 
     return AuthenticationOptionsResponse(
@@ -451,6 +476,12 @@ def authentication_options(
         challenge_token=_issue_challenge_token(
             options.challenge,
             "authenticate",
+            user_id=str(current.id) if current is not None else "",
+            auth_generation=user_auth_generation(current) if current is not None else 0,
+            non_sso_generation=current.non_sso_auth_generation
+            if current is not None
+            else 0,
+            step_up=stepping_up,
             account_id=body.account_id if body else None,
         ),
     )
@@ -509,6 +540,8 @@ def _authentication_verify(
     _require_enabled()
 
     payload = _read_challenge_token(body.challenge_token, "authenticate")
+    if payload.get("step_up", False) is not body.step_up:
+        raise HTTPException(401, "Passkey challenge purpose changed")
     if payload.get("account_id") != (str(body.account_id) if body.account_id else None):
         raise HTTPException(status_code=400, detail="Passkey account selection changed")
 
@@ -532,7 +565,8 @@ def _authentication_verify(
             expected_origin=_expected_origin(request),
             credential_public_key=base64.urlsafe_b64decode(public_key_padded),
             credential_current_sign_count=cred.sign_count,
-            require_user_verification=_uv_required_for(db, cred.person_id),
+            require_user_verification=body.step_up
+            or _uv_required_for(db, cred.person_id),
         )
     except InvalidAuthenticationResponse as e:
         logger.warning(f"Passkey authentication verification failed: {e}")
@@ -553,6 +587,51 @@ def _authentication_verify(
     from preloop.services.authentication_policy import select_authenticated_membership
 
     user = select_authenticated_membership(db, user, account_id=body.account_id)
+    if body.step_up:
+        from preloop.api.auth.mfa_router import person_session
+
+        token = request.headers.get("authorization", "").partition(" ")[2]
+        current = get_current_user(token=token, db=db, request=request)
+        person_session(request, current)
+        if current.id != user.id:
+            raise HTTPException(401, "Passkey must belong to the current session")
+        from preloop.services import mfa, rate_limit
+
+        user = mfa.locked_user(db, current)
+        from preloop.api.auth.jwt import decode_token, reject_revoked_token
+
+        reject_revoked_token(db, user, decode_token(token))
+        if (
+            payload.get("user_id") != str(user.id)
+            or payload.get("gen") != user_auth_generation(user)
+            or payload.get("nsg") != user.non_sso_auth_generation
+        ):
+            raise HTTPException(401, "Passkey challenge expired")
+        cred = crud_webauthn_credential.lock_active(db, credential_id=credential_id_b64)
+        if cred is None:
+            raise HTTPException(401, "Passkey no longer available")
+        # Consume the signed assertion challenge under the same membership lock
+        # as factor management, including authenticators with a zero counter.
+        jti = payload.get("jti")
+        issued = payload.get("iat")
+        if not isinstance(jti, str) or type(issued) is not int:
+            raise HTTPException(401, "Start a new passkey assertion")
+        if rate_limit.transactional_count(
+            db,
+            rate_limit.AUTH_MFA_CONSUMED,
+            "passkey:" + jti,
+            now=mfa.clock(),
+            started_at=issued,
+        ):
+            raise HTTPException(401, "Passkey challenge already used")
+        rate_limit.transactional_count(
+            db,
+            rate_limit.AUTH_MFA_CONSUMED,
+            "passkey:" + jti,
+            now=mfa.clock(),
+            started_at=issued,
+            increment=True,
+        )
     request.state.auth_audit_user = user
 
     # A passkey is a second way into the same local account, so it obeys the
@@ -565,6 +644,7 @@ def _authentication_verify(
     auth_context = new_authentication(
         db, user, method="passkey", source_ip=get_client_ip(request)
     )
+    auth_context["passkey_uv"] = verification.user_verified is True
 
     crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 
@@ -668,7 +748,11 @@ def list_credentials(
     ]
 
 
-@router.delete("/credentials/{credential_id}", status_code=204)
+@router.delete(
+    "/credentials/{credential_id}",
+    status_code=204,
+    dependencies=[Depends(require_recent_strong_auth(600))],
+)
 def delete_credential(
     credential_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
@@ -710,14 +794,17 @@ def delete_credential(
                 ),
             },
         )
+    from preloop.plugins.account_hooks import get_factor_removal_policy
+
+    policy = get_factor_removal_policy()
+    if policy is not None:
+        policy(db, current_user, "passkey")
     crud_webauthn_credential.deactivate(db, obj=cred)
 
 
 # ---------------------------------------------------------------------------
 # Passkey-only sign-in (authenticated, settings UI)
 # ---------------------------------------------------------------------------
-
-PASSKEY_SESSION_MAX_AGE_SECONDS = 600
 
 
 class PasskeyOnlyStatus(BaseModel):
@@ -752,43 +839,6 @@ def _detail(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
 
 
-def _require_fresh_passkey_session(request: Request, user: User) -> dict:
-    """Return the session's claims if it is a passkey sign-in under 10 minutes old.
-
-    Raises:
-        HTTPException: 403 ``passkey_sign_in_required`` otherwise.
-    """
-    from preloop.api.auth.jwt import decode_token
-    from preloop.services.authentication_policy import request_authentication_context
-
-    try:
-        claims = request_authentication_context(request, user)
-        # A CLI login token (sid) is bound to its cli_session row; reissuing
-        # an unbound console pair from it would escape per-login revocation,
-        # the same reason /auth/refresh refuses sid tokens.
-        bearer = request.headers.get("authorization", "").partition(" ")[2]
-        if decode_token(bearer).sid is not None:
-            claims = {}
-    except HTTPException:
-        claims = {}
-    auth_time = claims.get("auth_time")
-    now = int(datetime.now(UTC).timestamp())
-    if (
-        "passkey" not in claims.get("amr", [])
-        or type(auth_time) is not int
-        or now - auth_time > PASSKEY_SESSION_MAX_AGE_SECONDS
-        or auth_time > now + 60
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=_detail(
-                "passkey_sign_in_required",
-                "Sign in with a passkey in the last 10 minutes to change this setting.",
-            ),
-        )
-    return claims
-
-
 @router.get("/passkey-only", response_model=PasskeyOnlyStatus)
 def get_passkey_only(
     current_user: User = Depends(get_current_active_user),
@@ -810,12 +860,11 @@ def put_passkey_only(
 ) -> PasskeyOnlyUpdateResponse:
     """Turn passkey-only sign-in on or off for the signed-in user.
 
-    Either direction requires the current session to be a passkey sign-in
-    at most 10 minutes old. Enabling ends every other non-SSO session of the
+    Either direction requires strong authentication at most 10 minutes old. Enabling ends every other non-SSO session of the
     user and returns a fresh token pair for this one.
 
     Raises:
-        HTTPException: 403 ``passkey_sign_in_required``; 409
+        HTTPException: 401 ``step_up_required``; 409
             ``user_verification_disabled`` when enabling while
             ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false; 409
             ``no_passkey_registered`` when enabling without a passkey.
@@ -824,7 +873,6 @@ def put_passkey_only(
     from preloop.services.audit.service import AuditActionType
 
     _require_enabled()
-    claims = _require_fresh_passkey_session(request, current_user)
     if body.enabled and not user_verification_required():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -835,6 +883,7 @@ def put_passkey_only(
             ),
         )
 
+    claims = require_recent_strong_auth(600)(request, current_user, db)
     person = require_active_identity(db, current_user, lock=True)
     user = crud_user.lock(db, user_id=current_user.id)
     if user is None:

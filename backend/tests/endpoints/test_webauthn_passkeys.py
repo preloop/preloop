@@ -667,7 +667,20 @@ class TestCredentialManagement:
             "preloop.api.auth.webauthn_router.crud_webauthn_credential"
         ) as mock_crud:
             mock_crud.get.return_value = cred
-            response = client.delete(f"/auth/webauthn/credentials/{cred.id}")
+            from preloop.api.auth.jwt import create_access_token
+
+            token = create_access_token(
+                {"sub": str(authed_user.id)},
+                auth_context={
+                    "amr": ["passkey"],
+                    "passkey_uv": True,
+                    "auth_time": int(datetime.now(timezone.utc).timestamp()),
+                },
+            )
+            response = client.delete(
+                f"/auth/webauthn/credentials/{cred.id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
 
         assert response.status_code == 204
         mock_crud.deactivate.assert_called_once()
@@ -683,7 +696,20 @@ class TestCredentialManagement:
             "preloop.api.auth.webauthn_router.crud_webauthn_credential"
         ) as mock_crud:
             mock_crud.get.return_value = cred
-            response = client.delete(f"/auth/webauthn/credentials/{cred.id}")
+            from preloop.api.auth.jwt import create_access_token
+
+            token = create_access_token(
+                {"sub": str(authed_user.id)},
+                auth_context={
+                    "amr": ["passkey"],
+                    "passkey_uv": True,
+                    "auth_time": int(datetime.now(timezone.utc).timestamp()),
+                },
+            )
+            response = client.delete(
+                f"/auth/webauthn/credentials/{cred.id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
 
         assert response.status_code == 404
         mock_crud.deactivate.assert_not_called()

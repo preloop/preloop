@@ -52,6 +52,12 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
+def no_enrolled_mfa(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing mocked users have no factor; MFA scenarios use PostgreSQL."""
+    monkeypatch.setattr("preloop.models.crud.mfa.factor", lambda db, user_id: None)
+
+
+@pytest.fixture(autouse=True)
 def identity_crud(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
     from tests.auth_identity_support import mock_identity_crud
     from preloop.api.auth.email_verification import reset_resend_rate_limit

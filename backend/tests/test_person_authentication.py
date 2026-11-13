@@ -411,7 +411,7 @@ def test_passkey_signin_survives_origin_membership_removal(
     crud_user.hard_delete(db_session, user_id=child.id)
     monkeypatch.setattr(
         "preloop.api.auth.webauthn_router.verify_authentication_response",
-        lambda **kwargs: SimpleNamespace(new_sign_count=1),
+        lambda **kwargs: SimpleNamespace(new_sign_count=1, user_verified=True),
     )
     req = Request(
         {

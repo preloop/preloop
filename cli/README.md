@@ -805,3 +805,9 @@ See the [Claude Code rollout guide](../docs/guide/clients/claude-code.md#export-
 ## License
 
 Apache License 2.0. See `../LICENSE`.
+
+### Authenticator two-factor sign-in
+
+`preloop auth login` uses browser sign-in, including authenticator or recovery
+codes when enabled. Finish both steps in the browser; no terminal code prompt
+is required. Passkey-only accounts continue to use a passkey.

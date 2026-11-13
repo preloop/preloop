@@ -44,6 +44,8 @@ from preloop.api.auth.email_verification import (
     check_resend_rate_limit,
     enforce_verified_email,
 )
+from preloop.services.authentication_policy import require_account_step_up
+
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     MAX_SESSION_DAYS,
@@ -1750,7 +1752,10 @@ def _require_admin_for_telemetry_scope(
 
 
 @router.post(
-    "/api-keys", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED
+    "/api-keys",
+    response_model=ApiKeyResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_account_step_up("api_key.create"))],
 )
 def create_api_key(
     key_data: ApiKeyCreate,
@@ -2377,7 +2382,11 @@ def update_api_key_governance(
 # operators should use the account-scoped key management endpoints.
 
 
-@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/api-keys/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_account_step_up("api_key.delete"))],
+)
 def delete_api_key(
     key_id: UUID,
     current_user: AuthUserResponse = Depends(get_current_active_user),

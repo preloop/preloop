@@ -82,3 +82,9 @@ graph LR
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |
 | [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance and API diagnostics. |
+
+User authentication includes optional TOTP and hashed recovery codes, with
+single-use challenges and fresh-authentication checks for factor management.
+See [security architecture](docs/architecture/security.md) and the
+[operator guide](docs/operations/mfa.md). Account policy enforcement is an
+edition extension.

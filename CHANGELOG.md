@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- auth: authenticator-app two-factor sign-in, ten single-use recovery codes,
+  browser enrollment and recovery, and an operator reset command. Password,
+  email-link, chat and social authentication require a second step for enrolled
+  users; passkey and SSO authentication remain direct. Fresh strong
+  authentication now protects passkey removal and passkey-only settings, with
+  a shared console step-up dialog and extension hooks for account policies.
+
 ### Fixed
 
 - gateway: an error the upstream model provider produced now says so. A

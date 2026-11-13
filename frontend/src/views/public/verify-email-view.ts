@@ -3,7 +3,8 @@ import { LitElement, html } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
 import { formStyles } from '../../styles/form-styles';
-import { post } from '../../api';
+import { ApiError, post } from '../../api';
+import { setPendingMfaChallenge } from '../../services/mfa';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -54,6 +55,15 @@ export class VerifyEmailView extends LitElement {
       }
       this.isLoading = false;
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === 'mfa_required' &&
+        typeof error.detail?.challenge_token === 'string'
+      ) {
+        setPendingMfaChallenge(error.detail.challenge_token);
+        Router.go('/login');
+        return;
+      }
       this.error = 'Invalid or expired verification token.';
       this.isLoading = false;
       console.error('Email verification failed', error);
