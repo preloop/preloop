@@ -726,8 +726,8 @@ exists, its directory does not exist, or you cannot create files in that
 directory (for example `/private` on macOS, which belongs to the system).
 
 `PRINCIPAL_ID` is the identity's `id`; `KEY_ID` is the `id` of one of its
-keys. `create`, `issue` and `rotate` print both (`identity.id` and `key_id`),
-and `preloop ci show PRINCIPAL_ID` lists the identity's `keys` with their ids.
+keys. `create` prints both as `identity.id` and `key_id`; `issue` and
+`rotate` print them as `principal_id` and `key_id`; and `preloop ci show PRINCIPAL_ID` lists the identity's `keys` with their ids.
 `rotate` and `revoke` need both ids: an identity can hold more than one key,
 so the CLI does not guess which one you mean.
 

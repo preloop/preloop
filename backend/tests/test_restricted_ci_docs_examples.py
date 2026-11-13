@@ -11,7 +11,7 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import BaseModel, TypeAdapter
@@ -84,10 +84,32 @@ def _fill(value: Any, key: str = "") -> Any:
     return value
 
 
-def _unknown_keys(model: Any, data: dict[str, Any]) -> set[str]:
-    if isinstance(model, type) and issubclass(model, BaseModel):
-        return set(data) - set(model.model_fields)
-    return set()
+def _models_in(annotation: Any) -> list[type[BaseModel]]:
+    """Pydantic models inside an annotation such as ``Optional[List[M]]``."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+    found: list[type[BaseModel]] = []
+    for arg in get_args(annotation):
+        found.extend(_models_in(arg))
+    return found
+
+
+def _unknown_keys(model: Any, data: Any, path: str = "") -> set[str]:
+    """Keys the model would silently drop, at any depth of nested models."""
+    if not (isinstance(model, type) and issubclass(model, BaseModel)):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    unknown = {f"{path}{key}" for key in data if key not in model.model_fields}
+    for key, value in data.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            continue
+        items = value if isinstance(value, list) else [value]
+        for nested in _models_in(field.annotation):
+            for item in items:
+                unknown |= _unknown_keys(nested, item, f"{path}{key}.")
+    return unknown
 
 
 def _parse(body: str) -> Any:
@@ -111,7 +133,7 @@ def test_documented_json_is_accepted(name: str, kind: str, body: str) -> None:
     filled = _fill(data)
     # FlowCreate ignores unknown keys; a misspelt key would silently do
     # nothing, so the example must use real field names only.
-    assert not _unknown_keys(model, filled), name
+    assert not _unknown_keys(model, filled), (name, _unknown_keys(model, filled))
     TypeAdapter(model).validate_python(filled)
     if kind == "flow-create":
         # Without a model the flow silently uses the account default.
@@ -122,3 +144,8 @@ def test_guides_have_complete_flow_creation_examples() -> None:
     kinds = [kind for _name, kind, _body in EXAMPLES]
     assert kinds.count("flow-create") >= 3
     assert "ci-preview" in kinds and "ci-subscribe" in kinds
+
+
+def test_nested_typo_is_caught() -> None:
+    data = {"git_clone_config": {"enabled": True, "publication_mod": "read_only"}}
+    assert _unknown_keys(FlowUpdate, data) == {"git_clone_config.publication_mod"}
