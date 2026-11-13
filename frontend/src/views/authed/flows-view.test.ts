@@ -560,6 +560,39 @@ describe('FlowsView', () => {
     expect(flowCards?.length).to.equal(1);
   });
 
+  it('flags a flow whose model was deleted in both list and card views', async () => {
+    const mockFlows = [
+      {
+        id: 'flow-1',
+        name: 'Orphaned Flow',
+        model_health: {
+          status: 'missing',
+          code: 'model_deleted',
+          model_id: 'm-1',
+        },
+      },
+    ];
+    for (const mode of ['list', 'cards']) {
+      localStorage.setItem('preloop.flows.view_mode', mode);
+      fetchStub?.restore();
+      fetchStub = createFetchStub(mockFlows, []);
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () =>
+          element.shadowRoot?.querySelector(
+            '[data-testid="flow-model-health"]'
+          ),
+        `marker missing in ${mode} view`
+      );
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="flow-model-health"]')!
+          .textContent
+      ).to.contain('Model deleted');
+    }
+  });
+
   it('does not fetch presets on initial load when flows already exist', async () => {
     const mockFlows = [
       { id: 'flow-1', name: 'Test Flow', description: 'A test flow' },

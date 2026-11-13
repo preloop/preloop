@@ -13623,6 +13623,12 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '409':
+          description: Flows still select the model; pass force=true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelInUseDetail'
         '422':
           description: Validation Error
           content:
@@ -26253,6 +26259,33 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelInUseDetail:
+      properties:
+        code:
+          type: string
+          const: model_in_use
+          title: Code
+          default: model_in_use
+        message:
+          type: string
+          title: Message
+        flow_count:
+          type: integer
+          title: Flow Count
+          description: All flows of the account that select the model, visible or
+            not
+        flows:
+          items:
+            $ref: '#/components/schemas/AIModelFlowLink'
+          type: array
+          title: Flows
+          description: The flows the caller can see
+      type: object
+      required:
+      - message
+      - flow_count
+      title: AIModelInUseDetail
+      description: Body of the 409 a delete returns while flows still select the model.
     AIModelOverviewItem:
       properties:
         ai_model_id:
@@ -55750,6 +55783,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

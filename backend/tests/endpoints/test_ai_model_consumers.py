@@ -379,3 +379,82 @@ async def test_flow_summaries_mark_a_rejected_model(
     assert health[str(fine.id)].status == "ok"
     assert health[str(none.id)] is None
     assert str(uuid4()) not in health
+
+
+def test_flow_lists_read_model_health_without_a_query_per_secret(
+    db_session: Session, ci_resources: Any
+) -> None:
+    """Both list paths join the secret columns health needs, nothing more."""
+    from sqlalchemy import event
+
+    owner, _, _, _ = ci_resources
+    for index in range(3):
+        secret = _secret(db_session, owner.account_id)
+        model = _model(db_session, owner.account_id, f"Paged {index}", secret.id)
+        _flow(db_session, owner.account_id, f"Paged flow {index}", model)
+    db_session.expire_all()
+    statements: list[str] = []
+
+    def record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    for lightweight in (False, True):
+        rows = crud.crud_flow.get_multi(
+            db_session, account_id=str(owner.account_id), lightweight=lightweight
+        )
+        assert rows
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            health = [row.model_health for row in rows]
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert statements == [], statements
+        assert sum(1 for item in health if item and item["status"] == "ok") == 3
+        db_session.expire_all()
+    rows = crud.crud_flow.get_multi(
+        db_session, account_id=str(owner.account_id), lightweight=True
+    )
+    secret = next(r for r in rows if r.ai_model).ai_model.credentials_secret
+    loaded = {attr.key for attr in inspect_loaded(secret)}
+    assert {"status", "meta_data"} <= loaded
+    assert "encrypted_value" not in loaded
+
+
+def inspect_loaded(obj: Any) -> list[Any]:
+    """Attributes the identity map holds a loaded value for."""
+    from sqlalchemy import inspect
+
+    state = inspect(obj)
+    return [attr for attr in state.attrs if attr.key not in state.unloaded]
+
+
+@pytest.mark.asyncio
+async def test_delete_check_reads_every_matching_flow(
+    db_session: Session, ci_resources: Any
+) -> None:
+    """The refusal and the forced delete cover all flows, never a page."""
+    owner, _, _, _ = ci_resources
+    model = _model(db_session, owner.account_id, "Many users")
+    for index in range(4):
+        _flow(db_session, owner.account_id, f"User {index}", model)
+    original = crud.crud_flow.list_configured_for_model
+
+    def capped(*args: Any, **kwargs: Any) -> Any:
+        # Stand in for a production cap smaller than the account's flows.
+        if kwargs.get("limit", 5001) is not None:
+            kwargs["limit"] = 2
+        return original(*args, **kwargs)
+
+    with patch.object(crud.crud_flow, "list_configured_for_model", capped):
+        with pytest.raises(HTTPException) as exc:
+            await _delete(db_session, model, owner)
+        assert exc.value.detail["flow_count"] == 4
+        with patch("preloop.utils.audit._get_audit_service") as service:
+            await _delete(db_session, model, owner, force=True)
+    deleted = [
+        call.kwargs
+        for call in service.return_value.log_configuration_change.call_args_list
+        if call.kwargs.get("action") == "deleted"
+    ]
+    assert len(deleted[0]["old_value"]["orphaned_flows"]) == 4

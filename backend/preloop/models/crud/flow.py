@@ -51,26 +51,35 @@ class CRUDFlow(CRUDBase[models.Flow]):
         super().__init__(model=models.Flow)
 
     def list_configured_for_model(
-        self, db: Session, *, account_id: str, model_id: str, limit: int = 5001
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        model_id: str,
+        limit: Optional[int] = 5001,
+        with_agent_config: bool = False,
     ) -> List[models.Flow]:
         """Find saved default, label-routing and enabled retry model selections.
 
         Match only supported configuration fields, never arbitrary JSON strings
         or historical execution snapshots. Disabled flows retain configuration.
+        ``limit=None`` returns every match (the delete check needs all of
+        them); ``with_agent_config`` loads the configuration in the same query.
         """
         config = cast(self.model.agent_config, JSONB)
         model_ref = {"ai_model_id": model_id}
-        return (
+        columns = [
+            self.model.id,
+            self.model.name,
+            self.model.account_id,
+            self.model.ai_model_id,
+            self.model.is_enabled,
+        ]
+        if with_agent_config:
+            columns.append(self.model.agent_config)
+        query = (
             db.query(self.model)
-            .options(
-                load_only(
-                    self.model.id,
-                    self.model.name,
-                    self.model.account_id,
-                    self.model.ai_model_id,
-                    self.model.is_enabled,
-                )
-            )
+            .options(load_only(*columns))
             .filter(
                 self.model.account_id == account_id,
                 or_(
@@ -83,9 +92,10 @@ class CRUDFlow(CRUDBase[models.Flow]):
                 ),
             )
             .order_by(self.model.name.asc(), self.model.id.asc())
-            .limit(limit)
-            .all()
         )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
     def mark_model_orphaned(
         self, db: Session, *, flows: List[models.Flow], model: models.AIModel
@@ -112,9 +122,25 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db.add(flow)
         db.flush()
 
+    @staticmethod
+    def _health_secret_option() -> Any:
+        """Join only the secret columns ``Flow.model_health`` reads."""
+        return joinedload(models.AIModel.credentials_secret).load_only(
+            models.SecretReference.id,
+            models.SecretReference.status,
+            models.SecretReference.meta_data,
+            raiseload=True,
+        )
+
     def _query_with_ai_model(self, db: Session) -> Query:
-        """List queries that serialize ``ai_model_name`` join the model."""
-        return db.query(self.model).options(joinedload(self.model.ai_model))
+        """List queries that serialize ``ai_model_name`` and ``model_health``.
+
+        Join the model and the credential columns its health reads, so a page
+        of flows does not load one secret per model.
+        """
+        return db.query(self.model).options(
+            joinedload(self.model.ai_model).options(self._health_secret_option())
+        )
 
     def get(
         self,
@@ -202,7 +228,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     raiseload=True,
                 )
                 # model_health reads the credential state from the secret.
-                .joinedload(models.AIModel.credentials_secret),
+                .options(self._health_secret_option()),
             )
         if account_id and hasattr(self.model, "account_id"):
             shared_ids: list[Any] = []

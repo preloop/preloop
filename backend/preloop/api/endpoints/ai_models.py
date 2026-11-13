@@ -1075,6 +1075,12 @@ def set_ai_model_owner_flow_use(
     "/ai-models/{model_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete AI Model",
+    responses={
+        409: {
+            "model": AIModelInUseDetail,
+            "description": "Flows still select the model; pass force=true",
+        }
+    },
     tags=["AI Models"],
 )
 @require_permission("delete_ai_models")
@@ -1106,8 +1112,14 @@ def delete_ai_model(
     ensure_permission_in_oss(db, current_user, "delete_ai_models")
     model = _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
     consumers = list(
+        # Every match, not a page: a forced delete must mark and audit each
+        # flow that loses its model.
         crud_flow.list_configured_for_model(
-            db, account_id=str(current_user.account_id), model_id=str(model_id)
+            db,
+            account_id=str(current_user.account_id),
+            model_id=str(model_id),
+            limit=None,
+            with_agent_config=True,
         )
     )
     if consumers and not force:
