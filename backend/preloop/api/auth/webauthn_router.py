@@ -318,13 +318,13 @@ def _registration_session(request: Request, user: User, db: Session) -> User:
     from preloop.api.auth.mfa_router import person_session, _lock_session
     from preloop.models.crud import mfa as crud_mfa
     from preloop.services.authentication_policy import check_recent_strong_auth
-    from preloop.services.mfa import clock
+    from preloop.services.mfa import clock, enabled as totp_enabled
 
     person_session(request, user)
     user, context = _lock_session(db, user, request)
-    if crud_mfa.enabled(db, user.id) or crud_webauthn_credential.list_for_person(
-        db, person_id=user.person_id
-    ):
+    if (
+        totp_enabled() and crud_mfa.enabled(db, user.id)
+    ) or crud_webauthn_credential.list_for_person(db, person_id=user.person_id):
         check_recent_strong_auth(db, user, context, 600)
     else:
         # First-factor bootstrap must remain reachable without a strong factor.

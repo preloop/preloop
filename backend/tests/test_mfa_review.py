@@ -207,6 +207,55 @@ def test_first_passkey_registration_with_fresh_password(
     )
 
 
+def test_emergency_totp_disable_allows_fresh_passkey_bootstrap(
+    api: TestClient,
+    db_session: Session,
+    now: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=emergency downgrade permits a fresh login to add a first passkey;
+    fails_when=disabled TOTP deadlocks setup or stale password bypasses proof;
+    no_claim=software attestation replaces physical authenticator hardware."""
+    import base64
+    from tests.endpoints.passkey_crafting import Authenticator
+
+    user, _, _ = enroll(api, db_session, now)
+    monkeypatch.setenv("MFA_TOTP_ENABLED", "false")
+    old = _access(user, ["password"], auth_time=int(now[0]) - 660)
+    refused = api.post("/api/v1/auth/webauthn/register/options", headers=_bearer(old))
+    assert refused.status_code == 401
+    assert refused.json()["detail"] == {
+        "code": "step_up_required",
+        "methods": ["login"],
+    }
+    login = api.post(
+        "/api/v1/auth/token/json",
+        json={"username": user.email, "password": PASSWORD},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    assert decode_token(token).claims["amr"] == ["password"]
+    headers = _bearer(token)
+    response = api.post("/api/v1/auth/webauthn/register/options", headers=headers)
+    assert response.status_code == 200, response.text
+    started = response.json()
+    proof = Authenticator().register(
+        base64.urlsafe_b64decode(started["options"]["challenge"] + "=="),
+        user_verified=True,
+    )
+    result = api.post(
+        "/api/v1/auth/webauthn/register/verify",
+        headers=headers,
+        json={"credential": proof, "challenge_token": started["challenge_token"]},
+    )
+    assert result.status_code == 200, result.text
+    existing_factor = api.post(
+        "/api/v1/auth/webauthn/register/options", headers=headers
+    )
+    assert existing_factor.status_code == 401
+    assert existing_factor.json()["detail"]["methods"] == ["passkey"]
+
+
 @pytest.mark.parametrize(
     "method,purpose", [("password", "exchange"), ("chat", "login")]
 )
