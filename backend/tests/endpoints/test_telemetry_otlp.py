@@ -1435,3 +1435,70 @@ def test_ingested_rows_expire_cached_cost_reads(
     assert _post(client, LOGS, token, _logs_request(_api_request())).status_code == 200
     assert _otlp_rows(db_session, test_user.account_id)
     assert revision() == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Shared rate limiter (rule telemetry.otlp_ingest)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _frozen_limiter_clock(monkeypatch):
+    """Pin the shared limiter mid-window so a slow run cannot roll it over."""
+    from preloop.services import rate_limit
+
+    monkeypatch.setattr(rate_limit, "_clock", lambda: 1_800_000_030.0)
+
+
+def test_ingest_limit_keeps_the_otlp_envelope(
+    client, ingest_key, monkeypatch, _frozen_limiter_clock
+):
+    # OTLP exporters parse a google.rpc.Status body, so the refusal keeps that
+    # envelope and the Retry-After header rather than the generic 429 body.
+    _, token = ingest_key
+    monkeypatch.setattr(telemetry_otlp, "RATE_LIMIT_PER_MINUTE", 1)
+    assert _post(client, LOGS, token, _logs_request()).status_code == 200
+    response = _post(client, LOGS, token, _logs_request())
+    assert response.status_code == 429
+    assert response.json() == {"code": 429, "message": "Rate limit exceeded"}
+    assert response.headers["Retry-After"] == "31"
+
+
+def test_ingest_limit_is_per_key(
+    client, db_session, test_user, ingest_key, monkeypatch, _frozen_limiter_clock
+):
+    _, first = ingest_key
+    _, second = _key(db_session, test_user, [TELEMETRY_INGEST_SCOPE], name="second")
+    monkeypatch.setattr(telemetry_otlp, "RATE_LIMIT_PER_MINUTE", 1)
+    assert _post(client, LOGS, first, _logs_request()).status_code == 200
+    assert _post(client, LOGS, first, _logs_request()).status_code == 429
+    assert _post(client, LOGS, second, _logs_request()).status_code == 200
+
+
+def test_ingest_limit_env_names_still_apply(monkeypatch, _frozen_limiter_clock):
+    # The documented default and PRELOOP_OTLP_INGEST_RATE_LIMIT stay in force;
+    # the generic RATE_LIMIT_TELEMETRY_OTLP_INGEST override wins when set.
+    from preloop.services import rate_limit
+
+    assert telemetry_otlp.RATE_LIMIT_PER_MINUTE == 600
+    assert rate_limit.TELEMETRY_OTLP_INGEST.effective((600, 60)) == (600, 60)
+    monkeypatch.setenv("RATE_LIMIT_TELEMETRY_OTLP_INGEST", "1/60")
+    assert telemetry_otlp._rate_limited("key-a") is None
+    assert telemetry_otlp._rate_limited("key-a") == 31
+
+
+def test_ingest_limit_hit_increments_metric(monkeypatch, _frozen_limiter_clock):
+    from unittest.mock import patch
+
+    from preloop.services import rate_limit
+
+    monkeypatch.setattr(telemetry_otlp, "RATE_LIMIT_PER_MINUTE", 1)
+    calls: list[tuple[str, str]] = []
+    with patch.object(
+        rate_limit,
+        "_count",
+        side_effect=lambda name, _desc, rule: calls.append((name, rule.name)),
+    ):
+        telemetry_otlp._rate_limited("key-m")
+        assert telemetry_otlp._rate_limited("key-m") is not None
+    assert calls == [("preloop_rate_limit_hits_total", "telemetry.otlp_ingest")]

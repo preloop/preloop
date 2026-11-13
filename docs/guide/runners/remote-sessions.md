@@ -467,8 +467,44 @@ Set in `~/.preloop/runner.json`:
 
 The server may ask for a shorter idle timeout for one session, never a longer
 one. The runner reports each session's effective idle timeout, and the server
-adopts the host's lower value for its offline sweep, so a session whose runner
-disappears ends with `runner_offline` after the same limit the host applies.
+adopts the host's lower value. The same value is the resume window when the
+runner goes away (see [When the laptop sleeps](#when-the-laptop-sleeps)).
+
+## When the laptop sleeps
+
+When the runner hosting a started session (`idle` or `running`) goes
+`asleep` (it sent `going_to_sleep`) or `offline` (no heartbeat and no sleep
+signal; this is what a lid close looks like on macOS and Windows), the
+session moves to `runner_away`:
+
+- It keeps its slot. A turn sent now is accepted and held on the server; it
+  goes to the runner when it reconnects. A turn that was running stays as it
+  was.
+- Pending approvals stay open. The agent that would act on a decision is on
+  the sleeping machine, so nothing runs until it wakes.
+- The resume window is the session's idle timeout (30 minutes by default,
+  or the host's lower value), counted from when the runner went away: the
+  sleep signal, or the last heartbeat.
+- If the runner reconnects inside the window, the session resumes in the
+  same harness session (per-turn adapters resume by session id), the held
+  turn is delivered, and the audit log records `runner_session.resumed`.
+- After the window the session ends with `runner_away_timeout`, the audit
+  log records `runner_session.ended` with that reason, and whoever started
+  the session gets a notice in the console.
+
+What clients read while the session is away:
+
+| Where | What it says |
+|---|---|
+| `GET /api/v1/runners/{runner_id}/sessions` | `state: "runner_away"`, `runner_presence` (`asleep` or `offline`), `away_since`, `resume_until` |
+| `GET /api/v1/runtime-sessions/{id}/control` | `mode: "command"`, `reason_code: "runner_away"`, a readable `reason`; a typed line is sent as a held turn |
+| `runtime_session_updated` live event | `status: "runner_away"` with `metadata.presence`, `away_since` and `resume_until`; `status: "resumed"` when it is back |
+
+The console shows "Your laptop is asleep or offline" above the message box.
+The mobile apps can use the same fields. A session the runner had not
+confirmed yet (`requested`, `starting`) or one that is `stopping` does not go
+`runner_away`; it ends with `runner_offline` once the runner is offline past
+the idle timeout.
 
 ## What the host user sees
 
@@ -496,8 +532,10 @@ session.
   runner stopped is reported as failed with `runner_restarted`, and the result
   of the last finished turn is sent again on every reconnect, so a result lost
   in transit never leaves the session waiting.
-- **Runner offline**: if the runner stays offline past the idle timeout, the
-  server ends the session with `runner_offline`.
+- **Runner asleep or offline**: a started session waits as `runner_away`
+  and ends with `runner_away_timeout` if the runner does not come back
+  within the resume window ([When the laptop sleeps](#when-the-laptop-sleeps)).
+  A session that never started ends with `runner_offline`.
 - **Account kill switch**: halting flows or tools ends every live session with
   `killed_by_kill_switch` and refuses new ones.
 

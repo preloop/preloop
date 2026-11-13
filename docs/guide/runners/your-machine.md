@@ -106,13 +106,37 @@ requirement. Codex, OpenCode and DeepSeek native flows need a hand-written
 profile. See
 [Host execution profiles](quickstart-linux.md#host-execution-profiles-advanced-override-private-only).
 
-When no eligible runner is available, the flow's `harness_fallback` decides:
+When no eligible runner is available, the flow's `harness_fallback` decides
+(a flow pinned to a runner that is asleep or offline follows its
+`offline_policy` first, see below):
 `queue` (default, wait up to `harness_queue_timeout_seconds`, then fail with
 `queue_timeout`), `fallback_server` (run on hosted compute with
 `fallback_model_identifier`, metered by the gateway) or `fail`. The routing
 reasons shown on the execution are listed in
 [Copilot CLI: when no runner is eligible](../copilot-cli.md#when-no-runner-is-eligible).
 Model selection rules for flows are in [Model routing](../flows/model-routing.md).
+
+### When the pinned runner is asleep or offline
+
+A harness flow that pins a runner (`agent_config.runner_id`) follows its
+`agent_config.offline_policy` when that runner is `asleep` (it sent
+`going_to_sleep` before it went quiet) or `offline` (heartbeats stopped
+without a sleep signal; on macOS and Windows a closed lid shows as
+`offline`):
+
+- `fail` (default): the run fails in the same routing cycle with the
+  routing reason `runner_asleep` or `runner_offline`.
+- `reroute`: the run goes to another runner the flow's author may use for
+  flows, with the same harness, model and billing (a seat run never moves
+  to a gateway-metered path), never to the pinned runner itself. When no
+  such runner can take it right now, the run fails with the same reason.
+  `harness_fallback: fallback_server` still applies when no reroute
+  candidate exists, because that is an explicit opt-in to hosted compute.
+
+`queue` (wait for the runner to wake) is not available yet and is refused
+when the flow is saved. Either way the execution timeline gets an entry
+naming the policy that fired. A continuation bound to its host's local
+workspace keeps waiting for that host instead, since its state is there.
 
 ## Bring your own seat, and how runs are labelled
 
@@ -210,11 +234,14 @@ sessions (the default), and set flow execution consent to `ask_me` or `never`.
 
 The runner shows as `asleep` or `offline` and gets no new work. A flow routed
 by harness follows its `harness_fallback`: it waits (`queue`), runs on hosted
-compute (`fallback_server`) or fails (`fail`). Live remote sessions are kept
-on disk; if the runner comes back within the idle timeout the next turn resumes
-the same session, otherwise the server ends it with `runner_offline`. Turns are
-not queued for an offline runner. Temporary checkouts are cleaned up on the
-runner's next start.
+compute (`fallback_server`) or fails (`fail`). A flow pinned to this runner
+follows its `offline_policy` instead (see above). Live remote sessions show
+as `runner_away` and are kept on disk; a turn sent meanwhile is held, and if
+the runner comes back within the idle timeout the session resumes and the
+held turn runs in the same harness session. Otherwise the server ends it with
+`runner_away_timeout` and tells whoever started it. See
+[When the laptop sleeps](remote-sessions.md#when-the-laptop-sleeps).
+Temporary checkouts are cleaned up on the runner's next start.
 
 ### How do I turn off remote sessions?
 

@@ -238,6 +238,10 @@ class AuditActionType:
     # Authentication and enterprise identity lifecycle events
     AUTH_LOGIN_SUCCEEDED = "auth.login.succeeded"
     AUTH_LOGIN_FAILED = "auth.login.failed"
+    PASSKEY_ONLY_ENABLED = "auth.passkey_only.enabled"
+    PASSKEY_ONLY_DISABLED = "auth.passkey_only.disabled"
+    PASSKEY_ONLY_LOGIN_REFUSED = "auth.passkey_only.login_refused"
+    PASSKEY_ONLY_RESET = "auth.passkey_only.reset"
     SSO_LOGIN_SUCCEEDED = "sso.login.succeeded"
     SSO_LOGIN_FAILED = "sso.login.failed"
     SSO_JIT_PROVISIONED = "sso.jit.provisioned"

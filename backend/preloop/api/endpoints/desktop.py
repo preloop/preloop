@@ -1635,69 +1635,77 @@ async def desktop_viewer_socket(websocket: WebSocket, view_id: str) -> None:
     if info is None:
         await _close(websocket, code)
         return
-    view_pk = info["view_pk"]
-    bus = await broker.get_desktop_bus()
-    mode = {"mode": info["mode"], "until": info["control_expires_at"]}
-    peer_closed: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    from preloop.services.websocket_manager import manager
 
-    async def to_viewer(data: bytes) -> None:
-        await websocket.send_bytes(data)
+    revocation_id = manager.watch_user_connection(websocket, user, token)
+    try:
+        view_pk = info["view_pk"]
+        bus = await broker.get_desktop_bus()
+        mode = {"mode": info["mode"], "until": info["control_expires_at"]}
+        peer_closed: asyncio.Future[int] = asyncio.get_running_loop().create_future()
 
-    async def on_ctl(raw: bytes) -> None:
-        message = json.loads(raw)
-        if message.get("type") == "mode":
-            until = message.get("control_expires_at")
-            mode["mode"] = message.get("mode", "view_only")
-            mode["until"] = datetime.fromisoformat(until.rstrip("Z")) if until else None
-        elif message.get("type") == "close" and not peer_closed.done():
-            peer_closed.set_result(int(message.get("code", broker.CLOSE_NORMAL)))
+        async def to_viewer(data: bytes) -> None:
+            await websocket.send_bytes(data)
 
-    unsub_ctl = await bus.subscribe(broker.view_subject(view_pk, "ctl"), on_ctl)
-    unsub_bytes = await bus.subscribe(
-        broker.view_subject(view_pk, "to_viewer"), to_viewer
-    )
-    if not await _run_db(
-        lambda db: crud_desktop.attach_viewer(db, view_id=view_pk, now=_now())
-    ):
-        await unsub_ctl()
-        await unsub_bytes()
-        await _close(websocket, broker.CLOSE_VIEWER_BUSY, "viewer already attached")
-        return
-    await broker.publish_json(
-        bus, broker.view_subject(view_pk, "ctl"), {"type": "viewer_attached"}
-    )
-    rfb_filter = broker.RfbClientFilter()
-
-    def input_allowed() -> bool:
-        if mode["mode"] != "control":
-            return False
-        until = mode["until"]
-        return until is None or _now() < until
-
-    async def pump() -> str:
-        subject = broker.view_subject(view_pk, "to_endpoint")
-        while True:
-            try:
-                message = await asyncio.wait_for(
-                    websocket.receive(), timeout=broker.VIEWER_IDLE_SECONDS
+        async def on_ctl(raw: bytes) -> None:
+            message = json.loads(raw)
+            if message.get("type") == "mode":
+                until = message.get("control_expires_at")
+                mode["mode"] = message.get("mode", "view_only")
+                mode["until"] = (
+                    datetime.fromisoformat(until.rstrip("Z")) if until else None
                 )
-            except asyncio.TimeoutError:
-                return "idle"
-            if message["type"] == "websocket.disconnect":
-                return "viewer_disconnected"
-            data = message.get("bytes")
-            if data is None or len(data) > broker.MAX_FRAME_BYTES:
-                raise broker.RfbProtocolError("binary frames up to 1 MiB only")
-            forward = rfb_filter.feed(data, allow_input=input_allowed())
-            if forward:
-                await broker.publish_bytes(bus, subject, forward)
+            elif message.get("type") == "close" and not peer_closed.done():
+                peer_closed.set_result(int(message.get("code", broker.CLOSE_NORMAL)))
 
-    await _run_legs(
-        websocket,
-        view_pk,
-        info["expires_at"],
-        pump(),
-        peer_closed,
-        (unsub_ctl, unsub_bytes),
-        error_reason="viewer_disconnected",
-    )
+        unsub_ctl = await bus.subscribe(broker.view_subject(view_pk, "ctl"), on_ctl)
+        unsub_bytes = await bus.subscribe(
+            broker.view_subject(view_pk, "to_viewer"), to_viewer
+        )
+        if not await _run_db(
+            lambda db: crud_desktop.attach_viewer(db, view_id=view_pk, now=_now())
+        ):
+            await unsub_ctl()
+            await unsub_bytes()
+            await _close(websocket, broker.CLOSE_VIEWER_BUSY, "viewer already attached")
+            return
+        await broker.publish_json(
+            bus, broker.view_subject(view_pk, "ctl"), {"type": "viewer_attached"}
+        )
+        rfb_filter = broker.RfbClientFilter()
+
+        def input_allowed() -> bool:
+            if mode["mode"] != "control":
+                return False
+            until = mode["until"]
+            return until is None or _now() < until
+
+        async def pump() -> str:
+            subject = broker.view_subject(view_pk, "to_endpoint")
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        websocket.receive(), timeout=broker.VIEWER_IDLE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    return "idle"
+                if message["type"] == "websocket.disconnect":
+                    return "viewer_disconnected"
+                data = message.get("bytes")
+                if data is None or len(data) > broker.MAX_FRAME_BYTES:
+                    raise broker.RfbProtocolError("binary frames up to 1 MiB only")
+                forward = rfb_filter.feed(data, allow_input=input_allowed())
+                if forward:
+                    await broker.publish_bytes(bus, subject, forward)
+
+        await _run_legs(
+            websocket,
+            view_pk,
+            info["expires_at"],
+            pump(),
+            peer_closed,
+            (unsub_ctl, unsub_bytes),
+            error_reason="viewer_disconnected",
+        )
+    finally:
+        await manager.unwatch_user_connection(revocation_id)

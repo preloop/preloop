@@ -21,9 +21,17 @@ INDEXES = {
 }
 
 
-def _load_migration():
+#: Later migrations that add columns to the table; applied after the base
+#: one so the result matches the current model.
+FOLLOW_UPS = (
+    Path(__file__).resolve().parents[2]
+    / "preloop/models/alembic/versions/20261206_session_away_since.py",
+)
+
+
+def _load_migration(path: Path = MIGRATION_PATH):
     spec = importlib.util.spec_from_file_location(
-        "runner_remote_sessions_migration", MIGRATION_PATH
+        f"runner_remote_sessions_migration_{path.stem}", path
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -37,6 +45,8 @@ def test_downgrade_then_upgrade_matches_the_model(db_session):
         migration.downgrade()
         assert "runner_remote_sessions" not in inspect(connection).get_table_names()
         migration.upgrade()
+        for follow_up in FOLLOW_UPS:
+            _load_migration(follow_up).upgrade()
 
     inspector = inspect(connection)
     columns = {c["name"] for c in inspector.get_columns("runner_remote_sessions")}

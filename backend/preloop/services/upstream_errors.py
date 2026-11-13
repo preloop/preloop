@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from urllib import error as urllib_error
 
 # ---------------------------------------------------------------------------
@@ -621,6 +621,45 @@ def is_retryable_upstream_failure(exc: Exception) -> bool:
         return False
 
     return _contains(text, _RETRYABLE_MARKERS)
+
+
+# Explicit upstream HTTP rejections the Anthropic OAuth passthrough retries.
+# Deliberately narrower than ``_RETRYABLE_STATUS_CODES``: the passthrough only
+# replays a request the provider refused before doing any work.
+_PASSTHROUGH_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504, 529})
+
+
+def is_retryable_passthrough_rejection(
+    exc: Exception, headers: Optional[Any] = None
+) -> bool:
+    """Whether a passthrough upstream HTTP rejection may be retried.
+
+    Only explicit 502/503/504/529 responses qualify, and only when the shared
+    classifier considers them transient. A terminal classification or a
+    provider ``x-should-retry: false`` vetoes the retry; a ``true`` hint never
+    broadens the status allowlist.
+
+    Args:
+        exc: Carrier exposing the upstream ``status_code``, ``message`` and
+            ``error_type`` of the rejection.
+        headers: Upstream response headers, when available.
+
+    Returns:
+        True when another bounded attempt is allowed.
+    """
+    if _status_code(exc) not in _PASSTHROUGH_RETRYABLE_STATUS_CODES:
+        return False
+    if headers is not None:
+        try:
+            should_retry = headers.get("x-should-retry")
+        except Exception:  # noqa: BLE001 - headers object may be anything
+            should_retry = None
+        if str(should_retry or "").strip().lower() == "false":
+            return False
+    classified = classify_upstream_error(exc)
+    if classified is not None and classified.terminal:
+        return False
+    return is_retryable_upstream_failure(exc)
 
 
 def classify_recorded_error(

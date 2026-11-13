@@ -1359,7 +1359,12 @@ paths:
       - Auth
       - Passkeys
       summary: Delete Credential
-      description: Remove one of the signed-in user's passkeys.
+      description: "Remove one of the signed-in user's passkeys.\n\nThe person row\
+        \ and this membership row are locked first, in the same\norder as enabling\
+        \ passkey-only, so a concurrent enable and a delete of\nthe last passkey cannot\
+        \ both succeed.\n\nRaises:\n    HTTPException: 404 when the passkey is not\
+        \ the caller's; 409\n        ``last_passkey_required`` when a membership of\
+        \ this person\n        requires a passkey and this is the last one."
       operationId: delete_credential_api_v1_auth_webauthn_credentials__credential_id__delete
       security:
       - OAuth2PasswordBearer: []
@@ -1386,6 +1391,71 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/auth/webauthn/passkey-only:
+    get:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Get Passkey Only
+      description: Report whether the signed-in user requires a passkey to sign in.
+      operationId: get_passkey_only_api_v1_auth_webauthn_passkey_only_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyOnlyStatus'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Put Passkey Only
+      description: "Turn passkey-only sign-in on or off for the signed-in user.\n\n\
+        Either direction requires the current session to be a passkey sign-in\nat\
+        \ most 10 minutes old. Enabling ends every other non-SSO session of the\n\
+        user and returns a fresh token pair for this one.\n\nRaises:\n    HTTPException:\
+        \ 403 ``passkey_sign_in_required``; 409\n        ``user_verification_disabled``\
+        \ when enabling while\n        ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false;\
+        \ 409\n        ``no_passkey_registered`` when enabling without a passkey."
+      operationId: put_passkey_only_api_v1_auth_webauthn_passkey_only_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyOnlyUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyOnlyUpdateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
       x-restricted-ci: deny
   /api/v1/agents/enrollment/authorities:
     post:
@@ -24529,6 +24599,52 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/users/{user_id}/sessions/revoke-all:
+    post:
+      tags:
+      - Users
+      summary: Revoke Member Sessions
+      description: 'Sign a member out of this account without changing other memberships.
+
+
+        JWT generations, CLI session revocation and the audit record commit
+
+        together. API keys and runner credentials remain independently managed.'
+      operationId: revoke_member_sessions_api_v1_users__user_id__sessions_revoke_all_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+                title: Response Revoke Member Sessions Api V1 Users  User Id  Sessions
+                  Revoke All Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/users/{user_id}/deactivate:
     post:
       tags:
@@ -31224,9 +31340,9 @@ components:
           title: Routing Reason
           description: 'Why a harness-routed run (agent_config.harness) is waiting,
             failed or fell back: no_runner_with_harness, harness_signed_out, harness_disabled,
-            model_not_available, runner_offline, owner_has_no_runner, queue_timeout,
-            fell_back_to_server. Null once a runner took the run and for every other
-            execution.'
+            model_not_available, runner_offline, runner_asleep, owner_has_no_runner,
+            queue_timeout, fell_back_to_server. Null once a runner took the run and
+            for every other execution.'
         billing_mode:
           anyOf:
           - type: string
@@ -35989,9 +36105,9 @@ components:
           title: Routing Reason
           description: 'Why a harness-routed run (agent_config.harness) is waiting,
             failed or fell back: no_runner_with_harness, harness_signed_out, harness_disabled,
-            model_not_available, runner_offline, owner_has_no_runner, queue_timeout,
-            fell_back_to_server. Null once a runner took the run and for every other
-            execution.'
+            model_not_available, runner_offline, runner_asleep, owner_has_no_runner,
+            queue_timeout, fell_back_to_server. Null once a runner took the run and
+            for every other execution.'
         billing_mode:
           anyOf:
           - type: string
@@ -37613,9 +37729,9 @@ components:
           title: Routing Reason
           description: 'Why a harness-routed run (agent_config.harness) is waiting,
             failed or fell back: no_runner_with_harness, harness_signed_out, harness_disabled,
-            model_not_available, runner_offline, owner_has_no_runner, queue_timeout,
-            fell_back_to_server. Null once a runner took the run and for every other
-            execution.'
+            model_not_available, runner_offline, runner_asleep, owner_has_no_runner,
+            queue_timeout, fell_back_to_server. Null once a runner took the run and
+            for every other execution.'
         billing_mode:
           anyOf:
           - type: string
@@ -37983,9 +38099,9 @@ components:
           title: Routing Reason
           description: 'Why a harness-routed run (agent_config.harness) is waiting,
             failed or fell back: no_runner_with_harness, harness_signed_out, harness_disabled,
-            model_not_available, runner_offline, owner_has_no_runner, queue_timeout,
-            fell_back_to_server. Null once a runner took the run and for every other
-            execution.'
+            model_not_available, runner_offline, runner_asleep, owner_has_no_runner,
+            queue_timeout, fell_back_to_server. Null once a runner took the run and
+            for every other execution.'
         billing_mode:
           anyOf:
           - type: string
@@ -45605,6 +45721,68 @@ components:
         validation. Third-party recognizers must be registered explicitly and
 
         stay off by default.'
+    PasskeyOnlyStatus:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        passkey_count:
+          type: integer
+          title: Passkey Count
+      type: object
+      required:
+      - enabled
+      - passkey_count
+      title: PasskeyOnlyStatus
+      description: Whether passkey-only sign-in is on, and how many passkeys back
+        it.
+    PasskeyOnlyUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: PasskeyOnlyUpdate
+      description: Requested passkey-only state.
+    PasskeyOnlyUpdateResponse:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        access_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Access Token
+        refresh_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refresh Token
+        token_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Type
+        expires_in:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires In
+      type: object
+      required:
+      - enabled
+      title: PasskeyOnlyUpdateResponse
+      description: 'New state; on enable, a fresh token pair for the current session.
+
+
+        Enabling ends every other non-SSO session of the user, including the
+
+        tokens this request was made with, so the console replaces them with the
+
+        pair returned here (same fields as ``POST /auth/refresh``).'
     PasskeySummary:
       properties:
         id:
@@ -48542,6 +48720,23 @@ components:
           - type: string
           - type: 'null'
           title: End Reason
+        runner_presence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Presence
+        away_since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Away Since
+        resume_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resume Until
       type: object
       required:
       - session_id
@@ -49086,6 +49281,7 @@ components:
             - no_control_plugin
             - control_offline
             - terminal_session
+            - runner_away
           - type: 'null'
           title: Reason Code
         reason:

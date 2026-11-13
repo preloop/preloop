@@ -61,7 +61,8 @@ Preloop implements authentication and multi-tenancy:
   user. Tokens minted before the claim existed are treated as generation 0,
   so one bump also invalidates them. API keys and runner tokens are
   unchanged. `preloop auth logout --all` and the console Sign out everywhere
-  control call that endpoint.
+  control call that endpoint. Canonical identity revocation bumps the person's
+  generation and every linked membership's generation together.
 - `POST /auth/logout` is the console's server-side sign out. It runs the
   registered H9 `SessionHook.on_logout` (from `preloop.plugins.account_hooks`)
   with the current token's claims and returns `redirect_url`: a same-origin
@@ -94,6 +95,60 @@ Preloop implements authentication and multi-tenancy:
   (console tokens, CLI tokens from before `cli_session`) gets 400
   `unsupported_token_type` pointing at `POST /auth/sessions/revoke-all`
   instead of a false success.
+
+### Session revocation and live connections
+
+The database is authoritative. Identity changes (including password reset,
+address changes and verification, suspension and self-service sign-out) bump
+the canonical person's generation and its membership generations. Membership
+offboarding affects only that account. SSO enforcement increments the matching
+memberships' `non_sso_auth_generation`; the installed authentication policy
+decides which sessions remain valid.
+
+`POST /api/v1/users/{user_id}/sessions/revoke-all` uses the existing
+`manage_users` permission and an account-scoped lookup. It bumps only that
+membership's generation, without invoking cross-membership revoke fan-out,
+revokes its CLI session rows and writes `auth.sessions.revoked` in one
+transaction. It leaves the membership active so the person can sign in again.
+Roles are enforced by the commercial RBAC plugin; core retains its existing
+full-access-per-member model within an account.
+
+| Credential or connection | Self-service sign-out everywhere | Admin member sign-out |
+|---|---|---|
+| Console and CLI access/refresh JWTs | All linked memberships | Selected account membership |
+| CLI session records | Revoked across linked memberships | Revoked for selected membership |
+| Live JWT WebSockets | Closed with code `4401` when revoked | Same, scoped to selected membership |
+| API keys, agent-control credentials and runner tokens | Unchanged | Unchanged |
+| Anonymous WebSockets | Unchanged | Unchanged |
+
+The live JWT registry covers unified and legacy console sockets, execution and
+flow-lifecycle streams, runtime-session attach, and desktop viewers. It is
+separate from the account broadcast registry so tracking a lifecycle stream
+never subscribes it to unrelated account events. API-key-authenticated viewers,
+desktop host connections, managed-agent control sockets and runner sockets
+keep their separate credential lifecycle. Offboarding has its own, broader
+credential teardown; sign-out does not perform offboarding.
+
+Generation-writing CRUD stages only membership IDs and generation numbers on
+the transaction. The application's `services/auth_revocation.py` commit hook
+publishes `auth.revoked` through the bounded realtime publisher after the root
+transaction commits. Rolled-back transactions/savepoints publish nothing.
+This also covers plugin-owned transactions that call core CRUD. Every API
+replica subscribes without a NATS queue group. A notification re-runs
+`reject_revoked_token` against fresh database state for the named JWT sockets,
+so delayed notifications cannot close a newer login or an exempt SSO session.
+
+Each JWT socket also rechecks immediately on registration and every 60 seconds,
+independent of client traffic. A missed event, disconnected NATS publisher or
+full publisher queue therefore falls back to the next database check. A
+transient database failure is logged and retried on the next interval; no
+within-one-minute guarantee is possible while the database is unavailable.
+Handlers remove their watcher tasks on disconnect. Individual CLI-session and
+extension revocations are also detected by this periodic check.
+
+There is no browser-session inventory or single-browser-session revocation
+table. See [account and profile controls](../guide/accounts-and-profiles.md)
+for the console actions and credential boundaries.
 
 ### Restricted CI identity foundation
 
@@ -258,8 +313,9 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Input validation for all parameters via Pydantic models
 - [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy tracker API-key rows; staged schema migrations remove legacy webhook and AI-model key columns)
 - [x] Sensitive data masked in logs (see Redaction Policy below)
-- [x] Rate limiting on auth, OAuth and public approval endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md)); older per-process limiters (passkey challenges, email resend, OTLP ingest) not yet migrated
-- [ ] 2FA/MFA support for user accounts
+- [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
+- [x] Passkeys that verify the user (device plus PIN or biometric), and per-user passkey-only sign-in (see Passkey sign-in below)
+- [ ] TOTP codes, recovery codes and account-wide MFA enforcement
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
@@ -336,6 +392,59 @@ migration does not backfill and refuses downgrade while retained snapshots exist
 ## Account kill switch
 
 The [account kill switch](../guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
+
+## Passkey sign-in
+
+Passkey registration and sign-in request `userVerification: "required"` and
+verify the user-verification (UV) flag in the authenticator data. A passkey
+sign-in therefore proves two factors: the device holding the key and the PIN
+or biometric that unlocked it. An attestation or assertion without the UV flag
+is refused with 400 `passkey_user_verification_required`. Stored credentials
+need no migration; the flag is checked on every ceremony.
+`PASSKEYS_REQUIRE_USER_VERIFICATION=false` (default true) is the rollback
+switch: it restores `preferred` for security keys without a PIN, and while it
+is off passkey-only sign-in cannot be newly enabled (409
+`user_verification_disabled`). Persons with a passkey-only membership keep
+the UV requirement while the switch is off. `PASSKEYS_ENABLED=false` locks
+passkey-only users out entirely; reset them first. Changing the setting
+refuses CLI login tokens (`sid`), so a reissued pair cannot escape
+per-login revocation.
+
+**Passkey-only sign-in.** A user can require a passkey for their own
+membership (`user.passkey_only`, `GET`/`PUT /api/v1/auth/webauthn/passkey-only`).
+Changing it in either direction needs a session whose `amr` contains
+`passkey` and whose `auth_time` is at most 10 minutes old (403
+`passkey_sign_in_required`), so a password thief cannot switch it off and a
+session from before the UV requirement cannot switch it on. Enabling needs at
+least one passkey (409 `no_passkey_registered`), bumps the membership's
+non-SSO generation (`non_sso_auth_generation`) so every other non-SSO session
+ends, live WebSocket connections included, and returns a fresh token pair for
+the current session. The last passkey of a person with a passkey-only
+membership cannot be deleted (409 `last_passkey_required`); enable and delete
+lock the person and user rows in the same order.
+
+Enforcement lives in `preloop.services.authentication_policy`
+(`sign_in_method_allowed`), which every sign-in path reaches through
+`new_authentication` or `authorize_authentication`:
+
+| Path | Passkey-only behaviour |
+|---|---|
+| `/auth/token`, `/auth/token/json`, MCP OAuth consent form | Correct password: 401 `password_login_disabled`, no tokens. Wrong password: the usual generic error, so the setting is not revealed |
+| Email link (`/auth/verify-email`), chat exchange, social sign-in | 401 `password_login_disabled`, no tokens |
+| Account switch from a weaker session | Refused the same way |
+| Password reset | Changes the password, never signs in, never clears the setting |
+| Passkey, SSO (OIDC, SAML) | Unchanged |
+| API keys, runner tokens | Unchanged; the CLI signs in through the browser |
+
+Core also refuses non-SSO sessions whose `nsg` claim is behind the
+membership's non-SSO generation, with or without a policy plugin.
+
+Lost device: an operator runs `python scripts/reset_passkey_only.py --email
+<address> --reason <text>` in the API container. It clears the setting, ends
+the user's non-SSO sessions and writes `auth.passkey_only.reset`. There is no
+self-service recovery by email, which would reduce the account to one factor.
+Audit events `auth.passkey_only.enabled`, `.disabled`, `.login_refused` and
+`.reset` carry the user id and bounded fields only, never credential material.
 
 ## Audit collection and authentication audit
 

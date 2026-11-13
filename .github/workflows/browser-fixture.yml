@@ -1,0 +1,77 @@
+# Browser fixture QA flow (opt-in).
+#
+# Runs the model-free fixture-site flow end to end on the runner: the real
+# egress proxy, the fixture site, and the pinned Playwright MCP, wired by
+# environments/preloop/browser/enable.sh. Not part of the required CI check
+# and not on the default PR path: it runs only when a PR touches the fixture
+# site, the flow script, the browser profile or the proxy, or on demand.
+#
+# The Docker-hosted variant (scripts/tests/flow_environment_integration.py
+# --browser) needs a published environment image and stays a manual step.
+
+name: Browser fixture flow
+
+on:
+  pull_request:
+    paths:
+      - 'environments/fixture-site/**'
+      - 'environments/preloop/browser/**'
+      - 'environments/preloop/tools/**'
+      - 'environments/egress-proxy/**'
+      - 'scripts/tests/browser_fixture_flow.py'
+      - 'backend/tests/services/test_browser_fixture_flow.py'
+      - '.github/workflows/browser-fixture.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  browser-fixture:
+    name: Browser fixture flow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: environments/egress-proxy/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: environments/preloop/tools/package-lock.json
+
+      - name: Install pinned Playwright MCP and Chromium
+        working-directory: environments/preloop/tools
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Set up Python
+        uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test dependencies
+        uses: ./.github/actions/install-ci-python-deps
+
+      - name: Run the fixture flow and its boundary cases
+        env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
+          PRELOOP_BROWSER_CI: "1"
+        run: pytest -q --tb=short backend/tests/services/test_browser_fixture_flow.py

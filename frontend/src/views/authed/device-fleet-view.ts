@@ -20,6 +20,10 @@ import {
   fleetHref,
   getDeviceFleet,
   getFleetDevice,
+  SOURCE_RULES,
+  FLEET_CHANNELS,
+  fleetRuleProblem,
+  getFleetDeviceCredentials,
   getFleetRules,
   getFleetRoster,
   replaceFleetRosterCsv,
@@ -31,7 +35,9 @@ import {
   type DeviceFleetDevice,
   type FleetAgent,
   type FleetFinding,
+  type FleetDeviceCredential,
   type FleetRule,
+  type FleetRuleName,
 } from '../../device-fleet-api';
 import '../../components/view-header';
 import '../../components/fleet-map';
@@ -141,6 +147,36 @@ export function fleetCounts(page: DeviceFleetPage): {
   };
 }
 
+/** Rule names and one neutral sentence on what each rule cannot show. */
+const RULE_COPY: Record<FleetRuleName, { title: string; limitation: string }> =
+  {
+    traffic_without_runner: {
+      title: 'Traffic without a live runner',
+      limitation:
+        'Based on runner heartbeats and governed traffic Preloop received. A missed heartbeat can look like an offline runner.',
+    },
+    discovered_not_onboarded: {
+      title: 'Discovered agents not onboarded',
+      limitation:
+        'Discovery is self-reported. Agents on devices without a collector are not listed.',
+    },
+    agent_quiet: {
+      title: 'Enrolled agent quiet',
+      limitation:
+        'Quiet means no governed traffic was seen. It does not show whether the agent was removed, idle or used outside Preloop.',
+    },
+    control_drift: {
+      title: 'Expected control no longer observed',
+      limitation:
+        'Compares collector reports with expected controls. A missing or stale report is unknown, not drift.',
+    },
+    stale_inventory: {
+      title: 'Stale runner inventory',
+      limitation:
+        'Stale means no recent inventory report arrived. It does not describe the device’s current state.',
+    },
+  };
+
 @customElement('device-fleet-view')
 export class DeviceFleetView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -152,6 +188,10 @@ export class DeviceFleetView extends LitElement {
   @state() private page: DeviceFleetPage | null = null;
   @state() private device: DeviceFleetDevice | null = null;
   @state() private rules: FleetRule[] = [];
+  @state() private credentials: FleetDeviceCredential[] = [];
+  @state() private credentialsFailed = false;
+  @state() private saveError = '';
+  private unknownRules: Record<string, unknown> = {};
   @state() private tab =
     new URLSearchParams(location.search).get('tab') || 'devices';
   @state() private search = '';
@@ -626,6 +666,18 @@ export class DeviceFleetView extends LitElement {
       this.page = page;
       this.device = device;
       this.rules = rules?.items || [];
+      this.unknownRules = rules?.unknown || {};
+      this.saveError = '';
+      this.credentialsFailed = false;
+      this.credentials = this.rules.some((rule) =>
+        SOURCE_RULES.includes(rule.rule)
+      )
+        ? await getFleetDeviceCredentials(controller.signal).catch(() => {
+            this.credentialsFailed = true;
+            return [];
+          })
+        : [];
+      if (controller.signal.aborted) return;
       this.roster = roster;
       if (page && this.view === 'canvas') void this.loadMap();
     } catch (error) {
@@ -750,23 +802,35 @@ export class DeviceFleetView extends LitElement {
   private async save(event: Event): Promise<void> {
     event.preventDefault();
     if (!this.manage || this.saving) return;
+    const problem = this.rules.map(fleetRuleProblem).find(Boolean);
+    if (problem) {
+      this.notice = '';
+      this.saveError = problem;
+      return;
+    }
     this.saving = true;
-    this.error = '';
+    this.saveError = '';
     this.notice = '';
     try {
-      const result = await saveFleetRules(this.rules, this.controller?.signal);
+      const result = await saveFleetRules(
+        this.rules,
+        this.controller?.signal,
+        this.unknownRules
+      );
       if (!this.isConnected) return;
       this.rules = result.items;
+      this.unknownRules = result.unknown;
       this.notice = 'Alert settings saved.';
     } catch (error) {
       if (this.isConnected)
-        this.error =
+        this.saveError =
           error instanceof Error ? error.message : 'Could not save settings.';
     } finally {
       this.saving = false;
     }
   }
   private changeRule(index: number, change: Partial<FleetRule>): void {
+    this.saveError = '';
     this.rules = this.rules.map((rule, i) =>
       i === index ? { ...rule, ...change } : rule
     );
@@ -1447,6 +1511,173 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
       </details>`;
   }
 
+  private numberField(
+    label: string,
+    value: number | null | undefined,
+    min: number,
+    max: number,
+    change: (value: number | null) => void,
+    required = false
+  ) {
+    return html`<label
+      >${label}<input
+        type="number"
+        ?required=${required}
+        min=${min}
+        max=${max}
+        .value=${value == null ? '' : String(value)}
+        @input=${(e: Event) => {
+          const raw = (e.target as HTMLInputElement).value;
+          change(raw === '' ? null : Number(raw));
+        }}
+    /></label>`;
+  }
+  /** Freshness per reporter source, chosen from the account's device credentials. */
+  private renderSources(rule: FleetRule, index: number) {
+    const freshness = rule.source_freshness_seconds || {};
+    const listed = new Set(this.credentials.map((c) => c.id));
+    const sources = [
+      ...this.credentials.map((c) => ({
+        id: c.id,
+        label: `${deviceLabel({ hostname: null, device_key: `fp:${c.binding.workstation_fingerprint}` })} (${c.state})`,
+      })),
+      // A configured source whose credential is no longer listed stays visible
+      // so it can be removed; it is never typed in.
+      ...Object.keys(freshness)
+        .filter((id) => !listed.has(id))
+        .map((id) => ({
+          id,
+          label: `${this.credentialsFailed ? 'Reporter' : 'Unlisted reporter'} ${id.slice(0, 8)}`,
+        })),
+    ];
+    const set = (id: string, seconds: number | null) => {
+      const next = { ...freshness };
+      if (seconds === null) delete next[id];
+      else next[id] = seconds;
+      this.changeRule(index, { source_freshness_seconds: next });
+    };
+    const failed = this.credentialsFailed
+      ? html`<p class="meta" data-testid="sources-failed">
+          Device credentials could not be loaded, so reporter sources cannot be
+          chosen and stored sources cannot be matched. Reload the page to try
+          again.
+        </p>`
+      : nothing;
+    if (!sources.length && this.credentialsFailed) return failed;
+    if (!sources.length)
+      return html`<p class="meta" data-testid="no-sources">
+        No device credentials are available as reporter sources. Issue a device
+        credential to set report freshness for this rule.
+      </p>`;
+    return html`<div data-testid="sources">
+      ${failed}
+      <p class="meta">Report freshness per reporter source</p>
+      ${sources.map(
+        (source) =>
+          html`<label
+              ><input
+                type="checkbox"
+                data-source=${source.id}
+                .checked=${source.id in freshness}
+                @change=${(e: Event) =>
+                  set(
+                    source.id,
+                    (e.target as HTMLInputElement).checked ? 86400 : null
+                  )}
+              />${source.label}</label
+            >${
+              source.id in freshness
+                ? this.numberField(
+                    'Fresh for (minutes)',
+                    Math.round(freshness[source.id] / 60),
+                    1,
+                    129600,
+                    (minutes) =>
+                      minutes !== null && set(source.id, minutes * 60)
+                  )
+                : nothing
+            }`
+      )}
+    </div>`;
+  }
+  private renderRule(rule: FleetRule, index: number) {
+    const copy = RULE_COPY[rule.rule];
+    const change = (patch: Partial<FleetRule>) => this.changeRule(index, patch);
+    const passthrough = rule.passthrough || {};
+    const expectations = Array.isArray(passthrough.expectations)
+      ? passthrough.expectations.length
+      : null;
+    let thresholds: unknown = nothing;
+    if (rule.rule === 'traffic_without_runner')
+      thresholds = html`${this.numberField('Traffic window (minutes)', rule.window_minutes, 1, 10080, (v) => v !== null && change({ window_minutes: v }), true)}${this.numberField('Offline grace (minutes)', rule.grace_minutes, 1, 10080, (v) => v !== null && change({ grace_minutes: v }), true)}`;
+    else if (rule.rule === 'discovered_not_onboarded')
+      thresholds = this.numberField(
+        'Not onboarded for (days)',
+        rule.days,
+        1,
+        365,
+        (v) => v !== null && change({ days: v }),
+        true
+      );
+    else if (rule.rule === 'agent_quiet')
+      thresholds = html`${this.numberField('Quiet for (days)', rule.inactivity_days, 1, 365, (v) => change({ inactivity_days: v }))}${this.numberField('Enrollment grace (minutes)', rule.grace_minutes, 0, 10080, (v) => change({ grace_minutes: v }))}${typeof passthrough.require_fresh_report === 'boolean' ? html`<label><input type="checkbox" data-field="require_fresh_report" .checked=${passthrough.require_fresh_report} @change=${(e: Event) => change({ passthrough: { ...passthrough, require_fresh_report: (e.target as HTMLInputElement).checked } })} />Only with a fresh workstation report</label>` : nothing}`;
+    else if (rule.rule === 'stale_inventory')
+      thresholds = this.numberField(
+        'Inventory fresh for (minutes)',
+        rule.inventory_freshness_seconds === undefined
+          ? undefined
+          : Math.round(rule.inventory_freshness_seconds / 60),
+        1,
+        129600,
+        (v) => v !== null && change({ inventory_freshness_seconds: v * 60 })
+      );
+    else if (rule.rule === 'control_drift')
+      thresholds = html`<p class="meta" data-testid="expectations">
+        ${
+          expectations === 1
+            ? '1 expected control'
+            : `${expectations ?? 0} expected controls`
+        }
+        set by the server.
+      </p>`;
+    return html`<fieldset ?disabled=${this.saving} data-rule=${rule.rule}>
+      <legend>${copy.title}</legend>
+      <p class="meta" data-testid="limitation">${copy.limitation}</p>
+      <label
+        ><input
+          type="checkbox"
+          data-field="enabled"
+          .checked=${rule.enabled}
+          @change=${(e: Event) =>
+            change({ enabled: (e.target as HTMLInputElement).checked })}
+        />Enabled</label
+      >
+      ${thresholds}
+      ${
+        SOURCE_RULES.includes(rule.rule)
+          ? this.renderSources(rule, index)
+          : nothing
+      }
+      <div>
+        ${FLEET_CHANNELS.map(
+          (channel) =>
+            html`<label
+              ><input
+                type="checkbox"
+                data-channel=${channel}
+                .checked=${rule.channels.includes(channel)}
+                @change=${(e: Event) =>
+                  change({
+                    channels: (e.target as HTMLInputElement).checked
+                      ? [...rule.channels, channel]
+                      : rule.channels.filter((c) => c !== channel),
+                  })}
+              />${channel}</label
+            >`
+        )}
+      </div>
+    </fieldset>`;
+  }
   private renderSettings() {
     if (!this.manage) return nothing;
     return html`<sl-card>
@@ -1455,25 +1686,21 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
           Rules are off until you turn them on. Alerts go to eligible owners and
           admins, honoring their notification preferences.
         </p>
-        ${this.rules.map(
-          (rule, index) =>
-            html`<fieldset ?disabled=${this.saving}>
-              <legend>
-                ${rule.rule === 'traffic_without_runner' ? 'Traffic without a live runner' : 'Discovered agents not onboarded'}
-              </legend>
-              <label
-                ><input
-                  type="checkbox"
-                  .checked=${rule.enabled}
-                  @change=${(e: Event) => this.changeRule(index, { enabled: (e.target as HTMLInputElement).checked })}
-                />Enabled</label
+        ${this.rules.map((rule, index) => this.renderRule(rule, index))}
+        ${
+          this.saveError
+            ? html`<sl-alert
+                variant="danger"
+                open
+                role="alert"
+                data-testid="save-error"
               >
-              ${rule.rule === 'traffic_without_runner' ? html`<label>Traffic window (minutes)<input type="number" min="1" max="10080" required .value=${String(rule.window_minutes)} @input=${(e: Event) => this.changeRule(index, { window_minutes: Number((e.target as HTMLInputElement).value) })} /></label><label>Offline grace (minutes)<input type="number" min="1" max="10080" required .value=${String(rule.grace_minutes)} @input=${(e: Event) => this.changeRule(index, { grace_minutes: Number((e.target as HTMLInputElement).value) })} /></label>` : html`<label>Not onboarded for (days)<input type="number" min="1" max="365" required .value=${String(rule.days)} @input=${(e: Event) => this.changeRule(index, { days: Number((e.target as HTMLInputElement).value) })} /></label>`}
-              <div>
-                ${['attention', 'email', 'push', 'webhook'].map((channel) => html`<label><input type="checkbox" .checked=${rule.channels.includes(channel)} @change=${(e: Event) => this.changeRule(index, { channels: (e.target as HTMLInputElement).checked ? [...rule.channels, channel] : rule.channels.filter((c) => c !== channel) })} />${channel}</label>`)}
-              </div>
-            </fieldset>`
-        )}
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                <strong>Could not save alert settings</strong><br />
+                ${this.saveError}
+              </sl-alert>`
+            : nothing
+        }
         <p>
           <sl-button
             type="submit"

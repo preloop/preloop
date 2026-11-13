@@ -239,6 +239,7 @@ const HARNESS_ROUTING_KEYS = [
   'harness_fallback',
   'harness_queue_timeout_seconds',
   'fallback_model_identifier',
+  'offline_policy',
 ] as const;
 
 const FEEDBACK_LIMITS = {
@@ -2831,6 +2832,13 @@ export class PreloopFlowForm extends LitElement {
     } else {
       delete base.runner_id;
     }
+    // Offline policy (#1508) applies to a pinned runner only; fail is the
+    // server default, so only reroute is stored.
+    if (runnerId && base.offline_policy === 'reroute') {
+      base.offline_policy = 'reroute';
+    } else {
+      delete base.offline_policy;
+    }
     const fallback = String(base.harness_fallback || 'queue');
     if (fallback === 'queue') {
       delete base.harness_fallback;
@@ -2981,6 +2989,33 @@ export class PreloopFlowForm extends LitElement {
                       >`
                   )}
                 </sl-select>
+                ${
+                  config.runner_id
+                    ? html`<sl-select
+                        label="When this runner is asleep or offline"
+                        data-offline-policy
+                        help-text="Reroute only moves the run to another runner you may use with the same harness, model and billing. If none can take it, the run fails, unless you chose to fall back to the server pool below."
+                        .value=${
+                          config.offline_policy === 'reroute'
+                            ? 'reroute'
+                            : 'fail'
+                        }
+                        @sl-change=${(event: Event) => {
+                          const value = (event.target as HTMLSelectElement)
+                            .value;
+                          this.setHarnessRoutingKey(
+                            'offline_policy',
+                            value === 'reroute' ? 'reroute' : null
+                          );
+                        }}
+                      >
+                        <sl-option value="fail">Fail the run at once</sl-option>
+                        <sl-option value="reroute"
+                          >Reroute to another runner you may use</sl-option
+                        >
+                      </sl-select>`
+                    : nothing
+                }
                 <sl-select
                   label="When no runner is eligible"
                   data-harness-fallback

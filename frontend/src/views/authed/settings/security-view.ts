@@ -16,11 +16,15 @@ import { confirmDialog } from '../../../components/confirm-dialog';
 import {
   PasskeySummary,
   deletePasskey,
+  freshPasskeySession,
+  getPasskeyOnly,
   listPasskeys,
   passkeysSupported,
   registerPasskey,
+  setPasskeyOnly,
 } from '../../../services/passkeys';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import '../../../components/view-header';
@@ -51,6 +55,13 @@ export class SecurityView extends LitElement {
 
   @state()
   private passkeyBusy = false;
+
+  /** Server state of passkey-only sign-in; null until loaded (or unavailable). */
+  @state()
+  private passkeyOnly: boolean | null = null;
+
+  @state()
+  private passkeyOnlyBusy = false;
 
   @state()
   private cliSessions: CliSession[] = [];
@@ -162,11 +173,72 @@ export class SecurityView extends LitElement {
         features.features['passkeys'] !== false && passkeysSupported();
       if (this.passkeysEnabled) {
         this.passkeys = await listPasskeys();
+        await this.loadPasskeyOnly();
       }
     } catch {
       // Passkey list failure must not break the security page.
       this.passkeysEnabled = false;
     }
+  }
+
+  private async loadPasskeyOnly() {
+    try {
+      this.passkeyOnly = (await getPasskeyOnly()).enabled;
+    } catch {
+      // An older server has no setting: hide the switch, keep the card.
+      this.passkeyOnly = null;
+    }
+  }
+
+  private async handlePasskeyOnlyChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const wanted = target.checked;
+    this.passkeyMessage = '';
+    this.passkeyOnlyBusy = true;
+    try {
+      this.passkeyOnly = await setPasskeyOnly(wanted);
+      this.passkeyMessage = this.passkeyOnly
+        ? 'A passkey is now required to sign in. Your other sessions have been signed out.'
+        : 'Password sign-in is allowed again.';
+    } catch (error) {
+      target.checked = this.passkeyOnly === true;
+      this.passkeyMessage =
+        error instanceof Error
+          ? error.message
+          : 'Failed to change passkey sign-in setting.';
+    } finally {
+      this.passkeyOnlyBusy = false;
+    }
+  }
+
+  private renderPasskeyOnly() {
+    if (this.passkeyOnly === null) {
+      return '';
+    }
+    const fresh = freshPasskeySession();
+    const noPasskey = !this.passkeyOnly && this.passkeys.length === 0;
+    const reason = !fresh
+      ? 'Sign in with a passkey to change this. The sign-in must be from the last 10 minutes.'
+      : noPasskey
+        ? 'Add a passkey first.'
+        : '';
+    return html`
+      <div class="passkey-only" data-testid="passkey-only">
+        <sl-switch
+          data-testid="passkey-only-switch"
+          ?checked="${this.passkeyOnly}"
+          ?disabled="${!fresh || noPasskey || this.passkeyOnlyBusy}"
+          @sl-change="${this.handlePasskeyOnlyChange}"
+          >Require a passkey to sign in</sl-switch
+        >
+        <p class="help">
+          Password, email link and social sign-in stop working for your account.
+          If you lose every passkey, an administrator of this server has to
+          restore password sign-in for you.
+        </p>
+        ${reason ? html`<p class="help" data-testid="passkey-only-reason">${reason}</p>` : ''}
+      </div>
+    `;
   }
 
   private async handleAddPasskey() {
@@ -365,6 +437,7 @@ export class SecurityView extends LitElement {
                         @click="${this.handleAddPasskey}"
                         >Add passkey</sl-button
                       >
+                      ${this.renderPasskeyOnly()}
                       ${
                         this.passkeyMessage
                           ? html`<p>${this.passkeyMessage}</p>`
@@ -433,6 +506,18 @@ export class SecurityView extends LitElement {
       .passkey-item small {
         color: var(--console-meta-color);
         margin-left: 0.5rem;
+      }
+
+      .passkey-only {
+        margin-top: var(--sl-spacing-large);
+        padding-top: var(--sl-spacing-medium);
+        border-top: 1px solid var(--console-hairline);
+      }
+
+      .passkey-only .help {
+        margin: var(--sl-spacing-x-small) 0 0 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
       }
 
       .sign-out-everywhere {

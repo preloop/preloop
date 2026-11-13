@@ -1,7 +1,10 @@
 """Periodic end of runner-hosted sessions whose runner went away (#1482).
 
-A runner that stays offline past a session's idle timeout ends it with
-``runner_offline``; a runner that reconnects sooner resumes it. Each pass is
+A started session whose runner is asleep or offline goes ``runner_away``
+and ends with ``runner_away_timeout`` once the resume window (its idle
+timeout, from when the runner left) has passed; a runner that reconnects
+sooner resumes it (#1509). A session that never started ends with
+``runner_offline`` after the idle timeout. Each pass is
 idempotent (only live sessions are touched and ending one is a guarded state
 change), so several API replicas running it at once is safe.
 """

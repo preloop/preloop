@@ -1,6 +1,9 @@
-"""Tests for the admin-only test-push endpoint: gating, rate limit, results."""
+"""Tests for the admin-only test-push endpoint: gating, rate limit, results.
 
-import time
+The rate limit lives in the shared limiter; the conftest resets its
+in-process counters between tests.
+"""
+
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,16 +33,6 @@ def _prefs_with_devices(devices: list) -> MagicMock:
     prefs = MagicMock()
     prefs.mobile_device_tokens = devices
     return prefs
-
-
-@pytest.fixture(autouse=True)
-def _reset_rate_limiter():
-    """Keep the module-level sliding window from leaking between tests."""
-    endpoint._test_push_state.clear()
-    endpoint._test_push_sweep["last"] = 0.0
-    yield
-    endpoint._test_push_state.clear()
-    endpoint._test_push_sweep["last"] = 0.0
 
 
 class TestAdminGating:
@@ -251,35 +244,6 @@ class TestRateLimiting:
                 db=MagicMock(),
                 current_user=second,
             )
-
-
-class TestRateLimiterEviction:
-    def test_stale_entries_are_swept(self) -> None:
-        """Users who tried once and never returned must not accumulate forever.
-
-        The dict previously only ever gained keys; entries for one-time
-        callers lived for the life of the process. The sweep runs
-        opportunistically once per window, so seed a stale user, force the
-        sweep to be due, and enforce for a different user.
-        """
-        stale_time = time.monotonic() - (endpoint._TEST_PUSH_WINDOW_SECONDS * 3)
-        endpoint._test_push_state["stale-user"] = [stale_time]
-        # Force the next call to consider a sweep due.
-        endpoint._test_push_sweep["last"] = stale_time
-
-        endpoint._enforce_test_push_rate_limit("active-user")
-
-        assert "stale-user" not in endpoint._test_push_state
-        assert "active-user" in endpoint._test_push_state
-
-    def test_current_user_survives_sweep(self) -> None:
-        """The caller's own fresh entry must never be evicted by the sweep."""
-        endpoint._test_push_sweep["last"] = time.monotonic() - (
-            endpoint._TEST_PUSH_WINDOW_SECONDS * 3
-        )
-        endpoint._enforce_test_push_rate_limit("caller")
-        endpoint._enforce_test_push_rate_limit("caller")
-        assert len(endpoint._test_push_state["caller"]) == 2
 
 
 if __name__ == "__main__":
