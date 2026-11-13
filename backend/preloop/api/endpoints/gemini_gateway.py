@@ -42,6 +42,7 @@ async def get_gemini_gateway_auth_context(
             provider="gemini",
             status_code=401,
             message="Missing API key",
+            origin="gateway",
         )
 
     auth_context = await authenticate_bearer_token(
@@ -52,6 +53,7 @@ async def get_gemini_gateway_auth_context(
             provider="gemini",
             status_code=401,
             message="Invalid API key",
+            origin="gateway",
         )
     return auth_context
 

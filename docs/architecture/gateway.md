@@ -223,6 +223,11 @@ success, or a failure that differs in fingerprint, class or status, ends the
 streak. Rate limiting, overload, client cancellations and Preloop's own
 refusals (kill switch, budget) are never counted. The refusal is not recorded
 as usage, so it neither extends the streak nor counts as a turn.
+The stop summary (the 424 message, the execution's `error_message` and the
+milestone's `first_cause` metadata) also names the run's first failure since
+its last success, read from the same ledger, so a run whose first call failed
+with a routing 404 and later ones with 401 reports the 404 as the cause
+(#2288). The 424 body nests it as `error.cause`.
 
 ### Historical repricing jobs
 

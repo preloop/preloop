@@ -184,6 +184,29 @@ Requests from a trusted upstream (the Claude apps gateway) that carry a develope
 !!! warning "Migrating from `403` budget denials"
     Before this change a budget hard limit returned `403` (`permission_error`), the same status as a policy denial. Integrations that match `403` to detect an exhausted budget must match `429` with `billing_error` (Anthropic), `insufficient_quota` (OpenAI) or `RESOURCE_EXHAUSTED` (Gemini) instead. To tell a Preloop budget denial from an upstream rate limit, check `x-should-retry: false`, `error.preloop_code` on the OpenAI router, or the `Model gateway budget exceeded` message prefix.
 
+### Who produced an error
+
+An error from the gateway can come from Preloop itself (for example a missing or rejected Preloop key) or from the upstream model provider (for example the provider rejecting the credential configured for the model). The HTTP status is the same in both cases, so the error body says which one it was:
+
+| Field | Meaning |
+|---|---|
+| `origin` | `gateway` when Preloop decided, `upstream` when the model provider did |
+| `provider` | The upstream provider configured for the model, for example `openrouter` |
+| `category` | The upstream error class, the same value as the `X-Preloop-Error-Class` header |
+| `upstream_status` | The HTTP status the provider reported |
+| `request_id` | The gateway request id recorded on the run's usage row |
+| `cause` | On a `424` `repeated_upstream_failure`: the first failure of the run (`origin`, `provider`, `category`, `upstream_status`, `message`, `request_id`), so a later error never stands in for the original cause |
+
+The OpenAI and Anthropic routers put these keys inside `error`, next to `message`, and in the `error` / `response.failed` streaming events. The Gemini router carries them as `google.rpc.ErrorInfo` metadata (string values, `domain: preloop.ai`) in `error.details`.
+
+A provider-reported 401, 402, 403 or 404 names the provider in the message and quotes its own sentence unchanged, for example:
+
+```text
+Upstream provider openrouter rejected the provider credential configured for this model (HTTP 401). Provider message: User not found. This is not a rejection of your Preloop credentials.
+```
+
+The provider's wording is passed through as the provider's message; it does not by itself say which account or key the provider evaluated.
+
 ---
 
 ## Managed Agent Onboarding
