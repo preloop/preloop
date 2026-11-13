@@ -5466,6 +5466,42 @@ export async function getFlowExecution(executionId: string): Promise<any> {
   return response.json();
 }
 
+/**
+ * Publish, or publish again, the review and commit status of a finished
+ * read-only review (`POST /flows/executions/{id}/platform-review`). No body:
+ * the target comes from the execution's own binding. Idempotent.
+ *
+ * Throws with the server's reason code (`detail.code`) on 409, for example
+ * `execution_not_finished`, and a PermissionError message on 403.
+ */
+export async function publishExecutionPlatformReview(
+  executionId: string
+): Promise<{ execution_id: string; platform_review: any }> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/platform-review`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = (body as { detail?: unknown })?.detail;
+    const code =
+      detail && typeof detail === 'object'
+        ? (detail as { code?: unknown }).code
+        : undefined;
+    const error = new Error(
+      typeof detail === 'string' && detail
+        ? detail
+        : typeof code === 'string'
+          ? code
+          : 'Failed to publish the review'
+    ) as Error & { code?: string; status?: number };
+    if (typeof code === 'string') error.code = code;
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
 /** Small authoritative state and cursor, for realtime gap recovery. */
 export async function getFlowExecutionLifecycle(
   executionId: string
