@@ -401,7 +401,7 @@ class AIModelInDBBase(BaseModel):
         description=(
             "Status of the model's credential secret. `error` means the last "
             "OAuth refresh failed, or the provider rejected the stored API "
-            "key (HTTP 401) on its last use."
+            "key for authentication (HTTP 401) or billing (HTTP 402) on its last use."
         ),
     )
     credentials_last_error: Optional[str] = Field(
@@ -415,7 +415,8 @@ class AIModelInDBBase(BaseModel):
         None,
         description=(
             "Error code from the last credential refresh attempt, or "
-            "`upstream_auth_rejected` for a rejected API key"
+            "`upstream_auth_rejected` for an authentication rejection or "
+            "`upstream_billing_rejected` for a billing rejection"
         ),
     )
     credentials_last_failed_at: Optional[datetime] = Field(

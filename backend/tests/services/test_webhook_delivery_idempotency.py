@@ -705,22 +705,29 @@ async def test_two_concurrent_sessions_create_exactly_one_execution(
                 service = FlowTriggerService(session)
                 flow_row = session.get(models.Flow, flow_id)
                 await started.wait()
-                with (
-                    patch(
-                        "preloop.services.flow_trigger_service.get_nats_client",
-                        new=AsyncMock(return_value=None),
-                    ),
-                    without_in_process_run(),
-                ):
-                    return await service._start_flow_execution(
-                        flow=flow_row,
-                        event_data=dict(event),
-                        nats_client=None,
-                    )
+                return await service._start_flow_execution(
+                    flow=flow_row,
+                    event_data=dict(event),
+                    nats_client=None,
+                )
             finally:
                 session.close()
 
-        results = await asyncio.gather(worker(), worker())
+        from preloop.services import flow_execution_dispatcher
+
+        original_worker_mode = flow_execution_dispatcher.flow_execution_worker_enabled
+        with (
+            patch(
+                "preloop.services.flow_trigger_service.get_nats_client",
+                new=AsyncMock(return_value=None),
+            ),
+            without_in_process_run(),
+        ):
+            results = await asyncio.gather(worker(), worker())
+        assert (
+            flow_execution_dispatcher.flow_execution_worker_enabled
+            is original_worker_mode
+        )
 
         check = Session(bind=db_engine)
         try:

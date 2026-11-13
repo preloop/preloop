@@ -15,6 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and control-expectation store support evidence-based fleet generation,
   preserving manual expectations and retiring superseded bundle rows.
 
+- flows: a read-only review flow can have Preloop post the result itself.
+  With `git_clone_config.platform_review` (off by default, valid only with
+  `publication_mode: read_only`, `validate_result` and a `result_schema` that
+  declares a `verdict` enum), the control plane posts one pull request review
+  and one commit status on the exact commit the run reviewed, after the run
+  is terminal and its result passed the schema. It works for shared flows
+  (`ci_project_selection`): each execution posts only on the repository of
+  its own identity. The run still holds no write credential: Preloop mints a
+  GitHub App token per publication for one repository with `pull_requests:
+  write` and `statuses: write` and no contents permission, uses it for those
+  two writes, reads them back and revokes it. The posted text is rendered
+  from validated result fields as literal text (no mentions, links, issue
+  references or HTML). `POST /api/v1/flows/executions/{id}/platform-review`
+  publishes a finished review again without a model run (new CI action
+  `execution:review:publish`), and the execution, its result and
+  `flow.execution.finished` carry a `platform_review` record. Turning the
+  opt-in on requires provisioning the flow's CI identities again. GitHub App
+  trackers only. Adds the `platform_review_publication` table (migration
+  `20261208_platform_review`). See `docs/architecture/platform-posted-review.md`.
 - restricted CI: one hosted read-only review flow can be shared by several
   projects of an account, while every CI identity stays bound to one project.
   An account administrator sets the flow's project allowlist with
@@ -35,6 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- models: audit model creation, updates, deletion and credential set,
+  replacement, rotation and removal without key material. First provider API-key
+  rejections now notify account owners once per episode and emit
+  `ai_model.credential_rejected`. Provider billing `402` responses mark credentials
+  with `upstream_billing_rejected`; acceptance or key replacement clears the
+  mark. Before any clone or container, flows probe a model with a standing auth
+  rejection and refuse with `409 model_credentials_rejected` only when the
+  provider rejects authentication again. Successful probes clear the mark;
+  inconclusive probes allow the run. Healthy models and billing marks are never
+  probed. Restricted CI returns only the model name and code.
 
 - flows: a hosted Codex run whose native permission hook would be refused now
   fails before it starts. Before launch the execution's runtime credential is

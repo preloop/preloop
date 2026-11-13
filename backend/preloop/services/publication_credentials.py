@@ -46,15 +46,62 @@ def validate_publication_tracker(
         )
 
 
+#: Permission sets of the lease the control plane uses to post a finished
+#: read-only review itself. None of them carries ``contents``: the token can
+#: neither push nor merge. It never leaves the control plane.
+REVIEW_PUBLISH_PROFILES: dict[str, dict[str, str]] = {
+    "review_and_status": {"pull_requests": "write", "statuses": "write"},
+    "review": {"pull_requests": "write"},
+    "status": {"statuses": "write"},
+}
+
+
+class LeaseRefusedError(PublicationError):
+    """GitHub answered the lease request with an HTTP error status.
+
+    Attributes:
+        status_code: The HTTP status GitHub returned.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 async def mint_repository_lease(
     tracker: models.Tracker,
     repository_url: str,
     *,
-    write: bool,
+    write: bool | None = None,
     client: httpx.AsyncClient,
     allow_legacy_oauth_app: bool = False,
+    profile: str | None = None,
 ) -> PublicationLease:
-    """Ask GitHub to enforce exact repository and read/write permissions."""
+    """Ask GitHub to enforce exact repository and permissions.
+
+    Args:
+        tracker: GitHub App tracker that owns the repository.
+        repository_url: Canonical ``https://github.com/owner/repo.git`` URL.
+        write: Clone/publication lease: ``contents: read`` when False,
+            ``contents: write`` plus ``pull_requests: write`` when True.
+        client: HTTP client used for the one request to GitHub.
+        allow_legacy_oauth_app: Accept a legacy OAuth App installation.
+        profile: A key of :data:`REVIEW_PUBLISH_PROFILES`, instead of
+            ``write``, for the control plane's own review publication.
+
+    Returns:
+        The lease, after GitHub's reported repository and permissions matched
+        the request exactly (plus the implicit ``metadata: read``).
+
+    Raises:
+        PublicationError: The request is invalid, GitHub refused it, or
+            GitHub returned any other repository or permission set.
+    """
+    if (write is None) == (profile is None) or (
+        profile is not None
+        and (profile not in REVIEW_PUBLISH_PROFILES or allow_legacy_oauth_app)
+    ):
+        raise PublicationError("Invalid GitHub App lease request")
     validate_publication_tracker(tracker, allow_legacy_oauth_app=allow_legacy_oauth_app)
     parsed = urlsplit(repository_url)
     if (
@@ -86,9 +133,12 @@ async def mint_repository_lease(
         )
     except (ValueError, jwt.PyJWTError) as exc:
         raise PublicationError("GitHub App signing failed") from exc
-    permissions = {"contents": "write" if write else "read"}
-    if write:
-        permissions["pull_requests"] = "write"
+    if profile is not None:
+        permissions = dict(REVIEW_PUBLISH_PROFILES[profile])
+    else:
+        permissions = {"contents": "write" if write else "read"}
+        if write:
+            permissions["pull_requests"] = "write"
     installation_id = str(tracker.oauth_installation.external_id)
     if not installation_id.isdecimal():
         raise PublicationError("Invalid GitHub App installation identifier")
@@ -132,6 +182,11 @@ async def mint_repository_lease(
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, PublicationError):
             raise
+        if isinstance(exc, httpx.HTTPStatusError):
+            raise LeaseRefusedError(
+                "Could not issue a scoped GitHub App credential",
+                exc.response.status_code,
+            ) from exc
         raise PublicationError(
             "Could not issue a scoped GitHub App credential"
         ) from exc

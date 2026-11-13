@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision = "20261113_bundle_registry"
-down_revision = "20261207_user_passkey_only"
+down_revision = "20261208_platform_review"
 branch_labels = None
 depends_on = None
 
