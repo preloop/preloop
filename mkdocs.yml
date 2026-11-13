@@ -355,6 +355,7 @@ nav:
       - System overview: architecture/overview.md
       - Data model: architecture/data-model.md
       - Durable callback receipts: architecture/callback-receipts.md
+      - Review and status posted by Preloop: architecture/platform-posted-review.md
       - Technical decisions: architecture/decisions.md
       - 'ADR 0001: API versioning': architecture/decisions/0001-api-versioning.md
       - Agent Control: architecture/agent-control.md

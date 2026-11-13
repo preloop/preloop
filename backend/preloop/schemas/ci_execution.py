@@ -213,3 +213,6 @@ class CiExecutionResponse(BaseModel):
     # Controller-observed startup receipt for a read-only review; null when
     # startup did not complete or the execution is not a read-only review.
     startup_receipt: dict[str, Any] | None = None
+    # What Preloop itself posted on the pull request for this execution
+    # (review and commit status); null when the flow has not opted in.
+    platform_review: dict[str, Any] | None = None

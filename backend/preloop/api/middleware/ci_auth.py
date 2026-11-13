@@ -60,6 +60,10 @@ CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType(
             "POST",
             "/api/v1/flows/executions/{execution_id}/command",
         ): CiAction.STOP_EXECUTION,
+        (
+            "POST",
+            "/api/v1/flows/executions/{execution_id}/platform-review",
+        ): CiAction.PUBLISH_REVIEW,
     }
 )
 

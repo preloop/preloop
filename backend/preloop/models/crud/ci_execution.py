@@ -119,6 +119,7 @@ class CRUDCiExecution:
             CiAction.READ_RESULT,
             CiAction.READ_EVIDENCE,
             CiAction.STOP_EXECUTION,
+            CiAction.PUBLISH_REVIEW,
         }:
             raise PermissionError("Restricted CI execution operation denied")
         fresh = crud_ci_principal.authorize(db, context=context, action=action)
