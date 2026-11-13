@@ -2507,6 +2507,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             cache_split_columns,
             cache_split_from_row,
             exclude_replay_usage_condition,
+            reported_total_tokens,
         )
         from preloop.models.models.api_usage import ApiUsage
         from preloop.services.flow_failure_category import FAILURE_STATUSES
@@ -2552,7 +2553,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                         "completion_tokens"
                     ),
-                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
+                    func.coalesce(func.sum(reported_total_tokens()), 0).label(
                         "total_tokens"
                     ),
                     *cache_split_columns(),
@@ -2626,7 +2627,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                         "completion_tokens"
                     ),
-                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
+                    func.coalesce(func.sum(reported_total_tokens()), 0).label(
                         "total_tokens"
                     ),
                     *cache_split_columns(),

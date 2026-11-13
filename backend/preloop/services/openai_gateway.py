@@ -8755,6 +8755,12 @@ class OpenAIGatewayService:
                     ),
                 )
             kwargs["response_format"] = response_format
+            if not isinstance(response_format, dict):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="response_format must be an object",
+                )
             if response_format.get(
                 "type"
             ) == "json_schema" and _upstream_supports_json_object_only(kwargs):
@@ -8762,8 +8768,10 @@ class OpenAIGatewayService:
                 # the instructions. The flow result validation still enforces
                 # the schema on whatever the model returns.
                 kwargs["response_format"] = {"type": "json_object"}
+                json_schema = response_format.get("json_schema")
                 kwargs["messages"] = _json_schema_as_json_mode(
-                    kwargs["messages"], response_format.get("json_schema") or {}
+                    kwargs["messages"],
+                    json_schema if isinstance(json_schema, dict) else {},
                 )
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.

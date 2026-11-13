@@ -368,12 +368,14 @@ _MODEL_CONFIG_RE = re.compile(
     r"|model metadata for [`'\"][^`'\"]+[`'\"] not found"
     r"|\bmodel not found\b|unsupported model|invalid model"
     # DeepSeek's refusal of a json_schema response_format, the gateway's own
-    # structured-output refusal, and any other upstream 400 the harness
-    # surfaces as "unexpected status 400 Bad Request". A 400 is the request
-    # as configured, never a retry, matching the analysis rule for status 400.
+    # structured-output refusal, and any other model 400 the Codex harness
+    # surfaces as "unexpected status 400 Bad Request" (its model-request
+    # phrase; a bare "400 Bad Request" from a tool is not matched). A model
+    # 400 is the request as configured, never a retry, matching the analysis
+    # rule for status 400.
     r"|response_format type is unavailable"
     r"|does not support structured response_format"
-    r"|\b400 bad request\b",
+    r"|unexpected status 400 bad request",
     re.IGNORECASE,
 )
 # 'stream error ... Upstream provider disconnected mid-stream',

@@ -116,7 +116,43 @@ def test_execution_total_covers_prompt_and_completion(
     assert tokens["total_tokens"] == 280_000 + 1_100 + 600
     assert tokens["total_tokens"] >= tokens["input_tokens"] + tokens["output_tokens"]
     assert usage["estimated_cost"] == 0.03
+    assert usage["unpriced_tokens"] == 0
 
     listed = get_execution_totals(db_session, [execution.id])[str(execution.id)]
     assert listed["token_usage"]["total_tokens"] == tokens["total_tokens"]
     assert listed["estimated_cost"] == 0.03
+
+
+def test_flow_stats_and_unpriced_tokens_use_reported_total(
+    db_session, create_account, create_user
+):
+    from datetime import UTC, datetime, timedelta
+
+    from preloop.models.crud import crud_flow_execution as crud
+
+    account = create_account()
+    user = create_user(account=account)
+    flow, execution = _execution(db_session, account)
+    row = _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        prompt_tokens=278_000,
+        completion_tokens=2_000,
+        total_tokens=154_500,
+    )
+    row.estimated_cost = None
+    row.cost_source = "unpriced"
+    db_session.flush()
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(db_session, execution.id)
+    assert usage["unpriced_tokens"] == 280_000
+
+    stats = crud.get_execution_stats_for_flows(
+        db_session,
+        flow_ids=[flow.id],
+        start_date=datetime.now(UTC) - timedelta(days=1),
+    )
+    assert "280000" in str(vars(stats[0])) and "154500" not in str(vars(stats[0]))

@@ -3294,7 +3294,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 .filter(unpriced_condition)
                 .label("unpriced_requests"),
                 func.coalesce(
-                    func.sum(ApiUsage.total_tokens).filter(unpriced_condition), 0
+                    func.sum(reported_total_tokens()).filter(unpriced_condition), 0
                 ).label("unpriced_tokens"),
                 func.coalesce(
                     func.sum(ApiUsage.prompt_tokens).filter(unpriced_condition), 0

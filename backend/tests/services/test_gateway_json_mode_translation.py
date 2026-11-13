@@ -128,3 +128,24 @@ def test_gateway_structured_output_refusal_is_model_config():
         derive_failure_category(status="FAILED", error_message=message)
         == FAILURE_CATEGORY_MODEL_CONFIG
     )
+
+
+def test_non_object_response_format_is_a_400_not_a_crash():
+    import pytest
+
+    from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+    model = SimpleNamespace(
+        provider_name="deepseek", model_identifier="deepseek-chat", api_endpoint=None
+    )
+    with pytest.raises(ModelGatewayAPIError) as error:
+        _build_kwargs(model, {"response_format": "json_object"})
+    assert error.value.status_code == 400
+
+
+def test_tool_400_is_not_a_model_config_verdict():
+    message = "mcp tool fetch_url failed: HTTP 400 Bad Request from example.org"
+    assert (
+        derive_failure_category(status="FAILED", error_message=message)
+        != FAILURE_CATEGORY_MODEL_CONFIG
+    )
