@@ -68,21 +68,23 @@ Use `--register --yes` for explicit noninteractive approval and `--base-url http
 ## Restricted CI
 
 ```bash
+mkdir -m 700 ~/ci-secrets               # once: a private directory for issued secrets
 preloop ci capabilities
 preloop ci preview --input ci-preview.json
-preloop ci create --input ci-request.json --secret-file /private/new-ci-token
+preloop ci create --input ci-request.json --secret-file ~/ci-secrets/new-ci-token
 preloop ci list
 preloop ci show PRINCIPAL_ID
 preloop ci update PRINCIPAL_ID --input change.json
-preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
-preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
+preloop ci issue PRINCIPAL_ID --secret-file ~/ci-secrets/replacement-ci-token
+preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file ~/ci-secrets/rotated-ci-token
 preloop ci revoke PRINCIPAL_ID KEY_ID
-preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file /private/new-signing-secret
+preloop ci retire PRINCIPAL_ID
+preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file ~/ci-secrets/new-signing-secret
 preloop ci shared-flow FLOW_ID
 preloop ci share-flow FLOW_ID --input projects.json
 ```
 
-These commands use the saved login or `PRELOOP_TOKEN`. `--token` is rejected, so a plaintext token is not placed on the process command line. A secret is written only to a new exclusive file; stdout is safe metadata. `shared-flow` shows which projects a flow admits for restricted CI; `share-flow` replaces that allowlist on a read-only review flow from `{"project_ids": [...]}`. See [Native restricted CI setup](flows/restricted-ci.md).
+These commands use the saved login or `PRELOOP_TOKEN`. `--token` is rejected, so a plaintext token is not placed on the process command line. A secret is written only to a new exclusive file (mode 0600) in a directory you own; an existing file, a missing directory or one you cannot write is refused with the reason, before anything is issued. Stdout is safe metadata. `rotate` and `revoke` take both the identity id and the key id (`preloop ci show PRINCIPAL_ID` lists the keys). `subscribe` needs `subscription:create` in the identity's grant. An unknown `ci` subcommand exits non-zero with an error; CLIs before this change printed the help and exited 0, so `ci retire` on a CLI older than 1.0.0 looked successful while doing nothing. `shared-flow` shows which projects a flow admits for restricted CI; `share-flow` replaces that allowlist on a read-only review flow from `{"project_ids": [...]}`. See [Native restricted CI setup](flows/restricted-ci.md).
 
 ## Agents
 
