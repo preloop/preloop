@@ -7,8 +7,8 @@ so a dead key failed run after run while the model row still read ``active``.
 
 The gateway records the provider's verdict on the credential secret itself:
 
-* an upstream ``401`` on an API-key credential stores a small
-  ``upstream_auth_rejection`` object in the secret's ``meta_data``;
+* an upstream ``401`` or billing ``402`` on an API-key credential stores a small
+  authentication or billing rejection object in the secret's ``meta_data``;
 * the next request the provider accepts with that credential removes it;
 * replacing or rotating the key removes it.
 
@@ -30,19 +30,25 @@ from sqlalchemy.orm import Session
 from preloop.services.model_gateway_errors import provider_message_from_label
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.models.models.secret_reference import UPSTREAM_AUTH_REJECTION_KEY
-from preloop.services.upstream_errors import ERROR_CLASS_UPSTREAM_AUTH
+from preloop.services.upstream_errors import (
+    ERROR_CLASS_UPSTREAM_AUTH,
+    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+)
 from preloop.utils.jsonb_sanitize import sanitize_string
+from preloop.utils.secret_scrubbing import scrub_secrets
 
 logger = logging.getLogger(__name__)
 
 #: Error code surfaced as ``credentials_last_error_code`` for a rejected key.
 UPSTREAM_AUTH_REJECTED_CODE = "upstream_auth_rejected"
+UPSTREAM_BILLING_REJECTED_CODE = "upstream_billing_rejected"
 
 #: Longest provider message kept on the secret row.
 _MAX_PROVIDER_MESSAGE_CHARS = 200
 
 __all__ = [
     "UPSTREAM_AUTH_REJECTED_CODE",
+    "UPSTREAM_BILLING_REJECTED_CODE",
     "UPSTREAM_AUTH_REJECTION_KEY",
     "credential_rejection",
     "credential_rejection_summary",
@@ -60,7 +66,7 @@ def credential_rejection(secret: Any) -> Optional[dict[str, Any]]:
         The rejection object, or ``None`` when the provider has not rejected
         the stored key since it was last accepted, replaced or rotated.
     """
-    rejection = getattr(secret, "upstream_auth_rejection", None)
+    rejection = getattr(secret, "upstream_credential_rejection", None)
     return rejection if isinstance(rejection, dict) else None
 
 
@@ -120,17 +126,24 @@ def record_gateway_credential_outcome(
     if model_id is None or getattr(ai_model, "account_id", None) is None:
         return
 
-    if status_code == 401 and error_class == ERROR_CLASS_UPSTREAM_AUTH:
+    if (status_code == 401 and error_class == ERROR_CLASS_UPSTREAM_AUTH) or (
+        status_code == 402 and error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED
+    ):
         # Provider bodies can carry NUL or lone surrogates, which PostgreSQL
         # refuses in JSONB; an unsanitized message would lose the record.
         # The recorded detail is the client-facing message, which names the
         # upstream origin (#2288); the credential keeps the provider's own
         # sentence, as the summary already says who rejected the key.
         message = sanitize_string(
-            " ".join(str(provider_message_from_label(error_detail) or "").split()),
+            " ".join(
+                str(
+                    scrub_secrets(provider_message_from_label(error_detail)) or ""
+                ).split()
+            ),
             max_chars=_MAX_PROVIDER_MESSAGE_CHARS,
         )
-        crud_secret_reference.record_upstream_auth_rejection(
+        now = datetime.now(timezone.utc)
+        outcome = crud_secret_reference.record_upstream_auth_rejection(
             db,
             ai_model_id=model_id,
             secret_id=getattr(ai_model, "credentials_secret_id", None),
@@ -138,8 +151,54 @@ def record_gateway_credential_outcome(
             provider=str(getattr(ai_model, "provider_name", "") or ""),
             status_code=status_code,
             message=message,
-            now=datetime.now(timezone.utc),
+            now=now,
+            commit=False,
         )
+        if outcome.first_rejection is True:
+            from preloop.models.crud import crud_audit_log
+            from preloop.services.model_credential_alerts import (
+                enqueue_credential_rejection_notice,
+                rejection_notice_data,
+            )
+            from preloop.services.event_webhooks.events import (
+                EVENT_AI_MODEL_CREDENTIAL_REJECTED,
+            )
+            from preloop.services.event_webhooks.outbox import enqueue_event
+
+            assert outcome.rejection is not None
+            data = rejection_notice_data(ai_model, outcome.rejection)
+            # The secret row lock serializes read/claim across replicas, just
+            # as the failure-streak alert's lock serializes its audit claim.
+            crud_audit_log.log_action(
+                db,
+                account_id=ai_model.account_id,
+                action="ai_model.credential_rejected",
+                resource_type="ai_model",
+                resource_id=str(model_id),
+                status="error",
+                details=data,
+                commit=False,
+            )
+            enqueue_event(
+                db,
+                account_id=ai_model.account_id,
+                event_type=EVENT_AI_MODEL_CREDENTIAL_REJECTED,
+                data=data,
+                occurred_at=now,
+                natural_key=(
+                    f"credential_rejected:{data['reference_id']}:"
+                    f"{data['code']}:{data['first_rejected_at']}"
+                ),
+                subject_id=model_id,
+            )
+            db.commit()
+            enqueue_credential_rejection_notice(
+                account_id=ai_model.account_id, data=data
+            )
+        elif outcome.written is True:
+            db.commit()
+        else:
+            db.rollback()
         return
 
     if status_code < 400 and getattr(ai_model, "credentials_rejected", False):

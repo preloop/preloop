@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
@@ -423,7 +424,9 @@ class IssueLifecycleService:
                 self.db,
                 row=row,
                 flow_id=flow.id,
-                event=prepare_execution_routing(self.db, flow, event),
+                event=await run_db_off_loop(
+                    lambda: prepare_execution_routing(self.db, flow, event)
+                ),
             )
             state = (
                 "dispatch_pending" if execution.status == "PENDING" else "dispatched"
@@ -616,7 +619,9 @@ class IssueLifecycleService:
             self.db,
             row=row,
             flow_id=flow.id,
-            event=prepare_execution_routing(self.db, flow, event),
+            event=await run_db_off_loop(
+                lambda: prepare_execution_routing(self.db, flow, event)
+            ),
         )
 
     def _defer_until_checks(
@@ -742,7 +747,9 @@ class IssueLifecycleService:
                 self.db,
                 row=row,
                 flow_id=flow.id,
-                event=prepare_execution_routing(self.db, flow, event),
+                event=await run_db_off_loop(
+                    lambda: prepare_execution_routing(self.db, flow, event)
+                ),
             )
         if execution.status == "PENDING":
             await dispatch(execution)

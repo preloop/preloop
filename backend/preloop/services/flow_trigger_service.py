@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.plugins.account_hooks import AuthorizationContext
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
@@ -1615,7 +1616,6 @@ class FlowTriggerService:
             authorize,
             get_authorizer,
         )
-        from preloop.api.loop_safety import run_db_off_loop
 
         if get_authorizer() is None:
             return
@@ -1652,7 +1652,6 @@ class FlowTriggerService:
                 flow executions (#157). No execution row is created and
                 nothing is dispatched.
         """
-        from preloop.api.loop_safety import run_db_off_loop
         from preloop.models import crud, models
         from preloop.services.flow_execution_dispatcher import (
             dispatch_execute,
@@ -1696,12 +1695,16 @@ class FlowTriggerService:
             for key in ("lifecycle_pickup", "triage_context", "triage_packet"):
                 event_data.pop(key, None)
             if is_triage_flow(self.db, flow):
-                event_data = prepare_execution_routing(
-                    self.db,
-                    flow,
-                    _make_json_serializable(event_data),
-                    source_execution=source_execution,
-                    pin_kind="continuation" if source_execution is not None else None,
+                event_data = await run_db_off_loop(
+                    lambda: prepare_execution_routing(
+                        self.db,
+                        flow,
+                        _make_json_serializable(event_data),
+                        source_execution=source_execution,
+                        pin_kind="continuation"
+                        if source_execution is not None
+                        else None,
+                    )
                 )
                 if test_mode:
                     event_data["test_mode"] = True
@@ -1746,12 +1749,14 @@ class FlowTriggerService:
             trigger_details = _make_json_serializable(
                 dict(event_data) if event_data else {}
             )
-            trigger_details = prepare_execution_routing(
-                self.db,
-                flow,
-                trigger_details,
-                source_execution=source_execution,
-                pin_kind="continuation" if source_execution is not None else None,
+            trigger_details = await run_db_off_loop(
+                lambda: prepare_execution_routing(
+                    self.db,
+                    flow,
+                    trigger_details,
+                    source_execution=source_execution,
+                    pin_kind="continuation" if source_execution is not None else None,
+                )
             )
             if test_mode:
                 trigger_details["test_mode"] = True
@@ -3117,20 +3122,27 @@ class FlowTriggerService:
             if source_execution is None:
                 raise ModelRoutingError("source execution not found for this flow")
             pin_kind = "retry" if retry_of_execution_id is not None else "continuation"
-        trigger_details = prepare_execution_routing(
-            self.db,
-            flow,
-            trigger_details,
-            source_execution=source_execution,
-            pin_kind=pin_kind,
-        )
-        if no_progress_escalation and retry_of_execution_id is not None:
-            trigger_details = apply_no_progress_escalation(
+        trigger_details = await run_db_off_loop(
+            lambda: prepare_execution_routing(
                 self.db,
                 flow,
                 trigger_details,
-                escalation=no_progress_escalation,
-                retry_of_execution_id=retry_of_execution_id,
+                source_execution=source_execution,
+                pin_kind=pin_kind,
+                check_credentials=not (
+                    no_progress_escalation and retry_of_execution_id is not None
+                ),
+            )
+        )
+        if no_progress_escalation and retry_of_execution_id is not None:
+            trigger_details = await run_db_off_loop(
+                lambda: apply_no_progress_escalation(
+                    self.db,
+                    flow,
+                    trigger_details,
+                    escalation=no_progress_escalation,
+                    retry_of_execution_id=retry_of_execution_id,
+                )
             )
         from preloop.services.runner_service import validate_runner_capabilities
 
@@ -3324,11 +3336,15 @@ class FlowTriggerService:
                 cell["agent_type"] = str(entry["agent_type"])
             if entry.get("ai_model_id"):
                 cell["ai_model_id"] = str(entry["ai_model_id"])
-            trigger_details = prepare_execution_routing(
-                self.db,
-                flow,
-                trigger_details,
-                authorized_matrix=cell,
+            trigger_details = await run_db_off_loop(
+                lambda trigger_details=trigger_details, cell=cell: (
+                    prepare_execution_routing(
+                        self.db,
+                        flow,
+                        trigger_details,
+                        authorized_matrix=cell,
+                    )
+                )
             )
             cells.append(cell)
 

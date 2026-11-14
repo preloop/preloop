@@ -944,6 +944,17 @@ class CRUDAIModel(CRUDBase[AIModel]):
             db.commit()
         return updated
 
+    def remove_credential(self, db: Session, *, db_obj: AIModel) -> None:
+        """Detach a model and collect its secret only when no consumers remain."""
+        previous_secret_id = db_obj.credentials_secret_id
+        db_obj.credentials_secret_id = None
+        db_obj.credentials_secret = None
+        db.add(db_obj)
+        db.flush()
+        if previous_secret_id is not None:
+            self._delete_unreferenced_credential_secret(db, previous_secret_id)
+        db.commit()
+
     def count_sharing_secret(
         self, db: Session, *, secret_id: uuid.UUID, account_id: uuid.UUID
     ) -> int:
@@ -955,6 +966,20 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 self.model.account_id == account_id,
             )
             .count()
+        )
+
+    def list_sharing_secret(
+        self, db: Session, *, secret_id: uuid.UUID, account_id: uuid.UUID
+    ) -> list[AIModel]:
+        """List an account's models that resolve the given credential secret."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.credentials_secret_id == secret_id,
+                self.model.account_id == account_id,
+            )
+            .order_by(self.model.name.asc(), self.model.id.asc())
+            .all()
         )
 
     def _delete_unreferenced_credential_secret(

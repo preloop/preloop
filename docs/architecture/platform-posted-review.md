@@ -7,6 +7,12 @@ commit that was reviewed. The run itself never holds a credential that can
 write to GitHub.
 
 User guide: [Restricted CI: Review and status posted by Preloop](../guide/flows/restricted-ci.md#review-and-status-posted-by-preloop).
+Operator surfaces: the flow page card **Post review on the pull request**
+(`frontend/src/components/flow-platform-review-card.ts`), the execution page
+section **Posted on the pull request**
+(`frontend/src/components/execution-platform-review.ts`) and
+`preloop flow review-posting` (`cli/internal/cmd/flow_review_posting.go`).
+They read and write only the configuration and endpoints described here.
 Code: `backend/preloop/services/platform_review.py`. Tests:
 `backend/tests/services/test_platform_review.py` (every test named below is in
 that file).

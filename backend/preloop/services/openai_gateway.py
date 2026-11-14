@@ -46,6 +46,7 @@ from types import SimpleNamespace
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote as urllib_quote
+from urllib.parse import urlsplit
 
 import httpx
 import litellm
@@ -70,6 +71,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.models.crud.api_usage import consistent_total_tokens
 from preloop.models.crud.runtime_session import IDLE_GENERATION_INFIX
 from preloop.models.db.gateway_session import (
     has_runtime_session_summary_columns,
@@ -597,6 +599,48 @@ def _openrouter_usage_accounting_enabled() -> bool:
 def _is_openrouter_upstream(ai_model: GatewayModel) -> bool:
     """Whether this model's traffic terminates at OpenRouter."""
     return is_openrouter_model(ai_model)
+
+
+#: Hosts whose chat API accepts ``response_format={"type": "json_object"}``
+#: but rejects ``json_schema`` with an HTTP 400 ("This response_format type is
+#: unavailable now"), although LiteLLM's catalog lists schema support.
+_JSON_OBJECT_ONLY_HOSTS = frozenset({"api.deepseek.com"})
+_JSON_OBJECT_ONLY_MODEL_PREFIXES = ("deepseek/",)
+
+
+def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
+    """Whether the resolved upstream supports JSON mode but not JSON schemas."""
+    api_base = kwargs.get("api_base")
+    if isinstance(api_base, str) and api_base.strip():
+        try:
+            host = urlsplit(api_base.strip()).hostname
+        except ValueError:
+            return False
+        return (host or "").lower() in _JSON_OBJECT_ONLY_HOSTS
+    model = str(kwargs.get("model") or "").lower()
+    return model.startswith(_JSON_OBJECT_ONLY_MODEL_PREFIXES)
+
+
+def _json_schema_as_json_mode(
+    messages: List[Dict[str, Any]], json_schema: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Return ``messages`` with the schema stated as a system instruction.
+
+    Used when an upstream only offers JSON mode: the model is told the exact
+    schema, the provider guarantees syntactically valid JSON, and the flow's
+    existing result validation still checks the document against the schema.
+    The caller's list is never mutated.
+    """
+    schema = json_schema.get("schema") if isinstance(json_schema, dict) else None
+    name = json_schema.get("name") if isinstance(json_schema, dict) else None
+    instruction = (
+        "Respond with a single JSON object only, no prose and no code fences. "
+        "It must validate against this JSON Schema"
+        + (f" ({name})" if isinstance(name, str) and name else "")
+        + ":\n"
+        + json.dumps(schema if schema is not None else {}, sort_keys=True)
+    )
+    return [{"role": "system", "content": instruction}, *messages]
 
 
 def _bedrock_region(ai_model: GatewayModel) -> Optional[str]:
@@ -8712,6 +8756,24 @@ class OpenAIGatewayService:
                     ),
                 )
             kwargs["response_format"] = response_format
+            if not isinstance(response_format, dict):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="response_format must be an object",
+                )
+            if response_format.get(
+                "type"
+            ) == "json_schema" and _upstream_supports_json_object_only(kwargs):
+                # Translate rather than refuse: JSON mode plus the schema in
+                # the instructions. The flow result validation still enforces
+                # the schema on whatever the model returns.
+                kwargs["response_format"] = {"type": "json_object"}
+                json_schema = response_format.get("json_schema")
+                kwargs["messages"] = _json_schema_as_json_mode(
+                    kwargs["messages"],
+                    json_schema if isinstance(json_schema, dict) else {},
+                )
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.
         # OpenRouter also gets HTTP-Referer / X-Title.
@@ -11375,9 +11437,24 @@ class OpenAIGatewayService:
             or usage_details.get("output_tokens")
             or 0
         )
-        total_tokens = usage.get("total_tokens") or usage_details.get("total_tokens")
-        if not total_tokens and (prompt_tokens or completion_tokens):
-            total_tokens = prompt_tokens + completion_tokens
+        reported_totals = [
+            value
+            for value in (usage.get("total_tokens"), usage_details.get("total_tokens"))
+            if value is not None
+        ]
+        total_tokens = next((value for value in reported_totals if value), None)
+        # The stored total is never below input plus output. A provider total
+        # that is smaller, an explicit 0 included (it leaves the cached input
+        # out, or a counter was mapped wrongly), is kept in
+        # ``meta_data.usage_details`` and flagged, so the disagreement stays
+        # visible instead of reaching billing. A missing total is not flagged.
+        total_below_components = bool(reported_totals) and int(total_tokens or 0) < int(
+            prompt_tokens or 0
+        ) + int(completion_tokens or 0)
+        if prompt_tokens or completion_tokens:
+            total_tokens = consistent_total_tokens(
+                prompt_tokens, completion_tokens, total_tokens
+            )
         token_details = self._extract_token_details(usage_details)
         usage_estimated = False
         if not prompt_tokens and not completion_tokens and status_code in (200, 499):
@@ -11543,7 +11620,12 @@ class OpenAIGatewayService:
                 "funding": "platform"
                 if model_billing_is_hosted(ai_model)
                 else "account",
-                "billing_path": "allowance"
+                # Subscription (OAuth) traffic is neither the platform
+                # allowance nor a customer API key; it uses the same name as
+                # its cost_source.
+                "billing_path": "subscription"
+                if cost_source == "subscription"
+                else "allowance"
                 if model_billing_is_hosted(ai_model)
                 else "your_key",
                 "billing_model_id": str(ai_model.id),
@@ -11560,7 +11642,15 @@ class OpenAIGatewayService:
                 else None,
                 "usage_details": usage_details or None,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
-                "usage_warnings": self._usage_warnings(usage_details) or None,
+                "usage_warnings": (
+                    self._usage_warnings(usage_details)
+                    + (
+                        ["total_tokens_below_components"]
+                        if total_below_components
+                        else []
+                    )
+                )
+                or None,
                 "pricing_snapshot": {
                     **cost_estimate.pricing_snapshot,
                     "timestamp_basis": "request_start_estimated_from_duration",

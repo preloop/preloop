@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 _DIGITS = re.compile(r"\d+")
 
+#: Keys that only a cache inclusive usage payload carries (Chat Completions,
+#: Responses, or a chat usage the gateway renamed to the Responses shape).
+_CACHE_INCLUSIVE_INPUT_MARKERS = (
+    "prompt_tokens",
+    "total_tokens",
+    "input_tokens_details",
+)
+
 
 def coerce_token_count(value: Any) -> Optional[int]:
     """Return ``value`` as a non-negative token count, or None if unusable.
@@ -155,8 +163,14 @@ def anthropic_cache_input_tokens(usage: Optional[Dict[str, Any]]) -> int:
     Responses ``input_tokens``. The ledger stores input cache inclusive, so
     the caller adds this figure to a raw Anthropic input total (#1955).
 
-    A payload that names ``prompt_tokens`` is already cache inclusive and
-    yields 0, as does one without the top-level Anthropic cache keys.
+    The top-level cache keys alone do not identify a raw Anthropic payload.
+    litellm repeats them next to a cache inclusive ``prompt_tokens`` (Gemini,
+    Anthropic), and the gateway keeps them when it renames that usage to the
+    Responses shape, which has ``input_tokens`` and no ``prompt_tokens``.
+    Adding the cache to such a payload counts it twice. A raw Anthropic usage
+    never carries ``prompt_tokens``, ``total_tokens`` or
+    ``input_tokens_details``; any of them marks the input as cache inclusive
+    and yields 0, as does a payload without the top-level cache keys.
 
     Args:
         usage: Raw or normalized provider usage payload.
@@ -164,7 +178,9 @@ def anthropic_cache_input_tokens(usage: Optional[Dict[str, Any]]) -> int:
     Returns:
         Cache read plus cache write tokens to add to ``input_tokens``.
     """
-    if not isinstance(usage, dict) or "prompt_tokens" in usage:
+    if not isinstance(usage, dict):
+        return 0
+    if any(key in usage for key in _CACHE_INCLUSIVE_INPUT_MARKERS):
         return 0
     return sum(
         coerce_token_count(usage.get(key)) or 0
