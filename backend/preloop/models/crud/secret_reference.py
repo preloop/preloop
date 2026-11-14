@@ -30,30 +30,44 @@ class CredentialRejectionOutcome:
 class CRUDSecretReference(CRUDBase[models.SecretReference]):
     """CRUD class for SecretReference operations."""
 
-    def can_reuse_for_models(
+    def validate_model_reuse(
         self, db: Session, *, secret: models.SecretReference, account_id: Any
-    ) -> bool:
+    ) -> None:
         """Prove ownership without adopting unowned or mixed-account secrets.
 
         Explicit ownership must match. A legacy secret without an owner needs
         at least one model reference, and every reference must name this account.
         Global model references are not evidence of account ownership.
+
+        Raises:
+            ValueError: Ownership is foreign, ambiguous, or cannot be proved.
         """
         if account_id is None:
-            return False
+            raise ValueError("Referenced credential secret requires an owning account")
         owner = secret.account_id
         if owner is not None and str(owner) != str(account_id):
-            return False
+            raise ValueError(
+                "Referenced credential secret belongs to a different account"
+            )
         references = (
             db.query(models.AIModel.account_id)
             .filter(models.AIModel.credentials_secret_id == secret.id)
             .distinct()
             .all()
         )
-        return (owner is not None or bool(references)) and all(
-            model_account is not None and str(model_account) == str(account_id)
+        if owner is None and not references:
+            raise ValueError(
+                "Referenced credential secret has no owning account and no model "
+                "references proving ownership"
+            )
+        if any(
+            model_account is None or str(model_account) != str(account_id)
             for (model_account,) in references
-        )
+        ):
+            raise ValueError(
+                "Referenced credential secret has model references belonging to a "
+                "different account or a global model"
+            )
 
     def get_for_update(
         self,

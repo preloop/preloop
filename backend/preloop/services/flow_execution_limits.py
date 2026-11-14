@@ -947,7 +947,7 @@ def repeated_failure_message(
         source = f"{source} from upstream provider {first_cause.provider}"
     if first_cause.error_class:
         source = f"{first_cause.error_class}, {source}"
-    message = f"{message}. First failure in this run ({source})"
+    message = f"{message.rstrip('.')}. First failure in this run ({source})"
     if first_cause.detail:
         message = f"{message}: {first_cause.detail}"
     return message

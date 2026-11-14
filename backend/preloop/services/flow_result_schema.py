@@ -106,21 +106,32 @@ def uses_openai_strict_results(model: Any) -> bool:
     JSON-mode fallbacks (including DeepSeek) and other model families retain
     their existing schemas and capture-time validation.
     """
-    provider = str(getattr(model, "provider_name", "") or "").lower()
-    identifier = str(getattr(model, "model_identifier", "") or "").lower()
+    from preloop.services.litellm_routing import OPENAI_COMPATIBLE_PROVIDERS
+
+    provider = str(getattr(model, "provider_name", "") or "").strip().lower()
+    identifier = str(getattr(model, "model_identifier", "") or "").strip().lower()
     endpoint = str(getattr(model, "api_endpoint", "") or "")
     try:
         host = (urlsplit(endpoint).hostname or "").lower()
     except ValueError:
         return False
-    if host == "api.deepseek.com" or provider == "deepseek":
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return False
+    identifier = identifier.removeprefix("openai/")
+    if identifier.startswith("gpt-oss"):
+        return False
+    openai_family = identifier.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-"))
     if provider in {"azure", "azure_openai"}:
-        return True
-    if identifier.startswith("openai/"):
-        return True
-    if identifier.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
-        return True
+        azure_host = host.endswith(
+            (
+                ".openai.azure.com",
+                ".cognitiveservices.azure.com",
+                ".services.ai.azure.com",
+            )
+        )
+        return openai_family and (not host or azure_host)
+    if provider == "openrouter" or host == "openrouter.ai":
+        return openai_family and (not host or host == "openrouter.ai")
     return provider == "openai" and (not host or host == "api.openai.com")
 
 
@@ -148,10 +159,20 @@ def check_native_result_schema(schema: Any) -> None:
         target = schema
         try:
             for part in reference[2:].split("/") if reference.startswith("#/") else []:
-                target = target[part.replace("~1", "/").replace("~0", "~")]
+                part = part.replace("~1", "/").replace("~0", "~")
+                if isinstance(target, list):
+                    if (
+                        not part.isascii()
+                        or not part.isdecimal()
+                        or (len(part) > 1 and part.startswith("0"))
+                    ):
+                        raise KeyError(part)
+                    target = target[int(part)]
+                else:
+                    target = target[part]
             if reference != "#" and not reference.startswith("#/"):
                 raise KeyError(reference)
-        except (KeyError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError) as exc:
             raise ResultSchemaError(
                 f"result_schema at {path}: unresolved reference"
             ) from exc
@@ -215,6 +236,11 @@ def check_native_result_schema(schema: Any) -> None:
             "dependentRequired",
             "dependentSchemas",
             "patternProperties",
+            "prefixItems",
+            "contains",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "propertyNames",
         ):
             if keyword in node:
                 raise ResultSchemaError(

@@ -242,10 +242,13 @@ class CRUDAIModel(CRUDBase[AIModel]):
         credential material, the existing secret is reused as-is. This is what lets
         several models share one provider key. The secret is verified to belong to
         ``account_id`` first, so a caller cannot attach another account's key.
+        A legacy ownerless secret requires at least one model reference and all
+        references must belong to this account. Global or mixed-account model
+        references are refused even when explicit ownership matches.
 
         Raises:
-            ValueError: If the referenced secret does not exist or belongs to a
-                different account.
+            ValueError: If the referenced secret does not exist, belongs to a
+                different account, or has ambiguous/unprovable model ownership.
         """
         api_key = obj_data.pop("api_key", None) if "api_key" in obj_data else None
         credential_type = obj_data.pop("credential_type", None)
@@ -267,12 +270,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
             secret_ref = crud_secret_reference.get(db, id=reuse_secret_id)
             if secret_ref is None:
                 raise ValueError("Referenced credential secret does not exist")
-            if not crud_secret_reference.can_reuse_for_models(
+            crud_secret_reference.validate_model_reuse(
                 db, secret=secret_ref, account_id=account_id
-            ):
-                raise ValueError(
-                    "Referenced credential secret belongs to a different account"
-                )
+            )
             return
 
         if api_key:

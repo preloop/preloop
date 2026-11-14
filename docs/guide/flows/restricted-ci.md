@@ -38,6 +38,7 @@ without them). Replace the placeholders with your own IDs:
   "validate_result": true,
   "result_schema": {
     "type": "object",
+    "additionalProperties": false,
     "required": ["review"],
     "properties": {"review": {"type": "string"}}
   },
@@ -61,6 +62,12 @@ flow, or change it, send only that field to `PUT /api/v1/flows/{flow_id}`
 ```
 
 `GET /api/v1/ai-models/{model_id}/used-by` then lists the flow.
+
+These read-only Codex examples enable native structured results by default.
+Their schemas follow the [OpenAI strict-output requirements](repo-review-presets.md#native-codex-structured-results):
+every object is closed and every declared property is required. Include `null`
+for nullable values such as a finding's absent path or line. A capture-only flow
+can explicitly set `agent_config.native_result: false` instead.
 
 To bind an existing flow instead, use the human `PUT /api/v1/flows/{flow_id}`
 endpoint to set the dedicated clone binding. Replace the synthetic IDs below
@@ -1101,7 +1108,8 @@ CI identity, so neither can trigger for, read or cause a post on the other.
       "validate_result": true,
       "result_schema": {
         "type": "object",
-        "required": ["verdict", "summary", "findings"],
+        "additionalProperties": false,
+        "required": ["verdict", "summary", "findings", "checked"],
         "properties": {
           "verdict": {"type": "string", "enum": ["pass", "fail"]},
           "summary": {"type": "string"},
@@ -1109,17 +1117,18 @@ CI identity, so neither can trigger for, read or cause a post on the other.
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["severity", "title", "body"],
+              "additionalProperties": false,
+              "required": ["severity", "title", "body", "path", "line"],
               "properties": {
                 "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
-                "path": {"type": "string"},
-                "line": {"type": "integer"}
+                "path": {"type": ["string", "null"]},
+                "line": {"type": ["integer", "null"]}
               }
             }
           },
-          "checked": {"type": "array", "items": {"type": "string"}}
+          "checked": {"type": ["array", "null"], "items": {"type": "string"}}
         }
       },
       "trigger_project_ids": ["<project A id>", "<project B id>"],
@@ -1248,6 +1257,7 @@ flow uses the native read-only mode described above (a complete
   "validate_result": true,
   "result_schema": {
     "type": "object",
+    "additionalProperties": false,
     "required": ["review"],
     "properties": {"review": {"type": "string"}}
   },

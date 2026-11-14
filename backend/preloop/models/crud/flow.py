@@ -602,7 +602,40 @@ class CRUDFlow(CRUDBase[models.Flow]):
         effective = SimpleNamespace(
             **{key: update_data.get(key, getattr(db_obj, key)) for key in relevant}
         )
-        self._check_native_result(db, effective)
+        mode_fields = {
+            "agent_type",
+            "result_schema",
+            "ai_model_id",
+            "validate_result",
+            "source_preset_id",
+            "is_preset",
+            "git_clone_config",
+        }
+        changed_mode = any(
+            key in update_data and update_data[key] != getattr(db_obj, key)
+            for key in mode_fields
+        )
+        config_keys = (
+            "native_result",
+            "model_routing",
+            "model_by_label",
+            "retry_on_no_progress",
+        )
+        old_config = (
+            db_obj.agent_config if isinstance(db_obj.agent_config, dict) else {}
+        )
+        new_config = (
+            effective.agent_config if isinstance(effective.agent_config, dict) else {}
+        )
+        changed_mode = changed_mode or any(
+            old_config.get(key) != new_config.get(key) for key in config_keys
+        )
+        if effective.is_preset and effective.name != db_obj.name:
+            changed_mode = True
+        enabling = update_data.get("is_enabled") is True and not db_obj.is_enabled
+        # Always permit stopping a legacy flow; re-enabling validates its mode.
+        if update_data.get("is_enabled") is not False and (changed_mode or enabling):
+            self._check_native_result(db, effective)
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         db.add(db_obj)

@@ -11,6 +11,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, get_args
 
 import pytest
@@ -138,6 +139,15 @@ def test_documented_json_is_accepted(name: str, kind: str, body: str) -> None:
     if kind == "flow-create":
         # Without a model the flow silently uses the account default.
         assert filled.get("ai_model_id"), f"{name}: set ai_model_id"
+        from preloop.services.native_result import resolve_native_result
+        from preloop.services.flow_result_schema import check_native_result_schema
+
+        flow = FlowCreate.model_validate(filled)
+        if (
+            flow.agent_type == "codex"
+            and resolve_native_result(SimpleNamespace(**flow.model_dump()))[0]
+        ):
+            check_native_result_schema(flow.result_schema)
 
 
 def test_guides_have_complete_flow_creation_examples() -> None:

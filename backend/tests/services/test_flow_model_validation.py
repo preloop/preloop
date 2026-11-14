@@ -91,7 +91,12 @@ def test_reuse_requires_unambiguous_account_ownership(
                 )
             assert target.credentials_secret_id == secret.id
         else:
-            with pytest.raises(ValueError, match="different account"):
+            with pytest.raises(
+                ValueError,
+                match="no owning account"
+                if ownership == "unreferenced"
+                else "different account",
+            ):
                 crud.crud_ai_model._apply_secret_reference_fields(
                     db_session,
                     obj_data={"credentials_secret_id": secret.id},
@@ -294,7 +299,7 @@ def test_valid_recursive_schema_and_data_annotations_are_preserved() -> None:
     "provider,identifier,endpoint,strict",
     [
         ("openai", "gpt-5", None, True),
-        ("azure", "deployment", "https://example.openai.azure.com", True),
+        ("azure", "gpt-5", "https://example.openai.azure.com", True),
         ("openrouter", "openai/gpt-5", None, True),
         ("deepseek", "deepseek-chat", None, False),
         ("openai", "deepseek-chat", "https://api.deepseek.com", False),
@@ -455,6 +460,153 @@ def test_schema_checks_routed_and_retry_models(
                 prompt_template="Review",
                 agent_type="codex",
                 agent_config={"native_result": True, selection: selections[selection]},
+                result_schema={"type": "object"},
+            ),
+            account_id=test_user.account_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"is_enabled": False},
+        {"name": "Renamed legacy"},
+        {"agent_config": {"native_result": True, "limits": {"max_turns": 10}}},
+    ],
+)
+def test_legacy_native_flow_allows_unrelated_remediation(
+    db_session: Session, test_user: models.User, change: dict[str, Any]
+) -> None:
+    """A previously saved schema cannot prevent disabling or maintaining a flow."""
+    from preloop.models.crud.base import CRUDBase
+
+    model = crud.crud_ai_model.create_with_account(
+        db_session,
+        obj_in={
+            "name": "Legacy",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "synthetic-key",
+        },
+        account_id=test_user.account_id,
+    )
+    flow = crud.crud_flow.create(
+        db_session,
+        flow_in=FlowCreate(
+            name="Legacy",
+            prompt_template="Review",
+            agent_type="codex",
+            ai_model_id=model.id,
+            agent_config={"native_result": False},
+            result_schema={"type": "object"},
+        ),
+        account_id=test_user.account_id,
+    )
+    CRUDBase(models.Flow).update(
+        db_session, db_obj=flow, obj_in={"agent_config": {"native_result": True}}
+    )
+    updated = crud.crud_flow.update(
+        db_session,
+        db_obj=flow,
+        flow_in=FlowUpdate(**change),
+        account_id=test_user.account_id,
+    )
+    assert updated.result_schema == {"type": "object"}
+    for name, value in change.items():
+        assert getattr(updated, name) == value
+    if change.get("is_enabled") is False:
+        with pytest.raises(ResultSchemaError):
+            crud.crud_flow.update(
+                db_session,
+                db_obj=flow,
+                flow_in=FlowUpdate(is_enabled=True),
+                account_id=test_user.account_id,
+            )
+
+
+@pytest.mark.parametrize(
+    "provider,identifier,endpoint",
+    [
+        ("custom", "gpt-4o", "https://models.example.com"),
+        ("openai-compatible", "o3-mini", "https://models.example.com"),
+        ("openai", "gpt-4o", "https://models.example.com"),
+        ("custom", "openai/gpt-oss-120b", "https://models.example.com"),
+        ("azure", "phi-4", "https://example.services.ai.azure.com"),
+    ],
+)
+def test_custom_routes_do_not_inherit_openai_schema_constraints(
+    provider: str, identifier: str, endpoint: str
+) -> None:
+    """OpenAI-shaped model aliases are insufficient evidence of a strict API."""
+    assert not uses_openai_strict_results(
+        SimpleNamespace(
+            provider_name=provider, model_identifier=identifier, api_endpoint=endpoint
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "keyword", ["prefixItems", "contains", "unevaluatedProperties", "unevaluatedItems"]
+)
+def test_strict_schema_rejects_unsupported_schema_locations(keyword: str) -> None:
+    """Unsupported schema keywords must not bypass validation of nested objects."""
+    schema = deepcopy(STRICT_SCHEMA)
+    child = {"type": "object"}
+    schema["properties"]["findings"][keyword] = (
+        [child] if keyword == "prefixItems" else child
+    )
+    with pytest.raises(ResultSchemaError, match=keyword):
+        check_native_result_schema(schema)
+
+
+def test_schema_reference_can_address_an_array_branch() -> None:
+    """JSON Pointer array indices resolve just like mapping keys."""
+    schema = deepcopy(STRICT_SCHEMA)
+    schema["properties"]["findings"]["items"] = {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    schema["properties"]["tag"] = {"$ref": "#/properties/findings/items/anyOf/0"}
+    schema["required"].append("tag")
+    check_native_result_schema(schema)
+
+
+def test_source_review_preset_enables_strict_validation(
+    db_session: Session, test_user: models.User
+) -> None:
+    """A cloned review preset defaults native output on without read-only config."""
+    from preloop.flow_presets import PRESET_SLUGS
+
+    preset = crud.crud_flow.create(
+        db_session,
+        flow_in=FlowCreate(
+            name=PRESET_SLUGS["pull-request-reviewer"],
+            prompt_template="Review",
+            agent_type="codex",
+            agent_config={},
+            is_preset=True,
+        ),
+        account_id=test_user.account_id,
+    )
+    model = crud.crud_ai_model.create_with_account(
+        db_session,
+        obj_in={
+            "name": "Preset model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "synthetic-key",
+        },
+        account_id=test_user.account_id,
+    )
+    with pytest.raises(ResultSchemaError, match="additionalProperties"):
+        crud.crud_flow.create(
+            db_session,
+            flow_in=FlowCreate(
+                name="Cloned",
+                prompt_template="Review",
+                agent_type="codex",
+                agent_config={},
+                source_preset_id=preset.id,
+                ai_model_id=model.id,
                 result_schema={"type": "object"},
             ),
             account_id=test_user.account_id,
