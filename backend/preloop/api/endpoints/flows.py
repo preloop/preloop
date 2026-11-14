@@ -544,12 +544,17 @@ def create_flow(
     except CallableFlowsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    flow = crud_flow.create(
-        db=db,
-        flow_in=flow_in,
-        account_id=current_user.account_id,
-        created_by_user_id=getattr(current_user, "id", None),
-    )
+    from preloop.services.flow_result_schema import ResultSchemaError
+
+    try:
+        flow = crud_flow.create(
+            db=db,
+            flow_in=flow_in,
+            account_id=current_user.account_id,
+            created_by_user_id=getattr(current_user, "id", None),
+        )
+    except ResultSchemaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     log_config_change(
         db,
@@ -3349,7 +3354,9 @@ def _validate_matrix(
         409: {
             "description": (
                 "A model key failed its authentication probe (model_credentials_rejected), "
-                "or execution conflicts with a flow admission policy."
+                "or execution conflicts with a flow admission policy. Key rejections "
+                "include model_name, origin, provider, category, upstream_status, "
+                "provider_message, first_rejected_at, and key replacement instructions."
             )
         }
     },
@@ -3419,9 +3426,7 @@ async def trigger_flow_execution(
                 detail["execution_id"] = str(error.execution_id)
             raise HTTPException(503, detail) from None
         except ModelCredentialsRejectedError as exc:
-            raise HTTPException(
-                409, {"code": exc.code, "model_name": exc.model_name}
-            ) from None
+            raise HTTPException(409, exc.to_detail()) from None
         except ModelRoutingError:
             raise HTTPException(
                 422, "Restricted CI server model binding unavailable"
@@ -3484,7 +3489,7 @@ async def trigger_flow_execution(
         except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ModelCredentialsRejectedError as exc:
-            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(409, exc.to_detail()) from exc
         except (ModelRoutingError, RunnerCapabilityError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except FlowHaltActiveError:
@@ -3505,7 +3510,7 @@ async def trigger_flow_execution(
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -3598,7 +3603,7 @@ async def retry_flow_execution(
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -3892,9 +3897,14 @@ def update_flow(
     )
 
     old_enabled = flow.is_enabled
-    flow = crud_flow.update(
-        db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
-    )
+    from preloop.services.flow_result_schema import ResultSchemaError
+
+    try:
+        flow = crud_flow.update(
+            db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
+        )
+    except ResultSchemaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Determine if this was an enable/disable toggle
     update_fields = flow_in.model_dump(exclude_unset=True)
@@ -4351,7 +4361,7 @@ async def trigger_flow_via_webhook(
     except ReadOnlyHumanTriggerError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:

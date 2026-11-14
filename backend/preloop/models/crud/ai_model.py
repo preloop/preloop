@@ -267,7 +267,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
             secret_ref = crud_secret_reference.get(db, id=reuse_secret_id)
             if secret_ref is None:
                 raise ValueError("Referenced credential secret does not exist")
-            if str(secret_ref.account_id) != str(account_id):
+            if not crud_secret_reference.can_reuse_for_models(
+                db, secret=secret_ref, account_id=account_id
+            ):
                 raise ValueError(
                     "Referenced credential secret belongs to a different account"
                 )

@@ -84,12 +84,42 @@ class ModelCredentialsRejectedError(ModelRoutingError):
 
     code = "model_credentials_rejected"
 
-    def __init__(self, model_name: str, provider_message: str) -> None:
-        self.model_name = model_name
+    category = "model_auth"
+
+    def __init__(
+        self,
+        model_name: str,
+        provider_message: str,
+        *,
+        provider: Optional[str] = None,
+        first_rejected_at: Optional[str] = None,
+    ) -> None:
+        from preloop.services.model_gateway_errors import extract_upstream_error_detail
+        from preloop.utils.secret_scrubbing import scrub_secrets
+
+        self.model_name = (scrub_secrets(model_name) or "Model")[:200]
+        self.provider = (scrub_secrets(provider or "") or "upstream")[:100]
+        self.provider_message = extract_upstream_error_detail(provider_message).message
+        self.first_rejected_at = first_rejected_at
         super().__init__(
-            f"Model '{model_name}': {provider_message} "
-            "replace or rotate the API key for this model."
+            f"Provider {self.provider} rejected the API key for model "
+            f"'{self.model_name}'. Provider message: {self.provider_message}. "
+            "Replace the API key on this model."
         )
+
+    def to_detail(self) -> dict[str, Any]:
+        """Return the gateway's upstream error shape with actionable key context."""
+        return {
+            "code": self.code,
+            "model_name": self.model_name,
+            "message": str(self),
+            "origin": "upstream",
+            "provider": self.provider,
+            "category": "upstream_auth",
+            "upstream_status": 401,
+            "provider_message": self.provider_message,
+            "first_rejected_at": self.first_rejected_at,
+        }
 
 
 def validate_execution_model_credentials(
@@ -122,7 +152,10 @@ def validate_execution_model_credentials(
     result = probe_rejected_model_credentials(db, model=model)
     if result.auth_rejected:
         raise ModelCredentialsRejectedError(
-            scrub_secrets(model.name) or "Model", result.message
+            scrub_secrets(model.name) or "Model",
+            result.message,
+            provider=model.provider_name,
+            first_rejected_at=rejection.get("first_rejected_at"),
         )
 
 

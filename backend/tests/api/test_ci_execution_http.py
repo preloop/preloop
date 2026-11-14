@@ -457,19 +457,22 @@ def test_parked_checkpoint_is_not_served_as_the_final_result(
     assert "checkpoint" not in response.text
 
 
-def test_rejected_model_response_exposes_only_name_and_code(
+def test_rejected_model_response_exposes_sanitized_provider_context(
     db_session: Session,
     ci_resources: tuple[Any, ...],
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The restricted principal cannot read provider detail or secret identity."""
+    """A rejected model includes actionable provider context without key material."""
     from preloop.services.model_routing import ModelCredentialsRejectedError
 
     _, _, token = provision(db_session, ci_resources)
     trigger = AsyncMock(
         side_effect=ModelCredentialsRejectedError(
-            "Review model", "Private provider detail"
+            "Review model",
+            "Invalid API key sk-test-abcdefghijklmnopqrstuv",
+            provider="openai",
+            first_rejected_at="2026-11-14T00:00:00+00:00",
         )
     )
     monkeypatch.setattr(flows, "trigger_ci_review", trigger)
@@ -479,8 +482,14 @@ def test_rejected_model_response_exposes_only_name_and_code(
         json={"pr_number": 7, "head_sha": "a" * 40},
     )
     assert response.status_code == 409, response.text
-    assert response.json()["detail"] == {
-        "code": "model_credentials_rejected",
-        "model_name": "Review model",
-    }
-    assert "Private provider detail" not in response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "model_credentials_rejected"
+    assert detail["model_name"] == "Review model"
+    assert detail["origin"] == "upstream"
+    assert detail["provider"] == "openai"
+    assert detail["category"] == "upstream_auth"
+    assert detail["upstream_status"] == 401
+    assert detail["first_rejected_at"] == "2026-11-14T00:00:00+00:00"
+    assert "Invalid API key" in detail["provider_message"]
+    assert "replace" in detail["message"].lower()
+    assert "sk-test-abcdefghijklmnopqrstuv" not in response.text

@@ -382,6 +382,16 @@ pinned CLI's `--output-schema` and captures its final answer with
 and completion-status gates still decide success. Setting a schema alone keeps
 the existing file-writing contract.
 
+For native results on OpenAI model families (including Azure and OpenAI models
+routed through another provider), saving a flow checks the strict structured-output
+schema: every object, including array items and definitions, must set
+`additionalProperties: false` and require every declared property. Use nullable
+types for optional values. Unsupported schema compositions are rejected with the
+schema path. These checks also apply when an update enables native results or
+changes the model. The stored schema is preserved; capture-only schemas and other
+model families, including JSON-mode fallbacks, retain their existing validation.
+Provider schema rejections end the run with `model_config`.
+
 For Responses requests translated to Chat Completions, the gateway maps
 `text.format` to `response_format`. The gateway checks provider/model support for
 structured output and returns an explicit error when the schema is unsupported,
