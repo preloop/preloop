@@ -79,6 +79,9 @@ jobs:
               # backend/tests/test_universal_agent_image.py pins this recipe.
               - 'environments/universal/**'
               - 'environments/preloop/Dockerfile'
+              # test_restricted_ci_docs_examples.py validates their JSON.
+              - 'docs/guide/flows/restricted-ci.md'
+              - 'docs/guide/flows/repo-review-presets.md'
               - 'pyproject.toml'
               - 'requirements/**'
               # mkdocs lock only. Backend shards install app-dev.txt, not this.

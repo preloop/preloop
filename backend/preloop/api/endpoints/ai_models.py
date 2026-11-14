@@ -37,6 +37,8 @@ from preloop.schemas.ai_model import (
     AIModelRead,
     AIModelsOverviewResponse,
     AIModelUpdate,
+    AIModelInUseDetail,
+    AIModelInUseResponse,
     AIModelUsedByResponse,
     AvailableModelsRequest,
     AvailableModelsResponse,
@@ -681,7 +683,55 @@ def get_ai_model(
                 db, account_id=current_user.account_id, model_kind=model.model_kind
             ),
         )
-    return model
+    expires_at = (
+        _credential_expires_at(db, model)
+        if _can_see_credential_lifetime(db, current_user)
+        else None
+    )
+    if expires_at is None:
+        return model
+    read = AIModelRead.model_validate(model)
+    read.credentials_expires_at = expires_at
+    return read
+
+
+def _can_see_credential_lifetime(db: Session, user: User) -> bool:
+    """Account admins and the model's editors may see when a login expires."""
+    from preloop.utils.permissions import user_holds_permission
+
+    return bool(getattr(user, "is_superuser", False)) or user_holds_permission(
+        db, user, "edit_ai_models"
+    )
+
+
+def _credential_expires_at(db: Session, model: AIModel) -> Optional[datetime]:
+    """Read a subscription login's expiry without refreshing or returning it.
+
+    Args:
+        db: Database session.
+        model: Account model whose stored credential is inspected.
+
+    Returns:
+        The access token's expiry in UTC, or None for API keys, external
+        references and bundles without a usable ``expires``.
+    """
+    if not getattr(model, "credentials_secret_id", None):
+        return None
+    try:
+        resolved = get_secret_service().resolve_ai_model_credentials(
+            model, db=db, allow_refresh=False
+        )
+    except (ValueError, LookupError, RuntimeError):
+        return None
+    if (
+        resolved is None
+        or resolved.credential_type not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+    ):
+        return None
+    expires_ms = _coerce_expires_ms(resolved.payload or {})
+    if expires_ms is None:
+        return None
+    return datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
 
 
 @router.get(
@@ -698,8 +748,19 @@ def get_ai_model_used_by(
     """List visible, tenant-owned agents and flows configured to use a model."""
     from preloop.services.ai_model_usage_links import configured_model_consumers
 
-    _get_readable_ai_model(db=db, model_id=model_id, current_user=current_user)
-    return configured_model_consumers(db, user=current_user, model_id=str(model_id))
+    model = _get_readable_ai_model(db=db, model_id=model_id, current_user=current_user)
+    own_secret = (
+        model.credentials_secret_id
+        if model.account_id is not None
+        and str(model.account_id) == str(current_user.account_id)
+        else None
+    )
+    return configured_model_consumers(
+        db,
+        user=current_user,
+        model_id=str(model_id),
+        credentials_secret_id=own_secret,
+    )
 
 
 # Both dates omitted means the last 7 days (model_detail_window). One bound
@@ -1063,18 +1124,79 @@ def set_ai_model_owner_flow_use(
     "/ai-models/{model_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete AI Model",
+    responses={
+        409: {
+            "model": AIModelInUseResponse,
+            "description": "Flows still select the model; pass force=true",
+        }
+    },
     tags=["AI Models"],
 )
 @require_permission("delete_ai_models")
 def delete_ai_model(
     model_id: uuid.UUID,
+    force: Annotated[
+        bool,
+        Query(
+            description=(
+                "Delete even though flows select the model. Those flows are "
+                "left without a model and are named in the audit entry."
+            )
+        ),
+    ] = False,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> Response:
-    """Delete an AI Model by its ID."""
+    """Delete an AI Model by its ID.
+
+    While any enabled flow of the account selects the model (its own model, a
+    routing or label rule, or the retry model), the delete is refused with
+    409 ``model_in_use`` and the enabled flows the caller can see. Disabled
+    flows do not block it. ``force=true`` deletes anyway. Either way, each
+    flow that had the model as its own records which model it lost, and the
+    audit entry names every orphaned flow, enabled or not.
+    """
+    from preloop.models.crud import crud_flow
+    from preloop.services.ai_model_usage_links import flow_links
+
     ensure_permission_in_oss(db, current_user, "delete_ai_models")
     model = _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
+    consumers = list(
+        # Every match, not a page: a forced delete must mark and audit each
+        # flow that loses its model.
+        crud_flow.list_configured_for_model(
+            db,
+            account_id=str(current_user.account_id),
+            model_id=str(model_id),
+            limit=None,
+            with_agent_config=True,
+        )
+    )
+    # A disabled flow cannot fail now, so only enabled ones block. Disabled
+    # ones still lose the model: they are marked and audited below.
+    enabled = [flow for flow in consumers if flow.is_enabled]
+    if enabled and not force:
+        count = len(enabled)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=AIModelInUseDetail(
+                message=(
+                    f"{count} enabled flow{'' if count == 1 else 's'} still "
+                    f"use{'s' if count == 1 else ''} this model. Point them at "
+                    "another model, or delete with force=true to leave them "
+                    "without one."
+                ),
+                flow_count=count,
+                disabled_flow_count=len(consumers) - count,
+                flows=flow_links(db, user=current_user, flows=enabled),
+            ).model_dump(mode="json"),
+        )
     previous = _model_audit_state(model)
+    if consumers:
+        previous["orphaned_flows"] = [
+            {"id": str(flow.id), "name": flow.name} for flow in consumers
+        ]
+        crud_flow.mark_model_orphaned(db, flows=consumers, model=model)
     crud_ai_model.remove(db=db, id=model_id)
     log_config_change(
         db,
@@ -1328,9 +1450,24 @@ def rotate_ai_model_credential(
         ) from exc
     from preloop.utils.audit import log_config_change
 
+    from preloop.models.crud import crud_flow
+    from preloop.services.ai_model_usage_links import (
+        flow_links,
+        shared_credential_links,
+    )
+
     shared = crud_ai_model.count_sharing_secret(
         db, secret_id=secret.id, account_id=current_user.account_id
     )
+    affected_models = shared_credential_links(
+        db, user=current_user, secret_id=secret.id
+    )
+    affected_flows: dict[str, Any] = {}
+    for affected in affected_models:
+        for flow in crud_flow.list_configured_for_model(
+            db, account_id=str(current_user.account_id), model_id=affected.id
+        ):
+            affected_flows.setdefault(str(flow.id), flow)
     log_config_change(
         db,
         user=current_user,
@@ -1351,6 +1488,10 @@ def rotate_ai_model_credential(
         version=secret.version,
         rotated_at=secret.rotated_at,
         shared_model_count=shared,
+        affected_models=affected_models,
+        affected_flows=flow_links(
+            db, user=current_user, flows=list(affected_flows.values())
+        ),
     )
 
 

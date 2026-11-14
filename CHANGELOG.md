@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: console and CLI for the review and status Preloop posts on the pull
+  request. Read-only review flows get a **Post review on the pull request**
+  card on the flow page: turn posting on or off, map each verdict to a commit
+  status, and read the prerequisites as checks with the reason when one is
+  missing. The execution page shows the publication record (posted, skipped,
+  failed with the reason) with links to the review, the status and the pull
+  request, and offers **Publish again** to users who may edit flows. New
+  `preloop flow review-posting show|enable|set-states|disable|status|publish`.
+  `GET /api/v1/flows/executions/{id}` now also returns `platform_review` for
+  account users, with `pull_request_url`, `review_url` and `commit_url`
+  (read-only addition).
 - flows: a read-only review flow can have Preloop post the result itself.
   With `git_clone_config.platform_review` (off by default, valid only with
   `publication_mode: read_only`, `validate_result` and a `result_schema` that
@@ -48,6 +59,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- models: deleting a model that flows still select is refused with `409
+  model_in_use` and the flows, unless `force=true`. Before, the delete
+  silently cleared each flow's model and left routing, label and retry rules
+  pointing at a model that no longer existed. A forced delete records on
+  each flow which model it lost and names every orphaned flow in the audit
+  entry. `GET /ai-models/{id}/used-by` now also returns each flow's enabled
+  state and last run, the CI identities bound to those flows (no key
+  material) and the other models sharing the credential; credential rotation
+  returns the affected models and flows. Flow responses gain `model_health`
+  (`missing` or `error` with the credential error code), and the Flows list
+  marks those rows. The console names the flows in the delete confirmation.
+  Only enabled flows block a delete; disabled ones are counted apart
+  (`enabled_flow_count`, `disabled_flow_count`) and are still marked and
+  audited when the delete goes ahead. The model read gains
+  `credentials_expires_at` for subscription logins (admins and editors only),
+  shown on the model page with the last refresh time.
 
 - models: audit model creation, updates, deletion and credential set,
   replacement, rotation and removal without key material. First provider API-key

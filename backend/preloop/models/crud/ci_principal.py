@@ -60,6 +60,15 @@ class CiTokenInspection:
     flow_id: Optional[UUID] = None
 
 
+@dataclass(frozen=True)
+class CiFlowBinding:
+    """A CI identity bound to a flow, with its key lifetime metadata."""
+
+    principal: models.CiPrincipal
+    active_key_count: int
+    key_expires_at: Optional[datetime]
+
+
 class CRUDCiPrincipal:
     """CI-only entry points. There is deliberately no generic delete/update."""
 
@@ -78,6 +87,65 @@ class CRUDCiPrincipal:
         if lock:
             query = query.with_for_update()
         return query.first()
+
+    def list_bound_to_flows(
+        self, db: Session, *, account_id: UUID, flow_ids: list[UUID]
+    ) -> list[CiFlowBinding]:
+        """Read the account's CI identities bound to flows, with key lifetimes.
+
+        Two queries regardless of the number of flows. Only metadata is read:
+        key counts and the soonest expiry among active, unexpired keys.
+
+        Args:
+            db: Database session.
+            account_id: Account whose identities are listed.
+            flow_ids: Flows to look up.
+
+        Returns:
+            One binding per identity, ordered by name.
+        """
+        if not flow_ids:
+            return []
+        principals = (
+            db.query(models.CiPrincipal)
+            .filter(
+                models.CiPrincipal.account_id == account_id,
+                models.CiPrincipal.flow_id.in_(flow_ids),
+            )
+            .order_by(models.CiPrincipal.name.asc(), models.CiPrincipal.id.asc())
+            .all()
+        )
+        if not principals:
+            return []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        keys = (
+            db.query(models.ApiKey.ci_principal_id, models.ApiKey.expires_at)
+            .filter(
+                models.ApiKey.account_id == account_id,
+                models.ApiKey.ci_principal_id.in_([p.id for p in principals]),
+                models.ApiKey.credential_type == "restricted_ci",
+                models.ApiKey.is_active.is_(True),
+            )
+            .all()
+        )
+        counts: dict[UUID, int] = {}
+        soonest: dict[UUID, datetime] = {}
+        for principal_id, expires_at in keys:
+            if expires_at is not None and expires_at <= now:
+                continue
+            counts[principal_id] = counts.get(principal_id, 0) + 1
+            if expires_at is not None and (
+                principal_id not in soonest or expires_at < soonest[principal_id]
+            ):
+                soonest[principal_id] = expires_at
+        return [
+            CiFlowBinding(
+                principal=principal,
+                active_key_count=counts.get(principal.id, 0),
+                key_expires_at=soonest.get(principal.id),
+            )
+            for principal in principals
+        ]
 
     def _binding(
         self, db: Session, *, account_id: UUID, grant: CiGrant

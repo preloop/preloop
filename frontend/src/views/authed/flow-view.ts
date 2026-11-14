@@ -52,6 +52,8 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio/radio.js';
 import '../../components/flow-governance-card';
+import '../../components/flow-platform-review-card';
+import { hasPermission } from '../../permissions';
 import '../../components/preloop-flow-form';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
@@ -381,6 +383,10 @@ export class FlowView extends LitElement {
   @state()
   private isEditing = false;
 
+  /** Whether the viewer may edit flows; gates the posting card's controls. */
+  @state()
+  private canEditFlows = false;
+
   @state()
   private flowReady = false;
 
@@ -475,6 +481,10 @@ export class FlowView extends LitElement {
         const { getUserProfile } = await import('../../api');
         const currentUser = await getUserProfile();
         this.isAdmin = currentUser.is_superuser || false;
+        this.canEditFlows = hasPermission(
+          currentUser.permissions,
+          'edit_flows'
+        );
       } catch (error) {
         console.error('Failed to get current user:', error);
         this.isAdmin = false;
@@ -834,6 +844,20 @@ export class FlowView extends LitElement {
         }
       </sl-card>
     `;
+  }
+
+  /** "Post review on the pull request", for read-only review flows only. */
+  private renderPlatformReviewCard() {
+    if (this.flow?.git_clone_config?.publication_mode !== 'read_only') {
+      return '';
+    }
+    return html`<flow-platform-review-card
+      .flow=${this.flow}
+      .editable=${this.canEditFlows}
+      @flow-updated=${(e: CustomEvent) => {
+        this.flow = { ...this.flow, ...e.detail.flow };
+      }}
+    ></flow-platform-review-card>`;
   }
 
   render() {
@@ -1383,7 +1407,8 @@ ${this.flow.review_instructions}</pre>
                 `
               : ''
           }
-          ${this.renderPublicationPolicy()} ${this.renderGovernanceDisclosure()}
+          ${this.renderPublicationPolicy()} ${this.renderPlatformReviewCard()}
+          ${this.renderGovernanceDisclosure()}
           ${
             this.flow.git_clone_config?.enabled &&
             (this.flow.git_clone_config.repositories?.length || 0) > 0
