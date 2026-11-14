@@ -353,7 +353,10 @@ tracker tools, so the delivery check above does not apply to it. Such a flow
 can opt into `git_clone_config.platform_review` instead: after the run
 finishes and its result passed the flow's result schema, Preloop posts the
 review and a commit status on the reviewed commit with a GitHub App token
-that never reaches the run. See
+that never reaches the run. Turn it on from the flow page (**Post review on
+the pull request**) or with `preloop flow review-posting enable`; it needs no
+new CI identities. Each execution page shows what was posted and offers
+**Publish again** to users who may edit flows. See
 [Review and status posted by Preloop](restricted-ci.md#review-and-status-posted-by-preloop).
 
 ## Not in this slice

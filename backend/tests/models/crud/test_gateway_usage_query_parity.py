@@ -98,8 +98,8 @@ def _log(
     model_alias="gpt-4o",
     provider_name="openai",
     status_code=200,
-    prompt_tokens=60,
-    completion_tokens=40,
+    prompt_tokens=None,
+    completion_tokens=None,
     total_tokens=100,
     estimated_cost=0.01,
     cache_read_tokens=None,
@@ -109,7 +109,14 @@ def _log(
     runtime_principal_id=None,
     runtime_principal_type=None,
 ):
-    """Log one gateway row and pin its timestamp for deterministic windows."""
+    """Log one gateway row and pin its timestamp for deterministic windows.
+
+    A gateway write never stores a total below its parts, so a row that only
+    names a total splits it 60/40 between input and output.
+    """
+    if prompt_tokens is None and completion_tokens is None and total_tokens:
+        prompt_tokens = total_tokens * 6 // 10
+        completion_tokens = total_tokens - prompt_tokens
     row = crud_api_usage.log_gateway_request(
         db,
         endpoint="/openai/v1/chat/completions",
@@ -592,8 +599,8 @@ def test_timeseries_matches_raw_accounting(db_session, create_account) -> None:
             "date": "2026-06-01",
             "request_count": 2,
             "total_tokens": 150,
-            "input_tokens": 120,
-            "output_tokens": 80,
+            "input_tokens": 90,
+            "output_tokens": 60,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
             "estimated_cost": 0.375,
@@ -602,8 +609,8 @@ def test_timeseries_matches_raw_accounting(db_session, create_account) -> None:
             "date": "2026-06-02",
             "request_count": 1,
             "total_tokens": 25,
-            "input_tokens": 60,
-            "output_tokens": 40,
+            "input_tokens": 15,
+            "output_tokens": 10,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
             "estimated_cost": 0.5,

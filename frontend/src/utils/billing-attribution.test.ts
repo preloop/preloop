@@ -14,6 +14,9 @@ describe('billing display contracts', () => {
         billing_model_id: 'model-1',
       })
     ).to.equal('Billed to: your key (Own example · model-1)');
+    expect(billingAttribution({ billing_path: 'subscription' })).to.equal(
+      'Billed to: subscription'
+    );
     expect(
       billingAttribution({ model_alias: 'hosted-looking-alias' })
     ).to.equal('Billing path not recorded');

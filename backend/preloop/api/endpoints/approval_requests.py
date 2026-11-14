@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from preloop.services.authentication_policy import require_account_step_up
 from preloop.api.auth import get_current_active_user
 from preloop.api.managed_credentials import is_managed_execution_credential
 from preloop.services.approval_attribution import (
@@ -689,7 +690,11 @@ def list_approval_requests(
     ]
 
 
-@router.post("/{request_id}/approve", response_model=ApprovalRequestResponse)
+@router.post(
+    "/{request_id}/approve",
+    response_model=ApprovalRequestResponse,
+    dependencies=[Depends(require_account_step_up("approval.approve"))],
+)
 @_require_approval_permission("decide_approvals")
 async def approve_request(
     request_id: uuid.UUID,
@@ -772,7 +777,11 @@ async def approve_request(
         )
 
 
-@router.post("/{request_id}/decline", response_model=ApprovalRequestResponse)
+@router.post(
+    "/{request_id}/decline",
+    response_model=ApprovalRequestResponse,
+    dependencies=[Depends(require_account_step_up("approval.decline"))],
+)
 @_require_approval_permission("decide_approvals")
 async def decline_request(
     request_id: uuid.UUID,
@@ -847,7 +856,11 @@ async def decline_request(
         )
 
 
-@router.post("/{request_id}/decide", response_model=ApprovalRequestResponse)
+@router.post(
+    "/{request_id}/decide",
+    response_model=ApprovalRequestResponse,
+    dependencies=[Depends(require_account_step_up("approval.decide"))],
+)
 @_require_approval_permission("decide_approvals")
 async def decide_request(
     request_id: uuid.UUID,
@@ -953,6 +966,7 @@ async def decide_request(
 @router.post(
     "/decide-batch",
     response_model=ApprovalBatchResponse,
+    dependencies=[Depends(require_account_step_up("approval.decide_batch"))],
     # decide_approvals is enforced by a sync dependency instead of the
     # handler decorator: the RBAC check needs a sync Session and must not run
     # on the event loop. See _require_decide_approvals.

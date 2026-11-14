@@ -242,10 +242,13 @@ class CRUDAIModel(CRUDBase[AIModel]):
         credential material, the existing secret is reused as-is. This is what lets
         several models share one provider key. The secret is verified to belong to
         ``account_id`` first, so a caller cannot attach another account's key.
+        A legacy ownerless secret requires at least one model reference and all
+        references must belong to this account. Global or mixed-account model
+        references are refused even when explicit ownership matches.
 
         Raises:
-            ValueError: If the referenced secret does not exist or belongs to a
-                different account.
+            ValueError: If the referenced secret does not exist, belongs to a
+                different account, or has ambiguous/unprovable model ownership.
         """
         api_key = obj_data.pop("api_key", None) if "api_key" in obj_data else None
         credential_type = obj_data.pop("credential_type", None)
@@ -267,10 +270,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
             secret_ref = crud_secret_reference.get(db, id=reuse_secret_id)
             if secret_ref is None:
                 raise ValueError("Referenced credential secret does not exist")
-            if str(secret_ref.account_id) != str(account_id):
-                raise ValueError(
-                    "Referenced credential secret belongs to a different account"
-                )
+            crud_secret_reference.validate_model_reuse(
+                db, secret=secret_ref, account_id=account_id
+            )
             return
 
         if api_key:
@@ -966,6 +968,20 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 self.model.account_id == account_id,
             )
             .count()
+        )
+
+    def list_sharing_secret(
+        self, db: Session, *, secret_id: uuid.UUID, account_id: uuid.UUID
+    ) -> list[AIModel]:
+        """List an account's models that resolve the given credential secret."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.credentials_secret_id == secret_id,
+                self.model.account_id == account_id,
+            )
+            .order_by(self.model.name.asc(), self.model.id.asc())
+            .all()
         )
 
     def _delete_unreferenced_credential_secret(

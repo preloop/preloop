@@ -16,7 +16,6 @@ import { confirmDialog } from '../../../components/confirm-dialog';
 import {
   PasskeySummary,
   deletePasskey,
-  freshPasskeySession,
   getPasskeyOnly,
   listPasskeys,
   passkeysSupported,
@@ -28,6 +27,7 @@ import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import '../../../components/view-header';
+import '../../../components/mfa-card';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {
@@ -215,19 +215,16 @@ export class SecurityView extends LitElement {
     if (this.passkeyOnly === null) {
       return '';
     }
-    const fresh = freshPasskeySession();
     const noPasskey = !this.passkeyOnly && this.passkeys.length === 0;
-    const reason = !fresh
-      ? 'Sign in with a passkey to change this. The sign-in must be from the last 10 minutes.'
-      : noPasskey
-        ? 'Add a passkey first.'
-        : '';
+    const reason = noPasskey
+      ? 'Add a passkey first.'
+      : 'You may be asked to confirm your identity.';
     return html`
       <div class="passkey-only" data-testid="passkey-only">
         <sl-switch
           data-testid="passkey-only-switch"
           ?checked="${this.passkeyOnly}"
-          ?disabled="${!fresh || noPasskey || this.passkeyOnlyBusy}"
+          ?disabled="${noPasskey || this.passkeyOnlyBusy}"
           @sl-change="${this.handlePasskeyOnlyChange}"
           >Require a passkey to sign in</sl-switch
         >
@@ -390,6 +387,7 @@ export class SecurityView extends LitElement {
               </form>
             </div>
           </div>
+          <mfa-card></mfa-card>
           ${
             this.passkeysEnabled
               ? html`

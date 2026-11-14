@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -261,5 +262,44 @@ func TestCIShareFlowSendsAllowlistAndPrintsSafeMetadata(t *testing.T) {
 	invalid.SetArgs([]string{"not-a-uuid"})
 	if err := invalid.Execute(); err == nil || len(got) != 2 {
 		t.Fatal("a non-UUID flow must fail before any request")
+	}
+}
+
+func TestCIRevokeConfirmation(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		t.Run(fmt.Sprint(asJSON), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Fatalf("unexpected method %s", r.Method)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			pointCLIAt(t, server.URL)
+			FlagToken = ""
+			t.Setenv("PRELOOP_TOKEN", "synthetic-human-token")
+			t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+			principal := "00000000-0000-4000-8000-000000000001"
+			key := "00000000-0000-4000-8000-000000000002"
+			command := newCICommand("revoke")
+			args := []string{principal, key}
+			if asJSON {
+				args = append(args, "--json")
+			}
+			command.SetArgs(args)
+			var output bytes.Buffer
+			command.SetOut(&output)
+			if err := command.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if asJSON {
+				var result map[string]string
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil || result["status"] != "revoked" || result["key_id"] != key || result["principal_id"] != principal {
+					t.Fatalf("invalid confirmation: %s (%v)", output.String(), err)
+				}
+			} else if output.String() != fmt.Sprintf("Revoked CI key %s for identity %s.\n", key, principal) {
+				t.Fatalf("unexpected confirmation: %q", output.String())
+			}
+		})
 	}
 }

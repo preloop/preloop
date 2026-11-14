@@ -301,6 +301,7 @@ _CANCELLED_RE = re.compile(
 # 401 Unauthorized: Invalid authentication credentials'
 _MODEL_AUTH_RE = re.compile(
     r"invalid authentication credentials"
+    r"|provider rejected (?:the|this) model(?:\'s)? (?:API )?key"
     r"|\b401\b[^\n]{0,40}unauthorized"
     r"|authenticationerror"
     r"|rejected our credentials"
@@ -359,12 +360,23 @@ _EXECUTION_BUDGET_RE = re.compile(
 )
 # "zai does not support parameters: ['parallel_tool_calls']",
 # "Model 'openai/gpt-5.4' is bound to another agent's subscription credentials"
+# "unexpected status 400 Bad Request: ... This response_format type is
+# unavailable now" (built-in DeepSeek asked for a JSON schema)
 _MODEL_CONFIG_RE = re.compile(
     r"does not support parameters"
     r"|wire_api.{0,80}(?:no longer supported|unsupported)"
     r"|is bound to another agent"
     r"|model metadata for [`'\"][^`'\"]+[`'\"] not found"
-    r"|\bmodel not found\b|unsupported model|invalid model",
+    r"|\bmodel not found\b|unsupported model|invalid model"
+    # DeepSeek's refusal of a json_schema response_format, the gateway's own
+    # structured-output refusal, and any other model 400 the Codex harness
+    # surfaces as "unexpected status 400 Bad Request" (its model-request
+    # phrase; a bare "400 Bad Request" from a tool is not matched). A model
+    # 400 is the request as configured, never a retry, matching the analysis
+    # rule for status 400.
+    r"|response_format type is unavailable"
+    r"|does not support structured response_format"
+    r"|unexpected status 400 bad request",
     re.IGNORECASE,
 )
 # 'stream error ... Upstream provider disconnected mid-stream',
@@ -486,7 +498,18 @@ _RESUME_FAILED_RE = re.compile(
     r"|^resume_failed:"
 )
 
+_PROVIDER_SCHEMA_RE = re.compile(
+    r"invalid schema for (?:response_format|text\.format)"
+    r"|^model configuration rejected by the provider",
+    re.IGNORECASE,
+)
+_MODEL_KEY_REJECTION_RE = re.compile(
+    r"^provider rejected this model's API key", re.IGNORECASE
+)
+
 _STRUCTURAL_MESSAGE_RULES = (
+    (_PROVIDER_SCHEMA_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_MODEL_KEY_REJECTION_RE, FAILURE_CATEGORY_MODEL_AUTH),
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
     (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
     (_RESUME_FAILED_RE, FAILURE_CATEGORY_RESUME_FAILED),

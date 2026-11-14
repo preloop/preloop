@@ -70,7 +70,7 @@ graph LR
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
-| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
+| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, durable review completion evidence, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
 | [Review and status posted by Preloop](docs/architecture/platform-posted-review.md) | The control plane posts a validated read-only review and a commit status with a one-repository lease; threat model and tests. |
 | [Shared review flows for restricted CI](docs/architecture/shared-ci-review-flows.md) | One read-only review flow serving several projects with one project per CI identity: the allowlist, how an execution's project is resolved, the threat model with its tests, and what is not included. |
@@ -85,3 +85,9 @@ graph LR
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |
 | [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance and API diagnostics. |
+
+User authentication includes optional TOTP and hashed recovery codes, with
+single-use challenges and fresh-authentication checks for factor management.
+See [security architecture](docs/architecture/security.md) and the
+[operator guide](docs/operations/mfa.md). Account policy enforcement is an
+edition extension.

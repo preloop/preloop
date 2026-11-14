@@ -375,7 +375,7 @@ def test_upstream_controls_do_not_leak_into_a_subsequent_request() -> None:
         secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
             credential_type="api_key", value="synthetic-secret"
         )
-        service._build_completion_kwargs(
+        first = service._build_completion_kwargs(
             _model(provider_name="openrouter"),
             messages=[],
             payload={"max_tokens": 1024, "reasoning": {"effort": "low"}},
@@ -383,13 +383,14 @@ def test_upstream_controls_do_not_leak_into_a_subsequent_request() -> None:
             provider="openai",
         )
         assert service._last_upstream_parameters == {
+            "model": first["model"],
             "max_tokens": 1024,
             "reasoning_effort": "low",
         }
-        service._build_completion_kwargs(
+        second = service._build_completion_kwargs(
             _model(), messages=[], payload={}, stream=False, provider="openai"
         )
-        assert service._last_upstream_parameters == {}
+        assert service._last_upstream_parameters == {"model": second["model"]}
         service._last_upstream_parameters = {"max_tokens": 1024}
         service._begin_request_accounting()
         assert service._last_upstream_parameters == {}
@@ -557,4 +558,7 @@ def test_model_studio_effective_effort_is_recorded(effort: str, location: str) -
             _model(), messages=[], payload=payload, stream=True, provider="openai"
         )
     assert kwargs["extra_body"]["reasoning_effort"] == effort
-    assert service._last_upstream_parameters == {"reasoning_effort": effort}
+    assert service._last_upstream_parameters == {
+        "model": kwargs["model"],
+        "reasoning_effort": effort,
+    }

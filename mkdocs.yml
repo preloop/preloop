@@ -294,6 +294,8 @@ nav:
       - Roles and permissions: guide/users/roles.md
       - Managing teams: guide/users/managing-teams.md
       - Passkeys and passkey-only sign-in: guide/users/passkeys.md
+      - Authenticator app and recovery codes: guide/users/authenticator-app.md
+      - Operating authenticator authentication: operations/mfa.md
       - Accounts and CLI profiles: guide/accounts-and-profiles.md
       - Removing a member: guide/removing-members.md
       - Single sign-on and SCIM: guide/users/single-sign-on.md

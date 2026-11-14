@@ -51,18 +51,35 @@ class CRUDFlow(CRUDBase[models.Flow]):
         super().__init__(model=models.Flow)
 
     def list_configured_for_model(
-        self, db: Session, *, account_id: str, model_id: str, limit: int = 5001
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        model_id: str,
+        limit: Optional[int] = 5001,
+        with_agent_config: bool = False,
     ) -> List[models.Flow]:
         """Find saved default, label-routing and enabled retry model selections.
 
         Match only supported configuration fields, never arbitrary JSON strings
         or historical execution snapshots. Disabled flows retain configuration.
+        ``limit=None`` returns every match (the delete check needs all of
+        them); ``with_agent_config`` loads the configuration in the same query.
         """
         config = cast(self.model.agent_config, JSONB)
         model_ref = {"ai_model_id": model_id}
-        return (
+        columns = [
+            self.model.id,
+            self.model.name,
+            self.model.account_id,
+            self.model.ai_model_id,
+            self.model.is_enabled,
+        ]
+        if with_agent_config:
+            columns.append(self.model.agent_config)
+        query = (
             db.query(self.model)
-            .options(load_only(self.model.id, self.model.name, self.model.account_id))
+            .options(load_only(*columns))
             .filter(
                 self.model.account_id == account_id,
                 or_(
@@ -75,13 +92,65 @@ class CRUDFlow(CRUDBase[models.Flow]):
                 ),
             )
             .order_by(self.model.name.asc(), self.model.id.asc())
-            .limit(limit)
-            .all()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def mark_model_orphaned(
+        self, db: Session, *, flows: List[models.Flow], model: models.AIModel
+    ) -> None:
+        """Record on each flow that its selected model is being deleted.
+
+        The database clears ``flow.ai_model_id`` when the model row goes, so
+        the flow keeps ``agent_config.orphaned_model`` to say which model it
+        lost. Deleted routing targets are also recorded, without rewriting
+        routing policy or silently falling back to another model. Health reads
+        match those ids against the current configuration, so repairing a
+        reference clears its warning. Flushes only; the caller's delete commits.
+
+        Args:
+            db: Database session.
+            flows: Flows that select the model in any supported field.
+            model: The model being deleted.
+        """
+        marker = {"id": str(model.id), "name": model.name}
+        for flow in flows:
+            config = dict(flow.agent_config or {})
+            if str(flow.ai_model_id) == marker["id"]:
+                config["orphaned_model"] = marker
+            previous = config.get("orphaned_model_ids")
+            deleted_ids = (
+                [item for item in previous if isinstance(item, str)]
+                if isinstance(previous, list)
+                else []
+            )
+            config["orphaned_model_ids"] = list(
+                dict.fromkeys([*deleted_ids, marker["id"]])
+            )
+            flow.agent_config = config
+            db.add(flow)
+        db.flush()
+
+    @staticmethod
+    def _health_secret_option() -> Any:
+        """Join only the secret columns ``Flow.model_health`` reads."""
+        return joinedload(models.AIModel.credentials_secret).load_only(
+            models.SecretReference.id,
+            models.SecretReference.status,
+            models.SecretReference.meta_data,
+            raiseload=True,
         )
 
     def _query_with_ai_model(self, db: Session) -> Query:
-        """List queries that serialize ``ai_model_name`` join the model."""
-        return db.query(self.model).options(joinedload(self.model.ai_model))
+        """List queries that serialize ``ai_model_name`` and ``model_health``.
+
+        Join the model and the credential columns its health reads, so a page
+        of flows does not load one secret per model.
+        """
+        return db.query(self.model).options(
+            joinedload(self.model.ai_model).options(self._health_secret_option())
+        )
 
     def get(
         self,
@@ -158,11 +227,19 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     # A short SQL-derived string, not the clone config JSON:
                     # the summary's ci_only flag needs only this key.
                     self.model.publication_mode,
+                    self.model.orphaned_model_id,
+                    self.model.orphaned_routing_model_id,
                     raiseload=True,
                 ),
-                joinedload(self.model.ai_model).load_only(
-                    models.AIModel.id, models.AIModel.name, raiseload=True
-                ),
+                joinedload(self.model.ai_model)
+                .load_only(
+                    models.AIModel.id,
+                    models.AIModel.name,
+                    models.AIModel.credentials_secret_id,
+                    raiseload=True,
+                )
+                # model_health reads the credential state from the secret.
+                .options(self._health_secret_option()),
             )
         if account_id and hasattr(self.model, "account_id"):
             shared_ids: list[Any] = []
@@ -403,6 +480,58 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .all()
         )
 
+    def _check_native_result(self, db: Session, flow: Any) -> None:
+        """Validate the effective result mode, including inherited preset defaults."""
+        from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+        from preloop.services.flow_result_schema import (
+            check_native_result_schema,
+            uses_openai_strict_results,
+        )
+        from preloop.models.crud import crud_ai_model
+        from preloop.services.native_result import resolve_native_result
+
+        preset = flow if getattr(flow, "is_preset", False) else None
+        if getattr(flow, "source_preset_id", None):
+            preset = self.get(db, id=flow.source_preset_id)
+        slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", ""))
+        enabled, _ = resolve_native_result(flow, preset_slug=slug)
+        if enabled and flow.validate_result is not False and flow.result_schema:
+            from preloop.services.model_routing import (
+                parse_model_by_label,
+                parse_model_routing,
+            )
+
+            model_ids = (
+                {flow.ai_model_id}
+                if flow.agent_type == "codex" and flow.ai_model_id
+                else set()
+            )
+            routing = parse_model_routing(flow.agent_config)
+            if routing:
+                model_ids.update(
+                    rule.ai_model_id
+                    for rule in routing.rules
+                    if rule.agent_type == "codex"
+                )
+            by_label = parse_model_by_label(flow.agent_config)
+            if by_label and flow.agent_type == "codex":
+                model_ids.update(
+                    rule.ai_model_id for rule in by_label.root if rule.ai_model_id
+                )
+            config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
+            retry = config.get("retry_on_no_progress")
+            if (
+                isinstance(retry, dict)
+                and retry.get("enabled")
+                and retry.get("ai_model_id")
+            ):
+                model_ids.add(retry["ai_model_id"])
+            for model_id in model_ids:
+                model = crud_ai_model.get(db, id=model_id)
+                if model is not None and uses_openai_strict_results(model):
+                    check_native_result_schema(flow.result_schema)
+                    break
+
     def create(
         self,
         db: Session,
@@ -432,6 +561,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db_flow.account_id = (
                 str(account_id) if isinstance(account_id, UUID) else account_id
             )
+        self._check_native_result(db, db_flow)
         db.add(db_flow)
         if commit:
             db.commit()
@@ -467,6 +597,56 @@ class CRUDFlow(CRUDBase[models.Flow]):
         update_data["account_id"] = (
             str(account_id) if isinstance(account_id, UUID) else account_id
         )
+        from types import SimpleNamespace
+
+        relevant = (
+            "agent_type",
+            "agent_config",
+            "git_clone_config",
+            "result_schema",
+            "ai_model_id",
+            "validate_result",
+            "source_preset_id",
+            "is_preset",
+            "name",
+        )
+        effective = SimpleNamespace(
+            **{key: update_data.get(key, getattr(db_obj, key)) for key in relevant}
+        )
+        mode_fields = {
+            "agent_type",
+            "result_schema",
+            "ai_model_id",
+            "validate_result",
+            "source_preset_id",
+            "is_preset",
+            "git_clone_config",
+        }
+        changed_mode = any(
+            key in update_data and update_data[key] != getattr(db_obj, key)
+            for key in mode_fields
+        )
+        config_keys = (
+            "native_result",
+            "model_routing",
+            "model_by_label",
+            "retry_on_no_progress",
+        )
+        old_config = (
+            db_obj.agent_config if isinstance(db_obj.agent_config, dict) else {}
+        )
+        new_config = (
+            effective.agent_config if isinstance(effective.agent_config, dict) else {}
+        )
+        changed_mode = changed_mode or any(
+            old_config.get(key) != new_config.get(key) for key in config_keys
+        )
+        if effective.is_preset and effective.name != db_obj.name:
+            changed_mode = True
+        enabling = update_data.get("is_enabled") is True and not db_obj.is_enabled
+        # Always permit stopping a legacy flow; re-enabling validates its mode.
+        if update_data.get("is_enabled") is not False and (changed_mode or enabling):
+            self._check_native_result(db, effective)
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         db.add(db_obj)

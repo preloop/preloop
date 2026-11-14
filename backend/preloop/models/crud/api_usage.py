@@ -239,6 +239,33 @@ def cache_covered_condition(usage_model: Any = ApiUsage) -> Any:
     )
 
 
+def consistent_total_tokens(
+    prompt_tokens: Optional[int],
+    completion_tokens: Optional[int],
+    total_tokens: Optional[int],
+) -> Optional[int]:
+    """Return a total that is never below input plus output.
+
+    A provider's own ``total_tokens`` is kept when it is at least the sum of
+    the parts (some providers count more than input and output). A total that
+    is missing or smaller, for example one that leaves the cached input out
+    while the stored input is cache inclusive, is replaced by the sum, so a
+    reader of the total and a reader of the parts cannot disagree downward.
+
+    Args:
+        prompt_tokens: Cache inclusive input tokens, if known.
+        completion_tokens: Output tokens, if known.
+        total_tokens: The provider-reported total, if any.
+
+    Returns:
+        The total to store, or None when no token count is known at all.
+    """
+    if prompt_tokens is None and completion_tokens is None:
+        return total_tokens
+    parts = max(int(prompt_tokens or 0), 0) + max(int(completion_tokens or 0), 0)
+    return max(int(total_tokens or 0), parts)
+
+
 def cache_split_columns(usage_model: Any = ApiUsage) -> list:
     """Return the aggregate columns backing the cache half of token figures.
 
@@ -523,7 +550,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ``api_key_user_id`` is the owner of ``api_key_id`` when the caller
         already knows it (the gateway does); otherwise it is looked up, once,
         for the per-user budget scope.
+
+        ``total_tokens`` is stored no smaller than ``prompt_tokens`` plus
+        ``completion_tokens`` (see :func:`consistent_total_tokens`).
         """
+        total_tokens = consistent_total_tokens(
+            prompt_tokens, completion_tokens, total_tokens
+        )
         db_obj = ApiUsage(
             user_id=user_id,
             account_id=account_id,
@@ -3226,6 +3259,42 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 }
             )
         return models_by_execution
+
+    def review_request_facts(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> list[dict[str, Any]]:
+        """Read only non-content request facts for one authorized execution.
+
+        Args:
+            db: Database session.
+            execution_id: Execution already authorized by the caller.
+            account_id: Authenticated account, enforced again in the query.
+
+        Returns:
+            Recorded requests in completion order, without payloads or identities.
+        """
+        from preloop.models import models
+
+        usage = models.ApiUsage
+        rows = (
+            db.query(
+                usage.duration,
+                usage.provider_name,
+                usage.is_retry,
+                usage.error_class,
+                usage.meta_data["upstream_parameters"].label("upstream_parameters"),
+                usage.meta_data["upstream_retries"].label("upstream_retries"),
+            )
+            .filter(
+                usage.account_id == account_id,
+                usage.flow_execution_id == execution_id,
+                usage.action_type == "model_gateway",
+                exclude_customer_overhead_condition(),
+            )
+            .order_by(usage.timestamp, usage.id)
+            .all()
+        )
+        return [dict(row._mapping) for row in rows]
 
     def get_gateway_usage_for_execution(
         self,

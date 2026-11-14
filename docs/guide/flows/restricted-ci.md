@@ -18,9 +18,62 @@ enabled, use `runner_pool: "server"`, and trigger on exactly that project. The
 one exception is a
 [read-only review on a private runner](#read-only-review-on-a-private-runner),
 which names its private pool instead.
-Use the human `PUT /api/v1/flows/{flow_id}` endpoint to set the dedicated clone
-binding. Replace the synthetic IDs below with your disposable resources:
 
+A complete `POST /api/v1/flows` body for a dedicated read-only review flow.
+`name`, `prompt_template` and `agent_config` are required (the API answers 422
+without them). Replace the placeholders with your own IDs:
+
+<!-- example: flow-create -->
+```json
+{
+  "name": "Repository review",
+  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "ai_model_id": "<model id>",
+  "agent_type": "codex",
+  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
+  "runner_pool": "server",
+  "allowed_mcp_tools": [],
+  "allowed_mcp_servers": [],
+  "trigger_project_ids": ["<project id>"],
+  "validate_result": true,
+  "result_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["review"],
+    "properties": {"review": {"type": "string"}}
+  },
+  "git_clone_config": {
+    "enabled": true,
+    "publication_mode": "read_only",
+    "repositories": [{"project_id": "<project id>", "tracker_id": "<GitHub App tracker id>"}]
+  }
+}
+```
+
+Set `ai_model_id` when you create the flow. A flow saved without a model is
+accepted and then runs on the account's default model, which may not be the
+model, key or budget you meant for reviews. To attach a model to an existing
+flow, or change it, send only that field to `PUT /api/v1/flows/{flow_id}`
+(`GET /api/v1/ai-models` lists the IDs):
+
+<!-- example: flow-update -->
+```json
+{"ai_model_id": "<model id>"}
+```
+
+`GET /api/v1/ai-models/{model_id}/used-by` then lists the flow.
+
+These read-only Codex examples enable native structured results by default.
+Their schemas follow the [OpenAI strict-output requirements](repo-review-presets.md#native-codex-structured-results):
+every object is closed and every declared property is required. Include `null`
+for nullable values such as a finding's absent path or line. A capture-only flow
+can explicitly set `agent_config.native_result: false` instead.
+
+To bind an existing flow instead, use the human `PUT /api/v1/flows/{flow_id}`
+endpoint to set the dedicated clone binding. Replace the synthetic IDs below
+with your disposable resources:
+
+<!-- example: flow-update -->
 ```json
 {
   "runner_pool": "server",
@@ -123,8 +176,8 @@ source and write local `result.json`; the local filesystem remains writable.
 Remote MCP finalizers are unsupported. Runtime credentials cannot call MCP tools
 or general account REST routes, even when legacy scope enforcement is disabled.
 The normal execution-bound evidence upload capability still accepts only its own
-execution and operation. Results remain agent-authored, not an attested command
-history or custom diff/challenge proof.
+execution and operation. Results remain agent-authored. The controller-bound diff below identifies
+the input; it is not an attested model command history or custom challenge proof.
 
 Omit verification, publication approval, report publication, follow-up filing and
 backport configuration; `create_pull_request` must be false. Completion persists
@@ -153,12 +206,14 @@ is never silently ignored. Preloop reads the open pull request from the
 provider, requires its current head to equal `head_sha`, builds the pull
 request event server-side and starts one production execution
 (`test_mode: false`). The flow webhook does not accept CI credentials. Bind
-diffs, base revisions or challenges through the flow's own configured review
-inputs and your own validator instead.
+custom challenges through the flow's own configured review inputs and your
+own validator. The controller binds the reviewed repository diff as described
+below.
 
 `GET /api/v1/flows/executions/{id}` (the status projection) and `GET /api/v1/flows/executions/{id}/result` include
 `startup_receipt`, written by the controller, never by the model:
 
+<!-- example: fragment -->
 ```json
 {
   "version": 1,
@@ -168,6 +223,15 @@ inputs and your own validator instead.
   "setup_completed": true,
   "agent_started_at": "2030-01-01T00:00:00+00:00",
   "lease_revoked": true,
+  "diff": {
+    "base_sha": "<admitted base SHA>",
+    "merge_base_sha": "<unique merge base SHA>",
+    "head_sha": "<admitted head SHA>",
+    "sha256": "<canonical diff SHA-256>",
+    "files": ["src/example.py"],
+    "bytes": 1234
+  },
+  "diff_unavailable_reason": null,
   "agent_cli": {"name": "codex", "version": "0.153.4"}
 }
 ```
@@ -189,8 +253,8 @@ runner does not report it yet. Fields are only ever added to `version: 1`, so
 ignore keys you do not know. The receipt describes the controller's observation of the
 container's own output; setup commands run repository code inside that same
 container, so treat it as the platform's assertion, not an independent
-attestation. The completion callback body is unchanged; fetch `GET /api/v1/flows/executions/{id}` or
-`/result` for the receipt.
+attestation. The completion callback includes `data.diff.sha256` (or `data.diff: null`);
+fetch `GET /api/v1/flows/executions/{id}` or `/result` for the complete receipt.
 
 The restricted `/result` returns `result`, the captured `result.json`
 (at most 256 KiB at capture) without controller-private members: keys that
@@ -208,6 +272,176 @@ result recovery/publication uses the explicit export grant described below.
 GitLab, PAT and alternate-tracker clone bindings are not
 supported by this mode. Local tests use a synthetic provider; they do not certify
 an installation's live GitHub permissions.
+
+### Reproduce the reviewed diff
+
+The hosted startup chain computes `diff` after verifying the admitted checkout,
+before setup and the agent. The controller accepts its line only before the
+agent start marker. Later model output cannot set or replace the receipt.
+This identifies the complete diff **of the reviewed repository only**, including
+binary changes; additional context repositories are outside this identity.
+It does not prove the model read every changed line or found every defect.
+
+`base_sha` is the provider's target commit at admission, `head_sha` is the
+admitted PR head, and `merge_base_sha` is their unique merge base. The digest
+is SHA-256 of the exact bytes of the command below. There is no whitespace,
+newline or encoding normalization. Rename detection and text conversion are
+disabled; binaries use Git binary patches, paths use Git quoting, and patches
+use full object IDs, Myers diff, three context lines and fixed prefixes.
+A temporary bare view shares only the checkout's object database, so mutable
+worktree attributes, local configuration and diff drivers cannot change it.
+Use the same Git version when comparing across Git implementations/releases.
+
+Run in your checkout, with the two **receipt** revisions and full local history:
+
+```bash
+set -euo pipefail
+base='<receipt base_sha>'
+head='<receipt head_sha>'
+export LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1
+[[ "$(git rev-parse HEAD)" == "$head" ]]
+objects=$(git rev-parse --path-format=absolute --git-path objects)
+bare=$(mktemp -d)
+trap 'rm -rf "$bare"' EXIT
+git init --bare --quiet --object-format="$(git rev-parse --show-object-format)" "$bare"
+merge_base=$(GIT_OBJECT_DIRECTORY="$objects" git --git-dir="$bare" merge-base --all "$base" "$head")
+# Require exactly one merge base; never choose one from an ambiguous set.
+[[ "$merge_base" != *$'\n'* && -n "$merge_base" ]]
+GIT_OBJECT_DIRECTORY="$objects" git --git-dir="$bare" \
+  -c core.quotePath=true -c core.attributesFile=/dev/null diff \
+  --no-ext-diff --no-textconv --no-color --no-renames --binary --full-index \
+  --diff-algorithm=myers --no-indent-heuristic --unified=3 \
+  --inter-hunk-context=0 --src-prefix=a/ --dst-prefix=b/ --submodule=short \
+  --ignore-submodules=none "$merge_base" "$head" -- | sha256sum
+```
+
+For `files`, run `git --git-dir="$bare" diff --no-renames --name-only -z
+"$merge_base" "$head" --` with the same `GIT_OBJECT_DIRECTORY`. Paths are the
+NUL-delimited entries, including both sides of a rename. `bytes` is the byte
+length of the patch, before hashing. No credential or network fetch is used.
+
+`diff` is null with `diff_unavailable_reason` when the base is unknown
+(`base_unknown`), history/objects are unavailable (`history_unavailable`,
+including shallow checkouts), the merge base is ambiguous
+(`ambiguous_merge_base`), revisions are invalid (`invalid_revision`), HEAD does
+not match (`head_mismatch`), or the path list exceeds the 64 KiB receipt limit
+(`receipt_too_large`), or a changed path cannot be represented as UTF-8
+(`unsupported_path_encoding`). `not_recorded` identifies older receipts;
+`unverified_receipt` means the stored receipt no longer passes its startup or
+admitted-revision checks. Missing facts
+are never inferred from a model's binding fields. A publisher that requires
+diff binding must reject a missing or mismatched digest.
+
+### Phase timings and effective requests
+
+The owned status and result projections include `timings`. Seconds are measured
+from stored controller observations; missing boundaries are null, including on
+older runs. No prompts, response text, credentials or account IDs are included.
+
+| Field | Evidence and limits |
+| --- | --- |
+| `queue_wait_seconds` | Execution creation to recorded launch request. |
+| `startup_seconds` | Launch request to observed agent start, including container scheduling. |
+| `clone_seconds`, `setup_seconds` | Controller observation of startup boundaries; setup includes configured preparation after diff calculation. |
+| `first_model_response_seconds` | Currently null, with `first_model_response_unavailable_reason: not_recorded`. The gateway does not persist first-token/first-byte timing. A request's total duration is not substituted. |
+| `model_request_count` | Number of recorded gateway request rows belonging to this execution. |
+| `retry_count` | Recorded client resends plus gateway internal retries. Null if any request predates internal retry recording. It does not count unrecorded CLI attempts. |
+| `total_model_seconds` | Sum of recorded gateway request durations, including upstream waits, streaming and retries. Concurrent requests can overlap; this is not wall-clock model compute time. |
+| `finalization_seconds` | Observed agent completion (or timeout cleanup beginning) to terminal persistence. Later notification and lease cleanup are outside this interval. |
+| `first_causal_upstream_error_class` | First classified error in the final uninterrupted sequence of failed requests when the terminal cause is upstream failure; otherwise null. No error message is copied. |
+| `effective_requests` | Unique recorded combinations of `model`, `provider`, `reasoning_effort`, `max_output_tokens`, with `request_count`. Null controls mean not recorded or left to the provider default. Values come from request records, never model registration defaults. |
+
+`model` is the resolved outbound gateway model identifier (the LiteLLM route
+identifier for translated requests); `provider` identifies the gateway's upstream
+service. These do not establish an aggregator's internal provider route or prove
+that it honored a parameter. Historical rows lacking the outbound identifier
+remain null. Retention gaps and calls still in flight are not counted as
+completed request observations.
+
+`terminal_cause` is a stable enum, null while the execution is nonterminal:
+
+| Cause | Meaning |
+| --- | --- |
+| `completed` | The flow's required success gates passed. |
+| `timeout` | The execution deadline expired. |
+| `budget` | An execution or default token/turn/spend ceiling stopped the run. |
+| `upstream_error` | The stored failure category identifies model authentication, billing, quota, transient or repeated upstream failure. |
+| `no_result` | Completion was not confirmed or no result was reported, without a more specific stored cause. |
+| `stopped` | The run was stopped/cancelled. |
+| `post_result_failure` | A failed flow has a retained result and a separately recorded later failure. |
+| `failed` | Another failure, such as setup or schema validation; inspect `failure_category`. |
+
+For a terminal run without an artifact, `/result` keeps its existing 404
+contract. Read `timings` from the owned status endpoint to distinguish timeout,
+upstream failure and no-result termination.
+
+### Independent completion facts and recovery
+
+A successful `/result` response adds `completion`:
+
+<!-- example: fragment -->
+```json
+{
+  "agent_finished": {"status": "SUCCEEDED", "exit_code": 0},
+  "result_captured": {
+    "captured": true,
+    "source": "native_structured_result",
+    "result_sha256": "<digest of the restricted result>"
+  },
+  "result_valid": true,
+  "publication": null,
+  "post_result_failures": []
+}
+```
+
+`agent_finished` is the executor's observed process outcome (including its
+wrapper), or null when it was
+not recorded. It is independent of overall flow status. Exit zero proves neither
+capture nor validity. For native results with schema validation enabled, a
+valid verdict confirms completion without a success marker or a `status` field.
+Log-text heuristics, including a traceback from a reviewed test, cannot override
+a valid native verdict. Actual runtime failure and required later gates still
+apply. Controller-added `container_termination` is withheld from the restricted
+`result` and listed in `result_withheld_paths`, so it does not break a strict
+result schema; process status and exit code live in `completion.agent_finished`.
+Both `approve` and `request-changes` mean the review finished; approval is a
+separate verdict. Explicit failure/incomplete statuses and required later gates
+remain authoritative. `result_captured.source` is `native_structured_result` or
+`file`. For historical rows, capture and source are null when only a result
+field remains and capture provenance was never recorded. The digest uses the same canonical
+JSON as the completion callback and export grant, **after withholding private
+members**. `result_valid` is the existing capture-time schema outcome, null
+when no schema was checked. Only capture plus a valid strict schema makes the
+review usable; neither proves review completeness or authorizes publication.
+
+`publication` is a pointer to the publication package's `platform_review`
+projection when present, otherwise null. It never trusts an agent-authored
+publication claim. Publication remains separately authorized.
+
+A captured document is committed before bulk artifact transfers and subsequent
+finalization. `post_result_failures` names later failures independently:
+`checkpoint_upload`, `artifact_quota`, `artifact_capture`, `artifact_storage`,
+`log_shipping`, `lease_revocation`, `completion_event_queueing`, `publication`
+or `finalization`. Required later steps may still make the flow `FAILED`;
+the result remains retrievable. Optional cleanup failures do not rewrite success.
+A validated captured result also prevents an automatic repeat of paid model work
+just to repair those later steps. Storage must be available for the initial
+commit; this is not a guarantee against loss of the database itself.
+
+Recover without rerunning:
+
+1. Re-read the owned `GET /api/v1/flows/executions/{id}/result`. Verify head,
+   base, diff digest, result digest, schema validation and withheld paths.
+2. Repair the named export/publication/storage problem. For a historical
+   human-owned run, use an explicit
+   [result export grant](#explicit-export-of-a-completed-human-review) instead of widening
+   the CI credential.
+3. For an opted-in flow, call the authorized
+   [`POST /api/v1/flows/executions/{id}/platform-review`](#publish-a-finished-review-again-without-a-model-run)
+   to republish the stored document. Read `platform_review` to confirm the
+   posting outcome. This does not rerun the model; current head, validity and
+   permission checks still apply.
 
 ## Read-only review on a private runner
 
@@ -256,6 +490,7 @@ this work; the run waits in the queue for a capable runner.
 3. Add a Codex profile with checkout enabled to
    `~/.preloop/runner-host-profiles.json`:
 
+    <!-- example: fragment -->
     ```json
     {
       "profiles": [
@@ -279,8 +514,10 @@ this work; the run waits in the queue for a capable runner.
    `preloop runner fg --labels review-hosts` (or install it as a service). Run
    `preloop runner inventory --refresh` after editing profiles. In **Runners**
    the profile should list the `host_read_only_review` capability.
-5. **In Preloop**, set the dedicated review flow to:
+5. **In Preloop**, set the dedicated review flow to (with
+   `PUT /api/v1/flows/{flow_id}`):
 
+    <!-- example: flow-update -->
     ```json
     {
       "agent_type": "codex",
@@ -335,11 +572,11 @@ not run: the review pauses, an approval request appears in **Approvals**, and
 the run resumes on approval (the command may then run once) or ends `FAILED`
 with `approval_denied` or `approval_timeout`. The read-only mode is not special:
 if reviewers should never pause, write the rules so review commands do not
-need approval. In the hosted container, Codex in the read-only sandbox runs
-with its shell disabled, so there are no native commands to gate. Other hosted
-Codex runs install the same Preloop `PreToolUse` hook in the container and
-pause the same way; a hosted Codex run that has such a rule but cannot
-install the hook is refused before Codex starts with `approval_unavailable`.
+need approval. Hosted Codex runs install the Preloop permission hook, so deny
+and approval rules apply to their shell commands. With `sandbox_type:
+read-only`, Codex has no shell tool at all. A hosted Codex run that has such
+a rule but cannot install the hook is refused before Codex starts with
+`approval_unavailable`.
 Other hosted harnesses have no native hook and are refused before launch with
 `approval_unavailable` when such a rule applies.
 
@@ -395,6 +632,7 @@ admits only its own projects) or its own account.
    complete allowlist and replaces the previous one. Save it as
    `projects.json`:
 
+   <!-- example: shared-flow -->
    ```json
    {
      "project_ids": [
@@ -468,6 +706,7 @@ admitted projects in `trigger_project_ids` and give each exactly one entry in
 `git_clone_config.repositories` with its owning tracker, next to
 `"publication_mode": "read_only"` and `"ci_project_selection": true`:
 
+<!-- example: flow-update -->
 ```json
 {
   "trigger_project_ids": [
@@ -604,9 +843,34 @@ by default; custom roles can explicitly grant them. View does not imply manage.
 
 CLI setup uses your saved human login or `PRELOOP_TOKEN` from a secret manager.
 These commands reject the plaintext `--token` flag. Never put credentials in
-URLs, shell arguments or JSON request files. Save this public grant as
-`ci-request.json` (use your own synthetic test resource IDs):
+URLs, shell arguments or JSON request files.
 
+The grant is the same for a dedicated and a shared flow: one `project_id` and
+the `flow_id` of the flow that reviews it. On a shared flow the project must be
+on the flow's allowlist (`preloop ci shared-flow FLOW_ID`), and each repository
+gets its own identity with its own `project_id`. Grant only the actions you
+use; add `subscription:create` (and `subscription:read`) only if you will add a
+[completion subscription](#completion-subscriptions).
+
+`preview` takes only `{"grant": ...}`, without `name` or `expires_at`. Save it
+as `ci-preview.json`:
+
+<!-- example: ci-preview -->
+```json
+{
+  "grant": {
+    "version": 1,
+    "project_id": "00000000-0000-4000-8000-000000000001",
+    "flow_id": "00000000-0000-4000-8000-000000000003",
+    "actions": ["flow:trigger", "execution:read", "execution:result:read", "execution:stop"]
+  }
+}
+```
+
+`create` takes the same grant plus a `name` and an optional `expires_at`. Save
+this as `ci-request.json` (use your own synthetic test resource IDs):
+
+<!-- example: ci-create -->
 ```json
 {
   "name": "Hosted review CI",
@@ -620,19 +884,25 @@ URLs, shell arguments or JSON request files. Save this public grant as
 }
 ```
 
-`preview` takes only `{"grant": ...}`, without `name` or `expires_at`:
+`--secret-file` names a new file in a directory you own and only you can
+read. Create that directory once:
 
 ```sh
+mkdir -m 700 ~/ci-secrets
 preloop ci capabilities
 preloop ci preview --input ci-preview.json
-preloop ci create --input ci-request.json --secret-file /private/new-ci-token
+preloop ci create --input ci-request.json --secret-file ~/ci-secrets/new-ci-token
 preloop ci list
 preloop ci show PRINCIPAL_ID
-preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
+preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file ~/ci-secrets/rotated-ci-token
 preloop ci revoke PRINCIPAL_ID KEY_ID
-preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
+preloop ci issue PRINCIPAL_ID --secret-file ~/ci-secrets/replacement-ci-token
 preloop ci retire PRINCIPAL_ID
 ```
+
+`preloop ci retire` ships with CLI 1.0.0. An older CLI answers `unknown
+command "retire"`: upgrade it, or call
+`POST /api/v1/ci-identities/{id}/retire` with a human API token.
 
 The CLI reserves a new exclusive file with mode `0600` before requesting a
 secret. Existing files and symlinks fail before issuance. Stdout contains only
@@ -641,6 +911,40 @@ move it directly into the repository secret manager and remove the local copy.
 Use a private directory, including on Windows where POSIX mode alone does not
 define access control. Tokens and signing secrets are shown once in the console
 and cleared when the modal closes or the component disconnects.
+
+The error says why a `--secret-file` path cannot be used: the file already
+exists, its directory does not exist, or you cannot create files in that
+directory (for example `/private` on macOS, which belongs to the system).
+
+`PRINCIPAL_ID` is the identity's `id`; `KEY_ID` is the `id` of one of its
+keys. `create` prints both as `identity.id` and `key_id`; `issue` and
+`rotate` print them as `principal_id` and `key_id`; and `preloop ci show PRINCIPAL_ID` lists the identity's `keys` with their ids.
+`rotate` and `revoke` need both ids: an identity can hold more than one key,
+so the CLI does not guess which one you mean.
+
+`preview` prints the binding Preloop will record, without issuing anything.
+For a dedicated flow:
+
+<!-- example: fragment -->
+```json
+{
+  "grant": {"version": 1, "project_id": "00000000-0000-4000-8000-000000000001",
+            "flow_id": "00000000-0000-4000-8000-000000000003",
+            "actions": ["flow:trigger", "execution:read", "execution:result:read", "execution:stop"]},
+  "flow_name": "Repository review",
+  "tracker_id": "00000000-0000-4000-8000-000000000002",
+  "repository_identifier": "123456789",
+  "repository_slug": "example/repository",
+  "tracker_type": "github",
+  "binding_mode": "dedicated",
+  "runner_pool": "server"
+}
+```
+
+For a shared flow the same request, with that repository's `project_id` and
+the shared flow's `flow_id`, prints `"binding_mode": "shared"`, the shared
+flow's `flow_name` and the `repository_slug` of that one project. Check that
+`flow_name` and `repository_slug` are the ones you meant before `create`.
 
 Issuance and file storage cannot be a transaction across the server and local
 disk. If a request times out, inspect metadata before retrying. If storage fails
@@ -677,16 +981,43 @@ retired identity changes nothing. Reads show `"retired": true`.
 
 Include only the callback actions you need in the principal grant. For example,
 `subscription:create`, `subscription:read`, `subscription:update`,
-`subscription:delete` and `subscription:secret:rotate`. A human creates the
-endpoint with `preloop ci subscribe PRINCIPAL_ID --input callback.json
---secret-file /private/new-signing-secret`. The request is:
+`subscription:delete` and `subscription:secret:rotate`. The grant must include
+`subscription:create` before you subscribe; without it the CLI stops and names
+the missing action. Add it to an existing identity with
+`preloop ci update PRINCIPAL_ID --input change.json`, where `change.json` holds
+the identity's complete grant with the added action:
 
+<!-- example: ci-update -->
+```json
+{
+  "grant": {
+    "version": 1,
+    "project_id": "00000000-0000-4000-8000-000000000001",
+    "flow_id": "00000000-0000-4000-8000-000000000003",
+    "actions": ["flow:trigger", "execution:read", "execution:result:read", "subscription:create", "subscription:read"]
+  }
+}
+```
+
+A human then creates the endpoint:
+
+```sh
+preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file ~/ci-secrets/new-signing-secret
+```
+
+`callback.json` names one key of the identity and the HTTPS URL of your
+receiver. `description` and `active` are optional:
+
+<!-- example: ci-subscribe -->
 ```json
 {
   "key_id": "00000000-0000-4000-8000-000000000004",
   "url": "https://example.com/preloop-completion"
 }
 ```
+
+The signing secret is written once to the `--secret-file`; store it with your
+receiver. Stdout shows the subscription's `id`, `url` and `event_types`.
 
 `key_id` is a real key belonging to the principal, used only as an audit anchor.
 It may be revoked/expired; it is not the human's authentication. The event filter
@@ -710,22 +1041,34 @@ handling are documented in
 [Restricted CI completion](../webhooks.md#restricted-ci-completion). It names
 the bound repository, PR number, head SHA and the base SHA recorded when the
 review was accepted, plus `result_sha256`, the digest of the result the CI key
-will read.
+will read, and `diff.sha256` for the controller-bound reviewed diff (null when
+unavailable).
 
 ### Result readiness
 
-Preloop stores the result together with the terminal status, then queues
-`flow.execution.finished`, and materializes each delivery from that stored
-state. A completion event therefore never arrives before its result:
+Preloop commits a captured result before later artifact/finalization work.
+A stop transaction durably queues `flow.execution.finished` even when capture
+is still pending. The delivery worker waits for capture to settle without
+consuming retries, then refreshes the envelope from stored state. A stopped
+launch settles immediately. After a controller claim expires, a confirmed
+runtime stop also permits settlement; an unconfirmed stop remains pending,
+without guessing that no result exists. A completion event therefore never
+arrives before its result:
 `result_ready: true` means `GET /api/v1/flows/executions/{id}/result` returns
 it now. `GET .../result` answers:
 
 - `200` with the result;
 - `409` with `detail.code: "result_pending"` and the current `detail.status`
   while the execution has not finished, even if a checkpoint is stored, for
-  example while it is parked (retry after it finishes);
+  example while it is parked. It also answers 409 if a stop/limit has already
+  made the status terminal but controller capture is still pending; retry until
+  capture settles;
 - `404` when the execution does not exist for the caller, or finished without
-  reporting a result. This does not change later.
+  reporting a result and capture has settled. Controller-only termination
+  metadata or private publication policy state is not a result artifact;
+  historical PR/publication outputs remain
+  readable without a schema or capture provenance. A settled 404 does not change
+  merely because delayed artifact capture finishes; that interval uses 409.
 
 ## Review and status posted by Preloop
 
@@ -737,8 +1080,55 @@ write token, and you need no publisher workflow. Design and threat model:
 
 It is off by default. Turn it on with `git_clone_config.platform_review` on a
 flow that has `publication_mode: "read_only"`, `validate_result: true` and a
-`result_schema`. It works with and without `ci_project_selection`.
+`result_schema`. It works with and without `ci_project_selection`. Enabling it
+needs no new CI identities.
 
+### Turn it on in the console
+
+Open the flow. Read-only review flows show a **Post review on the pull
+request** card under the publication policy:
+
+1. **What it needs** lists the prerequisites as checks: the flow is a
+   read-only review, result validation is on, the result schema has a
+   required `verdict` with fixed values, the flow names its repositories,
+   and every repository is connected through a GitHub App (not a personal
+   access token, not GitLab). A failed check states the exact reason. The
+   GitHub App permissions (**Pull requests: Read and write**, **Commit
+   statuses: Read and write**) cannot be read from Preloop, so the card asks
+   you to confirm them in GitHub.
+2. Switch on **Post the review on the pull request**.
+3. To set a commit status, tick **Set a commit status for each verdict** and
+   choose Success, Failure or Error for every verdict of your schema. Keep
+   the status name (`preloop/review` by default) stable if a branch
+   protection rule requires it. Optionally choose what to set when a run
+   stops, fails or returns no valid result.
+4. **Save**. The card refuses a save the server would refuse and says why;
+   a refusal from the server is shown as it was returned.
+
+Users who may not edit flows see the card read-only.
+
+### Turn it on with the CLI
+
+```sh
+preloop flow review-posting show pull-request-reviewer
+preloop flow review-posting enable pull-request-reviewer \
+  --state pass=success --state fail=failure --incomplete-state error
+preloop flow review-posting enable pull-request-reviewer --no-status   # review only
+preloop flow review-posting set-states pull-request-reviewer --state fail=error
+preloop flow review-posting set-states pull-request-reviewer --status-context ci/review
+preloop flow review-posting disable pull-request-reviewer              # keeps the mapping
+```
+
+`show` prints whether posting is on, the verdict mapping and the
+prerequisites it can read from the flow. `enable` and `set-states` refuse,
+before saving, a verdict that is not in the schema or a schema verdict
+without a state. Each write changes only `git_clone_config.platform_review`.
+Every command takes `--json`. The commands use your saved login or
+`PRELOOP_TOKEN`.
+
+### The same in JSON
+
+<!-- example: fragment -->
 ```json
 "platform_review": {
   "enabled": true,
@@ -753,6 +1143,7 @@ flow that has `publication_mode: "read_only"`, `validate_result: true` and a
 | Key | Meaning |
 | --- | --- |
 | `enabled` | Turns posting on. |
+| `enabled_at` | Read-only. Set by Preloop when posting is turned on; runs that finished before it are not published automatically (the publish call below still can). |
 | `verdict_actions` | Optional map from verdict to `comment`, `approve` or `request_changes`. Without an entry the review is a comment. An approval is never implied. |
 | `status` | Optional. Omit it to post the review only. |
 | `status.context` | Status name, default `preloop/review`. Keep it stable so a branch protection rule can require it. |
@@ -775,7 +1166,7 @@ What gets posted:
   execution. A finding whose file and line are in the pull request's diff is
   also an inline comment. All text from the result is shown as literal text:
   it cannot mention a user, link anywhere, reference or close an issue, or
-  carry HTML.
+  carry HTML. File paths are shown as code.
 - A commit status on the reviewed SHA with the state mapped from the verdict.
 - Nothing from the result chooses the target. Repository, pull request and
   commit are the ones Preloop bound when it accepted the trigger
@@ -800,15 +1191,54 @@ after that the publish call below adds the status without posting the review
 again. Personal access token trackers, GitLab and Bitbucket are refused when
 you save the opt-in.
 
-### Existing identities must be provisioned again
+### Existing identities keep working
 
-A CI identity records which provider writes its flow can cause when it is
-provisioned. After you turn `platform_review` on, add `status`, or add
-`approve` or `request_changes`, the flow's existing identities stop
-authenticating (401) until you provision new ones and replace the keys in
-your CI. This is deliberate: an identity created for a flow that could not
-write is never silently upgraded. Retire the old identities
-([Retiring an identity](#retiring-an-identity)).
+Turning `platform_review` on, changing it or turning it off does not touch
+the flow's CI identities. Their keys keep triggering and reading exactly as
+before, and the first run after you enable posting is posted. Preloop posts
+with a token of its own, so an identity gains no authority from the flow
+posting.
+
+The one new thing an identity can be allowed to do is ask Preloop to publish
+its own finished execution again (below). That needs the action
+`execution:review:publish`, which an administrator adds to an existing
+identity in place, without a new identity or a new key:
+
+<!-- example: ci-update -->
+```json
+{
+  "grant": {
+    "version": 1,
+    "project_id": "<project id>",
+    "flow_id": "<flow id>",
+    "actions": [
+      "flow:trigger",
+      "execution:read",
+      "execution:result:read",
+      "execution:stop",
+      "execution:review:publish"
+    ]
+  },
+  "extend_keys": true
+}
+```
+
+Send it with `preloop ci update PRINCIPAL_ID --input change.json`, or with
+`PATCH /api/v1/ci-identities/{id}` and a human API token.
+
+`grant.actions` is the complete new list. `extend_keys: true` also adds the
+actions this change adds to the identity's active keys, so the token already
+stored in your CI gains exactly those actions. Without it only keys issued
+afterwards carry them.
+
+What does invalidate an identity (it then answers 401 until you provision a
+new one): its project is removed from the flow's allowlist, the flow changes
+between dedicated and shared selection, the repository entry changes tracker
+or the repository's provider identity or path changes, `publication_mode`
+changes, or the flow stops being a supported read-only review executor
+(another agent type or runner pool, MCP tools added). Disabling the flow
+suspends its identities until it is enabled again. Prompt, model, limits and
+the result schema never affect an identity.
 
 ### The posting record
 
@@ -816,6 +1246,7 @@ write is never silently upgraded. Retire the old identities
 `flow.execution.finished` carry `platform_review` (`null` when the flow has
 not opted in):
 
+<!-- example: fragment -->
 ```json
 {
   "status": "posted",
@@ -834,8 +1265,35 @@ not opted in):
 }
 ```
 
-`status` is `pending` (not attempted yet), `publishing`, `posted`, `skipped`
-(the rules decided nothing is posted) or `failed`. A posting failure never
+On `GET /api/v1/flows/executions/{id}` for an account user the record also
+carries `pull_request_url`, `review_url` and `commit_url` (the commit that
+holds the status), built from the execution's own repository, pull request
+and reviewed commit. Each is `null` until there is something to link to.
+
+In the console the execution page shows the record under **Posted on the
+pull request**: posted, skipped (for example because the head moved) or
+failed with the reason in words, such as a missing **Commit statuses**
+permission, with links to the review, the status and the pull request. From
+the CLI:
+
+```sh
+preloop flow review-posting status <execution-id>          # add --json for the record
+```
+
+`status` says what is on the pull request:
+
+- `posted`: the review is posted (and the status, when configured).
+- `status_only`: a commit status was set and, by rule, no review: the run
+  did not succeed or returned no valid verdict (`reason`
+  `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`), the head
+  moved (`head_moved`) or the pull request is closed. `review` is
+  `"skipped"` and `commit_status` holds the state that was set.
+- `skipped`: nothing was posted, for the same reasons, when no status applies.
+- `failed`: an attempt did not complete; `reason` says why, and `review` and
+  `commit_status` say what is already there.
+- `pending`, `publishing`: not attempted yet, or in progress.
+
+A posting failure never
 changes the execution's status or result. `reason` values include
 `head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
 `verdict_unmapped`, `admission_revoked`, `binding_changed`,
@@ -850,6 +1308,14 @@ transient failures by itself, up to six attempts with growing delays.
 curl -fsS -X POST \
   -H "Authorization: Bearer $PRELOOP_CI_KEY" \
   "$PRELOOP_URL/api/v1/flows/executions/$EXECUTION_ID/platform-review"
+```
+
+In the console, **Publish again** on the execution page makes the same call.
+It is shown to users who may edit flows, once the run has finished and while
+something is left to post. From the CLI:
+
+```sh
+preloop flow review-posting publish <execution-id>
 ```
 
 The call takes no body. It publishes the stored, validated result of that
@@ -869,17 +1335,25 @@ disabled is never published by this call either.
 One hosted Codex flow reviews two repositories. Each repository has its own
 CI identity, so neither can trigger for, read or cause a post on the other.
 
-1. Flow (an administrator saves this; project and tracker IDs are yours):
+1. Flow (an administrator saves this with `POST /api/v1/flows`; the model,
+   project and tracker IDs are yours):
 
+    <!-- example: flow-create -->
     ```json
     {
       "name": "Organisation review",
+      "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with verdict, summary and findings.",
+      "ai_model_id": "<model id>",
       "agent_type": "codex",
+      "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
       "runner_pool": "server",
+      "allowed_mcp_tools": [],
+      "allowed_mcp_servers": [],
       "validate_result": true,
       "result_schema": {
         "type": "object",
-        "required": ["verdict", "summary", "findings"],
+        "additionalProperties": false,
+        "required": ["verdict", "summary", "findings", "checked"],
         "properties": {
           "verdict": {"type": "string", "enum": ["pass", "fail"]},
           "summary": {"type": "string"},
@@ -887,17 +1361,18 @@ CI identity, so neither can trigger for, read or cause a post on the other.
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["severity", "title", "body"],
+              "additionalProperties": false,
+              "required": ["severity", "title", "body", "path", "line"],
               "properties": {
                 "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
-                "path": {"type": "string"},
-                "line": {"type": "integer"}
+                "path": {"type": ["string", "null"]},
+                "line": {"type": ["integer", "null"]}
               }
             }
           },
-          "checked": {"type": "array", "items": {"type": "string"}}
+          "checked": {"type": ["array", "null"], "items": {"type": "string"}}
         }
       },
       "trigger_project_ids": ["<project A id>", "<project B id>"],
@@ -924,6 +1399,7 @@ CI identity, so neither can trigger for, read or cause a post on the other.
 2. Two identities, one per repository, each with the grant below and its own
    `project_id`. Store each key as a secret of its own repository only.
 
+    <!-- example: ci-create -->
     ```json
     {
       "name": "Review CI, repository A",
@@ -942,6 +1418,12 @@ CI identity, so neither can trigger for, read or cause a post on the other.
       "expires_at": "2030-01-01T00:00:00Z"
     }
     ```
+
+   `execution:review:publish` is only needed for the publish call above,
+   not for posting. It can be granted on Preloop versions that include
+   platform-posted review; on Preloop Cloud and Preloop Enterprise the
+   access-control component must also include that action, otherwise the
+   grant is refused with 403. Leave it out of the list until then.
 
 3. In each repository's CI, on a pull request event, trigger with that
    repository's key and a body of exactly
@@ -1009,12 +1491,26 @@ token.
 
 [`restricted-ci-publish.yml`](../../examples/restricted-ci-publish.yml) with
 `scripts/restricted_ci_publish.py` is a `repository_dispatch` publisher. The
-flow uses the native read-only mode described above:
+flow uses the native read-only mode described above (a complete
+`POST /api/v1/flows` body):
 
+<!-- example: flow-create -->
 ```json
 {
+  "name": "Repository review",
+  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "ai_model_id": "<model id>",
   "agent_type": "codex",
+  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
   "runner_pool": "server",
+  "trigger_project_ids": ["<project id>"],
+  "validate_result": true,
+  "result_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["review"],
+    "properties": {"review": {"type": "string"}}
+  },
   "git_clone_config": {
     "enabled": true,
     "publication_mode": "read_only",

@@ -434,26 +434,35 @@ def flow_execution_finished_data(
     *,
     status: str,
     failure_category: Optional[str],
+    db: Any = None,
 ) -> dict[str, Any]:
     """Body of ``flow.execution.finished``."""
+    from preloop.services.review_diff import review_diff_identity
+
+    diff = review_diff_identity(execution)
     receipt = getattr(execution, "evidence_receipt", None)
     evidence = (
         {key: receipt.get(key) for key in RECEIPT_KEYS if key in receipt}
         if isinstance(receipt, Mapping)
         else None
     )
-    return {
+    data = {
         "execution_id": _str(getattr(execution, "id", None)),
         "flow_id": _str(getattr(flow, "id", None)),
         "flow_name": getattr(flow, "name", None),
         "status": status,
         "failure_category": failure_category,
         "result_schema_valid": _result_schema_valid(execution),
+        "diff": {"sha256": diff["sha256"]} if diff else None,
         "trigger_type": getattr(execution, "trigger_type", None),
         "started_at": _iso(getattr(execution, "start_time", None)),
         "finished_at": _iso(getattr(execution, "end_time", None)),
         "evidence_receipt": evidence,
     }
+
+    if db is not None:
+        data["platform_review"] = _platform_review(db, execution, flow)
+    return data
 
 
 def _platform_review(db: Any, execution: Any, flow: Any) -> Optional[dict[str, Any]]:
@@ -483,16 +492,15 @@ def emit_flow_execution_finished(
     *,
     status: str,
     failure_category: Optional[str] = None,
-) -> None:
+) -> outbox.EnqueueResult | None:
     """Enqueue ``flow.execution.finished`` in the caller's transaction."""
     execution_id = getattr(execution, "id", None)
     if execution_id is None:
         return
     data = flow_execution_finished_data(
-        execution, flow, status=status, failure_category=failure_category
+        execution, flow, status=status, failure_category=failure_category, db=db
     )
-    data["platform_review"] = _platform_review(db, execution, flow)
-    outbox.enqueue_event(
+    return outbox.enqueue_event(
         db,
         account_id=getattr(flow, "account_id", None),
         event_type=EVENT_FLOW_EXECUTION_FINISHED,

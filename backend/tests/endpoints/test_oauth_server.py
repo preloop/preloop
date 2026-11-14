@@ -303,6 +303,7 @@ async def test_issue_jwt_tokens_uses_long_lived_cli_refresh_tokens():
         return f"token-{len(captured)}"
 
     with (
+        patch("preloop.models.crud.mfa.factor", return_value=None),
         patch("preloop.models.crud.crud_user.get", return_value=user),
         patch("preloop.api.auth.jwt.create_access_token", side_effect=_capture_token),
         patch("preloop.api.auth.jwt.ACCESS_TOKEN_EXPIRE_MINUTES", 60),

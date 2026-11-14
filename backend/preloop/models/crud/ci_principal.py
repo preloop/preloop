@@ -17,6 +17,23 @@ from .api_key import CRUDApiKey
 from .audit_log import CRUDAuditLog
 
 
+def stored_binding(
+    principal: models.CiPrincipal,
+) -> tuple[UUID, str, dict[str, object]]:
+    """The identity's provisioning snapshot, as compared with its flow today.
+
+    The first release of platform-posted review (``platform_review``) wrote
+    which provider writes the flow could cause into the snapshot. That key is
+    ignored: the control plane posts with a token of its own, so the flow's
+    posting settings give an identity no authority and must not invalidate it.
+    Everything else in the snapshot is compared exactly.
+    """
+    snapshot = principal.repository_binding
+    if isinstance(snapshot, dict):
+        snapshot = {k: v for k, v in snapshot.items() if k != "platform_review"}
+    return (principal.tracker_id, principal.repository_identifier, snapshot)
+
+
 class CiRepositoryBinding(TypedDict):
     """Provider fields that determine the administrator-approved clone target."""
 
@@ -26,7 +43,6 @@ class CiRepositoryBinding(TypedDict):
     organization_id: str
     publication_mode: NotRequired[str]
     ci_project_selection: NotRequired[bool]
-    platform_review: NotRequired[list[str]]
 
 
 @dataclass(frozen=True)
@@ -60,6 +76,15 @@ class CiTokenInspection:
     flow_id: Optional[UUID] = None
 
 
+@dataclass(frozen=True)
+class CiFlowBinding:
+    """A CI identity bound to a flow, with its key lifetime metadata."""
+
+    principal: models.CiPrincipal
+    active_key_count: int
+    key_expires_at: Optional[datetime]
+
+
 class CRUDCiPrincipal:
     """CI-only entry points. There is deliberately no generic delete/update."""
 
@@ -78,6 +103,65 @@ class CRUDCiPrincipal:
         if lock:
             query = query.with_for_update()
         return query.first()
+
+    def list_bound_to_flows(
+        self, db: Session, *, account_id: UUID, flow_ids: list[UUID]
+    ) -> list[CiFlowBinding]:
+        """Read the account's CI identities bound to flows, with key lifetimes.
+
+        Two queries regardless of the number of flows. Only metadata is read:
+        key counts and the soonest expiry among active, unexpired keys.
+
+        Args:
+            db: Database session.
+            account_id: Account whose identities are listed.
+            flow_ids: Flows to look up.
+
+        Returns:
+            One binding per identity, ordered by name.
+        """
+        if not flow_ids:
+            return []
+        principals = (
+            db.query(models.CiPrincipal)
+            .filter(
+                models.CiPrincipal.account_id == account_id,
+                models.CiPrincipal.flow_id.in_(flow_ids),
+            )
+            .order_by(models.CiPrincipal.name.asc(), models.CiPrincipal.id.asc())
+            .all()
+        )
+        if not principals:
+            return []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        keys = (
+            db.query(models.ApiKey.ci_principal_id, models.ApiKey.expires_at)
+            .filter(
+                models.ApiKey.account_id == account_id,
+                models.ApiKey.ci_principal_id.in_([p.id for p in principals]),
+                models.ApiKey.credential_type == "restricted_ci",
+                models.ApiKey.is_active.is_(True),
+            )
+            .all()
+        )
+        counts: dict[UUID, int] = {}
+        soonest: dict[UUID, datetime] = {}
+        for principal_id, expires_at in keys:
+            if expires_at is not None and expires_at <= now:
+                continue
+            counts[principal_id] = counts.get(principal_id, 0) + 1
+            if expires_at is not None and (
+                principal_id not in soonest or expires_at < soonest[principal_id]
+            ):
+                soonest[principal_id] = expires_at
+        return [
+            CiFlowBinding(
+                principal=principal,
+                active_key_count=counts.get(principal.id, 0),
+                key_expires_at=soonest.get(principal.id),
+            )
+            for principal in principals
+        ]
 
     def _binding(
         self, db: Session, *, account_id: UUID, grant: CiGrant
@@ -190,16 +274,6 @@ class CRUDCiPrincipal:
             extra["publication_mode"] = "read_only"
             if shared:
                 extra["ci_project_selection"] = True
-            from preloop.services.platform_review import (
-                platform_review_capabilities,
-            )
-
-            # Same rule for provider writes made by the control plane: the
-            # identity records which ones its flow could cause when it was
-            # provisioned, and stops authenticating when that set changes.
-            posted = platform_review_capabilities(configuration)
-            if posted is not None:
-                extra["platform_review"] = posted
         return (
             tracker.id,
             project.identifier,
@@ -402,8 +476,18 @@ class CRUDCiPrincipal:
         principal_id: UUID,
         grant: Optional[CiGrant] = None,
         enabled: Optional[bool] = None,
+        extend_keys: bool = False,
     ) -> models.CiPrincipal:
-        """Change actions or enabled state; resource identity remains immutable."""
+        """Change actions or enabled state; resource identity remains immutable.
+
+        A key carries its own action list, so widening the grant alone does
+        not widen a key that is already in use. With ``extend_keys`` the
+        actions this change adds to the grant are also added to the
+        identity's active keys, in place: no new identity, no rotation, the
+        token in the caller's CI keeps working and gains exactly those
+        actions. Requires a grant. When the grant adds nothing (a repeated
+        call, a narrowing) no key is touched.
+        """
         principal = self.get(
             db, account_id=actor.account_id, principal_id=principal_id, lock=True
         )
@@ -429,6 +513,16 @@ class CRUDCiPrincipal:
             or grant.flow_id != principal.flow_id
         ):
             raise ValueError("CI binding is immutable; provision a new identity")
+        if extend_keys and grant is None:
+            raise ValueError("Extending keys requires a grant")
+        # What this change adds to the grant. Empty for a repeated call or a
+        # narrowing one: extending keys is then a no-op, never an error, and
+        # a non-empty list always went through the widening authorization.
+        added = (
+            [a for a in grant.actions if a not in current.actions]
+            if grant is not None
+            else []
+        )
         try:
             if grant is not None:
                 principal.grant = grant.model_dump(mode="json")
@@ -436,6 +530,31 @@ class CRUDCiPrincipal:
                 principal.is_active = enabled
             operation = "disable" if enabled is False else "change"
             self._audit(db, actor=actor, principal=principal, operation=operation)
+            if extend_keys and added:
+                keys = (
+                    db.query(models.ApiKey)
+                    .populate_existing()
+                    .filter(
+                        models.ApiKey.ci_principal_id == principal.id,
+                        models.ApiKey.account_id == principal.account_id,
+                        models.ApiKey.is_active.is_(True),
+                        models.ApiKey.credential_type == "restricted_ci",
+                    )
+                    .with_for_update()
+                    .all()
+                )
+                for key in keys:
+                    held = list(key.ci_actions or [])
+                    extra = [a.value for a in added if a.value not in held]
+                    if extra:
+                        key.ci_actions = held + extra
+                        self._audit(
+                            db,
+                            actor=actor,
+                            principal=principal,
+                            operation="extend_key",
+                            key_id=key.id,
+                        )
             db.commit()
             return principal
         except Exception:
@@ -692,12 +811,7 @@ class CRUDCiPrincipal:
             if (
                 grant.project_id != principal.project_id
                 or grant.flow_id != principal.flow_id
-                or binding
-                != (
-                    principal.tracker_id,
-                    principal.repository_identifier,
-                    principal.repository_binding,
-                )
+                or binding != stored_binding(principal)
             ):
                 raise ValueError("CI binding changed")
             fresh = CiAuthorizationContext(
@@ -777,11 +891,7 @@ class CRUDCiPrincipal:
             if not effective:
                 return None
             binding = self._binding(db, account_id=key.account_id, grant=grant)
-            if binding != (
-                principal.tracker_id,
-                principal.repository_identifier,
-                principal.repository_binding,
-            ):
+            if binding != stored_binding(principal):
                 return None
         except (ValidationError, ValueError, TypeError):
             return None

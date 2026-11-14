@@ -176,6 +176,51 @@ def test_free_probe_writes_gateway_usage_and_audit(
     assert STORED_KEY not in str(audit[0].details)
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"usage": None},
+        {"usage": {}},
+        {"usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}},
+    ],
+    ids=["absent", "null", "empty", "zero"],
+)
+def test_completion_probe_without_usage_writes_zero_tokens(
+    db_session: Session,
+    test_user: models.User,
+    response: dict[str, Any],
+) -> None:
+    """A successful credential test uses the ordinary gateway's zero totals."""
+    model = _marked_model(
+        db_session,
+        test_user.account_id,
+        provider_name="openai",
+        model_identifier="gpt-4o",
+        api_endpoint="https://api.openai.com/v1",
+    )
+    backend = MagicMock()
+    backend.completion.return_value = response
+    with patch(
+        "preloop.services.openai_gateway.get_model_gateway_backend",
+        return_value=backend,
+    ):
+        result = probe_rejected_model_credentials(db_session, model=model)
+
+    backend.completion.assert_called_once()
+    assert result.auth_rejected is False
+    rows = crud.crud_api_usage.get_multi(
+        db_session, account_id=str(test_user.account_id)
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status_code == 200
+    assert (row.prompt_tokens, row.completion_tokens, row.total_tokens) == (0, 0, 0)
+    assert row.meta_data["usage_details"] == (response.get("usage") or None)
+    assert not row.meta_data.get("usage_warnings")
+    assert row.estimated_cost is None
+
+
 def test_late_probe_rejection_cannot_refuse_a_replaced_key(
     db_session: Session,
     test_user: models.User,

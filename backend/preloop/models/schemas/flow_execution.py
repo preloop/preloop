@@ -448,6 +448,15 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
             "ran it; private when a self-hosted CLI runner did; unknown until assigned."
         ),
     )
+    platform_review: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "What Preloop posted on the pull request for a read-only review "
+            "flow with platform_review on: the publication record, plus "
+            "pull_request_url, review_url and commit_url built from the "
+            "execution's own binding. Null without the opt-in."
+        ),
+    )
 
     # Example of how to include related data if needed
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists

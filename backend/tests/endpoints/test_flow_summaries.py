@@ -206,7 +206,6 @@ def test_lightweight_crud_sql_excludes_large_columns(
     assert "flow.schedule_config" in sql
     for column in (
         "prompt_template",
-        "agent_config",
         "allowed_mcp_tools",
         "review_instructions",
     ):
@@ -215,3 +214,8 @@ def test_lightweight_crud_sql_excludes_large_columns(
     # is extracted in SQL for the summary's ci_only flag.
     assert "flow.git_clone_config ->>" in sql
     assert re.search(r"flow\.git_clone_config(?!\s*->>)", sql) is None
+    # Model health extracts only its marker and selection fields. Even the
+    # JSONB routing match must never materialize the whole configuration.
+    assert "flow.agent_config ->" in sql
+    assert re.search(r"flow\.agent_config(?!\s*->)", sql) is None
+    assert "jsonb_path_query_first(jsonb_build_object(" in sql

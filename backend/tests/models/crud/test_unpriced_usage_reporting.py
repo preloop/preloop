@@ -78,6 +78,11 @@ def _log(db_session, *, account, user, flow, execution, **overrides):
         total_tokens=1200,
     )
     params.update(overrides)
+    # A gateway write never stores a total below its parts, so a row that only
+    # names a total carries it as input.
+    if "total_tokens" in overrides and "prompt_tokens" not in overrides:
+        params["prompt_tokens"] = params["total_tokens"]
+        params["completion_tokens"] = 0
     return crud_api_usage.log_gateway_request(db_session, **params)
 
 

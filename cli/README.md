@@ -118,6 +118,12 @@ The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, confi
 
 An interactive login asks whether to install a runner (default no). Skip it with `--no-runner` or `PRELOOP_NO_RUNNER=1`. `preloop runner setup` runs the same step later. Headless login, `--token`, and `PRELOOP_TOKEN` never install a runner.
 
+### Authenticator two-factor sign-in
+
+`preloop auth login` uses browser sign-in, including authenticator or recovery
+codes when enabled. Finish both steps in the browser; no terminal code prompt
+is required. Passkey-only accounts continue to use a passkey.
+
 ### Signing out and revoking a login
 
 `preloop auth logout` posts the stored refresh token to `POST /oauth/revoke`,
@@ -464,6 +470,20 @@ preloop flow trigger nightly-review --wait --timeout 30m
 preloop flow trigger nightly-review --runner local
 ```
 
+Read-only review flows can have Preloop post the validated review and a
+commit status on the pull request:
+
+```bash
+preloop flow review-posting show <flow>                     # on/off, mapping, prerequisites
+preloop flow review-posting enable <flow> --state pass=success --state fail=failure
+preloop flow review-posting set-states <flow> --state fail=error --incomplete-state error
+preloop flow review-posting disable <flow>
+preloop flow review-posting status <execution-id>           # publication record
+preloop flow review-posting publish <execution-id>          # publish again, no model run
+```
+
+See [Review and status posted by Preloop](../docs/guide/flows/restricted-ci.md#review-and-status-posted-by-preloop).
+
 In CI (stdin is not a TTY) the command waits by default and streams
 execution logs to stdout. The same logs remain in the console execution
 view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT. Auth is
@@ -781,6 +801,7 @@ cli/
 │   │   ├── version.go       # version command
 │   │   ├── update.go        # update command
 │   │   ├── flow.go          # flow trigger
+│   │   ├── flow_review_posting.go # flow review-posting
 │   │   └── runner.go        # self-hosted runner daemon
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client

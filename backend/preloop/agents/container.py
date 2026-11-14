@@ -2419,6 +2419,7 @@ class ContainerAgentExecutor(AgentExecutor):
             has_error_pattern = self._detect_error_in_logs(logs_text)
 
             # Override status if we detect errors in logs
+            log_failure_override = has_error_pattern and status == AgentStatus.SUCCEEDED
             if has_error_pattern and status == AgentStatus.SUCCEEDED:
                 self.logger.warning(
                     f"Container {session_reference[:12]} exited with code 0 but logs contain critical errors. "
@@ -2435,6 +2436,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
             failure_analysis = None
             if termination.oom_killed:
+                log_failure_override = False
                 status = AgentStatus.FAILED
                 failure_analysis = _oom_failure_analysis(termination)
                 error_message = failure_analysis.message
@@ -2458,6 +2460,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
                 termination=termination,
+                log_failure_override=log_failure_override,
             )
 
         except DockerError as e:
@@ -2507,6 +2510,7 @@ class ContainerAgentExecutor(AgentExecutor):
             has_error_pattern = self._detect_error_in_logs(logs_text)
 
             # Override status if we detect errors in logs
+            log_failure_override = has_error_pattern and status == AgentStatus.SUCCEEDED
             if has_error_pattern and status == AgentStatus.SUCCEEDED:
                 self.logger.warning(
                     f"Job {job_name} succeeded but logs contain critical errors. "
@@ -2568,6 +2572,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
             failure_analysis = None
             if termination is not None and termination.oom_killed:
+                log_failure_override = False
                 status = AgentStatus.FAILED
                 failure_analysis = _oom_failure_analysis(termination)
                 error_message = failure_analysis.message
@@ -2589,6 +2594,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
                 termination=termination,
+                log_failure_override=log_failure_override and exit_code in (None, 0),
             )
 
         except ApiException as e:
@@ -4123,6 +4129,8 @@ class ContainerAgentExecutor(AgentExecutor):
             raise ValueError("Read-only review requires its admitted repository")
 
         # Prepare git clone command if enabled
+        if review_checkout:
+            commands.append("echo 'PRELOOP_REVIEW_PHASE clone_started'")
         git_clone_config = execution_context.get("git_clone_config")
         self.logger.info(f"Git clone config: {git_clone_config}")
 
@@ -4168,6 +4176,28 @@ class ContainerAgentExecutor(AgentExecutor):
                 )
         else:
             self.logger.debug("No git_clone_config in execution context")
+
+        if review_checkout:
+            from preloop.services import review_diff
+
+            diff_script = inspect.getsource(review_diff) + (
+                "\nimport sys\nprint(DIFF_MARKER + json.dumps("
+                "compute_diff(sys.argv[1], sys.argv[2] or None, sys.argv[3])))\n"
+            )
+            commands.append("echo 'PRELOOP_REVIEW_PHASE clone_finished'")
+            commands.append(
+                "python3 -c "
+                + shlex.quote(diff_script)
+                + " "
+                + shlex.quote(
+                    self._primary_workspace_path(execution_context, git_clone_config)
+                )
+                + " "
+                + shlex.quote(execution_context.get("read_only_base_sha") or "")
+                + " "
+                + shlex.quote(self._read_only_admitted_commit(execution_context))
+            )
+            commands.append("echo 'PRELOOP_REVIEW_PHASE setup_started'")
 
         if isinstance(git_clone_config, dict) and git_clone_config.get(
             "create_pull_request"
@@ -4249,6 +4279,7 @@ class ContainerAgentExecutor(AgentExecutor):
             # link of an ``&&`` list, so the review fails closed explicitly.
             from preloop.services.read_only_review import read_only_startup_line
 
+            commands.append("echo 'PRELOOP_REVIEW_PHASE setup_finished'")
             commands.append(
                 "echo "
                 + shlex.quote(

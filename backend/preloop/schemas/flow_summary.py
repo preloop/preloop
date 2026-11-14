@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from preloop.models.schemas.flow import FlowModelHealth
+
 
 class FlowSummaryResponse(BaseModel):
     """A flow row without prompts, agent configuration or tool definitions."""
@@ -23,6 +25,8 @@ class FlowSummaryResponse(BaseModel):
     trigger_event_types: list[str] | None = None
     ai_model_id: UUID | None = None
     ai_model_name: str | None = None
+    #: Null when the flow selects no model; see ``FlowModelHealth``.
+    model_health: FlowModelHealth | None = None
     agent_type: str
     is_enabled: bool
     is_preset: bool

@@ -9,7 +9,10 @@ and you.
 
 ## Add a passkey
 
-Open **Settings > Security** and choose **Add passkey**. Your browser or
+Open **Settings > Security** and choose **Add passkey**. Adding a passkey
+requires a console session and authentication within the last ten minutes.
+If you already have a passkey or authenticator app, confirm with a strong
+factor when prompted. For your first factor, sign in again if prompted. Your browser or
 operating system asks you to confirm with your PIN, fingerprint or face. A
 security key without a PIN is refused with "This security key did not verify
 you. Set a PIN or biometric on it, or register a different passkey."
@@ -22,14 +25,15 @@ social sign-in stop working for you, so a stolen password no longer opens
 your account.
 
 1. Add at least one passkey (two, on different devices, is safer).
-2. Sign out and sign back in **with your passkey**. The switch can only be
-   changed within 10 minutes of a passkey sign-in; in a password session it is
-   shown but disabled.
-3. On **Settings > Security**, turn on **Require a passkey to sign in**.
+2. On **Settings > Security**, turn on **Require a passkey to sign in**.
+3. If prompted, confirm your identity using a passkey or an enrolled
+   authenticator app. A strong sign-in within the last 10 minutes also works.
 
 Turning it on signs out every other console and CLI session of yours; the
-session you are using stays signed in. Turning it off needs a recent passkey
-sign-in too.
+session you are using stays signed in. Turning it off or deleting a passkey
+also needs a recent strong sign-in; the console prompts you when needed.
+Sessions created before the server recorded verified passkey assurance must
+complete a fresh assertion once before these actions.
 
 While it is on:
 

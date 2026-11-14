@@ -30,6 +30,44 @@ class AIModelFlowLink(BaseModel):
 
     id: str
     name: str
+    is_enabled: Optional[bool] = Field(
+        default=None, description="Whether the flow can be triggered"
+    )
+    last_execution_at: Optional[datetime] = Field(
+        default=None, description="Start time of the flow's most recent run"
+    )
+    last_execution_status: Optional[str] = Field(
+        default=None, description="Status of the flow's most recent run"
+    )
+
+
+class AIModelCiIdentityLink(BaseModel):
+    """A restricted CI identity bound to a flow that uses this model.
+
+    Carries lifetime metadata only, never key material.
+    """
+
+    id: str
+    name: str
+    flow_id: str
+    is_active: bool
+    retired: bool = False
+    active_key_count: int = 0
+    key_expires_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Soonest expiry among the identity's active keys; null when no "
+            "active key expires"
+        ),
+    )
+
+
+class AIModelSharedCredentialLink(BaseModel):
+    """Another model of the account that resolves the same credential secret."""
+
+    id: str
+    name: str
+    credentials_status: Optional[str] = None
 
 
 class AIModelUsedByResponse(BaseModel):
@@ -37,7 +75,50 @@ class AIModelUsedByResponse(BaseModel):
 
     agents: list[AIModelAgentLink] = Field(default_factory=list)
     flows: list[AIModelFlowLink] = Field(default_factory=list)
+    ci_identities: list[AIModelCiIdentityLink] = Field(
+        default_factory=list,
+        description="Restricted CI identities bound to the listed flows",
+    )
+    shared_credential_models: list[AIModelSharedCredentialLink] = Field(
+        default_factory=list,
+        description="Other models that use the same stored credential",
+    )
+    enabled_flow_count: int = Field(
+        default=0, description="Listed flows that can run and would break"
+    )
+    disabled_flow_count: int = Field(
+        default=0, description="Listed flows that are disabled and cannot run"
+    )
     truncated: bool = False
+
+
+class AIModelInUseDetail(BaseModel):
+    """Body of the 409 a delete returns while flows still select the model."""
+
+    code: Literal["model_in_use"] = "model_in_use"
+    message: str
+    flow_count: int = Field(
+        description=(
+            "Enabled flows of the account that select the model, visible or "
+            "not; only these block the delete"
+        )
+    )
+    disabled_flow_count: int = Field(
+        default=0,
+        description=(
+            "Disabled flows that select the model. They do not block the "
+            "delete; it marks them and names them in the audit entry"
+        ),
+    )
+    flows: list[AIModelFlowLink] = Field(
+        default_factory=list, description="The enabled flows the caller can see"
+    )
+
+
+class AIModelInUseResponse(BaseModel):
+    """The 409 body as sent: FastAPI wraps the refusal in ``detail``."""
+
+    detail: AIModelInUseDetail
 
 
 # Keys the credential resolver reads for each subscription-OAuth type. Codex
@@ -432,6 +513,15 @@ class AIModelInDBBase(BaseModel):
         None,
         description="Rotation counter of the credential secret (1 = never rotated)",
     )
+    credentials_expires_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When the stored subscription login's access token expires, from "
+            "the bundle's `expires`. Single-model read only, for account "
+            "admins and the model's editors; null otherwise or when the "
+            "credential has no expiry (API keys)"
+        ),
+    )
     credentials_rotated_at: Optional[datetime] = Field(
         None, description="When the credential material was last replaced"
     )
@@ -516,6 +606,14 @@ class AIModelCredentialRotateResponse(BaseModel):
     rotated_at: datetime
     shared_model_count: int = Field(
         description="Models of this account that resolve the rotated secret"
+    )
+    affected_models: list[AIModelSharedCredentialLink] = Field(
+        default_factory=list,
+        description="Every model of the account that resolves the rotated secret",
+    )
+    affected_flows: list[AIModelFlowLink] = Field(
+        default_factory=list,
+        description="Visible flows that select any of the affected models",
     )
 
 

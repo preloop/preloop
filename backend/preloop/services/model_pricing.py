@@ -339,6 +339,13 @@ def estimate_ai_model_usage_cost_detailed(
     approximate (and the Auto Router has no catalog price at all). The
     catalog is the fallback, and ``unpriced`` means nothing could price the
     request.
+
+    ``total_tokens`` is only read by a per-1k price and a prepaid token
+    balance, and is used as given. The gateway passes a total that is never
+    below ``prompt_tokens + completion_tokens``. A stored row is repriced on
+    its stored total: a row written before input was corrected can carry an
+    input that is too large next to a correct total, and raising the total to
+    match would over-charge.
     """
     configured_pricing = pricing_override or _get_configured_pricing(ai_model)
     if configured_pricing:

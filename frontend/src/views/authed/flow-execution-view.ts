@@ -20,6 +20,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import {
   getFlowExecution,
+  getUserProfile,
   getFlowExecutionLifecycle,
   getFlow,
   sendCommandToExecution,
@@ -85,6 +86,9 @@ import '../../components/preloop-execution-tree';
 import '../../components/view-header.ts';
 import '../../components/execution-records-card';
 import '../../components/execution-report-panel';
+import '../../components/execution-platform-review';
+import { hasPermission } from '../../permissions';
+import type { PlatformReviewRecord } from '../../utils/platform-review';
 import { getEvidenceStatus, type EvidenceStatus } from '../../records-api';
 import {
   findingsSummaryLabel,
@@ -167,6 +171,11 @@ interface FlowExecution {
    * Null when the flow sets no schema.
    */
   result_schema_validation?: ResultSchemaValidation | null;
+  /**
+   * What Preloop posted on the pull request for a read-only review flow
+   * with platform_review on. Null without the opt-in or on older servers.
+   */
+  platform_review?: PlatformReviewRecord | null;
   mcp_usage_logs?: any[];
   tool_calls_count?: number;
   total_tokens?: number;
@@ -1430,9 +1439,18 @@ export class FlowExecutionView extends LitElement {
   private logIdentities = new Set<string>();
   private readonly LOG_WINDOW_SIZE = 1000;
   @state() private logWindowStart = 0;
+  /** Whether the viewer may edit flows, which "Publish again" requires. */
+  @state() private canEditFlows = false;
 
   connectedCallback() {
     super.connectedCallback();
+    void getUserProfile()
+      .then((profile) => {
+        this.canEditFlows = hasPermission(profile?.permissions, 'edit_flows');
+      })
+      .catch(() => {
+        this.canEditFlows = false;
+      });
     // A deep link wins over the remembered tab, so a shared "?tab=logs" URL
     // opens on logs for whoever receives it.
     this.activeTab = this.resolveInitialTab();
@@ -3617,6 +3635,7 @@ export class FlowExecutionView extends LitElement {
       execution.error_message ||
       execution.result ||
       execution.model_output_summary ||
+      execution.platform_review ||
       (execution.actions_taken_summary || []).length > 0;
 
     if (!hasAnything) {
@@ -3686,6 +3705,22 @@ export class FlowExecutionView extends LitElement {
             : ''
         }
         ${renderResultSchemaErrors(execution.result_schema_validation)}
+        ${
+          execution.platform_review
+            ? html`<execution-platform-review
+                .executionId=${execution.id}
+                .record=${execution.platform_review}
+                .finished=${!this.isExecutionRunning()}
+                .canPublish=${this.canEditFlows}
+                @platform-review-updated=${(e: CustomEvent) => {
+                  this.execution = {
+                    ...this.execution!,
+                    platform_review: e.detail.record,
+                  };
+                }}
+              ></execution-platform-review>`
+            : ''
+        }
         ${
           execution.result
             ? html`

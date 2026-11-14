@@ -892,7 +892,11 @@ def test_gateway_stops_calling_upstream_after_repeated_identical_failures(
     assert response.json()["error"]["code"] == "repeated_upstream_failure"
     db_session.refresh(execution)
     assert execution.status == "FAILED"
-    assert execution.failure_category == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+    assert execution.failure_category == (
+        "model_auth"
+        if failed_requests == 2
+        else FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+    )
     assert len(_milestones(db_session, execution)) == 1
 
 

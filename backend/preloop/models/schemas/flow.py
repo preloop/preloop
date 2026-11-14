@@ -340,6 +340,15 @@ class PlatformReview(BaseModel):
     status: Optional[PlatformReviewStatus] = Field(
         default=None, description="Commit status to set; omit for none"
     )
+    enabled_at: Optional[str] = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$",
+        description=(
+            "Set by the server when posting is turned on (UTC); a value sent "
+            "by a client is replaced. Runs that finished before it are not "
+            "published automatically."
+        ),
+    )
 
 
 class FollowUpFiling(BaseModel):
@@ -1995,6 +2004,22 @@ class FlowUpdate(FlowBase):
         return _checked_result_schema(value)
 
 
+class FlowModelHealth(BaseModel):
+    """Deleted configured models or credential errors on the flow's own model."""
+
+    status: Literal["ok", "error", "missing"] = Field(
+        description=(
+            "missing: a default, routing, label or enabled retry model was deleted; "
+            "error: the default model's credential failed (credentials_status error)"
+        )
+    )
+    code: Optional[str] = Field(
+        default=None,
+        description="credentials_last_error_code, or model_deleted",
+    )
+    model_id: Optional[str] = None
+
+
 class FlowResponse(FlowBase):
     id: UUID
     account_id: Optional[UUID] = None
@@ -2018,6 +2043,7 @@ class FlowResponse(FlowBase):
     # Computed schedule state for schedule-triggered flows (read-only)
     schedule_state: Optional[Dict[str, Any]] = None
     ai_model_name: Optional[str] = None
+    model_health: Optional[FlowModelHealth] = None
     # Read back from agent_config.limits (the stored, enforced values), so a
     # client edits and displays the same numbers the gateway checks.
     max_budget: Optional[float] = None

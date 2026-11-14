@@ -485,6 +485,7 @@ _PRIVATE_RESULT_FIELDS = frozenset(
         "git_clone_config",
         "workspace_seed",
         "workspace_files",
+        "container_termination",
     }
 )
 

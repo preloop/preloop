@@ -1,3 +1,8 @@
+import {
+  mfaMessage,
+  storeMfaTokens,
+  takePendingMfaChallenge,
+} from '../../services/mfa';
 import { REST_API_PREFIX } from '../../api-path';
 import { discoverSso } from '../../services/sso-api';
 import { consumeLoginReturn } from '../../utils/login-return';
@@ -31,6 +36,9 @@ const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
 export class LoginView extends LitElement {
   @state()
   private error = '';
+  @state() private mfaChallenge = '';
+  @state() private mfaCode = '';
+  @state() private useRecoveryCode = false;
   private targetAccountId: string | undefined;
 
   @state() private ssoEnabled = false;
@@ -143,6 +151,7 @@ export class LoginView extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    this.mfaChallenge = takePendingMfaChallenge();
     const urlParams = new URLSearchParams(window.location.search);
     const target = urlParams.get('account_id');
     this.targetAccountId =
@@ -291,6 +300,17 @@ export class LoginView extends LitElement {
       );
       await this._continueAfterSignIn(data);
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === 'mfa_required' &&
+        typeof error.detail?.challenge_token === 'string'
+      ) {
+        this.mfaChallenge = error.detail.challenge_token;
+        this.mfaCode = '';
+        this.error = '';
+        form.reset();
+        return;
+      }
       if (error instanceof Error) {
         this.error = error.message;
       } else {
@@ -497,7 +517,65 @@ export class LoginView extends LitElement {
     `;
   }
 
+  private async verifyMfa(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.submitting) return;
+    this.submitting = true;
+    this.error = '';
+    try {
+      const data = await post(`${REST_API_PREFIX}/auth/mfa/verify`, {
+        challenge_token: this.mfaChallenge,
+        [this.useRecoveryCode ? 'recovery_code' : 'code']: this.mfaCode,
+      });
+      storeMfaTokens(data);
+      this.mfaChallenge = this.mfaCode = '';
+      window.dispatchEvent(
+        new CustomEvent('auth-change', { bubbles: true, composed: true })
+      );
+      await this._continueAfterSignIn(data);
+    } catch (error) {
+      this.error = mfaMessage(error);
+    } finally {
+      this.submitting = false;
+      this.mfaCode = '';
+    }
+  }
+
   private _renderSignInForm() {
+    if (this.mfaChallenge)
+      return html` <p>Confirm your sign-in</p>
+        ${this.error ? html`<p role="alert">${this.error}</p>` : nothing}
+        <form @submit=${this.verifyMfa}>
+          <sl-input
+            label=${this.useRecoveryCode ? 'Recovery code' : 'Authenticator code'}
+            inputmode=${this.useRecoveryCode ? 'text' : 'numeric'}
+            autocomplete="one-time-code"
+            maxlength=${this.useRecoveryCode ? '11' : '6'}
+            .value=${this.mfaCode}
+            @sl-input=${(e: Event) => {
+              this.mfaCode = (e.target as HTMLInputElement).value;
+            }}
+            required
+          ></sl-input>
+          <sl-button type="submit" variant="primary" ?loading=${this.submitting}
+            >Verify</sl-button
+          >
+        </form>
+        <sl-button
+          variant="text"
+          @click=${() => {
+            this.useRecoveryCode = !this.useRecoveryCode;
+            this.mfaCode = '';
+          }}
+          >${this.useRecoveryCode ? 'Use an authenticator code' : 'Use a recovery code'}</sl-button
+        >
+        <sl-button
+          variant="text"
+          @click=${() => {
+            this.mfaChallenge = this.mfaCode = this.error = '';
+          }}
+          >Start again</sl-button
+        >`;
     if (this.ssoEnabled && !this.showOtherMethods)
       return this._renderEmailFirst();
     return html`

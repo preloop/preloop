@@ -85,11 +85,12 @@ def validate_read_only_configuration(config: dict[str, Any]) -> None:
         if config.get("platform_review") is not None:
             raise ValueError("platform_review requires read_only publication mode")
         return
-    from preloop.services.platform_review import validate_platform_review_block
-
-    # The one publication block this mode accepts: the control plane posts
-    # the validated result itself; the run still gets no write credential.
-    validate_platform_review_block(config.get("platform_review"))
+    # ``platform_review`` is the one publication block this mode accepts: the
+    # control plane posts the validated result itself and the run still gets
+    # no write credential. Its shape is checked when the flow is saved and
+    # again before every publication, never here: this function also runs
+    # when a CI identity authenticates, and the flow's posting settings give
+    # an identity no authority, so they must not be able to invalidate it.
     repositories = config.get("repositories") or []
     if shared and (
         not isinstance(repositories, list)
@@ -167,9 +168,6 @@ def validate_read_only_flow(flow: Any) -> None:
     if not read_only_review(config):
         return
     validate_read_only_configuration(config)
-    from preloop.services.platform_review import validate_platform_review_flow
-
-    validate_platform_review_flow(flow)
     validate_read_only_executor(flow)
     if flow.allowed_mcp_servers or flow.allowed_mcp_tools:
         raise ValueError("Read-only review requires no MCP tools or servers")
@@ -367,6 +365,7 @@ async def prepare_read_only_review(
         raise ValueError("Read-only review lease is invalid or expired")
     context["git_clone_config"] = config
     context["read_only_review"] = True
+    context["read_only_base_sha"] = getattr(binding, "base_sha", None)
     context["git_credentials_map"] = {
         url: {
             "token": lease.token,
@@ -557,7 +556,23 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
         The receipt, or None when the execution has none (yet).
     """
     stored = getattr(execution, "startup_receipt", None)
-    if isinstance(stored, Mapping):
+    if isinstance(stored, Mapping) and stored.get("commit"):
+        from preloop.services.review_diff import review_diff_identity
+
+        diff = review_diff_identity(execution)
+        reason = None
+        if diff is None:
+            reason = stored.get("diff_unavailable_reason")
+            if reason not in {
+                "base_unknown",
+                "invalid_revision",
+                "head_mismatch",
+                "ambiguous_merge_base",
+                "receipt_too_large",
+                "history_unavailable",
+                "unsupported_path_encoding",
+            }:
+                reason = "unverified_receipt" if stored.get("diff") else "not_recorded"
         return {
             "version": STARTUP_RECEIPT_VERSION,
             "executor": "hosted",
@@ -566,6 +581,8 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
             "setup_completed": stored.get("setup_completed") is True,
             "agent_started_at": stored.get("agent_started_at"),
             "lease_revoked": stored.get("lease_revoked"),
+            "diff": diff,
+            "diff_unavailable_reason": reason,
             "agent_cli": _stored_agent_cli(stored.get("agent_cli")),
         }
     result = getattr(execution, "result", None)

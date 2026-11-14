@@ -1191,6 +1191,230 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/auth/mfa/status:
+    get:
+      tags:
+      - Auth
+      - MFA
+      summary: Status
+      description: Read state without disclosing secrets or recovery hashes.
+      operationId: status_api_v1_auth_mfa_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaStatus'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/enroll:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Enroll
+      description: Start or replace a pending enrollment.
+      operationId: enroll_api_v1_auth_mfa_enroll_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Enrollment'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/enroll/confirm:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Confirm
+      description: Confirm possession, issue recovery codes and end other non-SSO
+        sessions.
+      operationId: confirm_api_v1_auth_mfa_enroll_confirm_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmedEnrollment'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/verify:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Verify
+      description: Exchange a single-use challenge, atomically consuming its proof.
+      operationId: verify_api_v1_auth_mfa_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/disable:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Disable
+      description: Remove TOTP only after proof and the optional edition removal guard.
+      operationId: disable_api_v1_auth_mfa_disable_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProofRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/recovery-codes:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Regenerate
+      description: Replace every recovery code after a fresh authenticator proof.
+      operationId: regenerate_api_v1_auth_mfa_recovery_codes_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodes'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/mfa/step-up:
+    post:
+      tags:
+      - Auth
+      - MFA
+      summary: Step Up
+      description: Refresh strong authentication without requiring a new password
+        sign-in.
+      operationId: step_up_api_v1_auth_mfa_step_up_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/register/options:
     post:
       tags:
@@ -1422,12 +1646,12 @@ paths:
       - Passkeys
       summary: Put Passkey Only
       description: "Turn passkey-only sign-in on or off for the signed-in user.\n\n\
-        Either direction requires the current session to be a passkey sign-in\nat\
-        \ most 10 minutes old. Enabling ends every other non-SSO session of the\n\
-        user and returns a fresh token pair for this one.\n\nRaises:\n    HTTPException:\
-        \ 403 ``passkey_sign_in_required``; 409\n        ``user_verification_disabled``\
-        \ when enabling while\n        ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false;\
-        \ 409\n        ``no_passkey_registered`` when enabling without a passkey."
+        Either direction requires strong authentication at most 10 minutes old. Enabling\
+        \ ends every other non-SSO session of the\nuser and returns a fresh token\
+        \ pair for this one.\n\nRaises:\n    HTTPException: 401 ``step_up_required``;\
+        \ 409\n        ``user_verification_disabled`` when enabling while\n      \
+        \  ``PASSKEYS_REQUIRE_USER_VERIFICATION`` is false; 409\n        ``no_passkey_registered``\
+        \ when enabling without a passkey."
       operationId: put_passkey_only_api_v1_auth_webauthn_passkey_only_put
       requestBody:
         content:
@@ -13651,7 +13875,24 @@ paths:
       - AI Models
       - AI Models
       summary: Delete AI Model
-      description: Delete an AI Model by its ID.
+      description: 'Delete an AI Model by its ID.
+
+
+        While any enabled flow of the account selects the model (its own model, a
+
+        routing or label rule, or the retry model), the delete is refused with
+
+        409 ``model_in_use`` and the enabled flows the caller can see. Disabled
+
+        flows do not block it. ``force=true`` deletes anyway. Either way, each
+
+        flow records which model it lost and reports missing health until its
+
+        affected selections are repaired. Routing rules are retained to avoid
+
+        silently substituting a different model. The audit entry names every
+
+        orphaned flow, enabled or not.'
       operationId: delete_ai_model_api_v1_ai_models__model_id__delete
       security:
       - bearerAuth: []
@@ -13663,9 +13904,26 @@ paths:
           type: string
           format: uuid
           title: Model Id
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Delete even though flows select the model. Those flows are
+            marked with missing model selections and named in the audit entry.
+          default: false
+          title: Force
+        description: Delete even though flows select the model. Those flows are marked
+          with missing model selections and named in the audit entry.
       responses:
         '204':
           description: Successful Response
+        '409':
+          description: Flows still select the model; pass force=true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelInUseResponse'
         '422':
           description: Validation Error
           content:
@@ -18140,23 +18398,25 @@ paths:
         \ the runner captures it as a first-class execution artifact.\n\nStatus codes\
         \ tell the three empty cases apart:\n\n- 404 ``Flow execution not found``:\
         \ no such execution for this caller.\n- 409 with ``detail.code == \"result_pending\"\
-        ``: the execution exists but\n  has not reached a terminal status, so no result\
-        \ is final yet, even\n  when a checkpoint (for example of a parked run) is\
-        \ stored. Retry\n  after the execution finishes; ``detail.status`` is its\
-        \ current status.\n- 404 ``Flow execution did not report a result artifact``:\
-        \ the execution\n  is terminal and reported no result. This will not change.\n\
-        \nThe result is persisted with the terminal status, before\n``flow.execution.finished``\
-        \ is queued, so a caller notified of completion\nnever receives 409 for that\
-        \ execution.\n\n``evidence`` is the persisted receipt when one is bound, else\
-        \ derived\nfrom the same evidence record the download serves: bounded,\naccount-scoped,\
-        \ no decrypt. Availability is not integrity proof; download\n``GET .../evidence``\
-        \ to verify digest.\n\nA restricted CI credential (``execution:result:read``)\
-        \ reads only its own\nexecution and gets the correlation fields of the status\
-        \ projection,\nincluding ``startup_receipt``, plus ``result`` (the captured\
-        \ document\nwithout controller-private members), ``result_withheld_paths``\
-        \ (JSON\nPointers of any withheld members; empty means ``result`` is the complete\n\
-        captured document) and ``schema_validation`` (``valid``, ``error_count``\n\
-        and ``errors``; messages are omitted when a member was withheld)."
+        ``: the execution exists but\n  has not reached a terminal status or capture\
+        \ is still pending, so no result is final yet, even\n  when a checkpoint (for\
+        \ example of a parked run) is stored. Retry\n  after the execution finishes;\
+        \ ``detail.status`` is its current status.\n- 404 ``Flow execution did not\
+        \ report a result artifact``: the execution\n  is terminal, capture has settled,\
+        \ and no artifact was reported.\n  Controller-only metadata is not a captured\
+        \ result.\n\nThe result is persisted and capture settled before the durable\n\
+        ``flow.execution.finished`` event is delivered, so a caller notified of completion\n\
+        never receives 409 for that execution.\n\n``evidence`` is the persisted receipt\
+        \ when one is bound, else derived\nfrom the same evidence record the download\
+        \ serves: bounded,\naccount-scoped, no decrypt. Availability is not integrity\
+        \ proof; download\n``GET .../evidence`` to verify digest.\n\nA restricted\
+        \ CI credential (``execution:result:read``) reads only its own\nexecution\
+        \ and gets the correlation fields of the status projection,\nincluding ``startup_receipt``,\
+        \ plus ``result`` (the captured document\nwithout controller-private members),\
+        \ ``result_withheld_paths`` (JSON\nPointers of any withheld members; empty\
+        \ means ``result`` is the complete\ncaptured document) and ``schema_validation``\
+        \ (``valid``, ``error_count``\nand ``errors``; messages are omitted when a\
+        \ member was withheld)."
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -18174,16 +18434,19 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                anyOf:
+                - $ref: '#/components/schemas/CiExecutionResultResponse'
+                - type: object
+                  additionalProperties: true
                 title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
                   Id  Result Get
         '404':
           description: The execution does not exist for this caller, or it finished
             without reporting a result artifact.
         '409':
-          description: The execution exists but has not finished. ``detail.code``
-            is ``result_pending`` and ``detail.status`` is the current status.
+          description: The execution is running or result capture is still pending.
+            ``detail.code`` is ``result_pending`` and ``detail.status`` is the current
+            status.
         '422':
           description: Validation Error
           content:
@@ -18974,7 +19237,9 @@ paths:
               schema: {}
         '409':
           description: A model key failed its authentication probe (model_credentials_rejected),
-            or execution conflicts with a flow admission policy.
+            or execution conflicts with a flow admission policy. Key rejections include
+            model_name, origin, provider, category, upstream_status, provider_message,
+            first_rejected_at, and key replacement instructions.
         '422':
           description: Validation Error
           content:
@@ -25910,6 +26175,47 @@ components:
       type: object
       title: AIModelCatalogSyncResponse
       description: Per-provider results of one model-catalog sync run.
+    AIModelCiIdentityLink:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        flow_id:
+          type: string
+          title: Flow Id
+        is_active:
+          type: boolean
+          title: Is Active
+        retired:
+          type: boolean
+          title: Retired
+          default: false
+        active_key_count:
+          type: integer
+          title: Active Key Count
+          default: 0
+        key_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Key Expires At
+          description: Soonest expiry among the identity's active keys; null when
+            no active key expires
+      type: object
+      required:
+      - id
+      - name
+      - flow_id
+      - is_active
+      title: AIModelCiIdentityLink
+      description: 'A restricted CI identity bound to a flow that uses this model.
+
+
+        Carries lifetime metadata only, never key material.'
     AIModelCreate:
       properties:
         name:
@@ -26180,6 +26486,18 @@ components:
           type: integer
           title: Shared Model Count
           description: Models of this account that resolve the rotated secret
+        affected_models:
+          items:
+            $ref: '#/components/schemas/AIModelSharedCredentialLink'
+          type: array
+          title: Affected Models
+          description: Every model of the account that resolves the rotated secret
+        affected_flows:
+          items:
+            $ref: '#/components/schemas/AIModelFlowLink'
+          type: array
+          title: Affected Flows
+          description: Visible flows that select any of the affected models
       type: object
       required:
       - secret_id
@@ -26197,6 +26515,25 @@ components:
         name:
           type: string
           title: Name
+        is_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Enabled
+          description: Whether the flow can be triggered
+        last_execution_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Execution At
+          description: Start time of the flow's most recent run
+        last_execution_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Execution Status
+          description: Status of the flow's most recent run
       type: object
       required:
       - id
@@ -26294,6 +26631,48 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelInUseDetail:
+      properties:
+        code:
+          type: string
+          const: model_in_use
+          title: Code
+          default: model_in_use
+        message:
+          type: string
+          title: Message
+        flow_count:
+          type: integer
+          title: Flow Count
+          description: Enabled flows of the account that select the model, visible
+            or not; only these block the delete
+        disabled_flow_count:
+          type: integer
+          title: Disabled Flow Count
+          description: Disabled flows that select the model. They do not block the
+            delete; it marks them and names them in the audit entry
+          default: 0
+        flows:
+          items:
+            $ref: '#/components/schemas/AIModelFlowLink'
+          type: array
+          title: Flows
+          description: The enabled flows the caller can see
+      type: object
+      required:
+      - message
+      - flow_count
+      title: AIModelInUseDetail
+      description: Body of the 409 a delete returns while flows still select the model.
+    AIModelInUseResponse:
+      properties:
+        detail:
+          $ref: '#/components/schemas/AIModelInUseDetail'
+      type: object
+      required:
+      - detail
+      title: AIModelInUseResponse
+      description: 'The 409 body as sent: FastAPI wraps the refusal in ``detail``.'
     AIModelOverviewItem:
       properties:
         ai_model_id:
@@ -26765,6 +27144,16 @@ components:
           - type: 'null'
           title: Credentials Version
           description: Rotation counter of the credential secret (1 = never rotated)
+        credentials_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Credentials Expires At
+          description: When the stored subscription login's access token expires,
+            from the bundle's `expires`. Single-model read only, for account admins
+            and the model's editors; null otherwise or when the credential has no
+            expiry (API keys)
         credentials_rotated_at:
           anyOf:
           - type: string
@@ -26797,6 +27186,26 @@ components:
       - model_identifier
       title: AIModelRead
       description: Schema for reading AIModel entries, including timestamps.
+    AIModelSharedCredentialLink:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        credentials_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credentials Status
+      type: object
+      required:
+      - id
+      - name
+      title: AIModelSharedCredentialLink
+      description: Another model of the account that resolves the same credential
+        secret.
     AIModelUpdate:
       properties:
         name:
@@ -26940,6 +27349,28 @@ components:
             $ref: '#/components/schemas/AIModelFlowLink'
           type: array
           title: Flows
+        ci_identities:
+          items:
+            $ref: '#/components/schemas/AIModelCiIdentityLink'
+          type: array
+          title: Ci Identities
+          description: Restricted CI identities bound to the listed flows
+        shared_credential_models:
+          items:
+            $ref: '#/components/schemas/AIModelSharedCredentialLink'
+          type: array
+          title: Shared Credential Models
+          description: Other models that use the same stored credential
+        enabled_flow_count:
+          type: integer
+          title: Enabled Flow Count
+          description: Listed flows that can run and would break
+          default: 0
+        disabled_flow_count:
+          type: integer
+          title: Disabled Flow Count
+          description: Listed flows that are disabled and cannot run
+          default: 0
         truncated:
           type: boolean
           title: Truncated
@@ -31197,9 +31628,14 @@ components:
             format: uuid
           - type: 'null'
           title: Account Id
+        step_up:
+          type: boolean
+          title: Step Up
+          default: false
       type: object
       title: AuthenticationOptionsRequest
-      description: Optional account destination, signed into the passkey challenge.
+      description: Optional account destination and a session-bound reauthentication
+        flag.
     AuthenticationOptionsResponse:
       properties:
         options:
@@ -31230,6 +31666,10 @@ components:
             format: uuid
           - type: 'null'
           title: Account Id
+        step_up:
+          type: boolean
+          title: Step Up
+          default: false
       type: object
       required:
       - credential
@@ -33381,6 +33821,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Enabled
+        extend_keys:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Extend Keys
       additionalProperties: false
       type: object
       title: CiAdminUpdate
@@ -33442,6 +33887,13 @@ components:
             type: object
           - type: 'null'
           title: Startup Receipt
+        timings:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewTimings'
+          - type: 'null'
+          description: Sanitised recorded phase durations in seconds, request counts,
+            effective upstream settings and terminal cause. Unknown boundaries are
+            null.
         platform_review:
           anyOf:
           - additionalProperties: true
@@ -33464,6 +33916,117 @@ components:
       - failure_category
       title: CiExecutionResponse
       description: Owned execution correlation and readiness without runtime internals.
+    CiExecutionResultResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        repository_identifier:
+          type: string
+          title: Repository Identifier
+        pr_number:
+          type: integer
+          title: Pr Number
+        provider_pr_id:
+          type: string
+          title: Provider Pr Id
+        head_sha:
+          type: string
+          title: Head Sha
+        base_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Sha
+        status:
+          type: string
+          title: Status
+        start_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+        startup_receipt:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Startup Receipt
+        timings:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewTimings'
+          - type: 'null'
+          description: Sanitised recorded phase durations in seconds, request counts,
+            effective upstream settings and terminal cause. Unknown boundaries are
+            null.
+        platform_review:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Platform Review
+        execution_id:
+          type: string
+          title: Execution Id
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        result_withheld_paths:
+          items:
+            type: string
+          type: array
+          title: Result Withheld Paths
+        schema_validation:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schema Validation
+        completion:
+          $ref: '#/components/schemas/ReviewCompletion'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - flow_id
+      - project_id
+      - repository_identifier
+      - pr_number
+      - provider_pr_id
+      - head_sha
+      - status
+      - start_time
+      - end_time
+      - failure_category
+      - execution_id
+      - result
+      - result_withheld_paths
+      - schema_validation
+      - completion
+      title: CiExecutionResultResponse
+      description: Restricted result envelope, including independent completion facts.
     CiGrant:
       properties:
         version:
@@ -33661,6 +34224,18 @@ components:
       title: CliSessionResponse
       description: One CLI login session (``preloop auth login``) of the signed-in
         user.
+    CodeRequest:
+      properties:
+        code:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Code
+      type: object
+      required:
+      - code
+      title: CodeRequest
+      description: A bounded authenticator proof.
     CommentCreate:
       properties:
         body:
@@ -33842,6 +34417,34 @@ components:
         \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
         \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
         \ 1000 && args.approved == false\""
+    ConfirmedEnrollment:
+      properties:
+        recovery_codes:
+          items:
+            type: string
+          type: array
+          title: Recovery Codes
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - recovery_codes
+      - access_token
+      - refresh_token
+      - expires_in
+      title: ConfirmedEnrollment
+      description: Proof of enrollment replaces the now-revoked current token pair.
     ConnectionCreate:
       properties:
         provider:
@@ -36143,6 +36746,20 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    Enrollment:
+      properties:
+        secret:
+          type: string
+          title: Secret
+        otpauth_uri:
+          type: string
+          title: Otpauth Uri
+      type: object
+      required:
+      - secret
+      - otpauth_uri
+      title: Enrollment
+      description: The only response that exposes the pending authenticator secret.
     EnrollmentAppCredential:
       properties:
         app:
@@ -38755,6 +39372,16 @@ components:
           $ref: '#/components/schemas/ExecutionRunner'
           description: Where this execution ran. Hosted when the built-in executor
             ran it; private when a self-hosted CLI runner did; unknown until assigned.
+        platform_review:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Platform Review
+          description: 'What Preloop posted on the pull request for a read-only review
+            flow with platform_review on: the publication record, plus pull_request_url,
+            review_url and commit_url built from the execution''s own binding. Null
+            without the opt-in.'
       type: object
       required:
       - flow_id
@@ -38887,6 +39514,35 @@ components:
         ``config`` is empty and every execution of the flow is governed by the
 
         account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
+    FlowModelHealth:
+      properties:
+        status:
+          type: string
+          enum:
+          - ok
+          - error
+          - missing
+          title: Status
+          description: 'missing: a default, routing, label or enabled retry model
+            was deleted; error: the default model''s credential failed (credentials_status
+            error)'
+        code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+          description: credentials_last_error_code, or model_deleted
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+      type: object
+      required:
+      - status
+      title: FlowModelHealth
+      description: Deleted configured models or credential errors on the flow's own
+        model.
     FlowNotifications:
       properties:
         on_failure:
@@ -39189,6 +39845,10 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        model_health:
+          anyOf:
+          - $ref: '#/components/schemas/FlowModelHealth'
+          - type: 'null'
         effective_limits:
           additionalProperties:
             additionalProperties: true
@@ -39273,6 +39933,10 @@ components:
           - type: string
           - type: 'null'
           title: Ai Model Name
+        model_health:
+          anyOf:
+          - $ref: '#/components/schemas/FlowModelHealth'
+          - type: 'null'
         agent_type:
           type: string
           title: Agent Type
@@ -45082,6 +45746,20 @@ components:
 
 
         Offboarding a member leaves these working; admins review or rotate them.'
+    MfaStatus:
+      properties:
+        totp_enabled:
+          type: boolean
+          title: Totp Enabled
+        recovery_codes_remaining:
+          type: integer
+          title: Recovery Codes Remaining
+      type: object
+      required:
+      - totp_enabled
+      - recovery_codes_remaining
+      title: MfaStatus
+      description: Non-sensitive factor state.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -46488,6 +47166,15 @@ components:
           - $ref: '#/components/schemas/PlatformReviewStatus'
           - type: 'null'
           description: Commit status to set; omit for none
+        enabled_at:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$
+          - type: 'null'
+          title: Enabled At
+          description: Set by the server when posting is turned on (UTC); a value
+            sent by a client is replaced. Runs that finished before it are not published
+            automatically.
       additionalProperties: false
       type: object
       title: PlatformReview
@@ -47448,6 +48135,25 @@ components:
       type: object
       title: ProjectUpdate
       description: Model for updating a project.
+    ProofRequest:
+      properties:
+        code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Code
+        recovery_code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Recovery Code
+      type: object
+      title: ProofRequest
+      description: Exactly one authenticator or recovery proof.
     PruneRequest:
       properties:
         older_than_days:
@@ -48031,6 +48737,18 @@ components:
       - unmapped_activity_ids
       title: RecordingSync
       description: Independent mapping for one recording, including unavailable artifacts.
+    RecoveryCodes:
+      properties:
+        recovery_codes:
+          items:
+            type: string
+          type: array
+          title: Recovery Codes
+      type: object
+      required:
+      - recovery_codes
+      title: RecoveryCodes
+      description: New recovery codes, shown once and never returned by status.
     RefreshRequest:
       properties:
         refresh_token:
@@ -48506,6 +49224,126 @@ components:
       type: object
       title: RetentionSettingsUpdate
       description: Full desired state. An omitted class falls back to the default.
+    ReviewAgentFinished:
+      properties:
+        status:
+          type: string
+          title: Status
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+      type: object
+      required:
+      - status
+      - exit_code
+      title: ReviewAgentFinished
+      description: Observed process outcome, independently of verdict validity.
+    ReviewCapturedResult:
+      properties:
+        captured:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Captured
+        source:
+          anyOf:
+          - type: string
+            enum:
+            - native_structured_result
+            - file
+          - type: 'null'
+          title: Source
+        result_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Sha256
+      type: object
+      required:
+      - captured
+      - source
+      - result_sha256
+      title: ReviewCapturedResult
+      description: Capture evidence; the digest covers the restricted result projection.
+    ReviewCompletion:
+      properties:
+        agent_finished:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewAgentFinished'
+          - type: 'null'
+        result_captured:
+          $ref: '#/components/schemas/ReviewCapturedResult'
+        result_valid:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Result Valid
+        publication:
+          anyOf:
+          - type: string
+            const: '#/platform_review'
+          - type: 'null'
+          title: Publication
+        post_result_failures:
+          items:
+            type: string
+            enum:
+            - checkpoint_upload
+            - artifact_quota
+            - artifact_capture
+            - artifact_storage
+            - log_shipping
+            - lease_revocation
+            - completion_event_queueing
+            - publication
+            - finalization
+          type: array
+          title: Post Result Failures
+      type: object
+      required:
+      - agent_finished
+      - result_captured
+      - result_valid
+      - publication
+      - post_result_failures
+      title: ReviewCompletion
+      description: Independent completion facts, with later failures named separately.
+    ReviewEffectiveRequest:
+      properties:
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning Effort
+        max_output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Output Tokens
+        request_count:
+          type: integer
+          title: Request Count
+      type: object
+      required:
+      - model
+      - provider
+      - reasoning_effort
+      - max_output_tokens
+      - request_count
+      title: ReviewEffectiveRequest
+      description: Aggregated controls recorded from resolved upstream requests.
     ReviewPublication:
       properties:
         required:
@@ -48540,6 +49378,96 @@ components:
         succeeded review on the triggering pull request passes as
 
         ``unverified`` (API/worker version skew, #2208), never as published.'
+    ReviewTimings:
+      properties:
+        queue_wait_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Queue Wait Seconds
+        startup_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Startup Seconds
+        clone_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Clone Seconds
+        setup_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Setup Seconds
+        first_model_response_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: First Model Response Seconds
+        first_model_response_unavailable_reason:
+          anyOf:
+          - type: string
+            const: not_recorded
+          - type: 'null'
+          title: First Model Response Unavailable Reason
+        model_request_count:
+          type: integer
+          title: Model Request Count
+        retry_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Retry Count
+        total_model_seconds:
+          type: number
+          title: Total Model Seconds
+        finalization_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Finalization Seconds
+        terminal_cause:
+          anyOf:
+          - type: string
+            enum:
+            - completed
+            - timeout
+            - budget
+            - upstream_error
+            - no_result
+            - stopped
+            - post_result_failure
+            - failed
+          - type: 'null'
+          title: Terminal Cause
+        first_causal_upstream_error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Causal Upstream Error Class
+        effective_requests:
+          items:
+            $ref: '#/components/schemas/ReviewEffectiveRequest'
+          type: array
+          title: Effective Requests
+      type: object
+      required:
+      - queue_wait_seconds
+      - startup_seconds
+      - clone_seconds
+      - setup_seconds
+      - first_model_response_seconds
+      - first_model_response_unavailable_reason
+      - model_request_count
+      - retry_count
+      - total_model_seconds
+      - finalization_seconds
+      - terminal_cause
+      - first_causal_upstream_error_class
+      - effective_requests
+      title: ReviewTimings
+      description: Recorded durations in seconds; absent observations remain null.
     RollbackRequest:
       properties:
         preview_only:
@@ -54582,6 +55510,28 @@ components:
       - expires_in
       title: Token
       description: Token response model.
+    TokenPair:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: TokenPair
+      description: Session token fields shared with the refresh endpoint.
     ToolApprovalConditionCreate:
       properties:
         name:
@@ -56411,6 +57361,32 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifyRequest:
+      properties:
+        code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Code
+        recovery_code:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Recovery Code
+        challenge_token:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Challenge Token
+      type: object
+      required:
+      - challenge_token
+      title: VerifyRequest
+      description: Exchange a short-lived sign-in challenge and one proof.
     WebhookCatalogue:
       properties:
         version:

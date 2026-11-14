@@ -192,6 +192,13 @@ def test_summary_shapes_match_raw_accounting(db_session, test_user) -> None:
             "in_session_breakdown": True,
         }
         payload.update(overrides)
+        # A gateway write never stores a total below its parts, so a spec that
+        # only names a total carries it as input.
+        if "total_tokens" in overrides and not (
+            {"prompt_tokens", "completion_tokens"} & overrides.keys()
+        ):
+            payload["prompt_tokens"] = payload["total_tokens"]
+            payload["completion_tokens"] = 0
         return payload
 
     specs = [

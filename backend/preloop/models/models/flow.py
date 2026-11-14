@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 from sqlalchemy import (  # Added JSON
     Boolean,
     Column,
@@ -7,10 +7,12 @@ from sqlalchemy import (  # Added JSON
     String,
     Text,
     JSON,
+    cast,
+    func,
     text,
 )
 
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH, UUID
 from sqlalchemy.orm import column_property, relationship
 
 from preloop.models.db.encrypted_types import SecretFieldsJSON
@@ -61,6 +63,37 @@ class Flow(Base):
     )
     agent_type = Column(String, nullable=False, default="openhands")
     agent_config = Column(JSON, nullable=False)  # Changed from JSONB
+    # The model a forced model delete took from this flow, computed in SQL so
+    # list reads can flag the flow without loading the agent configuration.
+    orphaned_model_id = column_property(
+        agent_config.op("->")("orphaned_model").op("->>")("id")
+    )
+    # Match deleted targets against the current policy so editing/removing a
+    # reference clears its warning. Build only the selection fields as JSONB;
+    # never cast the whole agent configuration (which can contain large payloads).
+    # Lists load only the resulting scalar.
+    orphaned_routing_model_id = column_property(
+        func.jsonb_path_query_first(
+            func.jsonb_build_object(
+                "deleted",
+                agent_config.op("->")("orphaned_model_ids"),
+                "routed",
+                agent_config.op("->")("model_routing").op("->")("rules"),
+                "labels",
+                agent_config.op("->")("model_by_label"),
+                "retry_enabled",
+                agent_config.op("->")("retry_on_no_progress").op("->")("enabled"),
+                "retry_id",
+                agent_config.op("->")("retry_on_no_progress").op("->")("ai_model_id"),
+            ),
+            cast(
+                "$.deleted[*] ? ("
+                "@ == $.routed[*].ai_model_id || @ == $.labels[*].ai_model_id || "
+                "($.retry_enabled == true && @ == $.retry_id))",
+                JSONPATH,
+            ),
+        ).op("#>>")(cast([], ARRAY(Text)))
+    )
     allowed_mcp_servers = Column(
         JSON,
         nullable=False,
@@ -211,6 +244,38 @@ class Flow(Base):
     @property
     def ai_model_name(self) -> Optional[str]:
         return self.ai_model.name if self.ai_model else None
+
+    @property
+    def model_health(self) -> Optional[Dict[str, Optional[str]]]:
+        """Report deleted configured models or the default model's credential error.
+
+        ``missing`` when a delete removed the default model or a still-configured
+        routing, label or enabled retry target; ``error`` when the default
+        model's credential failed (``credentials_status: error``), with its error
+        code; ``ok`` otherwise. ``None`` without a default or known missing target.
+        """
+        if self.orphaned_routing_model_id:
+            return {
+                "status": "missing",
+                "code": "model_deleted",
+                "model_id": self.orphaned_routing_model_id,
+            }
+        model = self.ai_model
+        if model is None:
+            if self.ai_model_id is None and self.orphaned_model_id:
+                return {
+                    "status": "missing",
+                    "code": "model_deleted",
+                    "model_id": self.orphaned_model_id,
+                }
+            return None
+        if model.credentials_status == "error":
+            return {
+                "status": "error",
+                "code": model.credentials_last_error_code,
+                "model_id": str(model.id),
+            }
+        return {"status": "ok", "code": None, "model_id": str(model.id)}
 
     def __repr__(self) -> str:
         return f"<Flow(id={self.id}, name='{self.name}')>"

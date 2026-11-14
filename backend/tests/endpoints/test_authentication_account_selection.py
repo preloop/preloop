@@ -149,7 +149,7 @@ def test_passkey_recovery_binds_target_and_selects_only_held_membership(
         lambda *a, **kw: credential,
     )
     monkeypatch.setattr(api.crud_webauthn_credential, "touch", lambda *a, **kw: None)
-    verify = Mock(return_value=SimpleNamespace(new_sign_count=2))
+    verify = Mock(return_value=SimpleNamespace(new_sign_count=2, user_verified=True))
     monkeypatch.setattr(api, "verify_authentication_response", verify)
     app = FastAPI()
     app.include_router(api.router, prefix="/auth/webauthn")

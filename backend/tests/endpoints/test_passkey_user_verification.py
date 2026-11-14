@@ -78,12 +78,26 @@ def user(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         crud_account, "get", lambda *a, **k: SimpleNamespace(is_active=True)
     )
+    from preloop.api.auth.jwt import create_access_token
+    from preloop.models.crud import crud_user
+
+    # This suite isolates authenticator UV; the session is already verified.
+    monkeypatch.setattr(crud_user, "lock", lambda *a, **kw: member)
+    client.headers["Authorization"] = "Bearer " + create_access_token(
+        {"sub": str(member.id)},
+        auth_context={
+            "amr": ["passkey"],
+            "passkey_uv": True,
+            "auth_time": int(datetime.now(UTC).timestamp()),
+        },
+    )
     app.dependency_overrides[get_db_session] = lambda: MagicMock(spec=Session)
     app.dependency_overrides[get_current_active_user] = lambda: member
     try:
         yield member
     finally:
         app.dependency_overrides.clear()
+        client.headers.pop("Authorization", None)
 
 
 def _register(user, authenticator: Authenticator, *, user_verified: bool):
