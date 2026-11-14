@@ -19,8 +19,12 @@ from .base import Base
 
 #: A worker holds the claim and may be writing to the provider.
 STATE_PUBLISHING = "publishing"
-#: Every write the flow asks for is on the provider and was read back.
+#: The review (and the status, when configured) is on the provider and was
+#: read back.
 STATE_POSTED = "posted"
+#: A commit status is on the provider and, by rule, no review (the run did
+#: not produce a postable verdict, or the pull request head moved).
+STATE_STATUS_ONLY = "status_only"
 #: The rules decided that nothing is posted for this execution.
 STATE_SKIPPED = "skipped"
 #: An attempt ended without completing; ``reason`` says why.
@@ -45,7 +49,7 @@ class PlatformReviewPublication(Base):
         ForeignKey("flow_execution.id", ondelete="CASCADE"),
         index=True,
     )
-    #: ``publishing``, ``posted``, ``skipped`` or ``failed``.
+    #: ``publishing``, ``posted``, ``status_only``, ``skipped`` or ``failed``.
     state: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     #: Stable machine reason for ``skipped`` and ``failed``.
     reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

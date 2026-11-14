@@ -121,6 +121,26 @@ describe('platform review helpers', () => {
     expect(reasonText('some_new_code')).to.equal('some new code');
   });
 
+  it('never calls a status without a review posted', () => {
+    const incomplete = publicationSummary(
+      record({
+        status: 'status_only',
+        reason: 'run_not_succeeded',
+        review: 'skipped',
+        commit_status: 'error',
+      })
+    );
+    expect(incomplete.label).to.equal('Status only, no review');
+    expect(incomplete.variant).to.equal('warning');
+    expect(incomplete.detail).to.contain('did not succeed');
+    expect(
+      publicationSummary(
+        record({ status: 'status_only', reason: 'head_moved' })
+      ).label
+    ).to.equal('Status only: head moved');
+    expect(canPublishAgain(record({ status: 'status_only' }))).to.equal(false);
+  });
+
   it('offers to publish again unless posted or in progress', () => {
     expect(canPublishAgain(record())).to.equal(false);
     expect(canPublishAgain(record({ status: 'publishing' }))).to.equal(false);
