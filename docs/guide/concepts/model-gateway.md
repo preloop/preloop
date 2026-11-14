@@ -134,6 +134,30 @@ A flow selecting a model marked with an authentication rejection tests that stor
 
 A mark remains visible until an accepted request or key replacement/rotation clears it. Subscription OAuth logins keep their existing refresh-failure tracking; `403` answers, system models and deployment-provided hosted keys are not tracked. No key material is included in notices, audit entries or webhook payloads.
 
+Every flow response (`GET /api/v1/flows`, `GET /api/v1/flows/summary`, `GET /api/v1/flows/{id}`) carries `model_health` for the flow's own model: `{"status": "error", "code": "upstream_auth_rejected", "model_id": ...}` while that model's credential is marked, `{"status": "missing", "code": "model_deleted", ...}` after a forced delete removed it, `ok` otherwise, and `null` for a flow with no model. One list call answers "which of my flows will fail". The **Flows** list shows a quiet *Model key failing* or *Model deleted* chip on those rows.
+
+### What uses a model
+
+`GET /api/v1/ai-models/{model_id}/used-by` lists what is configured to use a model, independent of traffic:
+
+- `agents`: managed agents bound to the model.
+- `flows`: flows that select it as their own model, in a routing or label rule, or as the retry model, enabled or disabled, with `is_enabled`, `last_execution_at` and `last_execution_status`.
+- `ci_identities`: restricted CI identities bound to those flows, with `is_active`, `active_key_count` and the soonest `key_expires_at`. No key material.
+- `shared_credential_models`: other models of the account that use the same stored credential, with their `credentials_status`.
+- `enabled_flow_count` and `disabled_flow_count`: how many listed flows can run, and how many are disabled. The console header reads "2 enabled flows · 1 disabled".
+
+Only resources the caller can see are listed; restricted CI keys cannot call it. The model page in the console shows the same list.
+
+For account admins and the model's editors, the single-model read (`GET /api/v1/ai-models/{model_id}`) adds `credentials_expires_at`: when a stored subscription login (Claude Code, Codex) expires. It is null for API keys and for other readers. `credentials_last_verified_at` is when Preloop last wrote the credential, on import, CLI push or server-side refresh. The model page shows both next to *Upstream credentials*. No token material is returned.
+
+Rotating a credential (`POST /api/v1/ai-models/{model_id}/credentials/rotate`) returns `affected_models` (every model sharing the secret) and `affected_flows` (the flows that select any of them).
+
+### Before you retire a model or key
+
+1. Read `GET /api/v1/ai-models/{model_id}/used-by`. Repoint every listed flow, and every CI identity's flow, at the replacement model.
+2. If the key is shared (`shared_credential_models` is not empty), rotate it rather than removing it, and check `affected_flows` in the rotation response.
+3. Delete the model. While any **enabled** flow of the account still selects it, `DELETE /api/v1/ai-models/{model_id}` answers `409` with `{"detail": {"code": "model_in_use", "flow_count", "disabled_flow_count", "flows"}}` and changes nothing. Disabled flows cannot fail now, so they do not block the delete, but they still lose the model. `?force=true` deletes anyway. Either way, the flows that had it as their own model are left without one, report `model_health.status: missing`, and the audit entry for the delete lists every one of them, enabled or disabled, under `orphaned_flows`. Routing, label and retry rules that named the model are listed in the audit entry too but are not rewritten.
+
 ---
 
 ## Which models an agent sees

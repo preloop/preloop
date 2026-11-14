@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { Router } from '../../../router';
 import { getAccountRuntimeSessionActivityTimeline } from '../../../api';
 
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
@@ -1052,6 +1053,170 @@ describe('AIModelDetailView', () => {
     expect(dialog?.getAttribute('label') || (dialog as any).label).to.contain(
       'Delete model'
     );
+  });
+
+  /** The server refuses the first delete with its own counts, then accepts. */
+  function stubRefusingDelete(refusal: Record<string, unknown>): string[] {
+    const deletes: string[] = [];
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) =>
+          String(url).startsWith('/api/v1/ai-models/model-1')
+        ),
+        sinon.match.has('method', 'DELETE')
+      )
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        deletes.push(url);
+        if (url.endsWith('force=true'))
+          return new Response(null, { status: 204 });
+        return new Response(
+          JSON.stringify({ detail: { code: 'model_in_use', ...refusal } }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+    return deletes;
+  }
+
+  it('names the flows a delete would orphan and forces only after that', async () => {
+    usedByBody = {
+      agents: [],
+      flows: [{ id: 'flow-9', name: 'Review flow' }],
+      truncated: false,
+    };
+    sinon.stub(Router, 'go');
+    try {
+      const element = (await fixture(
+        html`<ai-model-detail-view
+          .modelId=${'model-1'}
+        ></ai-model-detail-view>`
+      )) as AIModelDetailView;
+      const root = element.shadowRoot!;
+      await waitUntil(
+        () => (element as any).usedBy?.flows.length === 1,
+        'used-by did not load',
+        { timeout: 5000 }
+      );
+      (element as any).isDeleteConfirmOpen = true;
+      element.requestUpdate();
+      await element.updateComplete;
+      const consumers = root.querySelector(
+        '[data-testid="delete-model-consumers"]'
+      )!;
+      expect(consumers.textContent).to.contain('Used by 1 flow');
+      expect(root.querySelector('sl-dialog a[href="/console/flows/flow-9"]')).to
+        .exist;
+
+      const deletes = stubRefusingDelete({
+        message: '3 enabled flows still use this model.',
+        flow_count: 3,
+        disabled_flow_count: 0,
+        flows: [{ id: 'flow-9', name: 'Review flow' }],
+      });
+      await (element as any).confirmDelete();
+      await element.updateComplete;
+      // The server's count wins over the visible list.
+      expect(
+        root.querySelector('[data-testid="delete-model-consumers"]')!
+          .textContent
+      ).to.contain('Used by 3 flows');
+      expect((element as any).isDeleteConfirmOpen).to.equal(true);
+      await (element as any).confirmDelete();
+      expect(deletes).to.deep.equal([
+        '/api/v1/ai-models/model-1',
+        '/api/v1/ai-models/model-1?force=true',
+      ]);
+    } finally {
+      usedByBody = { agents: [], flows: [], truncated: false };
+      (Router.go as sinon.SinonStub).restore();
+    }
+  });
+
+  it('tells enabled flows from disabled ones and forces only for enabled', async () => {
+    usedByBody = {
+      agents: [],
+      flows: [
+        { id: 'flow-9', name: 'Live flow', is_enabled: true } as any,
+        { id: 'flow-8', name: 'Paused flow', is_enabled: false } as any,
+      ],
+      truncated: false,
+    };
+    (usedByBody as any).enabled_flow_count = 1;
+    (usedByBody as any).disabled_flow_count = 1;
+    sinon.stub(Router, 'go');
+    try {
+      const element = (await fixture(
+        html`<ai-model-detail-view
+          .modelId=${'model-1'}
+        ></ai-model-detail-view>`
+      )) as AIModelDetailView;
+      const root = element.shadowRoot!;
+      await waitUntil(
+        () => (element as any).usedBy?.flows.length === 2,
+        'used-by did not load',
+        { timeout: 5000 }
+      );
+      await element.updateComplete;
+      expect(
+        root.querySelector('[data-testid="model-used-by"]')!.textContent
+      ).to.contain('1 enabled flow · 1 disabled');
+      (element as any).isDeleteConfirmOpen = true;
+      element.requestUpdate();
+      await element.updateComplete;
+      const consumers = root.querySelector(
+        '[data-testid="delete-model-consumers"]'
+      )!;
+      expect(consumers.textContent).to.contain('Used by 1 flow');
+      expect(root.querySelector('sl-dialog a[href="/console/flows/flow-8"]')).to
+        .not.exist;
+      expect(
+        root.querySelector('[data-testid="delete-model-disabled"]')!.textContent
+      ).to.contain('1 disabled flow');
+
+      // Only disabled flows remain: the server accepts the first delete.
+      const deletes: string[] = [];
+      fetchStub
+        .withArgs(
+          sinon.match((url: unknown) =>
+            String(url).startsWith('/api/v1/ai-models/model-1')
+          ),
+          sinon.match.has('method', 'DELETE')
+        )
+        .callsFake(async (input: RequestInfo | URL) => {
+          deletes.push(String(input));
+          return new Response(null, { status: 204 });
+        });
+      await (element as any).confirmDelete();
+      expect(deletes).to.deep.equal(['/api/v1/ai-models/model-1']);
+    } finally {
+      usedByBody = { agents: [], flows: [], truncated: false };
+      (Router.go as sinon.SinonStub).restore();
+    }
+  });
+
+  it('states when the stored login expires and was last refreshed', async () => {
+    modelPayload = {
+      ...modelPayload,
+      has_api_key: true,
+      credentials_expires_at: '2026-12-01T12:00:00Z',
+      credentials_last_verified_at: '2026-11-13T09:00:00Z',
+    };
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(
+      () =>
+        element.shadowRoot!.querySelector(
+          '[data-testid="credential-lifetime"]'
+        ),
+      'credential lifetime did not render',
+      { timeout: 5000 }
+    );
+    const text = element.shadowRoot!.querySelector(
+      '[data-testid="credential-lifetime"]'
+    )!.textContent!;
+    expect(text).to.contain('Login expires');
+    expect(text).to.contain('Last refreshed');
   });
 
   it('sets the header Delete apart as an outline action', async () => {
