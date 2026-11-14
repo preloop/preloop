@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Use the hosted-only label; legacy private runners also advertise ubuntu-latest.
 # Keep ubuntu-24.04 absent from private registrations (self-hosted-runners.md).

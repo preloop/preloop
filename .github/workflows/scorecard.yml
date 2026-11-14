@@ -10,10 +10,9 @@ on:
     branches: [main]
 
 concurrency:
-  # Only the newest main commit needs a fresh scorecard; superseded push runs
-  # are cancelled. Scheduled and branch_protection_rule runs are not.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # Cancel superseded PR work; every main/release/manual run keeps its own slot.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: read-all
 

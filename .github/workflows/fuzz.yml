@@ -18,7 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: fuzz-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.execution_host_tests && 'isolated' || 'hosted' }}
+  # Cancel superseded PR work; every main/release/manual run keeps its own slot.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
