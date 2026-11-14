@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- flows: approval and checkpoint continuations no longer re-test a model key
+  rejected after the run started. Recovery also skips admission probing; a dead
+  key fails at its next model call. Explicit retries still test the stored key
+  before starting a new execution.
 - models: deleting a model that flows still select is refused with `409
   model_in_use` and the flows, unless `force=true`. Before, the delete
   silently cleared each flow's model and left routing, label and retry rules
