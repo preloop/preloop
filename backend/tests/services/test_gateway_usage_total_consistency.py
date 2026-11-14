@@ -15,8 +15,9 @@ These tests pin, per provider shape, that:
 * input is stored cache inclusive exactly once;
 * the stored total is never below input plus output;
 * the cache and reasoning breakdown is kept;
-* a price that reads the total (per-1k, prepaid token balance) cannot charge
-  on a total smaller than its components.
+* a recorded cost that reads the total (per-1k, prepaid token balance) is
+  charged on a total no smaller than its components, while a row stored
+  before the fix is repriced on its stored total.
 """
 
 from __future__ import annotations
@@ -327,27 +328,21 @@ def test_gateway_usage_write_never_stores_a_total_below_its_parts(
     assert row.completion_tokens == completion
 
 
-def test_per_1k_price_charges_on_input_plus_output_when_total_is_short(
-    db_session, test_user
+@pytest.mark.parametrize("reported_total", [43, 0])
+def test_recorded_per_1k_cost_uses_input_plus_output_when_total_is_short(
+    db_session, test_user, reported_total: int
 ) -> None:
     ai_model = _model(db_session, test_user, pricing={"price_per_1k": 1.0})
-    estimate = estimate_ai_model_usage_cost_detailed(
-        ai_model, prompt_tokens=1500, completion_tokens=500, total_tokens=1000
+    usage = {**TOTAL_OMITS_CACHE, "total_tokens": reported_total}
+    row = _record(
+        db_session, test_user, ai_model, client_usage=usage, upstream_usage=usage
     )
-    assert estimate.cost == pytest.approx(2.0)
+    assert row.total_tokens == 107
+    assert row.estimated_cost == pytest.approx(0.107)
+    assert "total_tokens_below_components" in row.meta_data["usage_warnings"]
 
 
-def test_per_1k_price_keeps_a_provider_total_above_its_parts(
-    db_session, test_user
-) -> None:
-    ai_model = _model(db_session, test_user, pricing={"price_per_1k": 1.0})
-    estimate = estimate_ai_model_usage_cost_detailed(
-        ai_model, prompt_tokens=1500, completion_tokens=500, total_tokens=3000
-    )
-    assert estimate.cost == pytest.approx(3.0)
-
-
-def test_prepaid_token_balance_covers_input_plus_output_when_total_is_short(
+def test_recorded_prepaid_token_balance_covers_input_plus_output(
     db_session, test_user
 ) -> None:
     ai_model = _model(
@@ -356,15 +351,46 @@ def test_prepaid_token_balance_covers_input_plus_output_when_total_is_short(
         pricing={
             "input_price_per_1k": 1.0,
             "output_price_per_1k": 1.0,
-            "prepaid_token_balance": 1000,
+            "prepaid_token_balance": 43,
         },
     )
-    # 2,000 tokens used, 1,000 prepaid: half is covered. A stored total of
-    # 1,000 would have read as fully covered and charged nothing.
-    estimate = estimate_ai_model_usage_cost_detailed(
-        ai_model, prompt_tokens=1500, completion_tokens=500, total_tokens=1000
+    # 107 tokens used, 43 prepaid: 64 are charged. The provider total of 43
+    # would have read as fully covered and charged nothing.
+    row = _record(
+        db_session,
+        test_user,
+        ai_model,
+        client_usage=TOTAL_OMITS_CACHE,
+        upstream_usage=TOTAL_OMITS_CACHE,
     )
-    assert estimate.cost == pytest.approx(1.0)
+    assert row.estimated_cost == pytest.approx(0.107 * 64 / 107)
+
+
+def test_repricing_a_stored_row_charges_on_its_stored_total(
+    db_session, test_user
+) -> None:
+    """A row written before the fix: input too large, total correct.
+
+    Repricing it with a per-1k price must stay on the stored total. Raising
+    the total to the inflated parts would over-charge.
+    """
+    ai_model = _model(db_session, test_user, pricing={"price_per_1k": 1.0})
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model, prompt_tokens=15000, completion_tokens=600, total_tokens=9600
+    )
+    assert estimate.cost == pytest.approx(9.6)
+
+
+def test_missing_provider_total_is_not_flagged(db_session, test_user) -> None:
+    row = _record(
+        db_session,
+        test_user,
+        _model(db_session, test_user),
+        client_usage=NO_TOTAL,
+        upstream_usage=NO_TOTAL,
+    )
+    assert row.total_tokens == 107
+    assert not row.meta_data.get("usage_warnings")
 
 
 def test_recorded_cost_with_a_configured_input_price_does_not_bill_cache_twice(

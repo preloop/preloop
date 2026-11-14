@@ -11376,16 +11376,20 @@ class OpenAIGatewayService:
             or usage_details.get("output_tokens")
             or 0
         )
-        total_tokens = usage.get("total_tokens") or usage_details.get("total_tokens")
+        reported_totals = [
+            value
+            for value in (usage.get("total_tokens"), usage_details.get("total_tokens"))
+            if value is not None
+        ]
+        total_tokens = next((value for value in reported_totals if value), None)
         # The stored total is never below input plus output. A provider total
-        # that is smaller (it leaves the cached input out, or a counter was
-        # mapped wrongly) is kept in ``meta_data.usage_details`` and flagged,
-        # so the disagreement stays visible instead of reaching billing.
-        total_below_components = bool(
-            total_tokens
-            and int(total_tokens)
-            < int(prompt_tokens or 0) + int(completion_tokens or 0)
-        )
+        # that is smaller, an explicit 0 included (it leaves the cached input
+        # out, or a counter was mapped wrongly), is kept in
+        # ``meta_data.usage_details`` and flagged, so the disagreement stays
+        # visible instead of reaching billing. A missing total is not flagged.
+        total_below_components = bool(reported_totals) and int(total_tokens or 0) < int(
+            prompt_tokens or 0
+        ) + int(completion_tokens or 0)
         if prompt_tokens or completion_tokens:
             total_tokens = consistent_total_tokens(
                 prompt_tokens, completion_tokens, total_tokens
