@@ -193,7 +193,15 @@ def record_auth_event(
             if resource_id or person_id
             else None,
             status="failure"
-            if action.endswith((".failed", ".blocked", ".login_refused"))
+            if action.endswith(
+                (
+                    ".failed",
+                    ".blocked",
+                    ".login_refused",
+                    ".verify_failed",
+                    ".challenge_locked",
+                )
+            )
             else "success",
             ip_address=source_ip,
             details=clean,
@@ -256,6 +264,8 @@ def login_failure_reason(error: Exception, *, method: str) -> str:
     if not isinstance(error, HTTPException):
         return "internal_error"
     detail = error.detail if isinstance(error.detail, dict) else {}
+    if error.status_code == 401 and detail.get("code") == "mfa_required":
+        return "mfa_required"
     if error.status_code == 401 and detail.get("code") == "password_login_disabled":
         # The credential was correct; the account requires a passkey. Not a
         # failed guess, so it must not spend the failed-login budget.

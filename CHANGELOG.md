@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- auth: authenticator-app two-factor sign-in, ten single-use recovery codes,
+  browser enrollment and recovery, and an operator reset command. Password,
+  email-link, chat and social authentication require a second step for enrolled
+  users; passkey and SSO authentication remain direct. Fresh strong
+  authentication now protects passkey removal and passkey-only settings, with
+  a shared console step-up dialog and extension hooks for account policies.
 - flows: console and CLI for the review and status Preloop posts on the pull
   request. Read-only review flows get a **Post review on the pull request**
   card on the flow page: turn posting on or off, map each verdict to a commit

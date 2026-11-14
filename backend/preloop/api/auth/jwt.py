@@ -597,6 +597,10 @@ def decode_token(token: str) -> TokenData:
     """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("typ") == "mfa_challenge":
+            raise HTTPException(
+                status_code=401, detail="Invalid authentication credentials"
+            )
         sub: str = payload.get("sub", "")
         if not sub:
             raise HTTPException(

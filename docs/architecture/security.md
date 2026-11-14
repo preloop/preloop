@@ -349,7 +349,8 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Sensitive data masked in logs (see Redaction Policy below)
 - [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
 - [x] Passkeys that verify the user (device plus PIN or biometric), and per-user passkey-only sign-in (see Passkey sign-in below)
-- [ ] TOTP codes, recovery codes and account-wide MFA enforcement
+- [x] TOTP, single-use recovery codes, two-step sign-in and recent strong authentication for factor management
+- [ ] Account-wide MFA policy and step-up enforcement (edition extension)
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
@@ -446,10 +447,9 @@ per-login revocation.
 
 **Passkey-only sign-in.** A user can require a passkey for their own
 membership (`user.passkey_only`, `GET`/`PUT /api/v1/auth/webauthn/passkey-only`).
-Changing it in either direction needs a session whose `amr` contains
-`passkey` and whose `auth_time` is at most 10 minutes old (403
-`passkey_sign_in_required`), so a password thief cannot switch it off and a
-session from before the UV requirement cannot switch it on. Enabling needs at
+Changing it in either direction needs strong authentication at most ten
+minutes old (401 `step_up_required`). The console can refresh that proof with
+an authenticator code or a user-verified passkey assertion. Enabling needs at
 least one passkey (409 `no_passkey_registered`), bumps the membership's
 non-SSO generation (`non_sso_auth_generation`) so every other non-SSO session
 ends, live WebSocket connections included, and returns a fresh token pair for
@@ -554,3 +554,58 @@ with `meta_data.ingest_degraded`, and omits content search, content-derived
 summaries and tool enrichment. LLM session optimization falls back to its
 deterministic analyzers. With no registered policy, OSS retains full detail.
 The policy never changes forwarded requests or governance decisions.
+
+## Authenticator authentication and step-up
+
+TOTP uses SHA-1, six digits and 30-second steps, accepting the current step and
+one either side. The encrypted factor stores the last accepted step; a step
+at or below it cannot be reused. Ten lower-case base32 recovery codes are stored
+with the password hasher and consumed once. Unconfirmed factors cannot sign in.
+
+The common authentication policy interrupts password, email-link, chat and
+social authentication before token minting. A five-minute, typed JWT challenge
+is bound to the membership, factor and current authentication generations.
+Access-token decoding rejects challenges. Verification locks the person,
+membership and factor in that order. Used challenges and failure budgets use
+the shared limiter table inside the proof transaction, so a restart or concurrent
+replica cannot reset them. Database failure refuses authentication.
+
+Enrollment confirmation increments the existing non-SSO generation and stages
+the existing live revocation event. SSO sessions retain their existing exemption.
+Passkey-only users still cannot sign in through a password plus TOTP.
+
+`require_recent_strong_auth(seconds)` requires a strong `amr` and a bounded
+`auth_time`. Passkey deletion and passkey-only changes use 600 seconds; the
+bespoke passkey-only freshness refusal is replaced by `step_up_required`.
+TOTP step-up and a user-verified passkey assertion refresh authentication time.
+Code-bearing disable/regenerate requests supply their own proof and never
+require an extra step first. API keys and CLI-bound tokens cannot mint an
+unbound console session through these endpoints.
+
+Core emits `auth.mfa.enrolled`, `.disabled`, `.verify_failed`, `.challenge_locked`,
+`.recovery_code_used`, `.recovery_codes_regenerated` and `.reset`. Events contain
+identifiers and bounded operational metadata, never proof material.
+
+See [enrollment and recovery](../guide/users/authenticator-app.md) and
+[operations, rollback and extension policy](../operations/mfa.md).
+
+Passkey step-up always requires authenticator user verification. New session
+claims record the verified UV result; an older passkey session without that
+claim must reauthenticate before it satisfies step-up, even if the server's
+UV setting has since changed. Step-up options and verification both carry the
+signed `step_up` mode and current account/session generation. A consumed
+assertion challenge cannot be exchanged again.
+
+Passkey registration also requires a recent console authentication, rejects
+API keys and CLI-bound sessions, and rechecks revocation under the membership
+lock. Existing factor holders must prove a strong factor; first-factor setup
+accepts a fresh sign-in so enrollment cannot deadlock.
+
+Paired chat commands use the existing channel principal, resource permissions
+and eligibility checks. Their internal short-lived transport token is an
+paired-channel exchange, not an interactive chat sign-in; only the internal
+broker can select this path. It retains core and edition exchange checks, does
+not trigger an interactive TOTP challenge, and does not grant OTP assurance. Interactive chat sign-in remains challenged.
+The legacy OAuth password-consent form redirects enrolled users to console
+sign-in while preserving the authorization request, without exposing a challenge
+in the URL. Password login activity and success audits wait for MFA completion.

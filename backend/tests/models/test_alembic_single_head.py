@@ -579,6 +579,14 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert away_since.down_revision == "20261205_ci_dispatch_sink"
     passkey_only = script.get_revision("20261207_user_passkey_only")
     assert passkey_only.down_revision == "20261206_session_away_since"
+    assert (
+        script.get_revision("20261208_user_mfa").down_revision == passkey_only.revision
+    )
     platform_review = script.get_revision("20261208_platform_review")
-    assert platform_review.down_revision == "20261207_user_passkey_only"
-    assert script.get_heads() == ["20261208_platform_review"]
+    assert platform_review.down_revision == passkey_only.revision
+    joined = script.get_revision("20261209_mfa_review_merge")
+    assert set(joined.down_revision) == {
+        "20261208_user_mfa",
+        "20261208_platform_review",
+    }
+    assert script.get_heads() == ["20261209_mfa_review_merge"]

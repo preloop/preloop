@@ -207,6 +207,8 @@ tracked as follow-up work.
 | `tracker.credentials_secret_id` | Reference: value lives in `secret_reference.encrypted_value` (Fernet) | `20260712_tracker_credentials_secret` |
 | `tracker.webhook_secret_id` | Reference: value lives in `secret_reference.encrypted_value` (Fernet) | `20260712_tracker_credentials_secret` |
 | `upstream_mcp_oauth_connection.secret_id` | Reference: value lives in `secret_reference.encrypted_value` (Fernet) | `20261110_upstream_mcp_oauth` |
+| `user_mfa_factor.secret_encrypted` | Fernet, encrypted by the MFA service before persistence | `20261208_user_mfa` |
+| `user_mfa_recovery_code.code_hash` | bcrypt hash; plaintext is shown only when generated | `20261208_user_mfa` |
 | `user.hashed_password` | Password hash | `20251105_initial_schema` |
 | `user.passkey_only` | Not a secret: boolean sign-in policy flag | `20261207_user_passkey_only` |
 | `user_invitation.token` | **Plaintext, deferred**: invitation link token; looked up by equality and re-sent, same redesign as `approval_token` | `20251105_initial_schema` |

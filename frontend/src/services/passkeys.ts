@@ -167,7 +167,10 @@ export async function registerPasskey(name?: string): Promise<PasskeySummary> {
  * Sign in with a passkey (login page, unauthenticated). Returns the token
  * payload; the caller stores tokens and navigates.
  */
-export async function signInWithPasskey(accountId?: string): Promise<{
+export async function signInWithPasskey(
+  accountId?: string,
+  stepUp = false
+): Promise<{
   access_token: string;
   refresh_token: string;
 }> {
@@ -177,8 +180,18 @@ export async function signInWithPasskey(accountId?: string): Promise<{
       method: 'POST',
       ...(accountId
         ? {
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ account_id: accountId }),
+            headers: {
+              'Content-Type': 'application/json',
+              ...(stepUp
+                ? {
+                    Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              account_id: accountId,
+              ...(stepUp ? { step_up: true } : {}),
+            }),
           }
         : {}),
     }
@@ -199,8 +212,14 @@ export async function signInWithPasskey(accountId?: string): Promise<{
     REST_API_PREFIX + '/auth/webauthn/authenticate/verify',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(stepUp
+          ? { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
+          : {}),
+      },
       body: JSON.stringify({
+        step_up: stepUp,
         credential: serializeAssertion(credential),
         challenge_token,
         ...(accountId ? { account_id: accountId } : {}),
@@ -283,31 +302,4 @@ export async function setPasskeyOnly(enabled: boolean): Promise<boolean> {
     );
   }
   return data.enabled === true;
-}
-
-/** How long after a passkey sign-in the setting may be changed (server rule). */
-export const PASSKEY_SESSION_MAX_AGE_SECONDS = 600;
-
-/**
- * Whether this console session started with a passkey sign-in recent enough
- * to change the passkey-only setting. Reads the access token's own claims;
- * the server enforces the same rule.
- */
-export function freshPasskeySession(nowSeconds = Date.now() / 1000): boolean {
-  const token = localStorage.getItem('accessToken');
-  const part = token?.split('.')[1];
-  if (!part) return false;
-  try {
-    const claims = JSON.parse(
-      atob(part.replace(/-/g, '+').replace(/_/g, '/'))
-    ) as { amr?: unknown; auth_time?: unknown };
-    return (
-      Array.isArray(claims.amr) &&
-      claims.amr.includes('passkey') &&
-      typeof claims.auth_time === 'number' &&
-      nowSeconds - claims.auth_time <= PASSKEY_SESSION_MAX_AGE_SECONDS
-    );
-  } catch {
-    return false;
-  }
 }

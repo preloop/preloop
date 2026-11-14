@@ -70,6 +70,52 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Optional factor management and step-up policy. The provider is consulted at
+# call time; OSS installs have no organization-wide enforcement.
+FactorRemovalPolicy = Callable[["Session", "User", str], None]
+StepUpPolicy = Callable[["Session", "User", str], Optional[int]]
+_factor_removal_policy: Optional[FactorRemovalPolicy] = None
+_step_up_policy: Optional[StepUpPolicy] = None
+
+
+def register_factor_removal_policy(provider: Optional[FactorRemovalPolicy]) -> None:
+    """Register a guard that may refuse removal of a user's strong factor."""
+    global _factor_removal_policy
+    _factor_removal_policy = provider
+
+
+def get_factor_removal_policy() -> Optional[FactorRemovalPolicy]:
+    """Return the optional edition guard, or no policy in OSS."""
+    return _factor_removal_policy
+
+
+def register_step_up_policy(provider: Optional[StepUpPolicy]) -> None:
+    """Register an action-to-freshness-window policy; None clears the hook."""
+    global _step_up_policy
+    _step_up_policy = provider
+
+
+def enforce_step_up_policy(
+    db: "Session", user: "User", request: Any, action: str
+) -> None:
+    """Consult an edition's policy only for user sessions on named actions.
+
+    With no provider this does no work. API keys and channel credentials do
+    not gain a new dependency on a console session.
+    """
+    if _step_up_policy is None or getattr(user, "_auth_api_key", None) is not None:
+        return
+    from preloop.services.authentication_policy import (
+        check_recent_strong_auth,
+        request_authentication_context,
+    )
+
+    window = _step_up_policy(db, user, action)
+    if window is not None and window > 0:
+        check_recent_strong_auth(
+            db, user, request_authentication_context(request, user), window
+        )
+
 
 # ---------------------------------------------------------------------------
 # H1: login row selector

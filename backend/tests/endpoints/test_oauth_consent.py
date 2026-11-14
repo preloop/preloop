@@ -25,6 +25,7 @@ from preloop.api.endpoints.oauth_consent import (
 @pytest.fixture(autouse=True)
 def canonical_identity_boundary(monkeypatch):
     """Protocol fixtures represent a verified, active canonical identity."""
+    monkeypatch.setattr("preloop.models.crud.mfa.factor", lambda db, user_id: None)
     from preloop.models.crud import crud_person, crud_account
 
     person = SimpleNamespace(

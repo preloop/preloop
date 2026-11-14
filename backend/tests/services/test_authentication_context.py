@@ -10,6 +10,12 @@ from fastapi import HTTPException
 from preloop.services import authentication_policy as policy
 
 
+@pytest.fixture(autouse=True)
+def no_enrolled_factor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These mocked memberships have no MFA factor; proof tests use PostgreSQL."""
+    monkeypatch.setattr("preloop.models.crud.mfa.factor", lambda db, user_id: None)
+
+
 def test_context_carries_only_authentication_claims() -> None:
     connection = str(uuid4())
     assert policy.authentication_claims(
@@ -122,7 +128,7 @@ def test_switch_retains_original_account_and_generation(monkeypatch):
         lambda: SimpleNamespace(get_service=lambda name: None),
     )
     source = uuid4()
-    target = SimpleNamespace(account_id=uuid4(), non_sso_auth_generation=8)
+    target = SimpleNamespace(id=uuid4(), account_id=uuid4(), non_sso_auth_generation=8)
     context = policy.switched_authentication(
         Mock(),
         target,

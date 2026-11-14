@@ -60,6 +60,7 @@ class TestGetFeatures:
                 "policies_console": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
+                "mfa_totp": True,
                 "multi_account": False,
                 "account_hierarchy": False,
                 "abac_rules": False,
@@ -103,6 +104,7 @@ class TestGetFeatures:
                 "policies_console": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
+                "mfa_totp": True,
                 "multi_account": False,
                 "account_hierarchy": False,
                 "abac_rules": False,
@@ -141,7 +143,8 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 21
+        assert len(result["features"]) == 22
+        assert result["features"]["mfa_totp"] is True
         assert result["features"]["policy_simulation"] is True
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True

@@ -144,6 +144,9 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     except Exception:
         result["features"]["passkeys"] = False
 
+    from preloop.services.mfa import enabled as mfa_enabled
+
+    result["features"]["mfa_totp"] = mfa_enabled()
     return result
 
 

@@ -124,6 +124,9 @@ APPROVAL_PUBLIC_REQUEST = Rule("approval.public.request", 10, 60)
 # so the numbers below only document those defaults.
 # Passkey challenge generation per client address.
 AUTH_PASSKEY_CHALLENGE = Rule("auth.passkey_challenge", 30, 60)
+AUTH_MFA_CHALLENGE = Rule("auth.mfa.challenge", 5, 300)
+AUTH_MFA_USER = Rule("auth.mfa.user", 10, 3600)
+AUTH_MFA_CONSUMED = Rule("auth.mfa.consumed", 1, 300)
 # Verification resend and forgot-password mail, one budget per client address
 # and one per target address.
 AUTH_EMAIL_SEND = Rule("auth.email_send", 3, 900)
@@ -461,6 +464,44 @@ def _record_store_error(rule: Rule, exc: Exception) -> None:
 def _key(rule: Rule, identity: str) -> str:
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return f"{rule.name}:{digest}"
+
+
+def transactional_count(
+    db: Any,
+    rule: Rule,
+    identity: str,
+    *,
+    now: float,
+    started_at: float | None = None,
+    increment: bool = False,
+) -> int:
+    """Read or increment an MFA budget in the proof's transaction.
+
+    Args:
+        db: Caller session, holding the user's factor lock.
+        rule: Mandatory security budget; environment overrides do not apply.
+        identity: User or challenge identity, hashed before storage.
+        now: Current time in seconds.
+        started_at: Challenge issuance time for a lifetime, not fixed, window.
+        increment: Count a failure or a consumed challenge when true.
+
+    Returns:
+        The count. Store failures propagate: MFA never falls back to a local
+        budget. The caller commits failures and successful consumption along
+        with the proof's row updates and audit events.
+    """
+    from preloop.models.crud import crud_rate_limit
+
+    start = started_at if started_at is not None else _window_start(now, rule.window_s)
+    window_start = datetime.fromtimestamp(start, UTC).replace(tzinfo=None)
+    if increment:
+        return crud_rate_limit.hit(
+            db,
+            key=_key(rule, identity),
+            window_start=window_start,
+            window_s=rule.window_s,
+        )
+    return crud_rate_limit.peek(db, key=_key(rule, identity), window_start=window_start)
 
 
 def _with_fallback(
