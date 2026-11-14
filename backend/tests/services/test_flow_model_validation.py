@@ -625,3 +625,52 @@ def test_overlong_array_reference_returns_schema_validation_error() -> None:
     schema["required"].append("tag")
     with pytest.raises(ResultSchemaError, match="unresolved reference"):
         check_native_result_schema(schema)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status_code,error_class,category",
+    [(401, "upstream_auth", "model_auth"), (400, "upstream_protocol", "model_config")],
+)
+async def test_gateway_provider_rejection_survives_agent_finalization(
+    db_session: Session,
+    test_user: models.User,
+    status_code: int,
+    error_class: str,
+    category: str,
+) -> None:
+    """A later checkpoint/capture failure cannot replace the gateway's cause."""
+    from unittest.mock import AsyncMock
+    from preloop.services.flow_execution_limits import (
+        RepeatedUpstreamFailureError,
+        enforce_failure_streak_for_id,
+    )
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    flow = _create_flow(db_session, test_user)
+    execution = _create_execution(db_session, flow)
+    for _ in range(3):
+        _log_failure(
+            db_session,
+            test_user,
+            flow,
+            execution,
+            status_code=status_code,
+            error_class=error_class,
+        )
+    db_session.flush()
+    with pytest.raises(RepeatedUpstreamFailureError):
+        enforce_failure_streak_for_id(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.failure_category == category
+    provider_message = execution.error_message
+    orchestrator = FlowExecutionOrchestrator(db_session, str(flow.id), {}, AsyncMock())
+    orchestrator.execution_log = execution
+    await orchestrator._update_execution_log(
+        status="FAILED",
+        failure_category="agent_error",
+        error_message="Checkpoint capture refused: execution already closed (HTTP 409)",
+    )
+    db_session.refresh(execution)
+    assert execution.failure_category == category
+    assert execution.error_message == provider_message
