@@ -522,10 +522,11 @@ async def test_failed_run_retry_tests_stored_key_once(
     if provider == "openai" and status == 500:
         expected_status = 502
     assert usage[0].status_code == expected_status
-    # Usage rows keep the total consistent with their stored input/output counts,
-    # including unsuccessful probes whose components are both zero.
-    expected_tokens = 2 if provider == "openai" and status == 200 else 0
-    assert usage[0].total_tokens == expected_tokens
+    # The gateway stores zero for every count when no usage was returned.
+    expected_part = 1 if provider == "openai" and status == 200 else 0
+    assert usage[0].prompt_tokens == expected_part
+    assert usage[0].completion_tokens == expected_part
+    assert usage[0].total_tokens == expected_part * 2
     assert usage[0].total_tokens == usage[0].prompt_tokens + usage[0].completion_tokens
     audit = crud.crud_audit_log.get_by_account(
         db_session, account_id=run.user.account_id, action="model_gateway_request"
