@@ -43,6 +43,7 @@ from preloop.models.schemas.flow import (
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
+    CiExecutionResultResponse,
     CiReviewRequest,
     CiStopRequest,
 )
@@ -283,6 +284,13 @@ def _pinned_harness(agent_config: Any) -> Optional[str]:
     return harness if isinstance(harness, str) else None
 
 
+def _stamp_platform_review(git_clone_config: Any, previous: Any) -> None:
+    """Record when posting was turned on; see ``stamp_enabled_at``."""
+    from preloop.services.platform_review import stamp_enabled_at
+
+    stamp_enabled_at(git_clone_config, previous)
+
+
 def _reject_invalid_platform_review(
     db: Session,
     *,
@@ -460,6 +468,7 @@ def create_flow(
         result_schema=flow_in.result_schema,
         validate_result=flow_in.validate_result,
     )
+    _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
         agent_type=flow_in.agent_type,
         agent_config=flow_in.agent_config,
@@ -544,12 +553,17 @@ def create_flow(
     except CallableFlowsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    flow = crud_flow.create(
-        db=db,
-        flow_in=flow_in,
-        account_id=current_user.account_id,
-        created_by_user_id=getattr(current_user, "id", None),
-    )
+    from preloop.services.flow_result_schema import ResultSchemaError
+
+    try:
+        flow = crud_flow.create(
+            db=db,
+            flow_in=flow_in,
+            account_id=current_user.account_id,
+            created_by_user_id=getattr(current_user, "id", None),
+        )
+    except ResultSchemaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     log_config_change(
         db,
@@ -1455,7 +1469,12 @@ def read_flow_execution(
         execution = _owned_ci_execution(
             db, current_user, execution_id, CiAction.READ_EXECUTION
         )
-        return CiExecutionResponse(**execution_projection(execution))
+        from preloop.services.review_completion_evidence import execution_timings
+
+        return CiExecutionResponse(
+            **execution_projection(execution),
+            timings=execution_timings(db, execution, current_user.account_id),
+        )
     execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
@@ -1935,6 +1954,7 @@ def get_execution_tool_evidence(
 
 @router.get(
     "/flows/executions/{execution_id}/result",
+    response_model=CiExecutionResultResponse | Dict[str, Any],
     responses={
         404: {
             "description": (
@@ -1944,7 +1964,7 @@ def get_execution_tool_evidence(
         },
         409: {
             "description": (
-                "The execution exists but has not finished. ``detail.code`` is "
+                "The execution is running or result capture is still pending. ``detail.code`` is "
                 "``result_pending`` and ``detail.status`` is the current status."
             )
         },
@@ -1966,14 +1986,15 @@ def get_flow_execution_result(
 
     - 404 ``Flow execution not found``: no such execution for this caller.
     - 409 with ``detail.code == "result_pending"``: the execution exists but
-      has not reached a terminal status, so no result is final yet, even
+      has not reached a terminal status or capture is still pending, so no result is final yet, even
       when a checkpoint (for example of a parked run) is stored. Retry
       after the execution finishes; ``detail.status`` is its current status.
     - 404 ``Flow execution did not report a result artifact``: the execution
-      is terminal and reported no result. This will not change.
+      is terminal, capture has settled, and no artifact was reported.
+      Controller-only metadata is not a captured result.
 
-    The result is persisted with the terminal status, before
-    ``flow.execution.finished`` is queued, so a caller notified of completion
+    The result is persisted and capture settled before the durable
+    ``flow.execution.finished`` event is delivered, so a caller notified of completion
     never receives 409 for that execution.
 
     ``evidence`` is the persisted receipt when one is bound, else derived
@@ -1989,17 +2010,29 @@ def get_flow_execution_result(
     captured document) and ``schema_validation`` (``valid``, ``error_count``
     and ``errors``; messages are omitted when a member was withheld).
     """
+    from preloop.services.review_completion_evidence import result_availability
+
     if isinstance(current_user, CiAuthorizationContext):
         execution = _owned_ci_execution(
             db, current_user, execution_id, CiAction.READ_RESULT
         )
-        if execution.result is None or not _is_terminal(execution):
+        if result_availability(execution) != "available" or not _is_terminal(execution):
             _raise_result_missing(execution)
         withheld = ci_result_withheld_paths(execution.result)
+        from preloop.services.review_completion_evidence import (
+            completion_projection,
+            execution_timings,
+        )
+
+        projection = execution_projection(execution)
         return {
             "execution_id": str(execution.id),
-            **execution_projection(execution),
+            **projection,
             "result": public_ci_result(execution.result),
+            "timings": execution_timings(db, execution, current_user.account_id),
+            "completion": completion_projection(
+                execution, publication=projection.get("platform_review")
+            ),
             # Pointers of members withheld as controller-private; empty means
             # the projected document is the complete captured document.
             "result_withheld_paths": withheld,
@@ -2012,7 +2045,7 @@ def get_flow_execution_result(
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    if execution.result is None or not _is_terminal(execution):
+    if result_availability(execution) != "available" or not _is_terminal(execution):
         _raise_result_missing(execution)
     return {
         "execution_id": str(execution.id),
@@ -2123,13 +2156,17 @@ def _raise_result_missing(execution: Any) -> NoReturn:
         HTTPException: 409 ``result_pending`` before a terminal status, 404
             once the execution finished without reporting a result.
     """
+    from preloop.services.review_completion_evidence import result_availability
+
     status = getattr(execution, "status", None)
-    if not _is_terminal(execution):
+    if not _is_terminal(execution) or result_availability(execution) == "pending":
         raise HTTPException(
             status_code=409,
             detail={
                 "code": RESULT_PENDING_CODE,
-                "message": "Flow execution has not finished; no result yet",
+                "message": "Result capture has not settled"
+                if _is_terminal(execution)
+                else "Flow execution has not finished; no result yet",
                 "status": status,
             },
         )
@@ -3349,7 +3386,9 @@ def _validate_matrix(
         409: {
             "description": (
                 "A model key failed its authentication probe (model_credentials_rejected), "
-                "or execution conflicts with a flow admission policy."
+                "or execution conflicts with a flow admission policy. Key rejections "
+                "include model_name, origin, provider, category, upstream_status, "
+                "provider_message, first_rejected_at, and key replacement instructions."
             )
         }
     },
@@ -3419,9 +3458,7 @@ async def trigger_flow_execution(
                 detail["execution_id"] = str(error.execution_id)
             raise HTTPException(503, detail) from None
         except ModelCredentialsRejectedError as exc:
-            raise HTTPException(
-                409, {"code": exc.code, "model_name": exc.model_name}
-            ) from None
+            raise HTTPException(409, exc.to_detail()) from None
         except ModelRoutingError:
             raise HTTPException(
                 422, "Restricted CI server model binding unavailable"
@@ -3484,7 +3521,7 @@ async def trigger_flow_execution(
         except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ModelCredentialsRejectedError as exc:
-            raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(409, exc.to_detail()) from exc
         except (ModelRoutingError, RunnerCapabilityError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except FlowHaltActiveError:
@@ -3505,7 +3542,7 @@ async def trigger_flow_execution(
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -3598,7 +3635,7 @@ async def retry_flow_execution(
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -3817,6 +3854,8 @@ def update_flow(
         ),
     )
 
+    _stamp_platform_review(flow_in.git_clone_config, flow.git_clone_config)
+
     if flow_in.agent_config is not None:
         try:
             validate_stored_model_routing(
@@ -3892,9 +3931,14 @@ def update_flow(
     )
 
     old_enabled = flow.is_enabled
-    flow = crud_flow.update(
-        db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
-    )
+    from preloop.services.flow_result_schema import ResultSchemaError
+
+    try:
+        flow = crud_flow.update(
+            db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
+        )
+    except ResultSchemaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Determine if this was an enable/disable toggle
     update_fields = flow_in.model_dump(exclude_unset=True)
@@ -4351,7 +4395,7 @@ async def trigger_flow_via_webhook(
     except ReadOnlyHumanTriggerError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelCredentialsRejectedError as exc:
-        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(409, exc.to_detail()) from exc
     except (ModelRoutingError, RunnerCapabilityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:

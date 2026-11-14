@@ -60,6 +60,9 @@ class AgentExecutionResult:
     # Token and cost totals reported by a persistent control reply. Gateway
     # attribution still wins when the execution has its own usage rows.
     usage: Optional[Dict[str, Any]] = None
+    # The runtime succeeded, but a log-text heuristic changed its status.
+    # A validated native result can supersede this heuristic only.
+    log_failure_override: bool = False
 
 
 class AgentExecutor(ABC):

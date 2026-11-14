@@ -26,7 +26,14 @@ export interface PlatformReviewConfig {
 
 /** The record the API returns on an execution (`platform_review`). */
 export interface PlatformReviewRecord {
-  status: 'pending' | 'publishing' | 'posted' | 'skipped' | 'failed' | string;
+  status:
+    | 'pending'
+    | 'publishing'
+    | 'posted'
+    | 'status_only'
+    | 'skipped'
+    | 'failed'
+    | string;
   reason: string | null;
   head_sha: string | null;
   review: 'posted' | 'skipped' | null | string;
@@ -292,6 +299,16 @@ export function publicationSummary(
             ? reasonText(record.review_reason)
             : '',
       };
+    case 'status_only':
+      // A commit status was set and, by rule, no review was posted.
+      return {
+        label:
+          record.reason === 'head_moved'
+            ? 'Status only: head moved'
+            : 'Status only, no review',
+        variant: 'warning',
+        detail: reasonText(record.reason),
+      };
     case 'skipped':
       return {
         label:
@@ -316,5 +333,6 @@ export function publicationSummary(
 
 /** True when a publish call could change something. */
 export function canPublishAgain(record: PlatformReviewRecord): boolean {
-  return record.status !== 'publishing' && record.status !== 'posted';
+  // `posted` and `status_only` are final: the server changes nothing for them.
+  return !['publishing', 'posted', 'status_only'].includes(record.status);
 }

@@ -379,8 +379,22 @@ that exits 0 without confirming success says in its failure message whether
 `agent_config.native_result` was on and points to this section. The adapter passes the schema to the
 pinned CLI's `--output-schema` and captures its final answer with
 `--output-last-message /workspace/result.json`. The normal capture-time schema
-and completion-status gates still decide success. Setting a schema alone keeps
+and completion-status gates still decide success. A schema-valid native verdict
+confirms completion without an additional `status` field or printed success
+marker: `approve` and `request-changes` both describe a finished review. Explicit
+failure/incomplete statuses and required publication gates still apply.
+Setting a schema alone keeps
 the existing file-writing contract.
+
+For native results on OpenAI model families (including Azure and OpenAI models
+routed through another provider), saving a flow checks the strict structured-output
+schema: every object, including array items and definitions, must set
+`additionalProperties: false` and require every declared property. Use nullable
+types for optional values. Unsupported schema compositions are rejected with the
+schema path. These checks also apply when an update enables native results or
+changes the model. The stored schema is preserved; capture-only schemas and other
+model families, including JSON-mode fallbacks, retain their existing validation.
+Provider schema rejections end the run with `model_config`.
 
 For Responses requests translated to Chat Completions, the gateway maps
 `text.format` to `response_format`. The gateway checks provider/model support for
@@ -395,7 +409,10 @@ conversation context. Unconstrained recovery rounds
 and completion reminders remain disabled. Native schema output cannot
 ensure completion within a token/time budget, or execute an arbitrary trusted
 helper. Consumers requiring a helper-bound diff/challenge must still verify those
-requirements independently; a valid JSON shape is insufficient.
+requirements independently; a valid JSON shape is insufficient. Hosted
+read-only reviews additionally expose a controller-computed
+[diff identity and completion evidence](restricted-ci.md#reproduce-the-reviewed-diff),
+which bind the admitted repository input without relying on model-authored fields.
 
 Preset **003 Observe / Eval** now includes the documented
 `preloop.eval.result/v1` schema. It requires schema, status, summary, numeric

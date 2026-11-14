@@ -277,3 +277,17 @@ read-only Contents permission; it no longer edits release notes. These changes
 remove unnecessary access but do not make all Token-Permissions findings vanish.
 The remaining grants require a documented security exception or a separately
 provisioned GitHub App design, not an assertion that the scanner passed.
+
+## Temporary environment cleanup
+
+Backend jobs remove only their runner slot's `preloop-python` and `preloop-deps`
+directories under `RUNNER_TEMP`, before checkout and after artifact upload even
+when tests fail. The next job clears environments abandoned by abrupt runner
+loss. Shared tool and uv caches, Docker images, volumes and other runner slots
+are untouched. This bounds temporary environment retention; cache/image growth
+still requires host maintenance with an exclusive maintenance window.
+
+The duration hints were refreshed from all 18 JUnit artifacts of successful
+main run 43549579108. Replaying those file timings changes the longest partition
+from 611 to 335 seconds while preserving all 1,500 discovered files and the
+existing coverage gate. These are test-time estimates; setup and queues remain.

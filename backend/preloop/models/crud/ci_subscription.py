@@ -149,6 +149,21 @@ def _binding(endpoint: models.WebhookEndpoint) -> CiSubscriptionBinding:
     return binding
 
 
+def _review_diff_digest(execution: Any) -> dict[str, str] | None:
+    """Carry only the controller-observed reviewed diff digest to a CI event."""
+    from preloop.services.review_diff import review_diff_identity
+
+    diff = review_diff_identity(execution)
+    return {"sha256": diff["sha256"]} if diff else None
+
+
+def _result_ready(execution: Any) -> bool:
+    """Use the same capture readiness contract as the restricted result route."""
+    from preloop.services.review_completion_evidence import result_availability
+
+    return result_availability(execution) == "available"
+
+
 def _result_digest(result: Any) -> str | None:
     """Digest of the result projection served to the CI principal, or None."""
     if result is None:
@@ -475,7 +490,7 @@ class CRUDCiSubscription:
                 "provider_pr_id": review.provider_pr_id,
                 "head_sha": review.head_sha,
                 "status": execution.status,
-                "result_ready": execution.result is not None,
+                "result_ready": _result_ready(execution),
                 # The reviewed snapshot: bound repository, PR and both
                 # revisions as accepted from the provider, plus the digest of
                 # the result a reader of ``.../result`` will receive.
@@ -483,7 +498,10 @@ class CRUDCiSubscription:
                 "repository_slug": review.repository_slug,
                 "base_branch": review.base_branch,
                 "base_sha": review.base_sha,
-                "result_sha256": _result_digest(execution.result),
+                "result_sha256": _result_digest(execution.result)
+                if _result_ready(execution)
+                else None,
+                "diff": _review_diff_digest(execution),
             }
         except (
             PermissionError,

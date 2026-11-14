@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import DateTime, cast, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -208,9 +208,11 @@ class CRUDPlatformReviewPublication:
 
         Covers a run that reached a terminal status outside the worker that
         would have published it (an operator stop, a crashed worker). Only
-        executions of an identity that was provisioned with the opt-in on
-        are returned, so turning the opt-in on never reaches back to runs
-        of identities that predate it.
+        executions that finished after posting was turned on are returned
+        (the server-set ``platform_review.enabled_at``), so turning the
+        opt-in on never reaches back to earlier runs and an unrelated flow
+        save drops nothing. A run this bound leaves out can still be
+        published with the explicit publish call.
 
         Returns:
             ``(account_id, execution_id)`` pairs, oldest first.
@@ -218,15 +220,18 @@ class CRUDPlatformReviewPublication:
         model = models.PlatformReviewPublication
         execution = models.FlowExecution
         flow = models.Flow
-        principal = models.CiPrincipal
-        snapshot: Any = principal.repository_binding[("platform_review",)].as_json()
         enabled: Any = flow.git_clone_config[
             ("platform_review", "enabled")
         ].as_boolean()
+        # When posting was turned on: the server stamp on the block, or the
+        # flow's last save for a block stored without one.
+        stamp: Any = flow.git_clone_config[
+            ("platform_review", "enabled_at")
+        ].as_string()
+        since = func.coalesce(cast(stamp, DateTime), flow.updated_at)
         rows = (
             db.query(flow.account_id, execution.id)
             .join(flow, flow.id == execution.flow_id)
-            .join(principal, principal.id == execution.ci_principal_id)
             .outerjoin(model, model.execution_id == execution.id)
             .filter(
                 model.id.is_(None),
@@ -238,7 +243,7 @@ class CRUDPlatformReviewPublication:
                 # Leave the finishing worker time to publish first.
                 execution.end_time <= _now() - timedelta(minutes=2),
                 enabled.is_(True),
-                snapshot.isnot(None),
+                execution.end_time >= since,
             )
             .order_by(execution.end_time.asc())
             .limit(max(1, min(limit, 100)))

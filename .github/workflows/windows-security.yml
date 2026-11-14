@@ -6,18 +6,37 @@ on:
     branches: [main]
 
 concurrency:
-  # One run per PR, or per branch on push. A newer commit cancels the older
-  # run on PRs and on main; tags, schedules and manual runs are never
-  # cancelled (each tag is its own ref, so tags never collide anyway).
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  # Cancel superseded PR work; every main/release/manual run keeps its own slot.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  windows-security-tests:
-    name: Windows security script tests
+  changes:
+    name: Detect Windows paths
+    runs-on: ubuntu-24.04
+    outputs:
+      windows: ${{ github.event_name != 'pull_request' || steps.paths.outputs.windows == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: paths
+        with:
+          filters: |
+            windows:
+              - 'cli/**'
+              - 'scripts/**/*.ps1'
+              - '.github/**'
+
+  windows-first:
+    name: Windows security first attempt
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    outputs:
+      retryable: ${{ steps.defender.outputs.retryable }}
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -25,7 +44,7 @@ jobs:
     defaults:
       run:
         shell: powershell
-    steps:
+    steps: &windows-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -39,10 +58,58 @@ jobs:
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Defender validation tests failed.' }
       - name: Test installer integrity failure paths
         run: ./scripts/test-install-cli.ps1
+      - name: Test infrastructure classification
+        run: |
+          Import-Module "$env:RUNNER_TEMP/pester-modules/Pester/5.7.1/Pester.psd1" -Force
+          $result = Invoke-Pester -Path .github/tests/windows-runner.Tests.ps1 -PassThru
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Infrastructure classification tests failed.' }
       - name: Enable Defender on the disposable hosted runner
-        run: ./scripts/prepare-windows-defender.ps1
+        id: defender
+        continue-on-error: ${{ github.job == 'windows-first' }}
+        run: ./.github/scripts/check-windows-runner.ps1
+      - name: Reject unclassified setup failures
+        if: steps.defender.outcome == 'failure' && steps.defender.outputs.retryable != 'true'
+        run: throw 'Unclassified Defender setup failure; manual investigation required.'
       - name: Verify actual scanner availability
+        if: steps.defender.outcome == 'success'
         run: |
           . ./scripts/test-windows-defender.ps1
           Assert-DefenderCoverage | Out-Null
           Invoke-DefenderFileScan -FilePath "$env:SystemRoot/System32/where.exe" -LogPath "$env:RUNNER_TEMP/defender-smoke.log"
+
+  windows-retry:
+    name: Windows infrastructure retry
+    needs: windows-first
+    if: needs.windows-first.result == 'success' && needs.windows-first.outputs.retryable == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PRELOOP_DISABLE_TELEMETRY: 'true'
+    defaults:
+      run:
+        shell: powershell
+    steps: *windows-steps
+
+  windows-security-tests:
+    name: Windows security script tests
+    runs-on: ubuntu-24.04
+    needs: [changes, windows-first, windows-retry]
+    if: always() && !cancelled()
+    steps:
+      - name: Require a complete Windows validation or an irrelevant diff
+        env:
+          PATHS_RESULT: ${{ needs.changes.result }}
+          WINDOWS: ${{ needs.changes.outputs.windows }}
+          FIRST: ${{ needs.windows-first.result }}
+          RETRYABLE: ${{ needs.windows-first.outputs.retryable }}
+          RETRY: ${{ needs.windows-retry.result }}
+        run: |
+          test "$PATHS_RESULT" = success
+          if [ "$WINDOWS" = false ]; then exit 0; fi
+          test "$WINDOWS" = true
+          test "$FIRST" = success
+          if [ "$RETRYABLE" = true ]; then
+            test "$RETRY" = success
+          else
+            test "$RETRYABLE" = false
+          fi

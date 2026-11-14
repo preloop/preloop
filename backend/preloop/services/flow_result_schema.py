@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Mapping, Optional
+from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -31,7 +32,9 @@ RESULT_SCHEMA_INVALID_MESSAGE = "Result document does not match the flow result 
 
 
 class ResultSchemaError(ValueError):
-    """A flow's result schema is too large or not a valid JSON Schema."""
+    """A flow's result schema is invalid for its configured result mode."""
+
+    category = "model_config"
 
 
 #: Keys the runner and control plane add to a result next to the agent's
@@ -95,6 +98,164 @@ def check_result_schema(schema: Any) -> Optional[dict[str, Any]]:
             f"{where}: {_bounded(exc.message)}"
         ) from exc
     return schema
+
+
+def uses_openai_strict_results(model: Any) -> bool:
+    """Identify OpenAI strict-output families without restricting other providers.
+
+    JSON-mode fallbacks (including DeepSeek) and other model families retain
+    their existing schemas and capture-time validation.
+    """
+    from preloop.services.litellm_routing import OPENAI_COMPATIBLE_PROVIDERS
+
+    provider = str(getattr(model, "provider_name", "") or "").strip().lower()
+    identifier = str(getattr(model, "model_identifier", "") or "").strip().lower()
+    endpoint = str(getattr(model, "api_endpoint", "") or "")
+    try:
+        host = (urlsplit(endpoint).hostname or "").lower()
+    except ValueError:
+        return False
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        return False
+    identifier = identifier.removeprefix("openai/")
+    if identifier.startswith("gpt-oss"):
+        return False
+    openai_family = identifier.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-"))
+    if provider in {"azure", "azure_openai"}:
+        azure_host = host.endswith(
+            (
+                ".openai.azure.com",
+                ".cognitiveservices.azure.com",
+                ".services.ai.azure.com",
+            )
+        )
+        return openai_family and (not host or azure_host)
+    if provider == "openrouter" or host == "openrouter.ai":
+        return openai_family and (not host or host == "openrouter.ai")
+    return provider == "openai" and (not host or host == "api.openai.com")
+
+
+def check_native_result_schema(schema: Any) -> None:
+    """Check the strict JSON Schema contract sent by Codex to Responses.
+
+    Capture-only schemas remain unrestricted draft 2020-12. Do not add closed
+    objects or required fields automatically: that would narrow the authored
+    schema's validation semantics. Walk schema locations, never example/default
+    data, and leave references intact (their definitions are checked separately).
+
+    Args:
+        schema: The enabled native-result schema.
+
+    Raises:
+        ResultSchemaError: When strict structured output cannot use the schema.
+    """
+    check_result_schema(schema)
+
+    def local_reference(reference: Any, path: str) -> Any:
+        if not isinstance(reference, str) or not reference.startswith("#"):
+            raise ResultSchemaError(
+                f"result_schema at {path}: native results require local references"
+            )
+        target = schema
+        try:
+            for part in reference[2:].split("/") if reference.startswith("#/") else []:
+                part = part.replace("~1", "/").replace("~0", "~")
+                if isinstance(target, list):
+                    if (
+                        not part.isascii()
+                        or not part.isdecimal()
+                        or (len(part) > 1 and part.startswith("0"))
+                    ):
+                        raise KeyError(part)
+                    target = target[int(part)]
+                else:
+                    target = target[part]
+            if reference != "#" and not reference.startswith("#/"):
+                raise KeyError(reference)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ResultSchemaError(
+                f"result_schema at {path}: unresolved reference"
+            ) from exc
+        return target
+
+    root = schema
+    seen: set[str] = set()
+    while isinstance(root, dict) and "$ref" in root:
+        reference = root["$ref"]
+        if reference in seen:
+            raise ResultSchemaError(
+                "result_schema at $: root reference must resolve to an object"
+            )
+        seen.add(reference)
+        root = local_reference(reference, "$")
+    if not isinstance(root, dict) or root.get("type") != "object":
+        raise ResultSchemaError(
+            "result_schema at $: native results require an object root"
+        )
+    if "anyOf" in root or "anyOf" in schema:
+        raise ResultSchemaError(
+            "result_schema at $: native results cannot use root anyOf"
+        )
+
+    visited_references: set[str] = set()
+
+    def visit(node: Any, path: str) -> None:
+        if not isinstance(node, dict):
+            raise ResultSchemaError(
+                f"result_schema at {path}: native results require a schema object"
+            )
+        if "$ref" in node:
+            reference = node["$ref"]
+            target = local_reference(reference, path)
+            if reference not in visited_references:
+                visited_references.add(reference)
+                visit(target, f"{path}.$ref({reference})")
+        if (
+            node.get("type") == "object"
+            or "properties" in node
+            or (isinstance(node.get("type"), list) and "object" in node["type"])
+        ):
+            if node.get("additionalProperties") is not False:
+                raise ResultSchemaError(
+                    f"result_schema at {path}: additionalProperties must be false "
+                    "for native results"
+                )
+            properties = node.get("properties", {})
+            if set(node.get("required", [])) != set(properties):
+                raise ResultSchemaError(
+                    f"result_schema at {path}: required must include every property "
+                    "for native results (use a nullable type for optional values)"
+                )
+        for keyword in (
+            "allOf",
+            "oneOf",
+            "not",
+            "if",
+            "then",
+            "else",
+            "dependentRequired",
+            "dependentSchemas",
+            "patternProperties",
+            "prefixItems",
+            "contains",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "propertyNames",
+        ):
+            if keyword in node:
+                raise ResultSchemaError(
+                    f"result_schema at {path}: {keyword} is unsupported "
+                    "in native results"
+                )
+        for keyword in ("properties", "$defs", "definitions"):
+            for name, child in node.get(keyword, {}).items():
+                visit(child, f"{path}.{keyword}.{name}")
+        if "items" in node:
+            visit(node["items"], f"{path}.items")
+        for index, child in enumerate(node.get("anyOf", [])):
+            visit(child, f"{path}.anyOf[{index}]")
+
+    visit(schema, "$")
 
 
 def _json_path(parts: Any) -> str:

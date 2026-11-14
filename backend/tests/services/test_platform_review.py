@@ -516,8 +516,9 @@ async def test_review_body_is_readable_and_inline_only_for_diff_lines(
     assert f"Reviewed commit `{HEAD}`" in body
     assert "One problem in the parser" in body
     assert "**Findings (2)**" in body
-    assert "\\[high\\] Unchecked length" in body
-    assert "\\[low\\] Naming" in body
+    assert "&#91;high&#93; Unchecked length" in body
+    assert "&#91;low&#93; Naming" in body
+    assert "(`src/parser.py:12`)" in body
     assert "- correctness" in body and "- security" in body
     assert f"/console/flows/executions/{execution.id}" in body
     # Only the finding whose path and line are in the diff is inline.
@@ -911,6 +912,7 @@ async def test_sweep_lists_due_retries_and_unclaimed_finished_runs(
     assert (world.account.id, failed.id) in store.due_execution_ids(world.db)
     unclaimed = finished(world, who)
     unclaimed.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime(2020, 1, 1)
     world.db.commit()
     found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
     assert (world.account.id, unclaimed.id) in found
@@ -1009,22 +1011,34 @@ HOSTILE = (
 )
 
 
+def _visible(markdown: str) -> str:
+    """What GitHub shows: code spans removed, character references decoded."""
+    import html
+
+    return html.unescape(re.sub(r"`[^`\n]*`", "", markdown))
+
+
 def test_plain_text_neutralises_mentions_links_html_and_commands() -> None:
     text = plain_text(HOSTILE, 4000)
-    assert "<" not in text and ">" not in text
-    assert not re.search(r"@[A-Za-z0-9]", text)
-    assert not re.search(r"#\d", text)
-    assert not re.search(r"GH-\d", text)
-    assert "://" not in text and "www." not in text.lower()
+    outside_code = re.sub(r"`[^`\n]*`", "", text)
+    # No character that can open or delimit markup survives as itself, and
+    # every ampersand is one of our numeric references.
+    for char in "[]*_<>|~$!`\\":
+        assert char not in outside_code, char
+    assert not re.search(r"&(?!#\d+;)", outside_code)
+    assert not re.search(r"(?<!&)#", outside_code)
+    shown = _visible(text)
+    assert not re.search(r"@[A-Za-z0-9]", shown)
+    assert not re.search(r"#\d", shown)
+    assert not re.search(r"GH-\d", shown)
+    assert "://" not in shown and "www." not in shown.lower()
     assert "\u202e" not in text
-    assert "&#" not in text
-    # Every Markdown-significant character is escaped.
-    for char in "[]()*`#!":
-        assert not re.search(rf"(?<!\\){re.escape(char)}", text)
-    # No line can start with a slash command.
-    assert not any(line.startswith("/") for line in text.split("\n"))
+    # A model-written character reference is shown literally, not decoded.
+    assert "&#38;&#35;" in text
+    # No line can start with a slash command or a block marker.
+    assert not any(line[:1] in "/-+=#>" for line in text.split("\n"))
     # The words themselves stay readable.
-    assert "octocat" in text and "evil" in text and "lgtm" in text
+    assert "octocat" in shown and "evil" in shown and "lgtm" in shown
 
 
 def test_plain_text_caps_length_and_rejects_non_strings() -> None:
@@ -1065,11 +1079,14 @@ def test_rendered_review_contains_no_model_markup_and_respects_caps() -> None:
     lines = body.split("\n")
     # The marker is ours; no other HTML and no model line at column zero.
     assert lines[0].startswith("<!-- preloop-platform-review v1 ")
-    assert "<" not in "\n".join(lines[1:])
-    assert not re.search(r"@[A-Za-z0-9]", body)
-    assert not re.search(r"(?<!execution=)(?<![0-9a-f-])#\d", body)
-    assert "](" not in body
-    assert "https://evil" not in body and "www.evil" not in body
+    rest = "\n".join(lines[1:])
+    assert "<" not in rest and "\\" not in rest
+    shown = _visible(rest)
+    assert not re.search(r"@[A-Za-z0-9]", shown)
+    assert not re.search(r"#\d", shown)
+    # Inside a code span GitHub interprets nothing; outside, no link syntax.
+    assert "](" not in re.sub(r"`[^`\n]*`", "", body)
+    assert "https://evil" not in shown and "www.evil" not in shown
     assert not any(line.startswith("/") for line in lines)
 
 
@@ -1228,55 +1245,6 @@ def test_opt_in_is_rejected_for_personal_token_and_non_github_trackers(
 
 
 # --- identities are never silently upgraded --------------------------------
-
-
-def test_identity_snapshot_records_the_opt_in_and_breaks_when_it_changes(
-    world: SimpleNamespace,
-) -> None:
-    who = identity(world, world.projects[0])
-    assert who.principal.repository_binding["platform_review"] == [
-        "review:comment",
-        "status",
-    ]
-    assert who.principal.repository_binding["ci_project_selection"] is True
-    config = dict(world.flow.git_clone_config)
-    # Widening comments to approvals invalidates the identity.
-    config["platform_review"] = {**OPT_IN, "verdict_actions": {"pass": "approve"}}
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    # So does turning the opt-in off, and back on it works again.
-    config = dict(config)
-    config.pop("platform_review")
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    config = dict(config)
-    config["platform_review"] = OPT_IN
-    world.flow.git_clone_config = config
-    world.db.commit()
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is not None
-
-
-@pytest.mark.asyncio
-async def test_identity_provisioned_before_the_opt_in_cannot_cause_a_post(
-    world: SimpleNamespace,
-) -> None:
-    config = dict(world.flow.git_clone_config)
-    opted_out = dict(config)
-    opted_out.pop("platform_review")
-    world.flow.git_clone_config = opted_out
-    world.db.commit()
-    who = identity(world, world.projects[0])
-    assert "platform_review" not in who.principal.repository_binding
-    execution = finished(world, who)
-    world.flow.git_clone_config = config
-    world.db.commit()
-    # The old key no longer authenticates, and its finished run is not posted.
-    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
-    outcome = await publish(world, execution, explicit=True)
-    assert outcome is not None and outcome["reason"] == "admission_revoked"
-    assert world.github.calls == []
 
 
 # --- lease profile ----------------------------------------------------------
@@ -1766,23 +1734,492 @@ def test_dispatch_authorization_accepts_only_trigger_or_publish(
         )
 
 
-def test_sweep_never_reaches_back_to_runs_of_identities_that_predate_the_opt_in(
-    world: SimpleNamespace,
-) -> None:
+# --- posting settings never invalidate an identity -------------------------
+
+
+def _set_review(world: SimpleNamespace, block: Any) -> None:
     config = dict(world.flow.git_clone_config)
-    opted_out = dict(config)
-    opted_out.pop("platform_review")
-    world.flow.git_clone_config = opted_out
-    world.db.commit()
-    old = finished(world, identity(world, world.projects[0]))
-    old.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    if block is None:
+        config.pop("platform_review", None)
+    else:
+        config["platform_review"] = block
     world.flow.git_clone_config = config
     world.db.commit()
-    new = finished(world, identity(world, world.projects[1]))
-    new.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+
+def _dedicated(world: SimpleNamespace) -> None:
+    """Turn the fixture flow into a dedicated flow for the first project."""
+    project = world.projects[0]
+    config = dict(world.flow.git_clone_config)
+    config.pop("ci_project_selection")
+    config["repositories"] = [
+        repo for repo in config["repositories"] if repo["project_id"] == str(project.id)
+    ]
+    world.flow.git_clone_config = config
+    world.flow.trigger_project_ids = [str(project.id)]
     world.db.commit()
-    found = crud.crud_platform_review_publication.unclaimed_execution_ids(
-        world.db, finished_within=timedelta(hours=24)
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_existing_identity_survives_adding_changing_and_removing_posting(
+    world: SimpleNamespace, client: TestClient, shared: bool
+) -> None:
+    if not shared:
+        _dedicated(world)
+    _set_review(world, None)
+    who = identity(world, world.projects[0])
+    assert "platform_review" not in who.principal.repository_binding
+    execution = finished(world, who)
+    headers = {"Authorization": f"Bearer {who.token}"}
+    path = f"/api/v1/flows/executions/{execution.id}"
+    blocks = [
+        OPT_IN,
+        {**OPT_IN, "verdict_actions": {"pass": "approve"}},
+        {"enabled": True},
+        {"enabled": False},
+        None,
+    ]
+    for block in blocks:
+        _set_review(world, block)
+        assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+        for suffix in ("", "/result"):
+            response = client.get(path + suffix, headers=headers)
+            assert response.status_code == 200, (block, response.text)
+        # Dispatch (what a trigger and a launch re-check) still authorizes.
+        assert crud.crud_ci_execution.authorize_dispatch(world.db, execution=execution)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [True, False])
+async def test_first_run_after_enabling_posts_with_the_existing_identity(
+    world: SimpleNamespace, shared: bool
+) -> None:
+    if not shared:
+        _dedicated(world)
+    _set_review(world, None)
+    project = world.projects[0]
+    who = identity(world, project)
+    _set_review(world, OPT_IN)
+    execution = finished(world, who)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert len(world.github.statuses[(project.slug, HEAD)]) == 1
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [None, ["review:comment", "status"], ["review:approve", "review:comment"]],
+)
+def test_snapshot_written_by_an_earlier_release_is_honoured(
+    world: SimpleNamespace, recorded: list[str] | None
+) -> None:
+    """1.0.x wrote no posting key; the first posting release wrote a list."""
+    who = identity(world, world.projects[0])
+    snapshot = dict(who.principal.repository_binding)
+    assert set(snapshot) == {
+        "slug",
+        "tracker_type",
+        "tracker_url",
+        "organization_id",
+        "publication_mode",
+        "ci_project_selection",
+    }
+    if recorded is not None:
+        snapshot["platform_review"] = recorded
+    who.principal.repository_binding = snapshot
+    world.db.commit()
+    for block in (OPT_IN, None):
+        _set_review(world, block)
+        assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["project_removed", "selection_mode", "publication_mode", "tracker", "slug"],
+)
+def test_what_must_invalidate_an_identity_still_does(
+    world: SimpleNamespace, change: str
+) -> None:
+    project, other = world.projects
+    who = identity(world, project)
+    config = dict(world.flow.git_clone_config)
+    if change == "project_removed":
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] != str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(other.id)]
+    elif change == "selection_mode":
+        config.pop("ci_project_selection")
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] == str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(project.id)]
+    elif change == "publication_mode":
+        config["publication_mode"] = "legacy"
+        config.pop("ci_project_selection")
+        config.pop("platform_review")
+        config["repositories"] = [
+            r for r in config["repositories"] if r["project_id"] == str(project.id)
+        ]
+        world.flow.trigger_project_ids = [str(project.id)]
+    elif change == "tracker":
+        config["repositories"] = [
+            {**r, "tracker_id": str(uuid4())}
+            if r["project_id"] == str(project.id)
+            else r
+            for r in config["repositories"]
+        ]
+    else:
+        project.slug = "example/renamed"
+    world.flow.git_clone_config = config
+    world.db.commit()
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token) is None
+
+
+@pytest.mark.asyncio
+async def test_broken_posting_settings_block_posting_but_not_the_identity(
+    world: SimpleNamespace,
+) -> None:
+    who = identity(world, world.projects[0])
+    execution = finished(world, who)
+    world.flow.validate_result = False
+    world.db.commit()
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["reason"] == "configuration_invalid"
+    assert world.github.calls == []
+    world.flow.validate_result = True
+    _set_review(world, {"enabled": True, "status": {"verdict_states": {}}})
+    assert crud.crud_ci_principal.authenticate(world.db, token=who.token)
+    again = await publish(world, execution, explicit=True)
+    assert again is not None and again["reason"] == "configuration_invalid"
+    assert world.github.calls == []
+
+
+def test_publish_action_is_added_to_an_existing_key_in_place(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_EXECUTION, CiAction.READ_RESULT)
+    grant = CiGrant(
+        version=1, project_id=project.id, flow_id=world.flow.id, actions=base
     )
-    assert (world.account.id, new.id) in found
-    assert (world.account.id, old.id) not in found
+    principal, key, token = crud.crud_ci_principal.provision(
+        world.db, actor=world.owner, name="Existing", grant=grant
+    )
+    context = crud.crud_ci_principal.authenticate(world.db, token=token)
+    execution = finished(world, SimpleNamespace(context=context))
+    headers = {"Authorization": f"Bearer {token}"}
+    path = f"/api/v1/flows/executions/{execution.id}/platform-review"
+    assert client.post(path, headers=headers).status_code == 403
+    wider = CiGrant(
+        version=1,
+        project_id=project.id,
+        flow_id=world.flow.id,
+        actions=(*base, CiAction.PUBLISH_REVIEW),
+    )
+    # Widening the grant alone does not widen a key that is already issued.
+    crud.crud_ci_principal.change(
+        world.db, actor=world.owner, principal_id=principal.id, grant=grant
+    )
+    assert client.post(path, headers=headers).status_code == 403
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=wider,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == [a.value for a in (*base, CiAction.PUBLISH_REVIEW)]
+    assert key.is_active is True
+    posted = client.post(path, headers=headers)
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["platform_review"]["status"] == "posted"
+    # The same token still does what it did before.
+    assert (
+        client.get(path.removesuffix("/platform-review"), headers=headers).status_code
+        == 200
+    )
+
+
+def test_extending_keys_needs_a_widening_grant_and_adds_nothing_else(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_EXECUTION)
+    grant = CiGrant(
+        version=1, project_id=project.id, flow_id=world.flow.id, actions=base
+    )
+    principal, key, _ = crud.crud_ci_principal.provision(
+        world.db,
+        actor=world.owner,
+        name="Narrow key",
+        grant=grant,
+        key_actions=(CiAction.TRIGGER,),
+    )
+    with pytest.raises(ValueError):
+        crud.crud_ci_principal.change(
+            world.db, actor=world.owner, principal_id=principal.id, extend_keys=True
+        )
+    # A grant that adds nothing extends nothing, and is not an error.
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=grant,
+        enabled=True,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == ["flow:trigger"]
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=CiGrant(
+            version=1,
+            project_id=project.id,
+            flow_id=world.flow.id,
+            actions=(*base, CiAction.PUBLISH_REVIEW),
+        ),
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    # Only the newly granted action is added; the key's narrower ceiling for
+    # actions the grant already had (execution:read) is kept.
+    assert key.ci_actions == ["flow:trigger", "execution:review:publish"]
+    # Repeating the documented call is a no-op, not an error.
+    wider = CiGrant(
+        version=1,
+        project_id=project.id,
+        flow_id=world.flow.id,
+        actions=(*base, CiAction.PUBLISH_REVIEW),
+    )
+    crud.crud_ci_principal.change(
+        world.db,
+        actor=world.owner,
+        principal_id=principal.id,
+        grant=wider,
+        extend_keys=True,
+    )
+    world.db.refresh(key)
+    assert key.ci_actions == ["flow:trigger", "execution:review:publish"]
+
+
+def test_sweep_is_bounded_by_when_posting_was_enabled_not_by_later_saves(
+    world: SimpleNamespace,
+) -> None:
+    from preloop.models.schemas.flow import GitCloneConfig as Config
+
+    who = identity(world, world.projects[0])
+    before = finished(world, who)
+    before.end_time = datetime(2019, 6, 1)
+    after = finished(world, who)
+    after.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    # Posting was enabled half an hour ago; the flow was saved again since
+    # (an unrelated edit), after the run finished.
+    config = dict(world.flow.git_clone_config)
+    enabled = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=30)
+    config["platform_review"] = {**OPT_IN, "enabled_at": enabled.isoformat()}
+    Config.model_validate(config)
+    world.flow.git_clone_config = config
+    world.flow.updated_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    world.db.commit()
+    store = crud.crud_platform_review_publication
+    found = store.unclaimed_execution_ids(
+        world.db, finished_within=timedelta(days=36500)
+    )
+    assert (world.account.id, after.id) in found
+    assert (world.account.id, before.id) not in found
+    # A block stored without a stamp falls back to the flow's last save.
+    config = dict(config)
+    config["platform_review"] = OPT_IN
+    world.flow.git_clone_config = config
+    world.flow.updated_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    world.db.commit()
+    assert (
+        store.unclaimed_execution_ids(world.db, finished_within=timedelta(days=36500))
+        == []
+    )
+
+
+def test_enabled_at_is_set_by_the_server_and_kept_across_saves() -> None:
+    from preloop.models.schemas.flow import GitCloneConfig as Config
+
+    submitted = Config.model_validate(
+        _clone(platform_review={**OPT_IN, "enabled_at": "1999-01-01T00:00:00"})
+    )
+    platform_review.stamp_enabled_at(submitted, None)
+    first = submitted.platform_review.enabled_at
+    assert first is not None and not first.startswith("1999")
+    stored = submitted.model_dump()
+    # An unrelated save, with or without a client-sent value, keeps the stamp.
+    for sent in (None, "2001-01-01T00:00:00"):
+        again = Config.model_validate(
+            _clone(platform_review={**OPT_IN, "enabled_at": sent})
+        )
+        platform_review.stamp_enabled_at(again, stored)
+        assert again.platform_review.enabled_at == first
+    # Off clears it; on again starts a new period.
+    off = Config.model_validate(
+        _clone(platform_review={"enabled": False, "enabled_at": first})
+    )
+    platform_review.stamp_enabled_at(off, stored)
+    assert off.platform_review.enabled_at is None
+    on = Config.model_validate(_clone())
+    platform_review.stamp_enabled_at(on, off.model_dump())
+    assert on.platform_review.enabled_at is not None
+    platform_review.stamp_enabled_at(
+        Config.model_validate(_clone(platform_review=None)), stored
+    )
+    platform_review.validate_platform_review_block(on.model_dump()["platform_review"])
+
+
+def test_admin_update_extends_keys_and_requires_a_grant(
+    world: SimpleNamespace,
+) -> None:
+    from pydantic import ValidationError
+
+    from preloop.schemas.ci_administration import CiAdminUpdate
+
+    with pytest.raises(ValidationError):
+        CiAdminUpdate.model_validate({"extend_keys": True})
+    project = world.projects[0]
+    base = (CiAction.TRIGGER, CiAction.READ_RESULT)
+    principal, key, _ = crud.crud_ci_principal.provision(
+        world.db,
+        actor=world.owner,
+        name="Admin path",
+        grant=CiGrant(
+            version=1, project_id=project.id, flow_id=world.flow.id, actions=base
+        ),
+    )
+    payload = CiAdminUpdate.model_validate(
+        {
+            "grant": {
+                "version": 1,
+                "project_id": str(project.id),
+                "flow_id": str(world.flow.id),
+                "actions": [*[a.value for a in base], "execution:review:publish"],
+            },
+            "extend_keys": True,
+        }
+    )
+    crud.crud_ci_administration.change(
+        world.db, actor=world.owner, principal_id=principal.id, payload=payload
+    )
+    world.db.refresh(key)
+    assert key.ci_actions[-1] == "execution:review:publish"
+    audited = (
+        world.db.query(models.AuditLog)
+        .filter(models.AuditLog.action == "ci_identity_extend_key")
+        .count()
+    )
+    assert audited == 1
+
+
+# --- found by the first live run -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_of_a_run_without_a_review_says_status_only(
+    world: SimpleNamespace,
+) -> None:
+    """No review plus a commit status is never reported as ``posted``."""
+    project = world.projects[0]
+    who = identity(world, project)
+    failed_run = finished(world, who, status="FAILED", valid=None)
+    outcome = await publish(world, failed_run)
+    assert outcome is not None
+    assert outcome["status"] == "status_only"
+    assert outcome["reason"] == "run_not_succeeded"
+    assert outcome["review"] == "skipped" and outcome["review_id"] is None
+    assert outcome["commit_status"] == "error"
+    assert outcome["posted_at"] is not None
+    # Terminal like ``posted``: asking again changes and posts nothing.
+    calls = len(world.github.calls)
+    assert await publish(world, failed_run, explicit=True) == outcome
+    assert len(world.github.calls) == calls
+    # A moved head is the same shape: status on the reviewed commit only.
+    world.github.pulls[(project.slug, 7)]["head"]["sha"] = OTHER_HEAD
+    moved = await publish(world, finished(world, who))
+    assert moved is not None
+    assert (moved["status"], moved["reason"]) == ("status_only", "head_moved")
+    assert moved["review"] == "skipped" and moved["commit_status"] == "failure"
+
+
+@pytest.mark.asyncio
+async def test_record_states_are_consistent_with_what_was_written(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    who = identity(world, project)
+    both = await publish(world, finished(world, who))
+    assert both is not None
+    assert (both["status"], both["reason"]) == ("posted", None)
+    assert both["review"] == "posted" and both["commit_status"] == "failure"
+    _set_review(world, {"enabled": True})
+    review_only = await publish(world, finished(world, who))
+    assert review_only is not None
+    assert (review_only["status"], review_only["reason"]) == ("posted", None)
+    assert review_only["commit_status"] is None
+    nothing = await publish(world, finished(world, who, status="FAILED"))
+    assert nothing is not None
+    assert (nothing["status"], nothing["reason"]) == ("skipped", "run_not_succeeded")
+    assert nothing["review"] == "skipped" and nothing["commit_status"] is None
+    assert nothing["posted_at"] is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "calculator.py",
+        "src/my_module/file-name.test.py",
+        "packages/@scope/pkg/src/[id]/page.tsx",
+        "docs/a (copy)/READ_ME.md",
+        "__init__.py",
+    ],
+)
+def test_paths_render_in_code_spans_without_backslashes(path: str) -> None:
+    body, _ = render_review(
+        {
+            "verdict": "fail",
+            "summary": "See calculator.py and `add_numbers()` in my_module.",
+            "findings": [{"title": "Check __init__.py", "path": path, "line": 3}],
+        },
+        verdict="fail",
+        execution_id=uuid4(),
+        head_sha=HEAD,
+        nonce="n" * 32,
+        inline={},
+    )
+    assert "\\" not in body
+    assert f"`{path}:3`" in body
+    assert "See calculator.py and `add_numbers()` in my" in body
+
+
+def test_ordinary_text_is_left_readable() -> None:
+    assert plain_text("calculator.py returns 1.5 (not 2).", 100) == (
+        "calculator.py returns 1.5 (not 2)."
+    )
+    assert plain_text("Use `snake_case` here", 100) == "Use `snake_case` here"
+    assert "\\" not in plain_text(HOSTILE, 4000)
+
+
+def test_path_that_could_leave_a_code_span_is_rendered_as_text() -> None:
+    body, _ = render_review(
+        {
+            "verdict": "fail",
+            "findings": [{"title": "t", "path": "a`b` @octocat [x](y).py", "line": 1}],
+        },
+        verdict="fail",
+        execution_id=uuid4(),
+        head_sha=HEAD,
+        nonce="n" * 32,
+        inline={},
+    )
+    section = body.split("**Findings")[1]
+    assert "`" not in section.replace("&#96;", "")
+    assert "@octocat" not in section and "](" not in section

@@ -213,6 +213,14 @@ def test_admission_probes_marked_auth_keys(
             ) as exc:
                 validate_execution_model_credentials(db_session, flow, {})
             assert exc.value.code == "model_credentials_rejected"
+            detail = exc.value.to_detail()
+            assert detail["provider"] == model.provider_name
+            assert detail["provider_message"] == "User not found."
+            assert (
+                detail["first_rejected_at"]
+                == model.credentials_secret.upstream_auth_rejection["first_rejected_at"]
+            )
+            assert detail["upstream_status"] == 401
         else:
             validate_execution_model_credentials(db_session, flow, {})
         probe.assert_called_once()

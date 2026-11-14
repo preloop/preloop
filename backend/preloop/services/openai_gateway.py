@@ -5521,6 +5521,7 @@ class OpenAIGatewayService:
         upstream_payload["model"] = ai_model.model_identifier
         if stream:
             upstream_payload["stream"] = True
+        self._record_effective_request_parameters(upstream_payload)
         return upstream_payload
 
     # Default ``instructions`` used when a chat-completions request targets a
@@ -7944,6 +7945,7 @@ class OpenAIGatewayService:
         # reject them, so send them as labelled user context instead (#1113).
         governed_payload = rewrite_crosschat_responses_input(governed_payload)
         body = build_passthrough_body(ai_model, governed_payload, stream=stream)
+        self._record_effective_request_parameters(body)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -8782,6 +8784,7 @@ class OpenAIGatewayService:
         # Persist only effective, non-secret controls, never the full kwargs
         # (which contain credentials and private messages). Keep this after
         # alias/default resolution so diagnostics describe what was sent.
+        self._last_upstream_parameters["model"] = kwargs["model"]
         limit = kwargs.get("max_tokens")
         if isinstance(limit, int) and not isinstance(limit, bool):
             self._last_upstream_parameters["max_tokens"] = limit
@@ -8803,6 +8806,27 @@ class OpenAIGatewayService:
         }:
             self._last_upstream_parameters["reasoning_effort"] = effort
         return kwargs
+
+    def _record_effective_request_parameters(self, body: Dict[str, Any]) -> None:
+        """Keep only controls from the resolved outbound Responses body."""
+        parameters: Dict[str, Any] = {}
+        if isinstance(body.get("model"), str):
+            parameters["model"] = body["model"]
+        limit = body.get("max_output_tokens")
+        if type(limit) is int:
+            parameters["max_tokens"] = limit
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, dict) and reasoning.get("effort") in {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            parameters["reasoning_effort"] = reasoning["effort"]
+        self._last_upstream_parameters = parameters
 
     # ------------------------------------------------------------------
     # T11 entry-path audit (gateway choke points)
