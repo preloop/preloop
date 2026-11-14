@@ -71,6 +71,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.models.crud.api_usage import consistent_total_tokens
 from preloop.models.crud.runtime_session import IDLE_GENERATION_INFIX
 from preloop.models.db.gateway_session import (
     has_runtime_session_summary_columns,
@@ -11460,9 +11461,24 @@ class OpenAIGatewayService:
             or usage_details.get("output_tokens")
             or 0
         )
-        total_tokens = usage.get("total_tokens") or usage_details.get("total_tokens")
-        if not total_tokens and (prompt_tokens or completion_tokens):
-            total_tokens = prompt_tokens + completion_tokens
+        reported_totals = [
+            value
+            for value in (usage.get("total_tokens"), usage_details.get("total_tokens"))
+            if value is not None
+        ]
+        total_tokens = next((value for value in reported_totals if value), None)
+        # The stored total is never below input plus output. A provider total
+        # that is smaller, an explicit 0 included (it leaves the cached input
+        # out, or a counter was mapped wrongly), is kept in
+        # ``meta_data.usage_details`` and flagged, so the disagreement stays
+        # visible instead of reaching billing. A missing total is not flagged.
+        total_below_components = bool(reported_totals) and int(total_tokens or 0) < int(
+            prompt_tokens or 0
+        ) + int(completion_tokens or 0)
+        if prompt_tokens or completion_tokens:
+            total_tokens = consistent_total_tokens(
+                prompt_tokens, completion_tokens, total_tokens
+            )
         token_details = self._extract_token_details(usage_details)
         usage_estimated = False
         if not prompt_tokens and not completion_tokens and status_code in (200, 499):
@@ -11650,7 +11666,15 @@ class OpenAIGatewayService:
                 else None,
                 "usage_details": usage_details or None,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
-                "usage_warnings": self._usage_warnings(usage_details) or None,
+                "usage_warnings": (
+                    self._usage_warnings(usage_details)
+                    + (
+                        ["total_tokens_below_components"]
+                        if total_below_components
+                        else []
+                    )
+                )
+                or None,
                 "pricing_snapshot": {
                     **cost_estimate.pricing_snapshot,
                     "timestamp_basis": "request_start_estimated_from_duration",

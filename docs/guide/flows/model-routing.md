@@ -181,7 +181,11 @@ Account owners receive one email per rejection episode, and subscribers receive
 Preloop probes that model's stored key: success clears the mark, another auth
 rejection returns `409 model_credentials_rejected`, and an inconclusive result
 allows the run. Billing marks do not prevent runs. Unmarked models are never
-probed. See [credential health](../concepts/model-gateway.md#a-rejected-api-key-marks-its-model).
+probed. Approval and checkpoint continuations and restart recovery do not probe
+again: they continue already-admitted work. A dead key fails at the next model
+call with the ordinary upstream authentication error. Retrying a failed run
+creates a new execution and performs the pre-run check.
+See [credential health](../concepts/model-gateway.md#a-rejected-api-key-marks-its-model).
 `supports_server_side_generation` describes Preloop's own generation
 eligibility (for example summaries); it is not an executor compatibility API.
 `GET /api/v1/ai-models/{id}/owner-flow-use` reports whether the opt-in applies

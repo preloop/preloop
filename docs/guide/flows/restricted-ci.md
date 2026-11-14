@@ -373,6 +373,7 @@ upstream failure and no-result termination.
 
 A successful `/result` response adds `completion`:
 
+<!-- example: fragment -->
 ```json
 {
   "agent_finished": {"status": "SUCCEEDED", "exit_code": 0},
