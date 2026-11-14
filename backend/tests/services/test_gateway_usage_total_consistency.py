@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import pytest
+from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_ai_model, crud_api_usage
@@ -245,6 +246,28 @@ def test_recorded_row_is_consistent_for_every_provider_shape(
     assert row.reasoning_tokens == reasoning
     # The provider's own figures stay available for audit.
     assert row.meta_data["usage_details"] == upstream
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [None, {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}],
+    ids=["missing", "empty", "zero"],
+)
+def test_normal_gateway_write_without_usage_stores_zero_tokens(
+    db_session: Session, test_user: models.User, usage: dict[str, Any] | None
+) -> None:
+    """Without reported or estimated tokens, all three ledger counts are zero."""
+    row = _record(
+        db_session,
+        test_user,
+        _model(db_session, test_user),
+        client_usage=usage,
+        upstream_usage=usage,
+    )
+    assert (row.prompt_tokens, row.completion_tokens, row.total_tokens) == (0, 0, 0)
+    assert row.meta_data["usage_details"] == (usage or None)
+    assert not row.meta_data.get("usage_warnings")
+    assert row.estimated_cost is None
 
 
 def test_short_provider_total_is_flagged_not_silently_replaced(
