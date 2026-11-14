@@ -445,7 +445,7 @@ def test_repeated_failure_reports_the_first_cause_not_the_last(
         enforce_failure_streak_for_id,
     )
     from preloop.services.flow_failure_category import (
-        FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+        FAILURE_CATEGORY_MODEL_AUTH,
         derive_failure_category,
     )
 
@@ -468,7 +468,9 @@ def test_repeated_failure_reports_the_first_cause_not_the_last(
         "message": _ROUTING_404_MESSAGE,
         "request_id": "req-first",
     }
-    assert exc.message.startswith("Repeated upstream failure: 2 identical")
+    assert exc.message.startswith("Provider rejected this model's API key (HTTP 401)")
+    assert exc.category == FAILURE_CATEGORY_MODEL_AUTH
+    assert ".." not in exc.message
     assert (
         "First failure in this run (HTTP 404 from upstream provider "
         "openrouter): Upstream provider openrouter returned HTTP 404" in exc.message
@@ -477,9 +479,10 @@ def test_repeated_failure_reports_the_first_cause_not_the_last(
 
     db_session.refresh(execution)
     assert execution.error_message == exc.message
+    assert execution.failure_category == FAILURE_CATEGORY_MODEL_AUTH
     assert (
         derive_failure_category(status="FAILED", error_message=execution.error_message)
-        == FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+        == FAILURE_CATEGORY_MODEL_AUTH
     )
     from preloop.models.models import FlowExecutionLog
 

@@ -480,6 +480,58 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .all()
         )
 
+    def _check_native_result(self, db: Session, flow: Any) -> None:
+        """Validate the effective result mode, including inherited preset defaults."""
+        from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+        from preloop.services.flow_result_schema import (
+            check_native_result_schema,
+            uses_openai_strict_results,
+        )
+        from preloop.models.crud import crud_ai_model
+        from preloop.services.native_result import resolve_native_result
+
+        preset = flow if getattr(flow, "is_preset", False) else None
+        if getattr(flow, "source_preset_id", None):
+            preset = self.get(db, id=flow.source_preset_id)
+        slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", ""))
+        enabled, _ = resolve_native_result(flow, preset_slug=slug)
+        if enabled and flow.validate_result is not False and flow.result_schema:
+            from preloop.services.model_routing import (
+                parse_model_by_label,
+                parse_model_routing,
+            )
+
+            model_ids = (
+                {flow.ai_model_id}
+                if flow.agent_type == "codex" and flow.ai_model_id
+                else set()
+            )
+            routing = parse_model_routing(flow.agent_config)
+            if routing:
+                model_ids.update(
+                    rule.ai_model_id
+                    for rule in routing.rules
+                    if rule.agent_type == "codex"
+                )
+            by_label = parse_model_by_label(flow.agent_config)
+            if by_label and flow.agent_type == "codex":
+                model_ids.update(
+                    rule.ai_model_id for rule in by_label.root if rule.ai_model_id
+                )
+            config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
+            retry = config.get("retry_on_no_progress")
+            if (
+                isinstance(retry, dict)
+                and retry.get("enabled")
+                and retry.get("ai_model_id")
+            ):
+                model_ids.add(retry["ai_model_id"])
+            for model_id in model_ids:
+                model = crud_ai_model.get(db, id=model_id)
+                if model is not None and uses_openai_strict_results(model):
+                    check_native_result_schema(flow.result_schema)
+                    break
+
     def create(
         self,
         db: Session,
@@ -509,6 +561,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db_flow.account_id = (
                 str(account_id) if isinstance(account_id, UUID) else account_id
             )
+        self._check_native_result(db, db_flow)
         db.add(db_flow)
         if commit:
             db.commit()
@@ -544,6 +597,56 @@ class CRUDFlow(CRUDBase[models.Flow]):
         update_data["account_id"] = (
             str(account_id) if isinstance(account_id, UUID) else account_id
         )
+        from types import SimpleNamespace
+
+        relevant = (
+            "agent_type",
+            "agent_config",
+            "git_clone_config",
+            "result_schema",
+            "ai_model_id",
+            "validate_result",
+            "source_preset_id",
+            "is_preset",
+            "name",
+        )
+        effective = SimpleNamespace(
+            **{key: update_data.get(key, getattr(db_obj, key)) for key in relevant}
+        )
+        mode_fields = {
+            "agent_type",
+            "result_schema",
+            "ai_model_id",
+            "validate_result",
+            "source_preset_id",
+            "is_preset",
+            "git_clone_config",
+        }
+        changed_mode = any(
+            key in update_data and update_data[key] != getattr(db_obj, key)
+            for key in mode_fields
+        )
+        config_keys = (
+            "native_result",
+            "model_routing",
+            "model_by_label",
+            "retry_on_no_progress",
+        )
+        old_config = (
+            db_obj.agent_config if isinstance(db_obj.agent_config, dict) else {}
+        )
+        new_config = (
+            effective.agent_config if isinstance(effective.agent_config, dict) else {}
+        )
+        changed_mode = changed_mode or any(
+            old_config.get(key) != new_config.get(key) for key in config_keys
+        )
+        if effective.is_preset and effective.name != db_obj.name:
+            changed_mode = True
+        enabling = update_data.get("is_enabled") is True and not db_obj.is_enabled
+        # Always permit stopping a legacy flow; re-enabling validates its mode.
+        if update_data.get("is_enabled") is not False and (changed_mode or enabling):
+            self._check_native_result(db, effective)
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         db.add(db_obj)

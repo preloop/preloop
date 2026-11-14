@@ -205,8 +205,21 @@ func newCICommand(operation string) *cobra.Command {
 					return fmt.Errorf("secret file close failed after issuance; inspect metadata and revoke or replace the new credential")
 				}
 			}
+			if operation == "revoke" {
+				asJSON, _ := cmd.Flags().GetBool("json")
+				if asJSON {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
+						"status": "revoked", "principal_id": args[0], "key_id": args[1],
+					})
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Revoked CI key %s for identity %s.\n", args[1], args[0])
+				return err
+			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(ciSafeMetadata(result))
 		},
+	}
+	if operation == "revoke" {
+		cmd.Flags().Bool("json", false, "print the revocation confirmation as JSON")
 	}
 	if needsBody || operation == "issue" || operation == "rotate" {
 		cmd.Flags().StringVar(&inputPath, "input", "", "JSON request file matching the human API schema")

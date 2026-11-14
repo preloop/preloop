@@ -18948,7 +18948,9 @@ paths:
               schema: {}
         '409':
           description: A model key failed its authentication probe (model_credentials_rejected),
-            or execution conflicts with a flow admission policy.
+            or execution conflicts with a flow admission policy. Key rejections include
+            model_name, origin, provider, category, upstream_status, provider_message,
+            first_rejected_at, and key replacement instructions.
         '422':
           description: Validation Error
           content:

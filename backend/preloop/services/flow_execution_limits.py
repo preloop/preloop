@@ -818,6 +818,15 @@ class FirstFailureCause:
         return cause
 
 
+def failure_streak_category(streak: FailureStreak) -> str:
+    """Keep a deterministic provider rejection as the run's terminal cause."""
+    if streak.error_class == ERROR_CLASS_UPSTREAM_AUTH:
+        return "model_auth"
+    if streak.status_code in (400, 422):
+        return "model_config"
+    return FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE
+
+
 class RepeatedUpstreamFailureError(Exception):
     """A run's model calls kept failing identically; stop it."""
 
@@ -833,6 +842,7 @@ class RepeatedUpstreamFailureError(Exception):
         super().__init__(message)
         self.message = message
         self.streak = streak
+        self.category = failure_streak_category(streak)
         self.first_cause = first_cause
 
 
@@ -918,6 +928,16 @@ def repeated_failure_message(
         f"retrying it (limit {streak.threshold}, set "
         f"agent_config.limits.{MAX_CONSECUTIVE_IDENTICAL_FAILURES_KEY} to change it)"
     )
+    if streak.error_class == ERROR_CLASS_UPSTREAM_AUTH:
+        message = (
+            "Provider rejected this model's API key (HTTP "
+            f"{streak.status_code}). Replace the API key on the model."
+        )
+    elif failure_streak_category(streak) == "model_config":
+        message = (
+            f"Model configuration rejected by the provider (HTTP {streak.status_code}). "
+            "Check the model's structured output schema and request settings."
+        )
     if first_cause is None:
         return message
     source = f"HTTP {first_cause.status_code}"
@@ -927,7 +947,7 @@ def repeated_failure_message(
         source = f"{source} from upstream provider {first_cause.provider}"
     if first_cause.error_class:
         source = f"{first_cause.error_class}, {source}"
-    message = f"{message}. First failure in this run ({source})"
+    message = f"{message.rstrip('.')}. First failure in this run ({source})"
     if first_cause.detail:
         message = f"{message}: {first_cause.detail}"
     return message
@@ -1103,7 +1123,7 @@ def _fail_once_with_milestone(
             db,
             execution_id=execution.id,
             error_message=message,
-            failure_category=FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+            failure_category=failure_streak_category(streak),
         )
         if not moved:
             db.rollback()

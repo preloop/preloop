@@ -301,6 +301,7 @@ _CANCELLED_RE = re.compile(
 # 401 Unauthorized: Invalid authentication credentials'
 _MODEL_AUTH_RE = re.compile(
     r"invalid authentication credentials"
+    r"|provider rejected (?:the|this) model(?:\'s)? (?:API )?key"
     r"|\b401\b[^\n]{0,40}unauthorized"
     r"|authenticationerror"
     r"|rejected our credentials"
@@ -497,7 +498,18 @@ _RESUME_FAILED_RE = re.compile(
     r"|^resume_failed:"
 )
 
+_PROVIDER_SCHEMA_RE = re.compile(
+    r"invalid schema for (?:response_format|text\.format)"
+    r"|^model configuration rejected by the provider",
+    re.IGNORECASE,
+)
+_MODEL_KEY_REJECTION_RE = re.compile(
+    r"^provider rejected this model's API key", re.IGNORECASE
+)
+
 _STRUCTURAL_MESSAGE_RULES = (
+    (_PROVIDER_SCHEMA_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_MODEL_KEY_REJECTION_RE, FAILURE_CATEGORY_MODEL_AUTH),
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
     (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
     (_RESUME_FAILED_RE, FAILURE_CATEGORY_RESUME_FAILED),
