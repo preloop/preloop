@@ -340,6 +340,15 @@ class PlatformReview(BaseModel):
     status: Optional[PlatformReviewStatus] = Field(
         default=None, description="Commit status to set; omit for none"
     )
+    enabled_at: Optional[str] = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$",
+        description=(
+            "Set by the server when posting is turned on (UTC); a value sent "
+            "by a client is replaced. Runs that finished before it are not "
+            "published automatically."
+        ),
+    )
 
 
 class FollowUpFiling(BaseModel):

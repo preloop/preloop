@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud.audit_log import CRUDAuditLog
-from preloop.models.crud.ci_principal import CiAuthorizationContext, crud_ci_principal
+from preloop.models.crud.ci_principal import (
+    CiAuthorizationContext,
+    crud_ci_principal,
+    stored_binding,
+)
 from preloop.models.crud.ci_subscription import crud_ci_subscription
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
@@ -114,11 +118,7 @@ class CRUDCiAdministration:
         binding = crud_ci_principal._binding(
             db, account_id=principal.account_id, grant=grant
         )
-        if binding != (
-            principal.tracker_id,
-            principal.repository_identifier,
-            principal.repository_binding,
-        ):
+        if binding != stored_binding(principal):
             raise ValueError("CI binding changed; provision a new identity")
 
     def _authorize(
@@ -410,6 +410,7 @@ class CRUDCiAdministration:
             principal_id=principal.id,
             grant=payload.grant,
             enabled=payload.enabled,
+            extend_keys=payload.extend_keys is True,
         )
 
     def retire(

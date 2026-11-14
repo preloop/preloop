@@ -85,11 +85,12 @@ def validate_read_only_configuration(config: dict[str, Any]) -> None:
         if config.get("platform_review") is not None:
             raise ValueError("platform_review requires read_only publication mode")
         return
-    from preloop.services.platform_review import validate_platform_review_block
-
-    # The one publication block this mode accepts: the control plane posts
-    # the validated result itself; the run still gets no write credential.
-    validate_platform_review_block(config.get("platform_review"))
+    # ``platform_review`` is the one publication block this mode accepts: the
+    # control plane posts the validated result itself and the run still gets
+    # no write credential. Its shape is checked when the flow is saved and
+    # again before every publication, never here: this function also runs
+    # when a CI identity authenticates, and the flow's posting settings give
+    # an identity no authority, so they must not be able to invalidate it.
     repositories = config.get("repositories") or []
     if shared and (
         not isinstance(repositories, list)
@@ -167,9 +168,6 @@ def validate_read_only_flow(flow: Any) -> None:
     if not read_only_review(config):
         return
     validate_read_only_configuration(config)
-    from preloop.services.platform_review import validate_platform_review_flow
-
-    validate_platform_review_flow(flow)
     validate_read_only_executor(flow)
     if flow.allowed_mcp_servers or flow.allowed_mcp_tools:
         raise ValueError("Read-only review requires no MCP tools or servers")

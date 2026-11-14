@@ -41,8 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references or HTML). `POST /api/v1/flows/executions/{id}/platform-review`
   publishes a finished review again without a model run (new CI action
   `execution:review:publish`), and the execution, its result and
-  `flow.execution.finished` carry a `platform_review` record. Turning the
-  opt-in on requires provisioning the flow's CI identities again. GitHub App
+  `flow.execution.finished` carry a `platform_review` record. Existing CI
+  identities keep working when the opt-in is turned on. GitHub App
   trackers only. Adds the `platform_review_publication` table (migration
   `20261208_platform_review`). See `docs/architecture/platform-posted-review.md`.
 - restricted CI: one hosted read-only review flow can be shared by several
@@ -88,6 +88,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Checkpoint, quota, log shipping, lease cleanup, callback queueing and publication
   failures are named separately without hiding completed findings or requiring
   another model run. Required publication gates still govern flow success (#2100).
+- flows: turning `platform_review` on, changing it or turning it off no
+  longer invalidates the flow's existing CI identities. The first release of
+  platform-posted review recorded the flow's posting capabilities in each
+  identity's provisioning snapshot, so enabling posting made every existing
+  key answer 401 until new identities were provisioned. Posting is done by
+  Preloop with its own token and gives an identity no authority, so the
+  snapshot no longer includes it (a stored key from that release is
+  ignored), and posting settings are validated when the flow is saved and
+  before each publication instead of when an identity authenticates.
+  `PATCH /api/v1/ci-identities/{id}` accepts `extend_keys: true` to add the
+  actions a grant change adds (for example `execution:review:publish`) to
+  the identity's active keys in place, without rotation.
+
+- flows: the `platform_review` record no longer reports `posted` when no
+  review was posted. A run that did not succeed (or whose head moved) and
+  only received a commit status now reads `status: "status_only"` with the
+  reason and `review: "skipped"`; `posted` always means a review is on the
+  pull request.
+
+- flows: reviews posted by Preloop no longer show stray backslashes
+  (`calculator\.py`). Text from the result is neutralised with character
+  references instead of backslash escapes, so ordinary text reads as typed,
+  and file paths and identifiers marked as code are shown as code. Mentions,
+  links, issue references, HTML and commands from result text stay inert.
+
 - flows: approval and checkpoint continuations no longer re-test a model key
   rejected after the run started. Recovery also skips admission probing; a dead
   key fails at its next model call. Explicit retries still test the stored key

@@ -284,6 +284,13 @@ def _pinned_harness(agent_config: Any) -> Optional[str]:
     return harness if isinstance(harness, str) else None
 
 
+def _stamp_platform_review(git_clone_config: Any, previous: Any) -> None:
+    """Record when posting was turned on; see ``stamp_enabled_at``."""
+    from preloop.services.platform_review import stamp_enabled_at
+
+    stamp_enabled_at(git_clone_config, previous)
+
+
 def _reject_invalid_platform_review(
     db: Session,
     *,
@@ -461,6 +468,7 @@ def create_flow(
         result_schema=flow_in.result_schema,
         validate_result=flow_in.validate_result,
     )
+    _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
         agent_type=flow_in.agent_type,
         agent_config=flow_in.agent_config,
@@ -3840,6 +3848,8 @@ def update_flow(
             else flow.validate_result
         ),
     )
+
+    _stamp_platform_review(flow_in.git_clone_config, flow.git_clone_config)
 
     if flow_in.agent_config is not None:
         try:
