@@ -25,7 +25,7 @@ from preloop.api.middleware import ci_auth
 from preloop.models import crud, models
 from preloop.models.crud.base import CRUDBase
 from preloop.models.db.session import get_db_session
-from preloop.models.schemas.flow import FlowResponse
+from preloop.models.schemas.flow import FlowResponse, FlowUpdate
 from tests.api import test_ci_principal as ci_fixtures
 from tests.conftest import maybe_await
 
@@ -307,6 +307,168 @@ async def test_delete_unused_model_is_unchanged(
 
     assert response.status_code == 204
     assert crud.crud_ai_model.get(db_session, id=model.id) is None
+
+
+def _routed_config(kind: str, model_id: str) -> dict[str, Any]:
+    """Build one supported model reference without changing the default model."""
+    if kind == "routing":
+        return {
+            "model_routing": {
+                "rules": [
+                    {
+                        "id": "review",
+                        "labels": {"any": ["review"]},
+                        "ai_model_id": model_id,
+                        "agent_type": "codex",
+                    }
+                ]
+            }
+        }
+    if kind == "label":
+        return {"model_by_label": [{"label": "review", "ai_model_id": model_id}]}
+    return {"retry_on_no_progress": {"enabled": True, "ai_model_id": model_id}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["routing", "label", "retry"])
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("has_default", [True, False])
+async def test_deleted_routed_model_is_missing_until_reference_is_repaired(
+    db_session: Session,
+    ci_resources: Any,
+    kind: str,
+    enabled: bool,
+    has_default: bool,
+) -> None:
+    """Deleted routing targets warn on detail and lists without lazy queries."""
+    from sqlalchemy import event
+
+    owner, _, _, _ = ci_resources
+    retired = _model(db_session, owner.account_id, "Retired route")
+    replacement = _model(db_session, owner.account_id, "Healthy default")
+    config = _routed_config(kind, str(retired.id))
+    flow = _flow(
+        db_session,
+        owner.account_id,
+        "Routed review",
+        replacement if has_default else None,
+        agent_config=config,
+        enabled=enabled,
+    )
+    flow_id, retired_id = flow.id, retired.id
+
+    await _delete(db_session, retired, owner, force=enabled)
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    expected = {
+        "status": "missing",
+        "code": "model_deleted",
+        "model_id": str(retired_id),
+    }
+    assert row.model_health == expected
+    assert FlowResponse.model_validate(row).model_health.model_dump() == expected
+    assert row.ai_model_id == (replacement.id if has_default else None)
+    # Keep the selected policy so a missing target cannot silently fall back.
+    assert all(row.agent_config[key] == value for key, value in config.items())
+    if kind in {"routing", "label"}:
+        from preloop.services.model_routing import (
+            ModelRoutingError,
+            resolve_routing_record,
+        )
+
+        with pytest.raises(ModelRoutingError, match="not found"):
+            resolve_routing_record(db_session, row, {"payload": {"labels": ["review"]}})
+    statements: list[str] = []
+
+    def record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        statements.append(statement)
+
+    for lightweight in (False, True):
+        db_session.expire_all()
+        rows = crud.crud_flow.get_multi(
+            db_session, account_id=str(owner.account_id), lightweight=lightweight
+        )
+        row = next(item for item in rows if item.id == flow_id)
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            assert row.model_health == expected
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert statements == []
+
+    # An ordinary configuration edit repairs the reference even if it retains
+    # historical controller markers from the detail response.
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    repaired = {**row.agent_config, **_routed_config(kind, str(replacement.id))}
+    crud.crud_flow.update(
+        db_session,
+        db_obj=row,
+        flow_in=FlowUpdate(agent_config=repaired),
+        account_id=owner.account_id,
+    )
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    assert row.model_health == (
+        {"status": "ok", "code": None, "model_id": str(replacement.id)}
+        if has_default
+        else None
+    )
+
+
+@pytest.mark.asyncio
+async def test_repairing_one_deleted_model_keeps_other_missing_targets_visible(
+    db_session: Session, ci_resources: Any
+) -> None:
+    """Repair each deleted target; disabling a retry also clears its warning."""
+    owner, _, _, _ = ci_resources
+    first = _model(db_session, owner.account_id, "First route")
+    second = _model(db_session, owner.account_id, "Second route")
+    default = _model(db_session, owner.account_id, "Healthy default")
+    flow = _flow(
+        db_session,
+        owner.account_id,
+        "Multiple selections",
+        default,
+        agent_config={
+            **_routed_config("label", str(first.id)),
+            **_routed_config("retry", str(second.id)),
+        },
+    )
+    flow_id, first_id, second_id = flow.id, first.id, second.id
+    await _delete(db_session, first, owner, force=True)
+    await _delete(db_session, second, owner, force=True)
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    assert row.model_health["model_id"] == str(first_id)
+    config = {**row.agent_config, **_routed_config("label", str(default.id))}
+    crud.crud_flow.update(
+        db_session,
+        db_obj=row,
+        flow_in=FlowUpdate(agent_config=config),
+        account_id=owner.account_id,
+    )
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    assert row.model_health["model_id"] == str(second_id)
+    config = {
+        **row.agent_config,
+        "retry_on_no_progress": {"enabled": False, "ai_model_id": str(second_id)},
+    }
+    crud.crud_flow.update(
+        db_session,
+        db_obj=row,
+        flow_in=FlowUpdate(agent_config=config),
+        account_id=owner.account_id,
+    )
+    db_session.expire_all()
+    row = crud.crud_flow.get(db_session, id=flow_id)
+    assert row.model_health == {
+        "status": "ok",
+        "code": None,
+        "model_id": str(default.id),
+    }
 
 
 @pytest.mark.asyncio

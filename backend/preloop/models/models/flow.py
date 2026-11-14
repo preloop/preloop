@@ -7,10 +7,12 @@ from sqlalchemy import (  # Added JSON
     String,
     Text,
     JSON,
+    cast,
+    func,
     text,
 )
 
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH, UUID
 from sqlalchemy.orm import column_property, relationship
 
 from preloop.models.db.encrypted_types import SecretFieldsJSON
@@ -65,6 +67,21 @@ class Flow(Base):
     # list reads can flag the flow without loading the agent configuration.
     orphaned_model_id = column_property(
         agent_config.op("->")("orphaned_model").op("->>")("id")
+    )
+    # Match deleted targets against the current policy so editing/removing a
+    # reference clears its warning. Lists load only this scalar, not the JSON.
+    orphaned_routing_model_id = column_property(
+        func.jsonb_path_query_first(
+            cast(agent_config, JSONB),
+            cast(
+                "$.orphaned_model_ids[*] ? ("
+                "@ == $.model_routing.rules[*].ai_model_id || "
+                "@ == $.model_by_label[*].ai_model_id || "
+                "($.retry_on_no_progress.enabled == true && "
+                "@ == $.retry_on_no_progress.ai_model_id))",
+                JSONPATH,
+            ),
+        ).op("#>>")(cast([], ARRAY(Text)))
     )
     allowed_mcp_servers = Column(
         JSON,
@@ -219,13 +236,19 @@ class Flow(Base):
 
     @property
     def model_health(self) -> Optional[Dict[str, Optional[str]]]:
-        """Whether this flow's own model can serve a run.
+        """Report deleted configured models or the default model's credential error.
 
-        ``missing`` when a forced delete removed the model and no other model
-        was selected since; ``error`` when the model's credential failed
-        (``credentials_status: error``), with its error code; ``ok``
-        otherwise. ``None`` when the flow selects no model.
+        ``missing`` when a delete removed the default model or a still-configured
+        routing, label or enabled retry target; ``error`` when the default
+        model's credential failed (``credentials_status: error``), with its error
+        code; ``ok`` otherwise. ``None`` without a default or known missing target.
         """
+        if self.orphaned_routing_model_id:
+            return {
+                "status": "missing",
+                "code": "model_deleted",
+                "model_id": self.orphaned_routing_model_id,
+            }
         model = self.ai_model
         if model is None:
             if self.ai_model_id is None and self.orphaned_model_id:

@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- models: mark deleted routing, label and enabled retry targets as missing in
+  flow details and lists, including flows with a healthy default model. Repairing
+  each reference clears its warning; routing policy is preserved so a missing
+  target cannot silently select a different model.
+
 - flows: schema-valid native verdicts confirm completion without an additional
   status field or success marker, and supersede log-text error heuristics.
   Controller termination metadata is withheld from restricted result JSON so

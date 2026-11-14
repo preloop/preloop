@@ -104,8 +104,10 @@ class CRUDFlow(CRUDBase[models.Flow]):
 
         The database clears ``flow.ai_model_id`` when the model row goes, so
         the flow keeps ``agent_config.orphaned_model`` to say which model it
-        lost. ``Flow.model_health`` reads it while no model is selected.
-        Flushes only; the caller's delete commits.
+        lost. Deleted routing targets are also recorded, without rewriting
+        routing policy or silently falling back to another model. Health reads
+        match those ids against the current configuration, so repairing a
+        reference clears its warning. Flushes only; the caller's delete commits.
 
         Args:
             db: Database session.
@@ -114,10 +116,18 @@ class CRUDFlow(CRUDBase[models.Flow]):
         """
         marker = {"id": str(model.id), "name": model.name}
         for flow in flows:
-            if flow.ai_model_id is None or str(flow.ai_model_id) != str(model.id):
-                continue
             config = dict(flow.agent_config or {})
-            config["orphaned_model"] = marker
+            if str(flow.ai_model_id) == marker["id"]:
+                config["orphaned_model"] = marker
+            previous = config.get("orphaned_model_ids")
+            deleted_ids = (
+                [item for item in previous if isinstance(item, str)]
+                if isinstance(previous, list)
+                else []
+            )
+            config["orphaned_model_ids"] = list(
+                dict.fromkeys([*deleted_ids, marker["id"]])
+            )
             flow.agent_config = config
             db.add(flow)
         db.flush()
@@ -218,6 +228,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     # the summary's ci_only flag needs only this key.
                     self.model.publication_mode,
                     self.model.orphaned_model_id,
+                    self.model.orphaned_routing_model_id,
                     raiseload=True,
                 ),
                 joinedload(self.model.ai_model)

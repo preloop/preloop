@@ -13597,9 +13597,13 @@ paths:
 
         flows do not block it. ``force=true`` deletes anyway. Either way, each
 
-        flow that had the model as its own records which model it lost, and the
+        flow records which model it lost and reports missing health until its
 
-        audit entry names every orphaned flow, enabled or not.'
+        affected selections are repaired. Routing rules are retained to avoid
+
+        silently substituting a different model. The audit entry names every
+
+        orphaned flow, enabled or not.'
       operationId: delete_ai_model_api_v1_ai_models__model_id__delete
       security:
       - bearerAuth: []
@@ -13617,11 +13621,11 @@ paths:
         schema:
           type: boolean
           description: Delete even though flows select the model. Those flows are
-            left without a model and are named in the audit entry.
+            marked with missing model selections and named in the audit entry.
           default: false
           title: Force
-        description: Delete even though flows select the model. Those flows are left
-          without a model and are named in the audit entry.
+        description: Delete even though flows select the model. Those flows are marked
+          with missing model selections and named in the audit entry.
       responses:
         '204':
           description: Successful Response
@@ -39028,8 +39032,9 @@ components:
           - error
           - missing
           title: Status
-          description: 'missing: the model was deleted out from under the flow; error:
-            the model''s credential failed (credentials_status error)'
+          description: 'missing: a default, routing, label or enabled retry model
+            was deleted; error: the default model''s credential failed (credentials_status
+            error)'
         code:
           anyOf:
           - type: string
@@ -39045,7 +39050,8 @@ components:
       required:
       - status
       title: FlowModelHealth
-      description: Whether a flow's own model can serve a run, read from the model.
+      description: Deleted configured models or credential errors on the flow's own
+        model.
     FlowNotifications:
       properties:
         on_failure:
