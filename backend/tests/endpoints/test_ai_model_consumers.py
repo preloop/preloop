@@ -341,12 +341,13 @@ async def test_deleted_routed_model_is_missing_until_reference_is_repaired(
     has_default: bool,
 ) -> None:
     """Deleted routing targets warn on detail and lists without lazy queries."""
-    from sqlalchemy import event
+    from sqlalchemy import event, inspect
 
     owner, _, _, _ = ci_resources
     retired = _model(db_session, owner.account_id, "Retired route")
     replacement = _model(db_session, owner.account_id, "Healthy default")
     config = _routed_config(kind, str(retired.id))
+    config["private_configuration"] = "x" * 100_000
     flow = _flow(
         db_session,
         owner.account_id,
@@ -389,6 +390,8 @@ async def test_deleted_routed_model_is_missing_until_reference_is_repaired(
             db_session, account_id=str(owner.account_id), lightweight=lightweight
         )
         row = next(item for item in rows if item.id == flow_id)
+        if lightweight:
+            assert "agent_config" in inspect(row).unloaded
         engine = db_session.get_bind()
         event.listen(engine, "before_cursor_execute", record)
         try:

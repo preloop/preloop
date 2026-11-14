@@ -69,16 +69,27 @@ class Flow(Base):
         agent_config.op("->")("orphaned_model").op("->>")("id")
     )
     # Match deleted targets against the current policy so editing/removing a
-    # reference clears its warning. Lists load only this scalar, not the JSON.
+    # reference clears its warning. Build only the selection fields as JSONB;
+    # never cast the whole agent configuration (which can contain large payloads).
+    # Lists load only the resulting scalar.
     orphaned_routing_model_id = column_property(
         func.jsonb_path_query_first(
-            cast(agent_config, JSONB),
+            func.jsonb_build_object(
+                "deleted",
+                agent_config.op("->")("orphaned_model_ids"),
+                "routed",
+                agent_config.op("->")("model_routing").op("->")("rules"),
+                "labels",
+                agent_config.op("->")("model_by_label"),
+                "retry_enabled",
+                agent_config.op("->")("retry_on_no_progress").op("->")("enabled"),
+                "retry_id",
+                agent_config.op("->")("retry_on_no_progress").op("->")("ai_model_id"),
+            ),
             cast(
-                "$.orphaned_model_ids[*] ? ("
-                "@ == $.model_routing.rules[*].ai_model_id || "
-                "@ == $.model_by_label[*].ai_model_id || "
-                "($.retry_on_no_progress.enabled == true && "
-                "@ == $.retry_on_no_progress.ai_model_id))",
+                "$.deleted[*] ? ("
+                "@ == $.routed[*].ai_model_id || @ == $.labels[*].ai_model_id || "
+                "($.retry_enabled == true && @ == $.retry_id))",
                 JSONPATH,
             ),
         ).op("#>>")(cast([], ARRAY(Text)))
