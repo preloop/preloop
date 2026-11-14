@@ -877,7 +877,53 @@ write token, and you need no publisher workflow. Design and threat model:
 
 It is off by default. Turn it on with `git_clone_config.platform_review` on a
 flow that has `publication_mode: "read_only"`, `validate_result: true` and a
-`result_schema`. It works with and without `ci_project_selection`.
+`result_schema`. It works with and without `ci_project_selection`. Enabling it
+needs no new CI identities.
+
+### Turn it on in the console
+
+Open the flow. Read-only review flows show a **Post review on the pull
+request** card under the publication policy:
+
+1. **What it needs** lists the prerequisites as checks: the flow is a
+   read-only review, result validation is on, the result schema has a
+   required `verdict` with fixed values, the flow names its repositories,
+   and every repository is connected through a GitHub App (not a personal
+   access token, not GitLab). A failed check states the exact reason. The
+   GitHub App permissions (**Pull requests: Read and write**, **Commit
+   statuses: Read and write**) cannot be read from Preloop, so the card asks
+   you to confirm them in GitHub.
+2. Switch on **Post the review on the pull request**.
+3. To set a commit status, tick **Set a commit status for each verdict** and
+   choose Success, Failure or Error for every verdict of your schema. Keep
+   the status name (`preloop/review` by default) stable if a branch
+   protection rule requires it. Optionally choose what to set when a run
+   stops, fails or returns no valid result.
+4. **Save**. The card refuses a save the server would refuse and says why;
+   a refusal from the server is shown as it was returned.
+
+Users who may not edit flows see the card read-only.
+
+### Turn it on with the CLI
+
+```sh
+preloop flow review-posting show pull-request-reviewer
+preloop flow review-posting enable pull-request-reviewer \
+  --state pass=success --state fail=failure --incomplete-state error
+preloop flow review-posting enable pull-request-reviewer --no-status   # review only
+preloop flow review-posting set-states pull-request-reviewer --state fail=error
+preloop flow review-posting set-states pull-request-reviewer --status-context ci/review
+preloop flow review-posting disable pull-request-reviewer              # keeps the mapping
+```
+
+`show` prints whether posting is on, the verdict mapping and the
+prerequisites it can read from the flow. `enable` and `set-states` refuse,
+before saving, a verdict that is not in the schema or a schema verdict
+without a state. Each write changes only `git_clone_config.platform_review`.
+Every command takes `--json`. The commands use your saved login or
+`PRELOOP_TOKEN`.
+
+### The same in JSON
 
 <!-- example: fragment -->
 ```json
@@ -976,6 +1022,21 @@ not opted in):
 }
 ```
 
+On `GET /api/v1/flows/executions/{id}` for an account user the record also
+carries `pull_request_url`, `review_url` and `commit_url` (the commit that
+holds the status), built from the execution's own repository, pull request
+and reviewed commit. Each is `null` until there is something to link to.
+
+In the console the execution page shows the record under **Posted on the
+pull request**: posted, skipped (for example because the head moved) or
+failed with the reason in words, such as a missing **Commit statuses**
+permission, with links to the review, the status and the pull request. From
+the CLI:
+
+```sh
+preloop flow review-posting status <execution-id>          # add --json for the record
+```
+
 `status` is `pending` (not attempted yet), `publishing`, `posted`, `skipped`
 (the rules decided nothing is posted) or `failed`. A posting failure never
 changes the execution's status or result. `reason` values include
@@ -992,6 +1053,14 @@ transient failures by itself, up to six attempts with growing delays.
 curl -fsS -X POST \
   -H "Authorization: Bearer $PRELOOP_CI_KEY" \
   "$PRELOOP_URL/api/v1/flows/executions/$EXECUTION_ID/platform-review"
+```
+
+In the console, **Publish again** on the execution page makes the same call.
+It is shown to users who may edit flows, once the run has finished and while
+something is left to post. From the CLI:
+
+```sh
+preloop flow review-posting publish <execution-id>
 ```
 
 The call takes no body. It publishes the stored, validated result of that

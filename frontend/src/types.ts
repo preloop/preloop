@@ -1,3 +1,4 @@
+import type { PlatformReviewConfig } from './utils/platform-review';
 export interface GitCloneRepository {
   /** Dedicated project binding returned by hosted restricted CI flows. */
   project_id?: string;
@@ -24,6 +25,11 @@ export interface GitCloneConfig {
    * restricted CI identity selects just its own project's repository.
    */
   ci_project_selection?: boolean;
+  /**
+   * Read-only review only: Preloop posts the validated result as a pull
+   * request review and a commit status (see utils/platform-review.ts).
+   */
+  platform_review?: PlatformReviewConfig | null;
 }
 
 export interface FlowCustomCommands {

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: console and CLI for the review and status Preloop posts on the pull
+  request. Read-only review flows get a **Post review on the pull request**
+  card on the flow page: turn posting on or off, map each verdict to a commit
+  status, and read the prerequisites as checks with the reason when one is
+  missing. The execution page shows the publication record (posted, skipped,
+  failed with the reason) with links to the review, the status and the pull
+  request, and offers **Publish again** to users who may edit flows. New
+  `preloop flow review-posting show|enable|set-states|disable|status|publish`.
+  `GET /api/v1/flows/executions/{id}` now also returns `platform_review` for
+  account users, with `pull_request_url`, `review_url` and `commit_url`
+  (read-only addition).
 - flows: a read-only review flow can have Preloop post the result itself.
   With `git_clone_config.platform_review` (off by default, valid only with
   `publication_mode: read_only`, `validate_result` and a `result_schema` that
