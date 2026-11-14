@@ -172,7 +172,7 @@ def check_native_result_schema(schema: Any) -> None:
                     target = target[part]
             if reference != "#" and not reference.startswith("#/"):
                 raise KeyError(reference)
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ResultSchemaError(
                 f"result_schema at {path}: unresolved reference"
             ) from exc

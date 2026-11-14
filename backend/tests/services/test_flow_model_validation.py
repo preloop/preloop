@@ -611,3 +611,17 @@ def test_source_review_preset_enables_strict_validation(
             ),
             account_id=test_user.account_id,
         )
+
+
+def test_overlong_array_reference_returns_schema_validation_error() -> None:
+    """An index beyond Python's integer limit stays an actionable schema error."""
+    schema = deepcopy(STRICT_SCHEMA)
+    schema["properties"]["findings"]["items"] = {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    schema["properties"]["tag"] = {
+        "$ref": "#/properties/findings/items/anyOf/" + "9" * 5000
+    }
+    schema["required"].append("tag")
+    with pytest.raises(ResultSchemaError, match="unresolved reference"):
+        check_native_result_schema(schema)
