@@ -237,7 +237,10 @@ def test_workspace_reclaim_runs_before_checkout_on_self_hosted_only() -> None:
     probe, so a VM without passwordless sudo falls back to docker."""
     steps = load_ci_jobs()["test-backend"]["steps"]
     assert steps[0].get("name") == RECLAIM_STEP
-    assert "actions/checkout@" in steps[1].get("uses", "")
+    checkout_index = next(
+        i for i, step in enumerate(steps) if "actions/checkout@" in step.get("uses", "")
+    )
+    assert checkout_index > 0
     reclaim = steps[0]
     assert reclaim.get("if") == "runner.environment == 'self-hosted'"
     script = reclaim["run"]
