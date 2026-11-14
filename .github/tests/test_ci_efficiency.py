@@ -16,18 +16,28 @@ def workflow(name: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    "first,retryable,retry,expected",
+    "first,retryable,retry,windows,paths_result,expected",
     [
-        ("success", "false", "skipped", 0),
-        ("success", "true", "success", 0),
-        ("success", "true", "failure", 1),
-        ("success", "true", "skipped", 1),
-        ("failure", "false", "skipped", 1),
-        ("success", "", "skipped", 1),
+        ("success", "false", "skipped", "true", "success", 0),
+        ("success", "true", "success", "true", "success", 0),
+        ("success", "true", "failure", "true", "success", 1),
+        ("success", "true", "skipped", "true", "success", 1),
+        ("failure", "false", "skipped", "true", "success", 1),
+        ("success", "", "skipped", "true", "success", 1),
+        ("skipped", "", "skipped", "false", "success", 0),
+        ("skipped", "", "skipped", "", "success", 1),
+        ("skipped", "", "skipped", "unknown", "success", 1),
+        ("skipped", "", "skipped", "false", "failure", 1),
+        ("success", "false", "skipped", "true", "failure", 1),
     ],
 )
 def test_windows_gate_never_accepts_missing_validation(
-    first: str, retryable: str, retry: str, expected: int
+    first: str,
+    retryable: str,
+    retry: str,
+    windows: str,
+    paths_result: str,
+    expected: int,
 ) -> None:
     """A fresh-runner retry must complete the same tests and actual scan."""
     job = workflow("windows-security.yml")["jobs"]["windows-security-tests"]
@@ -35,8 +45,8 @@ def test_windows_gate_never_accepts_missing_validation(
         ["bash", "-eo", "pipefail", "-c", job["steps"][0]["run"]],
         env={
             **os.environ,
-            "PATHS_RESULT": "success",
-            "WINDOWS": "true",
+            "PATHS_RESULT": paths_result,
+            "WINDOWS": windows,
             "FIRST": first,
             "RETRYABLE": retryable,
             "RETRY": retry,
@@ -63,6 +73,17 @@ def test_cleanup_removes_only_its_own_temporary_environments(tmp_path: Path) -> 
         if step.get("name", "").startswith("Remove ")
     ]
     assert len(steps) == 2
+    all_steps = jobs["test-backend"]["steps"]
+    positions = {step.get("name"): i for i, step in enumerate(all_steps)}
+    checkout = next(
+        i
+        for i, step in enumerate(all_steps)
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+    assert positions["Remove abandoned job environments"] < checkout
+    completed = positions["Remove completed job environments"]
+    assert positions["Upload coverage data"] < completed
+    assert positions["Upload test results"] < completed
     for step in steps:
         for name in ("preloop-deps", "preloop-python"):
             (own / name).mkdir()

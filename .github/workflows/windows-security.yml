@@ -105,7 +105,8 @@ jobs:
           RETRY: ${{ needs.windows-retry.result }}
         run: |
           test "$PATHS_RESULT" = success
-          if [ "$WINDOWS" != true ]; then exit 0; fi
+          if [ "$WINDOWS" = false ]; then exit 0; fi
+          test "$WINDOWS" = true
           test "$FIRST" = success
           if [ "$RETRYABLE" = true ]; then
             test "$RETRY" = success
