@@ -2380,10 +2380,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """
         if not roots and not root_texts:
             return []
-        from preloop.models.crud.api_usage import (
-            exclude_replay_usage_condition,
-            reported_total_tokens,
-        )
+        from preloop.models.crud.api_usage import exclude_replay_usage_condition
         from preloop.models.models.api_usage import ApiUsage
 
         resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
@@ -2415,7 +2412,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         usage = (
             select(
                 func.count(ApiUsage.id).label("requests"),
-                func.coalesce(func.sum(reported_total_tokens()), 0).label("tokens"),
+                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
                 func.round(cast(func.sum(ApiUsage.estimated_cost), Numeric), 4).label(
                     "cost"
                 ),
@@ -2507,7 +2504,6 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             cache_split_columns,
             cache_split_from_row,
             exclude_replay_usage_condition,
-            reported_total_tokens,
         )
         from preloop.models.models.api_usage import ApiUsage
         from preloop.services.flow_failure_category import FAILURE_STATUSES
@@ -2553,7 +2549,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                         "completion_tokens"
                     ),
-                    func.coalesce(func.sum(reported_total_tokens()), 0).label(
+                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
                         "total_tokens"
                     ),
                     *cache_split_columns(),
@@ -2627,7 +2623,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
                         "completion_tokens"
                     ),
-                    func.coalesce(func.sum(reported_total_tokens()), 0).label(
+                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
                         "total_tokens"
                     ),
                     *cache_split_columns(),
