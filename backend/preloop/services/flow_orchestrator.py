@@ -1313,6 +1313,34 @@ class FlowExecutionOrchestrator:
             return
         if not self._agent_exec_started and line == read_only_startup_line(commit):
             self._read_only_startup_seen = True
+        if not self._agent_exec_started:
+            from preloop.services.review_diff import parse_diff_line
+
+            binding = getattr(self.execution_log, "ci_review_binding", None)
+            base = binding.get("base_sha") if isinstance(binding, dict) else None
+            diff = parse_diff_line(line, base, commit)
+            if diff is not None and not hasattr(self, "_review_diff"):
+                self._review_diff = diff
+            phase = line.removeprefix("PRELOOP_REVIEW_PHASE ")
+            if line.startswith("PRELOOP_REVIEW_PHASE ") and phase in {
+                "clone_started",
+                "clone_finished",
+                "setup_started",
+                "setup_finished",
+            }:
+                phases = getattr(self, "_review_phases", {})
+                phases.setdefault(phase, datetime.now(timezone.utc).isoformat())
+                self._review_phases = phases
+                if self.execution_log is not None:
+                    try:
+                        crud_flow_execution.record_startup_receipt(
+                            self.db,
+                            execution_id=self.execution_log.id,
+                            receipt={"_phases": phases},
+                        )
+                    except Exception:
+                        self.db.rollback()
+                        logger.warning("Could not store startup phase boundary")
 
     def _record_read_only_startup(self) -> None:
         """Persist the startup receipt once the agent start is observed."""
@@ -1331,6 +1359,17 @@ class FlowExecutionOrchestrator:
             agent_started_at=datetime.now(timezone.utc).isoformat(),
             agent_cli=getattr(self, "_agent_cli", None),
         )
+        self._startup_receipt.update(
+            getattr(
+                self,
+                "_review_diff",
+                {
+                    "diff": None,
+                    "diff_unavailable_reason": "not_recorded",
+                },
+            )
+        )
+        self._startup_receipt["_phases"] = getattr(self, "_review_phases", {})
         self._persist_startup_receipt()
 
     def _persist_startup_receipt(self, **changes: Any) -> None:
@@ -1380,6 +1419,7 @@ class FlowExecutionOrchestrator:
                         await revoke_repository_lease(lease, client)
                         revoked += 1
                     except PublicationError:
+                        self._record_post_result_failure("lease_revocation")
                         logger.warning(
                             "Read-only review lease revocation failed; expiry remains enforced"
                         )
@@ -5028,65 +5068,150 @@ class FlowExecutionOrchestrator:
         )
 
         artifact: Optional[Dict[str, Any]] = None
+        persisted: Optional[Dict[str, Any]] = None
+
+        def accept(document: Any) -> None:
+            nonlocal artifact, persisted
+            artifact = sanitize_captured_result(document)
+            if artifact is None:
+                return
+            if getattr(self, "_read_only_admitted_commit", None):
+                from preloop.services.read_only_review import HOST_READ_ONLY_RESULT_KEY
+
+                artifact.pop(HOST_READ_ONLY_RESULT_KEY, None)
+            persisted = self._persist_cra_result_boundary(
+                artifact, session_reference=session_reference
+            )
+            previous_validation = getattr(self, "_captured_validation", None)
+            self._check_result_schema(artifact)
+            if (
+                isinstance(previous_validation, dict)
+                and previous_validation.get("valid") is True
+                and isinstance(self._result_schema_validation, dict)
+                and self._result_schema_validation.get("valid") is False
+            ):
+                # A later failure envelope cannot replace completed findings.
+                persisted = self._captured_result
+                self._result_schema_validation = previous_validation
+                self._record_post_result_failure("finalization")
+                return
+            if persisted is not None:
+                self._store_captured_result(persisted)
 
         async def collect() -> None:
-            nonlocal artifact
-            # Normal terminal capture retains its original ordering. Timeout
-            # cleanup prioritizes the small result so a slow snapshot/evidence
-            # transfer cannot discard a document already available to read.
-            if timeout_seconds is None:
-                await self._capture_evidence_archive(agent_executor, session_reference)
-                await self._capture_workspace_snapshot(
-                    agent_executor, session_reference
-                )
             getter = getattr(agent_executor, "get_result_artifact", None)
             if callable(getter):
                 try:
                     captured = await getter(session_reference)
-                except Exception as e:
-                    logger.warning(f"Failed to capture result artifact: {e}")
-                    captured = None
-                if isinstance(captured, dict):
-                    artifact = captured
-            if timeout_seconds is not None:
+                except Exception:
+                    logger.warning("Failed to read result artifact")
+                else:
+                    # Commit before any bulk transfer, checkpoint or cleanup.
+                    accept(captured)
+            try:
                 await self._capture_evidence_archive(agent_executor, session_reference)
-            if not isinstance(artifact, dict):
+            except Exception:
+                if getattr(self, "db", None) is not None:
+                    self.db.rollback()
+                self._record_post_result_failure("artifact_capture")
+                raise
+            receipt = getattr(self, "_evidence_receipt", None)
+            if isinstance(receipt, dict) and receipt.get("status") == "failed":
+                error = receipt.get("error")
+                self._record_post_result_failure(
+                    "artifact_quota"
+                    if isinstance(error, str) and "artifact_quota_exceeded" in error
+                    else "artifact_capture"
+                )
+            if persisted is None:
                 archive = await self._evidence_bytes_for_result_extract()
                 if archive:
-                    artifact = extract_result_json(archive)
-            if timeout_seconds is not None:
+                    accept(extract_result_json(archive))
+            try:
                 await self._capture_workspace_snapshot(
                     agent_executor, session_reference
                 )
+            except Exception:
+                if getattr(self, "db", None) is not None:
+                    self.db.rollback()
+                self._record_post_result_failure("checkpoint_upload")
+                raise
 
-        if timeout_seconds is None:
-            await collect()
-        else:
-            try:
+        try:
+            if timeout_seconds is None:
+                await collect()
+            else:
                 await asyncio.wait_for(collect(), timeout=timeout_seconds)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Timed-out execution artifact capture exceeded cleanup bound"
-                )
-            except Exception as capture_error:
-                logger.warning(
-                    "Timed-out execution artifact capture failed (%s)",
-                    type(capture_error).__name__,
-                )
-        # Keep validation outside the cancellable transfers. A document read
-        # before a later transfer stalled still goes through the same boundary.
-        sanitized = sanitize_captured_result(artifact)
-        if sanitized is not None and getattr(self, "_read_only_admitted_commit", None):
-            # A hosted review's result.json is agent-authored; only a private
-            # runner completion may carry the runner's read-only receipt.
-            from preloop.services.read_only_review import HOST_READ_ONLY_RESULT_KEY
-
-            sanitized.pop(HOST_READ_ONLY_RESULT_KEY, None)
-        persisted = self._persist_cra_result_boundary(
-            sanitized, session_reference=session_reference
-        )
-        self._check_result_schema(sanitized)
+        except asyncio.TimeoutError:
+            self._record_post_result_failure("artifact_capture")
+            if timeout_seconds is None:
+                raise
+            logger.warning("Artifact capture exceeded cleanup bound")
+        except Exception:
+            if timeout_seconds is None:
+                raise
+            logger.warning("Timed-out execution artifact capture failed")
+        # Cancellation and storage failures propagate. A completed durable
+        # write nevertheless remains readable after the controller recovers.
+        if persisted is None:
+            validation = getattr(self, "_result_schema_validation", None)
+            if isinstance(validation, dict) and validation.get("valid") is True:
+                persisted = getattr(self, "_captured_result", None)
+            if persisted is None:
+                self._check_result_schema(None)
         return persisted
+
+    def _record_completion(self, **facts: Any) -> None:
+        """Persist controller facts without changing execution outcome."""
+        if getattr(self, "execution_log", None) is None:
+            return
+        try:
+            crud_flow_execution.record_completion_evidence(
+                self.db, execution_id=self.execution_log.id, facts=facts
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("Could not store completion evidence")
+
+    def _store_captured_result(self, document: Dict[str, Any]) -> None:
+        """Commit a captured document before optional transfers and publication."""
+        from preloop.services.native_result import resolve_native_result
+
+        self._captured_result = document
+        self._captured_validation = getattr(self, "_result_schema_validation", None)
+        if getattr(self, "execution_log", None) is None:
+            return
+        native = getattr(self, "_native_result_effective", None)
+        if native is None:
+            native, _ = resolve_native_result(getattr(self, "flow", None))
+        try:
+            crud_flow_execution.record_completion_evidence(
+                self.db,
+                execution_id=self.execution_log.id,
+                facts={
+                    "capture_state": "captured",
+                    "result_source": "native_structured_result" if native else "file",
+                    "result_captured_at": datetime.now(timezone.utc).isoformat(),
+                },
+                result=document,
+                validation=getattr(self, "_result_schema_validation", None),
+            )
+        except Exception:
+            # Keep the in-memory document for the terminal write to retry.
+            self.db.rollback()
+            logger.warning("Could not persist captured result before finalization")
+
+    def _record_post_result_failure(self, failure: str) -> None:
+        """Name a later failure without copying exception text or losing a result."""
+        from preloop.services.review_completion_evidence import POST_RESULT_FAILURES
+
+        if failure not in POST_RESULT_FAILURES:
+            raise ValueError("Unsupported post-result failure")
+        result = getattr(self, "_captured_result", None)
+        if result is None:
+            result = getattr(getattr(self, "execution_log", None), "result", None)
+        if isinstance(result, dict):
+            self._record_completion(post_result_failures=[failure])
 
     def _persist_merged_artifact(
         self,
@@ -5113,6 +5238,8 @@ class FlowExecutionOrchestrator:
             artifact, session_reference=session_reference
         )
         self._check_result_schema(artifact)
+        if persisted is not None:
+            self._store_captured_result(persisted)
         return persisted
 
     def _check_result_schema(self, document: Optional[Dict[str, Any]]) -> None:
@@ -5698,6 +5825,7 @@ class FlowExecutionOrchestrator:
             snapshot = await getter(session_reference)
         except Exception as e:
             logger.warning(f"Failed to capture workspace snapshot: {e}")
+            self._record_post_result_failure("checkpoint_upload")
             return
         if not isinstance(snapshot, (bytes, bytearray)) or not snapshot:
             return
@@ -5725,6 +5853,7 @@ class FlowExecutionOrchestrator:
             logs = await getter(session_reference, tail=None)
         except Exception as e:
             logger.warning(f"Post-exit log refetch failed: {_exception_message(e)}")
+            self._record_post_result_failure("log_shipping")
             return []
         if not isinstance(logs, list):
             return []
@@ -8587,6 +8716,16 @@ class FlowExecutionOrchestrator:
                     )
                     result = await agent_executor.get_result(session_reference)
 
+                    self._record_completion(
+                        agent_finished={
+                            "status": AgentStatus.SUCCEEDED.value
+                            if getattr(result, "log_failure_override", False) is True
+                            else result.status.value,
+                            "exit_code": result.exit_code,
+                        },
+                        finalization_started_at=datetime.now(timezone.utc).isoformat(),
+                    )
+
                     self.execution_logger.log_milestone(
                         "agent_execution_completed",
                         {
@@ -8610,6 +8749,24 @@ class FlowExecutionOrchestrator:
                     artifact_confirmation = _result_artifact_confirmation(
                         result_artifact
                     )
+                    validation = getattr(self, "_result_schema_validation", None)
+                    native_valid = (
+                        getattr(self, "_native_result_effective", False) is True
+                        and isinstance(result_artifact, dict)
+                        and isinstance(validation, dict)
+                        and validation.get("valid") is True
+                    )
+                    if (
+                        artifact_confirmation is None
+                        and native_valid
+                        and isinstance(result_artifact, dict)
+                        and str(result_artifact.get("status", "")).strip().lower()
+                        not in RESULT_ARTIFACT_INCOMPLETE_STATUSES
+                    ):
+                        # Native schemas define the verdict shape. Requiring
+                        # an additional status field or printed marker defeats
+                        # that contract; request-changes is also a completed review.
+                        artifact_confirmation = "success"
 
                     # Positive-confirmation contract (fail-closed):
                     # Exit code 0 is NEVER sufficient for success — agent CLIs
@@ -8626,6 +8783,17 @@ class FlowExecutionOrchestrator:
                     # any output), the sentinel's absence is not meaningful.
                     final_status = result.status.value
                     error_message = result.error_message
+                    if (
+                        native_valid
+                        and artifact_confirmation == "success"
+                        and getattr(result, "log_failure_override", False) is True
+                    ):
+                        final_status = "SUCCEEDED"
+                        error_message = None
+                        self.execution_logger.log_milestone(
+                            "native_result_superseded_log_heuristic",
+                            {"exit_code": result.exit_code},
+                        )
 
                     if (
                         result.status == AgentStatus.SUCCEEDED
@@ -8835,6 +9003,9 @@ class FlowExecutionOrchestrator:
             # short cleanup bound, and always stop even if capture fails or
             # this monitor is canceled. The execution still failed its budget.
             try:
+                self._record_completion(
+                    finalization_started_at=datetime.now(timezone.utc).isoformat()
+                )
                 result_artifact = await self._capture_result_artifact(
                     agent_executor,
                     session_reference,
@@ -9015,6 +9186,17 @@ class FlowExecutionOrchestrator:
         """
         logger.info(f"Updating execution log to status: {status}")
 
+        captured = getattr(self, "_captured_result", None)
+        if isinstance(captured, dict) and (
+            ("result" in kwargs and kwargs["result"] is None)
+            or (
+                status in TERMINAL_EXECUTION_STATUSES
+                and getattr(self.execution_log, "result", None) is None
+            )
+        ):
+            kwargs["result"] = captured
+            kwargs["result_schema_validation"] = self._result_schema_validation
+
         if self.execution_log is not None and status is not None:
             status = self._guard_status_write(status, kwargs)
 
@@ -9068,6 +9250,15 @@ class FlowExecutionOrchestrator:
                 f"total_tokens={update_dict.get('total_tokens')}, estimated_cost={update_dict.get('estimated_cost')}"
             )
 
+        if status in TERMINAL_EXECUTION_STATUSES and self.execution_log is not None:
+            crud_flow_execution.settle_result_capture(
+                self.db,
+                execution_id=self.execution_log.id,
+                captured=isinstance(getattr(self, "_captured_result", None), dict),
+                source="native_structured_result"
+                if getattr(self, "_native_result_effective", False)
+                else "file",
+            )
         updated_log = crud_flow_execution.update(
             self.db, db_obj=self.execution_log, obj_in=update_data
         )
@@ -9100,7 +9291,12 @@ class FlowExecutionOrchestrator:
         status_payload = dict(serializable_kwargs)
         if status is not None:
             status_payload["status"] = status
-        await self._publish_update("status_update", status_payload)
+        try:
+            await self._publish_update("status_update", status_payload)
+        except Exception:
+            self.db.rollback()
+            self._record_post_result_failure("log_shipping")
+            logger.warning("Could not publish the persisted execution status")
 
         logger.debug(f"Execution log updated: status={status}")
         return status
@@ -9238,6 +9434,10 @@ class FlowExecutionOrchestrator:
         """
         if self.execution_log is None:
             return
+        crud_flow_execution.settle_result_capture(
+            self.db, execution_id=self.execution_log.id
+        )
+        self.db.commit()
         try:
             self.db.refresh(self.execution_log)
         except Exception:  # pragma: no cover - detached row
@@ -9248,6 +9448,9 @@ class FlowExecutionOrchestrator:
                 self.db, execution_id=self.execution_log.id
             )
         status = getattr(self.execution_log, "status", None) or "STOPPED"
+        self._emit_execution_finished_webhook(
+            status, getattr(self.execution_log, "failure_category", None)
+        )
         await self._publish_update("status_update", {"status": status})
         self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
         await self._update_commit_status(
@@ -9323,6 +9526,7 @@ class FlowExecutionOrchestrator:
                 timeout=90,
             )
         except Exception:
+            self._record_post_result_failure("publication")
             logger.exception(
                 "Platform review publication failed for execution %s",
                 getattr(self.execution_log, "id", "unknown"),
@@ -9341,7 +9545,7 @@ class FlowExecutionOrchestrator:
                 emit_flow_execution_finished,
             )
 
-            emit_flow_execution_finished(
+            enqueued = emit_flow_execution_finished(
                 self.db,
                 self.execution_log,
                 self.flow,
@@ -9349,14 +9553,24 @@ class FlowExecutionOrchestrator:
                 failure_category=failure_category
                 or getattr(self.execution_log, "failure_category", None),
             )
+            if enqueued is not None and enqueued.failed is True:
+                raise RuntimeError("Completion event enqueue failed")
             # CRA Article 14 candidates ride the same commit. A 24 hour
             # deadline that only exists inside an evidence pack nobody opened
             # is not a notification.
             emit_cra_reportable_vulnerabilities(self.db, self.execution_log, self.flow)
             self.db.commit()
+            if (
+                enqueued is not None
+                and type(enqueued.skipped_queue_full) is int
+                and enqueued.skipped_queue_full > 0
+            ):
+                self._record_post_result_failure("completion_event_queueing")
         except Exception:
             # Completion still stands; the lost event is reported at error
             # level so it reaches the error tracker instead of a debug log.
+            self.db.rollback()
+            self._record_post_result_failure("completion_event_queueing")
             logger.error(
                 "Failed to queue flow.execution.finished webhook for %s",
                 getattr(self.execution_log, "id", "unknown"),
@@ -9813,6 +10027,9 @@ class FlowExecutionOrchestrator:
         push or pull request. A wrong retry is worse than no retry.
         """
         status = agent_result.get("status")
+        validation = getattr(self, "_captured_validation", None)
+        if isinstance(validation, dict) and validation.get("valid") is True:
+            return "a validated result is already captured; recover later steps without rerunning"
         if status != "FAILED":
             # STOPPED (user requested) and SUCCEEDED are never retried.
             # The status value itself stays out of the log: agent results are
@@ -10823,6 +11040,10 @@ class FlowExecutionOrchestrator:
                 # Stages 4 and 5: start the agent and monitor it, retrying the
                 # whole attempt when the upstream model provider failed in a
                 # way that another attempt could plausibly survive.
+                from preloop.services.review_completion_evidence import completion_facts
+
+                if not completion_facts(self.execution_log).get("result_captured_at"):
+                    self._record_completion(capture_state="pending")
                 agent_result, session_reference = await self._run_agent_with_retries(
                     execution_context
                 )
@@ -10830,7 +11051,9 @@ class FlowExecutionOrchestrator:
                 # Fold private-runner logs before terminal binding. Isolated
                 # publication still ignores agent-controlled PR markers.
                 await self._replay_persisted_runner_logs()
+                self._finalization_step = "publication"
                 await self._finish_isolated_publication(agent_result)
+                self._finalization_step = "finalization"
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")
@@ -10965,6 +11188,7 @@ class FlowExecutionOrchestrator:
                     # it would be silently dropped — narrow this recovery
                     # (expire + rebind the execution row) instead.
                     self.db.rollback()
+                    self._record_post_result_failure("artifact_storage")
                     try:
                         crud_flow_execution.set_evidence_receipt(
                             self.db,
@@ -10983,8 +11207,11 @@ class FlowExecutionOrchestrator:
 
             # Managed host publication (#1069): the runner pushed the branch;
             # the control plane opens and binds the pull request.
+            self._finalization_step = "publication"
             host_publication_error = await self._open_host_published_pr(final_status)
+            self._finalization_step = "finalization"
             if host_publication_error is not None:
+                self._record_post_result_failure("publication")
                 final_status = "FAILED"
                 agent_result = {
                     **agent_result,
@@ -11083,6 +11310,7 @@ class FlowExecutionOrchestrator:
                 final_status, merged_result
             )
             if missing_publication is not None:
+                self._record_post_result_failure("publication")
                 final_status = "FAILED"
                 agent_result = {
                     **agent_result,
@@ -11231,6 +11459,10 @@ class FlowExecutionOrchestrator:
                 f"Flow execution {self.execution_log.id if self.execution_log else 'unknown'} failed: {e}",
                 exc_info=True,
             )
+            self.db.rollback()
+            self._record_post_result_failure(
+                getattr(self, "_finalization_step", "finalization")
+            )
 
             # Update commit status to failure
             await self._update_commit_status(
@@ -11269,6 +11501,8 @@ class FlowExecutionOrchestrator:
                         error_message=str(e),
                         exception=e,
                     )
+                    if getattr(self, "_finalization_step", None) == "publication":
+                        exception_category = FAILURE_CATEGORY_PUBLICATION_MISSING
                     await self._update_execution_log(
                         status="FAILED",
                         error_message=str(e),
@@ -11295,6 +11529,13 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            await self._revoke_read_only_review_leases()
+            try:
+                await self._revoke_read_only_review_leases()
+            except Exception:
+                self.db.rollback()
+                self._record_post_result_failure("lease_revocation")
+                logger.warning(
+                    "Read-only lease cleanup failed; provider expiry remains"
+                )
             # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

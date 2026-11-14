@@ -394,9 +394,20 @@ async def test_native_result_persists_and_owned_callback_remains_available(
             ).status_code
             == 401
         )
+        captured = await orch._capture_result_artifact(
+            SimpleNamespace(
+                get_result_artifact=AsyncMock(
+                    return_value=json.loads(result_file.read_text())
+                ),
+                get_evidence_archive=None,
+                get_workspace_snapshot=None,
+                evidence_transport_error=None,
+            ),
+            "local-stand-in",
+        )
         return {
             "status": "SUCCEEDED",
-            "result": json.loads(result_file.read_text()),
+            "result": captured,
             "output_summary": "review complete",
         }, "local-stand-in"
 

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: hosted read-only reviews record an offline, canonical diff identity
+  before agent startup and include its digest in completion events. Restricted
+  status/result reads add phase timings and aggregated effective gateway request
+  controls; result reads distinguish process completion, capture, schema validity
+  and publication, with unknown historical observations left null (#2100).
+
 - flows: console and CLI for the review and status Preloop posts on the pull
   request. Read-only review flows get a **Post review on the pull request**
   card on the flow page: turn posting on or off, map each verdict to a commit
@@ -60,6 +66,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- models: mark deleted routing, label and enabled retry targets as missing in
+  flow details and lists, including flows with a healthy default model. Repairing
+  each reference clears its warning; routing policy is preserved so a missing
+  target cannot silently select a different model.
+
+- flows: schema-valid native verdicts confirm completion without an additional
+  status field or success marker, and supersede log-text error heuristics.
+  Controller termination metadata is withheld from restricted result JSON so
+  it cannot break a strict schema. Result reads return `409 result_pending`
+  while capture is unsettled, even after an external terminal transition;
+  controller-only termination metadata no longer masquerades as a captured
+  result (`404` after capture settles).
+
+- flows: keep completion notifications durably queued while result capture is
+  pending. Confirmed stopped runs can settle after an interrupted controller's
+  claim expires; waiting consumes no webhook retries. Legacy publication outputs
+  without capture provenance remain readable.
+
+- flows: commit captured results before artifact transfers and finalization.
+  Checkpoint, quota, log shipping, lease cleanup, callback queueing and publication
+  failures are named separately without hiding completed findings or requiring
+  another model run. Required publication gates still govern flow success (#2100).
 - flows: turning `platform_review` on, changing it or turning it off no
   longer invalidates the flow's existing CI identities. The first release of
   platform-posted review recorded the flow's posting capabilities in each

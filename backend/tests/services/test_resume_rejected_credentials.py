@@ -527,6 +527,7 @@ async def test_failed_run_retry_tests_stored_key_once(
     assert usage[0].prompt_tokens == expected_part
     assert usage[0].completion_tokens == expected_part
     assert usage[0].total_tokens == expected_part * 2
+    assert usage[0].total_tokens == usage[0].prompt_tokens + usage[0].completion_tokens
     audit = crud.crud_audit_log.get_by_account(
         db_session, account_id=run.user.account_id, action="model_gateway_request"
     )

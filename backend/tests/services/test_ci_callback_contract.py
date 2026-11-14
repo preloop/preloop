@@ -83,6 +83,7 @@ def test_valid_callback_uses_persisted_correlation_without_runtime_material(
         "base_branch": "develop",
         "base_sha": None,
         "result_sha256": digest(public_ci_result(execution.result)),
+        "diff": None,
     }
     serialized = json.dumps(payload, default=str)
     for trusted in (

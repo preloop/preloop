@@ -3260,6 +3260,42 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             )
         return models_by_execution
 
+    def review_request_facts(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> list[dict[str, Any]]:
+        """Read only non-content request facts for one authorized execution.
+
+        Args:
+            db: Database session.
+            execution_id: Execution already authorized by the caller.
+            account_id: Authenticated account, enforced again in the query.
+
+        Returns:
+            Recorded requests in completion order, without payloads or identities.
+        """
+        from preloop.models import models
+
+        usage = models.ApiUsage
+        rows = (
+            db.query(
+                usage.duration,
+                usage.provider_name,
+                usage.is_retry,
+                usage.error_class,
+                usage.meta_data["upstream_parameters"].label("upstream_parameters"),
+                usage.meta_data["upstream_retries"].label("upstream_retries"),
+            )
+            .filter(
+                usage.account_id == account_id,
+                usage.flow_execution_id == execution_id,
+                usage.action_type == "model_gateway",
+                exclude_customer_overhead_condition(),
+            )
+            .order_by(usage.timestamp, usage.id)
+            .all()
+        )
+        return [dict(row._mapping) for row in rows]
+
     def get_gateway_usage_for_execution(
         self,
         db: Session,

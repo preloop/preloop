@@ -1140,7 +1140,7 @@ def delete_ai_model(
         Query(
             description=(
                 "Delete even though flows select the model. Those flows are "
-                "left without a model and are named in the audit entry."
+                "marked with missing model selections and named in the audit entry."
             )
         ),
     ] = False,
@@ -1153,8 +1153,10 @@ def delete_ai_model(
     routing or label rule, or the retry model), the delete is refused with
     409 ``model_in_use`` and the enabled flows the caller can see. Disabled
     flows do not block it. ``force=true`` deletes anyway. Either way, each
-    flow that had the model as its own records which model it lost, and the
-    audit entry names every orphaned flow, enabled or not.
+    flow records which model it lost and reports missing health until its
+    affected selections are repaired. Routing rules are retained to avoid
+    silently substituting a different model. The audit entry names every
+    orphaned flow, enabled or not.
     """
     from preloop.models.crud import crud_flow
     from preloop.services.ai_model_usage_links import flow_links

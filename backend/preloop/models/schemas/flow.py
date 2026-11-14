@@ -2005,12 +2005,12 @@ class FlowUpdate(FlowBase):
 
 
 class FlowModelHealth(BaseModel):
-    """Whether a flow's own model can serve a run, read from the model."""
+    """Deleted configured models or credential errors on the flow's own model."""
 
     status: Literal["ok", "error", "missing"] = Field(
         description=(
-            "missing: the model was deleted out from under the flow; error: "
-            "the model's credential failed (credentials_status error)"
+            "missing: a default, routing, label or enabled retry model was deleted; "
+            "error: the default model's credential failed (credentials_status error)"
         )
     )
     code: Optional[str] = Field(

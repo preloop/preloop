@@ -76,7 +76,7 @@ Every request body is one JSON object with exactly these keys:
 | `session.ended` | A runtime session closes | `runtime_session_id`, `reason` (`execution_finished`, `idle`, `operator`), `runtime_principal_*`, `duration_seconds` |
 | `budget.threshold` | Spend crosses a configured soft limit | `scope`, `scope_id`, `period`, `limit_amount`, `spent_amount`, `percent_used`, `threshold_percent` |
 | `budget.exceeded` | Spend passes a configured hard limit | same as above |
-| `flow.execution.finished` | A flow execution reaches a terminal status | `execution_id`, `flow_id`, `flow_name`, `status`, `failure_category`, `result_schema_valid` (`true`/`false` when the flow sets a result schema, else `null`), `evidence_receipt`, `platform_review` (what Preloop posted on the pull request when the flow opted in, else `null`; see [restricted CI](flows/restricted-ci.md#the-posting-record)) |
+| `flow.execution.finished` | A flow execution reaches a terminal status | `execution_id`, `flow_id`, `flow_name`, `status`, `failure_category`, `diff` (`{"sha256": "..."}` from trusted startup, or `null`), `result_schema_valid` (`true`/`false` when the flow sets a result schema, else `null`), `evidence_receipt`, `platform_review` (what Preloop posted on the pull request when the flow opted in, else `null`; see [restricted CI](flows/restricted-ci.md#the-posting-record)) |
 | `agent.note_sent` | An operator note is accepted for a running agent | `note_id`, `managed_agent_id`, `runtime_session_id`, `text`, `author` (`user_id`, `display`, `auth_method`), `created_at`, `expires_at` |
 | `agent.note_undeliverable` | A session ends before delivery, or its spool drops the claimed block | note identity, target, author, `undeliverable_at`, `undeliverable_reason` (`session_ended`, `spool_dropped`); one event per note |
 | `agent.note_delivered` | That note reaches the agent at a turn boundary | same fields plus `delivered_at`, `delivery_channel` (`gateway`, `hook`, `claude_channel`, `claude_message`), `turn_index` |
@@ -312,14 +312,17 @@ from the emitter:
 | `status` | The terminal status |
 | `result_ready` | Whether a result is stored |
 | `result_sha256` | SHA-256 of the canonical JSON of the `result` that `GET .../result` returns to the CI key (sorted keys, compact separators, UTF-8), or `null` |
+| `diff` | `{ "sha256": "..." }` for the canonical reviewed diff computed by trusted hosted startup before the agent, or `null` when unavailable. Recompute it using the [restricted CI diff contract](flows/restricted-ci.md#reproduce-the-reviewed-diff). It is not a proof of model coverage. |
 
-Preloop records no separate merge-base or diff digest; `head_sha` plus
-`base_sha` identify the reviewed snapshot.
+The owned execution receipt also contains the merge base, changed paths and
+canonical diff byte count. A missing digest is not inferred from the revisions.
 
-The result is stored with the terminal status before the event is queued, so
-`result_ready: true` means the result can be read now. An execution that is
-not yet terminal is never delivered. If an enqueue fails, the execution still
-completes and the failure is logged at error level; nothing retries it, so a
+The event is queued durably even when a stop races result capture. Delivery
+waits without consuming retries until capture settles, then refreshes the
+envelope, so `result_ready: true` means the result can be read now. An execution
+that is not yet terminal is never delivered. If an enqueue fails, the execution still
+completes, the result remains readable and `completion.post_result_failures`
+names `completion_event_queueing`; the failure is also logged at error level; nothing retries it, so a
 publisher that must not miss a review should also handle a missing event, for
 example by reading the execution once after its own timeout.
 

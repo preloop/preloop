@@ -169,8 +169,8 @@ source and write local `result.json`; the local filesystem remains writable.
 Remote MCP finalizers are unsupported. Runtime credentials cannot call MCP tools
 or general account REST routes, even when legacy scope enforcement is disabled.
 The normal execution-bound evidence upload capability still accepts only its own
-execution and operation. Results remain agent-authored, not an attested command
-history or custom diff/challenge proof.
+execution and operation. Results remain agent-authored. The controller-bound diff below identifies
+the input; it is not an attested model command history or custom challenge proof.
 
 Omit verification, publication approval, report publication, follow-up filing and
 backport configuration; `create_pull_request` must be false. Completion persists
@@ -199,8 +199,9 @@ is never silently ignored. Preloop reads the open pull request from the
 provider, requires its current head to equal `head_sha`, builds the pull
 request event server-side and starts one production execution
 (`test_mode: false`). The flow webhook does not accept CI credentials. Bind
-diffs, base revisions or challenges through the flow's own configured review
-inputs and your own validator instead.
+custom challenges through the flow's own configured review inputs and your
+own validator. The controller binds the reviewed repository diff as described
+below.
 
 `GET /api/v1/flows/executions/{id}` (the status projection) and `GET /api/v1/flows/executions/{id}/result` include
 `startup_receipt`, written by the controller, never by the model:
@@ -215,6 +216,15 @@ inputs and your own validator instead.
   "setup_completed": true,
   "agent_started_at": "2030-01-01T00:00:00+00:00",
   "lease_revoked": true,
+  "diff": {
+    "base_sha": "<admitted base SHA>",
+    "merge_base_sha": "<unique merge base SHA>",
+    "head_sha": "<admitted head SHA>",
+    "sha256": "<canonical diff SHA-256>",
+    "files": ["src/example.py"],
+    "bytes": 1234
+  },
+  "diff_unavailable_reason": null,
   "agent_cli": {"name": "codex", "version": "0.153.4"}
 }
 ```
@@ -236,8 +246,8 @@ runner does not report it yet. Fields are only ever added to `version: 1`, so
 ignore keys you do not know. The receipt describes the controller's observation of the
 container's own output; setup commands run repository code inside that same
 container, so treat it as the platform's assertion, not an independent
-attestation. The completion callback body is unchanged; fetch `GET /api/v1/flows/executions/{id}` or
-`/result` for the receipt.
+attestation. The completion callback includes `data.diff.sha256` (or `data.diff: null`);
+fetch `GET /api/v1/flows/executions/{id}` or `/result` for the complete receipt.
 
 The restricted `/result` returns `result`, the captured `result.json`
 (at most 256 KiB at capture) without controller-private members: keys that
@@ -255,6 +265,176 @@ result recovery/publication uses the explicit export grant described below.
 GitLab, PAT and alternate-tracker clone bindings are not
 supported by this mode. Local tests use a synthetic provider; they do not certify
 an installation's live GitHub permissions.
+
+### Reproduce the reviewed diff
+
+The hosted startup chain computes `diff` after verifying the admitted checkout,
+before setup and the agent. The controller accepts its line only before the
+agent start marker. Later model output cannot set or replace the receipt.
+This identifies the complete diff **of the reviewed repository only**, including
+binary changes; additional context repositories are outside this identity.
+It does not prove the model read every changed line or found every defect.
+
+`base_sha` is the provider's target commit at admission, `head_sha` is the
+admitted PR head, and `merge_base_sha` is their unique merge base. The digest
+is SHA-256 of the exact bytes of the command below. There is no whitespace,
+newline or encoding normalization. Rename detection and text conversion are
+disabled; binaries use Git binary patches, paths use Git quoting, and patches
+use full object IDs, Myers diff, three context lines and fixed prefixes.
+A temporary bare view shares only the checkout's object database, so mutable
+worktree attributes, local configuration and diff drivers cannot change it.
+Use the same Git version when comparing across Git implementations/releases.
+
+Run in your checkout, with the two **receipt** revisions and full local history:
+
+```bash
+set -euo pipefail
+base='<receipt base_sha>'
+head='<receipt head_sha>'
+export LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1
+[[ "$(git rev-parse HEAD)" == "$head" ]]
+objects=$(git rev-parse --path-format=absolute --git-path objects)
+bare=$(mktemp -d)
+trap 'rm -rf "$bare"' EXIT
+git init --bare --quiet --object-format="$(git rev-parse --show-object-format)" "$bare"
+merge_base=$(GIT_OBJECT_DIRECTORY="$objects" git --git-dir="$bare" merge-base --all "$base" "$head")
+# Require exactly one merge base; never choose one from an ambiguous set.
+[[ "$merge_base" != *$'\n'* && -n "$merge_base" ]]
+GIT_OBJECT_DIRECTORY="$objects" git --git-dir="$bare" \
+  -c core.quotePath=true -c core.attributesFile=/dev/null diff \
+  --no-ext-diff --no-textconv --no-color --no-renames --binary --full-index \
+  --diff-algorithm=myers --no-indent-heuristic --unified=3 \
+  --inter-hunk-context=0 --src-prefix=a/ --dst-prefix=b/ --submodule=short \
+  --ignore-submodules=none "$merge_base" "$head" -- | sha256sum
+```
+
+For `files`, run `git --git-dir="$bare" diff --no-renames --name-only -z
+"$merge_base" "$head" --` with the same `GIT_OBJECT_DIRECTORY`. Paths are the
+NUL-delimited entries, including both sides of a rename. `bytes` is the byte
+length of the patch, before hashing. No credential or network fetch is used.
+
+`diff` is null with `diff_unavailable_reason` when the base is unknown
+(`base_unknown`), history/objects are unavailable (`history_unavailable`,
+including shallow checkouts), the merge base is ambiguous
+(`ambiguous_merge_base`), revisions are invalid (`invalid_revision`), HEAD does
+not match (`head_mismatch`), or the path list exceeds the 64 KiB receipt limit
+(`receipt_too_large`), or a changed path cannot be represented as UTF-8
+(`unsupported_path_encoding`). `not_recorded` identifies older receipts;
+`unverified_receipt` means the stored receipt no longer passes its startup or
+admitted-revision checks. Missing facts
+are never inferred from a model's binding fields. A publisher that requires
+diff binding must reject a missing or mismatched digest.
+
+### Phase timings and effective requests
+
+The owned status and result projections include `timings`. Seconds are measured
+from stored controller observations; missing boundaries are null, including on
+older runs. No prompts, response text, credentials or account IDs are included.
+
+| Field | Evidence and limits |
+| --- | --- |
+| `queue_wait_seconds` | Execution creation to recorded launch request. |
+| `startup_seconds` | Launch request to observed agent start, including container scheduling. |
+| `clone_seconds`, `setup_seconds` | Controller observation of startup boundaries; setup includes configured preparation after diff calculation. |
+| `first_model_response_seconds` | Currently null, with `first_model_response_unavailable_reason: not_recorded`. The gateway does not persist first-token/first-byte timing. A request's total duration is not substituted. |
+| `model_request_count` | Number of recorded gateway request rows belonging to this execution. |
+| `retry_count` | Recorded client resends plus gateway internal retries. Null if any request predates internal retry recording. It does not count unrecorded CLI attempts. |
+| `total_model_seconds` | Sum of recorded gateway request durations, including upstream waits, streaming and retries. Concurrent requests can overlap; this is not wall-clock model compute time. |
+| `finalization_seconds` | Observed agent completion (or timeout cleanup beginning) to terminal persistence. Later notification and lease cleanup are outside this interval. |
+| `first_causal_upstream_error_class` | First classified error in the final uninterrupted sequence of failed requests when the terminal cause is upstream failure; otherwise null. No error message is copied. |
+| `effective_requests` | Unique recorded combinations of `model`, `provider`, `reasoning_effort`, `max_output_tokens`, with `request_count`. Null controls mean not recorded or left to the provider default. Values come from request records, never model registration defaults. |
+
+`model` is the resolved outbound gateway model identifier (the LiteLLM route
+identifier for translated requests); `provider` identifies the gateway's upstream
+service. These do not establish an aggregator's internal provider route or prove
+that it honored a parameter. Historical rows lacking the outbound identifier
+remain null. Retention gaps and calls still in flight are not counted as
+completed request observations.
+
+`terminal_cause` is a stable enum, null while the execution is nonterminal:
+
+| Cause | Meaning |
+| --- | --- |
+| `completed` | The flow's required success gates passed. |
+| `timeout` | The execution deadline expired. |
+| `budget` | An execution or default token/turn/spend ceiling stopped the run. |
+| `upstream_error` | The stored failure category identifies model authentication, billing, quota, transient or repeated upstream failure. |
+| `no_result` | Completion was not confirmed or no result was reported, without a more specific stored cause. |
+| `stopped` | The run was stopped/cancelled. |
+| `post_result_failure` | A failed flow has a retained result and a separately recorded later failure. |
+| `failed` | Another failure, such as setup or schema validation; inspect `failure_category`. |
+
+For a terminal run without an artifact, `/result` keeps its existing 404
+contract. Read `timings` from the owned status endpoint to distinguish timeout,
+upstream failure and no-result termination.
+
+### Independent completion facts and recovery
+
+A successful `/result` response adds `completion`:
+
+<!-- example: fragment -->
+```json
+{
+  "agent_finished": {"status": "SUCCEEDED", "exit_code": 0},
+  "result_captured": {
+    "captured": true,
+    "source": "native_structured_result",
+    "result_sha256": "<digest of the restricted result>"
+  },
+  "result_valid": true,
+  "publication": null,
+  "post_result_failures": []
+}
+```
+
+`agent_finished` is the executor's observed process outcome (including its
+wrapper), or null when it was
+not recorded. It is independent of overall flow status. Exit zero proves neither
+capture nor validity. For native results with schema validation enabled, a
+valid verdict confirms completion without a success marker or a `status` field.
+Log-text heuristics, including a traceback from a reviewed test, cannot override
+a valid native verdict. Actual runtime failure and required later gates still
+apply. Controller-added `container_termination` is withheld from the restricted
+`result` and listed in `result_withheld_paths`, so it does not break a strict
+result schema; process status and exit code live in `completion.agent_finished`.
+Both `approve` and `request-changes` mean the review finished; approval is a
+separate verdict. Explicit failure/incomplete statuses and required later gates
+remain authoritative. `result_captured.source` is `native_structured_result` or
+`file`. For historical rows, capture and source are null when only a result
+field remains and capture provenance was never recorded. The digest uses the same canonical
+JSON as the completion callback and export grant, **after withholding private
+members**. `result_valid` is the existing capture-time schema outcome, null
+when no schema was checked. Only capture plus a valid strict schema makes the
+review usable; neither proves review completeness or authorizes publication.
+
+`publication` is a pointer to the publication package's `platform_review`
+projection when present, otherwise null. It never trusts an agent-authored
+publication claim. Publication remains separately authorized.
+
+A captured document is committed before bulk artifact transfers and subsequent
+finalization. `post_result_failures` names later failures independently:
+`checkpoint_upload`, `artifact_quota`, `artifact_capture`, `artifact_storage`,
+`log_shipping`, `lease_revocation`, `completion_event_queueing`, `publication`
+or `finalization`. Required later steps may still make the flow `FAILED`;
+the result remains retrievable. Optional cleanup failures do not rewrite success.
+A validated captured result also prevents an automatic repeat of paid model work
+just to repair those later steps. Storage must be available for the initial
+commit; this is not a guarantee against loss of the database itself.
+
+Recover without rerunning:
+
+1. Re-read the owned `GET /api/v1/flows/executions/{id}/result`. Verify head,
+   base, diff digest, result digest, schema validation and withheld paths.
+2. Repair the named export/publication/storage problem. For a historical
+   human-owned run, use an explicit
+   [result export grant](#explicit-export-of-a-completed-human-review) instead of widening
+   the CI credential.
+3. For an opted-in flow, call the authorized
+   [`POST /api/v1/flows/executions/{id}/platform-review`](#publish-a-finished-review-again-without-a-model-run)
+   to republish the stored document. Read `platform_review` to confirm the
+   posting outcome. This does not rerun the model; current head, validity and
+   permission checks still apply.
 
 ## Read-only review on a private runner
 
@@ -854,22 +1034,34 @@ handling are documented in
 [Restricted CI completion](../webhooks.md#restricted-ci-completion). It names
 the bound repository, PR number, head SHA and the base SHA recorded when the
 review was accepted, plus `result_sha256`, the digest of the result the CI key
-will read.
+will read, and `diff.sha256` for the controller-bound reviewed diff (null when
+unavailable).
 
 ### Result readiness
 
-Preloop stores the result together with the terminal status, then queues
-`flow.execution.finished`, and materializes each delivery from that stored
-state. A completion event therefore never arrives before its result:
+Preloop commits a captured result before later artifact/finalization work.
+A stop transaction durably queues `flow.execution.finished` even when capture
+is still pending. The delivery worker waits for capture to settle without
+consuming retries, then refreshes the envelope from stored state. A stopped
+launch settles immediately. After a controller claim expires, a confirmed
+runtime stop also permits settlement; an unconfirmed stop remains pending,
+without guessing that no result exists. A completion event therefore never
+arrives before its result:
 `result_ready: true` means `GET /api/v1/flows/executions/{id}/result` returns
 it now. `GET .../result` answers:
 
 - `200` with the result;
 - `409` with `detail.code: "result_pending"` and the current `detail.status`
   while the execution has not finished, even if a checkpoint is stored, for
-  example while it is parked (retry after it finishes);
+  example while it is parked. It also answers 409 if a stop/limit has already
+  made the status terminal but controller capture is still pending; retry until
+  capture settles;
 - `404` when the execution does not exist for the caller, or finished without
-  reporting a result. This does not change later.
+  reporting a result and capture has settled. Controller-only termination
+  metadata or private publication policy state is not a result artifact;
+  historical PR/publication outputs remain
+  readable without a schema or capture provenance. A settled 404 does not change
+  merely because delayed artifact capture finishes; that interval uses 409.
 
 ## Review and status posted by Preloop
 

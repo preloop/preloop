@@ -81,6 +81,7 @@ def test_projection_result_and_rotation(
         "end_time",
         "failure_category",
         "startup_receipt",
+        "timings",
         "platform_review",
     }
     assert detail.json()["startup_receipt"] is None

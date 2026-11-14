@@ -365,6 +365,7 @@ async def prepare_read_only_review(
         raise ValueError("Read-only review lease is invalid or expired")
     context["git_clone_config"] = config
     context["read_only_review"] = True
+    context["read_only_base_sha"] = getattr(binding, "base_sha", None)
     context["git_credentials_map"] = {
         url: {
             "token": lease.token,
@@ -555,7 +556,23 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
         The receipt, or None when the execution has none (yet).
     """
     stored = getattr(execution, "startup_receipt", None)
-    if isinstance(stored, Mapping):
+    if isinstance(stored, Mapping) and stored.get("commit"):
+        from preloop.services.review_diff import review_diff_identity
+
+        diff = review_diff_identity(execution)
+        reason = None
+        if diff is None:
+            reason = stored.get("diff_unavailable_reason")
+            if reason not in {
+                "base_unknown",
+                "invalid_revision",
+                "head_mismatch",
+                "ambiguous_merge_base",
+                "receipt_too_large",
+                "history_unavailable",
+                "unsupported_path_encoding",
+            }:
+                reason = "unverified_receipt" if stored.get("diff") else "not_recorded"
         return {
             "version": STARTUP_RECEIPT_VERSION,
             "executor": "hosted",
@@ -564,6 +581,8 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
             "setup_completed": stored.get("setup_completed") is True,
             "agent_started_at": stored.get("agent_started_at"),
             "lease_revoked": stored.get("lease_revoked"),
+            "diff": diff,
+            "diff_unavailable_reason": reason,
             "agent_cli": _stored_agent_cli(stored.get("agent_cli")),
         }
     result = getattr(execution, "result", None)

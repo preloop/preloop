@@ -43,6 +43,7 @@ from preloop.models.schemas.flow import (
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
+    CiExecutionResultResponse,
     CiReviewRequest,
     CiStopRequest,
 )
@@ -1463,7 +1464,12 @@ def read_flow_execution(
         execution = _owned_ci_execution(
             db, current_user, execution_id, CiAction.READ_EXECUTION
         )
-        return CiExecutionResponse(**execution_projection(execution))
+        from preloop.services.review_completion_evidence import execution_timings
+
+        return CiExecutionResponse(
+            **execution_projection(execution),
+            timings=execution_timings(db, execution, current_user.account_id),
+        )
     execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
     )
@@ -1943,6 +1949,7 @@ def get_execution_tool_evidence(
 
 @router.get(
     "/flows/executions/{execution_id}/result",
+    response_model=CiExecutionResultResponse | Dict[str, Any],
     responses={
         404: {
             "description": (
@@ -1952,7 +1959,7 @@ def get_execution_tool_evidence(
         },
         409: {
             "description": (
-                "The execution exists but has not finished. ``detail.code`` is "
+                "The execution is running or result capture is still pending. ``detail.code`` is "
                 "``result_pending`` and ``detail.status`` is the current status."
             )
         },
@@ -1974,14 +1981,15 @@ def get_flow_execution_result(
 
     - 404 ``Flow execution not found``: no such execution for this caller.
     - 409 with ``detail.code == "result_pending"``: the execution exists but
-      has not reached a terminal status, so no result is final yet, even
+      has not reached a terminal status or capture is still pending, so no result is final yet, even
       when a checkpoint (for example of a parked run) is stored. Retry
       after the execution finishes; ``detail.status`` is its current status.
     - 404 ``Flow execution did not report a result artifact``: the execution
-      is terminal and reported no result. This will not change.
+      is terminal, capture has settled, and no artifact was reported.
+      Controller-only metadata is not a captured result.
 
-    The result is persisted with the terminal status, before
-    ``flow.execution.finished`` is queued, so a caller notified of completion
+    The result is persisted and capture settled before the durable
+    ``flow.execution.finished`` event is delivered, so a caller notified of completion
     never receives 409 for that execution.
 
     ``evidence`` is the persisted receipt when one is bound, else derived
@@ -1997,17 +2005,29 @@ def get_flow_execution_result(
     captured document) and ``schema_validation`` (``valid``, ``error_count``
     and ``errors``; messages are omitted when a member was withheld).
     """
+    from preloop.services.review_completion_evidence import result_availability
+
     if isinstance(current_user, CiAuthorizationContext):
         execution = _owned_ci_execution(
             db, current_user, execution_id, CiAction.READ_RESULT
         )
-        if execution.result is None or not _is_terminal(execution):
+        if result_availability(execution) != "available" or not _is_terminal(execution):
             _raise_result_missing(execution)
         withheld = ci_result_withheld_paths(execution.result)
+        from preloop.services.review_completion_evidence import (
+            completion_projection,
+            execution_timings,
+        )
+
+        projection = execution_projection(execution)
         return {
             "execution_id": str(execution.id),
-            **execution_projection(execution),
+            **projection,
             "result": public_ci_result(execution.result),
+            "timings": execution_timings(db, execution, current_user.account_id),
+            "completion": completion_projection(
+                execution, publication=projection.get("platform_review")
+            ),
             # Pointers of members withheld as controller-private; empty means
             # the projected document is the complete captured document.
             "result_withheld_paths": withheld,
@@ -2020,7 +2040,7 @@ def get_flow_execution_result(
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    if execution.result is None or not _is_terminal(execution):
+    if result_availability(execution) != "available" or not _is_terminal(execution):
         _raise_result_missing(execution)
     return {
         "execution_id": str(execution.id),
@@ -2131,13 +2151,17 @@ def _raise_result_missing(execution: Any) -> NoReturn:
         HTTPException: 409 ``result_pending`` before a terminal status, 404
             once the execution finished without reporting a result.
     """
+    from preloop.services.review_completion_evidence import result_availability
+
     status = getattr(execution, "status", None)
-    if not _is_terminal(execution):
+    if not _is_terminal(execution) or result_availability(execution) == "pending":
         raise HTTPException(
             status_code=409,
             detail={
                 "code": RESULT_PENDING_CODE,
-                "message": "Flow execution has not finished; no result yet",
+                "message": "Result capture has not settled"
+                if _is_terminal(execution)
+                else "Flow execution has not finished; no result yet",
                 "status": status,
             },
         )
