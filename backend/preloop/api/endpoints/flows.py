@@ -1551,6 +1551,7 @@ def read_flow_execution(
     execution.pull_request = execution_pull_request(
         db, account_id=current_user.account_id, execution=execution
     )
+    execution.platform_review = _platform_review_with_links(db, execution)
 
     return execution
 
@@ -2041,6 +2042,72 @@ def _platform_review_of(db: Session, execution: Any) -> Optional[Dict[str, Any]]
     from preloop.services.platform_review import platform_review_projection
 
     return platform_review_projection(db, execution)
+
+
+def _github_web_base(tracker_url: Any) -> Optional[str]:
+    """Browser base URL of a GitHub host, from a tracker's API URL.
+
+    ``None`` and ``https://api.github.com`` are github.com; a GitHub
+    Enterprise Server API URL ending in ``/api/v3`` maps to its host.
+    Anything that is not a plain http(s) URL yields None.
+    """
+    from urllib.parse import urlsplit
+
+    if tracker_url is None or not str(tracker_url).strip():
+        return "https://github.com"
+    base = str(tracker_url).strip().rstrip("/")
+    parsed = urlsplit(base)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    if parsed.hostname.lower() == "api.github.com":
+        return "https://github.com"
+    if base.endswith("/api/v3"):
+        base = base[: -len("/api/v3")]
+    return base
+
+
+def _platform_review_with_links(
+    db: Session, execution: Any
+) -> Optional[Dict[str, Any]]:
+    """The posted-review record with links for the console, or None.
+
+    Read-only: links are derived from the execution's own
+    ``ci_review_binding`` (repository, pull request, reviewed commit) and the
+    recorded review id. Nothing is fetched from the provider.
+    """
+    record = _platform_review_of(db, execution)
+    if record is None:
+        return None
+    links: Dict[str, Optional[str]] = {
+        "pull_request_url": None,
+        "review_url": None,
+        "commit_url": None,
+    }
+    binding = getattr(execution, "ci_review_binding", None)
+    if isinstance(binding, dict) and binding.get("tracker_type") == "github":
+        base = _github_web_base(binding.get("tracker_url"))
+        slug = binding.get("repository_slug")
+        number = binding.get("pr_number")
+        sha = record.get("head_sha") or binding.get("head_sha")
+        if base and isinstance(slug, str) and slug.count("/") == 1:
+            repo = f"{base}/{slug}"
+            if isinstance(number, int) and not isinstance(number, bool):
+                links["pull_request_url"] = f"{repo}/pull/{number}"
+                review_id = record.get("review_id")
+                if record.get("review") == "posted" and review_id:
+                    links["review_url"] = (
+                        f"{repo}/pull/{number}#pullrequestreview-{review_id}"
+                    )
+            if isinstance(sha, str) and sha and record.get("commit_status"):
+                links["commit_url"] = f"{repo}/commit/{sha}"
+    return {**record, **links}
 
 
 RESULT_PENDING_CODE = "result_pending"

@@ -185,6 +185,7 @@ The payload must name the standards: the preset **refuses to run
 without one** (guessing which standard applies would contaminate the
 register):
 
+<!-- example: fragment -->
 ```json
 {
   "standards": [
@@ -259,6 +260,7 @@ stored result and writes it into the workspace at `previous/result.json`
 before the agent starts, which is exactly where a seeded baseline would
 have landed:
 
+<!-- example: fragment -->
 ```json
 {
   "previous_result_execution_id": "0f1d4c0e-7a1c-4a9a-9a8f-2f0b1d4c0e7a"
@@ -270,6 +272,7 @@ result, which is what a subscription wants: a schedule cannot know an
 execution id in advance, and a pinned id would freeze every future run
 against one baseline.
 
+<!-- example: fragment -->
 ```json
 {
   "previous_result_execution_id": "last"
@@ -305,6 +308,7 @@ Rules, in the order they bite:
 A schedule carries a static `payload` alongside its timing, which is how
 a scheduled run states the key (a schedule has no request body):
 
+<!-- example: schedule -->
 ```json
 {
   "type": "weekly",

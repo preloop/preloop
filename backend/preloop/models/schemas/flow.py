@@ -2004,6 +2004,22 @@ class FlowUpdate(FlowBase):
         return _checked_result_schema(value)
 
 
+class FlowModelHealth(BaseModel):
+    """Whether a flow's own model can serve a run, read from the model."""
+
+    status: Literal["ok", "error", "missing"] = Field(
+        description=(
+            "missing: the model was deleted out from under the flow; error: "
+            "the model's credential failed (credentials_status error)"
+        )
+    )
+    code: Optional[str] = Field(
+        default=None,
+        description="credentials_last_error_code, or model_deleted",
+    )
+    model_id: Optional[str] = None
+
+
 class FlowResponse(FlowBase):
     id: UUID
     account_id: Optional[UUID] = None
@@ -2027,6 +2043,7 @@ class FlowResponse(FlowBase):
     # Computed schedule state for schedule-triggered flows (read-only)
     schedule_state: Optional[Dict[str, Any]] = None
     ai_model_name: Optional[str] = None
+    model_health: Optional[FlowModelHealth] = None
     # Read back from agent_config.limits (the stored, enforced values), so a
     # client edits and displays the same numbers the gateway checks.
     max_budget: Optional[float] = None

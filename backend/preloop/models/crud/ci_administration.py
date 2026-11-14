@@ -224,6 +224,9 @@ class CRUDCiAdministration:
             # ``server``, or the named private pool of a read-only review that
             # runs on a Codex host profile (checked by ``_binding``).
             "runner_pool": self._flow_runner_pool(db, actor=actor, grant=grant),
+            # The flow is the actor's own (checked by ``_binding``); its name
+            # lets the person previewing recognise it without the UUID.
+            "flow_name": self._flow_name(db, actor=actor, grant=grant),
         }
 
     @staticmethod
@@ -233,6 +236,14 @@ class CRUDCiAdministration:
         flow = crud_flow.get(db, id=grant.flow_id, account_id=str(actor.account_id))
         pool = getattr(flow, "runner_pool", None)
         return pool if isinstance(pool, str) and pool else "server"
+
+    @staticmethod
+    def _flow_name(db: Session, *, actor: models.User, grant: CiGrant) -> str | None:
+        from preloop.models.crud import crud_flow
+
+        flow = crud_flow.get(db, id=grant.flow_id, account_id=str(actor.account_id))
+        name = getattr(flow, "name", None)
+        return name if isinstance(name, str) else None
 
     def _principal(
         self,

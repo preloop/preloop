@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -27,7 +30,7 @@ var ciSafeFields = map[string]bool{
 	"supported_actions": true, "binding": true, "tracker_id": true,
 	"runner_pool": true, "url": true, "enabled": true, "event_types": true,
 	"max_retries": true, "retry_backoff_seconds": true, "timeout_seconds": true,
-	"binding_mode": true, "binding_modes": true, "read_only": true,
+	"binding_mode": true, "flow_name": true, "binding_modes": true, "read_only": true,
 	"projects": true, "identities": true,
 }
 
@@ -56,6 +59,16 @@ func newCICmd() *cobra.Command {
 	group := &cobra.Command{
 		Use: "ci", Short: "Human setup for restricted CI identities",
 		Long: "Use your saved human login or PRELOOP_TOKEN. Issued secrets go only to a new 0600 file; safe metadata goes to stdout. CI credentials cannot administer themselves.",
+		// Without a RunE, cobra prints this help and exits 0 for an unknown
+		// subcommand, so a command missing from an older CLI (for example
+		// `ci retire`) looked like it had succeeded.
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown ci command %q; run \"preloop ci --help\" for the commands this CLI has, or upgrade the CLI", args[0])
+			}
+			return cmd.Help()
+		},
 	}
 	for _, operation := range []string{"capabilities", "list", "show", "preview", "create", "update", "issue", "rotate", "revoke", "retire", "subscribe", "shared-flow", "share-flow"} {
 		group.AddCommand(newCICommand(operation))
@@ -97,8 +110,18 @@ func newCICommand(operation string) *cobra.Command {
 	} else if operation == "share-flow" {
 		short = "Replace the project allowlist of a shared read-only review flow"
 	}
+	long := ""
+	if operation == "revoke" || operation == "rotate" {
+		long = "Needs both the identity id (PRINCIPAL_ID) and the id of the key to " + operation +
+			" (KEY_ID). `preloop ci create` and `preloop ci issue` print both; " +
+			"`preloop ci show PRINCIPAL_ID` lists the identity's keys with their ids."
+	} else if operation == "subscribe" {
+		long = "The identity's grant must include subscription:create. The --input file is " +
+			`{"key_id": "<a key id of this identity>", "url": "https://<receiver>/path"}; ` +
+			"the signing secret is written to --secret-file once."
+	}
 	cmd := &cobra.Command{
-		Use: use, Short: short, Args: cobra.ExactArgs(argCount),
+		Use: use, Short: short, Long: long, Args: ciArgs(operation, argCount),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The global plaintext-token flag must not leak credentials into
 			// process lists or shell history for these setup operations.
@@ -132,7 +155,7 @@ func newCICommand(operation string) *cobra.Command {
 				var err error
 				destination, err = os.OpenFile(secretPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 				if err != nil {
-					return fmt.Errorf("cannot reserve secret file; use a new path in a private directory")
+					return ciSecretFileError(secretPath, err)
 				}
 				defer destination.Close()
 			}
@@ -143,6 +166,13 @@ func newCICommand(operation string) *cobra.Command {
 					_ = os.Remove(secretPath)
 				}
 				return fmt.Errorf("cannot load human authentication")
+			}
+			if operation == "subscribe" {
+				if err = ciRequireGrantAction(client, args[0], "subscription:create"); err != nil {
+					_ = destination.Close()
+					_ = os.Remove(secretPath)
+					return err
+				}
 			}
 			method, suffix := ciRequestPath(operation, args)
 			// A typed nil map is a non-nil interface and marshals as JSON null.
@@ -185,6 +215,57 @@ func newCICommand(operation string) *cobra.Command {
 		cmd.Flags().StringVar(&secretPath, "secret-file", "", "new exclusive 0600 file for the issued token or signing secret")
 	}
 	return cmd
+}
+
+// ciArgs keeps the exact argument count and names a missing KEY_ID instead
+// of cobra's generic "accepts 2 arg(s)".
+func ciArgs(operation string, argCount int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if argCount == 2 && len(args) == 1 {
+			return fmt.Errorf("missing KEY_ID: %s needs PRINCIPAL_ID and KEY_ID; `preloop ci show PRINCIPAL_ID` lists the identity's key ids", operation)
+		}
+		return cobra.ExactArgs(argCount)(cmd, args)
+	}
+}
+
+// ciSecretFileError says why the secret file could not be reserved. It names
+// only the path the user typed, never file contents.
+func ciSecretFileError(path string, err error) error {
+	dir := filepath.Dir(path)
+	switch {
+	case errors.Is(err, fs.ErrExist):
+		return fmt.Errorf("cannot reserve secret file: %s already exists (or is a symlink); choose a new file name", path)
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("cannot reserve secret file: directory does not exist: %s; create it first, for example `mkdir -m 700 %s`", dir, dir)
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("cannot reserve secret file: you cannot create files in %s; use a private directory you own, for example ~/ci-secrets", dir)
+	default:
+		return fmt.Errorf("cannot reserve secret file; use a new path in a private directory you own")
+	}
+}
+
+// ciRequireGrantAction reads the identity's safe metadata and refuses early,
+// naming the action, when the grant lacks it. The server error body is never
+// shown, so without this the user saw only "HTTP 403".
+func ciRequireGrantAction(client *api.Client, principalID, action string) error {
+	var identity map[string]interface{}
+	if err := client.CIAdminRequest(http.MethodGet, "/"+principalID, nil, &identity); err != nil {
+		return err
+	}
+	grant, ok := identity["grant"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	actions, ok := grant["actions"].([]interface{})
+	if !ok {
+		return nil
+	}
+	for _, item := range actions {
+		if item == action {
+			return nil
+		}
+	}
+	return fmt.Errorf("the identity's grant does not include %s; add it with `preloop ci update %s --input change.json` (a grant whose actions include %q), then subscribe again", action, principalID, action)
 }
 
 func ciRequestPath(operation string, args []string) (string, string) {
