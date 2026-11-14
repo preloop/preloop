@@ -78,6 +78,10 @@ class Account(Base):
 
     __tablename__ = "account"
 
+    step_up_window_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     weekly_report_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
@@ -180,6 +184,10 @@ class Account(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "step_up_window_minutes = 0 OR step_up_window_minutes BETWEEN 5 AND 720",
+            name="ck_account_step_up_window",
+        ),
         CheckConstraint(
             "(parent_account_id IS NULL) = (hierarchy_depth = 0)",
             name="ck_account_parent_iff_nonroot",

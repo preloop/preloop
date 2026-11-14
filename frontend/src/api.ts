@@ -769,6 +769,25 @@ async function performFetchWithAuth(
     let isUpstreamGatewayError = false;
     try {
       const errorData = await response.clone().json();
+      if (errorData?.detail?.code === 'step_up_required') {
+        if (passive) return response;
+        const { requestStepUp } = await import('./components/step-up-dialog');
+        if (await requestStepUp(errorData.detail.methods || ['enroll'])) {
+          headers.set(
+            'Authorization',
+            `Bearer ${localStorage.getItem('accessToken')}`
+          );
+          // A second refusal is returned to the original caller, never retried.
+          return fetch(url, { ...options, headers });
+        }
+        return response;
+      }
+      if (
+        ['invalid_code', 'challenge_expired', 'challenge_locked'].includes(
+          errorData?.detail?.code
+        )
+      )
+        return response;
       if (errorData && typeof errorData === 'object' && 'error' in errorData) {
         isUpstreamGatewayError = true;
       }

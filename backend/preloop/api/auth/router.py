@@ -44,6 +44,8 @@ from preloop.api.auth.email_verification import (
     check_resend_rate_limit,
     enforce_verified_email,
 )
+from preloop.services.authentication_policy import require_account_step_up
+
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     MAX_SESSION_DAYS,
@@ -1157,7 +1159,9 @@ async def _audited_password_login(
     succeeded = False
     reason_code = "invalid_credentials"
     try:
-        user = await authenticate_user(username, password, source_ip=source_ip, db=db)
+        user = await authenticate_user(
+            username, password, source_ip=source_ip, db=db, record_success=False
+        )
         if user is not None:
             reason_code = "identity_or_policy_rejected"
             user = await _landing_row(user, db)
@@ -1172,6 +1176,7 @@ async def _audited_password_login(
                     db, user, method="password", source_ip=source_ip
                 )
             )
+            await run_db_off_loop(lambda: _record_successful_login(db, user, source_ip))
             succeeded = True
         return user, auth_context
     except Exception as exc:
@@ -1750,7 +1755,10 @@ def _require_admin_for_telemetry_scope(
 
 
 @router.post(
-    "/api-keys", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED
+    "/api-keys",
+    response_model=ApiKeyResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_account_step_up("api_key.create"))],
 )
 def create_api_key(
     key_data: ApiKeyCreate,
@@ -2377,7 +2385,11 @@ def update_api_key_governance(
 # operators should use the account-scoped key management endpoints.
 
 
-@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/api-keys/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_account_step_up("api_key.delete"))],
+)
 def delete_api_key(
     key_id: UUID,
     current_user: AuthUserResponse = Depends(get_current_active_user),
@@ -2449,7 +2461,12 @@ def get_api_usage(
 
 
 async def authenticate_user(
-    username: str, password: str, db: Session, source_ip: Optional[str] = None
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: Optional[str] = None,
+    *,
+    record_success: bool = True,
 ) -> Optional[UserModel]:
     """Authenticate a user.
 
@@ -2464,17 +2481,21 @@ async def authenticate_user(
     from preloop.api.loop_safety import run_db_off_loop
 
     return await run_db_off_loop(
-        lambda: _authenticate_user_sync(username, password, db, source_ip)
+        lambda: _authenticate_user_sync(
+            username, password, db, source_ip, record_success=record_success
+        )
     )
 
 
 def _authenticate_user_sync(
-    username: str, password: str, db: Session, source_ip: Optional[str] = None
+    username: str,
+    password: str,
+    db: Session,
+    source_ip: Optional[str] = None,
+    *,
+    record_success: bool = True,
 ) -> Optional[UserModel]:
     """Verify credentials and record login using one sequential worker owner."""
-    from datetime import datetime, timezone
-    import threading
-
     session = db
 
     try:
@@ -2494,6 +2515,18 @@ def _authenticate_user_sync(
     if user is None:
         return None
     require_active_identity(session, user)
+    if record_success:
+        _record_successful_login(session, user, source_ip)
+    return user
+
+
+def _record_successful_login(
+    session: Session, user: UserModel, source_ip: Optional[str] = None
+) -> None:
+    """Record activity and notifications only after authentication completes."""
+    from datetime import datetime, timezone
+    import threading
+
     # Capture old last_login before updating (for inactivity notification)
     old_last_login = user.last_login
 
@@ -2549,7 +2582,6 @@ def _authenticate_user_sync(
     # The audit insert commits and expires user fields. Token construction
     # reads them immediately after this worker returns to the event loop.
     _ = user.id, user.account_id, user.username, user.email, user.is_active
-    return user
 
 
 @router.post("/complete-onboarding", response_model=Token)

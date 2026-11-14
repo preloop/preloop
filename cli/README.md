@@ -118,6 +118,12 @@ The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, confi
 
 An interactive login asks whether to install a runner (default no). Skip it with `--no-runner` or `PRELOOP_NO_RUNNER=1`. `preloop runner setup` runs the same step later. Headless login, `--token`, and `PRELOOP_TOKEN` never install a runner.
 
+### Authenticator two-factor sign-in
+
+`preloop auth login` uses browser sign-in, including authenticator or recovery
+codes when enabled. Finish both steps in the browser; no terminal code prompt
+is required. Passkey-only accounts continue to use a passkey.
+
 ### Signing out and revoking a login
 
 `preloop auth logout` posts the stored refresh token to `POST /oauth/revoke`,

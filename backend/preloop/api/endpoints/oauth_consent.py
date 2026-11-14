@@ -320,6 +320,19 @@ async def consent_submit(
             auth_context = new_authentication(db, user, method="password")
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("code") == "mfa_required":
+                # The console preserves the authorization request and can
+                # complete password + MFA before consent. Never put the
+                # challenge or password in this redirect.
+                return await consent_page(
+                    client_id=client_id,
+                    redirect_uri=redirect_uri,
+                    code_challenge=code_challenge,
+                    state=state,
+                    scopes=scopes,
+                    redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
+                    resource=resource,
+                )
             if detail.get("code") != "password_login_disabled":
                 raise
             # Passkey-only account: the console consent page (passkey

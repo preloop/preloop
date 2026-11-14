@@ -425,10 +425,10 @@ describe('SecurityView passkey-only switch', () => {
     ).to.contain('If you lose every passkey');
   });
 
-  // protects=a password session cannot flip the setting from the console;
-  // fails_when=the switch is enabled or no reason is shown; no_claim=the
-  // server enforces the same rule (tested in the backend suite).
-  it('is disabled with an explanation in a password session', async () => {
+  // protects=password sessions can start the shared step-up flow;
+  // fails_when=the switch is disabled or the confirmation hint is absent;
+  // no_claim=server proof enforcement is tested in the backend suite.
+  it('offers identity confirmation in a password session', async () => {
     localStorage.setItem(
       'accessToken',
       token({ amr: ['password'], auth_time: Math.floor(Date.now() / 1000) })
@@ -437,11 +437,11 @@ describe('SecurityView passkey-only switch', () => {
     const element = await render();
 
     expect(switchOf(element).checked).to.equal(false);
-    expect(switchOf(element).disabled).to.equal(true);
+    expect(switchOf(element).disabled).to.equal(false);
     expect(
       element.shadowRoot?.querySelector('[data-testid="passkey-only-reason"]')
         ?.textContent
-    ).to.contain('Sign in with a passkey');
+    ).to.contain('confirm your identity');
   });
 
   // protects=enabling replaces this session's tokens with the returned pair;

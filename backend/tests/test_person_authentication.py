@@ -411,7 +411,7 @@ def test_passkey_signin_survives_origin_membership_removal(
     crud_user.hard_delete(db_session, user_id=child.id)
     monkeypatch.setattr(
         "preloop.api.auth.webauthn_router.verify_authentication_response",
-        lambda **kwargs: SimpleNamespace(new_sign_count=1),
+        lambda **kwargs: SimpleNamespace(new_sign_count=1, user_verified=True),
     )
     req = Request(
         {
@@ -477,10 +477,21 @@ def test_password_reset_invalidates_outstanding_passkey_registration(
         person_id=person.id,
         hashed_password=get_password_hash(NEW_PASSWORD),
     )
+    from preloop.services.authentication_policy import new_authentication
+
+    fresh_session = create_access_token(
+        {"sub": str(child.id)},
+        auth_generation=person.auth_generation,
+        auth_context=new_authentication(db_session, child, method="password"),
+    )
+    current_request = request()
+    current_request.scope["headers"] = [
+        (b"authorization", ("Bearer " + fresh_session).encode())
+    ]
     with pytest.raises(HTTPException) as denial:
         registration_verify(
             RegistrationVerifyRequest(challenge_token=challenge, credential={}),
-            request(),
+            current_request,
             child,
             db_session,
         )
