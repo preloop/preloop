@@ -6,6 +6,7 @@ export function billingAttribution(
   data: Record<string, unknown> | null | undefined
 ): string {
   if (data?.billing_path === 'allowance') return 'Billed to: allowance';
+  if (data?.billing_path === 'subscription') return 'Billed to: subscription';
   if (data?.billing_path === 'your_key') {
     const name =
       typeof data.billing_model_name === 'string'

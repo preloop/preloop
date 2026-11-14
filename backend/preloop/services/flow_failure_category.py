@@ -359,12 +359,23 @@ _EXECUTION_BUDGET_RE = re.compile(
 )
 # "zai does not support parameters: ['parallel_tool_calls']",
 # "Model 'openai/gpt-5.4' is bound to another agent's subscription credentials"
+# "unexpected status 400 Bad Request: ... This response_format type is
+# unavailable now" (built-in DeepSeek asked for a JSON schema)
 _MODEL_CONFIG_RE = re.compile(
     r"does not support parameters"
     r"|wire_api.{0,80}(?:no longer supported|unsupported)"
     r"|is bound to another agent"
     r"|model metadata for [`'\"][^`'\"]+[`'\"] not found"
-    r"|\bmodel not found\b|unsupported model|invalid model",
+    r"|\bmodel not found\b|unsupported model|invalid model"
+    # DeepSeek's refusal of a json_schema response_format, the gateway's own
+    # structured-output refusal, and any other model 400 the Codex harness
+    # surfaces as "unexpected status 400 Bad Request" (its model-request
+    # phrase; a bare "400 Bad Request" from a tool is not matched). A model
+    # 400 is the request as configured, never a retry, matching the analysis
+    # rule for status 400.
+    r"|response_format type is unavailable"
+    r"|does not support structured response_format"
+    r"|unexpected status 400 bad request",
     re.IGNORECASE,
 )
 # 'stream error ... Upstream provider disconnected mid-stream',
