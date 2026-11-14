@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 from sqlalchemy import (  # Added JSON
     Boolean,
     Column,
@@ -61,6 +61,11 @@ class Flow(Base):
     )
     agent_type = Column(String, nullable=False, default="openhands")
     agent_config = Column(JSON, nullable=False)  # Changed from JSONB
+    # The model a forced model delete took from this flow, computed in SQL so
+    # list reads can flag the flow without loading the agent configuration.
+    orphaned_model_id = column_property(
+        agent_config.op("->")("orphaned_model").op("->>")("id")
+    )
     allowed_mcp_servers = Column(
         JSON,
         nullable=False,
@@ -211,6 +216,32 @@ class Flow(Base):
     @property
     def ai_model_name(self) -> Optional[str]:
         return self.ai_model.name if self.ai_model else None
+
+    @property
+    def model_health(self) -> Optional[Dict[str, Optional[str]]]:
+        """Whether this flow's own model can serve a run.
+
+        ``missing`` when a forced delete removed the model and no other model
+        was selected since; ``error`` when the model's credential failed
+        (``credentials_status: error``), with its error code; ``ok``
+        otherwise. ``None`` when the flow selects no model.
+        """
+        model = self.ai_model
+        if model is None:
+            if self.ai_model_id is None and self.orphaned_model_id:
+                return {
+                    "status": "missing",
+                    "code": "model_deleted",
+                    "model_id": self.orphaned_model_id,
+                }
+            return None
+        if model.credentials_status == "error":
+            return {
+                "status": "error",
+                "code": model.credentials_last_error_code,
+                "model_id": str(model.id),
+            }
+        return {"status": "ok", "code": None, "model_id": str(model.id)}
 
     def __repr__(self) -> str:
         return f"<Flow(id={self.id}, name='{self.name}')>"

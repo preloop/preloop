@@ -86,7 +86,9 @@ import type {
   AIModelsOverviewResponse,
   ApiKeyGatewayUsageSummaryResponse,
   AIModelRuntimeSessionListResponse,
+  AIModelFlowLink,
   AIModelUsedByResponse,
+  FlowModelHealth,
   AIModelGatewayUsageSearchResponse,
   AIModel,
   CostAnalyticsSummaryResponse,
@@ -4717,15 +4719,56 @@ export async function synthesizeSpeech(
   return response.blob();
 }
 
-export async function deleteAIModel(modelId: string) {
+/** A delete refused because flows still select the model (409 model_in_use). */
+export class ModelInUseError extends Error {
+  /** Every enabled flow of the account that selects the model. */
+  readonly flowCount: number;
+  /** Disabled flows that will lose the model but do not block. */
+  readonly disabledFlowCount: number;
+  /** The enabled flows this caller can see; may be fewer than flowCount. */
+  readonly flows: AIModelFlowLink[];
+
+  constructor(
+    message: string,
+    flowCount: number,
+    flows: AIModelFlowLink[],
+    disabledFlowCount = 0
+  ) {
+    super(message);
+    this.name = 'ModelInUseError';
+    this.flowCount = flowCount;
+    this.disabledFlowCount = disabledFlowCount;
+    this.flows = flows;
+  }
+}
+
+/**
+ * Delete a model. Without ``force`` the server refuses with 409 while flows
+ * select the model, thrown here as ``ModelInUseError`` naming them; with it
+ * those flows are left without a model.
+ */
+export async function deleteAIModel(
+  modelId: string,
+  options: { force?: boolean } = {}
+) {
+  const query = options.force ? '?force=true' : '';
   const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/ai-models/${modelId}`,
+    `${REST_API_PREFIX}/ai-models/${modelId}${query}`,
     {
       method: 'DELETE',
     }
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    const detail = errorData?.detail;
+    if (response.status === 409 && detail?.code === 'model_in_use') {
+      throw new ModelInUseError(
+        extractErrorMessage(errorData, 'Flows still use this model'),
+        Number(detail.flow_count) || 0,
+        Array.isArray(detail.flows) ? detail.flows : [],
+        Number(detail.disabled_flow_count) || 0
+      );
+    }
     throw new Error(
       extractErrorMessage(errorData, 'Failed to delete AI model')
     );
@@ -4974,6 +5017,12 @@ export async function getAIModelUsedBy(
   return {
     agents: Array.isArray(body.agents) ? body.agents : [],
     flows: Array.isArray(body.flows) ? body.flows : [],
+    ci_identities: Array.isArray(body.ci_identities) ? body.ci_identities : [],
+    shared_credential_models: Array.isArray(body.shared_credential_models)
+      ? body.shared_credential_models
+      : [],
+    enabled_flow_count: Number(body.enabled_flow_count) || 0,
+    disabled_flow_count: Number(body.disabled_flow_count) || 0,
     truncated: body.truncated === true,
   };
 }
@@ -5034,6 +5083,7 @@ export interface FlowSummary {
   trigger_event_types: string[] | null;
   ai_model_id: string | null;
   ai_model_name: string | null;
+  model_health?: FlowModelHealth | null;
   agent_type: string;
   is_enabled: boolean;
   is_preset: boolean;
@@ -5462,6 +5512,42 @@ export async function getFlowExecution(executionId: string): Promise<any> {
   );
   if (!response.ok) {
     throw new Error('Failed to fetch flow execution');
+  }
+  return response.json();
+}
+
+/**
+ * Publish, or publish again, the review and commit status of a finished
+ * read-only review (`POST /flows/executions/{id}/platform-review`). No body:
+ * the target comes from the execution's own binding. Idempotent.
+ *
+ * Throws with the server's reason code (`detail.code`) on 409, for example
+ * `execution_not_finished`, and a PermissionError message on 403.
+ */
+export async function publishExecutionPlatformReview(
+  executionId: string
+): Promise<{ execution_id: string; platform_review: any }> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/platform-review`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = (body as { detail?: unknown })?.detail;
+    const code =
+      detail && typeof detail === 'object'
+        ? (detail as { code?: unknown }).code
+        : undefined;
+    const error = new Error(
+      typeof detail === 'string' && detail
+        ? detail
+        : typeof code === 'string'
+          ? code
+          : 'Failed to publish the review'
+    ) as Error & { code?: string; status?: number };
+    if (typeof code === 'string') error.code = code;
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }

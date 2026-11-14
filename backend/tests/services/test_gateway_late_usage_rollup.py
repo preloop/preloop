@@ -22,7 +22,7 @@ from preloop.services.openai_gateway import OpenAIGatewayService
 
 
 def _record(
-    context_data: dict, *, hosted: bool = False
+    context_data: dict, *, hosted: bool = False, oauth: bool = False
 ) -> tuple[MagicMock, OpenAIGatewayService]:
     account_id = uuid4()
     user = SimpleNamespace(id=uuid4(), account_id=account_id)
@@ -38,6 +38,8 @@ def _record(
         auth_context=ModelGatewayAuthContext(token="token", user=user, api_key=api_key),
     )
     service._begin_request_accounting()
+    if oauth:
+        service._last_upstream_credential_type = "oauth"
     usage_row = SimpleNamespace(
         id=uuid4(),
         endpoint="/openai/v1/chat/completions",
@@ -101,6 +103,7 @@ def _record(
             upstream_response=None,
             endpoint_kind="chat_completions",
         )
+    service._captured_usage_kwargs = usage_crud.log_gateway_request.call_args.kwargs
     service._captured_billing_metadata = (
         usage_crud.log_gateway_request.call_args.kwargs["meta_data"]
     )
@@ -128,3 +131,13 @@ def test_recorded_request_names_actual_model_and_billing_path() -> None:
         assert metadata["billing_model_name"] == "probe-model"
         assert metadata["billing_model_id"]
         assert "provider-secret" not in str(metadata)
+
+
+def test_subscription_request_is_not_labelled_as_a_customer_key() -> None:
+    """Subscription (OAuth) traffic records $0 spend and its own billing path."""
+    _sync, service = _record({}, oauth=True)
+    metadata = service._captured_billing_metadata
+    assert metadata["billing_path"] == "subscription"
+    assert service._captured_usage_kwargs["cost_source"] == "subscription"
+    assert service._captured_usage_kwargs["estimated_cost"] == 0.0
+    assert metadata["api_equivalent_cost"] == 0.1
