@@ -157,6 +157,10 @@ export class ConsoleShell extends LitElement {
   @state()
   private _permissionsLoaded = false;
 
+  /** True when the profile request failed, so permissions are unknown. */
+  @state()
+  private _profileUnavailable = false;
+
   @state()
   private _isSuperuser = false;
 
@@ -681,6 +685,7 @@ export class ConsoleShell extends LitElement {
           return null;
         }),
       ]);
+      this._profileUnavailable = profile === null;
       this.features = featuresResponse.features;
       this._fleetAllowed =
         !!profile && hasFleetPermission(profile, 'view_device_fleet');
@@ -692,6 +697,7 @@ export class ConsoleShell extends LitElement {
       // Default to empty features if fetch fails
       this.features = {};
       this._permissions = null;
+      this._profileUnavailable = true;
       this._isSuperuser = false;
     } finally {
       this._featuresLoaded = true;
@@ -751,6 +757,13 @@ export class ConsoleShell extends LitElement {
     const required = NAV_PERMISSIONS[href];
     if (!required) {
       return true;
+    }
+    // Fail closed: until the profile has said what this person may see, or
+    // when it could not be read, a gated link is hidden rather than shown
+    // to someone who may lack the permission (01-12). The server still
+    // enforces every page; this is about not advertising them.
+    if (!this._permissionsLoaded || this._profileUnavailable) {
+      return false;
     }
     return hasAnyPermission(this._permissions, required);
   }
