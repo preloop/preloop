@@ -7,7 +7,7 @@ description: >-
   reuses completed merge audits and the change briefs in PR bodies, runs
   deterministic risk rules, and pays for a model pass only on changes that
   have neither. Unverified means an evidence gap, not a failure.
-icon: document-report
+icon: clipboard-data
 trigger_event_source: schedule
 trigger_event_types:
   - schedule

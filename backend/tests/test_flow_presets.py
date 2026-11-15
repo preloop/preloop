@@ -640,3 +640,23 @@ class TestCompletionMarkersAreRecognizedByOrchestrator:
             "success confirmation — the preset can never confirm completion "
             f"via result.json ({classifications})"
         )
+
+
+_PRESETS_DIR = Path(__file__).resolve().parents[1] / "presets"
+_SHOELACE_ICONS = (
+    Path(__file__).resolve().parents[2]
+    / "frontend/node_modules/@shoelace-style/shoelace/dist/assets/icons"
+)
+
+
+@pytest.mark.skipif(
+    not _SHOELACE_ICONS.is_dir(), reason="frontend dependencies not installed"
+)
+def test_every_preset_icon_exists_in_the_console_icon_set():
+    """A preset icon the console cannot load renders as an empty box (404)."""
+    missing = []
+    for path in sorted(_PRESETS_DIR.glob("*.yaml")):
+        icon = (yaml.safe_load(path.read_text()) or {}).get("icon")
+        if icon and not (_SHOELACE_ICONS / f"{icon}.svg").is_file():
+            missing.append(f"{path.name}: {icon}")
+    assert missing == []
