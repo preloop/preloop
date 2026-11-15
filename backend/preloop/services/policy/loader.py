@@ -136,18 +136,11 @@ def _model_io_condition_type(condition: ToolCondition) -> str:
     return explicit
 
 
-def _get_cel_validation_service():
-    """Get the CEL validation service if available (lazy import to avoid circular deps).
+def _get_cel_validation_service() -> Any:
+    """Resolve optional CEL validation through the canonical plugin registry."""
+    from preloop.plugins.base import get_plugin_manager
 
-    Returns:
-        CEL validation service instance or None if not available.
-    """
-    try:
-        from plugins.cel_validation.service import get_cel_validation_service
-
-        return get_cel_validation_service()
-    except ImportError:
-        return None
+    return get_plugin_manager().get_service("cel_validation_service")
 
 
 def _validate_cel_expressions_in_policy(

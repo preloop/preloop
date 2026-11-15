@@ -511,7 +511,7 @@ async def run_scheduler_async(
     show_default=True,
 )
 @click.command(name="scheduler")
-def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str):
+def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str) -> None:
     """
     Start the Preloop Sync scheduler service in the foreground.
 
@@ -527,6 +527,11 @@ def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str):
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+    from preloop.plugins.base import get_plugin_manager
+
+    get_plugin_manager()
+    from preloop.sync.plugin_status import run_with_status
 
     click.echo(
         f"Starting Preloop Sync scheduler service in foreground (reload interval: {reload_interval}s, max workers: {max_workers})..."
@@ -552,7 +557,12 @@ def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str):
     start_audit()
     try:
         # Run the scheduler in an asyncio event loop
-        asyncio.run(run_scheduler_async(scheduler, reload_interval, db, max_workers))
+        asyncio.run(
+            run_with_status(
+                run_scheduler_async(scheduler, reload_interval, db, max_workers),
+                "scheduler",
+            )
+        )
         logger.info("Main loop exited.")
 
     finally:

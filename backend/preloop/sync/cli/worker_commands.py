@@ -39,9 +39,20 @@ def worker_cmd(log_level: str, tasks: str, exclude_tasks: str) -> None:
     Start the Preloop Sync worker service in the foreground.
     """
     logging.basicConfig(level=log_level)
+    from preloop.plugins.base import get_plugin_manager
+
+    get_plugin_manager()
+    from preloop.sync.plugin_status import run_with_status
+
     warn_codex_image_tag_once()
     tasks_list = tasks.split(",") if tasks else []
     exclude_list = exclude_tasks.split(",") if exclude_tasks else []
     if tasks_list and exclude_list:
         raise click.UsageError("--tasks and --exclude-tasks are mutually exclusive")
-    asyncio.run(main(tasks_allowlist=tasks_list, tasks_excludelist=exclude_list))
+    asyncio.run(
+        run_with_status(
+            main(tasks_allowlist=tasks_list, tasks_excludelist=exclude_list),
+            "worker",
+            [f"allow:{t}" for t in tasks_list] + [f"exclude:{t}" for t in exclude_list],
+        )
+    )

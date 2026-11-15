@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from sqlalchemy import text
 
 from preloop.models.db.session import get_health_engine
@@ -184,3 +184,29 @@ def health_check() -> Dict[str, Any]:
         health_status["upstream_connections"] = f"error: {type(e).__name__}"
 
     return health_status
+
+
+@router.get("/health/plugins")
+async def plugin_health(
+    authorization: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    """Read fleet plugin state using a dedicated operator bearer credential."""
+    import secrets
+
+    from preloop.sync.plugin_status import read_status
+
+    expected = os.getenv("PLUGIN_STATUS_OPERATOR_TOKEN", "")
+    if not expected:
+        raise HTTPException(
+            status_code=503, detail="Plugin status credential not configured"
+        )
+    supplied = authorization or ""
+    if not secrets.compare_digest(supplied.encode(), f"Bearer {expected}".encode()):
+        raise HTTPException(status_code=401, detail="Operator credential required")
+    try:
+        return await read_status()
+    except Exception:
+        logger.exception("Plugin status unavailable")
+        raise HTTPException(
+            status_code=503, detail="Plugin status unavailable"
+        ) from None
