@@ -5016,6 +5016,7 @@ ${log.payload.content}</pre>
       flow_name: this.flow?.name ?? this.execution?.flow_name ?? undefined,
       agent_type: this.flow?.agent_type,
       model_name: this.flow?.ai_model_name,
+      failure_category: this.execution?.failure_category,
     });
     if (!confirmed) return;
 

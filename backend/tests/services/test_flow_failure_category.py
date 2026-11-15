@@ -119,6 +119,23 @@ STAGING_MESSAGES = [
     ("Execution stopped by user request after 45 seconds.", "cancelled"),
     ("Traceback (most recent call last): ModuleNotFoundError: no numpy", "tool_error"),
     ("opencode command failed", "agent_error"),
+    # Production 2026-11-15: a reviewer flow whose tracker token no longer
+    # had repository access was chipped "Unknown" with a retry button.
+    (
+        "fatal: Authentication failed for "
+        "'https://gitlab.spacecode.ai/spacecode/preloop-ee.git/'",
+        "repository_access",
+    ),
+    (
+        "fatal: could not read Username for 'https://github.com': "
+        "terminal prompts disabled",
+        "repository_access",
+    ),
+    (
+        "remote: Repository not found.\n"
+        "fatal: repository 'https://github.com/acme/api.git/' not found",
+        "repository_access",
+    ),
 ]
 
 

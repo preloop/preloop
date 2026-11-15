@@ -9,6 +9,10 @@
 import { confirmDialog } from '../components/confirm-dialog';
 import type { ResourceAction } from '../components/resource-actions';
 import { RUNNING_STATUSES } from '../utils/execution';
+import {
+  failureCategoryLabel,
+  failureCategoryTooltip,
+} from '../utils/failure-category';
 import { defineActions, type ActionContext } from './registry';
 
 /**
@@ -95,17 +99,48 @@ export function confirmStopExecution(execution: {
  *
  * States the model and harness the retry will use (re-resolved from current flow).
  */
-export function confirmRetryExecution(options: {
+export interface RetryConfirmOptions {
   flow_name?: string | null;
   agent_type?: string | null;
   model_name?: string | null;
-}): Promise<boolean> {
+  /** The failed run's stored category, to warn when a retry cannot help. */
+  failure_category?: string | null;
+}
+
+/**
+ * Failures a plain retry repeats exactly: a credential, a billing account or
+ * a model setting has to change first. The confirmation says so instead of
+ * implying another attempt might work.
+ */
+export const NON_TRANSIENT_FAILURE_CATEGORIES: ReadonlySet<string> = new Set([
+  'repository_access',
+  'model_auth',
+  'provider_billing',
+  'model_config',
+  'hook_binding_invalid',
+]);
+
+/** The body of the retry confirmation. */
+export function retryConfirmDetail(options: RetryConfirmOptions): string {
   const harness = options.agent_type || 'default harness';
   const model = options.model_name || 'default model';
+  const base = `The retry will run with ${harness} using ${model}, re-resolved from the current flow definition.`;
+  const category = (options.failure_category || '').trim().toLowerCase();
+  if (!NON_TRANSIENT_FAILURE_CATEGORIES.has(category)) return base;
+  return `${base} This run failed with "${failureCategoryLabel(
+    category
+  )}", which a retry repeats until the cause is fixed: ${failureCategoryTooltip(
+    category
+  )}`;
+}
+
+export function confirmRetryExecution(
+  options: RetryConfirmOptions
+): Promise<boolean> {
   return confirmDialog({
     title: 'Retry run',
     message: `Retry the run of "${options.flow_name || 'this flow'}"?`,
-    detail: `The retry will run with ${harness} using ${model}, re-resolved from the current flow definition.`,
+    detail: retryConfirmDetail(options),
     confirmLabel: 'Retry run',
     cancelLabel: 'Cancel',
     variant: 'primary',

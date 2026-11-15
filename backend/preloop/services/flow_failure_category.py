@@ -77,6 +77,10 @@ it*, not about severity:
     not run (unavailable dependency, exit 126/127, exhausted gate budget).
     An environment gap, like ``setup_failed`` — runnable after bounded setup
     repair, never evidence of broken code.
+``repository_access``
+    Git could not clone or fetch the flow's repository because the remote
+    refused the credential or does not show the repository to it. The
+    tracker's token is the fix; a retry fails the same way.
 ``tool_error``
     A command or script the agent ran inside the workspace failed.
 ``agent_error``
@@ -172,6 +176,8 @@ FAILURE_CATEGORY_RESULT_SCHEMA_INVALID = "result_schema_invalid"
 FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
 FAILURE_CATEGORY_VERIFICATION_FAILED = "verification_failed"
 FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
+#: Git refused the repository credential, or the remote hides the repository.
+FAILURE_CATEGORY_REPOSITORY_ACCESS = "repository_access"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
 FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
@@ -208,6 +214,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_SETUP_FAILED,
     FAILURE_CATEGORY_VERIFICATION_FAILED,
     FAILURE_CATEGORY_VERIFICATION_BLOCKED,
+    FAILURE_CATEGORY_REPOSITORY_ACCESS,
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
@@ -396,6 +403,17 @@ _MODEL_TRANSIENT_RE = re.compile(
     r"|typeerror:\s*terminated|fetch failed",
     re.IGNORECASE,
 )
+# Git's own refusals when cloning or fetching over HTTPS: the remote rejected
+# the credential ("fatal: Authentication failed for '<url>'"), there was no
+# credential to offer ("could not read Username"), or the remote hides the
+# repository from it ("Repository not found").
+_REPOSITORY_ACCESS_RE = re.compile(
+    r"fatal: Authentication failed for '"
+    r"|fatal: could not read (?:Username|Password) for '"
+    r"|remote: Repository not found"
+    r"|fatal: repository '[^']+' not found",
+    re.IGNORECASE,
+)
 # The container-side setup block's marker, and the sentence
 # analyze_agent_failure builds from it.
 _SETUP_FAILED_RE = re.compile(
@@ -520,6 +538,7 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_DEFAULT_LIMIT_RE, FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED),
     (_EXECUTION_BUDGET_RE, FAILURE_CATEGORY_BUDGET_EXCEEDED),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
+    (_REPOSITORY_ACCESS_RE, FAILURE_CATEGORY_REPOSITORY_ACCESS),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
     (_VERIFICATION_BLOCKED_RE, FAILURE_CATEGORY_VERIFICATION_BLOCKED),
     (_VERIFICATION_FAILED_RE, FAILURE_CATEGORY_VERIFICATION_FAILED),

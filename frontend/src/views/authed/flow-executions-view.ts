@@ -1350,6 +1350,7 @@ export class FlowExecutionsView extends AuthedElement {
       flow_name: flow?.name || execution.flow_name,
       agent_type: flow?.agent_type,
       model_name: flow?.ai_model_name,
+      failure_category: execution.failure_category,
     });
     if (!confirmed) return;
 

@@ -29,6 +29,7 @@ describe('failure-category', () => {
       'agent_no_progress',
       'publication_missing',
       'result_schema_invalid',
+      'repository_access',
       'tool_error',
       'agent_error',
       'model_stream_idle',

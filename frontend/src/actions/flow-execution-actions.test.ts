@@ -1,6 +1,7 @@
 import { expect } from '@open-wc/testing';
 import {
   confirmRetryExecution,
+  retryConfirmDetail,
   executionSessionUrl,
   flowExecutionActions,
 } from './flow-execution-actions';
@@ -120,6 +121,28 @@ describe('flowExecutionActions', () => {
     expect(actionIds(intersectActions([running, failed]))).to.deep.equal([
       'open',
     ]);
+  });
+
+  it('warns that a retry repeats a credential failure', () => {
+    const detail = retryConfirmDetail({
+      agent_type: 'codex',
+      model_name: 'gpt-5',
+      failure_category: 'repository_access',
+    });
+    expect(detail).to.contain('retry repeats');
+    expect(detail).to.contain('repository access');
+    expect(detail).to.contain('tracker token');
+  });
+
+  it('keeps the plain retry wording for a transient failure', () => {
+    const detail = retryConfirmDetail({
+      agent_type: 'codex',
+      model_name: 'gpt-5',
+      failure_category: 'model_transient',
+    });
+    expect(detail).to.equal(
+      'The retry will run with codex using gpt-5, re-resolved from the current flow definition.'
+    );
   });
 
   it('exposes confirmRetryExecution function', () => {
