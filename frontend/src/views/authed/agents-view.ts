@@ -107,21 +107,15 @@ import {
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
 import { debugLog } from '../../utils/debug';
+import { AGENT_KIND_PRESENTATION } from '../../utils/agent-kinds';
 
+// Every kind the console can name, from the one presentation table, so a
+// kind present in the data (Copilot CLI, VS Code, Antigravity) cannot be
+// missing from the menu. `geminicli` is a legacy spelling of `gemini_cli`.
 const AVAILABLE_AGENT_KINDS = [
-  { value: 'openclaw', label: 'OpenClaw' },
-  { value: 'opencode', label: 'OpenCode' },
-  { value: 'pi', label: 'Pi' },
-  { value: 'deepseek', label: 'DeepSeek Harness' },
-  { value: 'claude_code', label: 'Claude Code' },
-  { value: 'claude_desktop', label: 'Claude Desktop' },
-  { value: 'codex', label: 'Codex CLI' },
-  { value: 'gemini_cli', label: 'Gemini CLI' },
-  { value: 'hermes', label: 'Hermes' },
-  { value: 'cursor', label: 'Cursor' },
-  { value: 'devin', label: 'Devin' },
-  { value: 'desktop_agent', label: 'Desktop Agent' },
-  { value: 'custom', label: 'Custom' },
+  ...Object.entries(AGENT_KIND_PRESENTATION)
+    .filter(([value]) => value !== 'geminicli')
+    .map(([value, presentation]) => ({ value, label: presentation.label })),
   { value: 'flows', label: 'Flows' },
 ];
 
@@ -431,6 +425,18 @@ export class AgentsView extends LitElement {
         }
         .usage-window {
           color: var(--sl-color-neutral-600);
+        }
+        .kind-filter-notice {
+          color: var(--sl-color-warning-700);
+        }
+        .kind-filter-notice .link-button {
+          background: none;
+          border: none;
+          color: var(--sl-color-primary-700);
+          cursor: pointer;
+          font: inherit;
+          padding: 0 0 0 var(--sl-spacing-2x-small);
+          text-decoration: underline;
         }
         /* The canvas fills the window the shell hands it. List and cards
            grow, and the shell content area is what scrolls. */
@@ -3489,6 +3495,49 @@ export class AgentsView extends LitElement {
     );
   }
 
+  /** Agent kinds (not flows) the remembered kind filter is hiding. */
+  private get hiddenAgentKindCount(): number {
+    return AVAILABLE_AGENT_KINDS.filter(
+      (kind) => kind.value !== 'flows' && !this.agentKinds.includes(kind.value)
+    ).length;
+  }
+
+  /** Re-selects every agent kind, keeping the flows choice and the search. */
+  private showAllAgentKinds = (): void => {
+    const includeFlows = this.agentKinds.includes('flows');
+    this.agentKinds = AGENT_KIND_VALUES.filter(
+      (kind) => kind !== 'flows' || includeFlows
+    );
+    persistAgentKinds(this.agentKinds);
+    this.syncListFilters();
+    void this.loadAgents();
+  };
+
+  /**
+   * The kind filter is remembered across visits, so say when it is on:
+   * otherwise a later visit shows fewer agents with nothing to explain why.
+   */
+  private renderKindFilterNotice() {
+    const hidden = this.hiddenAgentKindCount;
+    if (hidden === 0 || !this.resultsLabel) {
+      return nothing;
+    }
+    return html`<span
+      slot="count"
+      class="kind-filter-notice"
+      data-testid="agents-kind-filter-notice"
+    >
+      · hiding ${hidden} agent ${hidden === 1 ? 'kind' : 'kinds'}
+      <button
+        type="button"
+        class="link-button"
+        @click=${this.showAllAgentKinds}
+      >
+        Show all
+      </button>
+    </span>`;
+  }
+
   /** True when a kind, last-seen window or search narrows the list. */
   private get agentFiltersActive(): boolean {
     return (
@@ -5049,6 +5098,7 @@ export class AgentsView extends LitElement {
               <sl-option value="last_7_days">Last 7 days</sl-option>
             </sl-select>
             <span slot="count">${this.resultsLabel}</span>
+            ${this.renderKindFilterNotice()}
             ${
               // The numbers are lifetime totals; the Last seen filter picks
               // which agents are listed, not the window they cover (B-02).
