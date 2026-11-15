@@ -150,6 +150,7 @@
   "GET /api/v1/cost/copilot/mappings": "deny",
   "GET /api/v1/cost/copilot/spend-coverage": "deny",
   "GET /api/v1/cost/health": "deny",
+  "GET /api/v1/cost/report-items": "deny",
   "GET /api/v1/cost/summary": "deny",
   "GET /api/v1/cost/timeseries": "deny",
   "GET /api/v1/cost/work-items": "deny",
