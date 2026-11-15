@@ -15,8 +15,8 @@ import time
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from typing import Any, TypeVar
 
 import nats
@@ -25,6 +25,9 @@ from nats.js.errors import BucketNotFoundError, KeyNotFoundError, NoKeysError
 
 logger = logging.getLogger(__name__)
 BUCKET = "preloop_plugin_status"
+PROCESS_BUCKET = "preloop_plugin_processes"
+READ_TIMEOUT_SECONDS = 2.0
+WRITE_TIMEOUT_SECONDS = 2.0
 HEARTBEAT_SECONDS = 30
 STALE_SECONDS = 120
 JOB_IDS = {
@@ -88,7 +91,14 @@ async def _read(kv: Any, key: str) -> dict[str, Any]:
         return {}
 
 
-async def report(kv: Any, worker_id: str, role: str, subjects: list[str]) -> None:
+async def report(
+    kv: Any,
+    worker_id: str,
+    role: str,
+    subjects: list[str],
+    *,
+    processes: Any | None = None,
+) -> None:
     """Publish one process heartbeat and merge durable job timestamps."""
     from preloop.plugins.base import get_plugin_manager
 
@@ -128,71 +138,102 @@ async def report(kv: Any, worker_id: str, role: str, subjects: list[str]) -> Non
         "subjects": subjects,
         "jobs": jobs,
     }
-    await kv.put(f"process.{worker_id}", json.dumps(payload).encode())
+    process_store = processes if processes is not None else kv
+    await process_store.put(f"process.{worker_id}", json.dumps(payload).encode())
+
+
+@asynccontextmanager
+async def _connection() -> AsyncIterator[Any]:
+    """Own the client before connecting and bound handshake/JetStream requests."""
+    from preloop.config import settings
+
+    nc = nats.NATS()
+    try:
+        async with asyncio.timeout(0.5):
+            await nc.connect(
+                settings.nats_url,
+                name="preloop-plugin-status",
+                connect_timeout=0.25,
+                max_reconnect_attempts=1,
+                reconnect_time_wait=0,
+                allow_reconnect=False,
+            )
+        yield nc.jetstream(timeout=0.5)
+    finally:
+        with suppress(Exception):
+            async with asyncio.timeout(0.5):
+                await nc.close()
+
+
+async def _heartbeat(worker_id: str, role: str, subjects: list[str]) -> None:
+    """Retry reporting independently; observability never gates task processing."""
+    while True:
+        try:
+            async with _connection() as js:
+                stores = []
+                for bucket, ttl, max_bytes in (
+                    (BUCKET, 0, 1024 * 1024),
+                    (PROCESS_BUCKET, STALE_SECONDS, 8 * 1024 * 1024),
+                ):
+                    try:
+                        store = await js.key_value(bucket)
+                    except BucketNotFoundError:
+                        store = await js.create_key_value(
+                            config=KeyValueConfig(
+                                bucket=bucket,
+                                ttl=ttl,
+                                history=1,
+                                max_bytes=max_bytes,
+                                max_value_size=65536,
+                            )
+                        )
+                    stores.append(store)
+                while True:
+                    async with asyncio.timeout(WRITE_TIMEOUT_SECONDS):
+                        await report(
+                            stores[0], worker_id, role, subjects, processes=stores[1]
+                        )
+                    await asyncio.sleep(HEARTBEAT_SECONDS)
+        except Exception:
+            logger.exception(
+                "Plugin status reporting unavailable; processing continues"
+            )
+            await asyncio.sleep(HEARTBEAT_SECONDS)
 
 
 async def run_with_status(
     work: Awaitable[Any], role: str, subjects: list[str] | None = None
 ) -> None:
-    """Run a service with a status heartbeat; fail startup if status cannot initialize."""
+    """Run work alongside best-effort status reporting for installed extensions."""
     from preloop.plugins.base import get_plugin_manager
 
     if not get_plugin_manager().proprietary_enabled:
         await work
         return
     worker_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:12]}"
-    nc = None
-    heartbeat = None
+    heartbeat = asyncio.create_task(_heartbeat(worker_id, role, subjects or []))
     try:
-        from preloop.config import settings
-
-        nc = await nats.connect(settings.nats_url)
-        js = nc.jetstream()
-        try:
-            kv = await js.key_value(BUCKET)
-        except BucketNotFoundError:
-            kv = await js.create_key_value(config=KeyValueConfig(bucket=BUCKET))
-        await report(kv, worker_id, role, subjects or [])
-
-        async def beat() -> None:
-            while True:
-                await asyncio.sleep(HEARTBEAT_SECONDS)
-                try:
-                    await report(kv, worker_id, role, subjects or [])
-                except Exception:
-                    logger.exception("Plugin health heartbeat failed")
-
-        heartbeat = asyncio.create_task(beat())
         await work
     finally:
-        if heartbeat:
-            heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
-        elif hasattr(work, "close"):
-            work.close()
-        if nc:
-            await nc.close()
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
 
 
 async def read_status() -> dict[str, Any]:
-    """Read fleet state without creating buckets or running any plugin job."""
-    from preloop.config import settings
-
-    nc = await nats.connect(settings.nats_url)
-    try:
-        kv = await nc.jetstream().key_value(BUCKET)
-        try:
-            keys = await kv.keys()
-        except NoKeysError:
-            keys = []
-        workers = []
-        now = time.time()
-        for key in keys:
-            if key.startswith("process."):
-                payload = await _read(kv, key)
-                if now - payload.get("updated_at", 0) <= STALE_SECONDS:
-                    workers.append(payload)
-        return {"timestamp": now, "workers": workers}
-    finally:
-        await nc.close()
+    """Read current processes without mutations, bounded even when NATS stalls."""
+    async with asyncio.timeout(READ_TIMEOUT_SECONDS):
+        async with _connection() as js:
+            kv = await js.key_value(PROCESS_BUCKET)
+            try:
+                keys = await kv.keys()
+            except NoKeysError:
+                keys = []
+            workers = []
+            now = time.time()
+            for key in keys:
+                if key.startswith("process."):
+                    payload = await _read(kv, key)
+                    if now - payload.get("updated_at", 0) <= STALE_SECONDS:
+                        workers.append(payload)
+            return {"timestamp": now, "workers": workers}

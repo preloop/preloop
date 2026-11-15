@@ -195,7 +195,9 @@ async def plugin_health(
 
     from preloop.sync.plugin_status import read_status
 
-    expected = os.getenv("PLUGIN_STATUS_OPERATOR_TOKEN", "")
+    from preloop.config import settings
+
+    expected = settings.plugin_status_operator_token.get_secret_value()
     if not expected:
         raise HTTPException(
             status_code=503, detail="Plugin status credential not configured"

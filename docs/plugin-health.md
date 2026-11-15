@@ -15,15 +15,23 @@ completion timestamps; skipped or failed shims do not advance them. Schedules
 and job bodies are unchanged.
 
 Enabled proprietary processes publish a heartbeat every 30 seconds to the
-`preloop_plugin_status` JetStream key-value bucket on the existing NATS service.
-It requires JetStream key-value create/read/write access. Disabled or absent
-extensions do not add a status connection. Process records contain plugin names
+`preloop_plugin_processes` JetStream key-value bucket on the existing NATS service.
+Its records expire after 120 seconds and storage is bounded. Durable job
+deadlines/completions use the separate `preloop_plugin_status` bucket without
+a TTL. Reporting requires JetStream key-value create/read/write access and
+retries independently: an unavailable status bucket logs an error but does not
+prevent task processing. The probe detects missing reporting coverage. Disabled
+or absent extensions do not add a status connection. Process records contain plugin names
 and loaded booleans, task counters, task filters and timestamps. They contain no
 configuration, exception text, task arguments or credentials.
 
 `GET /api/v1/health/plugins` reads that bucket and requires
 `Authorization: Bearer <operator token>`, matching `PLUGIN_STATUS_OPERATOR_TOKEN`
-on the API. This credential authorizes only this read-only surface; ordinary
+on the API (a secret-typed setting that also loads from native `.env` files).
+Both compose API services pass the variable from `.env`. For Helm, use `extraEnv`
+with `name: PLUGIN_STATUS_OPERATOR_TOKEN` and a `valueFrom.secretKeyRef` pointing
+to the operator-managed secret. Keep this credential distinct from account keys.
+This credential authorizes only this read-only surface; ordinary
 account credentials do not grant access. Missing server configuration returns
 503; invalid credentials return 401. Health monitors can use the same endpoint.
 Process records older than 120 seconds are excluded. Configure a probe's expected
@@ -46,9 +54,13 @@ policy loading skipped the optional CEL syntax checks on tool conditions
 reference and simple-condition checks still ran; runtime policy evaluation is a
 separate path. Code establishes the bypass, not which deployed policies used it.
 
-Drift email dispatch claims use the existing `billing_operation` table through
-CRUD, scoped to account/provider/complete UTC day/material cost fingerprint.
-Repeated costs do not send again; changed actuals or estimates can send once.
+The core drift email persistence primitive uses the existing `billing_operation`
+table through CRUD, scoped to account/provider/complete UTC day/material cost fingerprint.
+The companion Enterprise billing change calls this primitive before email;
+deduplication is effective only after both changes are integrated. The caller
+finishes ingestion commits before claiming. Repeated costs then do not send
+again; changed actuals or estimates can send once.
 Claims commit before SMTP and are never reclaimed after an uncertain handoff.
-A mail failure can therefore need operator investigation rather than automatic
-retry. No database migration is required.
+A definite or uncertain mail failure can therefore need operator investigation
+rather than automatic retry. Claims also commit the caller session on duplicates.
+No database migration is required.

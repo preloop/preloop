@@ -79,6 +79,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
       NATS_URL: nats://nats:4222
+      PLUGIN_STATUS_OPERATOR_TOKEN: ${PLUGIN_STATUS_OPERATOR_TOKEN:-}
       HOST: 0.0.0.0
       PORT: 8000
       DEBUG: 'true'
