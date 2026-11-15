@@ -1709,6 +1709,18 @@ describe('DashboardView', () => {
       ).to.equal('/console/policies');
     });
 
+    it('does not tick "Onboard an agent" for an agent that never connected', async () => {
+      const element = await mountLoaded();
+      element['managedAgents'] = [
+        { ...element['managedAgents'][0], onboarding_state: 'incomplete' },
+      ];
+      expect(element['nextSteps'][0].done).to.be.false;
+      element['managedAgents'] = [
+        { ...element['managedAgents'][0], onboarding_state: 'fully_onboarded' },
+      ];
+      expect(element['nextSteps'][0].done).to.be.true;
+    });
+
     it('does not tick "Restrict a tool" for a builtin that ships disabled', async () => {
       // A brand new account: builtins with default_enabled false report
       // is_enabled false, but nobody configured them (no config_id).
