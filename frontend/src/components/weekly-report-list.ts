@@ -189,13 +189,14 @@ export class WeeklyReportList extends AuthedElement {
       <div class="filters" aria-label="Report filters">
         <sl-badge
           class="tag-chip"
+          variant="neutral"
           pill
           title=${period ? `${period.startDate} to ${period.endDate} (UTC, end exclusive)` : 'Invalid window'}
         >
           <sl-icon name="calendar3"></sl-icon> Week:
           ${period ? `${period.startDate} to ${period.endDate} (UTC, end exclusive)` : 'Invalid window'}
         </sl-badge>
-        ${['kind', 'model', 'agent', 'flow', 'status', 'item', 'user_id'].map((key) => (params.has(key) ? html`<sl-badge class="tag-chip" pill><sl-icon name="tag"></sl-icon>${key}: ${params.get(key)}</sl-badge>` : nothing))}
+        ${['kind', 'model', 'agent', 'flow', 'status', 'item', 'user_id'].map((key) => (params.has(key) ? html`<sl-badge class="tag-chip" variant="neutral" pill><sl-icon name="tag"></sl-icon>${key}: ${params.get(key)}</sl-badge>` : nothing))}
         <a href=${withoutReportFilters(window.location.href)}>Clear filters</a>
       </div>
       ${this.loading ? html`<p role="status">Loading report items…</p>` : nothing}
