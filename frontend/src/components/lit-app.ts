@@ -555,7 +555,15 @@ export class LitApp extends LitElement {
           { path: 'authorize', component: 'oauth-consent-view' },
           {
             path: 'governance',
-            action: (_context, commands) => {
+            action: async (context, commands) => {
+              // Policy-match lists also work without the optional review plugin.
+              if (
+                new URLSearchParams(context.search).get('kind') ===
+                'policy_notices'
+              ) {
+                await import('./weekly-report-list');
+                return commands.component('weekly-report-list');
+              }
               return commands.redirect('/console/policies');
             },
           },

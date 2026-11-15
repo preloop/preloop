@@ -304,6 +304,14 @@ function stubbedBody(url: string): unknown {
       total: 14000,
     };
   }
+  if (path.endsWith('/api/v1/cost/report-items')) {
+    return {
+      title: 'Policy rule matches this week',
+      items: [],
+      total: 0,
+      notes: [],
+    };
+  }
   if (path.endsWith('/api/v1/features')) return { features: {}, plugins: [] };
   if (path.endsWith('/api/v1/auth/users/me')) {
     return {
@@ -614,6 +622,25 @@ describe('console route transitions', () => {
         { timeout: 10000 }
       );
     }
+  });
+
+  it('opens policy-match report links without the review capability', async () => {
+    const query =
+      '?kind=policy_notices&account_id=00000000-0000-4000-8000-000000000001&start_date=2026-11-02T00:00:00Z&end_date=2026-11-09T00:00:00Z';
+    clickLink('/console/governance' + query);
+    await waitUntil(
+      () => Boolean(shell()?.querySelector(':scope > weekly-report-list')),
+      'report list remains on the governance route',
+      { timeout: 10000 }
+    );
+    expect(window.location.pathname + window.location.search).to.equal(
+      '/console/governance' + query
+    );
+    clickLink('/console/governance');
+    await assertLanded(
+      BY_PATH.get('/console/governance')!,
+      'legacy governance'
+    );
   });
 
   it('connects a view against the URL it navigated to', async () => {
