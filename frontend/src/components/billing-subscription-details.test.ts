@@ -36,3 +36,30 @@ describe('billing-subscription-details built-in model usage (B-21)', () => {
     expect(getComputedStyle(value).fontWeight).to.equal('600');
   });
 });
+
+describe('billing-subscription-details on the Free plan', () => {
+  it('does not claim a billing period ended for a one-time credit', async () => {
+    const summary = {
+      plan: { name: 'Free' },
+      effective_plan_id: 'free',
+      hosted_models: {
+        billing_period_end: '2020-11-15T00:00:00Z',
+        one_time_credit_usd: 0.5,
+        included_limit_usd: 0.5,
+        active_limit_usd: null,
+        used_usd: 0,
+        remaining_usd: 0.5,
+        models: [],
+      },
+    } as any;
+    const el = await fixture(
+      html`<billing-subscription-details
+        .summary=${summary}
+      ></billing-subscription-details>`
+    );
+    const text = el.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.not.contain('Billing period ended');
+    expect(text).to.not.contain('Current billing period ends');
+    expect(text).to.contain('One-time credit, no billing period');
+  });
+});
