@@ -15240,6 +15240,148 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/cost/report-items:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Weekly Report Items
+      description: 'List the report''s own collection in the authenticated account.
+
+
+        The report plugin supplies the collector; core owns the console contract,
+
+        permissions, account guard and bounded, exact UTC window.'
+      operationId: get_weekly_report_items_api_v1_cost_report_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: kind
+        in: query
+        required: true
+        schema:
+          enum:
+          - usage
+          - agents
+          - models
+          - cache
+          - optimizations
+          - spend_outlier
+          - valuable_work
+          - approvals
+          - first_seen
+          - reliability
+          - users
+          - policy_notices
+          type: string
+          title: Kind
+      - name: account_id
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Account Id
+      - name: start_date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Start Date
+      - name: end_date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: End Date
+      - name: user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+      - name: model
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent
+      - name: flow
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: item
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Item
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeeklyReportItems'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/timeseries:
     get:
       tags:
@@ -58018,6 +58160,63 @@ components:
       type: object
       title: WebhookTestSendResult
       description: Result of queueing a test event.
+    WeeklyReportItems:
+      properties:
+        kind:
+          type: string
+          enum:
+          - usage
+          - agents
+          - models
+          - cache
+          - optimizations
+          - spend_outlier
+          - valuable_work
+          - approvals
+          - first_seen
+          - reliability
+          - users
+          - policy_notices
+          title: Kind
+        title:
+          type: string
+          title: Title
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        start_date:
+          type: string
+          format: date-time
+          title: Start Date
+        end_date:
+          type: string
+          format: date-time
+          title: End Date
+        items:
+          items:
+            $ref: '#/components/schemas/WeeklyReportRow'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        notes:
+          items:
+            type: string
+          type: array
+          title: Notes
+      type: object
+      required:
+      - kind
+      - title
+      - account_id
+      - start_date
+      - end_date
+      - items
+      - total
+      title: WeeklyReportItems
+      description: One complete collection, paginated after applying URL filters.
     WeeklyReportPreferences:
       properties:
         account_enabled:
@@ -58096,6 +58295,38 @@ components:
       type: object
       title: WeeklyReportPreferencesUpdate
       description: Omitted fields preserve the current setting.
+    WeeklyReportRow:
+      properties:
+        label:
+          type: string
+          title: Label
+        value:
+          type: string
+          title: Value
+          default: ''
+        meta:
+          type: string
+          title: Meta
+          default: ''
+        detail:
+          type: string
+          title: Detail
+          default: ''
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        links:
+          items:
+            $ref: '#/components/schemas/WeeklyReportRow'
+          type: array
+          title: Links
+      type: object
+      required:
+      - label
+      title: WeeklyReportRow
+      description: A counted item with its evidence and optional resource action.
     WeeklySchedule:
       properties:
         timezone:

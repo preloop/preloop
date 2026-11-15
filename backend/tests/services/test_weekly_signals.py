@@ -43,6 +43,68 @@ START = datetime(2026, 10, 5, tzinfo=UTC)
 END = datetime(2026, 10, 12, tzinfo=UTC)
 
 
+def test_approval_list_membership_is_identical_to_every_report_count(
+    db_session: Session,
+    test_user: User,
+) -> None:
+    """Cover both boundaries, old requests decided this week and automation."""
+    from preloop.models.crud.weekly_signals import (
+        approval_report_items,
+        approval_signals,
+    )
+
+    cases = [
+        ("requested", "pending", START, None, None),
+        ("old-granted", "approved", START - timedelta(days=1), START, None),
+        ("denied", "declined", START, START + timedelta(seconds=1), None),
+        ("expired", "expired", START, START + timedelta(seconds=2), None),
+        ("automatic", "approved", START, START, "native_tool_approvals_off"),
+        ("at-end", "pending", END, None, None),
+        ("old-pending", "pending", START - timedelta(days=1), None, None),
+    ]
+    ids = {}
+    for token, status, requested, resolved, automatic in cases:
+        row = _approval_request(db_session, test_user, token)
+        row.status = status
+        row.requested_at = _naive(requested)
+        row.resolved_at = _naive(resolved) if resolved else None
+        row.auto_approved_reason = automatic
+        ids[token] = row.id
+    other_account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Other example account", "is_active": True},
+    )
+    other = _user(db_session, other_account.id, "other-report@example.com")
+    foreign = _approval_request(db_session, other, "foreign-account")
+    db_session.flush()
+    items = approval_report_items(
+        db_session, account_id=test_user.account_id, start=START, end=END
+    )
+    counts = approval_signals(
+        db_session, account_id=test_user.account_id, start=START, end=END
+    )
+    assert {row["id"] for row in items} == {
+        ids[key]
+        for key in (
+            "requested",
+            "old-granted",
+            "denied",
+            "expired",
+            "automatic",
+        )
+    }
+    assert foreign.id not in {row["id"] for row in items}
+    for cohort in (
+        "requested",
+        "granted",
+        "denied",
+        "expired",
+        "pending",
+        "auto_approved",
+    ):
+        assert sum(cohort in row["cohorts"] for row in items) == getattr(counts, cohort)
+
+
 def _naive(moment: datetime) -> datetime:
     return moment.astimezone(UTC).replace(tzinfo=None)
 

@@ -1,3 +1,5 @@
+import '../../components/weekly-report-list';
+import { WeeklyReportMode } from '../../controllers/weekly-report-mode';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -134,6 +136,9 @@ function byNewest(a: ApprovalRequest, b: ApprovalRequest): number {
 
 @customElement('approvals-view')
 export class ApprovalsView extends AuthedElement {
+  private readonly weeklyReport = new WeeklyReportMode(this, () =>
+    this.onFilterPopState()
+  );
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private approvalRequests: ApprovalRequest[] = [];
@@ -1638,6 +1643,8 @@ export class ApprovalsView extends AuthedElement {
   }
 
   render() {
+    if (this.weeklyReport.active)
+      return html`<weekly-report-list></weekly-report-list>`;
     if (this.loading) {
       return html`
         <view-header headerText="Approval requests" width="wide"></view-header>

@@ -8,6 +8,7 @@ import time
 from concurrent.futures import Future
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -59,10 +60,89 @@ from preloop.services.model_gateway_usage import (
 from preloop.services.usage_repricing import reprice_gateway_usage
 from preloop.schemas.work_item_cost import WorkItemCostReport
 from preloop.services import work_item_cost
-from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+from preloop.utils.permissions import (
+    ensure_permission_in_oss,
+    require_permission,
+    user_holds_permission,
+)
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.schemas.weekly_report_items import ReportKind, WeeklyReportItems
+from preloop.plugins.base import get_plugin_manager
 
 router = APIRouter(prefix="/cost", tags=["Cost Analytics"])
+
+
+@router.get("/report-items", response_model=WeeklyReportItems)
+def get_weekly_report_items(
+    kind: ReportKind,
+    account_id: UUID,
+    start_date: datetime,
+    end_date: datetime,
+    user_id: UUID | None = None,
+    model: str | None = None,
+    agent: str | None = None,
+    flow: str | None = None,
+    status: str | None = None,
+    item: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> WeeklyReportItems:
+    """List the report's own collection in the authenticated account.
+
+    The report plugin supplies the collector; core owns the console contract,
+    permissions, account guard and bounded, exact UTC window.
+    """
+    account = get_account_or_404(db, current_user)
+    if account.id != account_id:
+        raise HTTPException(409, "Switch to the account this report belongs to")
+    permission = (
+        "view_approvals"
+        if kind == "approvals"
+        else "view_policies"
+        if kind in {"first_seen", "policy_notices"}
+        else "view_cost"
+    )
+    permissions = (
+        ("view_policies", "view_device_fleet", "view_mcp_findings")
+        if kind == "first_seen"
+        else (permission,)
+    )
+    if not current_user.is_superuser and not any(
+        user_holds_permission(db, current_user, name) for name in permissions
+    ):
+        raise HTTPException(403, f"Permission denied: {permission}")
+    if user_id is not None and user_id != current_user.id:
+        raise HTTPException(403, "Personal report links belong to their recipient")
+    if (
+        start_date.tzinfo is None
+        or end_date.tzinfo is None
+        or end_date - start_date != timedelta(days=7)
+    ):
+        raise HTTPException(422, "Use the report's exact seven-day UTC window")
+    collector = get_plugin_manager().get_service("weekly_report_items")
+    if collector is None:
+        raise HTTPException(404, "Weekly report lists are not available")
+    return WeeklyReportItems.model_validate(
+        collector(
+            db,
+            account=account,
+            current_user=current_user,
+            kind=kind,
+            start=start_date,
+            end=end_date,
+            user_id=user_id,
+            model=model,
+            agent=agent,
+            flow=flow,
+            status=status,
+            item=item,
+            offset=offset,
+            limit=limit,
+        )
+    )
+
 
 #: Hard cap for one synchronous reprice request. Keyset pagination keeps
 #: memory flat, but a bound keeps one HTTP request from scanning unbounded
