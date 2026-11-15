@@ -1,5 +1,7 @@
 """Endpoint tests for managed-agent registry surfaces."""
 
+import pytest
+
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
@@ -2759,3 +2761,84 @@ def test_managed_agent_control_fields_after_deferred_live_validation():
     )
     assert fields["control_enabled"] is True
     assert fields["control_state"] == "plugin_configured"
+
+
+def _bindings_agent(client, db_session, test_user, source_id: str):
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "opencode",
+            "session_source_id": source_id,
+            "runtime_principal_name": "OpenCode Workspace",
+        },
+    )
+    assert token_response.status_code == 201
+    agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="opencode",
+        session_source_id=source_id,
+    )
+    assert agent is not None
+    return agent
+
+
+def _built_in_model(db_session, *, enabled: bool = True):
+    model = crud_ai_model.create(
+        db_session,
+        obj_in={
+            "name": "Preloop built-in",
+            "provider_name": "openai",
+            "model_identifier": "deepseek-flash",
+            "account_id": None,
+            "meta_data": {"gateway": {"enabled": enabled, "model_alias": "builtin"}},
+        },
+    )
+    return model
+
+
+def _binding_payload(model_id) -> dict:
+    return {
+        "bindings": [
+            {
+                "ai_model_id": str(model_id),
+                "binding_type": "configured",
+                "config_key": "onboarding.builtin",
+                "gateway_alias": "builtin",
+                "is_primary": True,
+                "status": "gateway_ready",
+            }
+        ]
+    }
+
+
+def test_model_bindings_accept_enabled_built_in_model(client, db_session, test_user):
+    """A fresh account can bind the deployment built-in the wizard offers it."""
+    agent = _bindings_agent(client, db_session, test_user, "ws-builtin-ok")
+    model = _built_in_model(db_session)
+    with patch(
+        "preloop.api.endpoints.account.built_in_models_enabled", return_value=True
+    ):
+        response = client.put(
+            f"/api/v1/agents/{agent.id}/model-bindings",
+            json=_binding_payload(model.id),
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["ai_model_id"] == str(model.id)
+
+
+@pytest.mark.parametrize("hosted, gateway_enabled", [(False, True), (True, False)])
+def test_model_bindings_reject_unavailable_built_in_model(
+    client, db_session, test_user, hosted, gateway_enabled
+):
+    """Built-ins stay unbindable when hosting is off or the row is retired."""
+    agent = _bindings_agent(client, db_session, test_user, f"ws-builtin-{hosted}")
+    model = _built_in_model(db_session, enabled=gateway_enabled)
+    with patch(
+        "preloop.api.endpoints.account.built_in_models_enabled", return_value=hosted
+    ):
+        response = client.put(
+            f"/api/v1/agents/{agent.id}/model-bindings",
+            json=_binding_payload(model.id),
+        )
+    assert response.status_code == 400

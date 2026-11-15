@@ -19,6 +19,7 @@ import {
   createManagedAgentCredential,
   replaceManagedAgentModelBindings,
   updateManagedAgent,
+  removeAccountAgent,
 } from '../api';
 import type { ManagedAgentModelBindingSyncItem } from '../api';
 import type { AIModel, ManagedAgentSummary } from '../types';
@@ -418,6 +419,9 @@ export class PreloopDeployWizard extends LitElement {
 
     this.customBusy = true;
     this.customError = '';
+    // Set once the agent exists; any later failure deletes it again so a
+    // failed connect never leaves an orphaned, credential-less agent behind.
+    let createdAgentId: string | null = null;
     try {
       const description = this.customDescription.trim();
       // 1. Register the agent: POST /api/v1/agents
@@ -425,6 +429,7 @@ export class PreloopDeployWizard extends LitElement {
         display_name: displayName,
         ...(description ? { description } : {}),
       });
+      createdAgentId = agent.id;
       this.customAgentId = agent.id;
 
       // 2. Set the allowed model bindings: PUT /api/v1/agents/{id}/model-bindings
@@ -484,6 +489,10 @@ export class PreloopDeployWizard extends LitElement {
       );
       this.startFirstDataPolling(agent.id);
     } catch (error: any) {
+      if (createdAgentId) {
+        await removeAccountAgent(createdAgentId).catch(() => undefined);
+        this.customAgentId = null;
+      }
       this.customError =
         error?.message || 'Failed to connect custom agent. Please try again.';
     } finally {

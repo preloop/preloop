@@ -467,6 +467,31 @@ describe('PreloopDeployWizard custom agent path', () => {
     expect((el as any).customSubStep).to.equal('name');
   });
 
+  for (const failure of ['failBindings', 'failMint'] as const) {
+    it(`${failure}: rolls back the just-registered agent so it is not orphaned`, async () => {
+      stubApi({ agentId: 'agent-orphan', [failure]: true });
+      const el = await createWizard();
+      (await findCustomCard(el))!.click();
+      await el.updateComplete;
+      (el as any).customDisplayName = 'A';
+      (el as any).aiModels = [gatewayModel('m-1', 'gpt-5', 'gpt-5')];
+      (el as any).customSelectedModelIds = ['m-1'];
+      await (el as any).handleCustomRegister();
+      await el.updateComplete;
+
+      const deleteCall = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            /\/api\/v1\/agents\/agent-orphan$/.test(String(c.args[0])) &&
+            (c.args[1] as RequestInit)?.method === 'DELETE'
+        );
+      expect(deleteCall, 'rollback DELETE').to.exist;
+      expect((el as any).customAgentId).to.equal(null);
+      expect((el as any).customError).to.be.a('string').and.not.be.empty;
+    });
+  }
+
   it('blocks register when the display name is empty', async () => {
     const el = await createWizard();
     (await findCustomCard(el))!.click();
