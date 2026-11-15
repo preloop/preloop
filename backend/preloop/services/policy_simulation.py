@@ -278,9 +278,17 @@ async def simulate_policy(
                 db,
                 config_id=str(selected[0].id),
                 account_id=str(account_id),
-                enabled_only=True,
+                enabled_only=False,
             )
-            rules = _place_draft_rule(stored_rules, rules, request.draft_rule_id)
+            # All rules, so an edited rule that is disabled today is still
+            # found at its place; disabled ones are dropped after placing.
+            rules = [
+                rule
+                for rule in _place_draft_rule(
+                    stored_rules, rules, request.draft_rule_id
+                )
+                if rule.is_enabled is not False
+            ]
             config = selected[0]
 
     if request.stored:
