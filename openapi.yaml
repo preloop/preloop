@@ -49392,14 +49392,13 @@ components:
       properties:
         result_bindings:
           anyOf:
-          - patternProperties:
-              ^[A-Za-z_][A-Za-z0-9_]{0,63}$:
-                type: string
-                enum:
-                - head_sha
-                - base_sha
-                - merge_base_sha
-                - diff_sha256
+          - additionalProperties:
+              type: string
+              enum:
+              - head_sha
+              - base_sha
+              - merge_base_sha
+              - diff_sha256
             type: object
           - type: 'null'
           title: Result Bindings
@@ -58357,14 +58356,13 @@ components:
       properties:
         result_bindings:
           anyOf:
-          - patternProperties:
-              ^[A-Za-z_][A-Za-z0-9_]{0,63}$:
-                type: string
-                enum:
-                - head_sha
-                - base_sha
-                - merge_base_sha
-                - diff_sha256
+          - additionalProperties:
+              type: string
+              enum:
+              - head_sha
+              - base_sha
+              - merge_base_sha
+              - diff_sha256
             type: object
           - type: 'null'
           title: Result Bindings

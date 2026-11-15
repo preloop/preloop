@@ -11,7 +11,6 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
-    StringConstraints,
     TypeAdapter,
     field_serializer,
     field_validator,
@@ -324,10 +323,7 @@ class ReviewIntegrity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     result_bindings: Optional[
-        Dict[
-            Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")],
-            Literal["head_sha", "base_sha", "merge_base_sha", "diff_sha256"],
-        ]
+        Dict[str, Literal["head_sha", "base_sha", "merge_base_sha", "diff_sha256"]]
     ] = Field(
         default=None,
         description=(
