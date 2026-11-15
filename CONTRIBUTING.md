@@ -49,7 +49,8 @@ These pages stay in `docs/guide/` with that banner. Moving them under
 ## Documentation site
 
 docs.preloop.ai is built from this repository: `mkdocs.yml` at the root,
-pages under `docs/`. Preview and check a change with:
+pages under `docs/`. The docs toolchain requires Python 3.11.5 or newer.
+Preview and check a change with:
 
 ```bash
 pip install --require-hashes -r requirements/docs.txt
