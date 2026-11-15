@@ -113,11 +113,13 @@ export class LandingView extends LitElement {
   @query('.feature-carousel') private _carousel!: SlCarousel;
   @state() private _showVideo: boolean[] = [false, false, false];
   @state() private _activeSlideIndex = 0;
-  @state() private _svgTimestamps: number[] = [
-    Date.now(),
-    Date.now(),
-    Date.now(),
-  ];
+  /**
+   * Bumped when a slide is shown so its SVG animation starts over. It goes in
+   * the URL fragment, which the HTTP cache ignores: the SVG is fetched once
+   * and replayed from cache, where a `?t=` timestamp re-downloaded it on
+   * every slide change (landing-10).
+   */
+  @state() private _svgPlays: number[] = [0, 0, 0];
   @state() private _featureSlides: FeatureSlide[] = [];
   @state() private _faqs: Array<{ q: string; a: string }> = [];
   @state() private _legalDisclaimer = '';
@@ -877,9 +879,9 @@ export class LandingView extends LitElement {
     e: CustomEvent<{ index: number; slide: SlCarouselItem }>
   ) {
     const index = e.detail.index;
-    const newTimestamps = [...this._svgTimestamps];
-    newTimestamps[index] = Date.now();
-    this._svgTimestamps = newTimestamps;
+    const plays = [...this._svgPlays];
+    plays[index] = (plays[index] || 0) + 1;
+    this._svgPlays = plays;
 
     // Restart the 20s cycle so the freshly loaded SVG plays perfectly to completion
     if (this._animTimer) {
@@ -1084,9 +1086,7 @@ export class LandingView extends LitElement {
                             height="54"
                             src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=${
                               this._productHunt.post_id
-                            }&amp;theme=${
-                              this._productHunt.theme
-                            }&amp;t=${Date.now()}"
+                            }&amp;theme=${this._productHunt.theme}"
                           />
                         </a>
                       </div>
@@ -1779,7 +1779,7 @@ export class LandingView extends LitElement {
                         (item, index) => html`
                           <sl-carousel-item>
                             <img
-                              src="${item.src}?t=${this._svgTimestamps[index]}"
+                              src="${item.src}#play-${this._svgPlays[index]}"
                               alt="${item.alt}"
                               style="width: 100%; height: 100%; object-fit: contain;"
                             />
