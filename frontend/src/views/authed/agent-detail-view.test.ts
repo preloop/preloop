@@ -2411,6 +2411,40 @@ describe('AgentDetailView', () => {
     ).to.be.true;
   });
 
+  it('does not read Idle next to calls that are arriving right now', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+    (element as any).agent = {
+      ...(element as any).agent,
+      turn_state: null,
+      last_activity_at: null,
+      last_request_at: null,
+    };
+    (element as any).liveActivity = {
+      modelCalls: 27,
+      toolCalls: 1,
+      lastActivityAt: new Date().toISOString(),
+    };
+    element.requestUpdate();
+    await element.updateComplete;
+    const row = element.shadowRoot!.querySelector('.badge-row')!;
+    expect(row.querySelector('sl-badge.status-chip')?.textContent).to.contain(
+      'Working'
+    );
+    const live = row.querySelector('sl-badge.live-chip') as HTMLElement;
+    expect(live, 'live chip').to.exist;
+    expect(live.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
+      '28 calls since opened'
+    );
+    // A tint, not a second solid green status.
+    expect(live.classList.contains('outline')).to.be.true;
+  });
+
   // Wave 3 (A5): the facts about the agent are one hairline row between the
   // header and the tabs, not a 190px card holding one number.
   it('states the agent facts and its spend on one summary strip', async () => {
