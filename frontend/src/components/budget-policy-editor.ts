@@ -315,10 +315,15 @@ export class BudgetPolicyEditor extends LitElement {
     );
   }
 
+  /** Human label for a model: its gateway alias, else its name, never a bare id. */
+  private modelLabel(model: AIModel): string {
+    return model.alias || model.name || model.model_identifier || model.id;
+  }
+
   private getSubjectName(type: string, id: string): string {
     if (type === 'ai_model') {
       const model = this.models.find((m) => m.id === id);
-      return model ? model.alias || model.id : id;
+      return model ? this.modelLabel(model) : id;
     }
     if (type === 'managed_agent') {
       const agent = this.agents.find((a) => a.id === id);
@@ -777,7 +782,10 @@ export class BudgetPolicyEditor extends LitElement {
 
   private subjectOptions(): { value: string; label: string }[] {
     if (this.newSubjectType === 'ai_model') {
-      return this.models.map((m) => ({ value: m.id, label: m.alias || m.id }));
+      return this.models.map((m) => ({
+        value: m.id,
+        label: this.modelLabel(m),
+      }));
     }
     if (this.newSubjectType === 'managed_agent') {
       return this.agents.map((a) => ({

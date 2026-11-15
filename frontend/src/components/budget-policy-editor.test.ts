@@ -197,6 +197,35 @@ describe('BudgetPolicyEditor', () => {
     expect(rows[1].querySelector('sl-icon[name="bell"]')).to.not.exist;
   });
 
+  it('names models by alias, then name, never by bare id', async () => {
+    stubBillingFetch({
+      models: [
+        { id: '5f1c-uuid-aliased', name: 'GPT 5', alias: 'gpt-5' },
+        { id: '9a2b-uuid-plain', name: 'Claude Opus' },
+      ],
+      policies: [
+        {
+          id: 'p-1',
+          subject_type: 'ai_model',
+          subject_id: '9a2b-uuid-plain',
+          model_alias: null,
+          period: 'monthly',
+          hard_limit_usd: 10,
+          soft_limit_usd: null,
+        },
+      ],
+    });
+    const element = await mountEditor();
+    (element as any).newSubjectType = 'ai_model';
+    const labels = (element as any)
+      .subjectOptions()
+      .map((o: { label: string }) => o.label);
+    expect(labels).to.deep.equal(['gpt-5', 'Claude Opus']);
+    expect(
+      (element as any).getSubjectName('ai_model', '9a2b-uuid-plain')
+    ).to.equal('Claude Opus');
+  });
+
   it('invites a first limit when none exist', async () => {
     stubBillingFetch();
     const element = await mountEditor();
