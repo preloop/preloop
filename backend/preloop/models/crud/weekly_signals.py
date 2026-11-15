@@ -144,6 +144,44 @@ _CUSTOMER_USAGE_FILTER = """
 """
 
 
+_APPROVAL_REQUESTS_SQL = """
+        WITH requests AS (
+            SELECT *, COALESCE(auto_approved_reason,
+                CASE WHEN decided_by_ai THEN 'ai_decision' END) AS automatic_reason
+            FROM approval_request
+            WHERE account_id = CAST(:account_id AS uuid)
+                AND (CAST(:user_id AS uuid) IS NULL
+                    OR api_key_id IN (SELECT id FROM api_key
+                        WHERE account_id = CAST(:account_id AS uuid)
+                        AND user_id = CAST(:user_id AS uuid))
+                    OR managed_agent_id IN (SELECT id FROM managed_agent
+                        WHERE account_id = CAST(:account_id AS uuid)
+                        AND owner_user_id = CAST(:user_id AS uuid))
+                    OR responses @> CAST(:response AS jsonb))
+        )
+"""
+
+_APPROVAL_COHORTS = {
+    "requested": "automatic_reason IS NULL AND requested_at >= :start AND requested_at < :end",
+    "granted": "automatic_reason IS NULL AND status = 'approved' AND resolved_at >= :start AND resolved_at < :end",
+    "denied": "automatic_reason IS NULL AND status = 'declined' AND resolved_at >= :start AND resolved_at < :end",
+    "expired": "automatic_reason IS NULL AND status = 'expired' AND COALESCE(resolved_at, expires_at) >= :start AND COALESCE(resolved_at, expires_at) < :end",
+    "pending": "automatic_reason IS NULL AND status = 'pending' AND (:pending_backlog OR requested_at >= :start) AND requested_at < :end",
+    "auto_approved": "automatic_reason IS NOT NULL AND status = 'approved' AND COALESCE(resolved_at, requested_at) >= :start AND COALESCE(resolved_at, requested_at) < :end",
+}
+
+
+def _approval_report_cte() -> str:
+    """Shared account, member and time predicates for counts and list rows."""
+    flags = ", ".join(
+        f"({predicate}) AS cohort_{name}"
+        for name, predicate in _APPROVAL_COHORTS.items()
+    )
+    return (
+        _APPROVAL_REQUESTS_SQL + ", scoped AS (SELECT *, " + flags + " FROM requests)"
+    )
+
+
 def approval_signals(
     db: Session,
     *,
@@ -163,63 +201,38 @@ def approval_signals(
     """
     rows = (
         db.execute(
-            text("""
-        WITH requests AS (
-            SELECT *, COALESCE(auto_approved_reason,
-                CASE WHEN decided_by_ai THEN 'ai_decision' END) AS automatic_reason
-            FROM approval_request
-            WHERE account_id = CAST(:account_id AS uuid)
-                AND (CAST(:user_id AS uuid) IS NULL
-                    OR api_key_id IN (SELECT id FROM api_key
-                        WHERE account_id = CAST(:account_id AS uuid)
-                        AND user_id = CAST(:user_id AS uuid))
-                    OR managed_agent_id IN (SELECT id FROM managed_agent
-                        WHERE account_id = CAST(:account_id AS uuid)
-                        AND owner_user_id = CAST(:user_id AS uuid))
-                    OR responses @> CAST(:response AS jsonb))
-        ), counts AS (
+            text(
+                _approval_report_cte()
+                + """
+        , counts AS (
             SELECT
-                COUNT(*) FILTER (WHERE automatic_reason IS NULL
-                    AND requested_at >= :start AND requested_at < :end)::int AS requested,
-                COUNT(*) FILTER (WHERE automatic_reason IS NULL AND status = 'approved'
-                    AND resolved_at >= :start AND resolved_at < :end)::int AS granted,
-                COUNT(*) FILTER (WHERE automatic_reason IS NULL AND status = 'declined'
-                    AND resolved_at >= :start AND resolved_at < :end)::int AS denied,
-                COUNT(*) FILTER (WHERE automatic_reason IS NULL AND status = 'expired'
-                    AND COALESCE(resolved_at, expires_at) >= :start
-                    AND COALESCE(resolved_at, expires_at) < :end)::int AS expired,
-                COUNT(*) FILTER (WHERE automatic_reason IS NULL AND status = 'pending'
-                    AND (:pending_backlog OR requested_at >= :start)
-                    AND requested_at < :end)::int AS pending,
+                COUNT(*) FILTER (WHERE cohort_requested)::int AS requested,
+                COUNT(*) FILTER (WHERE cohort_granted)::int AS granted,
+                COUNT(*) FILTER (WHERE cohort_denied)::int AS denied,
+                COUNT(*) FILTER (WHERE cohort_expired)::int AS expired,
+                COUNT(*) FILTER (WHERE cohort_pending)::int AS pending,
                 md5(COALESCE(string_agg(id::text, ',' ORDER BY id) FILTER (
-                    WHERE automatic_reason IS NULL AND status = 'pending'
-                    AND (:pending_backlog OR requested_at >= :start)
-                    AND requested_at < :end), '')) AS pending_fingerprint,
+                    WHERE cohort_pending), '')) AS pending_fingerprint,
                 md5(COALESCE(string_agg(id::text, ',' ORDER BY id) FILTER (
-                    WHERE automatic_reason IS NULL AND status = 'expired'
-                    AND COALESCE(resolved_at, expires_at) >= :start
-                    AND COALESCE(resolved_at, expires_at) < :end), '')) AS expired_fingerprint,
+                    WHERE cohort_expired), '')) AS expired_fingerprint,
                 COALESCE(percentile_cont(0.5) WITHIN GROUP (
                     ORDER BY EXTRACT(EPOCH FROM resolved_at - requested_at)
-                ) FILTER (WHERE automatic_reason IS NULL
-                    AND status IN ('approved', 'declined')
-                    AND resolved_at >= :start AND resolved_at < :end
+                ) FILTER (WHERE (cohort_granted OR cohort_denied)
                     AND resolved_at >= requested_at), 0)::float8 AS median_decision_seconds
-            FROM requests
+            FROM scoped
         ), reasons AS (
             SELECT automatic_reason AS reason, COUNT(*)::int AS count,
                 COUNT(DISTINCT managed_agent_id)::int AS agent_count
-            FROM requests
-            WHERE automatic_reason IS NOT NULL AND status = 'approved'
-                AND COALESCE(resolved_at, requested_at) >= :start
-                AND COALESCE(resolved_at, requested_at) < :end
+            FROM scoped
+            WHERE cohort_auto_approved
             GROUP BY automatic_reason
         )
         SELECT counts.*, COALESCE((SELECT SUM(count) FROM reasons), 0)::int AS auto_approved,
             COALESCE((SELECT jsonb_agg(to_jsonb(reasons) ORDER BY count DESC, reason)
                 FROM reasons), '[]'::jsonb) AS auto_approved_reasons
         FROM counts
-    """),
+    """
+            ),
             {
                 **_params(
                     account_id,
@@ -246,6 +259,78 @@ def approval_signals(
         pending_fingerprint=rows["pending_fingerprint"],
         expired_fingerprint=rows["expired_fingerprint"],
     )
+
+
+class ApprovalReportPage(NamedTuple):
+    """A bounded approval page and its filtered cohort total."""
+
+    items: list[dict[str, Any]]
+    total: int
+
+
+def approval_report_items(
+    db: Session,
+    *,
+    account_id: UUID,
+    start: datetime,
+    end: datetime,
+    user_id: UUID | None = None,
+    status: str | None = None,
+    item: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> ApprovalReportPage:
+    """Page requests through the same predicates as the email's cohort counts.
+
+    Cohort and item filters are applied before SQL pagination. The independent
+    count retains the correct total even when the requested page is empty.
+    """
+    cohorts = ", ".join(
+        f"CASE WHEN cohort_{name} THEN '{name}' END" for name in _APPROVAL_COHORTS
+    )
+    selected = " OR ".join(f"cohort_{name}" for name in _APPROVAL_COHORTS)
+    predicate = f"""
+        ({selected})
+        AND (CAST(:status AS text) IS NULL OR CAST(:status AS text) = ANY(
+            array_remove(ARRAY[{cohorts}], NULL)))
+        AND (CAST(:item AS text) IS NULL OR id::text = CAST(:item AS text))
+    """
+    params = {
+        **_params(
+            account_id,
+            start.astimezone(timezone.utc).replace(tzinfo=None),
+            end.astimezone(timezone.utc).replace(tzinfo=None),
+        ),
+        "user_id": str(user_id) if user_id else None,
+        "response": json.dumps([{"user_id": str(user_id)}]),
+        "pending_backlog": False,
+        "status": status,
+        "item": item,
+        "offset": offset,
+        "limit": limit,
+    }
+    total = db.execute(
+        text(_approval_report_cte() + "SELECT COUNT(*) FROM scoped WHERE " + predicate),
+        params,
+    ).scalar_one()
+    rows = (
+        db.execute(
+            text(
+                _approval_report_cte()
+                + f"""
+        SELECT id, tool_name, status, requested_at, resolved_at, automatic_reason,
+            array_remove(ARRAY[{cohorts}], NULL) AS cohorts
+        FROM scoped WHERE {predicate}
+        ORDER BY requested_at DESC, id
+        LIMIT :limit OFFSET :offset
+        """
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    return ApprovalReportPage(items=[dict(row) for row in rows], total=int(total))
 
 
 def first_seen_signals(

@@ -1,3 +1,4 @@
+import { withWeeklyReportRoutes } from '../weekly-report-routes';
 import { REST_API_PREFIX } from '../api-path';
 import { installSupportAssistant } from '../support-loader';
 import { runtimeSessionPathRedirect } from '../utils/runtime-session-route';
@@ -555,7 +556,22 @@ export class LitApp extends LitElement {
           { path: 'authorize', component: 'oauth-consent-view' },
           {
             path: 'governance',
-            action: (_context, commands) => {
+            action: async (context, commands) => {
+              // Policy-match lists also work without the optional review plugin.
+              if (
+                new URLSearchParams(context.search).get('kind') ===
+                'policy_notices'
+              ) {
+                await import('./weekly-report-list');
+                return commands.component('weekly-report-list');
+              }
+              if (
+                new URLSearchParams(context.search).get('unsubscribe') ===
+                'weekly-report'
+              ) {
+                await import('../views/authed/governance-view');
+                return commands.component('governance-view');
+              }
               return commands.redirect('/console/policies');
             },
           },
@@ -579,7 +595,10 @@ export class LitApp extends LitElement {
       // any real route would swallow it.
       { path: '(.*)', component: 'not-found-view' },
     ];
-    const table = withLazyRoutes(routes, consoleRouteLoaders);
+    const table = withLazyRoutes(
+      withWeeklyReportRoutes(routes),
+      consoleRouteLoaders
+    );
     this.installRoutes(table);
   }
 

@@ -1,3 +1,4 @@
+import { withWeeklyReportRoutes } from './weekly-report-routes';
 import { flattenRoutes, normalizePath } from './router';
 import type { Route, Router } from './router';
 import type { Capability, CapabilitySet } from './capabilities';
@@ -112,9 +113,11 @@ export function capabilityRoutesFor(
   loaders: ComponentLoaders = capabilityRouteLoaders
 ): Route[] {
   return withLazyRoutes(
-    table
-      .filter((route) => capabilities.has(route.capability))
-      .map(({ path, component }) => ({ path, component })),
+    withWeeklyReportRoutes(
+      table
+        .filter((route) => capabilities.has(route.capability))
+        .map(({ path, component }) => ({ path, component }))
+    ),
     loaders
   );
 }

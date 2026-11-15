@@ -1,5 +1,31 @@
 # Cost Analytics and Budgeting
 
+## Weekly report links
+
+Weekly report links reuse Spend, Approvals, Attention and Weekly Review with
+`kind`, `account_id`, exact UTC `start_date` / `end_date`, and optional `model`,
+`agent`, `flow`, `status` or `item` filters. Personal links also retain `user_id`.
+The existing routes mount a compact list with visible week/filter chips and
+a Clear filters action. The normal page is constructed only after the filters
+are cleared, avoiding duplicate analytics reads and realtime subscriptions.
+Browser history and pagination preserve the filters.
+
+`GET /api/v1/cost/report-items` validates account ownership, page permissions,
+personal scope and the seven-day window before calling the optional
+`weekly_report_items` plugin service. Without that service it returns 404.
+The report plugin supplies the email renderer's complete collections before
+email truncation, rather than independently recreating its counts. Approval
+counts and list membership share the cohort predicates in
+`crud.weekly_signals`: requests use requested time, decisions use resolved
+time, and automatic decisions remain separate from human decisions. Approval
+cohort/item filters, pagination and total counts are evaluated in SQL.
+
+Lists reflect the same collectors on current stored data. Open optimization
+suggestions are the report's current account-wide top three; cache findings
+come from its bounded scan of the sessions ranked by cache writes in the week.
+These scopes are stated on their lists. Reads never request model analysis
+or refresh external outcome evidence.
+
 Editions: OSS. Contributor documentation for this repository.
 
 Cost analytics turns gateway telemetry into explainable spend and budget health. This chapter covers the `ApiUsage` ledger, OSS API/UX boundaries, and the Enterprise plugin split.

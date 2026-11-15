@@ -1170,6 +1170,9 @@ export class GovernanceView extends LitElement {
       ${this.canManage ? html`<div class="detail-actions">${row.dismissed_at ? html`<sl-button data-restore ?disabled=${this.busy} @click=${() => void this.act(row)}>Restore</sl-button>` : (Object.entries(REASONS) as [DismissReason, string][]).map(([reason, label]) => html`<sl-button data-dismiss=${reason} ?disabled=${this.busy} @click=${() => void this.act(row, reason)}>Dismiss: ${label}</sl-button>`)}</div>` : nothing}`;
   }
   render() {
+    if (this.unsubscribe)
+      return html`<view-header headerText="Weekly report emails"></view-header>
+        ${this.notices()}`;
     if (!this.enabled && !this.loading && !this.error) return nothing;
     return html`<view-header
         headerText="Weekly review"
