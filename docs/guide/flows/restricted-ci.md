@@ -479,17 +479,23 @@ on the pull request:
   unknown (for example `diff` is null), a result that names it is rejected
   with `<field>_fact_unavailable`.
 - **Repository inspection.** The run must have made at least one tool call
-  that can read the repository (for example `exec_command`), or produced a
-  native command event. This is counted from tool evidence Preloop captured
-  at its gateway and from the native command stream, never from the result.
-  Tools that cannot read files, such as `request_user_input`, `view_image`,
-  `update_plan` and the goal tools, do not count.
+  that can read the repository, or produced a native command event. This is
+  counted from tool evidence Preloop captured at its gateway and from the
+  native command stream, never from the result. Only read-capable tools
+  count: `exec_command`, `shell`, `local_shell`, `container.exec`,
+  `read_file`, `list_dir`, `grep_files`, `Bash`, `Read`, `Grep`, `Glob` and
+  `LS`. Any other tool, such as `apply_patch`, `request_user_input` or
+  `view_image`, does not.
 
 A run that fails either check ends `FAILED` with `failure_category`
 `review_binding_mismatch` or `review_not_inspected`. The document is still
 stored, with a controller-owned `_review_integrity` member (withheld from the
 restricted `result`), and `/result` reports the outcome without values in
-`completion.review_integrity`:
+`completion.review_integrity`. Platform posting additionally requires a
+result field bound to `head_sha` that matches (`head_sha_unbound`
+otherwise), so a posted verdict always names the commit it reviewed; a run
+whose schema declares `head_sha` as optional still succeeds without it, but
+is not posted:
 
 <!-- example: fragment -->
 ```json

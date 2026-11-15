@@ -375,32 +375,34 @@ def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
     """
     import json
 
-    from preloop.services.review_integrity import count_observations
+    from preloop.services.review_integrity import ObservationCounter
 
-    rows: Any = (
+    ordered = (
         db.query(models.FlowExecutionLog.metadata_)
         .filter(
             models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
             models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
         )
         .order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
-        .limit(MAX_INSPECTION_ROWS)
     )
-    documents: list[dict[str, Any]] = []
-    counts = count_observations(documents)
-    for (stored,) in rows:
-        stored = stored or {}
+    counter = ObservationCounter()
+    # One row per query bounds driver buffering to one document, as in
+    # ``evidence_page``; the scan stops at the first inspecting observation.
+    for index in range(MAX_INSPECTION_ROWS):
+        row = ordered.offset(index).limit(1).first()
+        if row is None:
+            break
+        stored = row[0] or {}
         try:
             document = json.loads("".join(stored["chunks"]))
         except (KeyError, TypeError, ValueError):
             continue
         if digest(document) != stored.get("sha256"):
             continue
-        documents.append(document)
-        counts = count_observations(documents)
-        if counts["repository_tool_calls"] or counts["native_commands"]:
+        counter.add(document)
+        if counter.inspected():
             break
-    return counts
+    return counter.counts()
 
 
 def evidence_page(

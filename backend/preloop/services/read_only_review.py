@@ -614,12 +614,6 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
     }
 
 
-#: Execution statuses after which no startup receipt can still be recorded.
-_TERMINAL_STATUSES = frozenset(
-    {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED", "TIMEOUT", "TIMED_OUT"}
-)
-
-
 def startup_receipt_status(
     execution: Any, receipt: Mapping[str, Any] | None
 ) -> str | None:
@@ -646,7 +640,8 @@ def startup_receipt_status(
             and receipt.get("setup_completed") is True
         )
         return "recorded" if verified else "failed"
-    if getattr(execution, "status", None) in _TERMINAL_STATUSES:
+    terminal = crud.crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+    if getattr(execution, "status", None) in terminal:
         return "failed"
     return "pending"
 

@@ -1258,7 +1258,9 @@ async def _publish_claimed(
     # Recomputed from stored evidence at every attempt, never read back from
     # a stored outcome or the result itself.
     plan = plan_publication(
-        flow, execution, integrity=evaluate_execution(db, flow, execution)
+        flow,
+        execution,
+        integrity=evaluate_execution(db, flow, execution, require_head=True),
     )
     if row.status_reason == "statuses_permission_missing":
         # Only an explicit call reaches here again; the permission may have

@@ -43,18 +43,23 @@ STATUS_VERIFIED = "verified"
 STATUS_REJECTED = "rejected"
 STATUS_NOT_APPLICABLE = "not_applicable"
 
-#: Native tools that never read the repository. Any other tool call (a
-#: shell, ``exec_command``, a file read, grep) counts as inspection.
-NON_INSPECTING_TOOLS: frozenset[str] = frozenset(
+#: Tools that can read the repository. An allowlist: a tool not named here
+#: (``apply_patch``, ``request_user_input``, a future tool) is not evidence
+#: that the change was read. Native command events always count.
+INSPECTING_TOOLS: frozenset[str] = frozenset(
     {
-        "request_user_input",
-        "view_image",
-        "update_plan",
-        "get_goal",
-        "create_goal",
-        "update_goal",
-        "multi_agent_v1",
-        "web_search",
+        "exec_command",
+        "shell",
+        "local_shell",
+        "container.exec",
+        "read_file",
+        "list_dir",
+        "grep_files",
+        "Bash",
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
     }
 )
 
@@ -166,6 +171,7 @@ def evaluate(
     binding: Mapping[str, Any] | None,
     diff: Mapping[str, Any] | None,
     inspection: Mapping[str, Any] | None,
+    require_head: bool = False,
 ) -> dict[str, Any]:
     """Decide whether a review result may stand as a review of this change.
 
@@ -175,6 +181,9 @@ def evaluate(
         binding: The execution's ``ci_review_binding``.
         diff: The controller-computed diff identity, or None.
         inspection: ``inspection_summary`` of the captured tool evidence.
+        require_head: Require a result field bound to ``head_sha`` that
+            matches. Platform posting sets this: a posted verdict must name
+            the commit it reviewed.
 
     Returns:
         ``status`` (verified or rejected), ``category`` (None when verified),
@@ -199,6 +208,10 @@ def evaluate(
         checked.append({"field": field, "fact": fact, "outcome": outcome})
         if outcome in {"missing", "mismatch", "fact_unavailable"}:
             reasons.append(f"{field}_{outcome}")
+    if require_head and not any(
+        item["fact"] == FACT_HEAD and item["outcome"] == "matched" for item in checked
+    ):
+        reasons.append("head_sha_unbound")
     counts = dict(inspection) if isinstance(inspection, Mapping) else {}
     inspected = bool(counts.get("repository_tool_calls")) or bool(
         counts.get("native_commands")
@@ -238,52 +251,76 @@ def failure_message(outcome: Mapping[str, Any]) -> str:
     )
 
 
-def count_observations(documents: Any) -> dict[str, int]:
-    """Count inspecting tool calls in stored tool evidence documents.
+class ObservationCounter:
+    """Incremental inspection counts over stored tool evidence documents.
 
     Gateway documents contribute response-side calls (the model asked for a
-    tool); a request-side replay of the same call is not counted twice.
-    Native documents contribute command events, counted once per item.
+    tool); a request-side replay of the same call is not counted. Native
+    documents contribute command events, counted once per item.
     """
-    calls: dict[str, str | None] = {}
-    commands: set[str] = set()
-    anonymous = 0
-    for document in documents or []:
+
+    def __init__(self) -> None:
+        self._calls: dict[str, str | None] = {}
+        self._commands: set[str] = set()
+        self._anonymous_inspecting = 0
+        self._anonymous_other = 0
+
+    def add(self, document: Any) -> None:
+        """Count one stored evidence document."""
         if not isinstance(document, Mapping):
-            continue
+            return
         for item in document.get("observations") or []:
             if not isinstance(item, Mapping):
                 continue
             if item.get("source") == "native" and item.get("kind") == "command":
                 identity = item.get("item_id")
                 if isinstance(identity, str):
-                    commands.add(identity)
+                    self._commands.add(identity)
                 continue
             if item.get("source") != "response" or item.get("kind") != "call":
                 continue
             identity = item.get("call_id")
             name = item.get("name") if isinstance(item.get("name"), str) else None
             if isinstance(identity, str):
-                calls[identity] = name
-            elif name not in NON_INSPECTING_TOOLS:
-                anonymous += 1
-    repository = anonymous + sum(
-        1 for name in calls.values() if name not in NON_INSPECTING_TOOLS
-    )
-    return {
-        "repository_tool_calls": repository,
-        "other_tool_calls": len(calls) + anonymous - repository,
-        "native_commands": len(commands),
-    }
+                self._calls[identity] = name
+            elif name in INSPECTING_TOOLS:
+                self._anonymous_inspecting += 1
+            else:
+                self._anonymous_other += 1
+
+    def counts(self) -> dict[str, int]:
+        """``repository_tool_calls``, ``other_tool_calls``, ``native_commands``."""
+        inspecting = sum(1 for n in self._calls.values() if n in INSPECTING_TOOLS)
+        return {
+            "repository_tool_calls": inspecting + self._anonymous_inspecting,
+            "other_tool_calls": len(self._calls) - inspecting + self._anonymous_other,
+            "native_commands": len(self._commands),
+        }
+
+    def inspected(self) -> bool:
+        """Whether any inspecting call or native command was seen."""
+        counts = self.counts()
+        return bool(counts["repository_tool_calls"] or counts["native_commands"])
 
 
-def evaluate_execution(db: Any, flow: Any, execution: Any) -> dict[str, Any]:
+def count_observations(documents: Any) -> dict[str, int]:
+    """Count inspecting tool calls in stored tool evidence documents."""
+    counter = ObservationCounter()
+    for document in documents or []:
+        counter.add(document)
+    return counter.counts()
+
+
+def evaluate_execution(
+    db: Any, flow: Any, execution: Any, *, require_head: bool = False
+) -> dict[str, Any]:
     """Evaluate a stored execution from its stored evidence.
 
     Args:
         db: Database session.
         flow: The execution's flow.
         execution: The execution row.
+        require_head: Passed to :func:`evaluate`.
 
     Returns:
         The ``evaluate`` outcome, or ``status: not_applicable``.
@@ -299,4 +336,5 @@ def evaluate_execution(db: Any, flow: Any, execution: Any) -> dict[str, Any]:
         binding=getattr(execution, "ci_review_binding", None),
         diff=review_diff_identity(execution),
         inspection=inspection_summary(db, execution_id=execution.id),
+        require_head=require_head,
     )

@@ -60,6 +60,7 @@ OPT_IN = {
     },
 }
 RESULT = {
+    "head_sha": HEAD,
     "verdict": "fail",
     "summary": "One problem in the parser.",
     "findings": [
@@ -730,6 +731,22 @@ async def test_unverified_result_is_an_error_even_without_incomplete_state(
     )
     await publish(world, execution)
     assert world.github.reviews == {}
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_posted_verdict_must_name_the_reviewed_commit(
+    world: SimpleNamespace,
+) -> None:
+    """An optional head_sha the result omits is not a binding for posting."""
+    project = world.projects[0]
+    unbound = {k: v for k, v in RESULT.items() if k != "head_sha"}
+    execution = finished(
+        world, identity(world, project), result={**unbound, "verdict": "pass"}
+    )
+    outcome = await publish(world, execution)
+    assert outcome is not None and world.github.reviews == {}
+    assert outcome["review_reason"] == "review_binding_mismatch"
     assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
 
 

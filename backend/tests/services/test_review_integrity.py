@@ -146,11 +146,74 @@ def test_explicit_bindings_replace_defaults_and_are_required() -> None:
     )
 
 
+def test_write_only_and_unknown_tools_are_not_inspection() -> None:
+    document = {
+        "observations": [
+            {"source": "response", "kind": "call", "call_id": n, "name": n}
+            for n in ("apply_patch", "some_future_tool", "view_image")
+        ]
+        + [{"source": "response", "kind": "call", "name": "apply_patch"}]
+    }
+    assert count_observations([document]) == {
+        "repository_tool_calls": 0,
+        "other_tool_calls": 4,
+        "native_commands": 0,
+    }
+
+
+def test_posting_requires_a_matching_head_binding() -> None:
+    optional = flow()
+    optional.result_schema = {**SCHEMA, "required": ["verdict"]}
+    document = {"verdict": "pass", "base_sha": BASE}
+    assert (
+        evaluate(
+            optional,
+            result=document,
+            binding={"head_sha": HEAD, "base_sha": BASE},
+            diff=None,
+            inspection=INSPECTED,
+        )["status"]
+        == "verified"
+    )
+    outcome = evaluate(
+        optional,
+        result=document,
+        binding={"head_sha": HEAD, "base_sha": BASE},
+        diff=None,
+        inspection=INSPECTED,
+        require_head=True,
+    )
+    assert outcome["reasons"] == ["head_sha_unbound"]
+    assert outcome["category"] == "review_binding_mismatch"
+    bound = {**document, "head_sha": HEAD}
+    assert (
+        evaluate(
+            optional,
+            result=bound,
+            binding={"head_sha": HEAD, "base_sha": BASE},
+            diff=None,
+            inspection=INSPECTED,
+            require_head=True,
+        )["status"]
+        == "verified"
+    )
+
+
 def test_counts_come_from_captured_evidence_not_claims() -> None:
     gateway = {
         "observations": [
-            {"source": "response", "kind": "call", "call_id": "c1", "name": "x"},
-            {"source": "request", "kind": "call", "call_id": "c1", "name": "x"},
+            {
+                "source": "response",
+                "kind": "call",
+                "call_id": "c1",
+                "name": "exec_command",
+            },
+            {
+                "source": "request",
+                "kind": "call",
+                "call_id": "c1",
+                "name": "exec_command",
+            },
             {"source": "request", "kind": "result", "call_id": "c1"},
             {
                 "source": "response",
@@ -242,4 +305,6 @@ def test_startup_receipt_status_is_explicit() -> None:
     assert startup_receipt_status(row("RUNNING"), withdrawn) == "failed"
     assert startup_receipt_status(row("FAILED"), None) == "failed"
     assert startup_receipt_status(row("SUCCEEDED"), None) == "failed"
+    for status in ("ABORTED", "CANCELED", "CANCELLED", "TIMED_OUT"):
+        assert startup_receipt_status(row(status), None) == "failed"
     assert startup_receipt_status(row("RUNNING", binding=False), None) is None
