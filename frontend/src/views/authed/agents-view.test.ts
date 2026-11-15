@@ -1722,14 +1722,17 @@ describe('AgentsView', () => {
     try {
       await el.updateComplete;
       expect(estimate()?.textContent).to.contain('$0.92');
-      expect(estimate()?.textContent).to.contain('previous');
+      // Muted with the reason in the title, not a "previous" word that
+      // truncates to "pre…" in the cell (visual-3).
+      expect(estimate()?.classList.contains('stale')).to.be.true;
+      expect(estimate()?.textContent).to.not.contain('previous');
     } finally {
       release();
     }
     await refresh;
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.92');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     expect(estimate()?.getAttribute('title')).to.contain(
       'previous successful read'
     );
@@ -1738,7 +1741,7 @@ describe('AgentsView', () => {
     await (el as any).loadAgents();
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.92');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     // Explicit null means no subscription traffic, and zero is real data.
     agentItems[0].estimated_cost = 0;
     agentItems[0].subscription_usage = null;
@@ -1749,7 +1752,7 @@ describe('AgentsView', () => {
     await (el as any).loadAgents();
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.00');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     // Sign-out/account changes cannot lend a previous account's value.
     invalidateApiCaches();
     await waitUntil(() => !!(el as any).agents && !(el as any).loading);

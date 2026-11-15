@@ -426,6 +426,10 @@ export class AgentsView extends LitElement {
         .usage-window {
           color: var(--sl-color-neutral-600);
         }
+        /* An estimate kept from an earlier read: muted, reason in title. */
+        [data-testid='without-subscriptions'].stale {
+          color: var(--console-meta-color);
+        }
         .kind-filter-notice {
           color: var(--sl-color-warning-700);
         }
@@ -3912,6 +3916,7 @@ export class AgentsView extends LitElement {
             >`;
           return html`<span
             data-testid="without-subscriptions"
+            class=${row.withoutSubscriptionsStale ? 'stale' : ''}
             title=${
               row.withoutSubscriptionsStale
                 ? `Estimate from a previous successful read; current pricing is unavailable or updating. ${estimate.title}`
@@ -3919,7 +3924,6 @@ export class AgentsView extends LitElement {
             }
           >
             ${estimate.value === null ? 'No estimate' : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)}`}
-            ${row.withoutSubscriptionsStale ? html`<small>previous</small>` : nothing}
           </span>`;
         },
       },
