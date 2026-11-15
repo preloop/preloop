@@ -575,7 +575,7 @@ def test_native_responses_network_failure_recovers(stream: bool) -> None:
 
 
 def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
-    """The automatic SDK capture occurs before LiteLLM/gateway exception handlers."""
+    """The injected SDK backend captures errors inside the gateway attempt context."""
     import httpx
     import sentry_sdk
     from openai import InternalServerError, OpenAI
