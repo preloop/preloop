@@ -48,7 +48,7 @@ def result_availability(execution: Any) -> str:
     """Distinguish a result artifact from pending capture and controller metadata."""
     facts = completion_facts(execution)
     state = facts.get("capture_state")
-    if state == "pending":
+    if state == "pending" or facts.get("finalization_state") == "pending":
         return "pending"
     document = getattr(execution, "result", None)
     if state == "absent" or document is None:
@@ -275,7 +275,17 @@ def timings_projection(
     retry_count: int | None = 0
     total = 0.0
     first_error = None
+    first_response_seconds: float | None = None
     for request in requests:
+        response_seconds = _seconds(
+            receipt.get("agent_started_at"), request.get("first_response_at")
+        )
+        if response_seconds is not None:
+            first_response_seconds = (
+                min(first_response_seconds, response_seconds)
+                if first_response_seconds is not None
+                else response_seconds
+            )
         params = request.get("upstream_parameters") or {}
         params = params if isinstance(params, dict) else {}
         effort = params.get("reasoning_effort")
@@ -322,8 +332,10 @@ def timings_projection(
         "setup_seconds": _seconds(
             phases.get("setup_started"), phases.get("setup_finished")
         ),
-        "first_model_response_seconds": None,
-        "first_model_response_unavailable_reason": "not_recorded",
+        "first_model_response_seconds": first_response_seconds,
+        "first_model_response_unavailable_reason": (
+            "not_recorded" if first_response_seconds is None else None
+        ),
         "model_request_count": len(requests),
         "retry_count": retry_count,
         "total_model_seconds": round(total, 6),

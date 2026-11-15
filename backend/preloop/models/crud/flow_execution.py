@@ -1303,7 +1303,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if not isinstance(receipt, dict):
             return
         facts = receipt.get("_completion")
-        if not isinstance(facts, dict) or facts.get("capture_state") != "pending":
+        if not isinstance(facts, dict):
+            return
+        if (
+            facts.get("capture_state") != "pending"
+            and facts.get("finalization_state") != "pending"
+        ):
             return
         facts = dict(facts)
         if captured:
@@ -1317,12 +1322,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         state = (
             "captured"
             if captured
+            or (
+                facts.get("capture_state") == "captured"
+                and execution.result is not None
+            )
             or (facts.get("result_captured_at") and execution.result is not None)
             else "absent"
         )
         execution.startup_receipt = {
             **receipt,
-            "_completion": {**facts, "capture_state": state},
+            "_completion": {
+                **facts,
+                "capture_state": state,
+                "finalization_state": "settled",
+            },
         }
         db.flush()
 

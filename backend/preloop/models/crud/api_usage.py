@@ -3284,6 +3284,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 usage.error_class,
                 usage.meta_data["upstream_parameters"].label("upstream_parameters"),
                 usage.meta_data["upstream_retries"].label("upstream_retries"),
+                usage.meta_data["first_response_at"].label("first_response_at"),
             )
             .filter(
                 usage.account_id == account_id,
