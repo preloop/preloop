@@ -124,6 +124,48 @@ describe('FlowView runtime label', () => {
 });
 
 describe('FlowView recent executions', () => {
+  it('says how long the flow has been failing above its runs', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flow = {
+      id: 'flow-1',
+      name: 'Merge Request Reviewer',
+      agent_type: 'codex',
+      trigger_event_source: 'webhook',
+    };
+    element.recentExecutions = [
+      {
+        id: 'e-2',
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - 3600_000).toISOString(),
+      },
+      {
+        id: 'e-1',
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - 3 * 86400_000).toISOString(),
+      },
+    ];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    try {
+      const banner = element.shadowRoot!.querySelector(
+        '[data-testid="flow-failing-since"]'
+      ) as HTMLElement;
+      expect(banner, 'failing banner').to.exist;
+      const text = banner.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('The last 2 runs failed');
+      expect(text).to.contain('repository access');
+      expect(text).to.contain('failing since 3d ago');
+    } finally {
+      element.remove();
+    }
+  });
+
   it('names what each run was about, since they all share the flow name', async () => {
     // Every row on this page is the same flow: without a subject the table
     // is three timestamps and a status, and a reader cannot pick a run.

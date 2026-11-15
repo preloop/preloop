@@ -1,3 +1,8 @@
+import { failureStreak } from '../../utils/failure-streak';
+import {
+  failureCategoryLabel,
+  failureCategoryTooltip,
+} from '../../utils/failure-category';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { formatCount, formatCountExact } from '../../utils/count-format';
@@ -1016,6 +1021,34 @@ export class FlowView extends LitElement {
     `;
   }
 
+  /**
+   * "Failing since": the newest runs failed in a row. Said here because the
+   * tracker can pass its own connection check while every run of this flow
+   * fails to clone from it, and a list of red pills does not say since when.
+   */
+  private renderFailingSince() {
+    const streak = failureStreak(this.recentExecutions);
+    if (!streak) return nothing;
+    const cause = streak.category
+      ? html` with <strong>${failureCategoryLabel(streak.category)}</strong>`
+      : nothing;
+    const since = streak.since
+      ? html`, failing since
+          <span title=${formatLocalDateTime(streak.since)}
+            >${formatRelativeTime(streak.since)}</span
+          >`
+      : nothing;
+    const hint = streak.category
+      ? failureCategoryTooltip(streak.category)
+      : 'Open the newest run for the error.';
+    return html`
+      <sl-alert variant="danger" open data-testid="flow-failing-since">
+        <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+        The last ${streak.count} runs failed${cause}${since}. ${hint}
+      </sl-alert>
+    `;
+  }
+
   /** Inline warning naming the reference lists that could not be loaded. */
   private renderReferenceDataWarning() {
     if (this.referenceListsFailed.length === 0) return nothing;
@@ -1139,6 +1172,7 @@ export class FlowView extends LitElement {
       <div class="column-layout wide">
         <div class="main-column">
           ${this.renderReferenceDataWarning()} ${this.renderSummaryStrip()}
+          ${this.renderFailingSince()}
           <!-- Recent executions come before the prompt (#1692): the runs are
                why the page is opened, the prompt is reference. -->
           <sl-card data-recent-executions>
