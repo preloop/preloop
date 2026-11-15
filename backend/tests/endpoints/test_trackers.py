@@ -1440,7 +1440,11 @@ async def test_list_projects_for_org_keeps_400_when_client_missing(
 
 @pytest.mark.parametrize("stored_token", [False, True])
 def test_gitlab_rejected_token_has_actionable_error(
-    client: TestClient, db_session: Session, test_user, stored_token: bool
+    client: TestClient,
+    db_session: Session,
+    test_user,
+    stored_token: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Preserve GitLab auth failures through the real factory, including edits."""
     from gitlab.exceptions import GitlabAuthenticationError
@@ -1476,3 +1480,66 @@ def test_gitlab_rejected_token_has_actionable_error(
     assert "expired, revoked, or invalid" in result["message"]
     assert "api scope" in result["message"]
     assert "expired-token" not in result["message"]
+    assert "Tracker validation failed" in caplog.text
+    assert "expired-token" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        ("connection", "Check the URL"),
+        ("timeout", "Check the URL"),
+        ("not_found", "Check the URL"),
+        ("auth_forbidden", "api scope"),
+        ("groups_forbidden", "api scope"),
+    ],
+)
+def test_gitlab_validation_translates_provider_failures(
+    client: TestClient,
+    failure: str,
+    expected: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Transport errors and python-gitlab operation errors give safe guidance."""
+    import gitlab
+    import requests
+
+    upstream_detail = "upstream error containing private-token-sentinel"
+    errors = {
+        "connection": requests.ConnectionError(upstream_detail),
+        "timeout": requests.Timeout(upstream_detail),
+        "not_found": gitlab.exceptions.GitlabGetError(
+            upstream_detail, response_code=404
+        ),
+        "auth_forbidden": gitlab.exceptions.GitlabGetError(
+            upstream_detail, response_code=403
+        ),
+        "groups_forbidden": gitlab.exceptions.GitlabListError(
+            upstream_detail, response_code=403
+        ),
+    }
+    with patch("preloop.sync.trackers.gitlab.gitlab.Gitlab") as gitlab_client:
+        method = (
+            gitlab_client.return_value.groups.list
+            if failure == "groups_forbidden"
+            else gitlab_client.return_value.auth
+        )
+        method.side_effect = errors[failure]
+        response = client.post(
+            "/api/v1/trackers/test-and-list-orgs",
+            json={
+                "tracker_type": "gitlab",
+                "url": "https://gitlab.com",
+                "api_key": "private-token-sentinel",
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is False
+    assert result["orgs"] == []
+    assert expected in result["message"]
+    assert "unexpected error" not in result["message"]
+    assert "private-token-sentinel" not in result["message"]
+    assert "Tracker validation failed" in caplog.text
+    assert "private-token-sentinel" not in caplog.text

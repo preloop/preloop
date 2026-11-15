@@ -26,7 +26,11 @@ from preloop.schemas.tracker import (
 )  # Corrected import location
 
 
-from preloop.sync.exceptions import TrackerAuthenticationError, TrackerConnectionError
+from preloop.sync.exceptions import (
+    TrackerAuthenticationError,
+    TrackerConnectionError,
+    TrackerPermissionError,
+)
 from preloop.sync.trackers import create_tracker_client
 from preloop.utils.email import send_tracker_registered_email
 from preloop.sync.services.event_bus import event_bus_service
@@ -1542,20 +1546,33 @@ async def test_connection_and_list_orgs(
             orgs=orgs,
         )
 
-    except TrackerAuthenticationError:
-        message = (
-            "GitLab rejected the access token. It may be expired, revoked, or invalid. "
-            "Enter a new token with the api scope and access to the selected group."
-            if test_data.tracker_type == TrackerType.GITLAB
-            else "Authentication failed. Check your tracker credentials and try again."
+    except (
+        TrackerAuthenticationError,
+        TrackerConnectionError,
+        TrackerPermissionError,
+    ) as e:
+        logger.warning(
+            "Tracker validation failed: user_id=%s tracker_type=%s error_type=%s",
+            current_user.id,
+            test_data.tracker_type.value,
+            type(e).__name__,
         )
+        if isinstance(e, TrackerPermissionError):
+            message = (
+                "GitLab denied access. Check the token's api scope and group permissions."
+                if test_data.tracker_type == TrackerType.GITLAB
+                else "Access denied. Check your tracker credentials and permissions."
+            )
+        elif isinstance(e, TrackerAuthenticationError):
+            message = (
+                "GitLab rejected the access token. It may be expired, revoked, or invalid. "
+                "Enter a new token with the api scope and access to the selected group."
+                if test_data.tracker_type == TrackerType.GITLAB
+                else "Authentication failed. Check your tracker credentials and try again."
+            )
+        else:
+            message = "Could not connect to the tracker. Check the URL and try again."
         return TrackerTestResponse(success=False, message=message, orgs=[])
-    except TrackerConnectionError:
-        return TrackerTestResponse(
-            success=False,
-            message="Could not connect to the tracker. Check the URL and try again.",
-            orgs=[],
-        )
     except Exception as e:
         logger.exception(
             f"Error during tracker org list for user {current_user.username}: {e}"
