@@ -124,6 +124,61 @@ describe('FlowView runtime label', () => {
 });
 
 describe('FlowView recent executions', () => {
+  it('says how long the flow has been failing above its runs', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flow = {
+      id: 'flow-1',
+      name: 'Merge Request Reviewer',
+      agent_type: 'codex',
+      trigger_event_source: 'webhook',
+    };
+    element.recentExecutions = [
+      {
+        id: 'e-2',
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - 3600_000).toISOString(),
+      },
+      {
+        id: 'e-1',
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - 3 * 86400_000).toISOString(),
+      },
+    ];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    try {
+      const banner = element.shadowRoot!.querySelector(
+        '[data-testid="flow-failing-since"]'
+      ) as HTMLElement;
+      expect(banner, 'failing banner').to.exist;
+      const text = banner.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('The last 2 runs failed');
+      expect(text).to.contain('repository access');
+      expect(text).to.contain('failing since 3d ago');
+      // Ten loaded failures: the streak may be longer than the window.
+      element.recentExecutions = Array.from({ length: 10 }, (_, i) => ({
+        id: `e-${i}`,
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - i * 86400_000).toISOString(),
+      }));
+      await element.updateComplete;
+      const longer = element
+        .shadowRoot!.querySelector('[data-testid="flow-failing-since"]')!
+        .textContent!.replace(/\s+/g, ' ');
+      expect(longer).to.contain('At least the last 10 runs failed');
+      expect(longer).to.contain('failing since at least');
+    } finally {
+      element.remove();
+    }
+  });
+
   it('names what each run was about, since they all share the flow name', async () => {
     // Every row on this page is the same flow: without a subject the table
     // is three timestamps and a status, and a reader cannot pick a run.
@@ -163,6 +218,13 @@ describe('FlowView recent executions', () => {
       const link = element.shadowRoot!.querySelector(
         '.executions-table .subject-cell a'
       )!;
+      // A failed run is the solid danger pill here too, as on the
+      // executions list and the flows list (02-8).
+      const chip = element.shadowRoot!.querySelector(
+        '.executions-table sl-badge.chip'
+      )!;
+      expect(chip.classList.contains('solid')).to.be.true;
+
       expect(link.textContent).to.contain('spacecode/preloop-ios !17');
       expect(link.getAttribute('href')).to.equal(
         'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'

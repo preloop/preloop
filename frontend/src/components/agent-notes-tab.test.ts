@@ -373,7 +373,7 @@ describe('agent-notes-tab', () => {
       expect(
         el.shadowRoot!.querySelector('[data-testid="note-target-hint"]')!
           .textContent
-      ).to.contain('2 sessions are live');
+      ).to.contain('2 sessions have not ended');
       const options = [...target(el).querySelectorAll('sl-option')].map(
         (option) => option.textContent!.trim()
       );

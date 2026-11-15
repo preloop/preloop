@@ -1709,6 +1709,18 @@ describe('DashboardView', () => {
       ).to.equal('/console/policies');
     });
 
+    it('does not tick "Onboard an agent" for an agent that never connected', async () => {
+      const element = await mountLoaded();
+      element['managedAgents'] = [
+        { ...element['managedAgents'][0], onboarding_state: 'incomplete' },
+      ];
+      expect(element['nextSteps'][0].done).to.be.false;
+      element['managedAgents'] = [
+        { ...element['managedAgents'][0], onboarding_state: 'fully_onboarded' },
+      ];
+      expect(element['nextSteps'][0].done).to.be.true;
+    });
+
     it('does not tick "Restrict a tool" for a builtin that ships disabled', async () => {
       // A brand new account: builtins with default_enabled false report
       // is_enabled false, but nobody configured them (no config_id).
@@ -1733,6 +1745,40 @@ describe('DashboardView', () => {
       expect(steps[2].textContent).to.contain('Restrict a tool');
       expect(steps[2].classList.contains('done'), 'restrict step open').to.be
         .false;
+    });
+
+    it('does not tick "Restrict a tool" for the seeded send_note policy', async () => {
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          name: 'send_note',
+          source: 'builtin',
+          is_enabled: false,
+          approval_workflow_id: null,
+          has_approval_condition: true,
+          config_id: 'config-seed',
+          access_rules: [{ id: 'r1', action: 'require_approval' }],
+        },
+      ];
+      const element = await mountLoaded();
+      expect(element['hasToolPolicy']).to.be.false;
+    });
+
+    it('ticks "Restrict a tool" when send_note is gated by a workflow', async () => {
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          name: 'send_note',
+          source: 'builtin',
+          is_enabled: true,
+          approval_workflow_id: 'wf-1',
+          has_approval_condition: false,
+          config_id: 'config-seed',
+          access_rules: [],
+        },
+      ];
+      const element = await mountLoaded();
+      expect(element['hasToolPolicy']).to.be.true;
     });
 
     it('ticks "Restrict a tool" once somebody disables a tool', async () => {

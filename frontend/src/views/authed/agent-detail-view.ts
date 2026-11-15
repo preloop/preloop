@@ -618,7 +618,8 @@ export class AgentDetailView extends LitElement {
 
       /* "Recently active" is real but not live: a fainter tint of the same
          tone, no border (wave 4 depth limit). */
-      .status-chip.outline::part(base) {
+      .status-chip.outline::part(base),
+      .live-chip.outline::part(base) {
         background-color: color-mix(
           in srgb,
           var(--sl-color-success-500) 8%,
@@ -1857,10 +1858,21 @@ export class AgentDetailView extends LitElement {
   private renderHeaderChips(): TemplateResult | typeof nothing {
     if (!this.agent) return nothing;
 
-    const status = getAgentStatusChip(this.agent);
-    const control = getAgentControlState(this.agent);
     const liveCount =
       this.liveActivity.modelCalls + this.liveActivity.toolCalls;
+    let status = getAgentStatusChip(this.agent);
+    // Calls streaming in while the page is open are fresher than the turn
+    // state the page loaded with: an "Idle" chip beside them contradicts
+    // them. The same staleness rule as everywhere else decides "Working".
+    if (status.label === 'Idle' && liveCount > 0) {
+      const fresh = getAgentStatusChip({
+        ...this.agent,
+        turn_state: 'working',
+        last_activity_at: this.liveActivity.lastActivityAt,
+      });
+      if (fresh.label === 'Working') status = fresh;
+    }
+    const control = getAgentControlState(this.agent);
 
     const controlOff = control.visible && !control.enabled;
 
@@ -1889,7 +1901,14 @@ export class AgentDetailView extends LitElement {
       ${this.renderDesktopBadge()}
       ${
         liveCount > 0
-          ? html`<sl-badge variant="success" pill>Live ${liveCount}</sl-badge>`
+          ? html`<sl-tooltip
+              content="Model and tool calls seen since you opened this page"
+            >
+              <sl-badge class="live-chip outline" variant="success" pill
+                >${liveCount} ${liveCount === 1 ? 'call' : 'calls'} since
+                opened</sl-badge
+              >
+            </sl-tooltip>`
           : nothing
       }
       ${

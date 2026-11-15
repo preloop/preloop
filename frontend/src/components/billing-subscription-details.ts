@@ -456,11 +456,18 @@ export class BillingSubscriptionDetails extends LitElement {
                 </div>
                 <div class="date">
                   ${
-                    this._isPast(hostedSummary.billing_period_end)
-                      ? 'Billing period ended'
-                      : 'Current billing period ends'
+                    // A one-time credit has no period: "Billing period
+                    // ended" on a plan that "does not expire" contradicted
+                    // the card above it.
+                    onFreePlan
+                      ? 'One-time credit, no billing period'
+                      : html`${
+                          this._isPast(hostedSummary.billing_period_end)
+                            ? 'Billing period ended'
+                            : 'Current billing period ends'
+                        }
+                        ${this._formatDate(hostedSummary.billing_period_end)}`
                   }
-                  ${this._formatDate(hostedSummary.billing_period_end)}
                 </div>
                 <div class="usage-grid">
                   ${

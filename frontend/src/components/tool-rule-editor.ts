@@ -1506,6 +1506,7 @@ export class ToolRuleEditor extends LitElement {
             ? html`<policy-simulator
                 .toolName=${this.toolName}
                 .draftRule=${this._draftForTest()}
+                .draftRuleId=${this.rule?.id}
                 .toolSchema=${this.toolSchema}
               ></policy-simulator>`
             : ''

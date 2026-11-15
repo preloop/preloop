@@ -1224,6 +1224,7 @@ describe('PoliciesView', () => {
 
       (element as any)._activeTab = 'files';
       (element as any)._onYamlDraftInput('version: "1.0"\ntools: banish\n');
+      const focusErrors = sinon.spy(element as any, '_focusYamlErrors');
       await (element as any)._saveYamlDraft();
       await element.updateComplete;
 
@@ -1233,6 +1234,42 @@ describe('PoliciesView', () => {
       expect((element as any)._yamlErrors).to.have.length(1);
       expect((element as any)._yamlErrors[0].message).to.contain('banish');
       expect(element.shadowRoot?.textContent).to.contain('was not applied');
+      // The refusal sits above the editor, by Save, and takes focus.
+      const errors = element.shadowRoot!.querySelector(
+        '[data-testid="policy-yaml-errors"]'
+      ) as HTMLElement;
+      const editor = element.shadowRoot!.querySelector(
+        '[data-testid="policy-yaml-editor"]'
+      )!;
+      expect(
+        Boolean(
+          errors.compareDocumentPosition(editor) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+        'errors render before the editor'
+      ).to.be.true;
+      expect(errors.getAttribute('tabindex')).to.equal('-1');
+      expect(focusErrors).to.have.been.calledOnce;
+    });
+
+    it('asks before leaving with an unsaved YAML draft', async () => {
+      const { stub } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+      (element as any)._activeTab = 'files';
+      (element as any)._onYamlDraftInput('version: "1.0"\n');
+      const prevent = sinon.stub().returns('prevented');
+      const ask = sinon
+        .stub(element as any, '_confirmDiscardYaml')
+        .resolves(false);
+      expect(await (element as any).onBeforeLeave({}, { prevent })).to.equal(
+        'prevented'
+      );
+      expect(ask).to.have.been.calledOnce;
+      expect(prevent).to.have.been.calledOnce;
     });
 
     it('validates then previews a valid draft instead of applying immediately', async () => {

@@ -10,6 +10,10 @@ from uuid import UUID
 from typing import Annotated, Any, Literal, Optional
 
 from preloop.services.fleet_findings import evaluate_fleet_findings
+from preloop.services.built_in_models import (
+    built_in_models_enabled,
+    is_available_built_in_model,
+)
 
 from fastapi import (
     APIRouter,
@@ -1989,9 +1993,16 @@ async def replace_account_managed_agent_model_bindings(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
 
+    hosted_models = built_in_models_enabled()
     for binding in payload.bindings:
         ai_model = crud_ai_model.get(db, id=binding.ai_model_id)
-        if ai_model is None or str(ai_model.account_id) != str(account.id):
+        # Account-owned models, plus the deployment built-ins the model
+        # picker offers when hosted models are enabled (onboarding wizard).
+        bindable = ai_model is not None and (
+            str(ai_model.account_id) == str(account.id)
+            or (hosted_models and is_available_built_in_model(ai_model))
+        )
+        if not bindable:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"AI model {binding.ai_model_id} does not belong to the current account",

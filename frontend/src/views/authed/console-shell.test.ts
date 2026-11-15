@@ -609,13 +609,45 @@ describe('ConsoleShell', () => {
     }
   });
 
+  it('hides permission-gated links while the profile is unknown (fails closed)', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/users/me')) {
+        return new Response('boom', { status: 500 });
+      }
+      const body = url.endsWith('/features')
+        ? { features: {}, plugins: [] }
+        : {};
+      return new Response(JSON.stringify(body), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const el = await fixture<ConsoleShell>(
+      html`<console-shell></console-shell>`
+    );
+    // Before the profile answers: nothing gated is offered.
+    expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
+      .exist;
+    await waitUntil(
+      () =>
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded
+    );
+    await el.updateComplete;
+    // The profile failed: still nothing gated, and ungated links remain.
+    expect(el.shadowRoot?.querySelector('a[href="/console/agents"]')).to.not
+      .exist;
+    expect(el.shadowRoot?.querySelector('a[href="/console"]')).to.exist;
+  });
+
   it('has sidebar menu with Overview and Tools links', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
 
     await waitUntil(
-      () => el.shadowRoot?.querySelector('#console-nav > ul') !== null,
+      () =>
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded &&
+        el.shadowRoot?.querySelector('#console-nav > ul') !== null,
       'Sidebar menu did not render'
     );
 
@@ -1061,8 +1093,10 @@ describe('ConsoleShell', () => {
 
     await waitUntil(
       () =>
+        // Gated links wait for the profile (the nav fails closed).
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded &&
         el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
-        null,
+          null,
       'Settings links did not render'
     );
 
@@ -1089,8 +1123,10 @@ describe('ConsoleShell', () => {
     )) as ConsoleShell;
     await waitUntil(
       () =>
+        // Gated links wait for the profile (the nav fails closed).
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded &&
         el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
-        null,
+          null,
       'Settings links did not render'
     );
 
@@ -1358,8 +1394,10 @@ describe('ConsoleShell', () => {
     )) as ConsoleShell;
     await waitUntil(
       () =>
+        // Gated links wait for the profile (the nav fails closed).
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded &&
         el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
-        null,
+          null,
       'Settings links did not render'
     );
     expect(el.shadowRoot?.querySelector('a[href="/console/settings/account"]'))
@@ -1372,8 +1410,10 @@ describe('ConsoleShell', () => {
     )) as ConsoleShell;
     await waitUntil(
       () =>
+        // Gated links wait for the profile (the nav fails closed).
+        (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded &&
         el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
-        null,
+          null,
       'Settings links did not render'
     );
     const labels = Array.from(

@@ -1379,7 +1379,48 @@ export class PreloopFlowForm extends LitElement {
       (t) => t.id === this.flow.trigger_event_source
     );
     if (!tracker) return [];
-    return getTrackerEventOptions(tracker.tracker_type);
+    const known = getTrackerEventOptions(tracker.tracker_type);
+    // A saved event the tracker's list does not offer still gets an option:
+    // without one the select hides it and the next change drops it silently.
+    const unknown = this.unknownSavedEvents().map((value) => ({
+      name: `${value} (not sent by this tracker)`,
+      value,
+    }));
+    return [...known, ...unknown];
+  }
+
+  /** Saved trigger events the selected tracker's event list does not offer. */
+  private unknownSavedEvents(): string[] {
+    const tracker = this.trackers.find(
+      (t) => t.id === this.flow.trigger_event_source
+    );
+    if (!tracker) return [];
+    const known = new Set(
+      getTrackerEventOptions(tracker.tracker_type).map((ev) => ev.value)
+    );
+    return (this.flow.trigger_event_types || []).filter(
+      (value: string) => !known.has(value)
+    );
+  }
+
+  /** Help text under the Events select: a missing or mismatched event. */
+  private eventsHelpText(): string {
+    if (this.savedWithNoEvents()) {
+      return 'This flow was saved with no events, so tracker events do not start it. Choose events to have it run on them.';
+    }
+    const unknown = this.unknownSavedEvents();
+    if (unknown.length) {
+      const tracker = this.trackers.find(
+        (t) => t.id === this.flow.trigger_event_source
+      );
+      const name = tracker?.name || 'This tracker';
+      return `${name} does not send ${unknown.join(', ')}, so ${
+        unknown.length === 1 ? 'that event' : 'those events'
+      } will never start this flow. Remove ${
+        unknown.length === 1 ? 'it' : 'them'
+      } or pick a matching event.`;
+    }
+    return '';
   }
 
   private isToolSelected(serverName: string, toolName: string): boolean {
@@ -4931,11 +4972,7 @@ export class PreloopFlowForm extends LitElement {
                       <sl-select
                         label="Events"
                         data-field="events"
-                        help-text=${
-                          this.savedWithNoEvents()
-                            ? 'This flow was saved with no events, so tracker events do not start it. Choose events to have it run on them.'
-                            : ''
-                        }
+                        help-text=${this.eventsHelpText()}
                         placeholder="Select the events that trigger this flow"
                         multiple
                         .value=${this.flow.trigger_event_types || []}

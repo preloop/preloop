@@ -1271,10 +1271,42 @@ export class ApprovalsView extends AuthedElement {
     }
   }
 
+  /** Status values the filter offers; anything else falls back to Pending. */
+  static readonly STATUS_VALUES = new Set([
+    'all',
+    'pending',
+    'approved',
+    'declined',
+    'expired',
+    'cancelled',
+  ]);
+
+  /**
+   * The status from a link. The page labels a declined request "Denied", so
+   * `?status=denied` is read as `declined` rather than sent to the server as
+   * a value it rejects; an unknown value opens the default view.
+   */
+  static normalizeStatus(value: string | null): string {
+    const status = (value || '').trim().toLowerCase();
+    if (status === 'denied') return 'declined';
+    return ApprovalsView.STATUS_VALUES.has(status)
+      ? status
+      : ApprovalsView.DEFAULT_STATUS;
+  }
+
+  /** "Show all" from the empty queue: applied in place, like the select. */
+  private showAllStatuses = (event: Event): void => {
+    event.preventDefault();
+    this.statusFilter = 'all';
+    this.syncFilterLocation();
+    this.applyFilters();
+    this.reloadFromFirstPage();
+  };
+
   private filterSearchTimer: number | null = null;
   private readFilterLocation(): void {
     const params = new URLSearchParams(window.location.search);
-    this.statusFilter = params.get('status') ?? ApprovalsView.DEFAULT_STATUS;
+    this.statusFilter = ApprovalsView.normalizeStatus(params.get('status'));
     this.toolFilter = params.get('tool') ?? 'all';
     this.searchQuery = params.get('q') ?? '';
   }
@@ -1763,7 +1795,7 @@ export class ApprovalsView extends AuthedElement {
                           : !this.showsHistory
                             ? html`<sl-button
                                 data-testid="show-all-approvals"
-                                href="/console/approvals?status=all"
+                                @click=${this.showAllStatuses}
                               >
                                 Show all
                               </sl-button>`
@@ -1846,10 +1878,23 @@ export class ApprovalsView extends AuthedElement {
         ? html`Last ${count(loaded)} requests`
         : html`${count(loaded)} requests`,
       html`${count(this.waitingRequests.length)} waiting`,
-      html`${count(stats.approved)} approved`,
+      html`${count(
+        Math.max(0, stats.approved - (stats.autoApprovedByBypass || 0))
+      )}
+      approved`,
       html`${count(stats.declined)} denied`,
       html`${count(stats.expired)} timed out`,
     ];
+    // Auto-approved calls never waited for anyone, so they are not counted
+    // under a page about calls that waited for a human decision.
+    if ((stats.autoApprovedByBypass || 0) > 0) {
+      facts.push(
+        html`<span
+          title="Allowed by a bypass or an auto-approve rule without waiting for anyone"
+          >${count(stats.autoApprovedByBypass)} auto-approved</span
+        >`
+      );
+    }
     if (stats.approved + stats.declined > 0) {
       facts.push(
         html`<strong>${Math.round(stats.approvalRate)}%</strong> approved by a

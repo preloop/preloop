@@ -110,6 +110,25 @@ describe('LandingView', () => {
     ).to.be.true;
   });
 
+  it('replays carousel SVGs from cache instead of re-downloading them', async () => {
+    fetchStub = stubFetch();
+    const el = (await fixture(
+      html`<landing-view></landing-view>`
+    )) as LandingView;
+    await tick();
+    await el.updateComplete;
+    for (const img of el.shadowRoot!.querySelectorAll('img')) {
+      const src = img.getAttribute('src') || '';
+      expect(src, src).to.not.match(/[?&]t=/);
+    }
+    (el as any)._handleSvgSlideChange(
+      new CustomEvent('sl-slide-change', { detail: { index: 1 } })
+    );
+    await el.updateComplete;
+    expect((el as any)._svgPlays[1]).to.equal(1);
+    window.clearInterval((el as any)._animTimer);
+  });
+
   it('handles empty content without rendering feature cards', async () => {
     fetchStub = stubFetch({ hero: {}, features: [], faqs: [] });
     const el = (await fixture(

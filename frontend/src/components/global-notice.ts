@@ -3,6 +3,17 @@ import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
+/**
+ * The notices a link may ask for with `?message=<key>`. Only these keys are
+ * shown, as this fixed copy: free text from the URL never reaches the
+ * console banner, where a crafted link could put any words in Preloop's
+ * mouth (01-16).
+ */
+export const GLOBAL_NOTICE_MESSAGES: Record<string, string> = {
+  // Nothing in Preloop links here with a message today. Add a key and its
+  // copy when a redirect needs one.
+};
+
 @customElement('global-notice')
 export class GlobalNotice extends LitElement {
   @state() private _message = '';
@@ -13,14 +24,24 @@ export class GlobalNotice extends LitElement {
   }
 
   private _checkUrlForMessage() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const message = urlParams.get('message');
-    if (message) {
-      this._message = message.replace(/_/g, ' '); // Replace underscores with spaces
-      // Clean the URL after we have captured the message
-      const newUrl = `${window.location.pathname}`;
-      window.history.replaceState({}, '', newUrl);
-    }
+    const url = new URL(window.location.href);
+    const key = url.searchParams.get('message');
+    if (key === null) return;
+    const message = Object.prototype.hasOwnProperty.call(
+      GLOBAL_NOTICE_MESSAGES,
+      key
+    )
+      ? GLOBAL_NOTICE_MESSAGES[key]
+      : '';
+    if (!message) return;
+    this._message = message;
+    // Drop only the parameter this read; the page's own filters stay.
+    url.searchParams.delete('message');
+    window.history.replaceState(
+      {},
+      '',
+      `${url.pathname}${url.search}${url.hash}`
+    );
   }
 
   private _handleClose() {

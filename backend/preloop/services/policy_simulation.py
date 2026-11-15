@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from preloop.models import models
-from preloop.models.crud import crud_ai_model, crud_mcp_server, crud_tool_configuration
+from preloop.models.crud import (
+    crud_ai_model,
+    crud_mcp_server,
+    crud_tool_access_rule,
+    crud_tool_configuration,
+)
 from preloop.models.schemas.grant_introspection import GrantSample, IntrospectionConfig
 from preloop.services.grant_introspection import grant_denial_reason
 from preloop.services.model_content_policy import evaluate_model_io, load_model_io_rules
@@ -47,6 +52,12 @@ class PolicyEvaluationRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
     draft_rule: DraftToolRule | None = None
+    #: Test the draft inside the tool's stored, ordered rules, as it would
+    #: run once saved: an earlier live rule can decide the call first.
+    draft_with_stored_rules: bool = False
+    #: The stored rule the draft edits; it takes that rule's place. A draft
+    #: without one is a new rule and goes last, where saving appends it.
+    draft_rule_id: str | None = Field(None, max_length=64)
     draft_yaml: str | None = Field(None, max_length=1000000)
     stored: bool = False
     model_target: Literal["model.request", "model.response"] = "model.request"
@@ -83,6 +94,28 @@ class PolicyEvaluationResponse(BaseModel):
     also_matched_rule_ids: list[str] = Field(default_factory=list)
     sensitive_data_decision: str | None = None
     model_decision: str | None = None
+
+
+def _place_draft_rule(
+    stored_rules: list[Any], draft_rules: list[Any], draft_rule_id: str | None
+) -> list[Any]:
+    """Put the draft where it will run once saved.
+
+    An edited rule keeps its place in the order; a new rule is appended,
+    which is where saving puts it. A disabled draft (``draft_rules`` empty)
+    removes the rule it edits, as saving it disabled would.
+    """
+    placed: list[Any] = []
+    replaced = False
+    for rule in stored_rules:
+        if draft_rule_id is not None and str(rule.id) == draft_rule_id:
+            placed.extend(draft_rules)
+            replaced = True
+            continue
+        placed.append(rule)
+    if not replaced:
+        placed.extend(draft_rules)
+    return placed
 
 
 async def simulate_policy(
@@ -226,6 +259,37 @@ async def simulate_policy(
         )
         if reason:
             return PolicyEvaluationResponse(decision="deny", description=reason)
+
+    if (
+        request.draft_rule is not None
+        and request.draft_with_stored_rules
+        and (request.server == "builtin" or server is not None)
+    ):
+        selected = await run_in_threadpool(
+            crud_tool_configuration.get_for_server,
+            db,
+            account_id=str(account_id),
+            tool_name=request.name,
+            mcp_server_id=str(server.id) if server is not None else None,
+        )
+        if len(selected) == 1:
+            stored_rules = await run_in_threadpool(
+                crud_tool_access_rule.get_multi_by_config,
+                db,
+                config_id=str(selected[0].id),
+                account_id=str(account_id),
+                enabled_only=False,
+            )
+            # All rules, so an edited rule that is disabled today is still
+            # found at its place; disabled ones are dropped after placing.
+            rules = [
+                rule
+                for rule in _place_draft_rule(
+                    stored_rules, rules, request.draft_rule_id
+                )
+                if rule.is_enabled is not False
+            ]
+            config = selected[0]
 
     if request.stored:
         # Select the exact server's configuration rather than the first same-name tool.

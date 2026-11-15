@@ -651,7 +651,9 @@ function isSessionTarget(target: string): boolean {
 
 function targetHint(target: string, liveCount: number): string {
   if (target === '') {
-    return `${liveCount} sessions are live. Choose the one this note is for.`;
+    // "Live" here only means not ended: a session left open for days counts,
+    // so the copy says what the number is rather than claim activity.
+    return `${liveCount} sessions have not ended. Choose the one this note is for.`;
   }
   if (target === TARGET_NEXT) {
     return 'Held for the next session this agent starts. Live sessions will not see it.';

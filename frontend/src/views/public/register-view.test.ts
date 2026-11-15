@@ -95,7 +95,7 @@ describe('RegisterView', () => {
 
     const errorMessage = element.shadowRoot?.querySelector('.error-message');
     expect(errorMessage).to.exist;
-    expect(errorMessage?.textContent).to.contain('Email already registered');
+    expect(errorMessage?.textContent).to.contain('already has an account');
     // Announced, so a screen-reader user hears that sign-up failed.
     expect(errorMessage?.getAttribute('role')).to.equal('alert');
     expect(fetchStub).to.have.been.calledOnce;
@@ -180,6 +180,100 @@ describe('RegisterView', () => {
       goStub.restore();
       localStorage.removeItem('accessToken');
     }
+  });
+
+  function fillAndSubmit(values: {
+    username: string;
+    email: string;
+    password: string;
+  }) {
+    const field = (id: string) =>
+      element.shadowRoot?.querySelector<any>(`#${id}`);
+    field('username').value = values.username;
+    field('email').value = values.email;
+    field('password').value = values.password;
+    element.shadowRoot
+      ?.querySelector('form')
+      ?.dispatchEvent(
+        new SubmitEvent('submit', { bubbles: true, cancelable: true })
+      );
+  }
+
+  it('asks for email verification instead of "please sign in" when the auto-login is refused as unverified', async () => {
+    const goStub = sinon.stub(Router, 'go');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/auth/token/json')) {
+        return new Response(
+          JSON.stringify({
+            detail: {
+              code: 'email_not_verified',
+              message: 'Verify your email address to finish signing in.',
+              email: 'new@example.com',
+            },
+          }),
+          { status: 403 }
+        );
+      }
+      if (url.includes('/api/v1/auth/resend-verification')) {
+        return new Response(JSON.stringify({ message: 'Sent.' }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    try {
+      fillAndSubmit({
+        username: 'newuser',
+        email: 'new@example.com',
+        password: 'password123',
+      });
+      await waitUntil(
+        () => element.shadowRoot?.querySelector('#verify-email-pending'),
+        'verification notice did not appear'
+      );
+      const notice = element.shadowRoot!.querySelector(
+        '#verify-email-pending'
+      )!;
+      expect(notice.textContent).to.contain('new@example.com');
+      expect(notice.textContent).to.match(/check your email/i);
+      expect(goStub).to.not.have.been.called;
+      // The form is gone: nothing left to resubmit.
+      expect(element.shadowRoot?.querySelector('form')).to.not.exist;
+
+      (
+        element.shadowRoot!.querySelector('#resend-verification') as HTMLElement
+      ).click();
+      await waitUntil(() =>
+        fetchStub
+          .getCalls()
+          .some((c: any) =>
+            String(c.args[0]).includes('/auth/resend-verification')
+          )
+      );
+    } finally {
+      goStub.restore();
+    }
+  });
+
+  it('validates empty and malformed fields locally, one message per field', async () => {
+    fillAndSubmit({ username: '  ', email: 'not-an-email', password: 'short' });
+    await element.updateComplete;
+    expect(fetchStub).to.not.have.been.called;
+    const text =
+      element.shadowRoot?.querySelector('.error-message')?.textContent;
+    expect(text).to.contain('Choose a username.');
+    expect(text).to.contain('Enter a valid email address.');
+    expect(text).to.contain('Passwords need at least 8 characters.');
+  });
+
+  it('does not say "deliverable" for an empty email', async () => {
+    fillAndSubmit({ username: 'u', email: '', password: 'password123' });
+    await element.updateComplete;
+    const text =
+      element.shadowRoot?.querySelector('.error-message')?.textContent;
+    expect(text).to.contain('Enter your email address.');
+    expect(text).to.not.contain('deliverable');
   });
 
   it('should have a link to the login page', () => {
@@ -270,9 +364,18 @@ describe('RegisterView', () => {
       ).to.equal("That didn't work: Name should have at least 8 characters");
     });
 
-    it('wraps unmapped errors in plain language', () => {
+    it('maps taken username and email to plain copy', () => {
       expect(humanizeRegisterError('Username already registered')).to.equal(
-        "That didn't work: Username already registered"
+        'That username is taken. Choose another one.'
+      );
+      expect(humanizeRegisterError('Email already registered')).to.contain(
+        'already has an account'
+      );
+    });
+
+    it('wraps unmapped errors in plain language', () => {
+      expect(humanizeRegisterError('Registration is closed')).to.equal(
+        "That didn't work: Registration is closed"
       );
     });
 

@@ -39244,8 +39244,9 @@ components:
             does not match the flow result schema), review_binding_mismatch (a read-only
             review result names another revision than the admitted one), review_not_inspected
             (a read-only review made no repository tool call or command), setup_failed,
-            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
-            (timed out while the model stream was silent), approval_denied, approval_timeout,
+            repository_access (git refused the repository credential), verification_failed,
+            verification_blocked, tool_error, agent_error, model_stream_idle (timed
+            out while the model stream was silent), approval_denied, approval_timeout,
             approval_unavailable (an approval-required rule could not pause the run),
             hook_binding_invalid (the native hook credential was refused before launch),
             resume_failed (a parked run could not be continued), gateway_bypassed
@@ -47349,6 +47350,16 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DraftToolRule'
           - type: 'null'
+        draft_with_stored_rules:
+          type: boolean
+          title: Draft With Stored Rules
+          default: false
+        draft_rule_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Draft Rule Id
         draft_yaml:
           anyOf:
           - type: string

@@ -36,6 +36,28 @@ import { formatLocalDateTime, formatRelativeTime } from '../../../utils/date';
 /** Rows the approval-workflow shim owns are shown, but edited on the workflow. */
 const SHIM_SOURCE = 'approval_workflow';
 
+/**
+ * A hook URL often carries its credential in the path or query (Slack,
+ * Teams, Discord), so the list shows the origin and the last four
+ * characters of the path and query only. An unparsable value is never
+ * echoed: only its last four characters are shown.
+ */
+export function maskWebhookUrl(raw: string): string {
+  const tail = (value: string) => value.slice(-4);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Never echo what could not be parsed: it may be a bare secret.
+    return raw ? `…${tail(raw)}` : raw;
+  }
+  const rest = `${url.pathname}${url.search}`;
+  if (rest === '/' || rest === '') return url.origin;
+  // Any path or query may carry the credential; keep only the host and
+  // the last four characters.
+  return `${url.origin}/…${tail(rest)}`;
+}
+
 @customElement('webhooks-view')
 export class WebhooksView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -196,7 +218,7 @@ export class WebhooksView extends LitElement {
   private async handleDelete(endpoint: WebhookEndpoint) {
     const confirmed = await confirmDialog({
       title: 'Delete webhook endpoint',
-      message: `Delete ${endpoint.url}?`,
+      message: `Delete ${maskWebhookUrl(endpoint.url)}?`,
       detail:
         'Events stop being sent to it immediately and its delivery history is removed. This cannot be undone.',
       confirmLabel: 'Delete endpoint',
@@ -269,7 +291,9 @@ export class WebhooksView extends LitElement {
     return html`
       <tr>
         <td>
-          <div class="url" title=${endpoint.url}>${endpoint.url}</div>
+          <div class="url" title=${maskWebhookUrl(endpoint.url)}>
+            ${maskWebhookUrl(endpoint.url)}
+          </div>
           ${
             endpoint.description
               ? html`<div class="muted">${endpoint.description}</div>`
@@ -493,7 +517,11 @@ export class WebhooksView extends LitElement {
   private renderDeliveries() {
     if (this.deliveries.length === 0) {
       return html`<p class="empty-state">
-        No deliveries yet. Events appear here as they are sent.
+        ${
+          this.endpoints.some((endpoint) => endpoint.last_delivery_at)
+            ? 'No recent deliveries in the log. Each endpoint above shows when it last received an event.'
+            : 'No deliveries yet. Events appear here as they are sent.'
+        }
       </p>`;
     }
     return html`

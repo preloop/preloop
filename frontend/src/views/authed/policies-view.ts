@@ -36,6 +36,7 @@ import type {
   PolicyVersion,
 } from '../../api';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import type { RouterCommands, RouterLocation } from '../../router';
 import { hasPermission } from '../../permissions';
 import type { ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
@@ -885,8 +886,40 @@ export class PoliciesView extends LitElement {
     `,
   ];
 
+  /**
+   * An unsaved YAML draft is not lost to a click on the nav (03-25): the
+   * same discard question the flow form asks.
+   */
+  async onBeforeLeave(_location: RouterLocation, commands: RouterCommands) {
+    if (!this._yamlDirty) return;
+    if (!(await this._confirmDiscardYaml())) return commands.prevent();
+    this._yamlDirty = false;
+  }
+
+  private _confirmDiscardYaml(): Promise<boolean> {
+    return confirmDialog({
+      title: 'Discard unsaved changes?',
+      message: 'Your policy YAML has unsaved changes.',
+      detail: 'Leave without saving these changes?',
+      confirmLabel: 'Discard changes',
+      variant: 'danger',
+    });
+  }
+
+  private _beforeUnload = (event: BeforeUnloadEvent): void => {
+    if (!this._yamlDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  };
+
+  disconnectedCallback() {
+    window.removeEventListener('beforeunload', this._beforeUnload);
+    super.disconnectedCallback();
+  }
+
   connectedCallback() {
     super.connectedCallback();
+    window.addEventListener('beforeunload', this._beforeUnload);
     const accessTab = new URLSearchParams(window.location.search).get('tab');
     if (
       accessTab === 'access-rules' ||
@@ -1797,17 +1830,29 @@ export class PoliciesView extends LitElement {
    * full policy can drop rules, MCP servers, and workflows, so Save must
    * not upload until the user confirms.
    */
+  /** Move focus to the refusal so it is seen and announced. */
+  private async _focusYamlErrors() {
+    await this.updateComplete;
+    const alert = this.shadowRoot?.querySelector<HTMLElement>(
+      '[data-testid="policy-yaml-errors"]'
+    );
+    alert?.scrollIntoView?.({ block: 'nearest' });
+    alert?.focus?.();
+  }
+
   private _saveYamlDraft = async () => {
     this._error = null;
     if (!this._yamlDraft.trim()) {
       this._yamlErrors = [
         { path: '', message: 'The policy YAML is empty. Nothing to save.' },
       ];
+      await this._focusYamlErrors();
       return;
     }
 
     const valid = await this._validateYamlDraft();
     if (!valid) {
+      await this._focusYamlErrors();
       return;
     }
 
@@ -2890,6 +2935,35 @@ export class PoliciesView extends LitElement {
           </div>
         </div>
 
+        <!-- Next to Save, not under the 22-row editor where it landed off
+             screen (governance-3). -->
+        ${
+          this._yamlErrors.length > 0
+            ? html`
+                <sl-alert
+                  variant="danger"
+                  open
+                  class="yaml-feedback"
+                  data-testid="policy-yaml-errors"
+                  tabindex="-1"
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <strong>This YAML was not applied.</strong>
+                  <ul class="yaml-error-list">
+                    ${this._yamlErrors.map(
+                      (item) => html`
+                        <li>
+                          ${
+                            item.path ? html`<code>${item.path}</code>: ` : ''
+                          }${item.message}
+                        </li>
+                      `
+                    )}
+                  </ul>
+                </sl-alert>
+              `
+            : ''
+        }
         ${this._showSimulation ? html`<policy-simulator .draftYaml=${this._yamlDraft}></policy-simulator>` : ''}
         ${
           // An empty editor would read as an empty policy. When the export
@@ -2919,27 +2993,6 @@ export class PoliciesView extends LitElement {
                 .value=${this._yamlDraft}
                 @sl-input=${(e: any) => this._onYamlDraftInput(e.target.value)}
               ></sl-textarea>`
-        }
-        ${
-          this._yamlErrors.length > 0
-            ? html`
-                <sl-alert variant="danger" open class="yaml-feedback">
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  <strong>This YAML was not applied.</strong>
-                  <ul class="yaml-error-list">
-                    ${this._yamlErrors.map(
-                      (item) => html`
-                        <li>
-                          ${
-                            item.path ? html`<code>${item.path}</code>: ` : ''
-                          }${item.message}
-                        </li>
-                      `
-                    )}
-                  </ul>
-                </sl-alert>
-              `
-            : ''
         }
         ${
           this._yamlWarnings.length > 0

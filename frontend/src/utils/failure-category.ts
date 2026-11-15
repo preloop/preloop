@@ -100,6 +100,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent finished, but its result.json does not match the result schema set on this flow, so the result is not usable. The errors are listed on the execution.',
   },
+  repository_access: {
+    label: 'repository access',
+    tooltip:
+      "Git could not clone the flow's repository: the remote refused the tracker's credential or does not show the repository to it. Update the tracker token; a retry fails the same way until then.",
+  },
   review_binding_mismatch: {
     label: 'review not bound',
     tooltip:
@@ -164,7 +169,7 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
   unknown: {
     label: 'unknown',
     tooltip:
-      'Preloop could not place this failure from what the run recorded. A rising share of these is a gap in the vocabulary.',
+      'Preloop could not tell why this run failed. The error and the run log below show what happened.',
   },
 };
 

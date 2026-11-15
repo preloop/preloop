@@ -1075,6 +1075,10 @@ describe('AgentsView', () => {
         'devin',
         'desktop_agent',
         'custom',
+        'windsurf',
+        'vscode',
+        'copilot_cli',
+        'antigravity',
         'flows',
       ])
     );
@@ -1215,6 +1219,37 @@ describe('AgentsView', () => {
       'Onboard an existing agent',
       'Deploy a new agent',
     ]);
+  });
+
+  it('offers every kind the console can name in the kinds menu', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-dropdown sl-checkbox')
+    ).map((c) => c.textContent!.trim());
+    for (const label of ['Copilot CLI', 'VS Code', 'Antigravity', 'Windsurf']) {
+      expect(labels, label).to.include(label);
+    }
+    // One entry per kind: the separator-less legacy spelling is not listed.
+    expect(labels.filter((l) => l === 'Gemini CLI').length).to.equal(1);
+  });
+
+  it('says when a remembered kind filter is narrowing the list', async () => {
+    localStorage.setItem('preloopAgentKindsHidden', JSON.stringify(['codex']));
+    agentItems = [makeAgent('agent-a', 'Alpha', 'claude_code')];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const notice = el.shadowRoot!.querySelector(
+      '[data-testid="agents-kind-filter-notice"]'
+    ) as HTMLElement;
+    expect(notice, 'kind filter notice').to.exist;
+    expect(notice.textContent).to.match(/hiding 1 agent kind/i);
+    (notice.querySelector('button') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="agents-kind-filter-notice"]')
+    ).to.not.exist;
+    expect(localStorage.getItem('preloopAgentKindsHidden')).to.equal('[]');
   });
 
   it('keeps kinds added after a legacy saved filter visible (claude_desktop)', async () => {
@@ -1687,14 +1722,20 @@ describe('AgentsView', () => {
     try {
       await el.updateComplete;
       expect(estimate()?.textContent).to.contain('$0.92');
-      expect(estimate()?.textContent).to.contain('previous');
+      // Muted with the reason in the title, not a "previous" word that
+      // truncates to "pre…" in the cell (visual-3).
+      expect(estimate()?.classList.contains('stale')).to.be.true;
+      // Still said in text for screen readers, not by colour alone.
+      expect(
+        estimate()?.querySelector('.visually-hidden')?.textContent
+      ).to.contain('previous read');
     } finally {
       release();
     }
     await refresh;
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.92');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     expect(estimate()?.getAttribute('title')).to.contain(
       'previous successful read'
     );
@@ -1703,7 +1744,7 @@ describe('AgentsView', () => {
     await (el as any).loadAgents();
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.92');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     // Explicit null means no subscription traffic, and zero is real data.
     agentItems[0].estimated_cost = 0;
     agentItems[0].subscription_usage = null;
@@ -1714,7 +1755,7 @@ describe('AgentsView', () => {
     await (el as any).loadAgents();
     await el.updateComplete;
     expect(estimate()?.textContent).to.contain('$0.00');
-    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.classList.contains('stale')).to.be.true;
     // Sign-out/account changes cannot lend a previous account's value.
     invalidateApiCaches();
     await waitUntil(() => !!(el as any).agents && !(el as any).loading);

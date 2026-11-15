@@ -3792,6 +3792,15 @@ export class DashboardView extends AuthedElement {
     return this.tools.some(
       (tool) =>
         Boolean(tool.config_id) &&
+        // Every account is seeded with a disabled, rule-carrying send_note
+        // (the operator-note lineage policy). That is Preloop's default,
+        // not a restriction anybody added, so it does not tick the step.
+        !(
+          tool.name === 'send_note' &&
+          tool.source === 'builtin' &&
+          !tool.is_enabled &&
+          !tool.approval_workflow_id
+        ) &&
         (!tool.is_enabled ||
           Boolean(tool.approval_workflow_id) ||
           tool.has_approval_condition === true ||
@@ -3804,7 +3813,13 @@ export class DashboardView extends AuthedElement {
       {
         id: 'agent',
         label: 'Onboard an agent',
-        done: this.managedAgents.length > 0 || this.totalAgentsCount > 0,
+        // Registered is not onboarded: an agent that never connected reads
+        // "Not connected" right under this list (onboarding-6).
+        done: this.managedAgents.length
+          ? this.managedAgents.some(
+              (agent) => agent.onboarding_state !== 'incomplete'
+            )
+          : this.totalAgentsCount > 0,
         href: '/console/agents',
       },
       {

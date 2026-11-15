@@ -14,6 +14,8 @@ export class PolicySimulator extends LitElement {
   @property() draftYaml: string | undefined;
   @property({ attribute: false }) draftRule:
     Record<string, unknown> | undefined;
+  /** The stored rule the draft edits, so the test puts it in that place. */
+  @property({ attribute: false }) draftRuleId: string | undefined;
   @property({ attribute: false }) toolSchema: Record<string, any> | null = null;
   @state() private _args = '{}';
   @state() private _modelText = '';
@@ -92,7 +94,13 @@ export class PolicySimulator extends LitElement {
         ...(grant !== undefined ? { grant } : {}),
         ...(this.draftYaml !== undefined
           ? { draft_yaml: this.draftYaml }
-          : { draft_rule: this.draftRule }),
+          : {
+              draft_rule: this.draftRule,
+              // Test it among the tool's live rules: an earlier rule can
+              // decide the call before this one is reached (governance-1).
+              draft_with_stored_rules: true,
+              ...(this.draftRuleId ? { draft_rule_id: this.draftRuleId } : {}),
+            }),
         ...(this._modelText ? { model_text: this._modelText } : {}),
       });
     } catch (err) {
@@ -101,6 +109,22 @@ export class PolicySimulator extends LitElement {
     } finally {
       this._busy = false;
     }
+  }
+
+  /**
+   * A rule as a reader knows it: the draft is "this rule", a stored rule is
+   * its place in the evaluation order, never an internal id.
+   */
+  private _ruleName(id: string): string {
+    if (id.startsWith('draft-')) {
+      return this.draftYaml !== undefined
+        ? `draft rule ${id.slice(6)}`
+        : 'this rule';
+    }
+    const index = (this._result?.checked_rules || []).findIndex(
+      (rule) => rule.id === id
+    );
+    return index >= 0 ? `rule ${index + 1}` : 'another rule';
   }
 
   render() {
@@ -161,15 +185,15 @@ export class PolicySimulator extends LitElement {
         >Simulate</sl-button
       >
       <div role="status" aria-live="polite">
-        ${this._error || (this._result ? html`→ ${ruleActionLabel(this._result.decision)}${this._result.matched_rule ? ` (rule ${this._result.matched_rule})` : ''}` : '')}
+        ${this._error || (this._result ? html`→ ${ruleActionLabel(this._result.decision)}${this._result.matched_rule ? ` (${this._ruleName(this._result.matched_rule)})` : ''}` : '')}
       </div>
       ${
         this._result
           ? html`${this._result.description ? html`<p>${this._result.description}</p>` : ''}
               <ol>
-                ${this._result.checked_rules.map((rule) => html`<li>${rule.id}: ${rule.error ? `Error: ${rule.error}` : rule.matched ? 'Matched' : 'No match'}</li>`)}
+                ${this._result.checked_rules.map((rule) => html`<li>${this._ruleName(rule.id)}: ${rule.error ? `Error: ${rule.error}` : rule.matched ? 'Matched' : 'No match'}</li>`)}
               </ol>
-              ${this._result.also_matched_rule_ids.length ? html`<p>Also matched: ${this._result.also_matched_rule_ids.join(', ')}</p>` : ''}`
+              ${this._result.also_matched_rule_ids.length ? html`<p>Also matched: ${this._result.also_matched_rule_ids.map((id) => this._ruleName(id)).join(', ')}</p>` : ''}`
           : ''
       }
     </section>`;
