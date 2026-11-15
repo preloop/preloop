@@ -3,7 +3,12 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
 import { consumeLoginReturn } from '../../utils/login-return';
-import { post, getFeatures } from '../../api';
+import {
+  ApiError,
+  post,
+  getFeatures,
+  resendVerificationEmail,
+} from '../../api';
 import { formStyles } from '../../styles/form-styles';
 import { getBrandConfig } from '../../brand-config';
 import { trackGoal } from '../../services/web-analytics';
@@ -33,6 +38,12 @@ export function humanizeRegisterError(message: string): string {
   if (!raw) {
     return 'Failed to create an account';
   }
+  if (/username already registered/i.test(raw)) {
+    return 'That username is taken. Choose another one.';
+  }
+  if (/email already registered/i.test(raw)) {
+    return 'That email address already has an account. Sign in instead.';
+  }
   if (/not a valid email address/i.test(raw)) {
     return "That email address doesn't look deliverable — check the part after the @.";
   }
@@ -42,6 +53,32 @@ export function humanizeRegisterError(message: string): string {
     return 'Passwords need at least 8 characters.';
   }
   return `That didn't work: ${raw}`;
+}
+
+/**
+ * Check the sign-up fields before they reach the server, so an empty or
+ * malformed field gets its own message instead of whatever the server says
+ * about the first field it rejects. Returns one message per bad field.
+ */
+export function validateRegisterFields(fields: {
+  username: string;
+  email: string;
+  password: string;
+}): string[] {
+  const errors: string[] = [];
+  if (!fields.username.trim()) {
+    errors.push('Choose a username.');
+  }
+  const email = fields.email.trim();
+  if (!email) {
+    errors.push('Enter your email address.');
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    errors.push('Enter a valid email address.');
+  }
+  if (fields.password.length < 8) {
+    errors.push('Passwords need at least 8 characters.');
+  }
+  return errors;
 }
 
 /** Parse a bootstrap token out of a location hash like `#bootstrap=abc123`. */
@@ -96,6 +133,19 @@ export class RegisterView extends LitElement {
 
   @state()
   private _loading = false;
+
+  /**
+   * Set when the account exists but the instance requires a verified email
+   * before the first sign-in. Replaces the form with a check-your-email note.
+   */
+  @state()
+  private verificationEmail = '';
+
+  @state()
+  private resendMessage = '';
+
+  @state()
+  private resending = false;
 
   @state()
   private oauthProviders: string[] = [];
@@ -281,6 +331,17 @@ export class RegisterView extends LitElement {
     const email = formData.get('email') as string;
     const password = formData.get('password') as string;
 
+    const fieldErrors = validateRegisterFields({
+      username: username || '',
+      email: email || '',
+      password: password || '',
+    });
+    if (fieldErrors.length > 0) {
+      this._loading = false;
+      this.error = fieldErrors.join(' ');
+      return;
+    }
+
     try {
       await this.planChoiceChecked;
       const payload: Record<string, unknown> = { username, email, password };
@@ -340,7 +401,22 @@ export class RegisterView extends LitElement {
           return;
         }
       } catch (autoLoginError) {
-        // Silently fall back to the sign-in page below.
+        // The account exists but must verify its address first: say so here
+        // rather than send the person to a sign-in that will refuse them.
+        if (
+          autoLoginError instanceof ApiError &&
+          autoLoginError.code === 'email_not_verified'
+        ) {
+          const fromServer = autoLoginError.detail?.email;
+          this.verificationEmail =
+            typeof fromServer === 'string' && fromServer.trim()
+              ? fromServer.trim()
+              : email.trim();
+          this.error = '';
+          this._loading = false;
+          return;
+        }
+        // Otherwise fall back to the sign-in page below.
         console.warn(
           'Auto-login after registration failed, falling back to sign-in page',
           autoLoginError
@@ -447,7 +523,66 @@ export class RegisterView extends LitElement {
     `;
   }
 
+  private async _handleResend() {
+    if (!this.verificationEmail || this.resending) return;
+    this.resending = true;
+    try {
+      this.resendMessage = await resendVerificationEmail(
+        this.verificationEmail
+      );
+    } catch (error) {
+      this.resendMessage =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not send a new verification email.';
+    } finally {
+      this.resending = false;
+    }
+  }
+
+  private _renderVerificationPending() {
+    return html`<div id="verify-email-pending" class="verify-pending">
+      <h2>Check your email</h2>
+      <p>
+        Your account is created. We sent a verification link to
+        <strong>${this.verificationEmail}</strong>. Open it to finish signing
+        up, then sign in.
+      </p>
+      ${
+        this.resendMessage
+          ? html`<p class="resend-message" role="status">
+              ${this.resendMessage}
+            </p>`
+          : nothing
+      }
+      <div class="form-actions">
+        <sl-button
+          id="resend-verification"
+          variant="default"
+          ?loading=${this.resending}
+          @click=${this._handleResend}
+          >Send a new verification email</sl-button
+        >
+      </div>
+      <div class="form-links">
+        <a href="/login">Go to sign in</a>
+      </div>
+    </div>`;
+  }
+
   render() {
+    if (this.verificationEmail) {
+      return html`
+        <div class="container">
+          <div class="logo">
+            <a href="/">
+              <logo-component></logo-component>
+            </a>
+          </div>
+          <div class="form-container">${this._renderVerificationPending()}</div>
+        </div>
+      `;
+    }
     return html`
       <div class="container">
         <div class="logo">
