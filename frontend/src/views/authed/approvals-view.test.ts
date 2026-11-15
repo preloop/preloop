@@ -368,10 +368,16 @@ describe('ApprovalsView', () => {
     expect(emptyState?.textContent).to.not.include('No approval requests yet');
     const showAll = emptyState?.querySelector(
       '[data-testid="show-all-approvals"]'
+    ) as HTMLElement;
+    expect(showAll).to.exist;
+    // Applies in place: the list switches to All without a reload.
+    showAll.click();
+    await element.updateComplete;
+    expect((element as any).statusFilter).to.equal('all');
+    expect(new URLSearchParams(window.location.search).get('status')).to.equal(
+      'all'
     );
-    expect(showAll?.getAttribute('href')).to.equal(
-      '/console/approvals?status=all'
-    );
+    window.history.replaceState(null, '', window.location.pathname);
   });
 
   it('shows a danger alert with Retry instead of the empty state when loading fails', async () => {
@@ -1641,6 +1647,22 @@ describe('ApprovalsView', () => {
       const before = statsCalls();
       (element as any).applyResolution('waiting-1', { status: 'approved' });
       await waitUntil(() => statsCalls() === before + 1, 'stats re-read');
+    });
+
+    it('reads ?status=denied as the Denied filter instead of failing', async () => {
+      window.history.replaceState(null, '', '?status=denied');
+      stubServer(60);
+      const element = await mountView();
+      expect((element as any).statusFilter).to.equal('declined');
+      expect(listCalls().at(-1)!.get('status')).to.equal('declined');
+      expect((element as any).error).to.not.be.ok;
+    });
+
+    it('falls back to Pending for a status it does not know', async () => {
+      window.history.replaceState(null, '', '?status=bogus');
+      stubServer(60);
+      const element = await mountView();
+      expect((element as any).statusFilter).to.equal('pending');
     });
 
     it('sends status, tool and search to the server and restarts at page one', async () => {
