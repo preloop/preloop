@@ -492,8 +492,8 @@ A run that fails either check ends `FAILED` with `failure_category`
 stored, with a controller-owned `_review_integrity` member (withheld from the
 restricted `result`), and `/result` reports the outcome without values in
 `completion.review_integrity`. Platform posting additionally requires a
-result field bound to `head_sha` that matches (`head_sha_unbound`
-otherwise), so a posted verdict always names the commit it reviewed; a run
+result field bound to `head_sha` that matches (publication reason
+`review_binding_mismatch` otherwise), so a posted verdict always names the commit it reviewed; a run
 whose schema declares `head_sha` as optional still succeeds without it, but
 is not posted:
 
