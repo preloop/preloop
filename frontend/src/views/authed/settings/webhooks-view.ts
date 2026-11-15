@@ -43,19 +43,19 @@ const SHIM_SOURCE = 'approval_workflow';
  * as they are.
  */
 export function maskWebhookUrl(raw: string): string {
+  const tail = (value: string) => value.slice(-4);
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return raw;
+    // Never echo what could not be parsed: it may be a bare secret.
+    return raw ? `…${tail(raw)}` : raw;
   }
-  const segments = url.pathname.split('/').filter(Boolean);
-  const tail = (value: string) => value.slice(-4);
-  if (url.search) {
-    return `${url.origin}${url.pathname}?…${tail(url.search)}`;
-  }
-  if (segments.length <= 1) return `${url.origin}${url.pathname}`;
-  return `${url.origin}/${segments[0]}/…${tail(url.pathname)}`;
+  const rest = `${url.pathname}${url.search}`;
+  if (rest === '/' || rest === '') return url.origin;
+  // Any path or query may carry the credential; keep only the host and
+  // the last four characters.
+  return `${url.origin}/…${tail(rest)}`;
 }
 
 @customElement('webhooks-view')

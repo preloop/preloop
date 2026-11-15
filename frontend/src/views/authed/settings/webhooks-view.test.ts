@@ -148,7 +148,7 @@ describe('WebhooksView', () => {
     const element = await mount();
 
     const text = element.shadowRoot?.textContent ?? '';
-    expect(text).to.contain('https://siem.example.com/hook');
+    expect(text).to.contain('https://siem.example.com/…hook');
     expect(text).to.contain('policy.denied');
     expect(text).to.contain('Delivering');
   });
@@ -260,7 +260,8 @@ describe('WebhooksView', () => {
     await waitUntil(
       () =>
         Array.from(element.shadowRoot?.querySelectorAll('.url') ?? []).some(
-          (node) => node.textContent?.trim() === ACCOUNT_ENDPOINT.url
+          (node) =>
+            node.textContent?.trim() === maskWebhookUrl(ACCOUNT_ENDPOINT.url)
         ),
       'Endpoints did not load after Try again'
     );
@@ -286,7 +287,7 @@ describe('WebhooksView', () => {
     const element = await mount();
 
     const rowText = element.shadowRoot?.textContent ?? '';
-    expect(rowText).to.contain('https://chat.example.com/approvals');
+    expect(rowText).to.contain('https://chat.example.com/…vals');
     expect(rowText).to.contain('Managed by an approval workflow');
     // Listed so a failing legacy webhook is visible, but not editable here.
     expect(
@@ -362,18 +363,23 @@ describe('WebhooksView', () => {
 });
 
 describe('webhook endpoint URL display', () => {
-  it('masks the secret part of a hook URL and keeps the host', () => {
+  it('never shows a path or query, only the host and the last four characters', () => {
     expect(
       maskWebhookUrl(
         'https://hooks.slack.com/services/T0001/B0002/XyZsecretTokenAbcd'
       )
-    ).to.equal('https://hooks.slack.com/services/…Abcd');
-    expect(maskWebhookUrl('https://siem.example.com/hook')).to.equal(
-      'https://siem.example.com/hook'
-    );
+    ).to.equal('https://hooks.slack.com/…Abcd');
     expect(
-      maskWebhookUrl('https://example.com/in?token=supersecretvalue1234')
-    ).to.equal('https://example.com/in?…1234');
-    expect(maskWebhookUrl('not a url')).to.equal('not a url');
+      maskWebhookUrl(
+        'https://hooks.example.com/services/T1/B2/XyZsecret?channel=ops'
+      )
+    ).to.equal('https://hooks.example.com/…=ops');
+    expect(maskWebhookUrl('https://hooks.example.com/XyZsecret')).to.equal(
+      'https://hooks.example.com/…cret'
+    );
+    expect(maskWebhookUrl('https://siem.example.com/')).to.equal(
+      'https://siem.example.com'
+    );
+    expect(maskWebhookUrl('not a url secret')).to.equal('…cret');
   });
 });
