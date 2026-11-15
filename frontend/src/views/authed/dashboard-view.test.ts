@@ -1764,6 +1764,23 @@ describe('DashboardView', () => {
       expect(element['hasToolPolicy']).to.be.false;
     });
 
+    it('ticks "Restrict a tool" when send_note is gated by a workflow', async () => {
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          name: 'send_note',
+          source: 'builtin',
+          is_enabled: true,
+          approval_workflow_id: 'wf-1',
+          has_approval_condition: false,
+          config_id: 'config-seed',
+          access_rules: [],
+        },
+      ];
+      const element = await mountLoaded();
+      expect(element['hasToolPolicy']).to.be.true;
+    });
+
     it('ticks "Restrict a tool" once somebody disables a tool', async () => {
       toolsResponse = [
         {
