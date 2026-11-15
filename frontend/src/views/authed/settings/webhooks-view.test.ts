@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { maskWebhookUrl } from './webhooks-view';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
@@ -357,5 +358,22 @@ describe('WebhooksView', () => {
 
     const empty = element.shadowRoot?.querySelector('.empty-state');
     expect(empty?.textContent).to.contain('No endpoints yet');
+  });
+});
+
+describe('webhook endpoint URL display', () => {
+  it('masks the secret part of a hook URL and keeps the host', () => {
+    expect(
+      maskWebhookUrl(
+        'https://hooks.slack.com/services/T0001/B0002/XyZsecretTokenAbcd'
+      )
+    ).to.equal('https://hooks.slack.com/services/…Abcd');
+    expect(maskWebhookUrl('https://siem.example.com/hook')).to.equal(
+      'https://siem.example.com/hook'
+    );
+    expect(
+      maskWebhookUrl('https://example.com/in?token=supersecretvalue1234')
+    ).to.equal('https://example.com/in?…1234');
+    expect(maskWebhookUrl('not a url')).to.equal('not a url');
   });
 });
