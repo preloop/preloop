@@ -47312,6 +47312,16 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DraftToolRule'
           - type: 'null'
+        draft_with_stored_rules:
+          type: boolean
+          title: Draft With Stored Rules
+          default: false
+        draft_rule_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Draft Rule Id
         draft_yaml:
           anyOf:
           - type: string

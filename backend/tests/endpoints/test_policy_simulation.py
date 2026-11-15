@@ -507,3 +507,92 @@ def test_authenticated_stored_simulation_with_sync_dependency(
     assert not crud.crud_approval_request.get_multi(
         db_session, account_id=str(test_user.account_id)
     )
+
+
+def _stored_rule(rule_id: str, priority: int, action: str, expression: str):
+    return models.ToolAccessRule(
+        id=rule_id,
+        priority=priority,
+        action=action,
+        condition_expression=expression,
+        condition_type="cel",
+        description=None,
+        is_enabled=True,
+        approval_workflow_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_rule_is_tested_inside_the_tools_ordered_rule_list() -> None:
+    """A live deny that comes first wins over the draft, as it would live.
+
+    Production 2026-11-15: pay(amount=1500) showed "Require approval
+    (draft-1)" while the live rule 1 (deny amount > 1000) decides it.
+    """
+    stored = [_stored_rule("live-1", 0, "deny", "args.amount > 1000")]
+    config = models.ToolConfiguration(id=uuid4(), approval_workflow_id=None)
+    request = PolicyEvaluationRequest(
+        name="pay",
+        args={"amount": 1500},
+        draft_rule={
+            "action": "require_approval",
+            "condition_expression": "args.amount > 100",
+            "condition_type": "cel",
+        },
+        draft_with_stored_rules=True,
+    )
+    with (
+        patch(
+            "preloop.services.policy_simulation.crud_tool_configuration.get_for_server",
+            return_value=[config],
+        ),
+        patch(
+            "preloop.services.policy_simulation.crud_tool_access_rule.get_multi_by_config",
+            return_value=stored,
+        ),
+        patch("preloop.services.policy_evaluator._log_policy_decision_async") as audit,
+    ):
+        result = await simulate_policy(
+            request, db=MagicMock(), account_id=uuid4(), user_id=uuid4()
+        )
+        audit.assert_not_called()
+    assert result.decision == "deny"
+    assert result.matched_rule == "live-1"
+    assert result.also_matched_rule_ids == ["draft-1"]
+
+
+@pytest.mark.asyncio
+async def test_draft_rule_replaces_the_rule_it_edits_in_place() -> None:
+    stored = [
+        _stored_rule("live-1", 0, "deny", "args.amount > 1000"),
+        _stored_rule("live-2", 1, "allow", "args.amount > 0"),
+    ]
+    config = models.ToolConfiguration(id=uuid4(), approval_workflow_id=None)
+    request = PolicyEvaluationRequest(
+        name="pay",
+        args={"amount": 1500},
+        draft_rule={
+            "action": "require_approval",
+            "condition_expression": "args.amount > 1000",
+            "condition_type": "cel",
+        },
+        draft_rule_id="live-1",
+        draft_with_stored_rules=True,
+    )
+    with (
+        patch(
+            "preloop.services.policy_simulation.crud_tool_configuration.get_for_server",
+            return_value=[config],
+        ),
+        patch(
+            "preloop.services.policy_simulation.crud_tool_access_rule.get_multi_by_config",
+            return_value=stored,
+        ),
+        patch("preloop.services.policy_evaluator._log_policy_decision_async"),
+    ):
+        result = await simulate_policy(
+            request, db=MagicMock(), account_id=uuid4(), user_id=uuid4()
+        )
+    assert result.decision == "require_approval"
+    assert result.matched_rule == "draft-1"
+    assert [r.id for r in result.checked_rules] == ["draft-1"]

@@ -42,6 +42,42 @@ describe('policy simulator', () => {
     expect(body.draft_rule).to.deep.equal({ action: 'deny' });
   });
 
+  it("tests a rule inside the tool's live rules and names which rule decided", async () => {
+    const response = {
+      decision: 'deny',
+      matched_rule: '7d0c-live-uuid',
+      checked_rules: [{ id: '7d0c-live-uuid', matched: true, error: null }],
+      also_matched_rule_ids: ['draft-1'],
+    };
+    const fetch = sinon.stub(window, 'fetch').resolves(
+      new Response(JSON.stringify(response), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const el = await fixture<PolicySimulator>(
+      html`<policy-simulator
+        .toolName=${'pay'}
+        .draftRule=${{ action: 'require_approval' }}
+        .draftRuleId=${'rule-9'}
+      ></policy-simulator>`
+    );
+    await (el as any)._simulate();
+    await el.updateComplete;
+    const body = JSON.parse(
+      fetch
+        .getCalls()
+        .find((call) => call.args[0] === '/api/v1/policies/evaluate')!.args[1]!
+        .body as string
+    );
+    expect(body.draft_with_stored_rules).to.equal(true);
+    expect(body.draft_rule_id).to.equal('rule-9');
+    const status = el.querySelector('[role="status"]')!.textContent!;
+    expect(status).to.include('Deny');
+    expect(status).to.include('rule 1');
+    expect(status).to.not.include('7d0c');
+    expect(el.textContent).to.include('Also matched: this rule');
+  });
+
   it('submits the current YAML draft and refuses non-object arguments', async () => {
     const fetch = sinon.stub(window, 'fetch').resolves(
       new Response(
