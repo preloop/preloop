@@ -26,6 +26,7 @@ from preloop.schemas.tracker import (
 )  # Corrected import location
 
 
+from preloop.sync.exceptions import TrackerAuthenticationError, TrackerConnectionError
 from preloop.sync.trackers import create_tracker_client
 from preloop.utils.email import send_tracker_registered_email
 from preloop.sync.services.event_bus import event_bus_service
@@ -1490,6 +1491,7 @@ async def test_connection_and_list_orgs(
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
             tracker_id="test-connection",
+            raise_on_error=True,
             api_key=test_data.api_key,
             connection_details={
                 "url": str(test_data.url) if test_data.url else None,
@@ -1540,6 +1542,20 @@ async def test_connection_and_list_orgs(
             orgs=orgs,
         )
 
+    except TrackerAuthenticationError:
+        message = (
+            "GitLab rejected the access token. It may be expired, revoked, or invalid. "
+            "Enter a new token with the api scope and access to the selected group."
+            if test_data.tracker_type == TrackerType.GITLAB
+            else "Authentication failed. Check your tracker credentials and try again."
+        )
+        return TrackerTestResponse(success=False, message=message, orgs=[])
+    except TrackerConnectionError:
+        return TrackerTestResponse(
+            success=False,
+            message="Could not connect to the tracker. Check the URL and try again.",
+            orgs=[],
+        )
     except Exception as e:
         logger.exception(
             f"Error during tracker org list for user {current_user.username}: {e}"

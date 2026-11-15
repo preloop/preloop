@@ -128,6 +128,7 @@ async def test_test_connection_and_list_orgs_uses_correct_args(
     mock_create_tracker_client.assert_called_once_with(
         tracker_type="gitlab",
         tracker_id="test-connection",
+        raise_on_error=True,
         api_key="test-key",
         connection_details={"url": "https://gitlab.com", "project_id": "123"},
         credential_source=None,
@@ -238,6 +239,7 @@ async def test_test_connection_and_list_orgs_uses_installation_for_app_tracker(
     mock_create_tracker_client.assert_called_once_with(
         tracker_type="github",
         tracker_id="test-connection",
+        raise_on_error=True,
         api_key="",
         connection_details={
             "url": "https://github.com",
@@ -318,6 +320,7 @@ async def test_test_connection_and_list_orgs_keeps_pat_for_token_tracker(
     mock_create_tracker_client.assert_called_once_with(
         tracker_type="github",
         tracker_id="test-connection",
+        raise_on_error=True,
         api_key="stored-token",
         connection_details={"url": "https://github.com"},
         credential_source=None,
@@ -1433,3 +1436,43 @@ async def test_list_projects_for_org_keeps_400_when_client_missing(
         },
     )
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("stored_token", [False, True])
+def test_gitlab_rejected_token_has_actionable_error(
+    client: TestClient, db_session: Session, test_user, stored_token: bool
+) -> None:
+    """Preserve GitLab auth failures through the real factory, including edits."""
+    from gitlab.exceptions import GitlabAuthenticationError
+
+    payload = {
+        "tracker_type": "gitlab",
+        "url": "https://gitlab.com",
+        "api_key": "expired-token",
+    }
+    if stored_token:
+        tracker = models.Tracker(
+            name="GitLab tracker",
+            tracker_type="gitlab",
+            url="https://gitlab.com",
+            account_id=test_user.account_id,
+            api_key="expired-token",
+        )
+        db_session.add(tracker)
+        db_session.commit()
+        payload.update(tracker_id=str(tracker.id), api_key="unchanged")
+
+    with patch("preloop.sync.trackers.gitlab.gitlab.Gitlab") as gitlab_client:
+        gitlab_client.return_value.auth.side_effect = GitlabAuthenticationError(
+            "401 Unauthorized", response_code=401
+        )
+        response = client.post("/api/v1/trackers/test-and-list-orgs", json=payload)
+        assert gitlab_client.call_args.kwargs["private_token"] == "expired-token"
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is False
+    assert result["orgs"] == []
+    assert "expired, revoked, or invalid" in result["message"]
+    assert "api scope" in result["message"]
+    assert "expired-token" not in result["message"]

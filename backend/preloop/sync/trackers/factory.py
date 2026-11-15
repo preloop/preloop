@@ -81,6 +81,7 @@ async def create_tracker_client(
     connection_details: Dict[str, Any],
     *,
     credential_source: Optional[CredentialSource] = None,
+    raise_on_error: bool = False,
 ) -> Optional[BaseTracker]:
     """Create a tracker client.
 
@@ -96,6 +97,8 @@ async def create_tracker_client(
             ``credential_source`` is required.
         credential_source: Managed grants only: the bound resolver built by
             ``preloop.services.managed_credentials.tracker_credential_source``.
+
+        raise_on_error: Preserve initialization errors for interactive validation.
 
     Returns:
         A tracker client or None if the tracker type is not supported, or when
@@ -181,5 +184,7 @@ async def create_tracker_client(
             logger.warning(f"Unsupported tracker type: {tracker_type}")
             return None
     except Exception as e:
+        if raise_on_error:
+            raise
         logger.exception(f"Failed to create tracker client: {e}")
         return None

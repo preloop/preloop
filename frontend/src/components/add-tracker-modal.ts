@@ -1476,6 +1476,11 @@ export class AddTrackerModal extends LitElement {
                       .value=${this.trackerToken}
                       @sl-input=${(e: any) =>
                         (this.trackerToken = e.target.value)}
+                      help-text=${
+                        this.trackerType === 'gitlab'
+                          ? 'Use a personal or group access token with the api scope. Project webhooks require Maintainer; group webhooks require Owner and GitLab Premium or Ultimate. Use Owner for automatic group webhook setup; Maintainer alone may not complete setup. When editing, leave the token unchanged to keep it, or enter a new token to replace it.'
+                          : ''
+                      }
                       required
                     ></sl-input>
                   `
