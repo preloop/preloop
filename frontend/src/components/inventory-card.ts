@@ -579,6 +579,20 @@ export class InventoryCard extends LitElement {
           .agent-table th.col-name {
             width: 150px !important;
           }
+          /* The status chip goes under the name instead of squeezing it
+             to one letter. */
+          .agent-table .identity {
+            flex-wrap: wrap;
+            row-gap: 2px;
+          }
+          .agent-table .identity a.row-name {
+            flex: 1 1 0;
+            min-width: 0;
+          }
+          .agent-table .identity .chip {
+            flex-basis: 100%;
+            width: max-content;
+          }
         }
 
         .inventory-table th,

@@ -835,6 +835,11 @@ describe('inventory-card', () => {
     )!;
     // Nothing spills past the card.
     expect(table.getBoundingClientRect().width).to.be.at.most(628 + 1);
+    // The status chip wraps under the name rather than squeezing it.
+    const name = el.shadowRoot!.querySelector<HTMLElement>(
+      '.agent-table a.row-name'
+    )!;
+    expect(name.getBoundingClientRect().width).to.be.at.least(60);
   });
 
   it('ends the header controls at the range label, with no gap', async () => {
