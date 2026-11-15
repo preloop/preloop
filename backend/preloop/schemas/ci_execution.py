@@ -248,12 +248,44 @@ class ReviewAgentFinished(BaseModel):
     exit_code: int | None
 
 
+class ReviewIntegrityBinding(BaseModel):
+    """One result field checked against a controller fact; never its value."""
+
+    field: str
+    fact: Literal["head_sha", "base_sha", "merge_base_sha", "diff_sha256"]
+    outcome: Literal["matched", "missing", "absent", "mismatch", "fact_unavailable"]
+
+
+class ReviewIntegrityInspection(BaseModel):
+    """Repository inspection counted from Preloop-captured tool evidence."""
+
+    required: bool
+    inspected: bool
+    repository_tool_calls: int
+    other_tool_calls: int
+    native_commands: int
+
+
+class ReviewIntegrity(BaseModel):
+    """Result binding and evidence floor for a read-only review."""
+
+    status: Literal["verified", "rejected"]
+    category: Literal["review_binding_mismatch", "review_not_inspected"] | None
+    reasons: list[str]
+    bindings: list[ReviewIntegrityBinding]
+    inspection: ReviewIntegrityInspection
+
+
 class ReviewCompletion(BaseModel):
     """Independent completion facts, with later failures named separately."""
 
     agent_finished: ReviewAgentFinished | None
     result_captured: ReviewCapturedResult
     result_valid: bool | None
+    review_integrity: ReviewIntegrity | None = Field(
+        default=None,
+        description="Controller result binding and evidence floor; null when the checks did not run.",
+    )
     publication: Literal["#/platform_review"] | None
     post_result_failures: list[
         Literal[
@@ -290,6 +322,10 @@ class CiExecutionResponse(BaseModel):
     # Controller-observed startup receipt for a read-only review; null when
     # startup did not complete or the execution is not a read-only review.
     startup_receipt: dict[str, Any] | None = None
+    startup_receipt_status: Literal["pending", "recorded", "failed"] | None = Field(
+        default=None,
+        description="pending until the controller observes checkout and agent start; recorded once startup_receipt is set; failed when the run ended or setup failed without one. Null when the execution is not a read-only review.",
+    )
     timings: ReviewTimings | None = Field(
         default=None,
         description="Sanitised recorded phase durations in seconds, request counts, effective upstream settings and terminal cause. Unknown boundaries are null.",

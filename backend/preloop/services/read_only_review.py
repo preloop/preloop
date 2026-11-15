@@ -84,7 +84,12 @@ def validate_read_only_configuration(config: dict[str, Any]) -> None:
     if not read_only_review(config):
         if config.get("platform_review") is not None:
             raise ValueError("platform_review requires read_only publication mode")
+        if config.get("review_integrity") is not None:
+            raise ValueError("review_integrity requires read_only publication mode")
         return
+    from preloop.services.review_integrity import validate_review_integrity_block
+
+    validate_review_integrity_block(config.get("review_integrity"))
     # ``platform_review`` is the one publication block this mode accepts: the
     # control plane posts the validated result itself and the run still gets
     # no write credential. Its shape is checked when the flow is saved and
@@ -607,6 +612,38 @@ def public_startup_receipt(execution: Any) -> dict[str, Any] | None:
         # The runner does not report its CLI version yet.
         "agent_cli": None,
     }
+
+
+def startup_receipt_status(
+    execution: Any, receipt: Mapping[str, Any] | None
+) -> str | None:
+    """Say whether a null receipt is still expected or final.
+
+    The controller records the hosted receipt when it sees the agent start
+    marker, which follows checkout, setup and the diff identity. A run is
+    RUNNING from the moment its container starts, so the trigger response
+    and early status reads legitimately carry no receipt yet.
+
+    Args:
+        execution: Flow execution row.
+        receipt: Its ``public_startup_receipt`` projection.
+
+    Returns:
+        ``recorded``, ``failed`` or ``pending``; None without a CI binding.
+    """
+    binding = getattr(execution, "ci_review_binding", None)
+    if not isinstance(binding, Mapping):
+        return None
+    if isinstance(receipt, Mapping):
+        verified = (
+            receipt.get("checkout_verified") is True
+            and receipt.get("setup_completed") is True
+        )
+        return "recorded" if verified else "failed"
+    terminal = crud.crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+    if getattr(execution, "status", None) in terminal:
+        return "failed"
+    return "pending"
 
 
 def _stored_agent_cli(value: Any) -> dict[str, str] | None:

@@ -29,6 +29,8 @@ describe('failure-category', () => {
       'agent_no_progress',
       'publication_missing',
       'result_schema_invalid',
+      'review_binding_mismatch',
+      'review_not_inspected',
       'tool_error',
       'agent_error',
       'model_stream_idle',

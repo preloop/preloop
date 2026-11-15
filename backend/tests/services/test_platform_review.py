@@ -60,6 +60,7 @@ OPT_IN = {
     },
 }
 RESULT = {
+    "head_sha": HEAD,
     "verdict": "fail",
     "summary": "One problem in the parser.",
     "findings": [
@@ -385,6 +386,32 @@ def identity(world: SimpleNamespace, project: models.Project) -> SimpleNamespace
     return SimpleNamespace(principal=principal, key=key, token=token, context=context)
 
 
+def inspect(db: Session, execution: Any, item: str = "item_1") -> None:
+    """Record one native command event, as the controller does for a run."""
+    import json
+
+    from preloop.models.crud.execution_tool_evidence import (
+        persist_native_command_evidence,
+    )
+
+    persist_native_command_evidence(
+        db,
+        execution_id=str(execution.id),
+        line=json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": item,
+                    "type": "command_execution",
+                    "command": "git diff",
+                    "exit_code": 0,
+                },
+            }
+        ),
+    )
+    db.commit()
+
+
 def finished(
     world: SimpleNamespace,
     who: SimpleNamespace,
@@ -393,6 +420,7 @@ def finished(
     result: Any = RESULT,
     valid: bool | None = True,
     head: str = HEAD,
+    inspected: bool = True,
 ) -> models.FlowExecution:
     values = asdict(who.context)
     values.pop("actions")
@@ -408,6 +436,8 @@ def finished(
     execution = crud.crud_ci_execution.create(
         world.db, context=who.context, binding=binding, event={}
     )
+    if inspected:
+        inspect(world.db, execution)
     return CRUDBase(models.FlowExecution).update(
         world.db,
         db_obj=execution,
@@ -627,9 +657,131 @@ async def test_result_naming_another_pull_request_is_ignored(
     }
     execution = finished(world, identity(world, project), result=hostile)
     await publish(world, execution)
-    assert list(world.github.reviews) == [(project.slug, 7)]
+    # The target is still only the execution's own binding, and a result
+    # naming another commit is not a review of this one (#2100): no review,
+    # and the status on the bound commit is the error state.
+    assert list(world.github.reviews) == []
     assert list(world.github.statuses) == [(project.slug, HEAD)]
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
     assert all(other.slug not in path for _, path in world.github.calls)
+
+
+# --- what: only a verified, inspected review is posted (#2100) -------------
+
+
+@pytest.mark.asyncio
+async def test_reported_placeholder_pass_posts_an_error_status_and_no_review(
+    world: SimpleNamespace,
+) -> None:
+    """A schema-valid pass with an all-zero head and no tool call or command."""
+    project = world.projects[0]
+    placeholder = {
+        "verdict": "pass",
+        "summary": "",
+        "findings": [],
+        "head_sha": "0" * 40,
+    }
+    execution = finished(
+        world, identity(world, project), result=placeholder, inspected=False
+    )
+    outcome = await publish(world, execution)
+    assert outcome is not None
+    assert world.github.reviews == {}
+    assert outcome["review"] == "skipped"
+    assert outcome["review_reason"] == "review_binding_mismatch"
+    status_entry = world.github.statuses[(project.slug, HEAD)][0]
+    assert status_entry["state"] == "error"
+    assert status_entry["description"].startswith("Review not verified")
+
+
+@pytest.mark.asyncio
+async def test_uninspected_pass_on_the_right_head_is_not_posted(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(
+        world,
+        identity(world, project),
+        result={**RESULT, "verdict": "pass", "head_sha": HEAD},
+        inspected=False,
+    )
+    outcome = await publish(world, execution)
+    assert outcome is not None and world.github.reviews == {}
+    assert outcome["review_reason"] == "review_not_inspected"
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_unverified_result_is_an_error_even_without_incomplete_state(
+    world: SimpleNamespace,
+) -> None:
+    config = dict(world.flow.git_clone_config)
+    config["platform_review"] = {
+        "enabled": True,
+        "status": {"verdict_states": {"pass": "success", "fail": "failure"}},
+    }
+    world.flow.git_clone_config = config
+    world.db.commit()
+    project = world.projects[0]
+    execution = finished(
+        world,
+        identity(world, project),
+        result={**RESULT, "verdict": "pass"},
+        inspected=False,
+    )
+    await publish(world, execution)
+    assert world.github.reviews == {}
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_posted_verdict_must_name_the_reviewed_commit(
+    world: SimpleNamespace,
+) -> None:
+    """An optional head_sha the result omits is not a binding for posting."""
+    project = world.projects[0]
+    unbound = {k: v for k, v in RESULT.items() if k != "head_sha"}
+    execution = finished(
+        world, identity(world, project), result={**unbound, "verdict": "pass"}
+    )
+    outcome = await publish(world, execution)
+    assert outcome is not None and world.github.reviews == {}
+    assert outcome["review_reason"] == "review_binding_mismatch"
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_floor_opt_out_posts_a_bound_review_without_tool_evidence(
+    world: SimpleNamespace,
+) -> None:
+    config = dict(world.flow.git_clone_config)
+    config["review_integrity"] = {"require_inspection": False}
+    world.flow.git_clone_config = config
+    world.db.commit()
+    project = world.projects[0]
+    execution = finished(
+        world,
+        identity(world, project),
+        result={**RESULT, "verdict": "pass", "head_sha": HEAD},
+        inspected=False,
+    )
+    await publish(world, execution)
+    assert list(world.github.reviews) == [(project.slug, 7)]
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_run_failed_by_the_floor_is_reported_with_its_category(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project), status="FAILED")
+    execution.failure_category = "review_not_inspected"
+    world.db.commit()
+    outcome = await publish(world, execution)
+    assert outcome is not None and world.github.reviews == {}
+    assert outcome["review_reason"] == "review_not_inspected"
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
 
 
 @pytest.mark.asyncio
