@@ -617,6 +617,17 @@ describe('CostView', () => {
     // counts, not averaged.
     expect(text).to.contain('1K hit');
     expect(text).to.contain('1K miss');
+    // The tab groups the recent-session window and says how much of the
+    // range that covers.
+    const coverage = element.shadowRoot!.querySelector(
+      '[data-testid="users-coverage"]'
+    )!;
+    expect(coverage.textContent).to.match(
+      /Grouped from the 2 most recent sessions/
+    );
+    // The split wraps under the figure instead of pushing Cost out of a
+    // 588px card at 1280 (cost-settings-2).
+    expect(figures.hasAttribute('wrap')).to.be.true;
   });
 
   it('carries the shared range control, restates the window and drops Refresh', async () => {

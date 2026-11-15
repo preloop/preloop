@@ -641,6 +641,11 @@ export class CostView extends AuthedElement {
           font-size: var(--sl-font-size-x-small);
         }
 
+        .table-scope {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta, 13px);
+          margin: 0 0 var(--sl-spacing-small);
+        }
         .tools-notice {
           margin-bottom: var(--sl-spacing-medium);
         }
@@ -3160,6 +3165,7 @@ export class CostView extends AuthedElement {
           html`<token-figures
             .usage=${r.token_usage}
             expanded
+            wrap
           ></token-figures>`,
       },
       {
@@ -3465,7 +3471,11 @@ export class CostView extends AuthedElement {
         numeric: true,
         value: (r) => r.totalTokens,
         cell: (r) =>
-          html`<token-figures .usage=${r.tokenUsage} expanded></token-figures>`,
+          html`<token-figures
+            .usage=${r.tokenUsage}
+            expanded
+            wrap
+          ></token-figures>`,
       },
       {
         key: 'cost',
@@ -3734,7 +3744,11 @@ export class CostView extends AuthedElement {
         numeric: true,
         value: (r) => r.tokenUsage?.total_tokens || 0,
         cell: (r) =>
-          html`<token-figures .usage=${r.tokenUsage} expanded></token-figures>`,
+          html`<token-figures
+            .usage=${r.tokenUsage}
+            expanded
+            wrap
+          ></token-figures>`,
       },
       {
         key: 'cost',
@@ -3770,9 +3784,39 @@ export class CostView extends AuthedElement {
               </sl-alert>`
             : nothing
         }
+        ${this.renderUserCoverage(rows)}
         ${this.renderSpendTable(this.userTable, rows, 'Spend by user', 'users')}
       </div>
     `;
+  }
+
+  /**
+   * The Users tab groups the bounded recent-session list, not the whole
+   * range, so it says how much of the range it covers instead of passing a
+   * partial sum off as the period's per-user spend (cost-settings-3).
+   */
+  private renderUserCoverage(rows: Array<{ requests: number; cost: number }>) {
+    const totalRequests = this.summary?.total_requests || 0;
+    const totalCost = this.summary?.estimated_cost || 0;
+    const coveredRequests = rows.reduce((sum, row) => sum + row.requests, 0);
+    const coveredCost = rows.reduce((sum, row) => sum + row.cost, 0);
+    const sessions = this.summary?.usage_by_session?.length || 0;
+    const complete =
+      coveredRequests >= totalRequests && coveredCost >= totalCost - 0.005;
+    const scope = `Grouped from the ${this.formatNumber(sessions)} most recent ${
+      sessions === 1 ? 'session' : 'sessions'
+    } in ${this.rangeChipLabel()}`;
+    return html`<p class="table-scope" data-testid="users-coverage">
+      ${
+        complete
+          ? `${scope}, which cover all of its requests.`
+          : `${scope}: ${this.formatNumber(coveredRequests)} of ${this.formatNumber(
+              totalRequests
+            )} requests and ${formatUsd(coveredCost)} of ${formatUsd(
+              totalCost
+            )} spend. Older sessions are not counted here.`
+      }
+    </p>`;
   }
 
   private renderBudgets() {
