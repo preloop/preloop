@@ -77,9 +77,47 @@ def test_approval_list_membership_is_identical_to_every_report_count(
     other = _user(db_session, other_account.id, "other-report@example.com")
     foreign = _approval_request(db_session, other, "foreign-account")
     db_session.flush()
-    items = approval_report_items(
+    page = approval_report_items(
         db_session, account_id=test_user.account_id, start=START, end=END
     )
+    items = page.items
+    assert page.total == 5
+    pages = [
+        approval_report_items(
+            db_session,
+            account_id=test_user.account_id,
+            start=START,
+            end=END,
+            offset=offset,
+            limit=2,
+        )
+        for offset in (0, 2, 4, 100)
+    ]
+    assert [len(page.items) for page in pages] == [2, 2, 1, 0]
+    assert all(page.total == 5 for page in pages)
+    assert [row["id"] for page in pages for row in page.items] == [
+        row["id"] for row in items
+    ]
+    granted = approval_report_items(
+        db_session,
+        account_id=test_user.account_id,
+        start=START,
+        end=END,
+        status="granted",
+        limit=1,
+    )
+    assert granted.total == 1
+    assert granted.items[0]["id"] == ids["old-granted"]
+    selected = approval_report_items(
+        db_session,
+        account_id=test_user.account_id,
+        start=START,
+        end=END,
+        item=str(ids["denied"]),
+        limit=1,
+    )
+    assert selected.total == 1
+    assert selected.items[0]["id"] == ids["denied"]
     counts = approval_signals(
         db_session, account_id=test_user.account_id, start=START, end=END
     )

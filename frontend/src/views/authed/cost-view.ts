@@ -1,5 +1,3 @@
-import '../../components/weekly-report-list';
-import { WeeklyReportMode } from '../../controllers/weekly-report-mode';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { parseUTCDate } from '../../utils/date';
@@ -224,9 +222,6 @@ export { ceilToMinute };
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
-  private readonly weeklyReport = new WeeklyReportMode(this, () =>
-    this.restoreUrlPeriod()
-  );
   private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
@@ -4536,8 +4531,6 @@ export class CostView extends AuthedElement {
   }
 
   render() {
-    if (this.weeklyReport.active)
-      return html`<weekly-report-list></weekly-report-list>`;
     // A slower call never blanks a card that already has an answer: the first
     // load gets the spinner, a range change keeps the previous numbers at 60%
     // with aria-busy until the new ones arrive.

@@ -1,5 +1,6 @@
 import { expect, waitUntil } from '@open-wc/testing';
-import { Router } from './router';
+import { Router, type RouterLocation, type RouterCommands } from './router';
+import { withWeeklyReportRoutes } from './weekly-report-routes';
 import sinon from 'sinon';
 import {
   capabilityRoutesFor,
@@ -35,6 +36,26 @@ describe('lazy route modules', () => {
     ]);
     for (const route of routes)
       expect(route.load).to.equal(capabilityRouteLoaders['governance-view']);
+  });
+
+  it('runs report-route guards before loading the report or ordinary view', async () => {
+    const load = sinon.spy(async () => undefined);
+    const guard = sinon.spy(
+      (_context: RouterLocation, commands: RouterCommands) =>
+        commands.redirect('/login')
+    );
+    await router.setRoutes(
+      withWeeklyReportRoutes([
+        { path: '/guarded', component: 'cost-view', action: guard, load },
+        { path: '/login', component: 'report-test-login' },
+      ]),
+      true
+    );
+    await router.render('/guarded?kind=cache');
+    expect(guard.calledOnce).to.equal(true);
+    expect(load.called).to.equal(false);
+    expect(outlet.querySelector('weekly-report-list')).to.equal(null);
+    expect(outlet.querySelector('report-test-login')).to.exist;
   });
 
   it('loads only matching routes and waits for registration before rendering', async () => {

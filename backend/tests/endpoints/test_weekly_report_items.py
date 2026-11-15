@@ -147,3 +147,41 @@ def test_missing_plugin_returns_explicit_unavailable(
     )
     assert client.get("/api/v1/cost/report-items", params=query()).status_code == 404
     collector.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", get_args(ReportKind))
+def test_each_kind_requires_its_page_permission(
+    report_client: tuple[TestClient, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    """Pin every kind's permission, including each first-seen alternative."""
+    expected = {
+        "usage": ("view_cost",),
+        "agents": ("view_cost",),
+        "models": ("view_cost",),
+        "cache": ("view_cost",),
+        "optimizations": ("view_cost",),
+        "spend_outlier": ("view_cost",),
+        "valuable_work": ("view_cost",),
+        "approvals": ("view_approvals",),
+        "first_seen": ("view_policies", "view_device_fleet", "view_mcp_findings"),
+        "reliability": ("view_cost",),
+        "users": ("view_cost",),
+        "policy_notices": ("view_policies",),
+    }
+    client, collector = report_client
+    params = {**query(), "kind": kind}
+    for permission in expected[kind]:
+        monkeypatch.setattr(
+            cost,
+            "user_holds_permission",
+            lambda db, user, name, allowed=permission: name == allowed,
+        )
+        assert client.get("/api/v1/cost/report-items", params=params).status_code == 200
+    collector.reset_mock()
+    monkeypatch.setattr(
+        cost, "user_holds_permission", lambda db, user, name: name == "view_agents"
+    )
+    assert client.get("/api/v1/cost/report-items", params=params).status_code == 403
+    collector.assert_not_called()

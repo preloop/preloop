@@ -1,3 +1,4 @@
+import { withWeeklyReportRoutes } from '../weekly-report-routes';
 import { REST_API_PREFIX } from '../api-path';
 import { installSupportAssistant } from '../support-loader';
 import { runtimeSessionPathRedirect } from '../utils/runtime-session-route';
@@ -594,7 +595,10 @@ export class LitApp extends LitElement {
       // any real route would swallow it.
       { path: '(.*)', component: 'not-found-view' },
     ];
-    const table = withLazyRoutes(routes, consoleRouteLoaders);
+    const table = withLazyRoutes(
+      withWeeklyReportRoutes(routes),
+      consoleRouteLoaders
+    );
     this.installRoutes(table);
   }
 

@@ -624,6 +624,38 @@ describe('console route transitions', () => {
     }
   });
 
+  it('constructs only the report list on each existing report route', async () => {
+    for (const [path, kind, normalTag] of [
+      ['/console/cost/spend', 'cache', 'cost-view'],
+      ['/console/approvals', 'approvals', 'approvals-view'],
+      ['/console/attention', 'first_seen', 'attention-view'],
+      ['/console/governance', 'policy_notices', 'governance-view'],
+    ]) {
+      const before = fetchStub.callCount;
+      const query = `?kind=${kind}&account_id=00000000-0000-4000-8000-000000000001&start_date=2026-11-02T00:00:00Z&end_date=2026-11-09T00:00:00Z`;
+      clickLink(path + query);
+      await waitUntil(
+        () => Boolean(shell()?.querySelector(':scope > weekly-report-list')),
+        'filtered list mounted directly',
+        { timeout: 10000 }
+      );
+      expect(shell()?.querySelector(normalTag)).to.equal(null);
+      const requests = fetchStub
+        .getCalls()
+        .slice(before)
+        .map((call) => String(call.args[0]));
+      expect(
+        requests.some((url) =>
+          /\/(cost\/summary|approval-requests|governance-review\/runs)(?:[?]|$)/.test(
+            url
+          )
+        )
+      ).to.equal(false);
+      clickLink('/console/agents');
+      await assertLanded(BY_PATH.get('/console/agents')!, 'exit report');
+    }
+  });
+
   it('opens policy-match report links without the review capability', async () => {
     const query =
       '?kind=policy_notices&account_id=00000000-0000-4000-8000-000000000001&start_date=2026-11-02T00:00:00Z&end_date=2026-11-09T00:00:00Z';

@@ -1,5 +1,3 @@
-import '../../components/weekly-report-list';
-import { WeeklyReportMode } from '../../controllers/weekly-report-mode';
 import type { PreparedExtensionAttentionItem } from '../../utils/attention-extension';
 import type { DeliveryReportAttention } from '../../delivery-reports-api';
 import { decideMCPFinding, type MCPFinding } from '../../mcp-findings-api';
@@ -109,7 +107,6 @@ const DISMISS_REASON_LABELS: Record<string, string> = {
  */
 @customElement('attention-view')
 export class AttentionView extends AuthedElement {
-  private readonly weeklyReport = new WeeklyReportMode(this);
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private loading = true;
   @state() private approvals: AttentionApproval[] = [];
@@ -2025,8 +2022,6 @@ export class AttentionView extends AuthedElement {
   }
 
   render() {
-    if (this.weeklyReport.active)
-      return html`<weekly-report-list></weekly-report-list>`;
     const { items, dismissed } = this.derived;
     const grouped = groupAttentionItems(items);
 

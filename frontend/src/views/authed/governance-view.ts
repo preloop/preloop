@@ -1,5 +1,3 @@
-import '../../components/weekly-report-list';
-import { WeeklyReportMode } from '../../controllers/weekly-report-mode';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -131,7 +129,6 @@ const day = (value: string) =>
 /** Weekly findings and evidence, gated by the governance_review capability. */
 @customElement('governance-view')
 export class GovernanceView extends LitElement {
-  private readonly weeklyReport = new WeeklyReportMode(this);
   private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     unsafeCSS(consoleStyles),
@@ -1173,8 +1170,6 @@ export class GovernanceView extends LitElement {
       ${this.canManage ? html`<div class="detail-actions">${row.dismissed_at ? html`<sl-button data-restore ?disabled=${this.busy} @click=${() => void this.act(row)}>Restore</sl-button>` : (Object.entries(REASONS) as [DismissReason, string][]).map(([reason, label]) => html`<sl-button data-dismiss=${reason} ?disabled=${this.busy} @click=${() => void this.act(row, reason)}>Dismiss: ${label}</sl-button>`)}</div>` : nothing}`;
   }
   render() {
-    if (this.weeklyReport.active)
-      return html`<weekly-report-list></weekly-report-list>`;
     if (this.unsubscribe)
       return html`<view-header headerText="Weekly report emails"></view-header>
         ${this.notices()}`;

@@ -6,8 +6,6 @@ import {
 } from '../test-helpers/capability-api';
 import { WeeklyReportList, withoutReportFilters } from './weekly-report-list';
 import { LOCATION_CHANGED } from '../router';
-import { WeeklyReportMode } from '../controllers/weekly-report-mode';
-import type { ReactiveControllerHost } from 'lit';
 
 const path = '/api/v1/cost/report-items';
 const account = '00000000-0000-4000-8000-000000000001';
@@ -156,26 +154,5 @@ describe('weekly report filtered lists', () => {
     window.dispatchEvent(new PopStateEvent('popstate'));
     window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
     expect(api.callsTo(path)).to.have.length(2);
-  });
-
-  it('clears report mode and restores the ordinary page after in-app navigation', () => {
-    api = mockApi();
-    const host: ReactiveControllerHost = {
-      addController: () => {},
-      removeController: () => {},
-      requestUpdate: () => {},
-      updateComplete: Promise.resolve(true),
-    };
-    let restored = 0;
-    const mode = new WeeklyReportMode(host, () => {
-      ++restored;
-    });
-    mode.hostConnected();
-    expect(mode.active).to.equal(true);
-    window.history.replaceState({}, '', '/console/cost/spend');
-    window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
-    expect(mode.active).to.equal(false);
-    expect(restored).to.equal(1);
-    mode.hostDisconnected();
   });
 });

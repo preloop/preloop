@@ -261,6 +261,13 @@ def approval_signals(
     )
 
 
+class ApprovalReportPage(NamedTuple):
+    """A bounded approval page and its filtered cohort total."""
+
+    items: list[dict[str, Any]]
+    total: int
+
+
 def approval_report_items(
     db: Session,
     *,
@@ -268,12 +275,44 @@ def approval_report_items(
     start: datetime,
     end: datetime,
     user_id: UUID | None = None,
-) -> list[dict[str, Any]]:
-    """List each request once with the exact report cohorts it contributes to."""
+    status: str | None = None,
+    item: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> ApprovalReportPage:
+    """Page requests through the same predicates as the email's cohort counts.
+
+    Cohort and item filters are applied before SQL pagination. The independent
+    count retains the correct total even when the requested page is empty.
+    """
     cohorts = ", ".join(
         f"CASE WHEN cohort_{name} THEN '{name}' END" for name in _APPROVAL_COHORTS
     )
     selected = " OR ".join(f"cohort_{name}" for name in _APPROVAL_COHORTS)
+    predicate = f"""
+        ({selected})
+        AND (CAST(:status AS text) IS NULL OR CAST(:status AS text) = ANY(
+            array_remove(ARRAY[{cohorts}], NULL)))
+        AND (CAST(:item AS text) IS NULL OR id::text = CAST(:item AS text))
+    """
+    params = {
+        **_params(
+            account_id,
+            start.astimezone(timezone.utc).replace(tzinfo=None),
+            end.astimezone(timezone.utc).replace(tzinfo=None),
+        ),
+        "user_id": str(user_id) if user_id else None,
+        "response": json.dumps([{"user_id": str(user_id)}]),
+        "pending_backlog": False,
+        "status": status,
+        "item": item,
+        "offset": offset,
+        "limit": limit,
+    }
+    total = db.execute(
+        text(_approval_report_cte() + "SELECT COUNT(*) FROM scoped WHERE " + predicate),
+        params,
+    ).scalar_one()
     rows = (
         db.execute(
             text(
@@ -281,25 +320,17 @@ def approval_report_items(
                 + f"""
         SELECT id, tool_name, status, requested_at, resolved_at, automatic_reason,
             array_remove(ARRAY[{cohorts}], NULL) AS cohorts
-        FROM scoped WHERE {selected}
+        FROM scoped WHERE {predicate}
         ORDER BY requested_at DESC, id
+        LIMIT :limit OFFSET :offset
         """
             ),
-            {
-                **_params(
-                    account_id,
-                    start.astimezone(timezone.utc).replace(tzinfo=None),
-                    end.astimezone(timezone.utc).replace(tzinfo=None),
-                ),
-                "user_id": str(user_id) if user_id else None,
-                "response": json.dumps([{"user_id": str(user_id)}]),
-                "pending_backlog": False,
-            },
+            params,
         )
         .mappings()
         .all()
     )
-    return [dict(row) for row in rows]
+    return ApprovalReportPage(items=[dict(row) for row in rows], total=int(total))
 
 
 def first_seen_signals(
