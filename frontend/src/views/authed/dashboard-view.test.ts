@@ -1747,6 +1747,23 @@ describe('DashboardView', () => {
         .false;
     });
 
+    it('does not tick "Restrict a tool" for the seeded send_note policy', async () => {
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          name: 'send_note',
+          source: 'builtin',
+          is_enabled: false,
+          approval_workflow_id: null,
+          has_approval_condition: true,
+          config_id: 'config-seed',
+          access_rules: [{ id: 'r1', action: 'require_approval' }],
+        },
+      ];
+      const element = await mountLoaded();
+      expect(element['hasToolPolicy']).to.be.false;
+    });
+
     it('ticks "Restrict a tool" once somebody disables a tool', async () => {
       toolsResponse = [
         {

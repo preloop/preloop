@@ -3792,6 +3792,10 @@ export class DashboardView extends AuthedElement {
     return this.tools.some(
       (tool) =>
         Boolean(tool.config_id) &&
+        // Every account is seeded with a disabled, rule-carrying send_note
+        // (the operator-note lineage policy). That is Preloop's default,
+        // not a restriction anybody added, so it does not tick the step.
+        !(tool.name === 'send_note' && tool.source === 'builtin') &&
         (!tool.is_enabled ||
           Boolean(tool.approval_workflow_id) ||
           tool.has_approval_condition === true ||
