@@ -1182,7 +1182,12 @@ export class FlowView extends LitElement {
                                 </td>
                                 <td>
                                   <sl-badge
-                                    class="chip"
+                                    class="chip ${
+                                      this.getStatusVariant(exec.status) ===
+                                      'danger'
+                                        ? 'solid'
+                                        : ''
+                                    }"
                                     pill
                                     variant=${this.getStatusVariant(exec.status)}
                                   >

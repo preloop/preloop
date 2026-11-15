@@ -163,6 +163,13 @@ describe('FlowView recent executions', () => {
       const link = element.shadowRoot!.querySelector(
         '.executions-table .subject-cell a'
       )!;
+      // A failed run is the solid danger pill here too, as on the
+      // executions list and the flows list (02-8).
+      const chip = element.shadowRoot!.querySelector(
+        '.executions-table sl-badge.chip'
+      )!;
+      expect(chip.classList.contains('solid')).to.be.true;
+
       expect(link.textContent).to.contain('spacecode/preloop-ios !17');
       expect(link.getAttribute('href')).to.equal(
         'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'
