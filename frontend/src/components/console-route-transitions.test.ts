@@ -636,6 +636,13 @@ describe('console route transitions', () => {
     expect(window.location.pathname + window.location.search).to.equal(
       '/console/governance' + query
     );
+    clickLink('/console/governance?unsubscribe=weekly-report');
+    await waitUntil(
+      () => Boolean(shell()?.querySelector(':scope > governance-view')),
+      'unsubscribe is available without the review capability',
+      { timeout: 10000 }
+    );
+    expect(window.location.search).to.equal('?unsubscribe=weekly-report');
     clickLink('/console/governance');
     await assertLanded(
       BY_PATH.get('/console/governance')!,

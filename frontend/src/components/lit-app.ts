@@ -564,6 +564,13 @@ export class LitApp extends LitElement {
                 await import('./weekly-report-list');
                 return commands.component('weekly-report-list');
               }
+              if (
+                new URLSearchParams(context.search).get('unsubscribe') ===
+                'weekly-report'
+              ) {
+                await import('../views/authed/governance-view');
+                return commands.component('governance-view');
+              }
               return commands.redirect('/console/policies');
             },
           },

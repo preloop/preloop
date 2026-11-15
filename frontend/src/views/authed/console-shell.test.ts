@@ -1683,6 +1683,18 @@ describe('ConsoleShell', () => {
       expect(el.shadowRoot!.querySelector('permission-denied')).to.not.exist;
     });
 
+    it('lets any report recipient open their email preference', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        '/console/governance?unsubscribe=weekly-report'
+      );
+      withPermissions(['view_mcp_findings']);
+      const el = await loaded();
+      expect(el.shadowRoot!.querySelector('permission-denied')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('.main-content slot')).to.exist;
+    });
+
     it('lets a decision-token link through to the approval page', async () => {
       // An escalation recipient may hold no view_approvals at all; the page
       // falls back to the token, which authorizes exactly this request.

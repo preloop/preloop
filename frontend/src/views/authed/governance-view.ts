@@ -1175,6 +1175,9 @@ export class GovernanceView extends LitElement {
   render() {
     if (this.weeklyReport.active)
       return html`<weekly-report-list></weekly-report-list>`;
+    if (this.unsubscribe)
+      return html`<view-header headerText="Weekly report emails"></view-header>
+        ${this.notices()}`;
     if (!this.enabled && !this.loading && !this.error) return nothing;
     return html`<view-header
         headerText="Weekly review"

@@ -102,11 +102,13 @@ describe('Weekly review deep links and report evidence', () => {
   let api: MockApi;
   let mode: string;
   let valueEnabled: boolean;
+  let reviewEnabled: boolean;
   let costAllowed: boolean;
   let weeks: GovernanceRun[];
   beforeEach(() => {
     signInForTest();
     mode = 'on_platform';
+    reviewEnabled = true;
     valueEnabled = false;
     costAllowed = true;
     weeks = [run];
@@ -117,7 +119,7 @@ describe('Weekly review deep links and report evidence', () => {
           path: '/api/v1/features',
           body: () => ({
             features: {
-              governance_review: true,
+              governance_review: reviewEnabled,
               weekly_work_value: valueEnabled,
             },
           }),
@@ -230,6 +232,25 @@ describe('Weekly review deep links and report evidence', () => {
     expect(
       api.callsTo('/api/v1/weekly-report/preferences', 'PUT')[0].body
     ).to.eql({ user_enabled: false });
+  });
+
+  it('offers the same email preference without the optional review plugin', async () => {
+    reviewEnabled = false;
+    const el = await mount('?unsubscribe=weekly-report');
+    expect(el.shadowRoot!.querySelector('[data-unsubscribe]')).to.exist;
+    expect(
+      api.callsTo('/api/v1/weekly-report/preferences', 'PUT')
+    ).to.have.length(0);
+    (
+      el.shadowRoot!.querySelector(
+        '[data-unsubscribe] sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => el.shadowRoot!.querySelector('[data-unsubscribed]'));
+    expect(
+      api.callsTo('/api/v1/weekly-report/preferences', 'PUT')[0].body
+    ).to.eql({ user_enabled: false });
+    expect(api.callsTo(`${BASE}/runs`)).to.have.length(0);
   });
 
   it('says plainly when the review is off and turns it on in one click', async () => {

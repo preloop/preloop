@@ -794,6 +794,13 @@ export class ConsoleShell extends LitElement {
     ) {
       return 'view_policies';
     }
+    // Every report recipient can manage their own email preference.
+    if (
+      normalized === '/console/governance' &&
+      new URLSearchParams(window.location.search).get('unsubscribe') ===
+        'weekly-report'
+    )
+      return null;
     // A decision-token link authorizes exactly one request, for somebody
     // who may not hold view_approvals at all (an escalation recipient). The
     // approval page falls back to the token itself, so the shell must not
