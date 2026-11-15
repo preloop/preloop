@@ -567,6 +567,20 @@ export class InventoryCard extends LitElement {
           width: 100%;
         }
 
+        /* The agents table measures its own card. In the two-column Overview
+           at 1280 the card is about 630px and the fixed Agent, Tokens, spend
+           and Last seen widths left Last model 44px, one character per line.
+           Below 720px the Agent column gives up 90px so Last model keeps at
+           least 120px; the name still ellipsises with its full title. */
+        .agent-scroll {
+          container-type: inline-size;
+        }
+        @container (max-width: 720px) {
+          .agent-table th.col-name {
+            width: 150px !important;
+          }
+        }
+
         .inventory-table th,
         .inventory-table td {
           border-bottom: 1px solid var(--console-hairline);
@@ -1298,7 +1312,8 @@ export class InventoryCard extends LitElement {
       },
       {
         id: 'model',
-        header: 'Model',
+        // The model the agent used most recently, not a fixed setting.
+        header: 'Last model',
         minWidth: 120,
         // Absorbs what the other columns leave, so it has no handle.
         resizable: false,
@@ -1374,7 +1389,7 @@ export class InventoryCard extends LitElement {
     const rows = this.sortedAgents.slice(0, this.rowLimit);
     this.agentTable.data = rows;
     return html`
-      <div class="table-scroll">
+      <div class="table-scroll agent-scroll">
         <data-table
           class="agent-table"
           table-class="inventory-table"

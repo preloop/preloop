@@ -817,6 +817,26 @@ describe('inventory-card', () => {
     expect(el.shadowRoot?.querySelector('.sort-select')).to.exist;
   });
 
+  it('keeps the Last model column at least 120px wide in the 1280 Overview card', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({ modelAlias: 'dashscope/qwen3-coder-plus-2026-09-23' }),
+      ],
+    });
+    el.style.display = 'block';
+    el.style.width = '628px';
+    await el.updateComplete;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const th = el.shadowRoot!.querySelector<HTMLElement>('th.col-model')!;
+    expect(th.textContent).to.contain('Last model');
+    expect(th.getBoundingClientRect().width).to.be.at.least(120);
+    const table = el.shadowRoot!.querySelector<HTMLElement>(
+      'table.inventory-table'
+    )!;
+    // Nothing spills past the card.
+    expect(table.getBoundingClientRect().width).to.be.at.most(628 + 1);
+  });
+
   it('ends the header controls at the range label, with no gap', async () => {
     const el = await card();
     const controls = el.shadowRoot!.querySelector('.header-controls')!;
