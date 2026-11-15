@@ -224,7 +224,10 @@ async def read_status() -> dict[str, Any]:
     """Read current processes without mutations, bounded even when NATS stalls."""
     async with asyncio.timeout(READ_TIMEOUT_SECONDS):
         async with _connection() as js:
-            kv = await js.key_value(PROCESS_BUCKET)
+            try:
+                kv = await js.key_value(PROCESS_BUCKET)
+            except BucketNotFoundError:
+                return {"timestamp": time.time(), "workers": []}
             try:
                 keys = await kv.keys()
             except NoKeysError:

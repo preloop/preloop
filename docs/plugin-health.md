@@ -33,7 +33,8 @@ with `name: PLUGIN_STATUS_OPERATOR_TOKEN` and a `valueFrom.secretKeyRef` pointin
 to the operator-managed secret. Keep this credential distinct from account keys.
 This credential authorizes only this read-only surface; ordinary
 account credentials do not grant access. Missing server configuration returns
-503; invalid credentials return 401. Health monitors can use the same endpoint.
+503; invalid credentials return 401. An unreachable broker returns 503; a
+reachable broker with no process bucket yet returns an empty fleet. Health monitors can use the same endpoint.
 Process records older than 120 seconds are excluded. Configure a probe's expected
 worker count to detect partial fleet coverage.
 

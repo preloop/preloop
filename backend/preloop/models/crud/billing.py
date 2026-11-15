@@ -490,6 +490,11 @@ class CRUDBilling:
     ) -> bool:
         """Commit one send claim per account/provider/period/material cost state.
 
+        This is the persistence boundary for the optional Enterprise email
+        caller; deduplication requires that caller to be integrated separately.
+        Call only after ingestion commits: this method commits the session on
+        both a new claim and a duplicate.
+
         Concurrent processes race on the existing unique billing-operation key.
         A dispatch claim is never reclaimed: SMTP can accept a message before a
         connection fails, so retrying an uncertain handoff could send duplicates.

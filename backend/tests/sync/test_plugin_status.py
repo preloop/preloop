@@ -264,3 +264,24 @@ async def test_process_records_expire_without_expiring_job_evidence() -> None:
     )
     assert configurations[plugin_status.BUCKET].ttl == 0
     assert all(config.max_bytes > 0 for config in configurations.values())
+
+
+@pytest.mark.asyncio
+async def test_missing_process_bucket_is_an_empty_fleet() -> None:
+    """Before the first heartbeat, a reachable broker has an empty fleet."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from nats.js.errors import BucketNotFoundError
+    from preloop.sync import plugin_status
+
+    js = SimpleNamespace(key_value=AsyncMock(side_effect=BucketNotFoundError))
+
+    @asynccontextmanager
+    async def connection() -> AsyncIterator[SimpleNamespace]:
+        yield js
+
+    with patch.object(plugin_status, "_connection", connection):
+        result = await plugin_status.read_status()
+    assert result["workers"] == []
+    assert result["timestamp"] > 0
