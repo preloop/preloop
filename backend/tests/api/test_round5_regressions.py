@@ -2,12 +2,13 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from preloop.models import crud, models
 from preloop.models.crud.base import CRUDBase
@@ -405,3 +406,142 @@ def test_gateway_response_boundary_survives_storage_and_timing_projection(
         usage=usage, request_payload=None, response_payload=None
     )
     assert event["payload"]["first_response_at"] == observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("captured", [False, True])
+@pytest.mark.parametrize(
+    "recovery", ["no_session", "succeeded", "failed", "check_error", "monitor_error"]
+)
+async def test_recovery_settles_result_finalization(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    captured: bool,
+    recovery: str,
+) -> None:
+    """Every recovery terminal write settles the result-read readiness gate."""
+    from preloop.agents.base import AgentStatus
+    from preloop.services.execution_recovery import ExecutionRecoveryService
+
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    crud.crud_flow_execution.record_completion_evidence(
+        db_session,
+        execution_id=execution.id,
+        facts={
+            "capture_state": "captured" if captured else "pending",
+            "finalization_state": "pending",
+        },
+        result={"review": "Done"} if captured else None,
+    )
+    CRUDBase(models.FlowExecution).update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "status": "RUNNING",
+            "agent_session_reference": None
+            if recovery == "no_session"
+            else "synthetic-session",
+        },
+    )
+    service = ExecutionRecoveryService()
+    executor = MagicMock(
+        get_status=AsyncMock(
+            return_value=AgentStatus.SUCCEEDED
+            if recovery == "succeeded"
+            else AgentStatus.FAILED
+        ),
+        aclose=AsyncMock(),
+    )
+    if recovery == "check_error":
+        executor.get_status.side_effect = RuntimeError("Synthetic status failure")
+    with (
+        patch("preloop.agents.create_executor_for_execution", return_value=executor),
+        patch("preloop.services.execution_recovery._retire_runtime_credentials"),
+    ):
+        if recovery == "monitor_error":
+            orchestrator = MagicMock(execution_log=execution)
+            # Keep the integration-test transaction open while exercising the
+            # background task's two independently owned sessions.
+            with (
+                patch(
+                    "preloop.models.db.session.get_db_session",
+                    side_effect=lambda: iter([db_session]),
+                ),
+                patch.object(db_session, "close"),
+                patch(
+                    "preloop.services.flow_execution_runner.resume_existing_execution",
+                    AsyncMock(side_effect=RuntimeError("Synthetic monitor failure")),
+                ),
+            ):
+                await service._resume_monitoring_task(orchestrator, "synthetic-session")
+        else:
+            await service._resume_execution_monitoring(
+                db_session, execution, AsyncMock()
+            )
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == (200 if captured else 404), response.text
+
+
+def test_repoint_without_source_endpoint_keeps_configured_target(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """A shared credential with a default endpoint cannot erase a custom host."""
+    source = crud.crud_ai_model.create_with_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "name": "Default endpoint",
+            "provider_name": "openai",
+            "model_identifier": "model-a",
+            "api_key": "synthetic-new-key",
+        },
+    )
+    target = crud.crud_ai_model.create_with_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "name": "Custom endpoint",
+            "provider_name": "openai",
+            "model_identifier": "model-b",
+            "api_key": "synthetic-old-key",
+            "api_endpoint": "https://custom.example.com/v1",
+        },
+    )
+    updated = crud.crud_ai_model.update(
+        db_session,
+        db_obj=target,
+        obj_in={"credentials_secret_id": source.credentials_secret_id},
+    )
+    assert updated.api_endpoint == "https://custom.example.com/v1"
+
+
+@pytest.mark.parametrize("failure", ["update", "commit"])
+def test_ci_usage_write_failure_does_not_deny_authorized_request(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Activity bookkeeping failures cannot reject a freshly authorized read."""
+    from sqlalchemy.orm import Query
+
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    error = OperationalError("synthetic failure", None, None)
+    with (
+        patch.object(
+            Query if failure == "update" else db_session, failure, side_effect=error
+        ),
+        patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback,
+    ):
+        response = client.get(
+            f"/api/v1/flows/executions/{execution.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200, response.text
+    rollback.assert_called_once()

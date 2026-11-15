@@ -98,7 +98,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         )
         if source is None:
             return
-        if not obj_data.get("api_endpoint"):
+        if not obj_data.get("api_endpoint") and source.api_endpoint:
             obj_data["api_endpoint"] = source.api_endpoint
         source_meta = source.meta_data or {}
         if existing is not None and "meta_data" not in obj_data:

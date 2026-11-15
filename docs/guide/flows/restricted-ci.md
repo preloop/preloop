@@ -1157,8 +1157,8 @@ it now. `GET .../result` answers:
 - `409` with `detail.code: "result_pending"` and the current `detail.status`
   while the execution has not finished, even if a checkpoint is stored, for
   example while it is parked. It also answers 409 if a stop/limit has already
-  made the status terminal but controller capture or finalization is still pending; retry until
-  capture settles;
+  made the status terminal but controller capture or finalization is still
+  pending; retry until finalization settles;
 - `404` when the execution does not exist for the caller, or finished without
   reporting a result and capture has settled. Controller-only termination
   metadata or private publication policy state is not a result artifact;

@@ -182,7 +182,13 @@ def _inspect(
                 crud.crud_ci_principal.authorize(db, context=context, action=action)
             except PermissionError:
                 return inspection, False
-            crud.crud_ci_principal.record_key_usage(db, context=context)
+            try:
+                crud.crud_ci_principal.record_key_usage(db, context=context)
+            except SQLAlchemyError:
+                db.rollback()
+                # Activity accounting does not grant authority. Keep the fresh
+                # authorization result if only this auxiliary write failed.
+                logger.warning("Could not record CI credential activity")
         return inspection, True
     finally:
         sessions.close()

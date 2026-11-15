@@ -421,6 +421,7 @@ class ExecutionRecoveryService:
                 failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
+            crud_flow_execution.settle_result_capture(db, execution_id=execution.id)
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
             _retire_runtime_credentials(db, execution)
@@ -472,6 +473,9 @@ class ExecutionRecoveryService:
                             failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                             end_time=datetime.now(timezone.utc),
                         )
+                        crud_flow_execution.settle_result_capture(
+                            db, execution_id=execution.id
+                        )
                         crud_flow_execution.update(
                             db, db_obj=execution, obj_in=update_data
                         )
@@ -485,6 +489,9 @@ class ExecutionRecoveryService:
                         update_data = FlowExecutionUpdate(
                             status="SUCCEEDED",
                             end_time=datetime.now(timezone.utc),
+                        )
+                        crud_flow_execution.settle_result_capture(
+                            db, execution_id=execution.id
                         )
                         crud_flow_execution.update(
                             db, db_obj=execution, obj_in=update_data
@@ -510,6 +517,7 @@ class ExecutionRecoveryService:
                 failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
+            crud_flow_execution.settle_result_capture(db, execution_id=execution.id)
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
             # Status check failed: agent liveness is unknown. Leave the
@@ -597,6 +605,9 @@ class ExecutionRecoveryService:
                         exception=e,
                     ),
                     end_time=datetime.now(timezone.utc),
+                )
+                crud_flow_execution.settle_result_capture(
+                    failure_db, execution_id=execution_log.id
                 )
                 crud_flow_execution.update(
                     failure_db,
