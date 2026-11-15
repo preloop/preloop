@@ -1594,8 +1594,13 @@ describe('ApprovalsView', () => {
       expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
         '40K requests'
       );
+      // Auto-approved calls never waited for a person: they are their own
+      // figure, not part of "approved" (governance-4).
       expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
-        '32K approved'
+        '30K approved'
+      );
+      expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+        '2K auto-approved'
       );
       expect(
         strip.querySelector('strong[title="40,000"]'),

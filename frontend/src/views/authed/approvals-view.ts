@@ -1878,10 +1878,23 @@ export class ApprovalsView extends AuthedElement {
         ? html`Last ${count(loaded)} requests`
         : html`${count(loaded)} requests`,
       html`${count(this.waitingRequests.length)} waiting`,
-      html`${count(stats.approved)} approved`,
+      html`${count(
+        Math.max(0, stats.approved - (stats.autoApprovedByBypass || 0))
+      )}
+      approved`,
       html`${count(stats.declined)} denied`,
       html`${count(stats.expired)} timed out`,
     ];
+    // Auto-approved calls never waited for anyone, so they are not counted
+    // under a page about calls that waited for a human decision.
+    if ((stats.autoApprovedByBypass || 0) > 0) {
+      facts.push(
+        html`<span
+          title="Allowed by a bypass or an auto-approve rule without waiting for anyone"
+          >${count(stats.autoApprovedByBypass)} auto-approved</span
+        >`
+      );
+    }
     if (stats.approved + stats.declined > 0) {
       facts.push(
         html`<strong>${Math.round(stats.approvalRate)}%</strong> approved by a

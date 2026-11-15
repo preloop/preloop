@@ -1379,6 +1379,16 @@ describe('ApprovalView', () => {
       expect(
         element.shadowRoot!.querySelector('.resolved-info h3')!.textContent
       ).to.contain('Approved by a time-boxed bypass');
+      // The header does not pass it off as a person's green "Approved", and
+      // does not ask anyone to review a call that already ran.
+      const badge = element.shadowRoot!.querySelector(
+        '.header sl-badge.status-badge'
+      )!;
+      expect(badge.textContent!.trim()).to.equal('Auto-approved');
+      expect(badge.getAttribute('variant')).to.equal('neutral');
+      const subtitle = element.shadowRoot!.querySelector('.header p')!;
+      expect(subtitle.textContent).to.contain('ran without review');
+      expect(subtitle.textContent).to.not.contain('Review');
     });
 
     it("names the flow's approval policy", async () => {

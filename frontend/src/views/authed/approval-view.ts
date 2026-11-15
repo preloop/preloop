@@ -1493,7 +1493,12 @@ export class ApprovalView extends AuthedElement {
       ? this.reconciling
         ? 'Refreshing status'
         : 'Status unavailable'
-      : approvalStatusLabel(request.status);
+      : request.status === 'approved' && request.auto_approved_reason
+        ? // Nobody reviewed it: not the green "Approved" a person gives.
+          'Auto-approved'
+        : approvalStatusLabel(request.status);
+    const autoApproved =
+      request.status === 'approved' && !!request.auto_approved_reason;
     const countdown =
       isPending && !this.reconciliationRequired
         ? this.formatCountdown(request)
@@ -1533,7 +1538,9 @@ export class ApprovalView extends AuthedElement {
             pill
             class="chip status-badge"
             tabindex="-1"
-            variant=${this.getStatusVariant(request.status)}
+            variant=${
+              autoApproved ? 'neutral' : this.getStatusVariant(request.status)
+            }
           >
             ${displayStatus}
           </sl-badge>
@@ -1558,7 +1565,11 @@ export class ApprovalView extends AuthedElement {
           ${
             isQuestion
               ? `${requester} is waiting on your answer before it continues`
-              : `Review ${requester}'s tool execution request`
+              : autoApproved
+                ? `${requester}'s tool call ran without review`
+                : isPending
+                  ? `Review ${requester}'s tool execution request`
+                  : `${requester}'s tool execution request`
           }
         </p>
       </div>
