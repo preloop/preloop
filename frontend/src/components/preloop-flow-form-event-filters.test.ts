@@ -243,6 +243,30 @@ describe('PreloopFlowForm event filters behaviour', () => {
   const filterInput = (element: PreloopFlowForm, label: string) =>
     element.shadowRoot!.querySelector(`sl-input[label="${label}"]`) as any;
 
+  it('keeps a saved event the tracker list does not offer, and warns', async () => {
+    // A GitHub flow saved with GitLab's merge_request_opened: the event list
+    // has no option for it, so it used to vanish from the select and be
+    // dropped on the next save.
+    const element = await mount({
+      ...trackerFlow(),
+      trigger_event_types: ['pull_request_opened', 'merge_request_opened'],
+    });
+    const select = element.shadowRoot!.querySelector(
+      'sl-select[data-field="events"]'
+    ) as any;
+    const values = Array.from(select.querySelectorAll('sl-option')).map(
+      (o: any) => o.value
+    );
+    expect(values).to.include('merge_request_opened');
+    expect(select.helpText).to.contain('merge_request_opened');
+    expect(select.helpText).to.match(/GitHub does not send/);
+    const payload = await submit(element);
+    expect(payload.trigger_event_types).to.deep.equal([
+      'pull_request_opened',
+      'merge_request_opened',
+    ]);
+  });
+
   it('renders saved filters and submits them unchanged', async () => {
     const element = await mount(
       trackerFlow({ author: 'octocat', labels: ['bug'] })
