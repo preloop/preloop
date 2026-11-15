@@ -1,4 +1,5 @@
-# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 docs.in -o docs.txt
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11.5 docs.in -o docs.txt
+# Requires Python >=3.11.5 (Soup Sieve 4).
 # Build the documentation site: mkdocs build --strict (from the repository root)
 mkdocs>=1.6,<2
 mkdocs-material
@@ -6,3 +7,5 @@ mkdocs-mermaid2-plugin
 mkdocs-redirects
 # Offline evidence guard tests run as a MkDocs build hook.
 jsonschema>=4.0
+# Patched selector parsing and descendant matching (Soup Sieve DoS advisories).
+soupsieve>=4.0
