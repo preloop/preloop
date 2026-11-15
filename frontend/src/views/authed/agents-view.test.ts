@@ -1725,7 +1725,10 @@ describe('AgentsView', () => {
       // Muted with the reason in the title, not a "previous" word that
       // truncates to "pre…" in the cell (visual-3).
       expect(estimate()?.classList.contains('stale')).to.be.true;
-      expect(estimate()?.textContent).to.not.contain('previous');
+      // Still said in text for screen readers, not by colour alone.
+      expect(
+        estimate()?.querySelector('.visually-hidden')?.textContent
+      ).to.contain('previous read');
     } finally {
       release();
     }

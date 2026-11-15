@@ -3924,6 +3924,13 @@ export class AgentsView extends LitElement {
             }
           >
             ${estimate.value === null ? 'No estimate' : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)}`}
+            ${
+              row.withoutSubscriptionsStale
+                ? html`<span class="visually-hidden"
+                    >(estimate from a previous read)</span
+                  >`
+                : nothing
+            }
           </span>`;
         },
       },
