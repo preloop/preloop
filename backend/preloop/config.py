@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -350,6 +350,10 @@ class Settings(BaseSettings):
     )
     log_level: str = Field("INFO", description="Log level")
     product_team_email: str = Field("", description="Product team email address")
+    plugin_status_operator_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Dedicated read-only operator credential for plugin fleet status",
+    )
     nats_url: str = Field("nats://localhost:4222", description="NATS server URL")
     preloop_url: str = Field("http://localhost:8000", description="Preloop URL")
     model_endpoint_allowed_cidrs: str = Field(

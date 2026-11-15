@@ -22,6 +22,8 @@ from typing import Any, Optional, Union
 # to enumerate the subjects it wants, which is what this registry is for.
 # Add new dispatchable tasks here or a dedicated pool will silently never
 # receive them.
+from preloop.sync.plugin_status import missing_service, tracked_plugin_task
+
 DISPATCHABLE_TASKS: tuple[str, ...] = (
     "scan_tracker_task",
     "poll_tracker",
@@ -407,20 +409,19 @@ def reprice_gateway_usage_task(
         db_generator.close()
 
 
+@tracked_plugin_task
 def ingest_provider_billing(account_id: str | None = None) -> object | None:
     """Fetch provider billing/usage actuals for reconciliation.
 
     The implementation lives in the Enterprise billing plugin; this OSS shim
-    resolves it through the plugin service registry and no-ops (with a debug
-    log) when the plugin is not installed.
+    resolves it through the plugin service registry and no-ops (with a warning
+    and a health counter) when the plugin is not installed.
     """
     from preloop.plugins.base import get_plugin_manager
 
     service = get_plugin_manager().get_service("provider_billing_ingestion")
     if service is None:
-        logger.debug(
-            "provider_billing_ingestion service not available; skipping ingest"
-        )
+        missing_service("ingest_provider_billing", "provider_billing_ingestion")
         return None
     db = next(get_db_session())
     try:
@@ -591,18 +592,19 @@ async def maintain_gateway_activity() -> dict[str, Any] | None:
         db.close()
 
 
+@tracked_plugin_task
 def send_optimization_digest(account_id: str | None = None) -> object | None:
     """Build and email the weekly cost optimization & savings digest.
 
     The implementation lives in the Enterprise billing plugin; this OSS shim
-    resolves it through the plugin service registry and no-ops (with a debug
-    log) when the plugin is not installed.
+    resolves it through the plugin service registry and no-ops (with a warning
+    and a health counter) when the plugin is not installed.
     """
     from preloop.plugins.base import get_plugin_manager
 
     service = get_plugin_manager().get_service("optimization_digest")
     if service is None:
-        logger.debug("optimization_digest service not available; skipping digest")
+        missing_service("send_optimization_digest", "optimization_digest")
         return None
     db = next(get_db_session())
     try:
@@ -614,12 +616,13 @@ def send_optimization_digest(account_id: str | None = None) -> object | None:
         db.close()
 
 
+@tracked_plugin_task
 def reconcile_stripe_subscriptions(account_id: str | None = None) -> object | None:
     """Refresh Stripe-linked subscriptions so a missed webhook self-heals.
 
     The implementation lives in the Enterprise billing plugin; this OSS shim
-    resolves it through the plugin service registry and no-ops (with a debug
-    log) when the plugin is not installed. The plugin side additionally
+    resolves it through the plugin service registry and no-ops (with a warning
+    and a health counter) when the plugin is not installed. The plugin side additionally
     no-ops when no Stripe key is configured, which is the normal self-hosted
     case. Provider access is read-only.
     """
@@ -627,7 +630,7 @@ def reconcile_stripe_subscriptions(account_id: str | None = None) -> object | No
 
     service = get_plugin_manager().get_service("subscription_sync")
     if service is None:
-        logger.debug("subscription_sync service not available; skipping reconcile")
+        missing_service("reconcile_stripe_subscriptions", "subscription_sync")
         return None
     db = next(get_db_session())
     try:
@@ -673,7 +676,7 @@ def _run_governance_handler(service_name: str) -> object | None:
 
     service = get_plugin_manager().get_service(service_name)
     if service is None:
-        logger.debug("%s service not available; skipping", service_name)
+        missing_service(service_name, service_name)
         return None
     db = next(get_db_session())
     try:
@@ -686,6 +689,7 @@ def _run_governance_handler(service_name: str) -> object | None:
         db.close()
 
 
+@tracked_plugin_task
 def governance_session_digest_sweep() -> object | None:
     """Hourly sweep that summarises closed or idle session segments.
 
@@ -696,6 +700,7 @@ def governance_session_digest_sweep() -> object | None:
     return _run_governance_handler("governance_session_digest_sweep")
 
 
+@tracked_plugin_task
 def governance_weekly_review() -> object | None:
     """Monday review of the week's session segments against account policy.
 

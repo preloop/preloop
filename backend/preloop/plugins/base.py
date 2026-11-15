@@ -274,8 +274,9 @@ class WorkflowOrchestratorPlugin(ABC):
 class PluginManager:
     """Manages plugin lifecycle and registration."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize plugin manager."""
+        self.proprietary_enabled = False
         self._plugins: Dict[str, Plugin] = {}
         self._services: Dict[str, Any] = {}
         self._condition_evaluators: Dict[str, ConditionEvaluatorPlugin] = {}
@@ -284,24 +285,21 @@ class PluginManager:
             set()
         )  # Track discovered modules to prevent infinite recursion
 
-    def register_plugin(self, plugin: Plugin):
+    def register_plugin(self, plugin: Plugin) -> None:
         """Register a plugin and all its components."""
         if plugin.metadata.name in self._plugins:
             raise ValueError(f"Plugin '{plugin.metadata.name}' already registered")
 
+        # Discover every component before publishing any part of the plugin.
+        services = plugin.get_services()
+        evaluators = plugin.get_condition_evaluators()
+        orchestrators = plugin.get_workflow_orchestrators()
+        evaluator_map = {item.condition_type: item for item in evaluators}
+        orchestrator_map = {item.workflow_type: item for item in orchestrators}
+        self._services.update(services)
+        self._condition_evaluators.update(evaluator_map)
+        self._workflow_orchestrators.update(orchestrator_map)
         self._plugins[plugin.metadata.name] = plugin
-
-        # Register services
-        for service_name, service in plugin.get_services().items():
-            self._services[service_name] = service
-
-        # Register condition evaluators
-        for evaluator in plugin.get_condition_evaluators():
-            self._condition_evaluators[evaluator.condition_type] = evaluator
-
-        # Register workflow orchestrators
-        for orchestrator in plugin.get_workflow_orchestrators():
-            self._workflow_orchestrators[orchestrator.workflow_type] = orchestrator
 
         logger.info(
             f"Registered plugin: {plugin.metadata.name} v{plugin.metadata.version}"
@@ -474,7 +472,7 @@ class PluginManager:
                     f"Registered routes from plugin '{plugin.metadata.name}' at {config.prefix}"
                 )
 
-    def discover_plugins(self, plugin_module: str = "plugins"):
+    def discover_plugins(self, plugin_module: str = "plugins") -> None:
         """Discover and load plugins from a Python package.
 
         Args:
@@ -524,8 +522,10 @@ class PluginManager:
                         f"Failed to load plugin '{full_module_name}': {e}",
                         exc_info=True,
                     )
+                    raise
         except ImportError as e:
-            logger.warning(f"Plugin module not found: {plugin_module} - {e}")
+            logger.error("Failed to load plugin '%s': %s", plugin_module, e)
+            raise
 
 
 # Global singleton
@@ -539,26 +539,38 @@ def get_plugin_manager() -> PluginManager:
     global _plugin_manager
     if _plugin_manager is None:
         _plugin_manager = PluginManager()
-        _plugin_manager.discover_plugins("preloop.plugins.builtin")
-
-        # Only load proprietary plugins if not explicitly disabled
-        # Check both disable_rbac (for permission checks) and DISABLE_PROPRIETARY_PLUGINS (for plugin loading)
-        disable_proprietary = proprietary_plugins_disabled()
-
-        if settings.disable_rbac:
-            logger.info("DISABLE_RBAC is set - skipping proprietary plugins")
-        elif disable_proprietary:
-            logger.info(
-                "DISABLE_PROPRIETARY_PLUGINS is set - skipping proprietary plugins"
-            )
-        else:
-            logger.info("Loading proprietary plugins from preloop.plugins.proprietary")
-            _plugin_manager.discover_plugins("preloop.plugins.proprietary")
-
-        # Log loaded plugins summary
-        plugin_names = list(_plugin_manager._plugins.keys())
-        logger.info(f"Plugin manager initialized with plugins: {plugin_names}")
+        try:
+            _initialize_plugins(_plugin_manager, settings.disable_rbac)
+        except BaseException:
+            _plugin_manager = None
+            raise
     return _plugin_manager
+
+
+def _initialize_plugins(manager: PluginManager, disable_rbac: bool) -> None:
+    """Load installed extensions unless either existing disable flag is set."""
+    import importlib
+
+    manager.discover_plugins("preloop.plugins.builtin")
+
+    if disable_rbac or proprietary_plugins_disabled():
+        logger.info("Proprietary plugins disabled by configuration")
+        return
+    package = "preloop.plugins.proprietary"
+    try:
+        importlib.import_module(package)
+    except ModuleNotFoundError as exc:
+        if exc.name == package:
+            logger.info("No proprietary plugin package installed")
+            return
+        logger.error("Failed to load plugin '%s': %s", package, exc)
+        raise
+    except Exception as exc:
+        logger.error("Failed to load plugin '%s': %s", package, exc)
+        raise
+    manager.proprietary_enabled = True
+    manager.discover_plugins(package)
+    logger.info("Plugin manager initialized with plugins: %s", list(manager._plugins))
 
 
 def reset_plugin_manager():
