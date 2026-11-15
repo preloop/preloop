@@ -1334,3 +1334,24 @@ summary.faq-question:hover sl-icon {
     scroll-behavior: auto !important;
   }
 }
+
+/* Phones: the install command wraps instead of scrolling inside a box whose
+   scrollbar is hidden, which read as "curl ... https://preloop.ai" cut off
+   (landing-11). The secondary CTA stays inside the viewport. */
+@media (max-width: 480px) {
+  .hero-install-cmd {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow-x: visible;
+  }
+
+  .hero-secondary-cta {
+    box-sizing: border-box;
+    max-width: 100%;
+    padding: 0 1rem;
+  }
+
+  .hero-secondary-cta sl-button {
+    max-width: 100%;
+  }
+}
