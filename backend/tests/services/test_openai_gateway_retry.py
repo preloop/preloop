@@ -578,11 +578,9 @@ def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
     """The automatic SDK capture occurs before LiteLLM/gateway exception handlers."""
     import httpx
     import sentry_sdk
-    from litellm.llms.openai.openai import OpenAIChatCompletion
     from openai import InternalServerError, OpenAI
     from sentry_sdk.integrations.openai import OpenAIIntegration
 
-    from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
     from preloop.utils.sentry_filters import sentry_before_send, gateway_upstream_call
 
     captures = []
@@ -597,7 +595,6 @@ def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
         return httpx.Response(500, json={"error": {"message": "provider failure"}})
 
     service, ai_model, _ = _service_and_model()
-    service.upstream_backend = LiteLLMModelGatewayBackend()
     ai_model.api_endpoint = "https://sentry-budget.example.com/v1"
     with (
         sentry_sdk.init(
@@ -608,15 +605,30 @@ def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
             transport=lambda event: delivered.append(event),
         ),
         httpx.Client(transport=httpx.MockTransport(respond)) as client,
-        patch.object(
-            OpenAIChatCompletion, "_get_sync_http_client", return_value=client
-        ),
-        patch.object(
-            OpenAIChatCompletion, "get_cached_openai_client", return_value=None
-        ),
         patch("preloop.services.openai_gateway._sleep_before_upstream_retry"),
         patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert"),
     ):
+        sdk = OpenAI(
+            api_key="sk-test",
+            base_url=ai_model.api_endpoint,
+            http_client=client,
+            max_retries=0,
+        )
+
+        class SDKBackend:
+            """Exercise automatic SDK captures at the gateway attempt boundary.
+
+            LiteLLM may use low-level client.post(), bypassing the SDK create()
+            method that Sentry instruments. Test that method directly so SDK
+            instrumentation and the ownership filter are always exercised.
+            """
+
+            def completion(self, **kwargs: Any) -> Any:
+                return sdk.chat.completions.create(
+                    model="gpt-5", messages=kwargs["messages"]
+                )
+
+        service.upstream_backend = SDKBackend()
         with pytest.raises(ModelGatewayAPIError) as failure:
             _call(service, ai_model)
         assert failure.value.error_class == "upstream_error"
@@ -626,12 +638,6 @@ def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
         assert delivered == []
 
         # The same SDK exception outside the owned call remains visible.
-        sdk = OpenAI(
-            api_key="sk-test",
-            base_url=ai_model.api_endpoint,
-            http_client=client,
-            max_retries=0,
-        )
         with pytest.raises(InternalServerError):
             sdk.chat.completions.create(
                 model="gpt-5", messages=[{"role": "user", "content": "hi"}]
