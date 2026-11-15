@@ -173,6 +173,12 @@ FAILURE_CATEGORY_PUBLICATION_MISSING = "publication_missing"
 # The run finished but its result.json does not match the flow result schema
 # (#868), so the result is not usable even though the agent reported success.
 FAILURE_CATEGORY_RESULT_SCHEMA_INVALID = "result_schema_invalid"
+#: A read-only review result names a revision other than the admitted one
+#: (for example an all-zero ``head_sha``), so it does not review this change.
+FAILURE_CATEGORY_REVIEW_BINDING_MISMATCH = "review_binding_mismatch"
+#: A read-only review made no repository tool call or command, so its
+#: verdict is not evidence that the change was read.
+FAILURE_CATEGORY_REVIEW_NOT_INSPECTED = "review_not_inspected"
 FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
 FAILURE_CATEGORY_VERIFICATION_FAILED = "verification_failed"
 FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
@@ -211,6 +217,8 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
+    FAILURE_CATEGORY_REVIEW_BINDING_MISMATCH,
+    FAILURE_CATEGORY_REVIEW_NOT_INSPECTED,
     FAILURE_CATEGORY_SETUP_FAILED,
     FAILURE_CATEGORY_VERIFICATION_FAILED,
     FAILURE_CATEGORY_VERIFICATION_BLOCKED,

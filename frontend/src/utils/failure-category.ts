@@ -105,6 +105,16 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       "Git could not clone the flow's repository: the remote refused the tracker's credential or does not show the repository to it. Update the tracker token; a retry fails the same way until then.",
   },
+  review_binding_mismatch: {
+    label: 'review not bound',
+    tooltip:
+      'The review result names a commit or diff other than the one Preloop admitted and checked out, so its verdict is not recorded or posted.',
+  },
+  review_not_inspected: {
+    label: 'review not inspected',
+    tooltip:
+      'The review made no repository tool call and ran no command, so it did not read the change and its verdict is not recorded or posted.',
+  },
   tool_error: {
     label: 'tool error',
     tooltip: 'A command the agent ran in its own workspace exited non-zero.',

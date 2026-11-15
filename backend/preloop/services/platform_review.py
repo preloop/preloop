@@ -759,7 +759,9 @@ class PublicationPlan:
     reason: str | None
 
 
-def plan_publication(flow: Any, execution: Any) -> PublicationPlan:
+def plan_publication(
+    flow: Any, execution: Any, integrity: Mapping[str, Any] | None = None
+) -> PublicationPlan:
     """Decide the writes from the flow configuration and the stored outcome.
 
     A review needs all of: a SUCCEEDED execution, a stored result that
@@ -768,13 +770,26 @@ def plan_publication(flow: Any, execution: Any) -> PublicationPlan:
     yields no review and, when the flow asks for it, the neutral
     ``incomplete_state`` status.
 
+    A review also needs a verified result binding and evidence floor
+    (``integrity``, from :func:`preloop.services.review_integrity.
+    evaluate_execution`). Without one, or when it was rejected, no review
+    is planned and the commit status, when configured, is the flow's
+    ``incomplete_state`` or ``error``: never the verdict's state.
+
     Args:
         flow: The execution's flow.
         execution: A terminal execution.
+        integrity: The controller's integrity outcome; None means unverified.
 
     Returns:
         The plan. ``review_action`` and ``status_value`` may both be None.
     """
+    from preloop.services.review_integrity import (
+        CATEGORY_BINDING_MISMATCH,
+        CATEGORY_NOT_INSPECTED,
+        STATUS_VERIFIED,
+    )
+
     block = platform_review_block(getattr(flow, "git_clone_config", None)) or {}
     status = _status_block(block)
     context = (status or {}).get("context", DEFAULT_STATUS_CONTEXT)
@@ -783,7 +798,13 @@ def plan_publication(flow: Any, execution: Any) -> PublicationPlan:
     schema = getattr(flow, "result_schema", None)
     reason: str | None = None
     verdict: str | None = None
-    if getattr(execution, "status", None) != "SUCCEEDED":
+    rejected = getattr(execution, "failure_category", None) in {
+        CATEGORY_BINDING_MISMATCH,
+        CATEGORY_NOT_INSPECTED,
+    }
+    if rejected:
+        reason = str(execution.failure_category)
+    elif getattr(execution, "status", None) != "SUCCEEDED":
         reason = "run_not_succeeded"
     elif (
         not isinstance(result, Mapping)
@@ -802,16 +823,34 @@ def plan_publication(flow: Any, execution: Any) -> PublicationPlan:
             or (status is not None and candidate not in status["verdict_states"])
         ):
             reason = "verdict_unmapped"
+        elif not isinstance(integrity, Mapping) or (
+            integrity.get("status") != STATUS_VERIFIED
+        ):
+            category = (
+                integrity.get("category") if isinstance(integrity, Mapping) else None
+            )
+            reason = (
+                category
+                if category in {CATEGORY_BINDING_MISMATCH, CATEGORY_NOT_INSPECTED}
+                else "review_unverified"
+            )
+            rejected = True
         else:
             verdict = candidate
     if verdict is None:
         incomplete = (status or {}).get("incomplete_state")
+        if rejected and status is not None:
+            # A result Preloop could not verify is an error on the commit,
+            # even when the flow configured no incomplete state.
+            incomplete = incomplete or "error"
         return PublicationPlan(
             review_action=None,
             status_value=incomplete,
             status_context=context if incomplete else None,
             status_description=(
-                "Review did not complete; no verdict for this commit"
+                "Review not verified; no verdict for this commit"
+                if incomplete and rejected
+                else "Review did not complete; no verdict for this commit"
                 if incomplete
                 else None
             ),
@@ -1214,7 +1253,15 @@ async def _publish_claimed(
         validate_publication_tracker(tracker)
     except PublicationError:
         raise PlatformReviewError("tracker_unsupported") from None
-    plan = plan_publication(flow, execution)
+    from preloop.services.review_integrity import evaluate_execution
+
+    # Recomputed from stored evidence at every attempt, never read back from
+    # a stored outcome or the result itself.
+    plan = plan_publication(
+        flow,
+        execution,
+        integrity=evaluate_execution(db, flow, execution, require_head=True),
+    )
     if row.status_reason == "statuses_permission_missing":
         # Only an explicit call reaches here again; the permission may have
         # been approved on the App installation since.

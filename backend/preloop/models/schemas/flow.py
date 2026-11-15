@@ -309,6 +309,38 @@ class PlatformReviewStatus(BaseModel):
     )
 
 
+class ReviewIntegrity(BaseModel):
+    """Controller checks on a read-only review result (#2100).
+
+    Both checks are on by default for every read-only review. Result fields
+    named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
+    that the result schema declares, or the result contains, must equal the
+    admitted head and base, the computed merge base or the computed diff
+    digest. A review that made no repository tool call and ran no command
+    fails with ``review_not_inspected``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_bindings: Optional[
+        Dict[str, Literal["head_sha", "base_sha", "merge_base_sha", "diff_sha256"]]
+    ] = Field(
+        default=None,
+        description=(
+            "Explicit map from a top-level result field to the controller "
+            "fact it must equal. Replaces the default field names; every "
+            "listed field is required. An empty map binds nothing."
+        ),
+    )
+    require_inspection: bool = Field(
+        default=True,
+        description=(
+            "Fail a review that made no repository tool call and ran no "
+            "command, counted from Preloop's own tool evidence"
+        ),
+    )
+
+
 class PlatformReview(BaseModel):
     """Preloop posts the validated result of a read-only review itself.
 
@@ -592,6 +624,13 @@ class GitCloneConfig(BaseModel):
             "For read_only review: Preloop posts the validated result as a "
             "pull request review and a commit status on the reviewed commit. "
             "The run itself gets no write credential."
+        ),
+    )
+    review_integrity: Optional[ReviewIntegrity] = Field(
+        default=None,
+        description=(
+            "For read_only review: result binding to the admitted revision "
+            "and the repository inspection floor. Both apply when unset."
         ),
     )
     publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(

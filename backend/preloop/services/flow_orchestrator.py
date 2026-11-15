@@ -5310,6 +5310,90 @@ class FlowExecutionOrchestrator:
             "failure_category": FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
         }
 
+    def _apply_review_integrity_gate(
+        self, final_status: str, agent_result: Dict[str, Any], merged_result: Any
+    ) -> tuple[str, Dict[str, Any], Any]:
+        """Fail a read-only review whose result does not review this change.
+
+        Runs only for a restricted-CI read-only review that would otherwise
+        succeed. The result must name the admitted revision wherever it names
+        one, and the run must have inspected the repository (see
+        :mod:`preloop.services.review_integrity`). A rejected run keeps its
+        document; ``result._review_integrity`` records why, without values.
+
+        Args:
+            final_status: Status about to be written.
+            agent_result: The monitored attempt's result.
+            merged_result: The document about to be stored.
+
+        Returns:
+            The possibly overridden status, attempt result and document.
+        """
+        from preloop.services import review_integrity
+
+        execution = getattr(self, "execution_log", None)
+        flow = getattr(self, "flow", None)
+        if (
+            final_status != "SUCCEEDED"
+            or execution is None
+            or not review_integrity.applies(flow, execution)
+        ):
+            return final_status, agent_result, merged_result
+        from types import SimpleNamespace
+
+        from preloop.models.crud.execution_tool_evidence import inspection_summary
+        from preloop.services.review_diff import review_diff_identity
+
+        receipt = getattr(self, "_startup_receipt", None)
+        diff = review_diff_identity(
+            SimpleNamespace(
+                startup_receipt=receipt
+                if isinstance(receipt, dict)
+                else getattr(execution, "startup_receipt", None),
+                ci_review_binding=execution.ci_review_binding,
+            )
+        )
+        try:
+            inspection = inspection_summary(self.db, execution_id=execution.id)
+        except Exception:
+            self.db.rollback()
+            logger.warning("Could not read tool evidence for the review floor")
+            inspection = None
+        outcome = review_integrity.evaluate(
+            flow,
+            result=merged_result,
+            binding=execution.ci_review_binding,
+            diff=diff,
+            inspection=inspection,
+        )
+        self._review_integrity = outcome
+        self._record_completion(review_integrity=outcome)
+        if outcome["status"] != review_integrity.STATUS_REJECTED:
+            return final_status, agent_result, merged_result
+        self.execution_logger.log_milestone(
+            "review_integrity_rejected",
+            {"category": outcome["category"], "reasons": outcome["reasons"]},
+        )
+        if isinstance(merged_result, dict):
+            merged_result = {
+                **merged_result,
+                "_review_integrity": {
+                    "status": outcome["status"],
+                    "category": outcome["category"],
+                    "reasons": outcome["reasons"],
+                },
+            }
+        return (
+            "FAILED",
+            {
+                **agent_result,
+                "status": "FAILED",
+                "error_message": review_integrity.failure_message(outcome),
+                "failure_category": outcome["category"],
+            },
+            merged_result,
+        )
+
     def _cra_prompt_text(self) -> Optional[str]:
         """Configured flow prompt used to detect an expected CRA result schema."""
         flow = getattr(self, "flow", None)
@@ -11307,6 +11391,15 @@ class FlowExecutionOrchestrator:
             # still stored below for the consumer to inspect.
             final_status, agent_result = self._apply_result_schema_gate(
                 final_status, agent_result
+            )
+
+            # A read-only review result must name the admitted revision and
+            # the run must have read the repository (#2100). A schema-valid
+            # placeholder "pass" is not a review of this change.
+            final_status, agent_result, merged_result = (
+                self._apply_review_integrity_gate(
+                    final_status, agent_result, merged_result
+                )
             )
 
             # A review flow that requires publication succeeds only with a

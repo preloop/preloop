@@ -29,7 +29,10 @@ from preloop.services.issue_triage_controller import is_triage_flow
 from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.services.model_routing import prepare_execution_routing
 from preloop.services.no_progress_guard import parse_retry_config
-from preloop.services.read_only_review import public_startup_receipt
+from preloop.services.read_only_review import (
+    public_startup_receipt,
+    startup_receipt_status,
+)
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.exceptions import TrackerError, TrackerResponseError
 from preloop.sync.trackers.github import GitHubTracker
@@ -315,6 +318,7 @@ async def _read_provider(
 def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
     """Expose correlation and readiness, never prompts, runtime keys or logs."""
     binding = CiReviewBinding.model_validate(execution.ci_review_binding)
+    receipt = public_startup_receipt(execution)
     return {
         "id": str(execution.id),
         "flow_id": str(binding.flow_id),
@@ -328,7 +332,8 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "start_time": execution.start_time,
         "end_time": execution.end_time,
         "failure_category": execution.failure_category,
-        "startup_receipt": public_startup_receipt(execution),
+        "startup_receipt": receipt,
+        "startup_receipt_status": startup_receipt_status(execution, receipt),
         "platform_review": _platform_review(execution),
     }
 

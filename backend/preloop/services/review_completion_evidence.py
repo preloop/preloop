@@ -120,6 +120,7 @@ def completion_projection(
             else None,
         },
         "result_valid": valid if type(valid) is bool else None,
+        "review_integrity": review_integrity_projection(execution),
         # The publication package owns this projection. This is a pointer,
         # never an agent-authored publication claim copied from result.json.
         "publication": "#/platform_review" if publication is not None else None,
@@ -133,6 +134,50 @@ def completion_projection(
                 else set()
             )
         ),
+    }
+
+
+def review_integrity_projection(execution: Any) -> dict[str, Any] | None:
+    """The controller's binding and evidence-floor outcome, without values.
+
+    Null when the checks did not run (not a read-only review, a run that did
+    not otherwise succeed, or an execution finished before they existed).
+    """
+    stored = completion_facts(execution).get("review_integrity")
+    if not isinstance(stored, dict) or stored.get("status") not in {
+        "verified",
+        "rejected",
+    }:
+        return None
+    inspection = stored.get("inspection")
+    inspection = inspection if isinstance(inspection, dict) else {}
+    return {
+        "status": stored["status"],
+        "category": stored.get("category")
+        if stored.get("category") in {"review_binding_mismatch", "review_not_inspected"}
+        else None,
+        "reasons": [r for r in stored.get("reasons") or [] if isinstance(r, str)],
+        "bindings": [
+            {
+                key: item.get(key)
+                for key in ("field", "fact", "outcome")
+                if isinstance(item.get(key), str)
+            }
+            for item in stored.get("bindings") or []
+            if isinstance(item, dict)
+        ],
+        "inspection": {
+            "required": inspection.get("required") is True,
+            "inspected": inspection.get("inspected") is True,
+            **{
+                key: inspection.get(key) if type(inspection.get(key)) is int else 0
+                for key in (
+                    "repository_tool_calls",
+                    "other_tool_calls",
+                    "native_commands",
+                )
+            },
+        },
     }
 
 
