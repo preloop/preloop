@@ -33887,6 +33887,18 @@ components:
             type: object
           - type: 'null'
           title: Startup Receipt
+        startup_receipt_status:
+          anyOf:
+          - type: string
+            enum:
+            - pending
+            - recorded
+            - failed
+          - type: 'null'
+          title: Startup Receipt Status
+          description: pending until the controller observes checkout and agent start;
+            recorded once startup_receipt is set; failed when the run ended or setup
+            failed without one. Null when the execution is not a read-only review.
         timings:
           anyOf:
           - $ref: '#/components/schemas/ReviewTimings'
@@ -33973,6 +33985,18 @@ components:
             type: object
           - type: 'null'
           title: Startup Receipt
+        startup_receipt_status:
+          anyOf:
+          - type: string
+            enum:
+            - pending
+            - recorded
+            - failed
+          - type: 'null'
+          title: Startup Receipt Status
+          description: pending until the controller observes checkout and agent start;
+            recorded once startup_receipt is set; failed when the run ended or setup
+            failed without one. Null when the execution is not a read-only review.
         timings:
           anyOf:
           - $ref: '#/components/schemas/ReviewTimings'
@@ -39217,9 +39241,11 @@ components:
             the flow did not set), repeated_upstream_failure (the gateway stopped
             a run whose model calls kept failing identically), model_config, no_confirmation,
             agent_no_progress, publication_missing, result_schema_invalid (result.json
-            does not match the flow result schema), setup_failed, verification_failed,
-            verification_blocked, tool_error, agent_error, model_stream_idle (timed
-            out while the model stream was silent), approval_denied, approval_timeout,
+            does not match the flow result schema), review_binding_mismatch (a read-only
+            review result names another revision than the admitted one), review_not_inspected
+            (a read-only review made no repository tool call or command), setup_failed,
+            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
+            (timed out while the model stream was silent), approval_denied, approval_timeout,
             approval_unavailable (an approval-required rule could not pause the run),
             hook_binding_invalid (the native hook credential was refused before launch),
             resume_failed (a parked run could not be continued), gateway_bypassed
@@ -41591,6 +41617,12 @@ components:
           description: 'For read_only review: Preloop posts the validated result as
             a pull request review and a commit status on the reviewed commit. The
             run itself gets no write credential.'
+        review_integrity:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewIntegrity-Input'
+          - type: 'null'
+          description: 'For read_only review: result binding to the admitted revision
+            and the repository inspection floor. Both apply when unset.'
         publication_approval:
           anyOf:
           - type: boolean
@@ -41747,6 +41779,12 @@ components:
           description: 'For read_only review: Preloop posts the validated result as
             a pull request review and a commit status on the reviewed commit. The
             run itself gets no write credential.'
+        review_integrity:
+          anyOf:
+          - $ref: '#/components/schemas/preloop__models__schemas__flow__ReviewIntegrity'
+          - type: 'null'
+          description: 'For read_only review: result binding to the admitted revision
+            and the repository inspection floor. Both apply when unset.'
         publication_approval:
           anyOf:
           - type: boolean
@@ -49280,6 +49318,12 @@ components:
           - type: boolean
           - type: 'null'
           title: Result Valid
+        review_integrity:
+          anyOf:
+          - $ref: '#/components/schemas/preloop__schemas__ci_execution__ReviewIntegrity'
+          - type: 'null'
+          description: Controller result binding and evidence floor; null when the
+            checks did not run.
         publication:
           anyOf:
           - type: string
@@ -49344,6 +49388,102 @@ components:
       - request_count
       title: ReviewEffectiveRequest
       description: Aggregated controls recorded from resolved upstream requests.
+    ReviewIntegrity-Input:
+      properties:
+        result_bindings:
+          anyOf:
+          - patternProperties:
+              ^[A-Za-z_][A-Za-z0-9_]{0,63}$:
+                type: string
+                enum:
+                - head_sha
+                - base_sha
+                - merge_base_sha
+                - diff_sha256
+            type: object
+          - type: 'null'
+          title: Result Bindings
+          description: Explicit map from a top-level result field to the controller
+            fact it must equal. Replaces the default field names; every listed field
+            is required. An empty map binds nothing.
+        require_inspection:
+          type: boolean
+          title: Require Inspection
+          description: Fail a review that made no repository tool call and ran no
+            command, counted from Preloop's own tool evidence
+          default: true
+      additionalProperties: false
+      type: object
+      title: ReviewIntegrity
+      description: 'Controller checks on a read-only review result (#2100).
+
+
+        Both checks are on by default for every read-only review. Result fields
+
+        named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
+
+        that the result schema declares, or the result contains, must equal the
+
+        admitted head and base, the computed merge base or the computed diff
+
+        digest. A review that made no repository tool call and ran no command
+
+        fails with ``review_not_inspected``.'
+    ReviewIntegrityBinding:
+      properties:
+        field:
+          type: string
+          title: Field
+        fact:
+          type: string
+          enum:
+          - head_sha
+          - base_sha
+          - merge_base_sha
+          - diff_sha256
+          title: Fact
+        outcome:
+          type: string
+          enum:
+          - matched
+          - missing
+          - absent
+          - mismatch
+          - fact_unavailable
+          title: Outcome
+      type: object
+      required:
+      - field
+      - fact
+      - outcome
+      title: ReviewIntegrityBinding
+      description: One result field checked against a controller fact; never its value.
+    ReviewIntegrityInspection:
+      properties:
+        required:
+          type: boolean
+          title: Required
+        inspected:
+          type: boolean
+          title: Inspected
+        repository_tool_calls:
+          type: integer
+          title: Repository Tool Calls
+        other_tool_calls:
+          type: integer
+          title: Other Tool Calls
+        native_commands:
+          type: integer
+          title: Native Commands
+      type: object
+      required:
+      - required
+      - inspected
+      - repository_tool_calls
+      - other_tool_calls
+      - native_commands
+      title: ReviewIntegrityInspection
+      description: Repository inspection counted from Preloop-captured tool evidence.
     ReviewPublication:
       properties:
         required:
@@ -56915,7 +57055,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
@@ -58214,6 +58353,84 @@ components:
       - content_base64
       title: WorkspaceSeedInput
       description: Inline workspace seed carried on the existing trigger contract.
+    preloop__models__schemas__flow__ReviewIntegrity:
+      properties:
+        result_bindings:
+          anyOf:
+          - patternProperties:
+              ^[A-Za-z_][A-Za-z0-9_]{0,63}$:
+                type: string
+                enum:
+                - head_sha
+                - base_sha
+                - merge_base_sha
+                - diff_sha256
+            type: object
+          - type: 'null'
+          title: Result Bindings
+          description: Explicit map from a top-level result field to the controller
+            fact it must equal. Replaces the default field names; every listed field
+            is required. An empty map binds nothing.
+        require_inspection:
+          type: boolean
+          title: Require Inspection
+          description: Fail a review that made no repository tool call and ran no
+            command, counted from Preloop's own tool evidence
+          default: true
+      additionalProperties: false
+      type: object
+      title: ReviewIntegrity
+      description: 'Controller checks on a read-only review result (#2100).
+
+
+        Both checks are on by default for every read-only review. Result fields
+
+        named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
+
+        that the result schema declares, or the result contains, must equal the
+
+        admitted head and base, the computed merge base or the computed diff
+
+        digest. A review that made no repository tool call and ran no command
+
+        fails with ``review_not_inspected``.'
+    preloop__schemas__ci_execution__ReviewIntegrity:
+      properties:
+        status:
+          type: string
+          enum:
+          - verified
+          - rejected
+          title: Status
+        category:
+          anyOf:
+          - type: string
+            enum:
+            - review_binding_mismatch
+            - review_not_inspected
+          - type: 'null'
+          title: Category
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        bindings:
+          items:
+            $ref: '#/components/schemas/ReviewIntegrityBinding'
+          type: array
+          title: Bindings
+        inspection:
+          $ref: '#/components/schemas/ReviewIntegrityInspection'
+      type: object
+      required:
+      - status
+      - category
+      - reasons
+      - bindings
+      - inspection
+      title: ReviewIntegrity
+      description: Result binding and evidence floor for a read-only review.
   securitySchemes:
     bearerAuth:
       type: http

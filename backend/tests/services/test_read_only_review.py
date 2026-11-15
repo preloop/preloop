@@ -272,10 +272,16 @@ def test_runtime_marker_denies_rest_even_with_legacy_scopes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["inspected", "placeholder"])
 async def test_native_result_persists_and_owned_callback_remains_available(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
 ) -> None:
-    """A local helper result completes without MCP or any publishing credential."""
+    """A local helper result completes without MCP or any publishing credential.
+
+    ``placeholder`` is the shape reported on #2100: a schema-valid "pass"
+    with all-zero commit ids from a run that made no tool call or command.
+    It is stored, but the run fails with an explicit category.
+    """
     import json
     from preloop.models import crud
     from preloop.schemas.ci_principal import CiAction
@@ -307,8 +313,21 @@ async def test_native_result_persists_and_owned_callback_remains_available(
     )
     orch.execution_log = execution
     result_file = tmp_path / "result.json"
+    zero = "0" * 40
     result_file.write_text(
-        json.dumps({"review": "Native helper reviewed the exact admitted revision"})
+        json.dumps(
+            {"review": "Native helper reviewed the exact admitted revision"}
+            if shape == "inspected"
+            else {
+                "review": "placeholder",
+                "status": "success",
+                "success": True,
+                "verdict": "pass",
+                "head_sha": zero,
+                "base_sha": zero,
+                "findings": [],
+            }
+        )
     )
     contexts = []
     monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
@@ -405,6 +424,11 @@ async def test_native_result_persists_and_owned_callback_remains_available(
             ),
             "local-stand-in",
         )
+        # The review read the checkout: one native command event (#2100).
+        from tests.services.test_platform_review import inspect
+
+        if shape == "inspected":
+            inspect(db_session, execution)
         return {
             "status": "SUCCEEDED",
             "result": captured,
@@ -430,6 +454,30 @@ async def test_native_result_persists_and_owned_callback_remains_available(
     ):
         await orch.run()
     db_session.refresh(execution)
+    if shape == "placeholder":
+        from preloop.services.review_completion_evidence import completion_projection
+
+        assert execution.status == "FAILED"
+        assert execution.failure_category == "review_binding_mismatch"
+        assert "head_sha_mismatch" in execution.error_message
+        assert "0000" not in execution.error_message
+        # The document is kept for inspection and marked rejected.
+        assert execution.result["verdict"] == "pass"
+        assert execution.result["_review_integrity"]["status"] == "rejected"
+        integrity = completion_projection(execution)["review_integrity"]
+        assert integrity["status"] == "rejected"
+        assert set(integrity["reasons"]) >= {
+            "head_sha_mismatch",
+            "no_repository_inspection",
+        }
+        assert integrity["inspection"] == {
+            "required": True,
+            "inspected": False,
+            "repository_tool_calls": 0,
+            "other_tool_calls": 0,
+            "native_commands": 0,
+        }
+        return
     assert execution.status == "SUCCEEDED", execution.error_message
     assert execution.result["review"] == json.loads(result_file.read_text())["review"]
     assert contexts[0]["read_only_review"] is True

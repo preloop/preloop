@@ -81,10 +81,13 @@ def test_projection_result_and_rotation(
         "end_time",
         "failure_category",
         "startup_receipt",
+        "startup_receipt_status",
         "timings",
         "platform_review",
     }
     assert detail.json()["startup_receipt"] is None
+    # A finished run without a receipt says so; null is never left ambiguous.
+    assert detail.json()["startup_receipt_status"] == "failed"
     # The flow has not opted into platform-posted review.
     assert detail.json()["platform_review"] is None
     crud.crud_flow_execution.record_startup_receipt(
@@ -102,6 +105,7 @@ def test_projection_result_and_rotation(
     assert detail.status_code == 200, detail.text
     assert detail.json()["startup_receipt"]["checkout_verified"] is True
     assert detail.json()["startup_receipt"]["commit"] == "a" * 40
+    assert detail.json()["startup_receipt_status"] == "recorded"
     # A run that never printed the version line reports null.
     assert detail.json()["startup_receipt"]["agent_cli"] is None
     crud.crud_flow_execution.record_startup_receipt(

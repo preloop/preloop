@@ -256,6 +256,25 @@ container, so treat it as the platform's assertion, not an independent
 attestation. The completion callback includes `data.diff.sha256` (or `data.diff: null`);
 fetch `GET /api/v1/flows/executions/{id}` or `/result` for the complete receipt.
 
+#### When the receipt appears
+
+The receipt is recorded when the controller sees the agent start, after
+clone, checkout verification, the diff identity and setup. An execution is
+`RUNNING` from the moment its container starts, so the trigger response and
+status reads in the first seconds of a run carry `startup_receipt: null`.
+That null is not final. `startup_receipt_status` says which case you have:
+
+| Value | Meaning |
+| --- | --- |
+| `pending` | The run is not terminal and startup has not been observed yet. Poll again. |
+| `recorded` | `startup_receipt` is set, with `checkout_verified` and `setup_completed` true. |
+| `failed` | The run ended without a receipt, or setup failure withdrew it. |
+
+Poll the status endpoint until `startup_receipt_status` is `recorded` or
+`failed`, or wait for the completion callback. A checkout line in the logs is
+not a substitute for the receipt. The field is null for executions without a
+restricted CI binding.
+
 The restricted `/result` returns `result`, the captured `result.json`
 (at most 256 KiB at capture) without controller-private members: keys that
 start with `_` or name credentials, headers, prompts, logs, environment or
@@ -442,6 +461,77 @@ Recover without rerunning:
    to republish the stored document. Read `platform_review` to confirm the
    posting outcome. This does not rerun the model; current head, validity and
    permission checks still apply.
+
+### Result binding and repository inspection
+
+A schema-valid result is not by itself a review of the admitted change. For
+every restricted-CI read-only review that would otherwise succeed, the
+controller runs two checks, and runs them again before Preloop posts anything
+on the pull request:
+
+- **Result binding.** Result fields named `head_sha`, `base_sha`,
+  `merge_base_sha` and `diff_sha256` that your result schema declares, or the
+  result contains, must equal the admitted head, the admitted base, the
+  computed merge base and the computed diff digest from `startup_receipt`.
+  Comparison is exact on the full SHA, ignoring case. An all-zero, abbreviated
+  or other commit is a mismatch. A field the schema requires but the result
+  omits is a mismatch; an optional field may be omitted. When a bound fact is
+  unknown (for example `diff` is null), a result that names it is rejected
+  with `<field>_fact_unavailable`.
+- **Repository inspection.** The run must have made at least one tool call
+  that can read the repository (for example `exec_command`), or produced a
+  native command event. This is counted from tool evidence Preloop captured
+  at its gateway and from the native command stream, never from the result.
+  Tools that cannot read files, such as `request_user_input`, `view_image`,
+  `update_plan` and the goal tools, do not count.
+
+A run that fails either check ends `FAILED` with `failure_category`
+`review_binding_mismatch` or `review_not_inspected`. The document is still
+stored, with a controller-owned `_review_integrity` member (withheld from the
+restricted `result`), and `/result` reports the outcome without values in
+`completion.review_integrity`:
+
+<!-- example: fragment -->
+```json
+{
+  "status": "rejected",
+  "category": "review_binding_mismatch",
+  "reasons": ["base_sha_mismatch", "head_sha_mismatch", "no_repository_inspection"],
+  "bindings": [
+    {"field": "base_sha", "fact": "base_sha", "outcome": "mismatch"},
+    {"field": "head_sha", "fact": "head_sha", "outcome": "mismatch"}
+  ],
+  "inspection": {
+    "required": true,
+    "inspected": false,
+    "repository_tool_calls": 0,
+    "other_tool_calls": 0,
+    "native_commands": 0
+  }
+}
+```
+
+Both checks are on by default. To bind other field names, or to turn the
+inspection floor off for a flow, set `git_clone_config.review_integrity`:
+
+<!-- example: fragment -->
+```json
+{
+  "review_integrity": {
+    "result_bindings": {"reviewed_commit": "head_sha", "diff_digest": "diff_sha256"},
+    "require_inspection": true
+  }
+}
+```
+
+`result_bindings` replaces the default field names; every field it lists is
+required. Facts are `head_sha`, `base_sha`, `merge_base_sha` and
+`diff_sha256`. An empty map binds nothing. `require_inspection: false` keeps
+the binding check but accepts a review with no tool evidence; do not use it
+with platform posting unless your prompt supplies everything the review
+needs. A flow whose model writes a different value into a field with one of
+the default names (for example the target branch tip in `base_sha` after the
+base moved) now fails loudly; rename the field or map it explicitly.
 
 ## Read-only review on a private runner
 
@@ -1285,9 +1375,15 @@ preloop flow review-posting status <execution-id>          # add --json for the 
 - `posted`: the review is posted (and the status, when configured).
 - `status_only`: a commit status was set and, by rule, no review: the run
   did not succeed or returned no valid verdict (`reason`
-  `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`), the head
-  moved (`head_moved`) or the pull request is closed. `review` is
-  `"skipped"` and `commit_status` holds the state that was set.
+  `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`), the result
+  failed the binding or inspection check (`review_binding_mismatch`,
+  `review_not_inspected`, `review_unverified`), the head moved
+  (`head_moved`) or the pull request is closed. `review` is `"skipped"` and
+  `commit_status` holds the state that was set. A result that fails the
+  binding or inspection check always sets `incomplete_state`, or `error`
+  when none is configured, never the verdict's state. Preloop recomputes both
+  checks from stored evidence before every attempt, including an explicit
+  publish of a run that finished before this check existed.
 - `skipped`: nothing was posted, for the same reasons, when no status applies.
 - `failed`: an attempt did not complete; `reason` says why, and `review` and
   `commit_status` say what is already there.
@@ -1296,7 +1392,8 @@ preloop flow review-posting status <execution-id>          # add --json for the 
 A posting failure never
 changes the execution's status or result. `reason` values include
 `head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
-`verdict_unmapped`, `admission_revoked`, `binding_changed`,
+`verdict_unmapped`, `review_binding_mismatch`, `review_not_inspected`,
+`review_unverified`, `admission_revoked`, `binding_changed`,
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
 `provider_rejected`, `lease_refused`, `lease_unavailable`,
 `attempt_interrupted`, `platform_review_disabled` and `readback_mismatch`. Preloop retries `provider_unavailable` and similar

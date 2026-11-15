@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: restricted-CI read-only reviews bind their result to the admitted
+  revision and require repository inspection. A result whose `head_sha`,
+  `base_sha`, `merge_base_sha` or `diff_sha256` differs from what the
+  controller admitted or computed fails with `review_binding_mismatch`; a
+  review with no repository tool call or command fails with
+  `review_not_inspected`. Both are on by default and configurable under
+  `git_clone_config.review_integrity`. Platform posting recomputes both and
+  posts only the error status for an unverified result. Status reads add
+  `startup_receipt_status` (`pending`, `recorded`, `failed`) so an early null
+  receipt is no longer ambiguous (#2100).
+
 - Managed hook exports include a deterministic policy revision. The optional
   `--register` flag records secret-free manifest metadata in the selected
   account; exports remain offline by default. A new account-scoped registry

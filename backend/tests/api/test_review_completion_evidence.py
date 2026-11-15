@@ -379,7 +379,7 @@ async def test_publication_exception_in_full_lifecycle_preserves_result(
             },
         }
         db_session.refresh(execution)
-        plan = plan_publication(orch.flow, execution)
+        plan = plan_publication(orch.flow, execution, integrity={"status": "verified"})
         assert plan.reason is None
         assert plan.review_action == "approve"
         assert execution.result["container_termination"]["exit_code"] == 0

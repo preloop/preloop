@@ -359,6 +359,15 @@ new CI identities. Each execution page shows what was posted and offers
 **Publish again** to users who may edit flows. See
 [Review and status posted by Preloop](restricted-ci.md#review-and-status-posted-by-preloop).
 
+A schema-valid result is not enough on its own. If the result names the
+reviewed commit (`head_sha`, `base_sha`, `merge_base_sha`, `diff_sha256`),
+the names must match the admitted revision, and the run must have read the
+repository with at least one tool call or command. Otherwise the run fails
+and Preloop posts only the error status, never a passing verdict. Add
+`head_sha` to your review schema as a required field so every verdict is
+bound to the commit it describes. See
+[Result binding and repository inspection](restricted-ci.md#result-binding-and-repository-inspection).
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`

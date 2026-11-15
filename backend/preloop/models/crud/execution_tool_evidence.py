@@ -353,6 +353,56 @@ def _persist_native_command_evidence(
     )
 
 
+#: Evidence rows read to decide whether a review inspected the repository.
+#: One inspecting call is enough, so the scan stops as soon as one is seen.
+MAX_INSPECTION_ROWS = 500
+
+
+def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
+    """Count inspecting tool calls and native commands for one execution.
+
+    Reads only integrity-valid stored evidence, oldest first, and stops at
+    the first inspecting observation. A record whose digest does not verify
+    counts as no evidence.
+
+    Args:
+        db: Database session.
+        execution_id: Execution to summarise.
+
+    Returns:
+        ``repository_tool_calls``, ``other_tool_calls`` and
+        ``native_commands`` (lower bounds once one inspection is seen).
+    """
+    import json
+
+    from preloop.services.review_integrity import count_observations
+
+    rows: Any = (
+        db.query(models.FlowExecutionLog.metadata_)
+        .filter(
+            models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
+            models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
+        )
+        .order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+        .limit(MAX_INSPECTION_ROWS)
+    )
+    documents: list[dict[str, Any]] = []
+    counts = count_observations(documents)
+    for (stored,) in rows:
+        stored = stored or {}
+        try:
+            document = json.loads("".join(stored["chunks"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if digest(document) != stored.get("sha256"):
+            continue
+        documents.append(document)
+        counts = count_observations(documents)
+        if counts["repository_tool_calls"] or counts["native_commands"]:
+            break
+    return counts
+
+
 def evidence_page(
     db: Session, *, execution: models.FlowExecution, skip: int, limit: int
 ) -> dict[str, Any]:
