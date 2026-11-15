@@ -38,9 +38,9 @@ const SHIM_SOURCE = 'approval_workflow';
 
 /**
  * A hook URL often carries its credential in the path or query (Slack,
- * Teams, Discord), so the list shows the host, the first path segment and
- * the last four characters only. Short paths without a query are shown
- * as they are.
+ * Teams, Discord), so the list shows the origin and the last four
+ * characters of the path and query only. An unparsable value is never
+ * echoed: only its last four characters are shown.
  */
 export function maskWebhookUrl(raw: string): string {
   const tail = (value: string) => value.slice(-4);
