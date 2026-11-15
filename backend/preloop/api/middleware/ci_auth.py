@@ -182,6 +182,7 @@ def _inspect(
                 crud.crud_ci_principal.authorize(db, context=context, action=action)
             except PermissionError:
                 return inspection, False
+            crud.crud_ci_principal.record_key_usage(db, context=context)
         return inspection, True
     finally:
         sessions.close()

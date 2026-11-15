@@ -363,7 +363,7 @@ older runs. No prompts, response text, credentials or account IDs are included.
 | `queue_wait_seconds` | Execution creation to recorded launch request. |
 | `startup_seconds` | Launch request to observed agent start, including container scheduling. |
 | `clone_seconds`, `setup_seconds` | Controller observation of startup boundaries; setup includes configured preparation after diff calculation. |
-| `first_model_response_seconds` | Currently null, with `first_model_response_unavailable_reason: not_recorded`. The gateway does not persist first-token/first-byte timing. A request's total duration is not substituted. |
+| `first_model_response_seconds` | Seconds from the recorded agent start to the earliest observed upstream response body event. The gateway records the first chunk or Codex event for streams, or receipt of the body for non-streaming calls. Null with `first_model_response_unavailable_reason: not_recorded` when either boundary is missing, including historical requests. Total request duration is never substituted. |
 | `model_request_count` | Number of recorded gateway request rows belonging to this execution. |
 | `retry_count` | Recorded client resends plus gateway internal retries. Null if any request predates internal retry recording. It does not count unrecorded CLI attempts. |
 | `total_model_seconds` | Sum of recorded gateway request durations, including upstream waits, streaming and retries. Concurrent requests can overlap; this is not wall-clock model compute time. |
@@ -1157,7 +1157,7 @@ it now. `GET .../result` answers:
 - `409` with `detail.code: "result_pending"` and the current `detail.status`
   while the execution has not finished, even if a checkpoint is stored, for
   example while it is parked. It also answers 409 if a stop/limit has already
-  made the status terminal but controller capture is still pending; retry until
+  made the status terminal but controller capture or finalization is still pending; retry until
   capture settles;
 - `404` when the execution does not exist for the caller, or finished without
   reporting a result and capture has settled. Controller-only termination

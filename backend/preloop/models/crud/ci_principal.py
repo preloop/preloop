@@ -2,7 +2,7 @@
 
 import secrets
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import NotRequired, Optional, TypedDict
 from uuid import UUID
 
@@ -778,6 +778,32 @@ class CRUDCiPrincipal:
         ):
             raise PermissionError("Restricted CI authorization denied")
         return fresh
+
+    def record_key_usage(self, db: Session, *, context: CiAuthorizationContext) -> None:
+        """Persist authorized request activity at most once per minute.
+
+        Called by the authentication boundary after authorization succeeds.
+        The conditional update also throttles concurrent requests across workers.
+        """
+        from sqlalchemy import or_
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        changed = (
+            db.query(models.ApiKey)
+            .filter(
+                models.ApiKey.id == context.key_id,
+                models.ApiKey.account_id == context.account_id,
+                models.ApiKey.ci_principal_id == context.principal_id,
+                models.ApiKey.is_active.is_(True),
+                or_(
+                    models.ApiKey.last_used_at.is_(None),
+                    models.ApiKey.last_used_at < now - timedelta(minutes=1),
+                ),
+            )
+            .update({models.ApiKey.last_used_at: now}, synchronize_session=False)
+        )
+        if changed:
+            db.commit()
 
     def authorize_principal(
         self, db: Session, *, context: CiAuthorizationContext, action: CiAction

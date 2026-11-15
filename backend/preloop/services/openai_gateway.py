@@ -1383,6 +1383,7 @@ class OpenAIGatewayService:
         # It is deliberately NOT the ApiUsage primary key: the started event is
         # published before the usage row exists.
         self._gateway_request_id: Optional[str] = None
+        self._first_model_response_at: Optional[str] = None
 
     @property
     def db(self) -> Session:
@@ -1462,6 +1463,12 @@ class OpenAIGatewayService:
         # usage recording. Re-arming here (rather than minting at first use)
         # keeps it request-scoped under the same discipline as the retry count.
         self._gateway_request_id = uuid.uuid4().hex
+        self._first_model_response_at = None
+
+    def _observe_first_model_response(self) -> None:
+        """Remember the first upstream body event, independently of completion."""
+        if self._first_model_response_at is None:
+            self._first_model_response_at = datetime.now(timezone.utc).isoformat()
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -6261,6 +6268,7 @@ class OpenAIGatewayService:
             return key
 
         for event in events:
+            self._observe_first_model_response()
             event_type = event.get("type")
 
             if event_type in {"response.created", "response.in_progress"}:
@@ -7450,6 +7458,7 @@ class OpenAIGatewayService:
                             "Gateway upstream error: unexpected upstream response shape"
                         ),
                     )
+                self._observe_first_model_response()
                 return response_payload
             finally:
                 response.close()
@@ -7661,6 +7670,7 @@ class OpenAIGatewayService:
                 for chunk in upstream_response.iter_text():
                     if not chunk:
                         continue
+                    self._observe_first_model_response()
                     buffer += chunk
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
@@ -8067,6 +8077,7 @@ class OpenAIGatewayService:
                             "Gateway upstream error: unexpected upstream response shape"
                         ),
                     )
+                self._observe_first_model_response()
                 return response_payload
             finally:
                 response.close()
@@ -8145,6 +8156,7 @@ class OpenAIGatewayService:
                     # Cancellation is never retried, but still owns cleanup.
                     self._close_failed_upstream_stream(response)
                     raise
+                self._observe_first_model_response()
                 return _PrefetchedPassthroughResponse(
                     response, chain([first_chunk], text), hosted_call=hosted_call
                 )
@@ -8286,6 +8298,7 @@ class OpenAIGatewayService:
                 for chunk in upstream_response.iter_text():
                     if not chunk:
                         continue
+                    self._observe_first_model_response()
                     buffer += chunk
                     # Relay whole SSE frames: concatenating them reproduces the
                     # upstream bytes, and the policy wrapper needs complete
@@ -9028,6 +9041,7 @@ class OpenAIGatewayService:
         else:
             response = _invoke()
         if not stream:
+            self._observe_first_model_response()
             # LiteLLM relays provider headers in _hidden_params; best effort,
             # absent headers simply record no snapshot.
             self._capture_rate_limit_headers(headers_from_litellm_response(response))
@@ -9171,6 +9185,7 @@ class OpenAIGatewayService:
         response = self._run_with_upstream_retries(
             "openai", _invoke, ai_model=ai_model, purpose="gateway"
         )
+        self._observe_first_model_response()
         self._capture_rate_limit_headers(headers_from_litellm_response(response))
         return response
 
@@ -9248,6 +9263,7 @@ class OpenAIGatewayService:
         try:
             iterator = iter(upstream_stream)
             first_chunk = next(iterator)
+            self._observe_first_model_response()
         except StopIteration:
             return _PrefetchedUpstreamStream(iter(()), raw=upstream_stream)
         except Exception as exc:
@@ -11666,6 +11682,7 @@ class OpenAIGatewayService:
                 else None,
                 "usage_details": usage_details or None,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
+                "first_response_at": self._first_model_response_at,
                 "usage_warnings": (
                     self._usage_warnings(usage_details)
                     + (

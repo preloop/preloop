@@ -356,6 +356,7 @@ class ModelGatewayEventEmitter:
                 "status_code": usage.status_code,
                 "outcome": self._derive_outcome(usage.status_code, error_detail),
                 "duration_ms": int((usage.duration or 0) * 1000),
+                "first_response_at": meta_data.get("first_response_at"),
                 "user_id": str(usage.user_id) if usage.user_id else None,
                 "auth_subject_type": usage.auth_subject_type,
                 "api_key_id": str(usage.api_key_id) if usage.api_key_id else None,

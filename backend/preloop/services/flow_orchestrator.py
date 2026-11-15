@@ -11141,7 +11141,9 @@ class FlowExecutionOrchestrator:
                 from preloop.services.review_completion_evidence import completion_facts
 
                 if not completion_facts(self.execution_log).get("result_captured_at"):
-                    self._record_completion(capture_state="pending")
+                    self._record_completion(
+                        capture_state="pending", finalization_state="pending"
+                    )
                 agent_result, session_reference = await self._run_agent_with_retries(
                     execution_context
                 )

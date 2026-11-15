@@ -44,6 +44,88 @@ def _effective_gateway_alias_from_fields(
 class CRUDAIModel(CRUDBase[AIModel]):
     """CRUD class for AIModel operations."""
 
+    def _inherit_reused_credential_routing(
+        self,
+        db: Session,
+        *,
+        obj_data: dict[str, Any],
+        account_id: Any,
+        existing: AIModel | None = None,
+    ) -> None:
+        """Fill missing routing configuration from an account-owned shared key.
+
+        Only provider routing metadata is inherited. The target keeps its model
+        identity, explicit settings and pricing, and receives its own alias.
+        Ownership is checked before any source model configuration is read.
+        """
+        secret_id = obj_data.get("credentials_secret_id")
+        if (
+            secret_id is None
+            or obj_data.get("credential_payload") is not None
+            or any(
+                obj_data.get(field)
+                for field in (
+                    "api_key",
+                    "credential_type",
+                    "credentials_backend_type",
+                    "credentials_external_ref",
+                    "credentials_meta_data",
+                )
+            )
+        ):
+            return
+        secret = crud_secret_reference.get(db, id=secret_id)
+        if secret is None:
+            raise ValueError("Referenced credential secret does not exist")
+        crud_secret_reference.validate_model_reuse(
+            db, secret=secret, account_id=account_id
+        )
+        provider = obj_data.get(
+            "provider_name", getattr(existing, "provider_name", None)
+        )
+        identifier = obj_data.get(
+            "model_identifier", getattr(existing, "model_identifier", None)
+        )
+        source = (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.credentials_secret_id == secret_id,
+                self.model.provider_name == provider,
+            )
+            .order_by(self.model.created_at, self.model.id)
+            .first()
+        )
+        if source is None:
+            return
+        if not obj_data.get("api_endpoint"):
+            obj_data["api_endpoint"] = source.api_endpoint
+        source_meta = source.meta_data or {}
+        if existing is not None and "meta_data" not in obj_data:
+            meta = copy.deepcopy(existing.meta_data or {})
+            meta.pop("provider_runtime", None)
+            gateway = meta.pop("gateway", {})
+            if isinstance(gateway, dict) and gateway.get("enabled"):
+                alias = gateway.get("model_alias")
+                if alias:
+                    meta["gateway"] = {"model_alias": alias}
+        else:
+            meta = copy.deepcopy(obj_data.get("meta_data") or {})
+        for key in ("provider_runtime", "gateway"):
+            inherited = copy.deepcopy(source_meta.get(key) or {})
+            if key == "gateway":
+                inherited.pop("model_alias", None)
+            inherited.update(meta.get(key) or {})
+            if inherited:
+                meta[key] = inherited
+        gateway = meta.get("gateway")
+        if isinstance(gateway, dict) and gateway.get("enabled"):
+            gateway.setdefault(
+                "model_alias",
+                f"{provider.strip().lower()}/{identifier.strip()}",
+            )
+        obj_data["meta_data"] = meta
+
     def update_gateway_bootstrap_metadata(
         self, db: Session, *, db_obj: models.AIModel, meta_data: dict
     ) -> models.AIModel:
@@ -559,6 +641,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 and commit themselves.
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        self._inherit_reused_credential_routing(
+            db, obj_data=obj_data, account_id=account_id
+        )
         self._validate_runner_endpoint(db, obj_data, account_id=account_id)
         self._validate_qwen_api_endpoint(obj_data)
         self._validate_local_api_endpoint(obj_data)
@@ -820,6 +905,13 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> AIModel:
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        secret_id = obj_data.get("credentials_secret_id")
+        if secret_id is not None and str(secret_id) != str(
+            db_obj.credentials_secret_id
+        ):
+            self._inherit_reused_credential_routing(
+                db, obj_data=obj_data, account_id=db_obj.account_id, existing=db_obj
+            )
         self._validate_runner_endpoint(
             db, obj_data, account_id=db_obj.account_id, existing=db_obj
         )
