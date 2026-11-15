@@ -589,4 +589,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         "20261208_user_mfa",
         "20261208_platform_review",
     }
-    assert script.get_heads() == ["20261209_mfa_review_merge"]
+    bundle_registry = script.get_revision("20261113_bundle_registry")
+    assert bundle_registry.down_revision == joined.revision
+    assert script.get_heads() == ["20261113_bundle_registry"]

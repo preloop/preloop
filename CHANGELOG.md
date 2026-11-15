@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Managed hook exports include a deterministic policy revision. The optional
+  `--register` flag records secret-free manifest metadata in the selected
+  account; exports remain offline by default. A new account-scoped registry
+  and control-expectation store support evidence-based fleet generation,
+  preserving manual expectations and retiring superseded bundle rows.
+
 - auth: authenticator-app two-factor sign-in, ten single-use recovery codes,
   browser enrollment and recovery, and an operator reset command. Password,
   email-link, chat and social authentication require a second step for enrolled

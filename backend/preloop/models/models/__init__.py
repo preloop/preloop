@@ -239,6 +239,8 @@ __all__ = [
     "OwnerConsent",
     "MCPInventoryFinding",
     "MCPInventoryReview",
+    "RegisteredBundleRevision",
+    "ControlExpectation",
     "FleetFinding",
     "FleetAlertSettings",
     "ActivityRollup",
@@ -498,4 +500,6 @@ from .exception_digest import (
 from .rate_limit import RateLimitBucket
 
 from .entitlement_enforcement import EntitlementEnforcementSetting
+
+from .managed_bundle import RegisteredBundleRevision, ControlExpectation
 from .mfa import UserMfaFactor, UserMfaRecoveryCode

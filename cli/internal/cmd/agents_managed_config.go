@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +25,7 @@ var agentsManagedConfigCmd = newAgentsManagedConfigCmd()
 func init() { agentsCmd.AddCommand(agentsManagedConfigCmd) }
 
 func newAgentsManagedConfigCmd() *cobra.Command {
-	group := &cobra.Command{Use: "managed-config", Short: "Export an offline, secret-free managed hook overlay"}
+	group := &cobra.Command{Use: "managed-config", Short: "Export a secret-free managed hook overlay (offline by default)"}
 	claude := &cobra.Command{
 		Use: "claude-code", Short: "Export a Claude Code PreToolUse hook overlay (does not install)", Args: cobra.NoArgs,
 		RunE: runClaudeManagedConfig,
@@ -32,6 +34,7 @@ func newAgentsManagedConfigCmd() *cobra.Command {
 	claude.Flags().String("cli-path", "", "absolute Preloop executable path on target device")
 	claude.Flags().String("platform", runtime.GOOS, "target platform: darwin, windows, or linux")
 	claude.Flags().Int("timeout", 300, "host hook timeout in seconds (30-3600; include approval wait headroom)")
+	claude.Flags().Bool("register", false, "register the bundle revision and manifest metadata with the selected account (requires authentication)")
 	claude.Flags().Bool("overwrite", false, "replace only existing regular bundle files")
 	group.AddCommand(claude)
 	return group
@@ -63,6 +66,7 @@ type managedSettings struct {
 }
 
 type managedBundleManifest struct {
+	PolicyRevisionHash  string   `json:"policy_revision_hash"`
 	Schema              string   `json:"schema"`
 	AppID               string   `json:"app_id"`
 	Platform            string   `json:"platform"`
@@ -120,12 +124,17 @@ func renderClaudeManagedBundle(platform, executable string, timeout int) ([]mana
 	if err != nil {
 		return nil, err
 	}
+	// Hash the exact rendered artifact bytes, including its final LF. The
+	// manifest and preview are excluded, avoiding metadata/self-reference drift.
+	settingsJSON = append(settingsJSON, '\n')
+	digest := sha256.Sum256(settingsJSON)
+	manifest.PolicyRevisionHash = hex.EncodeToString(digest[:])
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	preview := fmt.Sprintf("Claude Code managed hook overlay (%s)\n\nEmits only hooks.PreToolUse with matcher *.\nHook command: %s\nHost timeout: %d seconds\nReviewed delivery target: %s\n\nThis export is offline and performs no installation or enrollment.\nProvision the per-device/user hook credential separately through supported onboarding.\nMissing credentials deny under the existing permission-hook contract.\nThe application honoring this overlay remains unverified. A higher managed source may supersede it.\nManaged configuration is not device attestation or local-admin immunity.\n\nOmitted: model routing, MCP allowlists, permission rules, OTel, credentials, Codex, Desktop.\nReview manifest.json and docs/guide/clients/claude-code.md before delivery.\n", platform, command, timeout, targets[platform])
-	return []managedBundleFile{{"managed-settings.json", append(settingsJSON, '\n')}, {"manifest.json", append(manifestJSON, '\n')}, {"preview.txt", []byte(preview)}}, nil
+	return []managedBundleFile{{"managed-settings.json", settingsJSON}, {"manifest.json", append(manifestJSON, '\n')}, {"preview.txt", []byte(preview)}}, nil
 }
 
 func managedClaudeHookInvocation(platform, executable string) (string, string, error) {
@@ -158,6 +167,7 @@ func runClaudeManagedConfig(cmd *cobra.Command, _ []string) error {
 	platform, _ := cmd.Flags().GetString("platform")
 	timeout, _ := cmd.Flags().GetInt("timeout")
 	overwrite, _ := cmd.Flags().GetBool("overwrite")
+	register, _ := cmd.Flags().GetBool("register")
 	if strings.TrimSpace(output) == "" || strings.ContainsFunc(output, managedPathControl) {
 		return errors.New("--output must name an explicit directory")
 	}
@@ -165,8 +175,26 @@ func runClaudeManagedConfig(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if register {
+		files[2].data = []byte(strings.Replace(string(files[2].data), "This export is offline and performs no installation or enrollment.", "Registration was requested for this export; check the command result for success.\nThe server receives only the revision and manifest metadata. No installation or enrollment is performed.", 1))
+	}
 	if err := writeManagedBundle(output, files, overwrite); err != nil {
 		return err
+	}
+	if register {
+		initializeCommandSelection(cmd)
+		client, err := api.NewClient(FlagToken, FlagURL)
+		if err != nil {
+			return fmt.Errorf("bundle exported; registration failed: %w", err)
+		}
+		var manifest managedBundleManifest
+		if err := json.Unmarshal(files[1].data, &manifest); err != nil {
+			return err
+		}
+		if err := client.Post(api.RESTPrefix+"/agents/managed-config/bundles", manifest, nil); err != nil {
+			return fmt.Errorf("bundle exported; registration failed (retry with --overwrite --register): %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Registered bundle revision with the selected account. This does not verify installation or generate expectations without matching workstation evidence.")
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Exported managed-settings.json, manifest.json and preview.txt. No installation or app verification performed.")
 	return nil
