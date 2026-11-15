@@ -161,6 +161,19 @@ describe('FlowView recent executions', () => {
       expect(text).to.contain('The last 2 runs failed');
       expect(text).to.contain('repository access');
       expect(text).to.contain('failing since 3d ago');
+      // Ten loaded failures: the streak may be longer than the window.
+      element.recentExecutions = Array.from({ length: 10 }, (_, i) => ({
+        id: `e-${i}`,
+        status: 'FAILED',
+        failure_category: 'repository_access',
+        start_time: new Date(Date.now() - i * 86400_000).toISOString(),
+      }));
+      await element.updateComplete;
+      const longer = element
+        .shadowRoot!.querySelector('[data-testid="flow-failing-since"]')!
+        .textContent!.replace(/\s+/g, ' ');
+      expect(longer).to.contain('At least the last 10 runs failed');
+      expect(longer).to.contain('failing since at least');
     } finally {
       element.remove();
     }

@@ -1029,11 +1029,15 @@ export class FlowView extends LitElement {
   private renderFailingSince() {
     const streak = failureStreak(this.recentExecutions);
     if (!streak) return nothing;
+    // Only the last 10 runs are loaded: when all of them failed the streak
+    // may be longer, so neither the count nor the date is claimed exact.
+    const atLeast =
+      streak.count >= this.recentExecutions.length && streak.count >= 10;
     const cause = streak.category
       ? html` with <strong>${failureCategoryLabel(streak.category)}</strong>`
       : nothing;
     const since = streak.since
-      ? html`, failing since
+      ? html`, failing since ${atLeast ? 'at least ' : ''}
           <span title=${formatLocalDateTime(streak.since)}
             >${formatRelativeTime(streak.since)}</span
           >`
@@ -1044,7 +1048,12 @@ export class FlowView extends LitElement {
     return html`
       <sl-alert variant="danger" open data-testid="flow-failing-since">
         <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-        The last ${streak.count} runs failed${cause}${since}. ${hint}
+        ${
+          atLeast
+            ? `At least the last ${streak.count} runs failed`
+            : `The last ${streak.count} runs failed`
+        }${cause}${since}.
+        ${hint}
       </sl-alert>
     `;
   }
