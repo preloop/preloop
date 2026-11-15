@@ -122,8 +122,7 @@ STAGING_MESSAGES = [
     # Production 2026-11-15: a reviewer flow whose tracker token no longer
     # had repository access was chipped "Unknown" with a retry button.
     (
-        "fatal: Authentication failed for "
-        "'https://gitlab.spacecode.ai/spacecode/preloop-ee.git/'",
+        "fatal: Authentication failed for 'https://gitlab.example.com/acme/app.git/'",
         "repository_access",
     ),
     (
