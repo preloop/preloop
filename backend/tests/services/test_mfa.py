@@ -13,7 +13,7 @@ from preloop.services import mfa
 def test_totp_window(offset: int, accepted: bool) -> None:
     """protects=exact three-step window; fails_when=outside codes pass;
     no_claim=database replay locking is covered separately."""
-    secret = "JBSWY3DPEHPK3PXP"
+    secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
     now = 1800000000
     code = mfa.totp(secret).at(now + offset * 30)
     assert (
@@ -24,7 +24,7 @@ def test_totp_window(offset: int, accepted: bool) -> None:
 def test_totp_replay() -> None:
     """protects=used and older steps fail; fails_when=replay passes;
     no_claim=database concurrency is covered separately."""
-    secret = "JBSWY3DPEHPK3PXP"
+    secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
     now = 1800000000
     assert (
         mfa.match_step(
@@ -39,7 +39,12 @@ def test_malformed_code(code: str) -> None:
     """protects=only six ASCII digits; fails_when=malformed input matches;
     no_claim=none beyond protects."""
     assert (
-        mfa.match_step("JBSWY3DPEHPK3PXP", code, now=1800000000, last_used_step=None)
+        mfa.match_step(
+            "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+            code,
+            now=1800000000,
+            last_used_step=None,
+        )
         is None
     )
 

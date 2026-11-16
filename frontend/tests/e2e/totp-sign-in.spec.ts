@@ -854,10 +854,6 @@ test.describe('local TOTP sign-in', () => {
     } finally {
       operator('reset_passkey_only.py', user);
     }
-    test.fail(
-      true,
-      'D1 (https://github.com/preloop/preloop/pull/2343; feature #2299): enabling with password+OTP returns a pair immediately refused as password_login_disabled; remove this marker when the documented current session remains usable.'
-    );
     expect(currentStatus).toBe(200);
   });
 });
