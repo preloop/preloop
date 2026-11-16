@@ -754,7 +754,9 @@ def reject_revoked_cli_session(db: Any, user: User, token_data: TokenData) -> No
         )
 
 
-def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
+def reject_revoked_token(
+    db: Any, user: User, token_data: TokenData, *, channel_action: bool = False
+) -> dict[str, Any]:
     """Apply every JWT revocation check: generation, CLI session, extension.
 
     Raises:
@@ -765,13 +767,20 @@ def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
     require_active_identity(db, user)
     reject_stale_token_generation(user, token_data)
     reject_revoked_cli_session(db, user, token_data)
-    authorize_authentication(db, user, claims=token_data.claims, purpose="access")
+    context = authorize_authentication(
+        db,
+        user,
+        claims=token_data.claims,
+        purpose="access",
+        channel_action=channel_action,
+    )
     if account_hooks.is_token_revoked(db, user, token_data.claims):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=SESSION_REVOKED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return context
 
 
 def get_current_user(
@@ -848,7 +857,14 @@ def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        if isinstance(token_data.claims, dict) and token_data.claims.get("purpose"):
+        channel_action = (
+            token_data.claims.get("purpose") == "channel_action"
+            and request is not None
+            and token_data.claims.get("amr") == ["chat"]
+            and token_data.claims.get("channel_method") == request.method
+            and token_data.claims.get("channel_path") == request.url.path
+        )
+        if token_data.claims.get("purpose") and not channel_action:
             raise HTTPException(
                 status_code=401, detail="A scoped authorization code is not a session"
             )
@@ -890,7 +906,18 @@ def get_current_user(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            reject_revoked_token(db, user, token_data)
+            user.__dict__.pop("_auth_api_key", None)
+            context = reject_revoked_token(
+                db, user, token_data, channel_action=channel_action
+            )
+            from preloop.services.authentication_policy import (
+                enforce_enrollment_session,
+            )
+
+            enforce_enrollment_session(context, request)
+            user._auth_context = context
+            if channel_action:
+                request.state.paired_channel_action = True
 
             return user  # Return the full User object
         except (HTTPException, SQLAlchemyPoolTimeout):
@@ -1104,7 +1131,12 @@ def get_user_from_token_if_valid_sync(
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
-            reject_revoked_token(db_session, user, token_data)
+            context = reject_revoked_token(db_session, user, token_data)
+            from preloop.services.authentication_policy import (
+                enforce_enrollment_session,
+            )
+
+            enforce_enrollment_session(context, None)
             user._auth_token_data = token_data
             return user
 

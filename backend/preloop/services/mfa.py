@@ -7,6 +7,7 @@ No exception text or caller-supplied proof enters the audit trail.
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
@@ -14,6 +15,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import jwt
 import pyotp
@@ -143,6 +145,46 @@ def require_challenge(db: Session, user: models.User, context: dict[str, Any]) -
     )
 
 
+def safe_cli_redirect(value: object) -> bool:
+    """Validate a bounded literal-loopback callback before signing or returning it."""
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        return False
+    if any(char in value for char in "\\\r\n\t"):
+        return False
+    try:
+        url = urlsplit(value)
+        if (
+            url.scheme not in {"http", "https"}
+            or url.username
+            or url.password
+            or url.fragment
+        ):
+            return False
+        if url.port is not None and not 0 < url.port < 65536:
+            return False
+        return (
+            url.hostname == "localhost"
+            or ipaddress.ip_address(url.hostname).is_loopback
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def bind_cli_challenge(token: str, redirect_uri: str) -> str:
+    """Bind a verified OAuth-state callback without extending challenge lifetime.
+
+    Only a server-side sign-in callback may call this helper, after validating
+    its provider state. This is not exposed as an HTTP token-rebinding endpoint.
+    """
+    from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
+
+    if not safe_cli_redirect(redirect_uri):
+        raise error("invalid_cli_redirect", 400)
+    payload = read_challenge(token)
+    payload["cli_redirect_uri"] = redirect_uri
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
 def read_challenge(token: str) -> dict[str, Any]:
     """Accept only signed, bounded MFA challenges, never access/refresh tokens."""
     from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
@@ -170,6 +212,10 @@ def read_challenge(token: str) -> dict[str, Any]:
             or payload["exp"] - payload["iat"] != 300
         ):
             raise ValueError("wrong lifetime")
+        if "cli_redirect_uri" in payload and not safe_cli_redirect(
+            payload["cli_redirect_uri"]
+        ):
+            raise ValueError("invalid CLI callback")
         context = authentication_claims(payload)
         if not context.get("amr") or not set(context["amr"]) <= WEAK_METHODS:
             raise ValueError("wrong method")

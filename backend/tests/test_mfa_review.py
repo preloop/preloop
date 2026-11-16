@@ -276,3 +276,53 @@ def test_channel_exception_is_not_a_generic_sign_in_bypass(
             purpose=purpose,
             channel_action=True,
         )
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+def test_cli_mfa_callback_is_bound_to_signed_challenge(
+    api: TestClient, db_session: Session, now: list[float], tampered: bool
+) -> None:
+    """protects=completed session goes only to the signed CLI callback;
+    fails_when=fragment changes destination or rejected proof is consumed;
+    no_claim=provider OAuth state verification has its own integration tests."""
+    user, secret, _ = enroll(api, db_session, now)
+    token = challenge(api, user)
+    callback = "http://127.0.0.1:4321/callback"
+    signed = mfa.bind_cli_challenge(token, callback)
+    assert mfa.read_challenge(signed)["exp"] == mfa.read_challenge(token)["exp"]
+    proof = {"challenge_token": signed, "code": mfa.totp(secret).at(now[0])}
+    if tampered:
+        refused = api.post(
+            BASE + "/verify",
+            json={**proof, "cli_redirect_uri": "http://127.0.0.1:9999/callback"},
+        )
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"]["code"] == "invalid_cli_redirect"
+    result = api.post(BASE + "/verify", json={**proof, "cli_redirect_uri": callback})
+    assert result.status_code == 200, result.text
+    assert result.json()["cli_redirect_uri"] == callback
+    assert "cli_redirect_uri" not in decode_token(result.json()["access_token"]).claims
+
+
+@pytest.mark.parametrize(
+    "callback",
+    [
+        "https://evil.example/callback",
+        "http://user@localhost:4321/callback",
+        "http://localhost:4321/cb#fragment",
+        "http://localhost:99999/cb",
+        "http://localhost\\@evil.example",
+        "http://localhost\n.evil.example",
+        "http://localhost/" + "x" * 1024,
+    ],
+)
+def test_cli_binding_rejects_unsafe_destinations(callback: str) -> None:
+    """protects=server rejects unsafe callbacks before reading proof;
+    fails_when=remote, ambiguous or oversized URL can be signed;
+    no_claim=no browser navigation or DNS is performed."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        mfa.bind_cli_challenge("unused-invalid-token", callback)
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "invalid_cli_redirect"
