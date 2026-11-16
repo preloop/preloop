@@ -76,7 +76,11 @@ describe('Login second step', () => {
     fetchStub.callsFake(async (input) =>
       String(input).endsWith('/features')
         ? json({ features: {} })
-        : json({ access_token: 'cli-access', refresh_token: 'cli-refresh' })
+        : json({
+            access_token: 'cli-access',
+            refresh_token: 'cli-refresh',
+            cli_redirect_uri: 'http://127.0.0.1:4321/callback',
+          })
     );
     try {
       const element = await fixture<LoginView>(html`<login-view></login-view>`);
@@ -94,6 +98,43 @@ describe('Login second step', () => {
       expect(callback.origin).to.equal('http://127.0.0.1:4321');
       expect(callback.searchParams.get('access_token')).to.equal('cli-access');
       expect(localStorage.getItem('accessToken')).to.equal(null);
+    } finally {
+      history.replaceState({}, '', originalUrl);
+    }
+  });
+
+  // protects=fragment callback is never a delivery authority; fails_when=unsigned address receives tokens; no_claim=server endpoint binding is tested separately.
+  it('refuses CLI delivery without a server-verified callback', async () => {
+    const originalUrl = location.href;
+    history.replaceState(
+      {},
+      '',
+      '/login#mfa_challenge=challenge&cli_redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcallback'
+    );
+    fetchStub.callsFake(async (input) =>
+      String(input).endsWith('/features')
+        ? json({ features: {} })
+        : json({ access_token: 'access', refresh_token: 'refresh' })
+    );
+    try {
+      const element = await fixture<LoginView>(html`<login-view></login-view>`);
+      const deliver = sinon.stub(element as any, '_completeCliMfa');
+      element
+        .shadowRoot!.querySelector('form')!
+        .dispatchEvent(new Event('submit', { cancelable: true }));
+      await waitUntil(() =>
+        element.shadowRoot!.textContent!.includes(
+          'CLI sign-in could not be verified'
+        )
+      );
+      expect(deliver.called).to.equal(false);
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      const verify = fetchStub
+        .getCalls()
+        .find((call) => String(call.args[0]).endsWith('/auth/mfa/verify'))!;
+      expect(JSON.parse(verify.args[1].body).cli_redirect_uri).to.equal(
+        'http://127.0.0.1:9999/callback'
+      );
     } finally {
       history.replaceState({}, '', originalUrl);
     }

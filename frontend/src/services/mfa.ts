@@ -31,7 +31,10 @@ export function takeRedirectMfaChallenge(): {
     '',
     window.location.pathname + window.location.search
   );
-  return { challenge, cliRedirect: safeCliRedirect(candidate) };
+  return {
+    challenge,
+    cliRedirect: safeCliRedirect(candidate) ? candidate : null,
+  };
 }
 
 /** Only literal loopback callbacks may receive a CLI's completed session. */
