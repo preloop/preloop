@@ -593,10 +593,13 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert bundle_registry.down_revision == joined.revision
     rotation = script.get_revision("20261210_flow_webhook_rotation")
     assert rotation.down_revision == bundle_registry.revision
-    external = script.get_revision("20261210_external_approval")
-    assert external.down_revision == bundle_registry.revision
-    indexes = script.get_revision("20261211_external_grant_idx")
-    assert indexes.down_revision == external.revision
+    external_approval = script.get_revision("20261210_external_approval")
+    assert external_approval.down_revision == bundle_registry.revision
+    external_grant_indexes = script.get_revision("20261211_external_grant_idx")
+    assert external_grant_indexes.down_revision == external_approval.revision
     merged = script.get_revision("20261212_flow_approval_merge")
-    assert set(merged.down_revision) == {rotation.revision, indexes.revision}
+    assert set(merged.down_revision) == {
+        rotation.revision,
+        external_grant_indexes.revision,
+    }
     assert script.get_heads() == [merged.revision]

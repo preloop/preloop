@@ -5,14 +5,22 @@ on:
     paths:
       - ".github/workflows/totp-e2e.yml"
       - "backend/preloop/api/auth/**"
+      - "backend/preloop/api/endpoints/oauth*.py"
       - "backend/preloop/services/authentication_policy.py"
       - "backend/preloop/services/mfa.py"
       - "backend/preloop/services/rate_limit.py"
+      - "backend/preloop/services/audit/**"
+      - "backend/preloop/utils/email.py"
       - "backend/preloop/models/crud/mfa.py"
-      - "backend/tests/e2e_support/totp_server.py"
+      - "backend/tests/e2e_support/**"
+      - "backend/tests/test_totp_e2e_support.py"
+      - "scripts/init_db.py"
+      - "scripts/reset_mfa.py"
+      - "scripts/reset_passkey_only.py"
       - "frontend/tests/e2e/totp-sign-in.spec.ts"
       - "frontend/tests/e2e/vite.totp.config.ts"
       - "frontend/playwright*.ts"
+      - "frontend/vite.config.ts"
       - "frontend/src/components/mfa-card.ts"
       - "frontend/src/components/step-up-dialog.ts"
       - "frontend/src/services/mfa.ts"
@@ -133,6 +141,7 @@ jobs:
             sleep 1
           done
           echo 'Local MFA test server did not become healthy' >&2
+          python -m tests.e2e_support.totp_server diagnose < "$PRELOOP_E2E_DIR/server.log" >&2
           exit 1
       - name: Run the existing e2e-ci harness with controlled MFA time
         working-directory: frontend
