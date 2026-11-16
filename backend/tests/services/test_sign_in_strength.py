@@ -148,8 +148,9 @@ def test_delegated_proof_is_only_visible_to_access_policy(
     user = SimpleNamespace(
         account_id=uuid4(), non_sso_auth_generation=0, passkey_only=True
     )
+    gate = Mock()
     monkeypatch.setattr(
-        policy, "get_plugin_manager", lambda: Mock(get_service=lambda name: None)
+        policy, "get_plugin_manager", lambda: Mock(get_service=lambda name: gate)
     )
     provider = Mock()
     account_hooks.register_sign_in_strength_policy(provider)
@@ -168,6 +169,10 @@ def test_delegated_proof_is_only_visible_to_access_policy(
             purpose="access",
         )
         assert result == {}
+        assert gate.authorize.call_args.kwargs["claims"]["delegated_auth"] == {
+            "amr": ["password", "otp"],
+            "auth_time": 123,
+        }
         assert provider.call_args.args[2]["delegated_auth"] == {
             "amr": ["password", "otp"],
             "auth_time": 123,
