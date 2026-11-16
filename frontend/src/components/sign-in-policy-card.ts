@@ -144,9 +144,10 @@ export class SignInPolicyCard extends LitElement {
           }),
         })
       );
-      storeMfaTokens(data);
+      if (data?.access_token && data?.refresh_token) storeMfaTokens(data);
       invalidateApiCaches();
-      this.setData(data);
+      if (data) this.setData(data);
+      else await this.load();
       this.message = 'Account sign-in policy saved.';
     } catch (error) {
       this.message =

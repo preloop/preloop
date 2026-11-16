@@ -1,6 +1,7 @@
 import {
   mfaMessage,
   storeMfaTokens,
+  safeCliRedirect,
   takePendingMfaChallenge,
   takeRedirectMfaChallenge,
   enrollmentOnly,
@@ -537,10 +538,17 @@ export class LoginView extends LitElement {
     try {
       const data = await post(`${REST_API_PREFIX}/auth/mfa/verify`, {
         challenge_token: this.mfaChallenge,
+        ...(this.cliMfaRedirect
+          ? { cli_redirect_uri: this.cliMfaRedirect }
+          : {}),
         [this.useRecoveryCode ? 'recovery_code' : 'code']: this.mfaCode,
       });
-      if (this.cliMfaRedirect) {
-        const callback = new URL(this.cliMfaRedirect);
+      const verifiedCallback = safeCliRedirect(data.cli_redirect_uri ?? null);
+      if (this.cliMfaRedirect && !verifiedCallback) {
+        throw new Error('The CLI sign-in could not be verified. Start again.');
+      }
+      if (verifiedCallback) {
+        const callback = new URL(verifiedCallback);
         callback.searchParams.set('access_token', data.access_token);
         callback.searchParams.set('refresh_token', data.refresh_token);
         callback.searchParams.set('token_type', 'Bearer');

@@ -87,3 +87,9 @@ Social browser sign-in carries a short-lived challenge to the second-step screen
 in a URL fragment, which is removed immediately. No session token is minted
 before proof. CLI social sign-in returns the completed token pair only to a
 validated loopback callback after the second factor succeeds.
+
+
+CLI social sign-in binds the loopback callback from validated OAuth state into the
+signed MFA challenge. Verification rejects a changed callback before consuming
+the code, and returns only the signed callback for browser delivery. The fragment
+address is a hint, never the authority for where completed tokens are sent.
