@@ -155,7 +155,9 @@ def answer_from_request(request: Any) -> Dict[str, Any]:
     tool_args = getattr(request, "tool_args", None) or {}
     answer_text = getattr(request, "answer_text", None)
     selected = getattr(request, "selected_option", None)
-    comment = getattr(request, "approver_comment", None)
+    from preloop.services.external_approval import agent_visible_comment
+
+    comment = agent_visible_comment(request)
     responses = getattr(request, "responses", None) or []
     answered_by = None
     for vote in reversed(responses if isinstance(responses, list) else []):

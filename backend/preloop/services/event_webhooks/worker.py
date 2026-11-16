@@ -70,6 +70,7 @@ class PreparedDelivery:
     # a logged PreparedDelivery cannot leak it.
     dispatch_token: Optional[str] = field(default=None, repr=False)
     dispatch_event_type: Optional[str] = None
+    external_hosts: Optional[tuple[str, ...]] = None
 
 
 @dataclass
@@ -80,6 +81,8 @@ class AttemptOutcome:
     success: bool
     response_status: Optional[int] = None
     error: Optional[str] = None
+    handoff: Optional[dict[str, str]] = None
+    permanent_failure: bool = False
 
 
 def _open_worker_session():
@@ -179,11 +182,35 @@ async def post_delivery(
     if prepared.dispatch_token is not None:
         return await post_github_dispatch(client, prepared)
     try:
-        response = await client.post(
-            prepared.url,
-            content=prepared.body,
-            headers=build_headers(prepared),
-        )
+        if prepared.external_hosts is not None:
+            async with client.stream(
+                "POST",
+                prepared.url,
+                content=prepared.body,
+                headers=build_headers(prepared),
+            ) as streamed:
+                chunks = bytearray()
+                async for chunk in streamed.aiter_bytes():
+                    chunks.extend(chunk)
+                    if len(chunks) > 16384:
+                        return AttemptOutcome(
+                            delivery_id=prepared.delivery_id,
+                            success=False,
+                            response_status=streamed.status_code,
+                            error="External approval response exceeds 16 KiB",
+                            permanent_failure=True,
+                        )
+                response = httpx.Response(
+                    streamed.status_code,
+                    content=bytes(chunks),
+                    headers=streamed.headers,
+                )
+        else:
+            response = await client.post(
+                prepared.url,
+                content=prepared.body,
+                headers=build_headers(prepared),
+            )
     except Exception as exc:  # noqa: BLE001 - transport errors are outcomes
         return AttemptOutcome(
             delivery_id=prepared.delivery_id,
@@ -191,10 +218,25 @@ async def post_delivery(
             error=f"{type(exc).__name__}: {str(exc)[:_ERROR_SNIPPET_CHARS]}",
         )
     if 200 <= response.status_code < 300:
+        handoff = None
+        if prepared.external_hosts is not None:
+            from preloop.services.external_approval import parse_handoff
+
+            try:
+                handoff = parse_handoff(response.content, prepared.external_hosts)
+            except (ValueError, UnicodeError):
+                return AttemptOutcome(
+                    delivery_id=prepared.delivery_id,
+                    success=False,
+                    response_status=response.status_code,
+                    error="External approval response rejected: invalid reference or HTTPS allow-list URL",
+                    permanent_failure=True,
+                )
         return AttemptOutcome(
             delivery_id=prepared.delivery_id,
             success=True,
             response_status=response.status_code,
+            handoff=handoff,
         )
     return AttemptOutcome(
         delivery_id=prepared.delivery_id,
@@ -308,7 +350,7 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
             continue
         item = prepare_claimed(delivery, endpoint)
         if item is None:
-            outbox.record_attempt(
+            status = outbox.record_attempt(
                 db,
                 delivery=delivery,
                 endpoint=endpoint,
@@ -316,7 +358,35 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
                 error="endpoint secret could not be decrypted",
                 now=moment,
             )
+            if (
+                status == "dead"
+                and endpoint.source == SOURCE_APPROVAL_WORKFLOW
+                and delivery.subject_id
+            ):
+                from preloop.models.crud import external_approval as handoff_crud
+
+                handoff_crud.finish_handoff(
+                    db,
+                    delivery.subject_id,
+                    handoff=None,
+                    error="External approval webhook could not be prepared",
+                )
             continue
+        if endpoint.source == SOURCE_APPROVAL_WORKFLOW:
+            from preloop.models.crud import external_approval as handoff_crud
+            from preloop.services.external_approval import (
+                allowed_hosts,
+                uses_external_link,
+            )
+
+            workflow = handoff_crud.workflow_for_delivery(
+                db, endpoint.approval_workflow_id
+            )
+            if uses_external_link(workflow):
+                try:
+                    item.external_hosts = allowed_hosts(workflow, item.url)
+                except ValueError:
+                    item.external_hosts = ()
         prepared.append(item)
     db.commit()
     return prepared
@@ -345,7 +415,19 @@ def apply_outcomes(db, outcomes: list[AttemptOutcome]) -> None:
             error=outcome.error,
         )
         if endpoint.source == SOURCE_APPROVAL_WORKFLOW:
+            from preloop.models.crud import external_approval as handoff_crud
+
+            if outcome.permanent_failure:
+                handoff_crud.stop_delivery(db, delivery)
+                status = "dead"
             _write_back_approval_state(db, delivery, status, outcome)
+            if status in {"delivered", "dead"} and delivery.subject_id:
+                handoff_crud.finish_handoff(
+                    db,
+                    delivery.subject_id,
+                    handoff=outcome.handoff if status == "delivered" else None,
+                    error=outcome.error if status == "dead" else None,
+                )
     db.commit()
 
 
@@ -454,6 +536,7 @@ async def run_once(db_factory=_open_worker_session) -> int:
         return 0
     if not prepared:
         db.close()
+        await send_external_notifications()
         return 0
 
     semaphore = asyncio.Semaphore(max(1, settings.webhook_delivery_concurrency))
@@ -483,7 +566,48 @@ async def run_once(db_factory=_open_worker_session) -> int:
         logger.warning("Webhook delivery pass failed", exc_info=True)
     finally:
         db.close()
+    await send_external_notifications()
     return len(outcomes)
+
+
+async def send_external_notifications() -> None:
+    """Resume notifications after a hand-off, recovering across worker restarts."""
+    from preloop.models.crud import external_approval as handoff_crud
+    from preloop.models.db.session import get_async_db_session
+    from preloop.services.approval_service import ApprovalService
+    import os
+
+    try:
+        async with get_async_db_session() as db:
+            ids = await db.run_sync(handoff_crud.pending_notifications)
+        for request_id in ids:
+            async with get_async_db_session() as db:
+                request = await db.run_sync(
+                    lambda sync,
+                    request_id=request_id: handoff_crud.notification_request(
+                        sync, request_id
+                    )
+                )
+                if request is None:
+                    continue
+                if request.status == "pending":
+                    service = ApprovalService(
+                        db, os.getenv("PRELOOP_URL", "http://localhost:8000")
+                    )
+                    await service.send_notifications(
+                        request,
+                        request.approval_workflow,
+                        external_handoff_complete=True,
+                    )
+                await db.run_sync(
+                    lambda sync,
+                    request_id=request_id: handoff_crud.notifications_finished(
+                        sync, request_id
+                    )
+                )
+                await db.commit()
+    except Exception:
+        logger.exception("External approval notifications will retry on the next pass")
 
 
 class WebhookDeliveryWorker:

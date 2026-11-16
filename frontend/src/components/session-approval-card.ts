@@ -1,3 +1,4 @@
+import { hasExternalDecision } from '../actions/approval-actions';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import { parseUTCDate } from '../utils/date';
@@ -142,6 +143,7 @@ export class SessionApprovalCard extends LitElement {
       this.busy ||
       this.voted ||
       !this.canDecide ||
+      hasExternalDecision(this.request) ||
       !isUnexpiredPendingRequest(this.request)
     )
       return;
@@ -248,6 +250,7 @@ export class SessionApprovalCard extends LitElement {
     const r = normalizeApprovalRequest(this.request, this.now);
     const enabled =
       this.canDecide &&
+      !hasExternalDecision(r) &&
       !this.forbidden &&
       isUnexpiredPendingRequest(r, this.now) &&
       !this.voted;
@@ -270,6 +273,7 @@ export class SessionApprovalCard extends LitElement {
         Requested
         ${parseUTCDate(r.requested_at).toLocaleString()}${r.expires_at ? ` · Expires ${parseUTCDate(r.expires_at).toLocaleString()}` : ''}
       </div>
+      ${r.external_url ? html`<p>The decision is made on the external service. <a href=${r.external_url} rel="noopener noreferrer" referrerpolicy="no-referrer">Decide on external service</a></p>` : nothing}
       ${r.agent_reasoning ? html`<p>${r.agent_reasoning}</p>` : nothing}
       <approval-rule-context-block
         .ruleContext=${r.rule_context ?? null}
