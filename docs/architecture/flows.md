@@ -33,6 +33,8 @@ verifying a consistent deployment: the API serving MCP calls and all workers
 run the intended build, with the API writing review receipts.
 `required: false` opts out. No migration or preset catalog sync opts existing
 derived flows in.
+See the [API opt-in and canary check](../guide/flows/pull-request-review.md#enable-an-existing-flow)
+for updating an existing flow while preserving its clone configuration.
 
 Manual preset and CLI PR runs carry the fetched head in the same provider
 fields as webhook events. A trigger naming a PR without its head fails with

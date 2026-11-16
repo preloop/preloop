@@ -348,6 +348,48 @@ check. GitLab and Bitbucket receipts do not carry the reviewed head, so they
 prove delivery for the current run but cannot justify skipping a head that was
 already reviewed. Details: [Flows architecture](../../architecture/flows.md#review-publication-receipts).
 
+### Enable an existing flow
+
+Confirm in your deployment system that the running MCP API and every worker
+use the intended image digest or version. Then opt in one canary reviewer
+flow and verify receipt writing before enabling other flows.
+
+Use the flows API with an account API token permitted to view and edit the
+flow; the flow form has no control for this switch. Set `PRELOOP_URL` to your
+instance URL, `PRELOOP_TOKEN` to that token, and `FLOW_ID` to the flow's UUID.
+The example requires `curl` and `jq`:
+
+```sh
+curl --fail-with-body --silent --show-error \
+  -H "Authorization: Bearer ${PRELOOP_TOKEN}" \
+  "${PRELOOP_URL}/api/v1/flows/${FLOW_ID}" > flow-before.json
+
+jq '{git_clone_config: ((.git_clone_config // {}) |
+  .review_publication = ((.review_publication // {}) + {required: true}))}' \
+  flow-before.json > flow-update.json
+
+curl --fail-with-body --silent --show-error --request PUT \
+  -H "Authorization: Bearer ${PRELOOP_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data-binary @flow-update.json \
+  "${PRELOOP_URL}/api/v1/flows/${FLOW_ID}" > flow-after.json
+```
+
+Run the commands in order, continuing only when each succeeds. The PUT
+replaces the entire `git_clone_config`, so preserve its existing repositories,
+publication mode and other settings as shown. Fetch the current flow before
+each edit and coordinate with other editors to avoid overwriting their
+changes. Check `flow-after.json` to confirm the saved configuration. To opt
+out, repeat with `required: false`.
+
+Trigger the canary on a fresh PR/head that requires a posted review. After it
+finishes, fetch `GET /api/v1/flows/executions/{execution_id}/result` with the
+same token and inspect `result.review_publication`: `status: published` with
+a `receipt_id` confirms that the API recorded a receipt for that execution.
+`unverified` / `receipt_unavailable` permits the run to pass but does not
+confirm receipt writing; `already_reviewed` relies on an earlier receipt.
+Enable the remaining flows individually after the canary is `published`.
+
 ## Read-only review posted by Preloop
 
 A restricted CI review that runs with `publication_mode: "read_only"` has no

@@ -53,6 +53,8 @@ receipts. During version skew, a successful review tool call for the triggering
 PR with no receipt can yield `unverified` / `receipt_unavailable`: the run
 succeeds with a warning, but publication for the reviewed head is unproven.
 See [Review delivery check](pull-request-review.md#review-delivery-check).
+The [API opt-in example](pull-request-review.md#enable-an-existing-flow)
+preserves the full clone configuration and describes the canary check.
 
 Four presets (SBOM Verify, SBOM Exploit Check, Release Security Audit, Component Due Diligence Record) turn a CI-emitted SBOM into a versioned `result.json` plus a human-readable evidence pack for a human assessor: see [Security audit presets (CRA evidence packs)](security-audit-presets.md).
 
