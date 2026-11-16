@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- flows: a Codex native-result read-only review whose session ends with an
+  answer but no command (the model satisfied the result schema on its first
+  turn) is continued in up to two fresh sessions that must inspect the
+  checkout first, inside the flow's existing timeout and budget. If none
+  inspects, the run fails `review_not_inspected`; that category now wins over
+  `review_binding_mismatch` when both apply (#2100).
+
 ### Added
 
 - flows: restricted-CI read-only reviews bind their result to the admitted

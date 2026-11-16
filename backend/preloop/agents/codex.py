@@ -71,6 +71,30 @@ logger = logging.getLogger(__name__)
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 CODEX_MCP_STARTUP_TIMEOUT_SECONDS = 60
 
+#: Extra sessions a native-result read-only review gets when a session ends
+#: without running a single command. One covers a sporadic early stop; a
+#: second tells a sporadic stop from a model that will not use its tools on
+#: this route. More would only spend the flow's timeout on the same answer.
+#: This is a behaviour, not a budget: every session runs inside the flow's
+#: existing timeout and model budget.
+REVIEW_INSPECTION_CONTINUATIONS = 2
+
+#: Written to the agent log before each continuation session.
+REVIEW_CONTINUATION_MARKER = "PRELOOP_REVIEW_CONTINUATION"
+
+REVIEW_CONTINUATION_PATH = "/tmp/preloop-review-continuation.txt"
+
+REVIEW_CONTINUATION_PROMPT = """
+
+---
+Your previous attempt at this review ended before you read the repository: \
+it ran no command, so its answer was discarded. Do not answer yet. First \
+inspect the checked-out change with your shell tool (for example \
+`git rev-parse HEAD`, `git log -1`, `git diff` against the base, and the \
+changed files). Give your final answer only after that, and take every \
+commit id in it from a command you ran.
+"""
+
 
 class CodexAgent(ContainerAgentExecutor):
     """
@@ -681,6 +705,12 @@ fi
             # turn a failed native-result request into an unconstrained round.
             stream_recovery_block = ""
             completion_nudge_block = ""
+        inspection_continuation_block = self._review_inspection_continuation_block(
+            execution_context,
+            event_filter=event_filter,
+            model=model,
+            sandbox_flags=sandbox_flags,
+        )
 
         script = f"""
 set -e
@@ -810,7 +840,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
+{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
@@ -1043,6 +1073,84 @@ exit $CODEX_EXIT_CODE
             setup,
             f"--output-schema {path} --output-last-message /workspace/result.json",
         )
+
+    def _review_inspection_continuation_block(
+        self,
+        execution_context: Dict[str, Any],
+        *,
+        event_filter: str,
+        model: str,
+        sandbox_flags: str,
+    ) -> str:
+        """Continue a native-result review whose session read nothing.
+
+        Codex ends a session when the model answers without a tool call. On a
+        native-result run that answer is the result document, so a model
+        that replies "starting by locating the checkout" on its first turn
+        ends the review with a schema-shaped answer that never looked at the
+        repository. The controller already rejects that as
+        ``review_not_inspected``; this block gives the model a bounded number
+        of further sessions (:data:`REVIEW_INSPECTION_CONTINUATIONS`) to do
+        the review first.
+
+        Each continuation is a fresh ``codex exec`` with the same output
+        schema, because the pinned CLI's ``exec resume`` cannot keep it; the
+        abandoned session ran no command, so it holds no inspection to lose.
+        Nothing here writes a result: if no session inspects, the last
+        answer stays as the model wrote it and the controller fails the run.
+
+        Applies only to read-only reviews (``publication_mode: read_only``)
+        with native results, a shell, and the inspection floor on.
+
+        Args:
+            execution_context: Execution context.
+            event_filter: The Codex event filter command.
+            model: The model the main session used.
+            sandbox_flags: The main session's sandbox flags.
+
+        Returns:
+            The shell block, or an empty string when it does not apply.
+        """
+        from preloop.services.read_only_review import read_only_review
+        from preloop.services.review_integrity import review_integrity_block
+
+        config = execution_context.get("agent_config") or {}
+        clone = execution_context.get("git_clone_config")
+        if (
+            not isinstance(config, dict)
+            or config.get("native_result") is not True
+            or not read_only_review(clone)
+            or self._shell_locked(execution_context)
+            or review_integrity_block(clone).get("require_inspection") is False
+        ):
+            return ""
+        _, native_args = self._native_result_output(execution_context)
+        prompt = shlex.quote(REVIEW_CONTINUATION_PROMPT)
+        return f"""
+# A native-result review whose session ran no command did not read the
+# change. Start a bounded number of fresh sessions that must inspect first.
+_pl_review_continuation=0
+while [ "$CODEX_EXIT_CODE" -eq 0 ] \
+    && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
+    && ! grep -Eq '"type": ?"command_execution"' "{ATTEMPT_LOG_PATH}"; do
+    _pl_review_continuation=$((_pl_review_continuation + 1))
+    echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_review_continuation"',"reason":"no_repository_inspection"}}' \
+        | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+    {{ cat "{PROMPT_FILE_PATH}"; printf %s {prompt}; }} > "{REVIEW_CONTINUATION_PATH}"
+    rm -f -- /workspace/result.json
+    : > "{ATTEMPT_LOG_PATH}"
+    set +e
+    $PRELOOP_AS_AGENT codex exec {native_args} --json --skip-git-repo-check \
+        --model "{model}" {sandbox_flags} < "{REVIEW_CONTINUATION_PATH}" 2>&1 \
+        | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+    _pl_review_codes=("${{PIPESTATUS[@]}}")
+    set -e
+    CODEX_EXIT_CODE=${{_pl_review_codes[0]:-1}}
+    if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
+        CODEX_EXIT_CODE=${{_pl_review_codes[1]:-1}}
+    fi
+done
+"""
 
     def _codex_sandbox_flags(self, shell_locked: bool) -> str:
         """Preserve read-only restrictions across both exec and exec resume.
