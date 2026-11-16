@@ -42,6 +42,10 @@ class ObservedControl(SafeEvidenceModel):
     """Independent collector assertions, with no effective/verified field."""
 
     axis: ControlAxis
+    configured: State = "unknown"
+    configuration_evidence: Literal["local_config", "managed_config", "unavailable"] = (
+        "unavailable"
+    )
     supported: State = "unknown"
     requested: State = "unknown"
     applied: State = "unknown"
@@ -55,6 +59,7 @@ class ObservedApplication(SafeEvidenceModel):
 
     agent_kind: str = Field(pattern=AGENT_KIND_PATTERN)
     config_path_hash: str = Field(pattern=HEX_SHA256_PATTERN)
+    config_scope: Literal["user_config", "managed_config"] = "user_config"
     profile_ref: str | None = Field(default=None, pattern=HEX_SHA256_PATTERN)
     app_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
     surface: Literal["cli", "desktop", "editor", "extension", "other", "unknown"] = (
@@ -127,6 +132,15 @@ class DiscoveryEvidence(SafeEvidenceModel):
             data.pop("profiles", None)
             for application in data.get("applications", []):
                 application.pop("profile_ref", None)
+        # Additive facts must not alter immutable replay hashes for old reports.
+        for application in data.get("applications", []):
+            if application.get("config_scope") == "user_config":
+                application.pop("config_scope", None)
+            for control in application.get("controls", []):
+                if control.get("configuration_evidence") == "unavailable":
+                    control.pop("configuration_evidence", None)
+                    if control.get("configured") == "unknown":
+                        control.pop("configured", None)
         return data
 
     @model_validator(mode="after")
@@ -147,7 +161,13 @@ class DiscoveryEvidence(SafeEvidenceModel):
         ):
             raise ValueError("Profile metadata requires schema version 2")
         if self.schema_version == 2:
-            if any(app.profile_ref not in refs for app in self.applications):
+            if any(
+                app.profile_ref not in refs
+                and not (
+                    app.profile_ref is None and app.config_scope == "managed_config"
+                )
+                for app in self.applications
+            ):
                 raise ValueError("Application must reference a collected profile")
             if self.completeness == "complete" and any(
                 profile.completeness != "complete" for profile in self.profiles

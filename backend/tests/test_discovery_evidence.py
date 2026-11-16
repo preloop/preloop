@@ -411,3 +411,81 @@ def test_go_profile_report_wire_contract() -> None:
     assert len(report.evidence.applications) == len(report.candidates) == 2
     assert len({candidate.config_path_hash for candidate in report.candidates}) == 2
     assert all(not candidate.enrolled for candidate in report.candidates)
+
+
+def test_managed_configuration_facts_are_scoped_and_unverified() -> None:
+    """Machine configuration does not masquerade as a collected user profile."""
+    app = {
+        "agent_kind": "claude_code",
+        "config_path_hash": "a" * 64,
+        "config_scope": "managed_config",
+        "controls": [
+            {
+                "axis": "native_tool_hook",
+                "configured": "false",
+                "configuration_evidence": "managed_config",
+                "method": "managed_config",
+            }
+        ],
+    }
+    evidence = DiscoveryEvidence.model_validate(
+        envelope(
+            schema_version=2,
+            scan_scope=["managed_config"],
+            applications=[app],
+        )
+    )
+    control = evidence.applications[0].controls[0]
+    assert control.configured == "false"
+    assert control.applied == "unknown"
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(
+            envelope(
+                schema_version=2,
+                applications=[{**app, "config_scope": "user_config"}],
+            )
+        )
+    for field, value in [
+        ("command", "private"),
+        ("configuration_evidence", "private"),
+        ("verification", "passed"),
+    ]:
+        with pytest.raises(ValidationError):
+            DiscoveryEvidence.model_validate(
+                envelope(
+                    applications=[
+                        {
+                            **app,
+                            "controls": [{**app["controls"][0], field: value}],
+                        }
+                    ]
+                )
+            )
+
+
+def test_configuration_additions_preserve_legacy_canonical_control_bytes() -> None:
+    """Adding optional facts cannot change immutable historical replay hashes."""
+    evidence = DiscoveryEvidence.model_validate(
+        envelope(
+            applications=[
+                {
+                    "agent_kind": "claude_code",
+                    "config_path_hash": "a" * 64,
+                    "controls": [
+                        {"axis": "native_tool_hook", "method": "local_config"}
+                    ],
+                }
+            ]
+        )
+    )
+    app = evidence.model_dump(mode="json")["applications"][0]
+    assert "config_scope" not in app
+    assert app["controls"] == [
+        {
+            "axis": "native_tool_hook",
+            "supported": "unknown",
+            "requested": "unknown",
+            "applied": "unknown",
+            "method": "local_config",
+        }
+    ]
