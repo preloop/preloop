@@ -2896,6 +2896,8 @@ class ApprovalService:
             recipient_user_ids: Override per-user recipients without changing the
                 saved workflow. None uses workflow approvers; an empty list sends
                 no per-user notifications. Webhooks keep the workflow destination.
+            external_handoff_complete: Resume a durable hand-off after webhook
+                delivery; retries and recovered claims may be older than 30 seconds.
 
         Returns:
             Dict with results per notification channel
@@ -2910,7 +2912,11 @@ class ApprovalService:
                 request_age = (
                     datetime.utcnow() - approval_request.requested_at
                 ).total_seconds()
-                if request_age > 30 and approval_request.tool_name != "owner_consent":
+                if (
+                    request_age > 30
+                    and approval_request.tool_name != "owner_consent"
+                    and not external_handoff_complete
+                ):
                     logger.warning(
                         f"Skipping notifications for approval request {approval_request.id} - "
                         f"request is {request_age:.1f}s old (likely duplicate call)"
