@@ -27,7 +27,11 @@ The endpoint receives a form POST containing `token`. An active response can loo
 
 The example uses CEL conditions, which require the enterprise CEL evaluator. Simple conditions such as `grant.active == true` are available with the open-source evaluator.
 
-Use secret environment references rather than real credentials in a policy file. Configure the referenced MCP server in the same policy or in your account before importing a rule that references `grant`.
+`preloop policy apply` resolves `${NAME}` references from your local environment
+before upload, including with `--dry-run`. Unset variables stop the command.
+The API preserves unresolved references and returns a warning. Configure the
+referenced MCP server in the same policy or in your account before importing a
+rule that references `grant`.
 
 ```yaml
 version: "1.0"

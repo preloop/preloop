@@ -128,6 +128,10 @@ tools:
 
 Check a sample call before saving with **Test this rule** or **Simulate** in the console. Ship it with `preloop policy apply <file>` (`validate` / `diff` / `export` also exist).
 
+The CLI resolves `${NAME}` in policy string values from your local environment,
+including during `--dry-run`. Use `--no-resolve-env` to keep references literal;
+the server preserves them and returns a warning.
+
 <p align="center">
   <a href="frontend/public/assets/screenshots/quickstart/dark/dashboard.png"><img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard-1600.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" /></a>
 </p>

@@ -133,6 +133,9 @@ var policyApplyCmd = &cobra.Command{
 	Long: `Apply a policy file to your Preloop organization.
 
 This will upload and activate the policy on the server.
+Variable references such as ${NAME} are resolved from your local environment.
+Unset variables stop the upload. Use --no-resolve-env to keep references literal.
+The same resolution applies with --dry-run.
 
 Examples:
   preloop policy apply my-policy.yaml
@@ -227,6 +230,7 @@ func init() {
 
 	// Flags for apply
 	policyApplyCmd.Flags().Bool("dry-run", false, "validate and show what would be applied without making changes")
+	policyApplyCmd.Flags().Bool("no-resolve-env", false, "upload variable references literally without local resolution")
 	policyApplyCmd.Flags().BoolP("recursive", "r", false, "recursively apply policies from directory")
 
 	// Flags for export
@@ -262,7 +266,8 @@ func validatePolicyContent(client *api.Client, fileName string, content []byte) 
 
 func applyPolicyContent(client *api.Client, fileName string, content []byte, dryRun bool) (*PolicyImportResult, error) {
 	fields := map[string]string{
-		"dry_run": fmt.Sprintf("%t", dryRun),
+		"dry_run":     fmt.Sprintf("%t", dryRun),
+		"resolve_env": "false",
 	}
 
 	var result PolicyImportResult
@@ -505,6 +510,13 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 	if err := yaml.Unmarshal(content, &parsed); err != nil {
 		return fmt.Errorf("invalid YAML syntax: %w", err)
 	}
+	noResolveEnv, _ := cmd.Flags().GetBool("no-resolve-env")
+	if !noResolveEnv {
+		content, err = resolvePolicyVariables(content, filePath)
+		if err != nil {
+			return err
+		}
+	}
 
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
@@ -515,19 +527,19 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
 
-	// If dry-run, just validate
+	// Use the same application checks for dry runs and writes.
 	if dryRun {
 		fmt.Printf("Dry run - validating policy: %s\n\n", filePath)
 
-		result, err := validatePolicyContent(client, filepath.Base(filePath), content)
+		result, err := applyPolicyContent(client, filepath.Base(filePath), content, true)
 		if err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
 
-		if !result.IsValid {
+		if !result.Success {
 			fmt.Printf("✗ Policy validation failed\n")
 			for _, e := range result.Errors {
-				fmt.Printf("  %s\n", e.Message)
+				fmt.Printf("  %s\n", e)
 			}
 			return fmt.Errorf("validation failed")
 		}

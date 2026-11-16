@@ -26,7 +26,7 @@ version: "1.0"
 metadata:
   name: my-policy
   description: Policy for production safety
-  author: team@company.com
+  author: team@example.com
   tags: [production, safety]
 
 mcp_servers:
@@ -57,6 +57,14 @@ tools:
 
 ---
 
+`preloop policy apply` resolves `${NAME}` references in string values from
+the operator's local environment before upload, including with `--dry-run`.
+Unset variables stop the command and are named in the error. Empty variables
+are allowed. Use `--no-resolve-env` to upload references literally. The API
+preserves references and returns a warning; its `resolve_env` form field is
+accepted for compatibility and ignored. `validate` and `diff` inspect the file
+as written. `$NAME` without braces is always literal.
+
 ## Schema Reference
 
 ### `version` (required)
@@ -82,7 +90,7 @@ Define external MCP servers that tools can reference.
 | `url` | string | n/a | Server endpoint URL |
 | `transport` | string | `streamable-http` | `streamable-http`, `http-streaming`, `stdio`, `sse` |
 | `auth_type` | string | `none` | `none`, `bearer`, `api_key`, `oauth` |
-| `auth_config` | object | n/a | Auth details. Use `${ENV_VAR}` for secrets |
+| `auth_config` | object | n/a | Auth details. The CLI resolves `${ENV_VAR}` locally |
 
 ### `approval_workflows`
 
@@ -184,6 +192,9 @@ preloop policy apply my-policy.yaml
 
 # Dry-run (preview without applying)
 preloop policy apply my-policy.yaml --dry-run
+
+# Keep variable references literal
+preloop policy apply my-policy.yaml --no-resolve-env
 
 # Recursively apply all policies in a directory
 preloop policy apply policies/ -r

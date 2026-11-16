@@ -15,7 +15,6 @@ from preloop.services.policy.loader import (
     export_policy_to_json,
     export_policy_to_yaml,
     load_policy_from_string,
-    resolve_env_vars,
 )
 from preloop.services.policy.schema import (
     ApprovalWorkflowDefinition,
@@ -343,56 +342,6 @@ class TestComputePolicyDiff:
 
         assert diff.has_changes is True
         assert any("metadata" in c.path for c in diff.changes)
-
-
-class TestResolveEnvVars:
-    """Test environment variable resolution."""
-
-    def test_resolve_string_var(self, monkeypatch):
-        """Test resolving environment variable in string."""
-        monkeypatch.setenv("TEST_VAR", "resolved_value")
-
-        result = resolve_env_vars("prefix_${TEST_VAR}_suffix")
-        assert result == "prefix_resolved_value_suffix"
-
-    def test_resolve_in_dict(self, monkeypatch):
-        """Test resolving environment variables in dict."""
-        monkeypatch.setenv("API_KEY", "secret123")
-
-        data = {"auth": {"key": "${API_KEY}"}, "other": "static"}
-        result = resolve_env_vars(data)
-
-        assert result["auth"]["key"] == "secret123"
-        assert result["other"] == "static"
-
-    def test_resolve_in_list(self, monkeypatch):
-        """Test resolving environment variables in list."""
-        monkeypatch.setenv("HOST", "localhost")
-
-        data = ["http://${HOST}:8080", "static_value"]
-        result = resolve_env_vars(data)
-
-        assert result[0] == "http://localhost:8080"
-        assert result[1] == "static_value"
-
-    def test_unset_var_unchanged(self):
-        """Test that unset variables remain unchanged."""
-        result = resolve_env_vars("${UNSET_VAR}")
-        assert result == "${UNSET_VAR}"
-
-    def test_multiple_vars(self, monkeypatch):
-        """Test resolving multiple variables in one string."""
-        monkeypatch.setenv("HOST", "example.com")
-        monkeypatch.setenv("PORT", "8080")
-
-        result = resolve_env_vars("http://${HOST}:${PORT}")
-        assert result == "http://example.com:8080"
-
-    def test_non_string_unchanged(self):
-        """Test that non-string values are unchanged."""
-        assert resolve_env_vars(123) == 123
-        assert resolve_env_vars(True) is True
-        assert resolve_env_vars(None) is None
 
 
 class TestPolicyApplierDefaults:
