@@ -158,6 +158,7 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 			}
 		}
 		if homeErr != nil {
+			app.Completeness = "failed"
 			addProbe("config", "unknown", "home_unavailable")
 			result.Apps = append(result.Apps, app)
 			continue

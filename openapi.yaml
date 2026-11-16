@@ -37098,6 +37098,15 @@ components:
           - 3
           title: Schema Version
           default: 1
+        extension_completeness:
+          anyOf:
+          - type: string
+            enum:
+            - complete
+            - partial
+            - failed
+          - type: 'null'
+          title: Extension Completeness
         profiles:
           items:
             $ref: '#/components/schemas/ObservedProfile'

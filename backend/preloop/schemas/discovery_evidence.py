@@ -98,6 +98,7 @@ class DiscoveryEvidence(SafeEvidenceModel):
     """Versioned bounded observation, including empty and failed scans."""
 
     schema_version: Literal[1, 2, 3] = 1
+    extension_completeness: Literal["complete", "partial", "failed"] | None = None
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=64)
     observation_id: UUID
     collector_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
@@ -132,6 +133,7 @@ class DiscoveryEvidence(SafeEvidenceModel):
             for application in data.get("applications", []):
                 application.pop("profile_ref", None)
         if self.schema_version < 3:
+            data.pop("extension_completeness", None)
             for application in data.get("applications", []):
                 application.pop("extensions", None)
                 application.pop("completeness", None)
@@ -161,6 +163,16 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 profile.completeness != "complete" for profile in self.profiles
             ):
                 raise ValueError("Complete collection cannot include partial profiles")
+        if self.schema_version < 3 and self.extension_completeness is not None:
+            raise ValueError("Extension completeness requires schema version 3")
+        if self.extension_completeness == "complete" and (
+            self.completeness == "failed"
+            or any(profile.completeness == "failed" for profile in self.profiles)
+            or any(app.completeness != "complete" for app in self.applications)
+        ):
+            raise ValueError(
+                "Complete extensions cannot include failed or partial extension scope"
+            )
         for app in self.applications:
             if self.schema_version < 3 and (
                 app.extensions is not None or app.completeness is not None
