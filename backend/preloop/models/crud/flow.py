@@ -623,6 +623,17 @@ class CRUDFlow(CRUDBase[models.Flow]):
             The updated flow object.
         """
         update_data = flow_in.model_dump(exclude_unset=True)
+        previous_hook = db_obj.webhook_config or {}
+        replacement_hook = update_data.get("webhook_config")
+        if isinstance(previous_hook, dict) and isinstance(replacement_hook, dict):
+            previous_secret = previous_hook.get("webhook_secret")
+            replacement_secret = replacement_hook.get("webhook_secret")
+            if (
+                previous_secret
+                and replacement_secret
+                and replacement_secret != previous_secret
+            ):
+                update_data["webhook_secret_rotated_at"] = datetime.now(timezone.utc)
         update_data["account_id"] = (
             str(account_id) if isinstance(account_id, UUID) else account_id
         )

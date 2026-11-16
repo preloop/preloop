@@ -3978,12 +3978,27 @@ def update_flow(
     old_enabled = flow.is_enabled
     from preloop.services.flow_result_schema import ResultSchemaError
 
+    webhook_secret_changed = bool(
+        existing_secret
+        and flow_in.webhook_config
+        and flow_in.webhook_config.webhook_secret
+        and flow_in.webhook_config.webhook_secret != existing_secret
+    )
     try:
         flow = crud_flow.update(
             db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
         )
     except ResultSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if webhook_secret_changed:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="flow",
+            action="webhook_secret_rotated",
+            new_value={"id": str(flow.id), "name": flow.name},
+        )
 
     # Determine if this was an enable/disable toggle
     update_fields = flow_in.model_dump(exclude_unset=True)
