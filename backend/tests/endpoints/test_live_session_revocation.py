@@ -269,9 +269,7 @@ def test_unified_revoke_closes_second_replica_or_timer(
     message_auth: bool,
     credential: str,
 ) -> None:
-    """protects=only access tokens open revocable authenticated sockets;
-    fails_when=refresh/purpose tokens authenticate or access revocation is ignored;
-    no_claim=local NATS transport replaces an external broker."""
+    """Revoke access-token sockets; keep refresh and purpose tokens anonymous."""
     auth_revocation.install_revocation_notifications()
     first, second = WebSocketManager(), WebSocketManager()
     bus = LocalNats()
@@ -288,7 +286,7 @@ def test_unified_revoke_closes_second_replica_or_timer(
     session = SimpleNamespace(
         id=str(uuid4()),
         connection_id=str(uuid4()),
-        is_authenticated=not message_auth,
+        is_authenticated=not message_auth and credential == "access",
         display_name="Test member",
         metadata={},
     )
@@ -343,18 +341,24 @@ def test_unified_revoke_closes_second_replica_or_timer(
         with client.websocket_connect("/api/v1/ws/unified", headers=headers) as socket:
             handshake = socket.receive_json()
             assert handshake["type"] == "handshake"
+            assert handshake["authenticated"] is (
+                not message_auth and credential == "access"
+            )
+            if message_auth:
+                socket.send_json({"type": "authenticate", "token": token})
+                assert socket.receive_json()["type"] == "authenticated"
+            assert first.revocable_connections == {}
             if credential != "access":
-                assert handshake["authenticated"] is False
+                # These credentials cannot authenticate a socket. The unified
+                # endpoint remains available anonymously, without a watcher.
                 assert second.revocable_connections == {}
                 assert (
                     second._count_account_connections(str(committed_member.account_id))
                     == 0
                 )
+                socket.send_json({"type": "ping"})
+                assert socket.receive_json()["type"] == "pong"
                 return
-            if message_auth:
-                socket.send_json({"type": "authenticate", "token": token})
-                assert socket.receive_json()["type"] == "authenticated"
-            assert first.revocable_connections == {}
             assert len(second.revocable_connections) == 1
             response = client.post(
                 "/api/v1/auth/sessions/revoke-all", headers=bearer(access_token)

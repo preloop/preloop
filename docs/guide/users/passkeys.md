@@ -30,8 +30,10 @@ your account.
    authenticator app. A strong sign-in within the last 10 minutes also works.
 
 Turning it on signs out every other console and CLI session of yours; the
-session you are using stays signed in. Turning it off or deleting a passkey
-also needs a recent strong sign-in; the console prompts you when needed.
+session you are using stays signed in, including when an authenticator code
+confirmed the change. New password sign-ins remain blocked. Turning it off or
+deleting a passkey also needs a recent strong sign-in; the console prompts you
+when needed.
 Sessions created before the server recorded verified passkey assurance must
 complete a fresh assertion once before these actions.
 

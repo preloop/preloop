@@ -32,7 +32,11 @@ _METHODS = frozenset(
         "otp",
     }
 )
-_UUID_CLAIMS = ("sso_connection_id", "auth_account_id")
+_UUID_CLAIMS = (
+    "sso_connection_id",
+    "auth_account_id",
+    "passkey_only_continuation",
+)
 _INTEGER_CLAIMS = ("nsg", "auth_nsg", "auth_time")
 
 
@@ -175,6 +179,13 @@ def _enforce_core_policy(
         raise HTTPException(status_code=401, detail="Session revoked")
     methods = list(context.get("amr", []))
     if sign_in_method_allowed(user, methods):
+        return
+    # Enabling the policy replaces the current strongly authenticated session.
+    # Keep its original assurance while allowing only that membership's session
+    # to continue. The generation check above still revokes this exception.
+    if purpose in {"access", "refresh"} and context.get(
+        "passkey_only_continuation"
+    ) == str(user.id):
         return
     if purpose in _SIGN_IN_PURPOSES:
         from preloop.services.audit.service import AuditActionType
