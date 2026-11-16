@@ -8745,7 +8745,7 @@ class FlowExecutionOrchestrator:
                         for item in loop_detection["pattern"]
                     )
                     error_message = (
-                        "Execution stopped after detecting a repeated MCP tool loop: "
+                        "Execution stopped after detecting a repeated tool loop: "
                         f"{repeated_tools} repeated "
                         f"{loop_detection['repetitions']} times with identical "
                         "arguments."
