@@ -1116,7 +1116,8 @@ retain the evidence tarball.
 In the console, clone **Release Security Audit** (or SBOM Verify / SBOM
 Exploit Check). Presets ship without a bound model; clone fails closed
 with a 422 if the account has no usable model for that agent. Enable a
-webhook trigger and copy the webhook URL. The inbound path is:
+webhook trigger, save the flow, then select **Rotate webhook secret** and
+copy the URL shown once. Save it securely for future calls. The inbound path is:
 
 ```
 POST /api/v1/webhooks/flows/{flow_id}/{webhook_secret}

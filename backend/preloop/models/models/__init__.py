@@ -216,6 +216,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "ToolRegistryEntry",
     "UserMfaFactor",
     "UserMfaRecoveryCode",
     "RateLimitBucket",
@@ -508,3 +509,4 @@ from .mfa import UserMfaFactor, UserMfaRecoveryCode
 
 from .discovered_extension import DiscoveredExtension
 from .extension_approval import ExtensionApproval
+from .tool_registry_entry import ToolRegistryEntry

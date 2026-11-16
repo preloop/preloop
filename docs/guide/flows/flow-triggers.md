@@ -30,7 +30,7 @@ This guide provides complete event payload structures for each trigger type.
 
 1. Create flow with Trigger Type: Webhook
 2. Save the flow
-3. Copy the generated webhook URL
+3. Click **Rotate webhook secret** and copy the new URL shown once
 4. Use the URL to trigger the flow from external services
 
 **Webhook URL Format:**

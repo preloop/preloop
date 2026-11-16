@@ -490,6 +490,18 @@ view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT. Auth is
 `--token`, `PRELOOP_TOKEN`, or the saved login. See
 [docs/guide/flows/ci-trigger.md](../docs/guide/flows/ci-trigger.md).
 
+For inbound webhooks, rotate the ingress credential and capture its new URL:
+
+```bash
+preloop flow webhook-secret rotate <flow-id-or-name>
+preloop flow webhook-secret rotate <flow-id-or-name> --json
+```
+
+The new secret is shown once. Rotation invalidates the previous URL immediately
+and requires `edit_flows` permission. Flow reads return only secret status, a
+hint and the last recorded rotation time; existing saved URLs continue to work
+until the secret changes. See [Webhook triggers](../docs/webhook-triggers.md).
+
 ### Version
 
 ```bash

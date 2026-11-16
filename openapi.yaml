@@ -1296,7 +1296,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenPair'
+                $ref: '#/components/schemas/VerifiedSignIn'
         '422':
           description: Validation Error
           content:
@@ -19814,6 +19814,48 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/webhook-secret/rotate:
+    post:
+      tags:
+      - Flows
+      summary: Rotate Flow Webhook Secret
+      description: "Rotate an ingress secret and return its new value once.\n\nArgs:\n\
+        \    db: Active database session.\n    flow_id: Flow owned by the caller's\
+        \ account.\n    current_user: User performing the rotation.\n\nReturns:\n\
+        \    Flow metadata with the new webhook_secret, shown only in this response.\n\
+        \nRaises:\n    HTTPException: 404 for an inaccessible flow, 400 without a\
+        \ webhook\n        trigger, or 403 without edit_flows permission."
+      operationId: rotate_flow_webhook_secret_api_v1_flows__flow_id__webhook_secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/apply-preset-update:
     post:
       tags:
@@ -21612,6 +21654,112 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/tools/registry:
+    get:
+      tags:
+      - Policies
+      summary: List Registry
+      description: List only the current account's observed execution routes.
+      operationId: list_registry_api_v1_tools_registry_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - approved
+            - denied
+            type: string
+          - type: 'null'
+          title: State
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RegistryEntryResponse'
+                title: Response List Registry Api V1 Tools Registry Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/tools/registry/{entry_id}/decision:
+    post:
+      tags:
+      - Policies
+      summary: Decide Registry
+      description: Decide or revoke a route, settling its pending approval with that
+        outcome.
+      operationId: decide_registry_api_v1_tools_registry__entry_id__decision_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Entry Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistryDecision'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistryEntryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/policies/notices/summary:
     get:
@@ -31900,6 +32048,11 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        enroll_only:
+          type: boolean
+          title: Enroll Only
+          description: Session is restricted to factor enrollment.
+          default: false
         id:
           type: string
           format: uuid
@@ -40704,6 +40857,33 @@ components:
             type: object
           type: object
           title: Effective Limits
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: New ingress secret, returned once by the rotate action only.
+        webhook_secret_rotated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Webhook Secret Rotated At
+          description: Last explicit rotation time; null for existing unrotated secrets.
+        webhook_secret_set:
+          type: boolean
+          title: Webhook Secret Set
+          description: Whether the flow has an ingress credential, without revealing
+            it.
+          readOnly: true
+        webhook_secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret Hint
+          description: The last four characters, matching approval workflow secret
+            hints.
+          readOnly: true
         effective_publication_policy:
           $ref: '#/components/schemas/EffectivePublicationPolicy'
           description: Read-only description derived from this saved flow's configuration.
@@ -40713,6 +40893,8 @@ components:
       - id
       - created_at
       - updated_at
+      - webhook_secret_set
+      - webhook_secret_hint
       - effective_publication_policy
       title: FlowResponse
     FlowSuccessNotifications:
@@ -49682,6 +49864,102 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RegistryDecision:
+      properties:
+        state:
+          type: string
+          enum:
+          - approved
+          - denied
+          title: State
+      type: object
+      required:
+      - state
+      title: RegistryDecision
+      description: An explicit execution authorization or revocation for this route.
+    RegistryEntryResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        tool_source:
+          type: string
+          title: Tool Source
+        mcp_server_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Mcp Server Id
+        server_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Label
+        tool_name:
+          type: string
+          title: Tool Name
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - denied
+          title: State
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        first_seen_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: First Seen Agent Id
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        seen_count:
+          type: integer
+          title: Seen Count
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+      type: object
+      required:
+      - id
+      - tool_source
+      - mcp_server_id
+      - server_label
+      - tool_name
+      - state
+      - first_seen_at
+      - first_seen_agent_id
+      - last_seen_at
+      - seen_count
+      - decided_at
+      - decided_by_user_id
+      - approval_request_id
+      title: RegistryEntryResponse
+      description: Safe route identity, observation metadata and execution approval
+        state.
     ReportPublication:
       properties:
         enabled:
@@ -58349,6 +58627,33 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifiedSignIn:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cli Redirect Uri
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: VerifiedSignIn
+      description: Completed proof with an optional server-validated CLI continuation.
     VerifyRequest:
       properties:
         code:
@@ -58370,6 +58675,12 @@ components:
           maxLength: 4096
           minLength: 1
           title: Challenge Token
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cli Redirect Uri
       type: object
       required:
       - challenge_token
@@ -58447,13 +58758,6 @@ components:
       description: Configuration for webhook triggers.
     WebhookConfigResponse:
       properties:
-        webhook_secret:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated
-            for webhook triggers; unset on flows triggered by tracker events)
         supersede_on_update:
           type: boolean
           title: Supersede On Update
@@ -58472,7 +58776,7 @@ components:
             then 'data.issue.id'.
       type: object
       title: WebhookConfigResponse
-      description: Webhook settings on a flow response. The ingress secret is omitted.
+      description: Webhook settings on a flow response, without ingress credentials.
     WebhookDeliveryRead:
       properties:
         id:

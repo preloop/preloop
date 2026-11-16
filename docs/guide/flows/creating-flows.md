@@ -111,8 +111,8 @@ Flows can be triggered by:
 **Configuration:**
 
 1. Select **Trigger type:** Webhook
-2. Save the flow (webhook URL generated after creation)
-3. Use the webhook URL to trigger the flow
+2. Save the flow, then click **Rotate webhook secret**
+3. Copy the new URL shown once and use it to trigger the flow
 
 **Webhook URL format:**
 

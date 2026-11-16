@@ -1372,6 +1372,14 @@ def _register_control_plane_routes(
         tags=["Policies"],
         dependencies=[Depends(get_current_active_user)],
     )
+    from preloop.api.endpoints import tool_registry
+
+    app.include_router(
+        tool_registry.router,
+        prefix="/api/v1",
+        tags=["Policies"],
+        dependencies=[Depends(get_current_active_user)],
+    )
     from preloop.api.endpoints import policy_notices
 
     app.include_router(

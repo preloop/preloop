@@ -671,9 +671,12 @@ def _authentication_verify(
     from preloop.services.authentication_policy import new_authentication
 
     auth_context = new_authentication(
-        db, user, method="passkey", source_ip=get_client_ip(request)
+        db,
+        user,
+        method="passkey",
+        source_ip=get_client_ip(request),
+        passkey_uv=verification.user_verified is True,
     )
-    auth_context["passkey_uv"] = verification.user_verified is True
 
     crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 

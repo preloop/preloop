@@ -18,6 +18,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
+from preloop.services.policy.defaults import POLICY_DEFAULTS_META_KEY, parse_defaults
 from preloop.services.policy.schema import (
     ApprovalWorkflowDefinition,
     ConditionAction,
@@ -37,7 +38,6 @@ from preloop.services.policy.schema import (
     SensitiveDataScope,
     ToolCondition,
     ToolDefinition,
-    UnknownToolsPolicy,
     is_known_tool_source,
 )
 
@@ -814,39 +814,36 @@ class MissingWorkflowError:
         )
 
 
-def unsupported_default_settings(defaults: DefaultsDefinition) -> List[str]:
-    """List the ``defaults`` settings that ``PolicyApplier`` rejects.
-
-    Only the built-in behavior is implemented: a tool call that no rule
-    matches is allowed. A stricter setting would be ignored and make the
-    policy look stricter than it is, so ``apply`` refuses it. Policy
-    generation runs the same check on model output.
+def invalid_default_settings(
+    defaults: DefaultsDefinition,
+    available_workflows: Optional[set[str]] = None,
+) -> List[str]:
+    """Return invalid defaults, using the same check for validate and apply.
 
     Args:
-        defaults: The policy's ``defaults`` block.
+        defaults: Account-level defaults to check.
+        available_workflows: Resolvable workflow names, when known.
 
     Returns:
-        One entry per rejected setting, naming it and why. Empty when
-        ``apply`` accepts the block.
+        Errors naming each field that cannot be enforced.
     """
-    unsupported: List[str] = []
-
-    unknown_tools = getattr(defaults.unknown_tools, "value", defaults.unknown_tools)
-    if unknown_tools != UnknownToolsPolicy.ALLOW.value:
-        unsupported.append(
-            f"unknown_tools='{unknown_tools}' (only 'allow' is currently supported)"
+    errors: List[str] = []
+    workflow = defaults.default_approval_workflow
+    if (
+        defaults.unknown_tools == "require_approval"
+        or defaults.require_approval_for_new_tools
+    ) and not workflow:
+        errors.append(
+            "defaults.default_approval_workflow is required when "
+            "defaults.unknown_tools=require_approval or defaults.require_approval_for_new_tools=true"
         )
-
-    if defaults.require_approval_for_new_tools:
-        unsupported.append("require_approval_for_new_tools=true (not yet implemented)")
-
-    if defaults.default_approval_workflow:
-        unsupported.append(
-            f"default_approval_workflow='{defaults.default_approval_workflow}' "
-            "(not yet implemented)"
-        )
-
-    return unsupported
+    if (
+        workflow
+        and available_workflows is not None
+        and workflow not in available_workflows
+    ):
+        errors.append(f"defaults.default_approval_workflow='{workflow}' does not exist")
+    return errors
 
 
 class PolicyApplier:
@@ -1185,16 +1182,10 @@ class PolicyApplier:
             # longer declares would silently stop detecting and break export.
             errors.extend(self._stored_model_io_type_conflicts(policy.sensitive_data))
 
-        # Validate defaults.default_approval_workflow
-        if policy.defaults and policy.defaults.default_approval_workflow:
-            if policy.defaults.default_approval_workflow not in all_available_workflows:
-                suggestion = self._get_workflow_suggestion(
-                    policy.defaults.default_approval_workflow, all_available_workflows
-                )
-                errors.append(
-                    f"Default approval workflow '{policy.defaults.default_approval_workflow}' "
-                    f"is not defined. {suggestion}"
-                )
+        if policy.defaults:
+            errors.extend(
+                invalid_default_settings(policy.defaults, all_available_workflows)
+            )
 
         # Validate escalation_workflow references on approval workflows
         for workflow in policy.approval_workflows or []:
@@ -1801,35 +1792,21 @@ class PolicyApplier:
         defaults: DefaultsDefinition,
         dry_run: bool,
     ) -> bool:
-        """Apply default behavior settings.
+        """Persist validated account defaults; omitted blocks never reset them."""
+        from preloop.models.crud import crud_approval_workflow
 
-        NOTE: Default settings are not yet implemented. This method will raise
-        an error if restrictive defaults are specified that would be silently
-        ignored (leading to fail-open behavior).
-
-        Safe defaults (that match current behavior):
-        - unknown_tools: "allow"
-        - require_approval_for_new_tools: false
-
-        Restrictive defaults (not yet supported, will error):
-        - unknown_tools: "deny" or "require_approval"
-        - require_approval_for_new_tools: true
-        """
-        unsupported_settings = unsupported_default_settings(defaults)
-        if unsupported_settings:
-            error_msg = (
-                "Policy contains restrictive default settings that are not yet supported. "
-                "These settings would be silently ignored, leading to permissive behavior. "
-                f"Unsupported settings: {'; '.join(unsupported_settings)}. "
-                "Remove these settings or wait for implementation."
-            )
-            self._result.errors.append(error_msg)
-            return False
-
-        # Safe defaults - just log and continue
-        logger.info(
-            "Default settings validated (using built-in defaults): unknown_tools=allow"
+        available = set(self._policy_map)
+        available |= crud_approval_workflow.get_names_by_account(
+            self.db, account_id=self.account_id
         )
+        errors = invalid_default_settings(defaults, available)
+        if errors:
+            self._result.errors.extend(errors)
+            return False
+        if not dry_run:
+            from preloop.models.crud.policy_defaults import replace
+
+            replace(self.db, self.account_id, defaults.model_dump(mode="json"))
         return True
 
     def _apply_model_io(
@@ -2135,7 +2112,7 @@ def export_current_policy(
         tools=tool_defs if tool_defs else None,
         model_io=model_io_rules if model_io_rules else None,
         sensitive_data=sensitive_data if has_sensitive_data else None,
-        defaults=DefaultsDefinition(),  # Default settings
+        defaults=parse_defaults(account_meta.get(POLICY_DEFAULTS_META_KEY)),
     )
     from preloop.models.crud.resource_share import policy_section as share_section
 

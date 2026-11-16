@@ -208,6 +208,10 @@ class AuthUserResponse(BaseModel):
 
     model_config = {"title": "AuthUserResponse"}
 
+    enroll_only: bool = Field(
+        False, description="Session is restricted to factor enrollment."
+    )
+
     id: UUID = Field(
         ...,
         description=(
