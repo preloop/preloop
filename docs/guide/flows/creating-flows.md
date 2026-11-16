@@ -44,6 +44,16 @@ Start from a template for common automation scenarios (auto-triage issues, deplo
 
 Flows cloned from a preset track their source: if the preset is later updated, the flow shows a **preset update available** badge and you can apply or dismiss the update. Applying overwrites the prompt/tools unless you customized them (customizations are flagged as `prompt_customized` / `tools_customized`).
 
+For the Pull Request Reviewer, the review delivery gate is off unless the flow
+itself sets `git_clone_config.review_publication.required: true`. The current
+preset copies that block into new flows; existing derived flows never inherit
+it from the preset or a catalog sync. Opt each existing flow in only after
+verifying a consistent API and worker deployment with the API writing review
+receipts. During version skew, a successful review tool call for the triggering
+PR with no receipt can yield `unverified` / `receipt_unavailable`: the run
+succeeds with a warning, but publication for the reviewed head is unproven.
+See [Review delivery check](pull-request-review.md#review-delivery-check).
+
 Four presets (SBOM Verify, SBOM Exploit Check, Release Security Audit, Component Due Diligence Record) turn a CI-emitted SBOM into a versioned `result.json` plus a human-readable evidence pack for a human assessor: see [Security audit presets (CRA evidence packs)](security-audit-presets.md).
 
 **Option B: Blank flow**

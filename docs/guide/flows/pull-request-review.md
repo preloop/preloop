@@ -324,8 +324,10 @@ A reviewer run can be required to prove that the code host accepted its
 review. Set `git_clone_config.review_publication.required: true` on the flow.
 Flows created from the Pull Request Reviewer preset carry this block; an
 existing flow without its own block is never gated, whatever its source preset
-says. Turn it on for an existing flow once the API build that writes receipts
-is serving, and use `required: false` to opt out.
+says. Opt each existing flow in only after verifying a consistent deployment:
+the API serving MCP calls and all workers must run the intended build, with
+the API writing review receipts. No migration or preset catalog sync opts
+existing derived flows in. Use `required: false` to opt out.
 
 With the check on, the MCP `update_pull_request` tool records a receipt only
 after an approve, request-changes or comment review succeeds on the triggering
