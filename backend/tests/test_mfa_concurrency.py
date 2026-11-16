@@ -32,7 +32,9 @@ def test_only_one_concurrent_exchange(
     no_claim=two threads model replicas, with real PostgreSQL row locks."""
     with Session(db_engine) as db:
         user = _user(db)
-        obj = crud_mfa.enroll(db, user.id, encrypt_value("JBSWY3DPEHPK3PXP"))
+        obj = crud_mfa.enroll(
+            db, user.id, encrypt_value("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")
+        )
         crud_mfa.confirm(db, obj, now=datetime.now(UTC))
         codes, hashes = mfa.generate_recovery_codes()
         crud_mfa.replace_recovery_codes(db, user.id, hashes)
@@ -47,7 +49,7 @@ def test_only_one_concurrent_exchange(
         proof = (
             {"recovery_code": codes[0]}
             if recovery
-            else {"code": mfa.totp("JBSWY3DPEHPK3PXP").now()}
+            else {"code": mfa.totp("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP").now()}
         )
     app = FastAPI()
     app.include_router(router, prefix="/mfa")
