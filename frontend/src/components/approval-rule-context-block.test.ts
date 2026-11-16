@@ -9,6 +9,26 @@ import type { ApprovalRuleContext } from '../types';
  * shown verbatim when we have it, and nothing at all is shown when we do not.
  */
 describe('ApprovalRuleContextBlock', () => {
+  it('protects=unlisted tool approval explains the account default; fails_when=reason hidden; no_claim=static server payload', async () => {
+    const element = await fixture<ApprovalRuleContextBlock>(html`
+      <approval-rule-context-block
+        .ruleContext=${
+          {
+            source: 'unknown_tools_default',
+            decision: 'require_approval',
+            rule_name: 'Unlisted MCP tool',
+            explanation:
+              'No access rule matched. The account default requires approval for unlisted MCP tools.',
+          } satisfies ApprovalRuleContext
+        }
+      ></approval-rule-context-block>
+    `);
+    expect(element.shadowRoot?.textContent).to.include('Unlisted MCP tool');
+    expect(element.shadowRoot?.textContent).to.include(
+      'The account default requires approval'
+    );
+  });
+
   const boundaryRule: ApprovalRuleContext = {
     source: 'tool_access_rule',
     decision: 'require_approval',

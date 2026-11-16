@@ -7,6 +7,7 @@ from types import ModuleType
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi.testclient import TestClient
+from pytest_mock import MockerFixture
 from sqlalchemy.orm import Session
 
 from preloop.models import models, schemas
@@ -102,3 +103,42 @@ def test_migration_preserves_existing_secret(
     assert flow.webhook_config["webhook_secret"] == SECRET
     assert flow.webhook_config["dedupe_path"] == "event.id"
     assert flow.webhook_secret_rotated_at is None
+
+
+def test_legacy_secret_replacement_records_rotation(
+    db_session: Session,
+    test_user: models.User,
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """Existing PUT clients get accurate rotation metadata and audit events."""
+    from preloop.api.endpoints import flows
+
+    audit = mocker.patch.object(flows, "log_config_change")
+    flow = _create(db_session, test_user)
+    base = f"/api/v1/flows/{flow.id}"
+    new_secret = "synthetic-replacement-webhook-secret"
+    response = client.put(base, json={"webhook_config": {"webhook_secret": new_secret}})
+    assert response.status_code == 200, response.text
+    assert new_secret not in response.text
+    db_session.refresh(flow)
+    assert flow.webhook_config["webhook_secret"] == new_secret
+    assert flow.webhook_secret_rotated_at is not None
+    rotated_at = flow.webhook_secret_rotated_at
+    assert response.json()["webhook_secret_rotated_at"] is not None
+    rotations = [
+        call.kwargs
+        for call in audit.call_args_list
+        if call.kwargs["action"] == "webhook_secret_rotated"
+    ]
+    assert len(rotations) == 1
+    assert rotations[0]["new_value"]["id"] == str(flow.id)
+    assert new_secret not in str(rotations) and SECRET not in str(rotations)
+    saved = client.put(base, json={"webhook_config": response.json()["webhook_config"]})
+    assert saved.status_code == 200, saved.text
+    db_session.refresh(flow)
+    assert flow.webhook_secret_rotated_at == rotated_at
+    assert (
+        client.post(f"/api/v1/webhooks/flows/{flow.id}/{SECRET}", json={}).status_code
+        == 403
+    )
