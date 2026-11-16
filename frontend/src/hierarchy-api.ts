@@ -21,10 +21,10 @@ import {
 import { CapabilityOffError } from './capabilities';
 
 export class SsoRequiredError extends Error {
-  constructor() {
-    super(
-      "Sign in with your organization's SSO provider. Account owners can use fresh password or passkey sign-in for emergency access."
-    );
+  constructor(
+    message = "Sign in with your organization's SSO provider. Account owners can use fresh password or passkey sign-in for emergency access."
+  ) {
+    super(message);
     this.name = 'SsoRequiredError';
   }
 }
@@ -89,6 +89,13 @@ async function request<T>(
   if (response.status === 409) throw new ConflictError();
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    if (
+      response.status === 403 &&
+      body?.detail?.code === 'strong_sign_in_required'
+    )
+      throw new SsoRequiredError(
+        'Use a passkey, authenticator app, or single sign-on to enter the selected account.'
+      );
     if (response.status === 403 && body?.detail?.code === 'sso_required')
       throw new SsoRequiredError();
     const message = extractErrorMessage(body, fallback);

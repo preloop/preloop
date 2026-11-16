@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field as dataclass_field
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
 from uuid import UUID
 
@@ -49,6 +50,34 @@ class CRUDFlow(CRUDBase[models.Flow]):
     def __init__(self):
         """Initialize with the Flow model."""
         super().__init__(model=models.Flow)
+
+    def rotate_webhook_secret(
+        self,
+        db: Session,
+        *,
+        db_obj: models.Flow,
+        secret: str,
+    ) -> models.Flow:
+        """Replace only the ingress credential, preserving the latest settings.
+
+        Args:
+            db: Active database session.
+            db_obj: Account-scoped flow resolved by the caller.
+            secret: Newly generated ingress token.
+
+        Returns:
+            The refreshed flow after the rotation has committed.
+        """
+        db.refresh(db_obj, with_for_update=True)
+        db_obj.webhook_config = {
+            **(db_obj.webhook_config or {}),
+            "webhook_secret": secret,
+        }
+        db_obj.webhook_secret_rotated_at = datetime.now(timezone.utc)
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
 
     def list_configured_for_model(
         self,
@@ -594,6 +623,17 @@ class CRUDFlow(CRUDBase[models.Flow]):
             The updated flow object.
         """
         update_data = flow_in.model_dump(exclude_unset=True)
+        previous_hook = db_obj.webhook_config or {}
+        replacement_hook = update_data.get("webhook_config")
+        if isinstance(previous_hook, dict) and isinstance(replacement_hook, dict):
+            previous_secret = previous_hook.get("webhook_secret")
+            replacement_secret = replacement_hook.get("webhook_secret")
+            if (
+                previous_secret
+                and replacement_secret
+                and replacement_secret != previous_secret
+            ):
+                update_data["webhook_secret_rotated_at"] = datetime.now(timezone.utc)
         update_data["account_id"] = (
             str(account_id) if isinstance(account_id, UUID) else account_id
         )

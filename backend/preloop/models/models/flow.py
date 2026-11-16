@@ -2,6 +2,7 @@ from typing import Dict, Optional
 from sqlalchemy import (  # Added JSON
     Boolean,
     Column,
+    DateTime,
     ForeignKey,
     Integer,
     String,
@@ -43,6 +44,8 @@ class Flow(Base):
     webhook_config = Column(
         SecretFieldsJSON("webhook_secret"), nullable=True, default=None
     )
+    # Nullable metadata only: existing credentials retain their stored values.
+    webhook_secret_rotated_at = Column(DateTime(timezone=True), nullable=True)
     # Schedule-specific configuration (for trigger_event_source == 'schedule')
     # Discriminated on "type" (see schemas.flow.ScheduleConfig):
     #   {"type": "cron", "expr": "0 6 * * 1-5", "timezone": "Europe/Athens"}

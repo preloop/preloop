@@ -2807,10 +2807,21 @@ async def test_proxied_send_note_enforces_deny_before_dispatch(
     dynamic_mcp._user_context_provider = lambda: user_context
     dynamic_mcp._proxied_tool_servers["send_note"] = str(uuid4())
     dynamic_mcp._proxied_tool_server_names["send_note"] = server_name
+    server = models.MCPServer(
+        account_id=test_user.account_id,
+        name=server_name,
+        url="https://example.com/mcp",
+        transport="http-streaming",
+        auth_type="none",
+    )
+    db_session.add(server)
+    db_session.flush()
+    dynamic_mcp._proxied_tool_servers["send_note"] = str(server.id)
     config = models.ToolConfiguration(
         account_id=test_user.account_id,
         tool_name="send_note",
         tool_source="mcp",
+        mcp_server_id=server.id,
         is_enabled=True,
     )
     db_session.add(config)
@@ -2834,7 +2845,13 @@ async def test_proxied_send_note_enforces_deny_before_dispatch(
         patch(
             "preloop.services.dynamic_fastmcp._prepare_grant_dispatch",
             new=AsyncMock(
-                return_value=(SimpleNamespace(server_name=server_name), None)
+                return_value=(
+                    SimpleNamespace(
+                        server_name=server_name,
+                        client_config={"server_id": str(server.id)},
+                    ),
+                    None,
+                )
             ),
         ),
         patch.object(dynamic_mcp, "_audit_refused_tool_call"),

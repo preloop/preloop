@@ -55,9 +55,9 @@ Example YAML:
         keywords:
           - name: codenames
             terms: ["Project Phoenix"]
-      # No defaults block: apply only accepts unknown_tools: allow, so a
-      # tool call that no rule matches is allowed. This rule denies every
-      # other tool on github-mcp instead. The scope names the server
+      # This server-scoped allowlist restricts only github-mcp. Account
+      # defaults.unknown_tools can instead govern all unmatched MCP calls.
+      # The scope names the server
       # defined under mcp_servers; apply rejects a server that neither the
       # file nor the account has.
       rules:
@@ -1280,45 +1280,28 @@ def _rule_pii_types(rule: ModelIORule) -> List[str]:
 
 
 class DefaultsDefinition(BaseModel):
-    """Default behaviors for the policy.
+    """Account defaults for unmatched MCP calls; native tools keep client fallback.
 
-    ``apply`` only implements the built-in behavior and rejects the other
-    values (see ``unsupported_default_settings`` in the loader).
-
-    Attributes:
-        unknown_tools: How to handle tools not explicitly configured. Only
-            ``allow`` is supported.
-        require_approval_for_new_tools: Require approval for newly discovered
-            tools. Only ``False`` is supported.
-        default_approval_workflow: Default approval workflow for tools
-            requiring approval. Not implemented; ``apply`` rejects any value.
-        inherit_from_parent: Not used; ``apply`` accepts any value and
-            ignores it.
+    Missing defaults preserve allow/false. ``inherit_from_parent`` is accepted
+    and remains unread; scoped defaults are unsupported.
     """
 
     unknown_tools: UnknownToolsPolicy = Field(
         UnknownToolsPolicy.ALLOW,
-        description=(
-            "How to handle tools not explicitly configured. Only 'allow' is "
-            "supported; apply rejects 'deny' and 'require_approval'"
-        ),
+        description="Action for unmatched MCP calls; defaults to allow for existing accounts",
     )
     require_approval_for_new_tools: bool = Field(
         False,
-        description=(
-            "Require approval for newly discovered tools. Only false is "
-            "supported; apply rejects true"
-        ),
+        description="Require one approval per previously unlisted MCP tool route",
     )
     default_approval_workflow: Optional[str] = Field(
         None,
-        description="Default approval workflow name. Not implemented; apply rejects it",
+        description="Resolvable workflow name required for approval defaults",
     )
     inherit_from_parent: bool = Field(
         True,
         description="Not used; apply accepts any value and ignores it",
     )
-
     model_config = ConfigDict(use_enum_values=True)
 
 
@@ -1372,6 +1355,26 @@ class PolicyDocument(BaseModel):
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_scoped_defaults(cls, data: Any) -> Any:
+        """Reject defaults attached to a scope instead of the account."""
+        if isinstance(data, dict):
+            metadata = data.get("metadata") or {}
+            scoped = data.get("scope") or (
+                metadata.get("scope") if isinstance(metadata, dict) else None
+            )
+            if scoped and data.get("defaults") is not None:
+                raise ValueError(
+                    "defaults is only supported at account level; scoped defaults are unsupported"
+                )
+            for index, tool in enumerate(data.get("tools") or []):
+                if isinstance(tool, dict) and "defaults" in tool:
+                    raise ValueError(
+                        f"tools[{index}].defaults is unsupported; use account defaults"
+                    )
+        return data
 
     @model_validator(mode="after")
     def validate_references(self) -> "PolicyDocument":

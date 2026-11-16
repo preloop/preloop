@@ -265,3 +265,92 @@ See the [MDM recipes](../operations/mdm-recipes.md) for staged delivery and sepa
 credential provisioning, the [threat model](endpoint-coverage.md#threat-model)
 for bypass risks, and [planned work](endpoint-coverage.md#planned-work-and-separate-controls)
 for features that must not be treated as shipped coverage.
+
+## Extensions
+
+`preloop agents discover --inventory` emits `preloop.inventory.v3`, including
+installed extensions for Claude Code and Codex CLI. `--report` sends the same
+metadata on each candidate, bound to the matching app's hashed config context.
+Servers continue accepting v1 and v2. A v3 CLI retries once with extensions
+removed when an older server specifically rejects evidence schema version 3.
+
+Extension identifiers (plugin, skill, command and hook event names, versions,
+and marketplace names) are sent in clear. Marketplace and git URLs, hook
+commands, file contents and paths are not. Local/git identifiers containing a
+profile login or home path segment, and project identifiers with that personal
+information, become `hash:<16 hex characters>` with `id_hashed: true`.
+Marketplace plugin identifiers remain unchanged. Source locations are represented
+only by SHA-256 hashes; project references use the config-path hashing scheme
+(keyed with the account salt when reporting).
+
+| Agent | Kind | Known locations below the profile home | Collected metadata |
+| --- | --- | --- | --- |
+| Claude Code | Plugin | `.claude/plugins/store/*.json`, `.claude/plugins/known_marketplaces.json`, `.claude/plugins/marketplaces/<marketplace>/plugins/<name>/.claude-plugin/plugin.json` | Name and marketplace, manifest version (falling back to record version), source hash, enabled state |
+| Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory name and file SHA-256 |
+| Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, command count, one aggregate hash |
+| Claude Code | Command | `.claude/commands/*.md` | File stem and file SHA-256 |
+| Codex CLI | Plugin | `.codex/plugins/<marketplace>/<name>/plugin.json` | Name, marketplace, version when present |
+| Codex CLI | Skill | `.codex/skills/<name>/` | Directory name and `SKILL.md` SHA-256 when present |
+| Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, command count, one aggregate hash |
+
+For the current user, project roots already listed in `.claude.json` are also
+scanned for `.claude/skills/`, `.claude/commands/`, `.claude/hooks/`, and
+`.claude/settings.json`. Unknown projects are not searched. A project's explicit
+plugin setting overrides the user's setting in a project-scope record; absence
+of a setting means `unknown`. All-users inventory scans profile-local locations
+only. Plugin-bundled skills, hooks and commands are represented by the plugin,
+not duplicated as standalone extensions.
+
+```json
+{
+  "kind": "plugin",
+  "id": "reviewer@claude-plugins-official",
+  "version": "1.4.0",
+  "source_kind": "official_marketplace",
+  "source_ref_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scope": "user",
+  "enabled": "true",
+  "id_hashed": false
+}
+```
+
+Optional fields are `project_ref_hash`, `content_hash`, `event` and `count` (the
+last two occur only on hooks). `enabled` is the string `true`, `false` or
+`unknown`. Sources are `official_marketplace`, `third_party_marketplace`, `git`,
+`local`, `builtin` or `unknown`. Only Claude's `claude-plugins-official` and
+Codex's `openai-curated-remote` are classified as official marketplaces.
+
+A skill hash covers `SKILL.md`; a command hash covers the command file. A plugin
+hash, when available, covers canonical JSON of its manifest, not its entire
+installation. For hooks the collector hashes each command locally, sorts the
+`sha256:<hex>` values, joins them with newlines (no trailing newline), then hashes
+that string. Neither commands nor intermediate hashes leave the device. These
+hashes are inventory metadata; approval is by name and does not pin content.
+
+At most 200 extensions are emitted per app context, with a 4 MiB per-file cap,
+64 profiles and 100 app contexts. Directory enumeration is bounded to 256 entries.
+Symlinks are refused, discovered agents are never executed, and `--inventory`
+remains offline without writes. Exceeding a bound, unreadable/malformed metadata,
+or a standalone hook script with no declared event makes the scan partial and
+emits a fixed error code. Unbound scripts are not assigned invented events.
+
+The server reconciles each device/profile/agent only after a complete scan of its
+extension locations. Missing extensions become `present=false` and leave the
+default lists; partial scans preserve previously observed rows. Historical v1/v2
+reports do not reconcile extensions. Discovery retention removes inventory with
+its source observation after 90 days; account approval decisions survive.
+
+`GET /api/v1/agents/discovery-extensions` lists present inventory, with filters
+`fingerprint`, `agent_kind`, `state`, and `source_kind`. `group=extension` returns
+account aggregates with distinct device counts, versions and source kinds.
+`GET /api/v1/agents/extension-approvals` lists durable decisions. Both use `limit`
+(default 50, maximum 500) and an opaque `cursor`, returning `next_cursor` until
+all results have been read. Approval is `unknown` when no decision exists.
+
+`PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
+requires `manage_agents` and accepts `approval_state` (`approved`, `unapproved`,
+`unknown`), optional `note`, and optional `version_constraint`. A constraint is an
+exact version or a prefix ending in `.*`; null means any version. The list shows
+the stored name decision, not a claim that a particular version complies.
+Approvals apply account-wide, not per device. Inventory and approvals do not
+block an extension from loading or running.

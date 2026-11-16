@@ -166,6 +166,39 @@ class CRUDMCPTool(CRUDBase[models.MCPTool]):
         db.commit()
         return count
 
+    def unambiguous_legacy_route(
+        self, db: Session, *, account_id: str, exposed_name: str
+    ) -> Optional[UUID]:
+        """Resolve a pre-route-binding approval only when inventory is unambiguous.
+
+        Include shadowed tools: a collision must not let an old unbound grant
+        transfer to whichever server happens to own the exposed name now.
+        """
+        from . import crud_mcp_server
+
+        server_ids = [
+            server.id
+            for server in crud_mcp_server.get_active_visible_by_account(
+                db, account_id=account_id
+            )
+        ]
+        if not server_ids:
+            return None
+        rows = (
+            db.query(
+                self.model.mcp_server_id, self.model.name, models.MCPServer.tool_prefix
+            )
+            .join(models.MCPServer, self.model.mcp_server_id == models.MCPServer.id)
+            .filter(self.model.mcp_server_id.in_(server_ids))
+            .all()
+        )
+        matches = {
+            server_id
+            for server_id, name, prefix in rows
+            if (f"{prefix}_{name}" if prefix else name) == exposed_name
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
     def get_tool_names_by_server_ids(
         self,
         db: Session,

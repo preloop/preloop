@@ -57,13 +57,11 @@ holds for the database password and the Sentry token.
 
 ## Why the policy is an allowlist
 
-A tool call that no rule matches is allowed
-([Subject-scoped governance](../../../architecture/governance.md)), and policy
-`defaults` cannot change that: the loader refuses `unknown_tools` values other
-than `allow`. A policy that only lists write tools therefore lets through any
-tool a later upstream release adds.
+An account can set `defaults.unknown_tools: deny` to deny unmatched MCP calls
+across all its servers. Without that opt-in, unmatched calls keep the historical
+allow behavior. This profile restricts only its three servers.
 
-So each server gets a `sensitive_data` rule whose CEL `condition` denies every
+Each server gets a `sensitive_data` rule whose CEL `condition` denies every
 tool that is not on the server's read list, the mechanism the
 [back-office policy pack](../../policies/back-office-ai.md) uses. These rules
 run before tool access rules, and a deny rule whose condition fails to

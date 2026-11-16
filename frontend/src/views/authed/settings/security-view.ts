@@ -28,6 +28,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import '../../../components/view-header';
 import '../../../components/mfa-card';
+import '../../../components/sign-in-policy-card';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {
@@ -388,6 +389,7 @@ export class SecurityView extends LitElement {
             </div>
           </div>
           <mfa-card></mfa-card>
+          <sign-in-policy-card></sign-in-policy-card>
           ${
             this.passkeysEnabled
               ? html`

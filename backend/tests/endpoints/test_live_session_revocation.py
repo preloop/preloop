@@ -269,7 +269,9 @@ def test_unified_revoke_closes_second_replica_or_timer(
     message_auth: bool,
     credential: str,
 ) -> None:
-    """Call the real self revoke endpoint while /ws/unified stays open."""
+    """protects=only access tokens open revocable authenticated sockets;
+    fails_when=refresh/purpose tokens authenticate or access revocation is ignored;
+    no_claim=local NATS transport replaces an external broker."""
     auth_revocation.install_revocation_notifications()
     first, second = WebSocketManager(), WebSocketManager()
     bus = LocalNats()
@@ -290,8 +292,16 @@ def test_unified_revoke_closes_second_replica_or_timer(
         display_name="Test member",
         metadata={},
     )
+
+    async def create_session(**kwargs: Any) -> SimpleNamespace:
+        """Model session telemetry using the middleware's actual decision."""
+        session.is_authenticated = kwargs.get("user") is not None
+        return session
+
     monkeypatch.setattr(
-        websockets.session_manager, "create_session", AsyncMock(return_value=session)
+        websockets.session_manager,
+        "create_session",
+        AsyncMock(side_effect=create_session),
     )
     monkeypatch.setattr(websockets.session_manager, "end_session", AsyncMock())
     monkeypatch.setattr(websockets.session_manager, "upgrade_session", AsyncMock())
@@ -331,7 +341,16 @@ def test_unified_revoke_closes_second_replica_or_timer(
         monkeypatch.setattr(auth_revocation, "publish_realtime", publish)
         headers = {} if message_auth else bearer(token)
         with client.websocket_connect("/api/v1/ws/unified", headers=headers) as socket:
-            assert socket.receive_json()["type"] == "handshake"
+            handshake = socket.receive_json()
+            assert handshake["type"] == "handshake"
+            if credential != "access":
+                assert handshake["authenticated"] is False
+                assert second.revocable_connections == {}
+                assert (
+                    second._count_account_connections(str(committed_member.account_id))
+                    == 0
+                )
+                return
             if message_auth:
                 socket.send_json({"type": "authenticate", "token": token})
                 assert socket.receive_json()["type"] == "authenticated"
