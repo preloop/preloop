@@ -24,6 +24,51 @@ from preloop.services.push_notifications.notification_payloads import (
 URL = "https://consent.example.com/path?request=a%2Fb&state=x%2By"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["request_too_old", "notifications_muted"])
+async def test_notification_worker_preserves_unexpected_skips(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """Unexpected skips remain retryable; an intentional mute stays respected."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from preloop.models.crud import external_approval as handoff_crud
+    from preloop.services.approval_service import ApprovalService
+    from preloop.services.event_webhooks.worker import send_external_notifications
+
+    request = SimpleNamespace(
+        id=uuid4(), status="pending", approval_workflow=SimpleNamespace()
+    )
+    db = AsyncMock()
+    db.run_sync.side_effect = lambda fn: fn(None)
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield db
+
+    monkeypatch.setattr("preloop.models.db.session.get_async_db_session", session)
+    monkeypatch.setattr(handoff_crud, "pending_notifications", lambda db: [request.id])
+    monkeypatch.setattr(
+        handoff_crud, "notification_request", lambda db, request_id: request
+    )
+    finish = MagicMock()
+    monkeypatch.setattr(handoff_crud, "notifications_finished", finish)
+    notify = AsyncMock(return_value={"skipped": True, "reason": reason})
+    monkeypatch.setattr(ApprovalService, "send_notifications", notify)
+
+    await send_external_notifications()
+    if reason == "notifications_muted":
+        finish.assert_called_once()
+    else:
+        finish.assert_not_called()
+        notify.return_value = {"email": {"success": True, "sent": 1}}
+        await send_external_notifications()
+        finish.assert_called_once()
+        assert notify.await_count == 2
+
+
 def test_handoff_carries_url_byte_for_byte() -> None:
     """Validation never normalizes percent encoding or query order."""
     data = {"external_reference": "request-example", "external_url": URL}

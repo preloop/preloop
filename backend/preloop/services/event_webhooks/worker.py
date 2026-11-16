@@ -594,11 +594,20 @@ async def send_external_notifications() -> None:
                     service = ApprovalService(
                         db, os.getenv("PRELOOP_URL", "http://localhost:8000")
                     )
-                    await service.send_notifications(
+                    result = await service.send_notifications(
                         request,
                         request.approval_workflow,
                         external_handoff_complete=True,
                     )
+                    if (
+                        result.get("skipped") is True
+                        and result.get("reason") != "notifications_muted"
+                    ):
+                        logger.warning(
+                            "External approval notifications for %s remain deferred",
+                            request_id,
+                        )
+                        continue
                 await db.run_sync(
                     lambda sync,
                     request_id=request_id: handoff_crud.notifications_finished(

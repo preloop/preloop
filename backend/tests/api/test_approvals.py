@@ -337,3 +337,64 @@ def test_expire_by_hook_reports_a_decision_that_landed_first(
         "approver_comment": "not on main",
         "decided_by": "jane",
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "config", "external_url", "visible"),
+    [
+        ("approved", {}, "https://consent.example.com/decide", False),
+        ("approved", {"external_approval_link": True}, None, False),
+        ("approved", {}, None, True),
+        ("declined", {"expose_comment_to_agent": False}, None, False),
+        ("declined", {}, "https://consent.example.com/decide", True),
+    ],
+)
+def test_hook_expiry_applies_agent_comment_privacy(
+    client: Any,
+    db_session: Session,
+    status: str,
+    config: dict[str, Any],
+    external_url: str | None,
+    visible: bool,
+) -> None:
+    """A decision racing hook expiry obeys the same privacy as the held call."""
+    from preloop.api.auth.jwt import _managed_agent_for_api_key
+    from preloop.models.crud import crud_api_key
+
+    token = _runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    agent = _managed_agent_for_api_key(db_session, key)
+    row = _pending_row(db_session, key.account_id, agent.id)
+    row.status = status
+    row.approver_comment = "Private approver text"
+    row.external_url = external_url
+    row.approval_workflow.approval_config = config
+    db_session.flush()
+
+    @asynccontextmanager
+    async def fake_db() -> AsyncIterator[Any]:
+        yield MagicMock()
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", fake_db),
+        patch.object(
+            ApprovalService,
+            "get_approval_request_for_update",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "preloop.api.endpoints.agent_permission._approval_decided_by",
+            return_value="Jane Doe",
+        ),
+    ):
+        response = client.post(
+            f"/api/v1/approvals/{row.id}/expire",
+            json={"reason": "hook_deadline"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == status
+    assert response.json()["approver_comment"] == (
+        "Private approver text" if visible else None
+    )
