@@ -88,14 +88,15 @@ compose_env_assign() {
   printf '%s=%s\n' "$1" "$(compose_env_escape "$2")"
 }
 
-# Replace (or append) a single KEY=value line in the install's .env.
+# Replace all Compose-supported assignments before appending a canonical line.
 set_env_value() {
   key="$1"
   value="$2"
   env_file="${INSTALL_DIR}/.env"
   tmp_file="${env_file}.set"
   if [ -f "$env_file" ]; then
-    grep -v "^${key}=" "$env_file" > "$tmp_file" || true
+    grep -v "^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}${key}[[:space:]]*[:=]" \
+      "$env_file" > "$tmp_file" || true
   else
     : > "$tmp_file"
   fi
@@ -225,16 +226,26 @@ load_existing_env() {
 env_value() {
   # last assignment wins, value may contain '='. Unescape `$$` so a re-run
   # that reads secrets and writes them back does not double-escape.
-  compose_env_unescape "$(sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1)"
+  compose_env_unescape "$(sed -n \
+    "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1[[:space:]]*[:=][[:space:]]*//p" \
+    "$2" 2>/dev/null | tail -n 1)"
 }
 
-# Match instance_service.is_telemetry_disabled, including quoted .env values.
+# Read an opt-out's literal .env value. A hash inside quotes is data; only
+# unquoted values can have an inline comment before their value ends.
+opt_out_env_value() {
+  raw_opt_out="$(env_value "$1" "${INSTALL_DIR}/.env")"
+  case "$raw_opt_out" in
+    \"*) printf '%s' "$raw_opt_out" | sed 's/^"\([^"]*\)".*$/\1/' ;;
+    \'*) printf '%s' "$raw_opt_out" | sed "s/^'\([^']*\)'.*$/\1/" ;;
+    *) printf '%s' "$raw_opt_out" | sed 's/[[:space:]]#.*$//' ;;
+  esac
+}
+
+# Match instance_service.is_telemetry_disabled on literal environment values.
 opt_out_enabled() {
   normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-    | sed -e 's/[[:space:]]#.*$//' \
-      -e 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-      -e "s/^[\"']//;s/[\"']$//" \
-      -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   case "$normalized" in
     true|1|t|yes) return 0 ;;
   esac
@@ -247,14 +258,17 @@ opt_out_enabled() {
 persist_opt_out() {
   opt_out_key="$1"
   opt_out_value="$2"
-  stored_opt_out="$(env_value "$opt_out_key" "${INSTALL_DIR}/.env")"
+  stored_opt_out="$(opt_out_env_value "$opt_out_key")"
   if opt_out_enabled "$stored_opt_out" || opt_out_enabled "$opt_out_value"; then
     opt_out_value=true
-  elif [ -z "$opt_out_value" ]; then
-    opt_out_value="$stored_opt_out"
-  fi
-  if [ -n "$opt_out_value" ]; then
     set_env_value "$opt_out_key" "$opt_out_value"
+  elif [ -n "$opt_out_value" ]; then
+    # All other supplied values are false under the backend's truthy rule.
+    opt_out_value=false
+    set_env_value "$opt_out_key" "$opt_out_value"
+  else
+    # Keep a stored non-opt-out verbatim, including quotes and comments.
+    opt_out_value="$stored_opt_out"
   fi
   printf '%s' "$opt_out_value"
 }

@@ -115,6 +115,13 @@ def test_release_compose_reads_persisted_opt_out(
     tmp_path: Path, key: str, older_release: bool
 ) -> None:
     """Real Compose resolves the install's .env without inherited opt-outs."""
+    _install(tmp_path, {key: "true"})
+    _install(tmp_path, {key: None, "PRELOOP_VERSION": "1.0.3"})
+    assert _compose_api_env(tmp_path, older_release=older_release)[key] == "true"
+
+
+def _compose_api_env(home: Path, *, older_release: bool = False) -> dict[str, str]:
+    """Render the scratch install's API environment without inherited flags."""
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("Docker Compose is unavailable")
@@ -122,20 +129,20 @@ def test_release_compose_reads_persisted_opt_out(
     # executable into the scratch home; no real Docker configuration is read.
     plugin = Path.home() / ".docker/cli-plugins/docker-compose"
     if plugin.is_file():
-        plugins = tmp_path / ".docker/cli-plugins"
-        plugins.mkdir(parents=True)
-        (plugins / "docker-compose").symlink_to(plugin.resolve())
-    clean_env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+        plugins = home / ".docker/cli-plugins"
+        plugins.mkdir(parents=True, exist_ok=True)
+        link = plugins / "docker-compose"
+        if not link.exists():
+            link.symlink_to(plugin.resolve())
+    clean_env = {"PATH": os.environ["PATH"], "HOME": str(home)}
     version = subprocess.run(
         [docker, "compose", "version"], env=clean_env, capture_output=True, timeout=15
     )
     if version.returncode:
         pytest.skip("Docker Compose is unavailable")
-    _install(tmp_path, {key: "true"})
-    _install(tmp_path, {key: None, "PRELOOP_VERSION": "1.0.3"})
     compose_args = []
     if older_release:
-        compose_file = tmp_path / ".preloop-oss/docker-compose.yaml"
+        compose_file = home / ".preloop-oss/docker-compose.yaml"
         compose_file.write_text(
             "\n".join(
                 line
@@ -147,12 +154,52 @@ def test_release_compose_reads_persisted_opt_out(
         compose_args = ["-f", "docker-compose.yaml", "-f", "docker-compose.auth.yaml"]
     result = subprocess.run(
         [docker, "compose", *compose_args, "config", "--format", "json"],
-        cwd=tmp_path / ".preloop-oss",
+        cwd=home / ".preloop-oss",
         env=clean_env,
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    api_env = json.loads(result.stdout)["services"]["api"]["environment"]
-    assert api_env[key] == "true"
+    return json.loads(result.stdout)["services"]["api"]["environment"]
+
+
+@pytest.mark.parametrize("key", OPT_OUTS)
+@pytest.mark.parametrize("override", [None, "false"])
+@pytest.mark.parametrize(
+    "assignment",
+    ["{key} = true", "{key}: true", "export {key}=true", "  {key}=true"],
+)
+def test_preserve_compose_assignment_syntax(
+    tmp_path: Path, key: str, override: str | None, assignment: str
+) -> None:
+    """Every Compose-supported key form preserves an existing opt-out."""
+    install = tmp_path / ".preloop-oss"
+    install.mkdir()
+    (install / ".env").write_text(
+        "SECRET_KEY=synthetic-install-secret\n" + assignment.format(key=key) + "\n"
+    )
+    shutil.copy(
+        REPO_ROOT / "docker-compose.release.yaml", install / "docker-compose.yaml"
+    )
+    assert _compose_api_env(tmp_path)[key] == "true"
+    output = _install(tmp_path, {"PRELOOP_DISABLE_TELEMETRY": None, key: override})
+    assert f"{key}=true\n" in (install / ".env").read_text()
+    assert sum(key in line for line in (install / ".env").read_text().splitlines()) == 1
+    assert "Version check-in: OFF" in output
+    assert _compose_api_env(tmp_path)[key] == "true"
+
+
+@pytest.mark.parametrize("key", OPT_OUTS)
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_hash_is_not_an_opt_out(tmp_path: Path, key: str, quote: str) -> None:
+    """A hash inside quotes is literal and must not manufacture an opt-out."""
+    install = tmp_path / ".preloop-oss"
+    install.mkdir()
+    value = f"{quote}true # not a comment{quote}"
+    (install / ".env").write_text(
+        f"SECRET_KEY=synthetic-install-secret\n{key}={value}\n"
+    )
+    output = _install(tmp_path, {"PRELOOP_DISABLE_TELEMETRY": None})
+    assert "Version check-in: ON" in output
+    assert _compose_api_env(tmp_path)[key] == "true # not a comment"
