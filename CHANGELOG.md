@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- MCP policies honour `defaults.unknown_tools` for unmatched calls, including
+  hook-observed MCP tools. Allow remains the default for existing accounts;
+  deny and approval defaults are opt-in (#2313).
+
 ### Added
 
 - flows: restricted-CI read-only reviews bind their result to the admitted

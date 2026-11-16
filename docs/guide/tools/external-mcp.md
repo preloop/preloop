@@ -386,11 +386,11 @@ tools:
         description: "Small payments are safe"
 ```
 
-A tool the policy does not list is allowed. In `defaults`, `apply` (also with
-`--dry-run`) accepts only `unknown_tools: allow`; it rejects
-`unknown_tools: deny` or `require_approval`, `require_approval_for_new_tools: true`
-and `default_approval_workflow`. To put a tool behind approval, list it under
-`tools:` as `pay` is above.
+When no rule matches an MCP call, `defaults.unknown_tools` chooses `allow`
+(the backward-compatible default), `deny`, or `require_approval`. Approval
+requires a resolvable `defaults.default_approval_workflow`. Rules use the exposed
+name and selected server, including any prefix; a colliding name on another
+server cannot authorize this call. See [Unlisted tools](../concepts/policy-as-code.md#unlisted-tools).
 
 Apply with the CLI:
 

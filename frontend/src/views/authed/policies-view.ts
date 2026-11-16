@@ -1,3 +1,4 @@
+import { parseDocument } from 'yaml';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
@@ -388,6 +389,14 @@ export class PoliciesView extends LitElement {
 
       sl-tab-panel {
         padding-top: var(--sl-spacing-large);
+      }
+
+      .policy-defaults {
+        border-bottom: 1px solid var(--console-hairline);
+        padding-bottom: var(--sl-spacing-large);
+        margin-bottom: var(--sl-spacing-large);
+        display: grid;
+        gap: var(--sl-spacing-medium);
       }
 
       /* Access Policies Tab */
@@ -1734,6 +1743,82 @@ export class PoliciesView extends LitElement {
   // YAML editor (active policy)
   // ============================================================================
 
+  /** Edit the existing YAML document so comments and unrelated blocks survive. */
+  private _setDefaults(field: string, value: string | boolean) {
+    try {
+      const doc = parseDocument(this._yamlDraft);
+      if (doc.errors.length || !doc.contents)
+        throw new Error('Fix YAML errors before editing defaults.');
+      doc.setIn(['defaults', field], value);
+      this._yamlDraft = doc.toString();
+      this._yamlDirty = true;
+      this._yamlErrors = [];
+      this._yamlNotice = '';
+    } catch {
+      this._yamlErrors = [
+        {
+          path: '$.defaults',
+          message: 'Fix YAML errors before editing defaults.',
+        },
+      ];
+    }
+  }
+
+  private _renderDefaults() {
+    let defaults: Record<string, any> = {};
+    let invalid = false;
+    try {
+      const doc = parseDocument(this._yamlDraft);
+      invalid = doc.errors.length > 0;
+      defaults = doc.toJS()?.defaults || {};
+    } catch {
+      invalid = true;
+    }
+    const disabled =
+      invalid || this._yamlUnavailable || !this._canManagePolicies;
+    return html`<section
+      class="policy-defaults"
+      aria-labelledby="policy-defaults-title"
+    >
+      <h3 id="policy-defaults-title">Defaults</h3>
+      <p class="model-io-hint">
+        Apply to MCP tools when no rule matches. Native tools keep their client
+        permission decision.
+      </p>
+      <sl-select
+        label="Unlisted MCP tools"
+        data-testid="unknown-tools"
+        .value=${defaults.unknown_tools || 'allow'}
+        ?disabled=${disabled}
+        @sl-change=${(event: Event) => this._setDefaults('unknown_tools', (event.target as HTMLSelectElement).value)}
+      >
+        <sl-option value="allow">Allow</sl-option>
+        <sl-option value="require_approval">Require approval</sl-option>
+        <sl-option value="deny">Deny</sl-option>
+      </sl-select>
+      <sl-tooltip
+        content="Approve-once will be available with the Tools seen registry."
+      >
+        <sl-switch disabled
+          >Require approval the first time a tool is seen</sl-switch
+        >
+      </sl-tooltip>
+      ${
+        defaults.unknown_tools === 'require_approval'
+          ? html` <sl-select
+              label="Default approval workflow"
+              data-testid="defaults-workflow"
+              .value=${defaults.default_approval_workflow || ''}
+              ?disabled=${disabled}
+              @sl-change=${(event: Event) => this._setDefaults('default_approval_workflow', (event.target as HTMLSelectElement).value)}
+            >
+              ${this._approvalPolicies.map((workflow) => html`<sl-option value=${workflow.name}>${workflow.name}</sl-option>`)}
+            </sl-select>`
+          : nothing
+      }
+    </section>`;
+  }
+
   private _triggerImport = () => {
     this.shadowRoot
       ?.querySelector<HTMLInputElement>('#policy-file-input')
@@ -2876,6 +2961,7 @@ export class PoliciesView extends LitElement {
       );
     return html`
       <div class="policy-files-container">
+        ${this._renderDefaults()}
         <div class="yaml-editor-header">
           ${
             baseline

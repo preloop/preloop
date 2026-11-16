@@ -537,11 +537,23 @@ async def validate_policy(
                     rule.approval_workflow,
                 )
 
-        if policy.defaults and policy.defaults.default_approval_workflow:
-            name = policy.defaults.default_approval_workflow
-            if name not in all_available_workflows:
-                _workflow_error(
-                    "$.defaults.default_approval_workflow", "Defaults", name
+        if policy.defaults:
+            from preloop.services.policy.loader import invalid_default_settings
+
+            for error in invalid_default_settings(
+                policy.defaults, all_available_workflows
+            ):
+                field = (
+                    "default_approval_workflow"
+                    if "default_approval_workflow" in error
+                    else "require_approval_for_new_tools"
+                )
+                result.errors.append(
+                    PolicyValidationError(
+                        path=f"$.defaults.{field}",
+                        message=error,
+                        value=getattr(policy.defaults, field),
+                    )
                 )
 
         for idx, wf in enumerate(policy.approval_workflows or []):
@@ -698,7 +710,11 @@ async def upload_policy(
             result.errors,
         )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=(
+                status.HTTP_400_BAD_REQUEST
+                if any("defaults." in error for error in result.errors)
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
             detail={
                 "message": "Failed to apply policy",
                 "errors": result.errors,
