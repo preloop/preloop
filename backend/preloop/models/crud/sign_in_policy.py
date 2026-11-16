@@ -6,7 +6,7 @@ Mutations flush without committing so settings, revocation and audit are atomic.
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, func
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -65,6 +65,86 @@ def roles(db: Session, account_id: UUID) -> dict[UUID, set[str]]:
     for user_id, name in inherited:
         result.setdefault(user_id, set()).add(name)
     return result
+
+
+def administrator_ids(
+    db: Session, account_id: UUID, *, user_id: UUID | None = None
+) -> set[UUID]:
+    """Resolve canonical administrators in one account-scoped query.
+
+    Primary owners, superusers, the system owner role and roles granting
+    manage_account count. Role labels alone never confer authority. An optional
+    member filter keeps authentication checks independent of account size.
+    """
+    direct = (
+        select(models.UserRole.role_id)
+        .where(models.UserRole.user_id == models.User.id)
+        .correlate(models.User)
+    )
+    inherited = (
+        select(models.TeamRole.role_id)
+        .join(
+            models.TeamMembership,
+            models.TeamMembership.team_id == models.TeamRole.team_id,
+        )
+        .join(models.Team, models.Team.id == models.TeamRole.team_id)
+        .where(
+            models.TeamMembership.user_id == models.User.id,
+            models.Team.account_id == account_id,
+        )
+        .correlate(models.User)
+    )
+    permission = (
+        select(models.RolePermission.id)
+        .join(
+            models.Permission,
+            models.Permission.id == models.RolePermission.permission_id,
+        )
+        .where(
+            models.RolePermission.role_id == models.Role.id,
+            models.Permission.name == "manage_account",
+        )
+        .exists()
+    )
+    held_admin_role = (
+        select(models.Role.id)
+        .where(
+            (models.Role.account_id == account_id)
+            | (models.Role.account_id.is_(None) & models.Role.is_system_role.is_(True)),
+            models.Role.id.in_(direct) | models.Role.id.in_(inherited),
+            ((models.Role.name == "owner") & models.Role.is_system_role.is_(True))
+            | permission,
+        )
+        .exists()
+    )
+    primary_owner = (
+        select(models.Account.primary_user_id)
+        .where(models.Account.id == account_id)
+        .scalar_subquery()
+    )
+    query = select(models.User.id).where(
+        models.User.account_id == account_id,
+        (models.User.id == primary_owner)
+        | models.User.is_superuser.is_(True)
+        | held_admin_role,
+    )
+    if user_id is not None:
+        query = query.where(models.User.id == user_id)
+    return set(db.scalars(query))
+
+
+def membership_account_counts(db: Session, account_id: UUID) -> dict[UUID, int]:
+    """Count each member person's accounts in one query for managed reset checks."""
+    people = select(models.User.person_id).where(models.User.account_id == account_id)
+    return dict(
+        db.execute(
+            select(
+                models.User.person_id, func.count(func.distinct(models.User.account_id))
+            )
+            .where(models.User.person_id.in_(people))
+            .group_by(models.User.person_id)
+        ).all()
+    )
 
 
 def factor_coverage(db: Session, account_id: UUID) -> dict[UUID, dict[str, bool]]:
