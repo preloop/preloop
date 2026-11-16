@@ -75,8 +75,6 @@ export function defaultFlowNotifications(): FlowNotifications {
 }
 
 export interface FlowWebhookConfig {
-  /** Set on webhook-triggered flows only; tracker flows have none. */
-  webhook_secret?: string | null;
   dedupe_path?: string | null;
   /**
    * Stop this flow's run on an older pull request head when a new head
@@ -160,6 +158,9 @@ export interface Flow {
   schedule_config?: Record<string, unknown> | null;
   schedule_state?: FlowScheduleState | null;
   webhook_config?: FlowWebhookConfig;
+  webhook_secret_set?: boolean;
+  webhook_secret_hint?: string | null;
+  webhook_secret_rotated_at?: string | null;
   allowed_mcp_servers?: string[];
   allowed_mcp_tools?: Array<{ server_name: string; tool_name: string }>;
   /**
@@ -2775,7 +2776,8 @@ export type ApprovalRuleContextSource =
   | 'tool_default_workflow'
   | 'rule_evaluation_error'
   | 'agent_permission_hook'
-  | 'model_io_rule';
+  | 'model_io_rule'
+  | 'unknown_tools_default';
 
 /**
  * Snapshot of the policy rule that required an approval.

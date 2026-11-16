@@ -346,6 +346,7 @@ async def require_approval(
     halt_scope: str = "tools",
     requested_timeout_seconds: Optional[int] = None,
     server_name: Optional[str] = None,
+    mcp_server_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -495,6 +496,18 @@ async def require_approval(
                 tool_name=tool_name,
                 tool_source=tool_source,
             )
+            if tool_source == "mcp" and mcp_server_id is not None:
+                from preloop.models.crud.tool_configuration import (
+                    get_tool_config_for_route_async,
+                )
+
+                config = await get_tool_config_for_route_async(
+                    db,
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    tool_source="mcp",
+                    mcp_server_id=mcp_server_id,
+                )
             if not config and tool_source == "builtin":
                 alias = TOOL_NAME_ALIASES.get(tool_name)
                 if alias:
@@ -540,7 +553,12 @@ async def require_approval(
                         tool_name=tool_name,
                         tool_source=tool_source,
                         account_id=account_id,
-                        approval_workflow_id=workflow_id,
+                        # Approval tracking must not turn a default into a tool rule.
+                        approval_workflow_id=None
+                        if rule_context
+                        and rule_context.get("source") == "unknown_tools_default"
+                        else workflow_id,
+                        mcp_server_id=mcp_server_id,
                         is_enabled=True,
                         custom_config={},
                     )

@@ -62,7 +62,11 @@ without running that initializer, run
 The review publication requirement is a per-flow opt-in: an existing reviewer
 flow without its own `git_clone_config.review_publication` block is never
 gated by the stored catalog. Set `review_publication.required: true` on the
-flow once the API build that writes receipts is serving.
+flow only after verifying that the API serving MCP calls and all workers run
+the intended build consistently, with the API writing review receipts.
+Use the [API opt-in and canary check](guide/flows/pull-request-review.md#enable-an-existing-flow)
+to preserve the flow's full clone configuration and verify a `published`
+receipt before opting other flows in.
 
 PostgreSQL data (schema, migrations, seeded rows) lives on the host. After
 the first boot you normally only restart processes, not reinstall or

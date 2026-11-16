@@ -25,7 +25,6 @@ from preloop.services.policy import (
     DefaultsDefinition,
     PolicyApplier,
     PolicyDocument,
-    UnknownToolsPolicy,
     load_policy_from_string,
 )
 from preloop.services.policy_generation import (
@@ -194,8 +193,13 @@ DEFAULTS_CASES = [
 
 def _apply_accepts(defaults: dict[str, Any]) -> bool:
     """Whether ``PolicyApplier._apply_defaults`` accepts these defaults."""
-    applier = PolicyApplier(MagicMock(), account_id=str(uuid.uuid4()))
-    return applier._apply_defaults(DefaultsDefinition(**defaults), dry_run=True)
+    db = MagicMock()
+    applier = PolicyApplier(db, account_id=str(uuid.uuid4()))
+    with patch(
+        "preloop.models.crud.crud_approval_workflow.get_names_by_account",
+        return_value={"review"},
+    ):
+        return applier._apply_defaults(DefaultsDefinition(**defaults), dry_run=True)
 
 
 def _with_defaults(defaults: dict[str, Any]) -> str:
@@ -245,7 +249,7 @@ class TestValidateOutputDefaults:
 
         assert result == VALID_POLICY_YAML.strip()
         messages = mock_litellm.completion.call_args.kwargs["messages"]
-        assert "unknown_tools='require_approval'" in messages[-1]["content"]
+        assert "defaults.default_approval_workflow" in messages[-1]["content"]
 
 
 @pytest.fixture(params=["_build_system_prompt", "_build_audit_system_prompt"])
@@ -260,18 +264,11 @@ class TestPromptDefaultsGuidance:
     def test_rules_name_no_unknown_tools_value_apply_rejects(
         self, system_prompt: str
     ) -> None:
-        rejected = [
-            value.value
-            for value in UnknownToolsPolicy
-            if not _apply_accepts({"unknown_tools": value.value})
-        ]
-        assert rejected
-        rules = system_prompt.split("### RULES", 1)[1].split("###", 1)[0]
-        for bullet in rules.split("\n- "):
-            if "unknown_tools" not in bullet:
-                continue
-            for value in rejected:
-                assert not re.search(rf"\b{value}\b", bullet), bullet
+        # protects=prompt documents enforced defaults; fails_when=guidance hides
+        # deny or approval workflow requirement; no_claim=no model provider call.
+        assert "defaults.unknown_tools" in system_prompt
+        assert "default_approval_workflow" in system_prompt
+        assert "backward-compatible default" in system_prompt
 
     def test_yaml_examples_pass_apply(self, system_prompt: str) -> None:
         examples = _yaml_examples(system_prompt)

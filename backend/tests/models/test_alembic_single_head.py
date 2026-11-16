@@ -591,8 +591,32 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     bundle_registry = script.get_revision("20261113_bundle_registry")
     assert bundle_registry.down_revision == joined.revision
+    rotation = script.get_revision("20261210_flow_webhook_rotation")
+    assert rotation.down_revision == bundle_registry.revision
     external_approval = script.get_revision("20261210_external_approval")
     assert external_approval.down_revision == bundle_registry.revision
     external_grant_indexes = script.get_revision("20261211_external_grant_idx")
     assert external_grant_indexes.down_revision == external_approval.revision
-    assert script.get_heads() == [external_grant_indexes.revision]
+    merged = script.get_revision("20261212_flow_approval_merge")
+    assert set(merged.down_revision) == {
+        rotation.revision,
+        external_grant_indexes.revision,
+    }
+    sign_in_policy = script.get_revision("20261116_sign_in_policy")
+    assert sign_in_policy.down_revision == bundle_registry.revision
+    joined_policy = script.get_revision("20261213_flow_signin_merge")
+    assert set(joined_policy.down_revision) == {
+        merged.revision,
+        sign_in_policy.revision,
+    }
+    sign_in_approval = script.get_revision("20261212_sign_in_approval_merge")
+    assert set(sign_in_approval.down_revision) == {
+        sign_in_policy.revision,
+        external_grant_indexes.revision,
+    }
+    flow_policy = script.get_revision("20261215_flow_policy_merge")
+    assert set(flow_policy.down_revision) == {
+        joined_policy.revision,
+        sign_in_approval.revision,
+    }
+    assert script.get_heads() == [flow_policy.revision]

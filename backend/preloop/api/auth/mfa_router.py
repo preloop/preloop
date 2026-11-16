@@ -87,6 +87,7 @@ class VerifyRequest(ProofRequest):
     """Exchange a short-lived sign-in challenge and one proof."""
 
     challenge_token: str = Field(min_length=1, max_length=4096)
+    cli_redirect_uri: str | None = Field(default=None, max_length=1024)
 
 
 class TokenPair(BaseModel):
@@ -96,6 +97,12 @@ class TokenPair(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class VerifiedSignIn(TokenPair):
+    """Completed proof with an optional server-validated CLI continuation."""
+
+    cli_redirect_uri: str | None = None
 
 
 class RecoveryCodes(BaseModel):
@@ -189,7 +196,7 @@ def confirm(
     return {"recovery_codes": codes, **mfa.token_pair(user, context)}
 
 
-@router.post("/verify", response_model=TokenPair)
+@router.post("/verify", response_model=VerifiedSignIn)
 def verify(
     body: VerifyRequest,
     request: Request,
@@ -205,6 +212,9 @@ def verify(
     )
 
     claims = mfa.read_challenge(body.challenge_token)
+    callback = claims.get("cli_redirect_uri")
+    if body.cli_redirect_uri is not None and body.cli_redirect_uri != callback:
+        raise mfa.error("invalid_cli_redirect", 400)
     user = crud_user.get(db, id=uuid.UUID(claims["sub"]))
     if user is None:
         raise mfa.error("challenge_expired")
@@ -243,7 +253,7 @@ def verify(
         db, user=user, method=claims["amr"][0], succeeded=True, source_ip=source_ip
     )
     response.headers["Cache-Control"] = "no-store"
-    return mfa.token_pair(user, context)
+    return {**mfa.token_pair(user, context), "cli_redirect_uri": callback}
 
 
 @router.post("/disable", status_code=204)

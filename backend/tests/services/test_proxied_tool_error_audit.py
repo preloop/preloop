@@ -347,12 +347,22 @@ async def test_post_approval_replay_reports_upstream_error(monkeypatch, user_con
         is_error=True,
         structured_content=DENIED,
     )
-    mcp, _, _, _ = _setup(monkeypatch, user_context, upstream=upstream)
+    mcp, _, _, server = _setup(monkeypatch, user_context, upstream=upstream)
     internal = f"account_{user_context.account_id.replace('-', '_')}_safe_tool"
 
-    tool_result = await mcp.call_registered_tool_without_policy(
-        internal, {"ok": "yes"}, account_id=user_context.account_id
-    )
+    from tests.services.approval_replay_fixtures import approved_mcp_replay
+
+    server.id = uuid4()
+    with approved_mcp_replay(
+        monkeypatch,
+        mcp,
+        account_id=user_context.account_id,
+        tool_name="safe_tool",
+        server_id=server.id,
+    ):
+        tool_result = await mcp.call_registered_tool_without_policy(
+            internal, {"ok": "yes"}, account_id=user_context.account_id
+        )
     status, error = post_approval_exec_outcome(tool_result)
 
     assert status == "upstream_error"

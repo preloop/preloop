@@ -671,9 +671,12 @@ def _authentication_verify(
     from preloop.services.authentication_policy import new_authentication
 
     auth_context = new_authentication(
-        db, user, method="passkey", source_ip=get_client_ip(request)
+        db,
+        user,
+        method="passkey",
+        source_ip=get_client_ip(request),
+        passkey_uv=verification.user_verified is True,
     )
-    auth_context["passkey_uv"] = verification.user_verified is True
 
     crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 
@@ -954,9 +957,11 @@ def put_passkey_only(
         return PasskeyOnlyUpdateResponse(enabled=body.enabled)
 
     # This session's tokens carry the old non-SSO generation; reissue them
-    # with the same assurance (passkey, original auth_time) and the new one.
+    # with the original assurance and a membership-bound continuation. TOTP
+    # can authorize this change too; it must not be relabeled as a passkey.
     auth_context = dict(claims)
     auth_context["nsg"] = generation
+    auth_context["passkey_only_continuation"] = str(user.id)
     auth_generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},

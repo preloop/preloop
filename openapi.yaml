@@ -1296,7 +1296,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenPair'
+                $ref: '#/components/schemas/VerifiedSignIn'
         '422':
           description: Validation Error
           content:
@@ -19602,6 +19602,48 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/webhook-secret/rotate:
+    post:
+      tags:
+      - Flows
+      summary: Rotate Flow Webhook Secret
+      description: "Rotate an ingress secret and return its new value once.\n\nArgs:\n\
+        \    db: Active database session.\n    flow_id: Flow owned by the caller's\
+        \ account.\n    current_user: User performing the rotation.\n\nReturns:\n\
+        \    Flow metadata with the new webhook_secret, shown only in this response.\n\
+        \nRaises:\n    HTTPException: 404 for an inaccessible flow, 400 without a\
+        \ webhook\n        trigger, or 403 without edit_flows permission."
+      operationId: rotate_flow_webhook_secret_api_v1_flows__flow_id__webhook_secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/apply-preset-update:
     post:
       tags:
@@ -31688,6 +31730,11 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        enroll_only:
+          type: boolean
+          title: Enroll Only
+          description: Session is restricted to factor enrollment.
+          default: false
         id:
           type: string
           format: uuid
@@ -40100,6 +40147,33 @@ components:
             type: object
           type: object
           title: Effective Limits
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: New ingress secret, returned once by the rotate action only.
+        webhook_secret_rotated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Webhook Secret Rotated At
+          description: Last explicit rotation time; null for existing unrotated secrets.
+        webhook_secret_set:
+          type: boolean
+          title: Webhook Secret Set
+          description: Whether the flow has an ingress credential, without revealing
+            it.
+          readOnly: true
+        webhook_secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret Hint
+          description: The last four characters, matching approval workflow secret
+            hints.
+          readOnly: true
         effective_publication_policy:
           $ref: '#/components/schemas/EffectivePublicationPolicy'
           description: Read-only description derived from this saved flow's configuration.
@@ -40109,6 +40183,8 @@ components:
       - id
       - created_at
       - updated_at
+      - webhook_secret_set
+      - webhook_secret_hint
       - effective_publication_policy
       title: FlowResponse
     FlowSuccessNotifications:
@@ -57729,6 +57805,33 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifiedSignIn:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cli Redirect Uri
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: VerifiedSignIn
+      description: Completed proof with an optional server-validated CLI continuation.
     VerifyRequest:
       properties:
         code:
@@ -57750,6 +57853,12 @@ components:
           maxLength: 4096
           minLength: 1
           title: Challenge Token
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cli Redirect Uri
       type: object
       required:
       - challenge_token
@@ -57827,13 +57936,6 @@ components:
       description: Configuration for webhook triggers.
     WebhookConfigResponse:
       properties:
-        webhook_secret:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated
-            for webhook triggers; unset on flows triggered by tracker events)
         supersede_on_update:
           type: boolean
           title: Supersede On Update
@@ -57852,7 +57954,7 @@ components:
             then 'data.issue.id'.
       type: object
       title: WebhookConfigResponse
-      description: Webhook settings on a flow response. The ingress secret is omitted.
+      description: Webhook settings on a flow response, without ingress credentials.
     WebhookDeliveryRead:
       properties:
         id:

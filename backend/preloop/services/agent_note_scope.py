@@ -656,7 +656,12 @@ def _consult_policy(
     action = decision[0]
     rule_description = decision[2]
     source = getattr(decision, "source", None)
-    from_rule = source in (SOURCE_TOOL_ACCESS_RULE, SOURCE_SUBJECT_SCOPED_RULE)
+    from_rule = source in (
+        SOURCE_TOOL_ACCESS_RULE,
+        SOURCE_SUBJECT_SCOPED_RULE,
+        "rule",
+        "scoped_rule",
+    )
     if action == "require_approval":
         from preloop.models.crud.agent_note_policy import caller_approval_workflow
 

@@ -147,13 +147,14 @@ Tool conditions do not accept `redact`. A `sensitive_data` rule does:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `unknown_tools` | string | `allow` | Only `allow` is supported; `apply` rejects `deny` and `require_approval` |
+| `unknown_tools` | string | `allow` | Unmatched MCP calls: `allow`, `deny`, or `require_approval` |
 | `require_approval_for_new_tools` | bool | `false` | Only `false` is supported; `apply` rejects `true` |
-| `default_approval_workflow` | string | n/a | Not implemented yet; `apply` rejects any value |
+| `default_approval_workflow` | string | n/a | Workflow name, required for `unknown_tools: require_approval` |
 | `inherit_from_parent` | bool | `true` | Not used; `apply` accepts any value and ignores it |
 
-`apply` rejects the unsupported values, also with `--dry-run`, so that a policy
-does not look stricter than it is.
+`validate` and `apply` resolve workflow names against the file and your account.
+A missing workflow is an error, including with `--dry-run`. Scoped defaults
+are rejected: only the account policy supplies defaults.
 
 **Native tool rules in unattended flow runs.** Rules on native agent tools
 (`Bash`, `Write`, ...) also govern flow executions. A flow run on a private
@@ -171,12 +172,42 @@ any enabled native tool configuration (including agent-pinned ones) has a rule
 requiring approval, or when such a rule is scoped to the flow or to an employee
 flow's target agent.
 
-A tool the policy does not list is allowed.
-To put a tool behind approval, list it under `tools:` with an
-`approval_workflow`. To deny every tool on an MCP server except a list, add a
-`sensitive_data` rule scoped to that server with a CEL `condition`, as the
-[read-only production access example](../examples/production-access/README.md#why-the-policy-is-an-allowlist)
-does.
+### Unlisted tools
+
+An MCP tool is unlisted when no explicit rule matches the call, including a
+configured tool with no matching condition. Its account policy controls it:
+
+```yaml
+defaults:
+  unknown_tools: deny
+```
+
+| Precedence | Outcome |
+|------------|---------|
+| Explicit tool or subject rule matches | Rule action |
+| No rule matches an MCP call | `defaults.unknown_tools` |
+| Native agent tool (Bash, Edit, Read) | Existing rule and client-decision fallback |
+
+To ask a human for every unmatched MCP call, use `unknown_tools: require_approval`
+and `default_approval_workflow: Review`, where `Review` is a workflow defined in
+the file or account. Decisions are audited with `source: unknown_tools_default`.
+Workflow lookup or evaluation errors block execution. An async approved call is
+checked again before replay; a new deny blocks it.
+
+Omitting the block preserves stored defaults. An account with no stored block
+loads `unknown_tools: allow` and `require_approval_for_new_tools: false`, keeping
+historical behavior. Exports and snapshots include defaults; rollback restores
+them. `inherit_from_parent` is accepted and unread. Defaults are account-wide;
+there are no scoped defaults in this version.
+
+Tools are identified by the selected MCP server and exposed name. A prefix is
+part of that name; a same-name tool on another server cannot lend its rules.
+Claude Code hook names `mcp__<server>__<tool>` also count as MCP calls. Their
+server label is a distinct route from a registered Preloop proxy server.
+
+A server-scoped `sensitive_data` CEL allowlist remains useful when only one
+server should be restricted, or a tool delegates to other tools by name. See the
+[read-only production access example](../examples/production-access/README.md#why-the-policy-is-an-allowlist).
 
 ---
 
@@ -262,7 +293,7 @@ The schema validates:
 2. **Valid references**: Tools, `model_io` rules and escalation settings that reference approval workflows or MCP servers must point to a name defined in the file or already configured in your account
 3. **AI policy completeness**: AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
 4. **Expression syntax**: Tool condition expressions cannot be empty
-5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account (`apply` does not support the setting yet; see [`defaults`](#defaults))
+5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account (see [`defaults`](#defaults))
 
 If validation fails, you get detailed error messages pointing to the exact issue:
 

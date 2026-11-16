@@ -350,7 +350,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Rate limiting on auth, OAuth, public approval, passkey challenge, verification resend and forgot-password, OTLP ingest and admin test-push endpoints, shared across replicas ([operations/rate-limiting.md](../operations/rate-limiting.md))
 - [x] Passkeys that verify the user (device plus PIN or biometric), and per-user passkey-only sign-in (see Passkey sign-in below)
 - [x] TOTP, single-use recovery codes, two-step sign-in and recent strong authentication for factor management
-- [ ] Account-wide MFA policy and step-up enforcement (edition extension)
+- [x] Account sign-in policy storage, restricted sessions and step-up hooks (enforcement supplied by an edition extension)
 - [x] Session revocation via per-user token generation (`auth_generation`)
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
@@ -609,3 +609,25 @@ not trigger an interactive TOTP challenge, and does not grant OTP assurance. Int
 The legacy OAuth password-consent form redirects enrolled users to console
 sign-in while preserving the authorization request, without exposing a challenge
 in the URL. Password login activity and success audits wait for MFA completion.
+
+### Optional account sign-in strength
+
+The account stores `strong_sign_in_policy` with an inert `off` default. An edition
+registers `register_sign_in_strength_policy`; core clears stale `enroll_only`
+claims and re-evaluates the current membership at authentication boundaries.
+Restricted sessions have an exact HTTP method/path allowlist for profile,
+enrollment, refresh, logout and switching. Gateway token resolution and
+WebSocket admission reject restricted sessions; the live revocation checker also
+ends sessions that become restricted. Machine keys retain separate authorization.
+
+Core CRUD supplies transactional configuration, factor coverage, managed-person
+reset and server policy recovery. Policy selection, member-management permission
+and required-factor decisions belong to the edition. Console controls use the
+`strong_sign_in_policy` capability flag. A user-verified passkey claim is set
+before policy evaluation, so unverified assertions cannot satisfy enforcement.
+
+Internal paired-channel tokens are signed for a specific HTTP method and path
+and rejected elsewhere. Only a verified channel token sets the server-side
+step-up exception; headers and user-agent strings cannot do so. Browser social
+MFA uses a one-time fragment handoff removed on load, and only validated loopback
+callbacks receive completed CLI sessions.

@@ -648,7 +648,9 @@ async def test_apply_native_access_rules_no_match_sentinel_returns_none() -> Non
     tool_config.id = uuid.uuid4()
     tool_config.is_enabled = True
     evaluate = AsyncMock(
-        return_value=PolicyDecision("allow", None, "No rules matched (default allow)")
+        return_value=PolicyDecision(
+            "allow", None, "No rules matched (default allow)", matched=False
+        )
     )
 
     with patch(
@@ -934,7 +936,7 @@ async def test_request_agent_permission_require_approval_rule_uses_rule_workflow
     )
     db = _enforced_db(default_workflow)
     rule_wf_result = MagicMock()
-    rule_wf_result.scalars.return_value.first.return_value = rule_workflow
+    rule_wf_result.scalar_one_or_none.return_value = rule_workflow
     db.execute = AsyncMock(
         side_effect=[
             *db.execute.side_effect,

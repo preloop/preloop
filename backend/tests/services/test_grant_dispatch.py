@@ -293,7 +293,11 @@ async def test_direct_wrapper_and_async_approval_replay_do_not_bypass_grant(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mcp, user, policy, deny_audit, _, wrapper = runtime
-    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server())
+    from tests.services.approval_replay_fixtures import approved_mcp_replay
+
+    row = server()
+    row.id = "00000000-0000-0000-0000-000000000123"
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: row)
     evaluate = AsyncMock(return_value=GrantResult(deepcopy(BINDING), "grant_inactive"))
     monkeypatch.setattr(gateway.grant_introspector, "evaluate", evaluate)
     approval = AsyncMock()
@@ -302,9 +306,16 @@ async def test_direct_wrapper_and_async_approval_replay_do_not_bypass_grant(
     result = await wrapper()
     assert result.is_error and "grant_inactive" in result.content[0].text
     internal = f"account_{user.account_id.replace('-', '_')}_first_read"
-    result = await mcp.call_registered_tool_without_policy(
-        internal, {}, account_id=user.account_id
-    )
+    with approved_mcp_replay(
+        monkeypatch,
+        mcp,
+        account_id=user.account_id,
+        tool_name="first_read",
+        server_id=UUID(row.id),
+    ):
+        result = await mcp.call_registered_tool_without_policy(
+            internal, {}, account_id=user.account_id
+        )
     assert result.is_error and "grant_inactive" in result.content[0].text
     assert evaluate.await_count == 2
     assert deny_audit.call_count == 2

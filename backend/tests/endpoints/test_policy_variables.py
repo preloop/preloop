@@ -78,11 +78,13 @@ def test_upload_read_paths(
     mocker: MockerFixture,
 ) -> None:
     """Upload, read, diff, audit and restore preserve the submitted references."""
-    content = (
-        json.dumps(policy_data())
-        if file_format == "json"
-        else yaml.safe_dump(policy_data())
-    )
+    data = policy_data()
+    data["approval_workflows"] = [{"name": REFERENCES}]
+    data["defaults"] = {
+        "unknown_tools": "require_approval",
+        "default_approval_workflow": REFERENCES,
+    }
+    content = json.dumps(data) if file_format == "json" else yaml.safe_dump(data)
     fields = {} if resolve_env is None else {"resolve_env": resolve_env}
     env_get = mocker.spy(os.environ, "get")
     upload = client.post(
@@ -102,6 +104,11 @@ def test_upload_read_paths(
         )
         assert exported.status_code == 200, exported.text
         assert_literal(exported.text)
+        assert yaml.safe_load(exported.text)["defaults"] == {
+            **data["defaults"],
+            "require_approval_for_new_tools": False,
+            "inherit_from_parent": True,
+        }
 
     servers = crud_mcp_server.get_multi_by_account(
         db_session, account_id=str(test_user.account_id)
@@ -141,9 +148,13 @@ def test_upload_read_paths(
     service = PolicyVersionService(db_session, str(test_user.account_id))
     snapshot = service.create_snapshot()
     assert_literal(json.dumps(snapshot.snapshot_data))
+    assert snapshot.snapshot_data["defaults"]["default_approval_workflow"] == REFERENCES
     _, success, error = service.rollback_to_snapshot(snapshot.id)
     assert success, error
-    assert_literal(client.get("/api/v1/policies/export").text)
+    restored = client.get("/api/v1/policies/export", params={"format": "json"})
+    assert restored.status_code == 200, restored.text
+    assert_literal(restored.text)
+    assert restored.json()["defaults"]["default_approval_workflow"] == REFERENCES
     assert any("unresolved" in warning.lower() for warning in upload.json()["warnings"])
 
 
@@ -204,10 +215,16 @@ def test_upload_dry_run(
     client: TestClient, db_session: Session, test_user: models.User
 ) -> None:
     """Dry run reports references and warnings without persisting objects."""
+    data = policy_data()
+    data["approval_workflows"] = [{"name": REFERENCES}]
+    data["defaults"] = {
+        "unknown_tools": "require_approval",
+        "default_approval_workflow": REFERENCES,
+    }
     response = client.post(
         "/api/v1/policies/upload",
         data={"dry_run": "true", "resolve_env": "true"},
-        files={"file": ("policy.json", json.dumps(policy_data()))},
+        files={"file": ("policy.json", json.dumps(data))},
     )
     assert response.status_code == 200, response.text
     assert_literal(response.text)
@@ -215,6 +232,30 @@ def test_upload_dry_run(
     assert not crud_mcp_server.get_multi_by_account(
         db_session, account_id=str(test_user.account_id)
     )
+
+
+@pytest.mark.parametrize("endpoint", ["upload", "validate"])
+@pytest.mark.parametrize("dry_run", ["true", "false"])
+def test_defaults_reference_error(
+    client: TestClient, endpoint: str, dry_run: str
+) -> None:
+    """Default workflow diagnostics preserve the submitted variable references."""
+    data = policy_data()
+    data["defaults"] = {
+        "unknown_tools": "require_approval",
+        "default_approval_workflow": REFERENCES,
+    }
+    response = client.post(
+        "/api/v1/policies/" + endpoint,
+        data={"dry_run": dry_run, "resolve_env": "true"},
+        files={"file": ("policy.json", json.dumps(data))},
+    )
+    assert response.status_code == (200 if endpoint == "validate" else 400)
+    result = response.json().get("detail", response.json())
+    assert result["errors"]
+    assert result["warnings"]
+    assert "default_approval_workflow" in response.text
+    assert_literal(response.text)
 
 
 @pytest.mark.parametrize("endpoint", ["upload", "validate", "diff"])
