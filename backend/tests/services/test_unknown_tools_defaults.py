@@ -507,3 +507,204 @@ async def test_hook_does_not_adopt_proxy_configuration(
     )
     assert decision == "deny" and request_id is None
     assert "unknown_tools=deny" in reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["deny", "require_approval"])
+async def test_hook_honours_mcp_scoped_source(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """protects=MCP-scoped hook rules; fails_when=client fallback discards them;
+    no_claim=evaluator mocked to isolate the hook's decision-source filter.
+    """
+    from preloop.services.agent_permission_service import apply_native_access_rules
+
+    decision = evaluator.PolicyDecision(
+        action, uuid4(), "Scoped MCP rule", source="scoped_rule", stored_source="mcp"
+    )
+    monkeypatch.setattr(
+        evaluator, "evaluate_policy_async", AsyncMock(return_value=decision)
+    )
+    result = await apply_native_access_rules(
+        AsyncMock(),
+        config=None,
+        tool_name="mcp__docs__fetch",
+        tool_input={},
+        account_id=str(uuid4()),
+        user_id=None,
+        managed_agent_id=None,
+        runtime_session_id=None,
+    )
+    assert result is not None and result[0] == action
+
+
+@pytest.mark.asyncio
+async def test_replay_includes_original_subject_scopes(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=subject denies added after approval block replay;
+    fails_when=missing subject lets a scoped deny pass; no_claim=request lookup mocked, real evaluator/DB.
+    """
+    from contextlib import asynccontextmanager
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services.dynamic_fastmcp import DynamicFastMCP, _approved_id_var
+    from preloop.services.subject_governance import set_subject_governance
+
+    account_id, agent_id, server_id = test_user.account_id, uuid4(), uuid4()
+    request = SimpleNamespace(
+        account_id=account_id,
+        status="approved",
+        tool_name="fetch",
+        tool_configuration_id=uuid4(),
+        approval_workflow_id=uuid4(),
+        managed_agent_id=agent_id,
+        api_key_id=None,
+        runtime_session_id=None,
+        execution_id=None,
+    )
+    test_user.account.meta_data = set_subject_governance(
+        {},
+        subject_type="managed_agents",
+        subject_id=str(agent_id),
+        config={
+            "tool_rules": {
+                "fetch": [
+                    {"source": "mcp", "action": "deny", "condition_expression": "true"}
+                ]
+            }
+        },
+    )
+    db_session.flush()
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[SyncApprovalSession]:
+        """Use real account rules for the replay evaluation."""
+        yield SyncApprovalSession(db_session)
+
+    monkeypatch.setattr("preloop.models.db.session.get_async_db_session", session)
+    monkeypatch.setattr(
+        "preloop.models.crud.approval_request.get_approval_request_async",
+        AsyncMock(return_value=request),
+    )
+    monkeypatch.setattr(
+        "preloop.models.crud.tool_configuration.get_tool_config_by_id_async",
+        AsyncMock(return_value=SimpleNamespace(mcp_server_id=server_id)),
+    )
+    monkeypatch.setattr(evaluator, "_log_policy_decision_async", MagicMock())
+    mcp = DynamicFastMCP("subject-replay")
+    mcp._proxied_tool_servers["fetch"] = str(server_id)
+    token = _approved_id_var.set(str(uuid4()))
+    try:
+        assert "blocks approval replay" in await mcp._approval_replay_denial(
+            str(account_id), "fetch", {}
+        )
+    finally:
+        _approved_id_var.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prefix,collision", [(None, False), ("docs", False), (None, True)]
+)
+async def test_legacy_replay_resolves_only_an_unambiguous_route(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    prefix: str | None,
+    collision: bool,
+) -> None:
+    """protects=in-flight legacy approvals survive with one provable route;
+    fails_when=NULL config grants a colliding server; no_claim=request lookup mocked, inventory/CRUD real.
+    """
+    from contextlib import asynccontextmanager
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services.dynamic_fastmcp import DynamicFastMCP, _approved_id_var
+
+    servers = [
+        models.MCPServer(
+            account_id=test_user.account_id,
+            name=f"docs-{i}",
+            url="https://example.com/mcp",
+            transport="http-streaming",
+            auth_type="none",
+            status="active",
+            tool_prefix=prefix,
+        )
+        for i in range(2 if collision else 1)
+    ]
+    db_session.add_all(servers)
+    db_session.flush()
+    for server in servers:
+        db_session.add(
+            models.MCPTool(
+                mcp_server_id=server.id,
+                name="fetch",
+                input_schema={},
+                discovered_at="2026-11-01T10:00:00Z",
+            )
+        )
+    tool_name = f"{prefix}_fetch" if prefix else "fetch"
+    config = models.ToolConfiguration(
+        account_id=test_user.account_id,
+        tool_name=tool_name,
+        tool_source="mcp",
+        mcp_server_id=None,
+        is_enabled=True,
+    )
+    db_session.add(config)
+    db_session.flush()
+    request = SimpleNamespace(
+        account_id=test_user.account_id,
+        status="approved",
+        tool_name=tool_name,
+        tool_configuration_id=config.id,
+        approval_workflow_id=uuid4(),
+        execution_id=None,
+        api_key_id=None,
+        managed_agent_id=None,
+        runtime_session_id=None,
+    )
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[SyncApprovalSession]:
+        """Share the real inventory transaction with the replay guard."""
+        yield SyncApprovalSession(db_session)
+
+    monkeypatch.setattr("preloop.models.db.session.get_async_db_session", session)
+    monkeypatch.setattr(
+        "preloop.models.crud.approval_request.get_approval_request_async",
+        AsyncMock(return_value=request),
+    )
+    monkeypatch.setattr(evaluator, "_log_policy_decision_async", MagicMock())
+    mcp = DynamicFastMCP("legacy-replay")
+    mcp._proxied_tool_servers[tool_name] = str(servers[0].id)
+    token = _approved_id_var.set(str(uuid4()))
+    try:
+        denial = await mcp._approval_replay_denial(
+            str(test_user.account_id), tool_name, {}
+        )
+        if collision:
+            assert "route changed" in denial
+        else:
+            assert denial is None
+    finally:
+        _approved_id_var.reset(token)
+
+
+def test_default_approval_context_has_a_visible_reason() -> None:
+    """protects=approver sees why an unlisted call is held;
+    fails_when=missing label hides the block; no_claim=no browser or notification.
+    """
+    decision = evaluator._unmatched_policy_decision(
+        account_meta={"policy_defaults": {"unknown_tools": "require_approval"}},
+        tool_source="mcp",
+        tool_config=None,
+        decision=evaluator.PolicyDecision("allow", None, "Unlisted", matched=False),
+        workflow=SimpleNamespace(id=uuid4()),
+    )
+    assert decision.rule_context["source"] == "unknown_tools_default"
+    assert decision.rule_context["rule_name"] == "Unlisted MCP tool"
+    assert "No access rule matched" in decision.rule_context["explanation"]

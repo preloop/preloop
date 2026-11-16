@@ -4206,8 +4206,49 @@ async def {internal_name}({params_str}):
                     account_id=account_id,
                 )
                 server_id = self._proxied_tool_servers[client_name]
-                if config is None or str(config.mcp_server_id) != server_id:
+                if config is None:
                     return "Access denied: approved MCP route changed"
+                if config.mcp_server_id is None and config.tool_source == "mcp":
+                    from preloop.models.crud import crud_mcp_tool
+
+                    legacy_server_id = await db.run_sync(
+                        lambda session: crud_mcp_tool.unambiguous_legacy_route(
+                            session, account_id=account_id, exposed_name=client_name
+                        )
+                    )
+                    if str(legacy_server_id) != server_id:
+                        return "Access denied: approved MCP route changed (ambiguous legacy grant)"
+                elif str(config.mcp_server_id) != server_id:
+                    return "Access denied: approved MCP route changed"
+                from preloop.models.crud import crud_flow_execution
+
+                execution_id = getattr(request, "execution_id", None)
+                execution = (
+                    await db.run_sync(
+                        lambda session: crud_flow_execution.get(
+                            session, id=execution_id, account_id=account_id
+                        )
+                    )
+                    if execution_id
+                    else None
+                )
+                if execution_id and execution is None:
+                    return "Access denied: approval execution is unavailable"
+                subject_context = {
+                    "api_key_id": str(request.api_key_id)
+                    if getattr(request, "api_key_id", None)
+                    else None,
+                    "managed_agent_id": str(request.managed_agent_id)
+                    if getattr(request, "managed_agent_id", None)
+                    else None,
+                    "runtime_session_id": str(request.runtime_session_id)
+                    if getattr(request, "runtime_session_id", None)
+                    else None,
+                    "flow_id": str(execution.flow_id)
+                    if execution is not None
+                    else None,
+                    "tool_source": "mcp",
+                }
                 decision = await evaluate_policy_async(
                     db,
                     tool_name=client_name,
@@ -4215,6 +4256,8 @@ async def {internal_name}({params_str}):
                     account_id=uuid.UUID(account_id),
                     tool_source="mcp",
                     mcp_server_id=uuid.UUID(server_id),
+                    subject_context=subject_context,
+                    execution_id=execution_id,
                 )
                 if outbox_enabled():
                     await db.commit()

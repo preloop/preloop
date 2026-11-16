@@ -406,7 +406,9 @@ def _native_decision_source(decision: Any) -> Optional[str]:
     return None
 
 
-def _honour_native_policy_decision(decision: Any) -> bool:
+def _honour_native_policy_decision(
+    decision: Any, *, tool_source: str = AGENT_TOOL_SOURCE
+) -> bool:
     """True when the evaluator outcome is a real match, not a default allow.
 
     A match is the decision's ``action`` plus ``source``. Deny (including
@@ -429,7 +431,7 @@ def _honour_native_policy_decision(decision: Any) -> bool:
     if source in (SOURCE_SUBJECT_SCOPED_RULE, "scoped_rule") and stored_source not in (
         None,
         "",
-        AGENT_TOOL_SOURCE,
+        tool_source,
     ):
         return False
     if action == "deny":
@@ -524,7 +526,9 @@ async def apply_native_access_rules(
             "tool_source": "mcp" if mcp_identity else AGENT_TOOL_SOURCE,
         },
     )
-    if not _honour_native_policy_decision(decision):
+    if not _honour_native_policy_decision(
+        decision, tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE
+    ):
         return None
     ctx = getattr(decision, "rule_context", None)
     action, approval_workflow_id, rule_description = decision

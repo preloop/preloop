@@ -52,7 +52,9 @@ flow can carry `webhook_config` without a secret, for example only
 `supersede_on_update` (see
 [Pull Request Reviewer](guide/flows/pull-request-review.md#stale-reviews-stop-on-their-own)).
 An update that sends `webhook_config` without the secret keeps the stored
-one.
+one. Supplying a replacement secret through the existing flow-update API
+remains supported and records rotation metadata and an audit event without
+returning the value.
 
 ## Prompt placeholders
 

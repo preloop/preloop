@@ -184,8 +184,18 @@ async function register(page: Page): Promise<User> {
 /** Use the console's actual sign-out control. */
 async function signOut(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'User Menu', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
-  await page.waitForURL('**/login');
+  // auth-change can briefly route to /login before the awaited server logout
+  // finishes and assigns /. Wait for that final document navigation.
+  await Promise.all([
+    page.waitForNavigation({
+      url: (url) => url.pathname === '/',
+      waitUntil: 'load',
+    }),
+    page.getByRole('menuitem', { name: 'Sign out', exact: true }).click(),
+  ]);
+  expect(await page.evaluate(() => !!localStorage.getItem('accessToken'))).toBe(
+    false
+  );
 }
 
 /** Submit the password and demand the real second-factor form. */

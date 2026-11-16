@@ -62,10 +62,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-ci-python
+      # Keep the existing repository convention and actionlint compatibility.
+      - uses: ./.github/actions/setup-ci-python # zizmor: ignore[self-repository]
         with:
           python-version: "3.11"
-      - uses: ./.github/actions/install-ci-python-deps
+      - uses: ./.github/actions/install-ci-python-deps # zizmor: ignore[self-repository]
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
