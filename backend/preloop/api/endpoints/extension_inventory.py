@@ -57,12 +57,14 @@ def list_extensions(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid cursor") from exc
-    return DiscoveredExtensionList(
-        items=items,
-        next_cursor=next_cursor,
-        completeness=crud_discovered_extension.completeness(
-            db, account_id=account.id, fingerprint=fingerprint
-        ),
+    return DiscoveredExtensionList.model_validate(
+        {
+            "items": items,
+            "next_cursor": next_cursor,
+            "completeness": crud_discovered_extension.completeness(
+                db, account_id=account.id, fingerprint=fingerprint
+            ),
+        }
     )
 
 

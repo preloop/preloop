@@ -229,11 +229,11 @@ class DiscoveryEvidence(SafeEvidenceModel):
                     raise ValueError(
                         "Version 3 requires extensions and app completeness"
                     )
-                keys = [
+                extension_keys = [
                     (ext.kind, ext.id, ext.scope, ext.project_ref_hash)
                     for ext in app.extensions
                 ]
-                if len(set(keys)) != len(keys):
+                if len(set(extension_keys)) != len(extension_keys):
                     raise ValueError(
                         "Extension keys must be unique within an application"
                     )
