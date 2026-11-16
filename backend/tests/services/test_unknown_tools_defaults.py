@@ -380,6 +380,9 @@ async def test_replay_rechecks_default_deny(monkeypatch: pytest.MonkeyPatch) -> 
         ("require_approval", "Review", True),
         ("require_approval", None, False),
         ("require_approval", "missing", False),
+        ("registry", "Review", True),
+        ("registry", None, False),
+        ("registry", "missing", False),
     ],
 )
 async def test_validate_upload_parity(
@@ -407,7 +410,8 @@ async def test_validate_upload_parity(
         {
             "metadata": {"name": "Parity"},
             "defaults": {
-                "unknown_tools": action,
+                "unknown_tools": "deny" if action == "registry" else action,
+                "require_approval_for_new_tools": action == "registry",
                 "default_approval_workflow": workflow,
             },
         }

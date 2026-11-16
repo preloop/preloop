@@ -659,3 +659,122 @@ async def test_registry_replay_rechecks_revocation_and_errors(
         )
     finally:
         _approved_id_var.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["allow", "deny", "require_approval", "registry"])
+async def test_proxy_dispatch_obeys_defaults_and_registry(
+    db_session: Session,
+    test_user: models.User,
+    registry_environment: models.ApprovalWorkflow,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """protects=real firewall dispatch and approval lifecycle enforce defaults;
+    fails_when=unlisted/pending/revoked tool reaches upstream;
+    no_claim=MCP network, notification/model delivery and independent session close mocked.
+    """
+    from contextlib import asynccontextmanager
+    from preloop.models.crud import tool_registry
+    from preloop.models.crud.policy_defaults import replace
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.models.schemas.approval_request import ApprovalRequestUpdate
+    from preloop.services import approval_helper, policy_evaluator
+    from preloop.services.approval_service import ApprovalService
+    from preloop.services.dynamic_mcp_server import UserContext
+    from tests.services.test_proxied_tool_error_audit import _setup
+
+    real_evaluator = policy_evaluator.evaluate_policy_async
+    real_require = approval_helper.require_approval
+    user_context = UserContext(
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        username="testuser",
+        has_tracker=True,
+        enabled_default_tools=[],
+        enabled_proxied_tools=[],
+    )
+    mcp, client, _, server = _setup(monkeypatch, user_context)
+    row = models.MCPServer(
+        account_id=test_user.account_id,
+        name="docs",
+        url="https://example.com/mcp",
+        transport="http-streaming",
+        auth_type="none",
+    )
+    db_session.add(row)
+    db_session.flush()
+    server.id = str(row.id)
+    mcp._proxied_tool_servers["safe_tool"] = str(row.id)
+    registry_environment.async_approval_enabled = True
+    replace(
+        db_session,
+        test_user.account_id,
+        {
+            "unknown_tools": "deny" if mode == "registry" else mode,
+            "require_approval_for_new_tools": mode == "registry",
+            "default_approval_workflow": "Review",
+        },
+    )
+
+    class Adapter(SyncApprovalSession):
+        """The test owns the outer transaction, so close only releases its wrapper."""
+
+        async def close(self) -> None:
+            """Keep the transaction available for lifecycle assertions."""
+
+    adapter = Adapter(db_session)
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[Adapter]:
+        """Use real CRUD on one fixture transaction."""
+        yield adapter
+
+    monkeypatch.setattr("preloop.models.db.session.get_async_db_session", session)
+    monkeypatch.setattr(policy_evaluator, "evaluate_policy_async", real_evaluator)
+    monkeypatch.setattr(approval_helper, "require_approval", real_require)
+    result = await mcp.call_tool("safe_tool", {"ok": "yes"})
+    if mode == "allow":
+        client.call_tool.assert_awaited_once()
+        return
+    client.call_tool.assert_not_awaited()
+    if mode == "deny":
+        assert "unknown_tools=deny" in str(result)
+        return
+    requests = (
+        db_session.query(models.ApprovalRequest)
+        .filter_by(account_id=test_user.account_id)
+        .all()
+    )
+    assert (
+        len(requests) == 1
+        and requests[0].approval_workflow_id == registry_environment.id
+    )
+    assert requests[0].status == "pending"
+    if mode == "registry":
+        await mcp.call_tool("safe_tool", {"ok": "yes"})
+        assert (
+            db_session.query(models.ApprovalRequest)
+            .filter_by(account_id=test_user.account_id)
+            .count()
+            == 1
+        )
+        await ApprovalService(adapter, "https://example.com").update_approval_request(
+            requests[0].id,
+            ApprovalRequestUpdate(status="approved"),
+            audit_approver_id=test_user.id,
+        )
+        await mcp.call_tool("safe_tool", {"ok": "yes"})
+        client.call_tool.assert_awaited_once()
+        [entry] = tool_registry.list_entries(
+            db_session, account_id=test_user.account_id
+        )
+        tool_registry.decide(
+            db_session,
+            account_id=test_user.account_id,
+            entry_id=entry.id,
+            state="denied",
+            user_id=test_user.id,
+        )
+        await mcp.call_tool("safe_tool", {"ok": "yes"})
+        client.call_tool.assert_awaited_once()
