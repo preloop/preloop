@@ -66,8 +66,13 @@ passkey-only sign-in after password plus OTP returns a token pair immediately
 refused with `password_login_disabled`, despite the documented promise that the
 current session stays signed in. Its setup remains ordinary assertions; only the
 final current-session assertion is marked as an expected failure. A fix produces
-an unexpected pass, prompting removal of the marker. No product fix is included.
+an unexpected pass, prompting removal of the marker. D1 is documented in
+[the test PR](https://github.com/preloop/preloop/pull/2343), with the originating
+feature in [#2299](https://github.com/preloop/preloop/pull/2299). No issue was
+opened under this test brief, and no product fix is included.
 
 Screenshots mask secrets, QR images, recovery lists and proof inputs. Traces,
 videos and automatic screenshots are disabled for these tests; CI uploads only
 the explicitly masked PNG evidence, never the private outbox or CLI HOME.
+Helper and startup failures report traceback locations and exception classes;
+raw messages and bound parameters are omitted because they can contain proofs.
