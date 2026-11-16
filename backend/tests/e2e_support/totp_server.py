@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -18,6 +19,36 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 
 os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
+
+
+def failure_details(log: str) -> str:
+    """Return traceback locations/classes without messages or local values.
+
+    SQL errors and mail tracebacks can contain proofs, connection strings and
+    bound parameters. Neither raw stderr nor application log messages are safe
+    CI artifacts. Preserve only stack metadata, including JSON-logged traces.
+    """
+    traces = []
+    for line in log.splitlines():
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            traces.append(line)
+        else:
+            if isinstance(entry, dict) and isinstance(entry.get("exc_info"), str):
+                traces.append(entry["exc_info"])
+    trace = "\n".join(traces)
+    frames = re.findall(r'File "([^"\n]+)", line (\d+), in ([\w<>.]+)', trace)
+    details = [
+        f"{Path(filename).name}:{line} in {function}"
+        for filename, line, function in frames[-8:]
+    ]
+    classes = re.findall(
+        r"(?m)^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*(?:Error|Exception))(?=:|$)",
+        trace,
+    )
+    details.extend(dict.fromkeys(classes))
+    return "\n".join(details) or "No traceback metadata available"
 
 
 def test_directory() -> Path:
@@ -133,9 +164,14 @@ def email_proof(email: str) -> str:
 def main() -> None:
     """Serve the app or perform a private driver operation over stdin/stdout."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["serve", "totp", "approval", "email"])
+    parser.add_argument(
+        "command", choices=["serve", "totp", "approval", "email", "diagnose"]
+    )
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    if args.command == "diagnose":
+        print(failure_details(sys.stdin.read()))
+        return
     if args.command == "totp":
         import pyotp
 
