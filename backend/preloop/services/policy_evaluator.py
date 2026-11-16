@@ -887,7 +887,7 @@ def _unmatched_policy_decision(
         action,
         workflow_id if action == "require_approval" else None,
         f"No rule matched; defaults.unknown_tools={action}",
-        {"source": "unknown_tools_default", "decision": action}
+        build_rule_context(source="unknown_tools_default", decision=action)
         if action == "require_approval"
         else None,
         matched=False,
@@ -1039,7 +1039,7 @@ def evaluate_policy(
     writes: list[Callable[[Session], None]] = []
     audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
-        _storage_scope_identity(subject_context, server_name)
+        _storage_scope_identity(subject_context, server_name or server_label)
     )
     try:
         denial = _account_authorizer_denial(
@@ -1729,7 +1729,7 @@ async def evaluate_policy_async(
     writes: list[Callable[[Session], None]] = []
     audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
-        _storage_scope_identity(subject_context, server_name)
+        _storage_scope_identity(subject_context, server_name or server_label)
     )
     try:
         denial = _account_authorizer_denial(
