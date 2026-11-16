@@ -88,14 +88,15 @@ compose_env_assign() {
   printf '%s=%s\n' "$1" "$(compose_env_escape "$2")"
 }
 
-# Replace (or append) a single KEY=value line in the install's .env.
+# Replace all Compose-supported assignments before appending a canonical line.
 set_env_value() {
   key="$1"
   value="$2"
   env_file="${INSTALL_DIR}/.env"
   tmp_file="${env_file}.set"
   if [ -f "$env_file" ]; then
-    grep -v "^${key}=" "$env_file" > "$tmp_file" || true
+    grep -v "^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}${key}[[:space:]]*[:=]" \
+      "$env_file" > "$tmp_file" || true
   else
     : > "$tmp_file"
   fi
@@ -225,7 +226,51 @@ load_existing_env() {
 env_value() {
   # last assignment wins, value may contain '='. Unescape `$$` so a re-run
   # that reads secrets and writes them back does not double-escape.
-  compose_env_unescape "$(sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1)"
+  compose_env_unescape "$(sed -n \
+    "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1[[:space:]]*[:=][[:space:]]*//p" \
+    "$2" 2>/dev/null | tail -n 1)"
+}
+
+# Read an opt-out's literal .env value. A hash inside quotes is data; only
+# unquoted values can have an inline comment before their value ends.
+opt_out_env_value() {
+  raw_opt_out="$(env_value "$1" "${INSTALL_DIR}/.env")"
+  case "$raw_opt_out" in
+    \"*) printf '%s' "$raw_opt_out" | sed 's/^"\([^"]*\)".*$/\1/' ;;
+    \'*) printf '%s' "$raw_opt_out" | sed "s/^'\([^']*\)'.*$/\1/" ;;
+    *) printf '%s' "$raw_opt_out" | sed 's/[[:space:]]#.*$//' ;;
+  esac
+}
+
+# Match instance_service.is_telemetry_disabled on literal environment values.
+opt_out_enabled() {
+  normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$normalized" in
+    true|1|t|yes) return 0 ;;
+  esac
+  return 1
+}
+
+# A stored opt-out wins even when this run explicitly supplies false. To opt
+# back in, the operator must edit .env. Print the effective value for export
+# so Compose's shell precedence cannot override the persisted opt-out either.
+persist_opt_out() {
+  opt_out_key="$1"
+  opt_out_value="$2"
+  stored_opt_out="$(opt_out_env_value "$opt_out_key")"
+  if opt_out_enabled "$stored_opt_out" || opt_out_enabled "$opt_out_value"; then
+    opt_out_value=true
+    set_env_value "$opt_out_key" "$opt_out_value"
+  elif [ -n "$opt_out_value" ]; then
+    # All other supplied values are false under the backend's truthy rule.
+    opt_out_value=false
+    set_env_value "$opt_out_key" "$opt_out_value"
+  else
+    # Keep a stored non-opt-out verbatim, including quotes and comments.
+    opt_out_value="$stored_opt_out"
+  fi
+  printf '%s' "$opt_out_value"
 }
 
 # True only when a real terminal is attached. `curl ... | sh` leaves stdin as
@@ -849,9 +894,8 @@ issue_certificate() {
   return 0
 }
 
-# Carry REGISTRATION_ENABLED into the API. Kept in a script-owned overlay rather
-# than relying on the released compose file, so signup lockdown works even on
-# releases whose compose file predates the setting.
+# Carry first-user settings and telemetry opt-outs into the API through a
+# script-owned overlay, including releases whose Compose file predates them.
 write_auth_overlay() {
   cat > "${INSTALL_DIR}/docker-compose.auth.yaml" <<'EOF'
 services:
@@ -859,6 +903,8 @@ services:
     environment:
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       PRELOOP_BOOTSTRAP_TOKEN: ${PRELOOP_BOOTSTRAP_TOKEN:-}
+      PRELOOP_DISABLE_TELEMETRY: ${PRELOOP_DISABLE_TELEMETRY:-}
+      DISABLE_VERSION_CHECK: ${DISABLE_VERSION_CHECK:-}
 EOF
 }
 
@@ -995,6 +1041,12 @@ EOF
     set_env_value PRELOOP_BOOTSTRAP_TOKEN "$PRELOOP_BOOTSTRAP_TOKEN"
   fi
 
+  PRELOOP_DISABLE_TELEMETRY="$(persist_opt_out PRELOOP_DISABLE_TELEMETRY \
+    "${PRELOOP_DISABLE_TELEMETRY:-}")"
+  DISABLE_VERSION_CHECK="$(persist_opt_out DISABLE_VERSION_CHECK \
+    "${DISABLE_VERSION_CHECK:-}")"
+  export PRELOOP_DISABLE_TELEMETRY DISABLE_VERSION_CHECK
+
   write_auth_overlay
   COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml"
   if [ "$WANT_TLS" -eq 1 ]; then
@@ -1117,6 +1169,12 @@ EOF
     echo "Email: NOT configured — approval emails, invitations and password"
     echo "  resets will not be delivered. To enable, set SMTP_HOST/SMTP_PORT/"
     echo "  SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM in ${INSTALL_DIR}/.env"
+  fi
+  if opt_out_enabled "$PRELOOP_DISABLE_TELEMETRY" \
+    || opt_out_enabled "$DISABLE_VERSION_CHECK"; then
+    echo "Version check-in: OFF (opt-out saved in ${INSTALL_DIR}/.env)"
+  else
+    echo "Version check-in: ON (daily check-in to preloop.ai)"
   fi
   echo "  (change any setting: edit ${INSTALL_DIR}/.env, then re-run 'docker compose up -d')"
   echo ""

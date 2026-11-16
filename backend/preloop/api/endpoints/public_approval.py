@@ -21,6 +21,7 @@ from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models.approval_event import ApprovalEvent
 from preloop.models.models.approval_request import ApprovalRequest
+from preloop.models.schemas.external_approval import ExternalApprovalResult
 from preloop.models.schemas.approval_request import ApprovalEventPublic
 from preloop.services.approval_service import ApprovalService
 from preloop.services.question_schema import (
@@ -57,6 +58,7 @@ class ApprovalDecisionRequest(BaseModel):
     """Request to approve or decline."""
 
     action: str  # "approve" or "decline"
+    result: Optional[ExternalApprovalResult] = None
     comment: Optional[str] = None
     # The filled form, for a question that carries an input_schema. Validated
     # against that schema exactly as on the authenticated path: a token link
@@ -71,6 +73,9 @@ class ApprovalRequestPublic(BaseModel):
     tool_name: str
     tool_args: dict
     agent_reasoning: Optional[str]
+    external_url: Optional[str] = None
+    external_reference: Optional[str] = None
+    external_handoff_state: Optional[str] = None
     summary: Optional[str] = None
     status: str
     requested_at: str
@@ -137,6 +142,15 @@ def _to_public_request(
         requested_at=_iso_or_none(approval_request.requested_at) or "",
         expires_at=_iso_or_none(approval_request.expires_at),
         resolved_at=_iso_or_none(approval_request.resolved_at),
+        external_url=getattr(approval_request, "external_url", None)
+        if isinstance(getattr(approval_request, "external_url", None), str)
+        else None,
+        external_reference=getattr(approval_request, "external_reference", None)
+        if isinstance(getattr(approval_request, "external_reference", None), str)
+        else None,
+        external_handoff_state=getattr(approval_request, "external_handoff_state", None)
+        if isinstance(getattr(approval_request, "external_handoff_state", None), str)
+        else None,
         history=[
             ApprovalEventPublic(
                 event_type=event.event_type,
@@ -217,6 +231,7 @@ class TokenDecisionBody(BaseModel):
     """
 
     action: Optional[str] = None
+    result: Optional[ExternalApprovalResult] = None
     comment: Optional[str] = None
     answer: Optional[dict] = None
 
@@ -268,7 +283,7 @@ async def decide_approval_request_public(
         # The path names the decision; a body action is not consulted.
         action = route
     decision = ApprovalDecisionRequest(
-        action=action, comment=body.comment, answer=body.answer
+        action=action, comment=body.comment, answer=body.answer, result=body.result
     )
     return await _decide_with_token(request_id, decision, token, db_sync)
 
@@ -363,6 +378,11 @@ async def _decide_with_token(
                     channel=TOKEN_URL_DECISION_CHANNEL,
                     structured_answer=answer,
                     user_id=decision_user_id,
+                    **(
+                        {"result": decision.result}
+                        if decision.result is not None
+                        else {}
+                    ),
                 )
             else:
                 logger.info(f"Declining request {request_id}")
@@ -371,6 +391,11 @@ async def _decide_with_token(
                     decision.comment,
                     channel=TOKEN_URL_DECISION_CHANNEL,
                     user_id=decision_user_id,
+                    **(
+                        {"result": decision.result}
+                        if decision.result is not None
+                        else {}
+                    ),
                 )
         except HTTPException:
             raise

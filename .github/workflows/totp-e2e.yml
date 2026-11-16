@@ -58,8 +58,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 12
-    env:
-      DATABASE_URL: postgresql+psycopg://postgres:synthetic-browser-test-password@127.0.0.1:${{ job.services.postgres.ports[5432] }}/preloop
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,16 +83,24 @@ jobs:
         working-directory: frontend
         env:
           WITH_DEPS: ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }}
-        run: npx playwright install $WITH_DEPS chromium
+        run: |
+          args=()
+          if [ -n "$WITH_DEPS" ]; then args+=("$WITH_DEPS"); fi
+          npx playwright install "${args[@]}" chromium
       - name: Prepare private harness and isolated NATS
         shell: bash
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
         run: |
           set -euo pipefail
           test_dir=$(mktemp -d "$RUNNER_TEMP/totp-e2e.XXXXXX")
           mkdir "$test_dir/outbox" "$test_dir/cli-home"
           python -c 'import time; print(int(time.time()) // 30 * 30)' > "$test_dir/clock"
-          echo "PRELOOP_E2E_DIR=$test_dir" >> "$GITHUB_ENV"
-          echo "PRELOOP_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          {
+            echo "PRELOOP_E2E_DIR=$test_dir"
+            echo "PRELOOP_E2E_PYTHON=$(command -v python)"
+            echo "DATABASE_URL=postgresql+psycopg://postgres:synthetic-browser-test-password@127.0.0.1:$POSTGRES_PORT/preloop"
+          } >> "$GITHUB_ENV"
           python - <<'PY' >> "$GITHUB_ENV"
           import socket
           with socket.socket() as api, socket.socket() as console:
@@ -119,7 +125,7 @@ jobs:
           python scripts/init_db.py --force
           python -m tests.e2e_support.totp_server serve --port "$PRELOOP_E2E_API_PORT" > "$PRELOOP_E2E_DIR/server.log" 2>&1 &
           echo "$!" > "$PRELOOP_E2E_DIR/server.pid"
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --silent --fail "$PRELOOP_E2E_API_URL/api/v1/health" > /dev/null; then
               exit 0
             fi

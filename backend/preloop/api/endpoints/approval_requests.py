@@ -761,6 +761,11 @@ async def approve_request(
             comment,
             user_id=current_user.id,
             channel=_decision_channel(request, current_user),
+            **(
+                {"result": decision.result}
+                if getattr(decision, "result", None) is not None
+                else {}
+            ),
             structured_answer=answer,
         )
         if not updated:
@@ -841,6 +846,11 @@ async def decline_request(
             decision.effective_comment,
             user_id=current_user.id,
             channel=_decision_channel(request, current_user),
+            **(
+                {"result": decision.result}
+                if getattr(decision, "result", None) is not None
+                else {}
+            ),
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
@@ -939,6 +949,11 @@ async def decide_request(
                 comment,
                 user_id=current_user.id,
                 channel=_decision_channel(request, current_user),
+                **(
+                    {"result": decision.result}
+                    if getattr(decision, "result", None) is not None
+                    else {}
+                ),
                 structured_answer=answer,
             )
         else:
@@ -947,6 +962,11 @@ async def decide_request(
                 decision.effective_comment,
                 user_id=current_user.id,
                 channel=_decision_channel(request, current_user),
+                **(
+                    {"result": decision.result}
+                    if getattr(decision, "result", None) is not None
+                    else {}
+                ),
             )
 
         if not updated:
@@ -1075,6 +1095,11 @@ async def decide_requests_batch(
                     decision.comment,
                     user_id=current_user.id,
                     channel=_decision_channel(request, current_user),
+                    **(
+                        {"result": decision.result}
+                        if getattr(decision, "result", None) is not None
+                        else {}
+                    ),
                 )
             else:
                 updated = await approval_service.decline_request(
@@ -1082,6 +1107,11 @@ async def decide_requests_batch(
                     decision.comment,
                     user_id=current_user.id,
                     channel=_decision_channel(request, current_user),
+                    **(
+                        {"result": decision.result}
+                        if getattr(decision, "result", None) is not None
+                        else {}
+                    ),
                 )
         except Exception as error:  # noqa: BLE001 - one bad id, not the batch
             await db.rollback()

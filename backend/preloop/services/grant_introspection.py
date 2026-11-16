@@ -150,11 +150,12 @@ class GrantIntrospector:
         config: IntrospectionConfig,
         *,
         server_id: str,
+        force: bool = False,
     ) -> GrantResult:
         """Resolve a grant and enforce active/expiry/scopes before policy matching."""
         now = self._monotonic()
         key = self._cache_key(token, config, server_id) if token else None
-        entry = self._cache.get(key) if key else None
+        entry = self._cache.get(key) if key and not force else None
         if key is not None and entry is not None and entry.expires_at > now:
             self._cache.move_to_end(key)
             binding = {
