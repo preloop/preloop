@@ -346,7 +346,10 @@ async def test_async_status_replays_once_and_withholds_comments(
     user_context: Any,
     refused: bool,
 ) -> None:
-    """The actual polling callback claims, executes and caches one scope retry."""
+    """protects=one cached scope retry without private comments;
+    fails_when=duplicate dispatch or comment leaks; no_claim=upstream, DB and
+    replay policy CRUD are mocked; real polling and dispatch guard execute.
+    """
     from contextlib import asynccontextmanager
     from datetime import datetime
     from types import SimpleNamespace
@@ -362,6 +365,7 @@ async def test_async_status_replays_once_and_withholds_comments(
     )
     proxy, client, _, server = _setup(monkeypatch, user_context, upstream=upstream)
     server.id = "00000000-0000-4000-8000-000000000002"
+    proxy._proxied_tool_servers["safe_tool"] = server.id
     server.auth_config = {
         "on_insufficient_scope": "request_approval",
         "approval_workflow": str(uuid4()),
@@ -417,6 +421,26 @@ async def test_async_status_replays_once_and_withholds_comments(
         "preloop.services.dynamic_fastmcp_http.get_current_user_context",
         lambda: user_context,
     )
+    # The replay guard owns separate request/configuration reads; keep the
+    # polling session's finite result sequence specific to polling itself.
+    from preloop.services.policy_evaluator import PolicyDecision
+
+    monkeypatch.setattr(
+        "preloop.models.crud.approval_request.get_approval_request_async",
+        AsyncMock(return_value=approval),
+    )
+    monkeypatch.setattr(
+        "preloop.models.crud.tool_configuration.get_tool_config_by_id_async",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                mcp_server_id=UUID(proxy._proxied_tool_servers["safe_tool"])
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        AsyncMock(return_value=PolicyDecision("allow", None, "Allowed")),
+    )
     status_server._registered_proxied_tools = proxy._registered_proxied_tools
     replay = AsyncMock(side_effect=proxy.call_registered_tool_without_policy)
     monkeypatch.setattr(status_server, "call_registered_tool_without_policy", replay)
@@ -438,6 +462,7 @@ async def test_async_status_replays_once_and_withholds_comments(
     assert COMMENT not in json.dumps(first) + json.dumps(second)
     assert first["tool_result"] == second["tool_result"]
     assert first["external_reference"] == REFERENCE
+    assert "Access denied" not in str(first), first
     client.call_tool.assert_awaited_once()
     replay.assert_awaited_once()
     assert any(
