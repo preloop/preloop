@@ -421,7 +421,8 @@ curl -X POST https://preloop.ai/api/v1/tool-configurations/{config_id}/access-ru
 
 ### Automatic Discovery
 
-When you click **Scan for tools**, Preloop:
+When you click **Scan for tools** (or **Refresh tools** on a server that
+already has tools), Preloop:
 
 1. Connects to MCP server
 2. Calls `tools/list` method
@@ -435,10 +436,16 @@ Tools don't update automatically. To refresh:
 
 1. Go to **Tools**
 2. Find your MCP server
-3. Click **Scan for tools** again
-4. New tools appear, removed tools disappear
+3. Click **Refresh tools** (the circular-arrow button), or run
+   `preloop mcp-servers scan <server>`
+4. New tools appear, and tools that changed get their new description and
+   arguments
 
-**Recommended:** Scan after updating your MCP server.
+**Recommended:** Refresh after changing your MCP server's tools, especially
+their arguments. The next call through Preloop uses the refreshed arguments,
+with no restart. A call that still uses arguments the stored schema does not
+declare is refused with a message naming the unknown arguments and pointing
+at this refresh.
 
 ### Tool Filtering
 
