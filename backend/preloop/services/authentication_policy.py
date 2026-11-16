@@ -183,7 +183,7 @@ def _enforce_core_policy(
     # Enabling the policy replaces the current strongly authenticated session.
     # Keep its original assurance while allowing only that membership's session
     # to continue. The generation check above still revokes this exception.
-    if purpose in {"access", "refresh", "exchange"} and context.get(
+    if purpose in {"access", "refresh"} and context.get(
         "passkey_only_continuation"
     ) == str(user.id):
         return

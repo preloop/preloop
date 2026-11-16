@@ -149,7 +149,7 @@ def test_enable_passkey_only_preserves_current_otp_session(
     )
 
 
-@pytest.mark.parametrize("purpose", ["login", "switch"])
+@pytest.mark.parametrize("purpose", ["login", "switch", "exchange"])
 def test_passkey_only_continuation_cannot_authorize_new_sign_in(
     db_session: Session, purpose: AuthenticationPurpose
 ) -> None:
