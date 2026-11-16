@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.plugins.base import get_plugin_manager
 
+SUPPORTS_DELEGATED_AUTH = True
+
 AuthenticationPurpose = Literal["login", "access", "refresh", "switch", "exchange"]
 _METHODS = frozenset(
     {
@@ -233,6 +235,8 @@ def authorize_authentication(
         from preloop.services.mfa import require_challenge
 
         require_challenge(db, user, context)
+    if delegated_auth is not None:
+        context["delegated_auth"] = delegated_auth
     gate = get_plugin_manager().get_service("authentication_policy")
     if gate is not None:
         gate.authorize(
@@ -241,8 +245,6 @@ def authorize_authentication(
     if not channel_action:
         from preloop.plugins.account_hooks import apply_sign_in_strength_policy
 
-        if delegated_auth is not None:
-            context["delegated_auth"] = delegated_auth
         apply_sign_in_strength_policy(db, user, context, purpose)
     return authentication_claims(context)
 
