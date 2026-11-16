@@ -18,6 +18,34 @@ authorized model or harness overrides, including when nested under the
 webhook `payload`. Presence of `_resume` in the body is also not a trust
 signal.
 
+Flow reads and lists never return the credential. They return
+`webhook_secret_set`, `webhook_secret_hint` (last four characters) and
+`webhook_secret_rotated_at` (null when no explicit rotation was recorded).
+The same redaction applies to create, update and preset responses.
+
+To obtain a new credential, use the **Rotate webhook secret** button on the
+flow page, or:
+
+```bash
+preloop flow webhook-secret rotate <flow-id-or-name>
+# Machine-readable one-time response:
+preloop flow webhook-secret rotate <flow-id-or-name> --json
+```
+
+The API action is `POST /api/v1/flows/{flow_id}/webhook-secret/rotate` and
+requires `edit_flows` permission. It returns the flow with a top-level
+`webhook_secret` once, following the approval workflow rotation convention.
+Save it and update the sender URL. The old secret is rejected immediately;
+other flow settings stay unchanged. Each rotation records the actor, time
+and flow in the audit trail without the secret.
+
+The console keeps the URL template visible to editors and shows the full
+new URL once after rotation. Returning to the page cannot recover it.
+Existing integrations can keep their saved URLs; no migration changes their
+secrets. Integrations that previously extracted
+`webhook_config.webhook_secret` from flow responses must keep that value
+securely or rotate and capture the one-time response.
+
 `webhook_secret` lives in the flow's `webhook_config` and is generated when
 the flow is created or switched to a webhook trigger. A tracker-triggered
 flow can carry `webhook_config` without a secret, for example only

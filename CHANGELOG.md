@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: rotate webhook ingress secrets with
+  `POST /api/v1/flows/{id}/webhook-secret/rotate`,
+  `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console
+  flow page. The new `webhook_secret` is returned once by rotation; the old
+  URL stops working immediately. Each rotation records an audit event
+  without the credential (#2336).
+
 - flows: restricted-CI read-only reviews bind their result to the admitted
   revision and require repository inspection. A result whose `head_sha`,
   `base_sha`, `merge_base_sha` or `diff_sha256` differs from what the
@@ -461,6 +468,16 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
   `api` and `gateway` services (#2094).
 
 ### Changed
+
+- **API compatibility:** flow responses (including reads, lists, creates,
+  updates and presets) no longer include `webhook_config.webhook_secret`.
+  Integrations that extracted the secret from those responses must retain
+  their existing URL or call the rotate action and save its one-time
+  `webhook_secret`. Responses expose `webhook_secret_set`,
+  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
+  secrets and URLs remain valid until explicitly replaced; the migration
+  adds nullable rotation metadata and does not change credentials. Existing
+  unrotated secrets have a null rotation time (#2336).
 
 - The daily version check marks check-ins from CI jobs with `metadata.ci: true` so CI runs do not count as installs. Set `PRELOOP_DISABLE_TELEMETRY=true` to send nothing.
 - The cost page renders each card as its data arrives, caches closed periods

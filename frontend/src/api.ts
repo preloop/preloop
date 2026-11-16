@@ -5241,6 +5241,26 @@ export async function getAllFlowSummaries(
   );
 }
 
+/** The ingress credential is available only on this action response. */
+export async function rotateFlowWebhookSecret(flowId: string): Promise<{
+  webhook_secret: string;
+  webhook_secret_set: boolean;
+  webhook_secret_hint: string | null;
+  webhook_secret_rotated_at: string | null;
+}> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/${flowId}/webhook-secret/rotate`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      flowWriteErrorMessage(errorData, 'Failed to rotate webhook secret')
+    );
+  }
+  return response.json();
+}
+
 export async function getFlow(flowId: string): Promise<any> {
   const response = await fetchWithAuth(`${REST_API_PREFIX}/flows/${flowId}`);
   if (!response.ok) {
