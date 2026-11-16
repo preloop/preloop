@@ -801,6 +801,12 @@
                     </div>
                 </div>
 
+                <div id="external-decision" class="info-item section-gap" style="display: none;">
+                    <p id="external-decision-message"></p>
+                    <a id="external-decision-link" rel="noopener noreferrer"
+                        referrerpolicy="no-referrer" style="display: none;">Decide on external service</a>
+                </div>
+
                 <div id="comment-section">
                     <label class="field-label" for="comment">Comment (optional)</label>
                     <textarea id="comment" class="control" rows="3" aria-describedby="comment-help"></textarea>
@@ -869,6 +875,12 @@
         const token = urlParams.get('token');
 
         let approvalData = null;
+        let handoffPoll = null;
+
+        function hasExternalDecision() {
+            return Boolean(approvalData?.external_url) ||
+                ['waiting', 'notify'].includes(approvalData?.external_handoff_state);
+        }
 
         // Inline icon set (24x24, stroked). The page loads nothing from the
         // network beyond its own API calls, so icons live here.
@@ -929,6 +941,11 @@
                 }
                 approvalData = await response.json();
                 displayApproval();
+                clearTimeout(handoffPoll);
+                if (approvalData.status === 'pending' &&
+                    ['waiting', 'notify'].includes(approvalData.external_handoff_state)) {
+                    handoffPoll = setTimeout(loadApproval, 3000);
+                }
             } catch (error) {
                 showError(error.message);
             }
@@ -974,6 +991,24 @@
                 approvalData.status === 'expired' ? 'block' : 'none';
 
             displayHistory(approvalData.history || []);
+
+            const external = hasExternalDecision();
+            const canDecide = approvalData.status === 'pending' && !external;
+            document.getElementById('actions').style.display = canDecide ? '' : 'none';
+            document.getElementById('comment-section').style.display = canDecide ? '' : 'none';
+            if (!canDecide) document.getElementById('answer-form').style.display = 'none';
+            document.getElementById('external-decision').style.display =
+                approvalData.status === 'pending' && external ? 'block' : 'none';
+            document.getElementById('external-decision-message').textContent =
+                approvalData.external_url ? 'The decision is made on the external service.' :
+                    'Waiting for the external service to provide a decision link.';
+            const externalLink = document.getElementById('external-decision-link');
+            externalLink.style.display = approvalData.external_url ? '' : 'none';
+            if (approvalData.external_url) {
+                externalLink.setAttribute('href', approvalData.external_url);
+            } else {
+                externalLink.removeAttribute('href');
+            }
 
             // Hide actions if already resolved
             if (['approved', 'declined', 'expired', 'cancelled'].includes(approvalData.status)) {
@@ -1458,6 +1493,7 @@
         }
 
         async function submitDecision(action) {
+            if (!approvalData || approvalData.status !== 'pending' || hasExternalDecision()) return;
             const comment = document.getElementById('comment').value;
             const btn = document.getElementById(`${action}-btn`);
 

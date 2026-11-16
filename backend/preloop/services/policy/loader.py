@@ -1477,6 +1477,20 @@ class PolicyApplier:
                     "ai_fallback_behavior",
                 )
             }
+            external_options = {
+                key: getattr(item, key)
+                for key in (
+                    "external_approval_link",
+                    "external_approval_hosts",
+                    "expose_comment_to_agent",
+                )
+                if getattr(item, key) is not None
+            }
+            if external_options:
+                data["approval_config"] = {
+                    **(existing.approval_config or {} if existing else {}),
+                    **external_options,
+                }
             data["approval_mode"] = item.approval_type
             data["async_approval_enabled"] = item.async_approval
             if item.channel_configs is not None:
@@ -2013,6 +2027,15 @@ def export_current_policy(
             workflow_type=policy.workflow_type,
             approvals_required=policy.approvals_required,
             channel_configs=policy.channel_configs,
+            **{
+                key: (policy.approval_config or {}).get(key)
+                for key in (
+                    "external_approval_link",
+                    "external_approval_hosts",
+                    "expose_comment_to_agent",
+                )
+                if (policy.approval_config or {}).get(key) is not None
+            },
             # AI-driven settings
             approval_type=yaml_approval_type,
             ai_model=getattr(policy, "ai_model", None),

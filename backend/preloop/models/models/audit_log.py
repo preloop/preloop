@@ -61,6 +61,14 @@ class AuditLog(Base):
             text("(details -> 'grant' ->> 'consent_ref')"),
             postgresql_where=text("(details -> 'grant' ->> 'consent_ref') IS NOT NULL"),
         ),
+        Index(
+            "ix_audit_log_grant_reference",
+            "account_id",
+            text("((details -> 'external_result') ->> 'grant_reference')"),
+            postgresql_where=text(
+                "((details -> 'external_result') ->> 'grant_reference') IS NOT NULL"
+            ),
+        ),
         # The grouped timeline resolves one page's tool calls and approval
         # lifecycle by account and JSON identifiers, without scanning details
         # of every audit row in that account.

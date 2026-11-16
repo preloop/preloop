@@ -889,6 +889,8 @@ class ApprovalService:
             managed_agent_name=managed_agent_name,
             api_key_id=api_key_id,
             rule_context=rule_context,
+            correlation_id=_current_correlation_id(),
+            server_name=server_name,
             status="pending",
             requested_at=datetime.utcnow(),
             expires_at=expires_at,
@@ -1010,7 +1012,19 @@ class ApprovalService:
 
         previous_status = approval_request.status
         # Update fields
-        for field, value in update.model_dump(exclude_unset=True).items():
+        values = update.model_dump(exclude_unset=True)
+        external_fields = {
+            key: values.pop(key) for key in list(values) if key.startswith("external_")
+        }
+        if external_fields:
+            from preloop.models.crud import external_approval as handoff_crud
+
+            await self.db.run_sync(
+                lambda db: handoff_crud.update_fields(
+                    db, approval_request, external_fields
+                )
+            )
+        for field, value in values.items():
             setattr(approval_request, field, value)
 
         if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
@@ -1029,6 +1043,18 @@ class ApprovalService:
                 flag_modified(approval_request, "tool_args")
 
         if approval_request.status != previous_status:
+            external_result = getattr(approval_request, "external_result", None)
+            if isinstance(external_result, dict):
+                audit_details = {
+                    **(audit_details or {}),
+                    "external_result": external_result,
+                }
+            external_reference = getattr(approval_request, "external_reference", None)
+            if isinstance(external_reference, str):
+                audit_details = {
+                    **(audit_details or {}),
+                    "external_reference": external_reference,
+                }
             await self._enqueue_lifecycle(
                 account_id=str(approval_request.account_id),
                 approval_id=approval_request.id,
@@ -1041,7 +1067,10 @@ class ApprovalService:
                 if audit_reason is not None
                 else approval_request.approver_comment,
                 execution_id=approval_request.execution_id,
-                correlation_id=_current_correlation_id(),
+                correlation_id=(
+                    getattr(approval_request, "correlation_id", None)
+                    or _current_correlation_id()
+                ),
                 extra_details=audit_details,
             )
         await self.db.commit()
@@ -1312,6 +1341,44 @@ class ApprovalService:
                 detail="Desktop control must be approved by another admin",
             )
 
+    async def _external_decision_fields(
+        self, approval_request: ApprovalRequest, result: Any
+    ) -> Dict[str, Any]:
+        """Validate and redact external references before either durable write."""
+        if result is None:
+            return {}
+        from fastapi import HTTPException
+        from preloop.models.schemas.external_approval import ExternalApprovalResult
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+        from preloop.utils.redaction import redact_dict
+
+        parsed = ExternalApprovalResult.model_validate(result)
+        expected = getattr(approval_request, "external_reference", None)
+        if isinstance(expected, str) and parsed.external_reference != expected:
+            raise HTTPException(
+                status_code=422, detail="External reference does not match this request"
+            )
+        data = parsed.model_dump(exclude_none=True)
+        # Unlike the legacy best-effort storage helper, a redaction failure
+        # rejects this decision: external fields must never fall back to raw data.
+        stored = await asyncio.to_thread(
+            apply_storage_redaction,
+            str(approval_request.account_id),
+            redact_dict(data),
+            scope=StorageScope(
+                target="tool.args",
+                tool_name=approval_request.tool_name,
+                server_name=getattr(approval_request, "server_name", None),
+                managed_agent_id=str(approval_request.managed_agent_id)
+                if approval_request.managed_agent_id
+                else None,
+            ),
+        )
+        return {"external_result": stored}
+
     async def approve_request(
         self,
         request_id: uuid.UUID,
@@ -1319,6 +1386,7 @@ class ApprovalService:
         user_id: Optional[uuid.UUID] = None,
         channel: Optional[str] = None,
         structured_answer: Optional[dict] = None,
+        result: Optional[Dict[str, Any]] = None,
     ) -> Optional[ApprovalRequest]:
         """Approve an approval request.
 
@@ -1354,6 +1422,8 @@ class ApprovalService:
         guarded = await self._reject_if_not_actionable(approval_request)
         if guarded is not None:
             return guarded
+
+        result_fields = await self._external_decision_fields(approval_request, result)
 
         # Get the approval workflow to check quorum requirements
         approval_workflow = approval_request.approval_workflow
@@ -1405,6 +1475,7 @@ class ApprovalService:
                 update = ApprovalRequestUpdate(
                     status="approved",
                     approver_comment=comment,
+                    **result_fields,
                     structured_answer=structured_answer,
                     resolved_at=datetime.utcnow(),
                 )
@@ -1464,6 +1535,7 @@ class ApprovalService:
             update = ApprovalRequestUpdate(
                 status="approved",
                 approver_comment=comment,
+                **result_fields,
                 structured_answer=structured_answer,
                 resolved_at=datetime.utcnow(),
             )
@@ -1492,6 +1564,14 @@ class ApprovalService:
         else:
             # Quorum not met yet - just record the vote and broadcast progress
             approval_request.responses = responses
+            if result_fields:
+                from preloop.models.crud import external_approval as handoff_crud
+
+                await self.db.run_sync(
+                    lambda db: handoff_crud.update_fields(
+                        db, approval_request, result_fields
+                    )
+                )
             await self.db.commit()
             await self.db.refresh(approval_request)
 
@@ -1516,6 +1596,7 @@ class ApprovalService:
         comment: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
         channel: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
     ) -> Optional[ApprovalRequest]:
         """Decline an approval request.
 
@@ -1548,6 +1629,8 @@ class ApprovalService:
         guarded = await self._reject_if_not_actionable(approval_request)
         if guarded is not None:
             return guarded
+
+        result_fields = await self._external_decision_fields(approval_request, result)
 
         # Get the approval workflow to check quorum requirements
         approval_workflow = approval_request.approval_workflow
@@ -1599,6 +1682,7 @@ class ApprovalService:
                 update = ApprovalRequestUpdate(
                     status="declined",
                     approver_comment=comment,
+                    **result_fields,
                     resolved_at=datetime.utcnow(),
                 )
                 updated_request = await self.update_approval_request(request_id, update)
@@ -1683,6 +1767,7 @@ class ApprovalService:
             update = ApprovalRequestUpdate(
                 status="declined",
                 approver_comment=comment,
+                **result_fields,
                 resolved_at=datetime.utcnow(),
             )
             # Update responses in the database
@@ -1711,6 +1796,14 @@ class ApprovalService:
         else:
             # Still possible to reach quorum - just record the vote
             approval_request.responses = responses
+            if result_fields:
+                from preloop.models.crud import external_approval as handoff_crud
+
+                await self.db.run_sync(
+                    lambda db: handoff_crud.update_fields(
+                        db, approval_request, result_fields
+                    )
+                )
             await self.db.commit()
             await self.db.refresh(approval_request)
 
@@ -2124,7 +2217,11 @@ class ApprovalService:
 
         # Create message based on approval type
         channel = target[0]
-        if channel in ["slack", "mattermost"]:
+        from preloop.services.external_approval import uses_external_link
+
+        if channel in ["slack", "mattermost"] and not uses_external_link(
+            approval_workflow
+        ):
             # Build message text with all details: summary first when present
             if ask_text:
                 message_text = f"⚠️ **{ask_text}**\n\n"
@@ -2451,6 +2548,21 @@ class ApprovalService:
             broadcast_created=False,
         )
 
+        from preloop.services.external_approval import uses_external_link
+
+        if uses_external_link(approval_workflow):
+            # The external service owns the question and the decision. Neither
+            # AI approval nor a local bypass can substitute for its consent.
+            await self.update_approval_request(
+                approval_request.id,
+                ApprovalRequestUpdate(
+                    summary="Approval required on the external service"
+                ),
+            )
+            await self.send_notifications(approval_request, approval_workflow)
+            await self._broadcast_pending(approval_request)
+            return approval_request
+
         # Generate user-facing summary before any notifications fire.
         # Every stored request must carry a summary. The model summary is
         # unavailable on several paths (no default model, timeout, empty
@@ -2763,6 +2875,7 @@ class ApprovalService:
         approval_workflow: ApprovalWorkflow,
         *,
         recipient_user_ids: Optional[List[uuid.UUID]] = None,
+        external_handoff_complete: bool = False,
     ) -> Dict[str, Any]:
         """Send notifications for an approval request based on user preferences.
 
@@ -2783,6 +2896,8 @@ class ApprovalService:
             recipient_user_ids: Override per-user recipients without changing the
                 saved workflow. None uses workflow approvers; an empty list sends
                 no per-user notifications. Webhooks keep the workflow destination.
+            external_handoff_complete: Resume a durable hand-off after webhook
+                delivery; retries and recovered claims may be older than 30 seconds.
 
         Returns:
             Dict with results per notification channel
@@ -2797,7 +2912,11 @@ class ApprovalService:
                 request_age = (
                     datetime.utcnow() - approval_request.requested_at
                 ).total_seconds()
-                if request_age > 30 and approval_request.tool_name != "owner_consent":
+                if (
+                    request_age > 30
+                    and approval_request.tool_name != "owner_consent"
+                    and not external_handoff_complete
+                ):
                     logger.warning(
                         f"Skipping notifications for approval request {approval_request.id} - "
                         f"request is {request_age:.1f}s old (likely duplicate call)"
@@ -2806,6 +2925,32 @@ class ApprovalService:
         except (TypeError, AttributeError):
             # In tests, requested_at might be a mock - just continue
             pass
+
+        from preloop.services.external_approval import uses_external_link
+        from preloop.models.crud import external_approval as handoff_crud
+
+        if uses_external_link(approval_workflow) and not external_handoff_complete:
+            # The machine receives the token URLs first. Human channels are
+            # resumed durably by the worker once the external URL is known.
+            if getattr(approval_request, "external_handoff_state", None) is None:
+                await self.db.run_sync(
+                    lambda db: handoff_crud.mark_waiting(db, approval_request.id)
+                )
+                queued = await self.post_webhook_notification(
+                    approval_request, approval_workflow
+                )
+                if not queued:
+                    await self.db.run_sync(
+                        lambda db: handoff_crud.finish_handoff(
+                            db,
+                            approval_request.id,
+                            handoff=None,
+                            error="External approval webhook could not be queued",
+                        )
+                    )
+                    await self.db.commit()
+                return {"webhook": {"success": queued}, "deferred": True}
+            return {"deferred": True}
 
         # Notification mute. Distinct from auto-approval: the request stays
         # pending and keeps blocking the agent, we simply stop buzzing people.
@@ -2982,7 +3127,9 @@ class ApprovalService:
         )
 
         target = resolve_webhook_target(approval_workflow)
-        workflow_channels = [target[0]] if target else []
+        workflow_channels = (
+            [target[0]] if target and not external_handoff_complete else []
+        )
         for channel in workflow_channels:
             if channel in ["slack", "mattermost", "webhook"]:
                 try:
@@ -3395,6 +3542,11 @@ class ApprovalService:
                     f"{approval_request.id}?token={token}"
                 )
 
+                from preloop.services.external_approval import external_url
+
+                external = external_url(approval_request)
+                approval_url = external or approval_url
+
                 # Send email (redact tool_args for display)
                 from preloop.utils.redaction import redact_dict
 
@@ -3403,6 +3555,7 @@ class ApprovalService:
                     tool_name=approval_request.tool_name,
                     tool_args=redact_dict(approval_request.tool_args or {}),
                     approval_url=approval_url,
+                    **({"external_decision": True} if external else {}),
                     agent_reasoning=approval_request.agent_reasoning,
                     summary=approval_request.summary,
                     # Who asked, in the subject: an approver triaging an inbox
@@ -3581,6 +3734,8 @@ class ApprovalService:
         # Build notification payload (redact tool_args for push display)
         from preloop.utils.redaction import redact_dict
 
+        from preloop.services.external_approval import external_url
+
         payload = NotificationPayloadBuilder.new_approval_request(
             request_id=str(approval_request.id),
             tool_name=approval_request.tool_name,
@@ -3590,6 +3745,11 @@ class ApprovalService:
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
             rule_context=approval_request.rule_context,
+            **(
+                {"external_url": external_url(approval_request)}
+                if external_url(approval_request)
+                else {}
+            ),
             agent_name=approval_request.managed_agent_name,
             runtime_session_id=(
                 str(approval_request.runtime_session_id)

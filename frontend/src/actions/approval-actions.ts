@@ -42,12 +42,21 @@ export function requestNeedsForm(request: ApprovalRequest): boolean {
 }
 
 /** Pending, unexpired and not a question: the requests a person can decide. */
+export function hasExternalDecision(request: ApprovalRequest): boolean {
+  return (
+    Boolean(request.external_url) ||
+    ['waiting', 'notify'].includes(request.external_handoff_state ?? '')
+  );
+}
+
 export function isDecidableRequest(
   request: ApprovalRequest,
   now: number = Date.now()
 ): boolean {
   return (
-    isUnexpiredPendingRequest(request, now) && !isApprovalQuestion(request)
+    isUnexpiredPendingRequest(request, now) &&
+    !isApprovalQuestion(request) &&
+    !hasExternalDecision(request)
   );
 }
 
@@ -86,6 +95,13 @@ export function approvalActions(
         available: (item) => isDecidableRequest(item, now),
         onClick: ctx.onDeny ? () => ctx.onDeny!(request) : undefined,
       },
+      request.external_url
+        ? {
+            id: 'external-decision',
+            label: 'Decide on external service',
+            href: request.external_url,
+          }
+        : null,
       ctx.includeDetails
         ? {
             id: 'details',

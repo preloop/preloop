@@ -88,6 +88,11 @@ class ApprovalRequest(Base):
             "resolved_at",
             postgresql_where=text("resolved_at IS NOT NULL"),
         ),
+        Index(
+            "ix_approval_request_external_notifications",
+            "id",
+            postgresql_where=text("external_handoff_state = 'notify'"),
+        ),
         # One pending security-maintenance request per work item. Concurrent
         # creators race past the advisory lock; this partial unique index is
         # the durable control. Crash/retry binds the surviving row.
@@ -208,6 +213,17 @@ class ApprovalRequest(Base):
         default=None,
         comment="Snapshot of the policy rule that required this approval",
     )
+
+    external_reference: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
+    external_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_result: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    external_handoff_state: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    correlation_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    server_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     summary: Mapped[Optional[str]] = mapped_column(
         Text,
