@@ -783,6 +783,19 @@ def reject_revoked_token(
     return context
 
 
+def _is_bound_channel_action(
+    token_data: TokenData, request_scope: tuple[str, str] | None
+) -> bool:
+    """Recognize a signed paired-channel action only at its exact HTTP route."""
+    return bool(
+        request_scope is not None
+        and token_data.claims.get("purpose") == "channel_action"
+        and token_data.claims.get("amr") == ["chat"]
+        and token_data.claims.get("channel_method") == request_scope[0]
+        and token_data.claims.get("channel_path") == request_scope[1]
+    )
+
+
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db_session),
@@ -857,12 +870,8 @@ def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        channel_action = (
-            token_data.claims.get("purpose") == "channel_action"
-            and request is not None
-            and token_data.claims.get("amr") == ["chat"]
-            and token_data.claims.get("channel_method") == request.method
-            and token_data.claims.get("channel_path") == request.url.path
+        channel_action = _is_bound_channel_action(
+            token_data, (request.method, request.url.path) if request else None
         )
         if token_data.claims.get("purpose") and not channel_action:
             raise HTTPException(
@@ -1079,6 +1088,7 @@ def get_user_from_token_if_valid_sync(
     allow_restricted_runtime: bool = False,
     allow_read_only_review: bool = False,
     allow_managed_agent: bool = False,
+    request_scope: tuple[str, str] | None = None,
 ) -> Optional[User | ManagedAgentPrincipal]:
     """Sync variant for short-lived sessions in WebSocket handlers.
 
@@ -1088,6 +1098,8 @@ def get_user_from_token_if_valid_sync(
         allow_ended_runtime_session: When true, a key pinned to a session
             that has ended still resolves its user. Missing sessions stay
             rejected. The model gateway leaves this false.
+        request_scope: Actual HTTP method and path for a gateway request.
+            Without it, paired-channel action tokens remain invalid here.
     """
     if not token:
         return None
@@ -1115,7 +1127,8 @@ def get_user_from_token_if_valid_sync(
         if getattr(token_data, "refresh", False):
             return None
 
-        if isinstance(token_data.claims, dict) and token_data.claims.get("purpose"):
+        channel_action = _is_bound_channel_action(token_data, request_scope)
+        if token_data.claims.get("purpose") and not channel_action:
             return None
 
         user_id_str = getattr(token_data, "sub", "")
@@ -1131,7 +1144,9 @@ def get_user_from_token_if_valid_sync(
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
-            context = reject_revoked_token(db_session, user, token_data)
+            context = reject_revoked_token(
+                db_session, user, token_data, channel_action=channel_action
+            )
             from preloop.services.authentication_policy import (
                 enforce_enrollment_session,
             )

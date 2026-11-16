@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from preloop.models.db.session import get_db_session
@@ -27,6 +27,7 @@ async def authenticate_request(
     *,
     allow_ended_runtime_session: bool,
     allow_read_only_review: bool = False,
+    request_scope: tuple[str, str] | None = None,
 ) -> ModelGatewayAuthContext:
     """Resolve a bearer token or raise the gateway's 401.
 
@@ -36,6 +37,7 @@ async def authenticate_request(
         allow_ended_runtime_session: When true, a key pinned to a session
             that has already ended still authenticates. Model inference
             keeps the default and rejects that key.
+        request_scope: Actual method and path, used to bind paired-chat tokens.
 
     Returns:
         The authenticated gateway context.
@@ -58,6 +60,7 @@ async def authenticate_request(
         owns_db_session=True,
         allow_ended_runtime_session=allow_ended_runtime_session,
         allow_read_only_review=allow_read_only_review,
+        request_scope=request_scope,
     )
     if not auth_context:
         raise ModelGatewayAPIError(
@@ -70,6 +73,7 @@ async def authenticate_request(
 
 
 async def get_model_gateway_auth_context(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_preloop_execution: Optional[str] = Header(None),
     db: Session = Depends(get_db_session),
@@ -83,6 +87,7 @@ async def get_model_gateway_auth_context(
     (``preloop.services.host_exec_gateway``).
 
     Args:
+        request: The actual HTTP request whose method and path bind chat actions.
         authorization: ``Authorization`` header.
         x_preloop_execution: Optional execution marker header.
         db: Database session.
@@ -98,6 +103,7 @@ async def get_model_gateway_auth_context(
         db,
         allow_ended_runtime_session=False,
         allow_read_only_review=True,
+        request_scope=(request.method, request.url.path),
     )
     from preloop.services.host_exec_gateway import attach_execution_marker
 
