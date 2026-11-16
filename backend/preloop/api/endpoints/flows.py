@@ -3732,7 +3732,11 @@ def update_flow(
 ):
     """Update a flow."""
     ensure_permission_in_oss(db, current_user, "edit_flows")
-    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    # Settings saves preserve omitted credentials from the current locked row,
+    # so a concurrent rotation cannot be undone by a stale ORM snapshot.
+    flow = crud_flow.get(
+        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
+    )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 

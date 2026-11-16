@@ -1010,8 +1010,12 @@ describe('FlowView all-of labels filter', () => {
 describe('FlowView webhook URL', () => {
   let element: any;
   let fetchStub: sinon.SinonStub;
+  let toastStub: sinon.SinonStub;
 
   beforeEach(async () => {
+    toastStub = sinon
+      .stub(customElements.get('sl-alert')!.prototype, 'toast')
+      .resolves();
     localStorage.setItem('accessToken', 'test-token');
     fetchStub = sinon
       .stub(window, 'fetch')
@@ -1023,6 +1027,7 @@ describe('FlowView webhook URL', () => {
               webhook_secret_hint: 'cret',
               webhook_secret_set: true,
               webhook_secret_rotated_at: '2026-11-16T12:00:00Z',
+              execution_stats: null,
             }),
             { status: 200 }
           );
@@ -1045,6 +1050,7 @@ describe('FlowView webhook URL', () => {
         webhook_secret_set: true,
         webhook_secret_hint: 'abcd',
         webhook_config: {},
+        execution_stats: { total_execs: 7 },
       },
     });
     document.body.appendChild(element);
@@ -1058,7 +1064,9 @@ describe('FlowView webhook URL', () => {
     element.remove();
     localStorage.clear();
     fetchStub.restore();
+    toastStub.restore();
     document.querySelector('confirm-dialog')?.remove();
+    document.querySelectorAll('sl-alert').forEach((alert) => alert.remove());
   });
 
   it('keeps a URL template and status visible to editors without a read secret', () => {
@@ -1129,10 +1137,50 @@ describe('FlowView webhook URL', () => {
       );
     expect(call?.args[1]?.method).to.equal('POST');
     expect(element.flow.webhook_secret).to.be.undefined;
+    expect(element.flow.execution_stats).to.deep.equal({ total_execs: 7 });
     expect(element.shadowRoot.textContent).to.contain('shown once');
     element.disconnectedCallback();
     expect(element.newWebhookSecret).to.equal(null);
   });
+
+  for (const change of ['disconnect', 'reload', 'another-flow']) {
+    it(`warns when a confirmed rotation completes after ${change}`, async () => {
+      let finish!: (response: Response) => void;
+      fetchStub.callsFake((input: RequestInfo | URL) => {
+        if (input.toString().endsWith('/webhook-secret/rotate')) {
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      });
+      const pending = element.rotateWebhookSecret();
+      const dialog = document.querySelector('confirm-dialog') as any;
+      await dialog.updateComplete;
+      dialog.shadowRoot
+        .querySelector('[data-testid="confirm-dialog-confirm"]')
+        .click();
+      await waitUntil(() => typeof finish === 'function');
+      if (change === 'disconnect') element.remove();
+      else if (change === 'reload') ++element.flowLoadGeneration;
+      else element.flowId = 'flow-2';
+      finish(
+        new Response(
+          JSON.stringify({ webhook_secret: 'late-example-secret' }),
+          { status: 200 }
+        )
+      );
+      await pending;
+      const warning = [...document.querySelectorAll('sl-alert')].find((alert) =>
+        alert.textContent?.includes('Webhook secret rotated')
+      ) as any;
+      expect(warning).to.exist;
+      expect(warning.textContent).to.contain('Rotate again');
+      expect(warning.duration).to.equal(Infinity);
+      expect(warning.textContent).not.to.contain('late-example-secret');
+      expect(element.newWebhookSecret).to.equal(null);
+    });
+  }
 });
 
 describe('FlowView load failure', () => {
