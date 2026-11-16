@@ -40,30 +40,54 @@ describe('extension inventory API', () => {
     expect(String(fetch.lastCall.args[0])).to.contain('group=extension');
   });
   // protects=existing version constraints and notes; fails_when=state change
-  // clears another decision field; no_claim=fetch fixture and pagination.
+  // clears another decision field or scans unrelated approvals;
+  // no_claim=fetch fixture, not server authorization.
   it('preserves the existing constraint and note when changing state', async () => {
     const fetch = sinon.stub(window, 'fetch');
-    fetch
-      .onFirstCall()
-      .resolves(
-        new Response(JSON.stringify({ items: [], next_cursor: 'next' }))
-      );
-    fetch.onSecondCall().resolves(
+    fetch.onFirstCall().resolves(
       new Response(
         JSON.stringify({
-          items: [{ ...key, version_constraint: '1.4.*', note: 'Reviewed' }],
-          next_cursor: null,
+          ...key,
+          version_constraint: '1.4.*',
+          note: 'Reviewed',
         })
       )
     );
-    fetch.onThirdCall().resolves(new Response('{}'));
+    fetch.onSecondCall().resolves(new Response('{}'));
     await setExtensionApproval(key, 'unapproved');
-    expect(String(fetch.secondCall.args[0])).to.contain('cursor=next');
-    expect(JSON.parse(String(fetch.thirdCall.args[1]?.body))).to.deep.equal({
+    expect(fetch.callCount).to.equal(2);
+    expect(fetch.firstCall.args[0]).to.equal(fetch.secondCall.args[0]);
+    expect(JSON.parse(String(fetch.secondCall.args[1]?.body))).to.deep.equal({
       approval_state: 'unapproved',
       version_constraint: '1.4.*',
       note: 'Reviewed',
     });
-    expect(String(fetch.thirdCall.args[0])).to.contain('reviewer%40community');
+    expect(String(fetch.firstCall.args[0])).to.contain('reviewer%40community');
   });
+  // protects=bounded first approval; fails_when=missing decisions require a
+  // list scan or failed reads overwrite metadata; no_claim=synthetic HTTP.
+  for (const status of [404, 403, 500]) {
+    it(`handles a decision lookup returning ${status}`, async () => {
+      const fetch = sinon.stub(window, 'fetch');
+      fetch.onFirstCall().resolves(new Response('{}', { status }));
+      fetch.onSecondCall().resolves(new Response('{}'));
+      let error: unknown;
+      try {
+        await setExtensionApproval(key, 'approved');
+      } catch (caught) {
+        error = caught;
+      }
+      expect(fetch.callCount).to.equal(status === 404 ? 2 : 1);
+      if (status === 404) {
+        expect(error).to.equal(undefined);
+        expect(
+          JSON.parse(String(fetch.secondCall.args[1]?.body))
+        ).to.deep.equal({
+          approval_state: 'approved',
+          version_constraint: null,
+          note: null,
+        });
+      } else expect(error).to.be.instanceOf(Error);
+    });
+  }
 });

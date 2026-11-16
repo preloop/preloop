@@ -79,7 +79,8 @@ raw messages and bound parameters are omitted because they can contain proofs.
 
 ### Extension inventory
 
-`playwright.extensions.config.ts` runs the real CLI report path, PostgreSQL
+The isolated spec in `tests/extensions` is excluded from the shared e2e project
+directories. `playwright.extensions.config.ts` runs the real CLI report path, PostgreSQL
 inventory/approval endpoints, and the Lit extension table against loopback-only
 servers. The rig supplies a synthetic identity and profile enumeration; it does
 not test sign-in or operating-system user enumeration. The fixture plants a

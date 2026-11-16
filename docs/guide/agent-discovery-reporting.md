@@ -367,6 +367,11 @@ account aggregates with distinct device counts, versions and source kinds.
 (default 50, maximum 500) and an opaque `cursor`, returning `next_cursor` until
 all results have been read. Approval is `unknown` when no decision exists.
 
+`GET /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
+reads one decision with `view_agents` permission, or returns 404 when no decision
+exists. The console uses this lookup to preserve notes and version constraints
+without scanning the account's approval list.
+
 `PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
 requires `manage_agents` and accepts `approval_state` (`approved`, `unapproved`,
 `unknown`), optional `note`, and optional `version_constraint`. A constraint is an

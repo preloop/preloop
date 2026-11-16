@@ -8,7 +8,7 @@ const apiPort = Number(process.env.PRELOOP_EXTENSION_API_PORT || 58147);
 const port = Number(process.env.PRELOOP_EXTENSION_FRONTEND_PORT || 58148);
 
 export default defineConfig({
-  testDir: './tests/e2e',
+  testDir: './tests/extensions',
   testMatch: 'extension-inventory.spec.ts',
   workers: 1,
   retries: 0,

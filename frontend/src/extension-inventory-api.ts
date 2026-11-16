@@ -89,23 +89,6 @@ export async function setExtensionApproval(
   extension: ExtensionKey,
   approval_state: ExtensionApprovalState
 ): Promise<void> {
-  let cursor: string | null = null;
-  let existing: ExtensionDecision | undefined;
-  do {
-    const params = new URLSearchParams({ limit: '500' });
-    if (cursor) params.set('cursor', cursor);
-    const page = await request<{
-      items: (ExtensionKey & ExtensionDecision)[];
-      next_cursor: string | null;
-    }>(`/extension-approvals?${params}`);
-    existing = page.items.find(
-      (row) =>
-        row.agent_kind === extension.agent_kind &&
-        row.extension_kind === extension.extension_kind &&
-        row.extension_id === extension.extension_id
-    );
-    cursor = page.next_cursor;
-  } while (!existing && cursor);
   const path = [
     extension.agent_kind,
     extension.extension_kind,
@@ -113,6 +96,14 @@ export async function setExtensionApproval(
   ]
     .map(encodeURIComponent)
     .join('/');
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/extension-approvals/${path}`
+  );
+  if (!response.ok && response.status !== 404)
+    throw new Error(`Extension request failed (${response.status})`);
+  const existing: ExtensionDecision | null = response.ok
+    ? await response.json()
+    : null;
   await request(`/extension-approvals/${path}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

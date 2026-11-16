@@ -2144,6 +2144,60 @@ paths:
           description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}:
+    get:
+      tags:
+      - Agent discovery
+      summary: Get Approval
+      description: Read one account decision without traversing unrelated approvals.
+      operationId: get_approval_api_v1_agents_extension_approvals__agent_kind___extension_kind___extension_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          type: string
+          title: Extension Kind
+      - name: extension_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionApprovalSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Agent discovery
