@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **API compatibility:** flow responses (including reads, lists, creates,
+  updates and presets) no longer include `webhook_config.webhook_secret`.
+  Integrations that extracted the secret from those responses must retain
+  their existing URL or call the rotate action and save its one-time
+  `webhook_secret`. Responses expose `webhook_secret_set`,
+  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
+  secrets and URLs remain valid until explicitly replaced; the migration
+  adds nullable rotation metadata and does not change credentials. Existing
+  unrotated secrets have a null rotation time (#2336).
+
+- MCP policies honour `defaults.unknown_tools` for unmatched calls, including
+  hook-observed MCP tools. Allow remains the default for existing accounts;
+  deny and approval defaults are opt-in (#2313).
+
 ### Added
+
+- flows: rotate webhook ingress secrets with
+  `POST /api/v1/flows/{id}/webhook-secret/rotate`,
+  `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console
+  flow page. The new `webhook_secret` is returned once by rotation; the old
+  URL stops working immediately. Each rotation records an audit event
+  without the credential (#2336).
 
 - flows: restricted-CI read-only reviews bind their result to the admitted
   revision and require repository inspection. A result whose `head_sha`,

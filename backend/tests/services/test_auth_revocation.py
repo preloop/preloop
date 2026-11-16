@@ -261,10 +261,16 @@ async def test_recheck_uses_existing_sso_policy_and_short_lived_session(
         return operation(db_session)
 
     def policy(
-        db: Session, user: models.User, *, claims: dict[str, Any], purpose: str
-    ) -> None:
+        db: Session,
+        user: models.User,
+        *,
+        claims: dict[str, Any],
+        purpose: str,
+        channel_action: bool = False,
+    ) -> dict[str, Any]:
         if claims.get("amr") != ["sso", "oidc"]:
             raise HTTPException(401, "Session revoked")
+        return claims
 
     monkeypatch.setattr(auth_revocation, "run_db_async", run)
     monkeypatch.setattr(jwt, "authorize_authentication", policy)

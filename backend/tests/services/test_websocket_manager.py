@@ -931,3 +931,38 @@ class TestAdminAlertSupervision:
         except asyncio.CancelledError:
             # Expected when cancelling the NATS consumer background task.
             pass
+
+
+async def test_handler_cancellation_preserves_watcher_cleanup() -> None:
+    """protects=disconnect cancellation cannot interrupt watcher finalization twice;
+    fails_when=the parent join cancels the already-cancelled watcher again;
+    no_claim=uses an in-process watcher, not database or network revocation."""
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    finish = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def watcher() -> None:
+        """Wait for cancellation, then model an asynchronous cleanup operation."""
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await finish.wait()
+            cleaned.set()
+
+    manager = WebSocketManager()
+    connection = wsm.RevocableConnection(MagicMock(), MagicMock())
+    connection.task = asyncio.create_task(watcher())
+    manager.revocable_connections["test"] = connection
+    await started.wait()
+    closing = asyncio.create_task(manager.unwatch_user_connection("test"))
+    await cleaning.wait()
+    closing.cancel("handler disconnected")
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    finish.set()
+    await asyncio.gather(connection.task, return_exceptions=True)
+    assert cleaned.is_set()
+    assert not manager.revocable_connections

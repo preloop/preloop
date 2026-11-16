@@ -21,6 +21,7 @@ import {
   type StaticMarkdownPage,
 } from '../static-markdown-pages';
 import { getFeatures } from '../api';
+import { enrollmentOnly } from '../services/mfa';
 import '../views/public/landing-view';
 import './static-view-wrapper';
 import '../views/public/login-view';
@@ -178,6 +179,11 @@ export class LitApp extends LitElement {
         },
       },
       { path: '/login', component: 'login-view' },
+      {
+        path: '/enroll-sign-in',
+        component: 'sign-in-enrollment-view',
+        load: () => import('../views/public/sign-in-enrollment-view'),
+      },
       {
         path: '/register',
         action: async (context, commands) => {
@@ -356,6 +362,10 @@ export class LitApp extends LitElement {
                 composed: true,
               })
             );
+
+            if (enrollmentOnly(accessToken)) {
+              return commands.redirect('/enroll-sign-in');
+            }
 
             // Signup is card-free (T2 paywall move): new OAuth users go
             // straight into the console; premium features request the card
