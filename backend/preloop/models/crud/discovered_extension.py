@@ -129,10 +129,12 @@ class CRUDDiscoveredExtension:
                     row.present = True
                     row.last_seen_at = received
                     row.last_observation_id = observation_id
-            complete = all(app.completeness == "complete" for app in apps)
+            complete = evidence.completeness != "failed" and all(
+                app.completeness == "complete" for app in apps
+            )
             # Failed profiles make their app claims insufficient for absence.
             complete = complete and all(
-                profile.completeness == "complete"
+                profile.completeness != "failed"
                 for profile in evidence.profiles
                 if profile.profile_ref == profile_ref
             )

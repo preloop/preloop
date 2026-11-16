@@ -342,3 +342,44 @@ def test_legacy_evidence_canonical_bytes() -> None:
     assert "extensions" not in dumped["applications"][0]
     assert "completeness" not in dumped["applications"][0]
     assert "profiles" not in dumped
+
+
+def test_complete_app_reconciles_despite_unrelated_profile_partial(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=app-level absence; fails_when=unverified runtime blocks removals;
+    no_claim=synthetic all-profile evidence, no OS enumeration.
+    """
+    store(db_session, test_user.account_id, report(profile_ref="c" * 64))
+    payload = report([], profile_ref="c" * 64, at=NOW + timedelta(minutes=1))
+    payload["evidence"]["completeness"] = "partial"
+    payload["evidence"]["profiles"][0].update(
+        completeness="partial", error_code="probe_incomplete"
+    )
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.list_for_account(
+            db_session, account_id=test_user.account_id
+        )[0]
+        == []
+    )
+
+
+def test_failed_envelope_never_proves_absence(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=failed scope; fails_when=a failed envelope removes inventory;
+    no_claim=synthetic contradictory collector claims.
+    """
+    store(db_session, test_user.account_id, report())
+    payload = report([], at=NOW + timedelta(minutes=1))
+    payload["evidence"]["completeness"] = "failed"
+    store(db_session, test_user.account_id, payload)
+    assert (
+        len(
+            crud_discovered_extension.list_for_account(
+                db_session, account_id=test_user.account_id
+            )[0]
+        )
+        == 1
+    )

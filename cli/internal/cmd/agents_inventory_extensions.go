@@ -345,6 +345,10 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 			r.scan.hookHashes = map[string][]string{}
 		}
 		hashes = append(r.scan.hookHashes[key], hashes...)
+		if len(hashes) > 10000 {
+			r.scan.fail("extension_limit")
+			continue
+		}
 		r.scan.hookHashes[key] = hashes
 		sort.Strings(hashes)
 		r.scan.add(inventoryExtension{Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n")))})

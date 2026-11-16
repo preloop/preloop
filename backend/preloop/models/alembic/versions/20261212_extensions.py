@@ -24,10 +24,16 @@ def _common_columns() -> list[sa.Column]:
         sa.Column("extension_kind", sa.String(16), nullable=False),
         sa.Column("extension_id", sa.String(128), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
         ),
         sa.Column(
-            "updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
         ),
     ]
 
