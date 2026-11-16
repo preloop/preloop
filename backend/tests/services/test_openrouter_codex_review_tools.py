@@ -73,7 +73,8 @@ def _service() -> tuple[OpenAIGatewayService, ExitStack]:
     service = OpenAIGatewayService(
         MagicMock(),
         ModelGatewayAuthContext(
-            token="synthetic", user=SimpleNamespace(id="u", account_id="a")
+            token="synthetic",
+            user=SimpleNamespace(id="u", account_id="a"),  # type: ignore[arg-type]
         ),
     )
     stack = ExitStack()
