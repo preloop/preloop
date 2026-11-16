@@ -599,4 +599,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert indexes.down_revision == external.revision
     merged = script.get_revision("20261212_flow_approval_merge")
     assert set(merged.down_revision) == {rotation.revision, indexes.revision}
-    assert script.get_heads() == [merged.revision]
+    registry = script.get_revision("20261116_tool_registry")
+    assert registry.down_revision == merged.revision
+    assert script.get_heads() == [registry.revision]

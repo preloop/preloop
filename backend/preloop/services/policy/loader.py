@@ -828,15 +828,14 @@ def invalid_default_settings(
         Errors naming each field that cannot be enforced.
     """
     errors: List[str] = []
-    if defaults.require_approval_for_new_tools:
-        errors.append(
-            "defaults.require_approval_for_new_tools=true (not yet implemented)"
-        )
     workflow = defaults.default_approval_workflow
-    if defaults.unknown_tools == "require_approval" and not workflow:
+    if (
+        defaults.unknown_tools == "require_approval"
+        or defaults.require_approval_for_new_tools
+    ) and not workflow:
         errors.append(
             "defaults.default_approval_workflow is required when "
-            "defaults.unknown_tools=require_approval"
+            "defaults.unknown_tools=require_approval or defaults.require_approval_for_new_tools=true"
         )
     if (
         workflow

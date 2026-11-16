@@ -1201,13 +1201,41 @@ def evaluate_policy(
             if effective_source == "mcp"
             else None
         )
-        decision = _unmatched_policy_decision(
-            account_meta=account_meta,
-            tool_source=effective_source,
-            tool_config=tool_config,
-            decision=decision,
-            workflow=workflow,
+        from preloop.services.policy.defaults import (
+            POLICY_DEFAULTS_META_KEY,
+            parse_defaults,
         )
+
+        defaults = (
+            parse_defaults(account_meta.get(POLICY_DEFAULTS_META_KEY))
+            if effective_source == "mcp"
+            else None
+        )
+        if defaults is not None and defaults.require_approval_for_new_tools:
+            from preloop.services.tool_registry import observe_sync
+
+            decision = observe_sync(
+                db=db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                server_id=mcp_server_id or getattr(tool_config, "mcp_server_id", None),
+                server_label=server_label,
+                workflow=workflow,
+                user_id=user_id,
+                subject_context=subject_context,
+                execution_id=execution_id,
+                record=record,
+            )
+        else:
+            decision = _unmatched_policy_decision(
+                account_meta=account_meta,
+                tool_source=effective_source,
+                tool_config=tool_config,
+                decision=decision,
+                workflow=workflow,
+            )
+
         if record:
             _log_policy_decision_async(
                 account_id=account_id,
@@ -1909,13 +1937,41 @@ async def evaluate_policy_async(
             if effective_source == "mcp"
             else None
         )
-        decision = _unmatched_policy_decision(
-            account_meta=account_meta_data,
-            tool_source=effective_source,
-            tool_config=tool_config,
-            decision=decision,
-            workflow=workflow,
+        from preloop.services.policy.defaults import (
+            POLICY_DEFAULTS_META_KEY,
+            parse_defaults,
         )
+
+        defaults = (
+            parse_defaults(account_meta_data.get(POLICY_DEFAULTS_META_KEY))
+            if effective_source == "mcp"
+            else None
+        )
+        if defaults is not None and defaults.require_approval_for_new_tools:
+            from preloop.services.tool_registry import observe
+
+            decision = await observe(
+                db=db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                server_id=mcp_server_id or getattr(tool_config, "mcp_server_id", None),
+                server_label=server_label,
+                workflow=workflow,
+                user_id=user_id,
+                subject_context=subject_context,
+                execution_id=execution_id,
+                record=record,
+            )
+        else:
+            decision = _unmatched_policy_decision(
+                account_meta=account_meta_data,
+                tool_source=effective_source,
+                tool_config=tool_config,
+                decision=decision,
+                workflow=workflow,
+            )
+
         if record:
             _log_policy_decision_async(
                 account_id=account_id,

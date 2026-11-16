@@ -21443,6 +21443,112 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/tools/registry:
+    get:
+      tags:
+      - Policies
+      summary: List Registry
+      description: List only the current account's observed execution routes.
+      operationId: list_registry_api_v1_tools_registry_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - approved
+            - denied
+            type: string
+          - type: 'null'
+          title: State
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RegistryEntryResponse'
+                title: Response List Registry Api V1 Tools Registry Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/tools/registry/{entry_id}/decision:
+    post:
+      tags:
+      - Policies
+      summary: Decide Registry
+      description: Decide or revoke a route, settling its pending approval with that
+        outcome.
+      operationId: decide_registry_api_v1_tools_registry__entry_id__decision_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Entry Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistryDecision'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistryEntryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/notices/summary:
     get:
       tags:
@@ -49131,6 +49237,102 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RegistryDecision:
+      properties:
+        state:
+          type: string
+          enum:
+          - approved
+          - denied
+          title: State
+      type: object
+      required:
+      - state
+      title: RegistryDecision
+      description: An explicit execution authorization or revocation for this route.
+    RegistryEntryResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        tool_source:
+          type: string
+          title: Tool Source
+        mcp_server_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Mcp Server Id
+        server_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Label
+        tool_name:
+          type: string
+          title: Tool Name
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - denied
+          title: State
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        first_seen_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: First Seen Agent Id
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        seen_count:
+          type: integer
+          title: Seen Count
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+      type: object
+      required:
+      - id
+      - tool_source
+      - mcp_server_id
+      - server_label
+      - tool_name
+      - state
+      - first_seen_at
+      - first_seen_agent_id
+      - last_seen_at
+      - seen_count
+      - decided_at
+      - decided_by_user_id
+      - approval_request_id
+      title: RegistryEntryResponse
+      description: Safe route identity, observation metadata and execution approval
+        state.
     ReportPublication:
       properties:
         enabled:

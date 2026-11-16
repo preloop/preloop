@@ -447,6 +447,7 @@ async def get_or_create_tool_configuration_async(
     *,
     obj_in: schemas.ToolConfigurationCreate,
     account_id: str,
+    commit: bool = True,
 ) -> models.ToolConfiguration:
     """Async: create a tool configuration, or return the row holding its scope.
 
@@ -464,7 +465,10 @@ async def get_or_create_tool_configuration_async(
     values = obj_in.model_dump()
     values["account_id"] = account_id
     new_id = (await db.execute(_insert_if_absent_stmt(values))).scalar()
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     if new_id is not None:
         return await db.get(models.ToolConfiguration, new_id)
     return (await db.execute(_same_scope_stmt(values))).scalars().one()

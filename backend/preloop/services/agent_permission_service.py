@@ -466,6 +466,7 @@ def _honour_native_policy_decision(decision: Any) -> bool:
         SOURCE_RULE_EVALUATION_ERROR,
         "rule",
         "scoped_rule",
+        "registry",
     }:
         return True
     return getattr(decision, "matched", False) is True
@@ -771,9 +772,6 @@ async def request_agent_permission(
                     )
                 workflow = rule_workflow
             timeout_seconds = workflow.timeout_seconds or 300
-            config = existing or await resolve_tool_config(
-                db, account_id, tool_name, workflow.id
-            )
             park_window_seconds: Optional[int] = None
             approval_tool_args = dict(tool_input or {})
             approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
@@ -792,49 +790,71 @@ async def request_agent_permission(
                 )
 
             service = ApprovalService(db, base_url)
-            approval = await service.create_and_notify(
-                account_id=account_id,
-                tool_configuration_id=config.id,
-                approval_workflow=workflow,
-                tool_name=tool_name,
-                tool_args=approval_tool_args,
-                agent_reasoning=agent_reasoning,
-                execution_id=(
-                    str(flow_execution_id) if flow_execution_id is not None else None
-                ),
-                timeout_seconds=park_window_seconds,
-                user_id=user_id,
-                managed_agent_id=managed_agent_id,
-                runtime_session_id=runtime_session_id,
-                managed_agent_name=managed_agent_name,
-                api_key_id=api_key_id,
-                request_id=approval_request_id,
-                standing_bypass_reason=(
-                    models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
-                    if approvals_off and matched_require is None
-                    else models.AutoApprovedReason.FLOW_APPROVAL_POLICY
-                    if flow_policy_label and matched_require is None
-                    else None
-                ),
-                standing_bypass_text=(
-                    f"Auto-approved by the approval policy of flow {flow_policy_label}"
-                    if flow_policy_label
-                    and matched_require is None
-                    and not approvals_off
-                    else None
-                ),
-                # A matching require_approval rule carries its own context.
-                # Otherwise the agent's hook escalated and no rule decided.
-                rule_context=(
-                    matched_require[2]
-                    if matched_require and matched_require[2] is not None
-                    else build_rule_context(
-                        source=SOURCE_AGENT_PERMISSION_HOOK,
-                        decision="require_approval",
-                        rule_name="Agent permission hook",
-                    )
-                ),
+            registry_request_id = (
+                (matched_require[2] or {}).get("registry_approval_request_id")
+                if matched_require
+                else None
             )
+            if registry_request_id:
+                from preloop.models.crud.approval_request import (
+                    get_approval_request_async,
+                )
+
+                approval = await get_approval_request_async(
+                    db, request_id=registry_request_id
+                )
+                if approval is None or str(approval.account_id) != str(account_id):
+                    return ("deny", "Registry approval is unavailable", None, False)
+            else:
+                config = existing or await resolve_tool_config(
+                    db, account_id, tool_name, workflow.id
+                )
+                approval = await service.create_and_notify(
+                    account_id=account_id,
+                    tool_configuration_id=config.id,
+                    approval_workflow=workflow,
+                    tool_name=tool_name,
+                    tool_args=approval_tool_args,
+                    agent_reasoning=agent_reasoning,
+                    execution_id=(
+                        str(flow_execution_id)
+                        if flow_execution_id is not None
+                        else None
+                    ),
+                    timeout_seconds=park_window_seconds,
+                    user_id=user_id,
+                    managed_agent_id=managed_agent_id,
+                    runtime_session_id=runtime_session_id,
+                    managed_agent_name=managed_agent_name,
+                    api_key_id=api_key_id,
+                    request_id=approval_request_id,
+                    standing_bypass_reason=(
+                        models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
+                        if approvals_off and matched_require is None
+                        else models.AutoApprovedReason.FLOW_APPROVAL_POLICY
+                        if flow_policy_label and matched_require is None
+                        else None
+                    ),
+                    standing_bypass_text=(
+                        f"Auto-approved by the approval policy of flow {flow_policy_label}"
+                        if flow_policy_label
+                        and matched_require is None
+                        and not approvals_off
+                        else None
+                    ),
+                    # A matching require_approval rule carries its own context.
+                    # Otherwise the agent's hook escalated and no rule decided.
+                    rule_context=(
+                        matched_require[2]
+                        if matched_require and matched_require[2] is not None
+                        else build_rule_context(
+                            source=SOURCE_AGENT_PERMISSION_HOOK,
+                            decision="require_approval",
+                            rule_name="Agent permission hook",
+                        )
+                    ),
+                )
+
         except Exception:
             # The recording path must never become a new way to block an agent
             # whose operator explicitly switched approvals off. Losing the audit

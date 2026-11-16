@@ -1292,7 +1292,7 @@ class DefaultsDefinition(BaseModel):
     )
     require_approval_for_new_tools: bool = Field(
         False,
-        description="Approve-once registry (not yet implemented; true is rejected)",
+        description="Require one approval per previously unlisted MCP tool route",
     )
     default_approval_workflow: Optional[str] = Field(
         None,

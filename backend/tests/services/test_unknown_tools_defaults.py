@@ -316,6 +316,7 @@ async def test_replay_rechecks_default_deny(monkeypatch: pytest.MonkeyPatch) -> 
     account_id, server_id, config_id = uuid4(), uuid4(), uuid4()
     server._proxied_tool_servers["docs_fetch"] = str(server_id)
     request = SimpleNamespace(
+        id=uuid4(),
         account_id=account_id,
         status="approved",
         tool_name="docs_fetch",
@@ -349,6 +350,17 @@ async def test_replay_rechecks_default_deny(monkeypatch: pytest.MonkeyPatch) -> 
     token = _approved_id_var.set(str(uuid4()))
     try:
         assert "blocks approval replay" in await server._approval_replay_denial(
+            str(account_id), "docs_fetch", {}
+        )
+        evaluator.evaluate_policy_async.return_value = evaluator.PolicyDecision(
+            "require_approval",
+            request.approval_workflow_id,
+            "New registry gate",
+            matched=False,
+            source="registry",
+            rule_context={"registry_approval_request_id": str(uuid4())},
+        )
+        assert "registry approval is pending" in await server._approval_replay_denial(
             str(account_id), "docs_fetch", {}
         )
         request.status = "declined"

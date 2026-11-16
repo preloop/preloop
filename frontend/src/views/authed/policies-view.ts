@@ -329,6 +329,21 @@ export class PoliciesView extends LitElement {
   /** True while an editor Save is waiting on the shared import diff dialog. */
   private _pendingYamlSave = false;
 
+  @state() private _registryEntries: Array<{
+    id: string;
+    tool_name: string;
+    mcp_server_id: string | null;
+    server_label: string | null;
+    state: 'pending' | 'approved' | 'denied';
+    first_seen_at: string;
+    first_seen_agent_id: string | null;
+  }> = [];
+  @state() private _registryFilter = '';
+  @state() private _registryPage = 0;
+  @state() private _registryLoading = false;
+  @state() private _registryError = '';
+  @state() private _registryDeciding = '';
+
   // Version management state
   @state() private _versions: PolicyVersion[] = [];
   @state() private _loadingVersions = false;
@@ -389,6 +404,20 @@ export class PoliciesView extends LitElement {
 
       sl-tab-panel {
         padding-top: var(--sl-spacing-large);
+      }
+
+      .table-scroll {
+        overflow-x: auto;
+      }
+      .table-scroll table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .table-scroll th,
+      .table-scroll td {
+        text-align: left;
+        padding: var(--sl-spacing-small);
+        border-bottom: 1px solid var(--console-hairline);
       }
 
       .policy-defaults {
@@ -1764,6 +1793,151 @@ export class PoliciesView extends LitElement {
     }
   }
 
+  private async _loadRegistry() {
+    this._registryLoading = true;
+    this._registryError = '';
+    try {
+      const query = new URLSearchParams({
+        page: String(this._registryPage),
+        page_size: '50',
+      });
+      if (this._registryFilter) query.set('state', this._registryFilter);
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/tools/registry?${query}`
+      );
+      if (!response.ok) throw new Error('Could not load tools seen.');
+      this._registryEntries = await response.json();
+    } catch (error) {
+      this._registryError =
+        error instanceof Error ? error.message : 'Could not load tools seen.';
+    } finally {
+      this._registryLoading = false;
+    }
+  }
+
+  private async _decideRegistry(id: string, state: 'approved' | 'denied') {
+    this._registryDeciding = id;
+    this._registryError = '';
+    try {
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/tools/registry/${id}/decision`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state }),
+        }
+      );
+      if (!response.ok)
+        throw new Error('Could not save the tool decision. Refresh and retry.');
+      await this._loadRegistry();
+    } catch (error) {
+      this._registryError =
+        error instanceof Error
+          ? error.message
+          : 'Could not save the tool decision.';
+    } finally {
+      this._registryDeciding = '';
+    }
+  }
+
+  private _renderRegistry() {
+    return html`<section aria-labelledby="tools-seen-title">
+      <h3 id="tools-seen-title">Tools seen</h3>
+      <p class="model-io-hint">
+        Approving authorizes this MCP tool route for the account when
+        approve-once is enabled and no explicit rule matches. Deny revokes that
+        authorization.
+      </p>
+      <sl-select
+        label="State"
+        .value=${this._registryFilter}
+        @sl-change=${(event: Event) => {
+          this._registryFilter = (event.target as HTMLSelectElement).value;
+          this._registryPage = 0;
+          void this._loadRegistry();
+        }}
+      >
+        <sl-option value="">All</sl-option
+        ><sl-option value="pending">Pending</sl-option>
+        <sl-option value="approved">Approved</sl-option
+        ><sl-option value="denied">Denied</sl-option>
+      </sl-select>
+      ${this._registryError ? html`<sl-alert variant="danger" open>${this._registryError}</sl-alert>` : nothing}
+      <sl-button
+        @click=${() => this._loadRegistry()}
+        ?loading=${this._registryLoading}
+        >Refresh</sl-button
+      >
+      <div class="table-scroll">
+        <table aria-label="Tools seen">
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Tool</th>
+              <th>First seen</th>
+              <th>Seen by</th>
+              <th>State</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this._registryEntries.map(
+              (entry) =>
+                html`<tr>
+                  <td>
+                    ${entry.server_label || entry.mcp_server_id || 'Unknown'}
+                  </td>
+                  <td>${entry.tool_name}</td>
+                  <td>${new Date(entry.first_seen_at).toLocaleString()}</td>
+                  <td>${entry.first_seen_agent_id || 'Unknown'}</td>
+                  <td>${entry.state}</td>
+                  <td>
+                    ${
+                      this._canManagePolicies
+                        ? html` <sl-button
+                              size="small"
+                              aria-label=${`Approve ${entry.tool_name}`}
+                              ?disabled=${this._registryDeciding !== '' || entry.state === 'approved'}
+                              @click=${() => this._decideRegistry(entry.id, 'approved')}
+                              >Approve</sl-button
+                            >
+                            <sl-button
+                              size="small"
+                              variant="danger"
+                              aria-label=${`Deny ${entry.tool_name}`}
+                              ?disabled=${this._registryDeciding !== '' || entry.state === 'denied'}
+                              @click=${() => this._decideRegistry(entry.id, 'denied')}
+                              >Deny</sl-button
+                            >`
+                        : nothing
+                    }
+                  </td>
+                </tr>`
+            )}
+          </tbody>
+        </table>
+      </div>
+      ${!this._registryLoading && !this._registryEntries.length ? html`<p>No tools seen for this filter.</p>` : nothing}
+      <sl-button
+        ?disabled=${this._registryPage === 0 || this._registryLoading}
+        @click=${() => {
+          this._registryPage--;
+          void this._loadRegistry();
+        }}
+        >Previous</sl-button
+      >
+      <span>Page ${this._registryPage + 1}</span>
+      <sl-button
+        ?disabled=${this._registryEntries.length < 50 || this._registryLoading}
+        @click=${() => {
+          this._registryPage++;
+          void this._loadRegistry();
+        }}
+        >Next</sl-button
+      >
+    </section>`;
+  }
+
   private _renderDefaults() {
     let defaults: Record<string, any> = {};
     let invalid = false;
@@ -1796,15 +1970,17 @@ export class PoliciesView extends LitElement {
         <sl-option value="require_approval">Require approval</sl-option>
         <sl-option value="deny">Deny</sl-option>
       </sl-select>
-      <sl-tooltip
-        content="Approve-once will be available with the Tools seen registry."
+      <sl-switch
+        data-testid="approve-once"
+        ?disabled=${disabled}
+        ?checked=${defaults.require_approval_for_new_tools === true}
+        @sl-change=${(event: Event) => this._setDefaults('require_approval_for_new_tools', (event.target as HTMLInputElement).checked)}
       >
-        <sl-switch disabled
-          >Require approval the first time a tool is seen</sl-switch
-        >
-      </sl-tooltip>
+        Require approval the first time a tool is seen
+      </sl-switch>
       ${
-        defaults.unknown_tools === 'require_approval'
+        defaults.unknown_tools === 'require_approval' ||
+        defaults.require_approval_for_new_tools
           ? html` <sl-select
               label="Default approval workflow"
               data-testid="defaults-workflow"
@@ -3886,6 +4062,7 @@ defaults:
       return;
     }
     this._activeTab = name;
+    if (name === 'tools-seen') void this._loadRegistry();
     if (name === 'files' && !this._yamlDirty) {
       void this._refreshCurrentExport();
     }
@@ -4078,6 +4255,15 @@ defaults:
                         : ''
                     }
 
+                    <sl-tab
+                      slot="nav"
+                      panel="tools-seen"
+                      ?active=${this._activeTab === 'tools-seen'}
+                      >Tools seen</sl-tab
+                    >
+                    <sl-tab-panel name="tools-seen"
+                      >${this._activeTab === 'tools-seen' ? this._renderRegistry() : nothing}</sl-tab-panel
+                    >
                     <sl-tab-panel name="rules">
                       ${this.renderRulesTab()}
                     </sl-tab-panel>

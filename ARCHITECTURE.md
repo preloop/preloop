@@ -92,3 +92,11 @@ single-use challenges and fresh-authentication checks for factor management.
 See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
+
+Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
+the account-owned `tool_registry_entry` records a decision per proxy server UUID
+or direct-hook server label and exposed tool name. CRUD serializes first sightings
+and approval attachment in one transaction; approval resolution updates the route
+decision, and async replays recheck the current policy before dispatch. Native
+agent tools retain their client-decision fallback. See
+[policy defaults](docs/guide/concepts/policy-as-code.md#unlisted-tools).

@@ -41,6 +41,8 @@ describe('PoliciesView', () => {
       workflows?: unknown[];
       modelIORules?: unknown[];
       toolsFail?: boolean;
+      registry?: Array<Record<string, unknown>>;
+      registryFailure?: boolean;
       emptyVersions?: boolean;
       features?: Record<string, boolean>;
       exportStatus?: () => number;
@@ -51,6 +53,23 @@ describe('PoliciesView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
+
+        if (url.includes('/api/v1/tools/registry')) {
+          if (opts.registryFailure) return json({}, 403);
+          if (method === 'POST') {
+            const state = JSON.parse(String(init?.body)).state;
+            if (opts.registry?.[0]) opts.registry[0].state = state;
+            return json(opts.registry?.[0]);
+          }
+          const state = new URL(url, window.location.origin).searchParams.get(
+            'state'
+          );
+          return json(
+            (opts.registry ?? []).filter(
+              (entry) => !state || entry.state === state
+            )
+          );
+        }
 
         if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
           if (opts.toolsFail) {
@@ -1939,6 +1958,104 @@ describe('PoliciesView', () => {
     expect(dialog).to.exist;
     expect(dialog?.textContent).to.not.contain('Roll back');
     expect((element as any)._rollbackConfirmVisible).to.be.false;
+  });
+  it('protects=approve-once shares YAML and workflow picker; fails_when=toggle has no policy effect; no_claim=no apply API', async () => {
+    fetchStub = createFetchStub({ workflows: [sampleWorkflow] });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    const view = element as any;
+    view._yamlDraft = 'version: "1.0"\ndefaults:\n  unknown_tools: allow\n';
+    view._activeTab = 'files';
+    view._setDefaults('require_approval_for_new_tools', true);
+    view._setDefaults('default_approval_workflow', sampleWorkflow.name);
+    await element.updateComplete;
+    expect(view._yamlDraft).to.include('require_approval_for_new_tools: true');
+    expect(view._yamlDraft).to.include(
+      'default_approval_workflow: Standard Approval'
+    );
+    expect(
+      element.shadowRoot?.querySelector(
+        'sl-select[label="Default approval workflow"]'
+      )
+    ).to.exist;
+  });
+
+  const seenEntry = () => ({
+    id: 'entry-1',
+    tool_source: 'mcp',
+    server_label: 'docs',
+    mcp_server_id: null,
+    tool_name: 'fetch',
+    state: 'pending',
+    first_seen_at: '2026-11-01T10:00:00Z',
+    first_seen_agent_id: null,
+  });
+
+  it('protects=tools seen list and state filter; fails_when=wrong route or stale rows; no_claim=HTTP mocked', async () => {
+    fetchStub = createFetchStub({ registry: [seenEntry()] });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    const view = element as any;
+    view._activeTab = 'tools-seen';
+    await view._loadRegistry();
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector('table[aria-label="Tools seen"]')
+        ?.textContent
+    ).to.include('fetch');
+    view._registryFilter = 'denied';
+    await view._loadRegistry();
+    expect(view._registryEntries).to.have.length(0);
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('state=denied'))
+    ).to.equal(true);
+  });
+
+  it('protects=approve and revoke post explicit outcomes; fails_when=UI sends wrong decision; no_claim=HTTP mocked', async () => {
+    fetchStub = createFetchStub({ registry: [seenEntry()] });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    const view = element as any;
+    await view._loadRegistry();
+    await view._decideRegistry('entry-1', 'approved');
+    expect(view._registryEntries[0].state).to.equal('approved');
+    await view._decideRegistry('entry-1', 'denied');
+    expect(view._registryEntries[0].state).to.equal('denied');
+    const posts = fetchStub
+      .getCalls()
+      .filter((call) => (call.args[1] as RequestInit)?.method === 'POST');
+    expect(
+      posts.map(
+        (call) => JSON.parse(String((call.args[1] as RequestInit).body)).state
+      )
+    ).to.deep.equal(['approved', 'denied']);
+  });
+
+  it('protects=failed decisions remain visible and read-only hides actions; fails_when=failed approval appears granted; no_claim=HTTP and permissions mocked', async () => {
+    fetchStub = createFetchStub({ registryFailure: true });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    const view = element as any;
+    view._activeTab = 'tools-seen';
+    view._canManagePolicies = false;
+    view._registryEntries = [seenEntry()];
+    await view._decideRegistry('entry-1', 'approved');
+    await element.updateComplete;
+    expect(view._registryEntries[0].state).to.equal('pending');
+    expect(view._registryError).to.include('Could not save');
+    expect(
+      element.shadowRoot?.querySelector('sl-button[aria-label="Approve fetch"]')
+    ).to.equal(null);
   });
 });
 

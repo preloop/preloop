@@ -599,8 +599,9 @@ No markdown fences, no explanation.
 - `defaults.unknown_tools` governs unmatched MCP calls: allow (the
   backward-compatible default), deny, or require_approval. For require_approval,
   set `defaults.default_approval_workflow` to a defined workflow name.
-  Native tools retain the client decision. Do not set scoped defaults or
-  `require_approval_for_new_tools: true` (not yet implemented).
+  Native tools retain the client decision. Do not set scoped defaults.
+  `require_approval_for_new_tools: true` approves each unmatched MCP route once;
+  it also requires a defined `defaults.default_approval_workflow`.
 - To deny every tool on an MCP server except a list, add a
   `sensitive_data` rule scoped to that server whose CEL `condition` is
   true for any tool not on the list, as in the example below. Replace
@@ -677,8 +678,9 @@ Output ONLY the raw YAML. No fences, no explanation.
 - `defaults.unknown_tools` governs unmatched MCP calls: allow (the
   backward-compatible default), deny, or require_approval. For require_approval,
   set `defaults.default_approval_workflow` to a defined workflow name.
-  Native tools retain the client decision. Do not set scoped defaults or
-  `require_approval_for_new_tools: true` (not yet implemented).
+  Native tools retain the client decision. Do not set scoped defaults.
+  `require_approval_for_new_tools: true` approves each unmatched MCP route once;
+  it also requires a defined `defaults.default_approval_workflow`.
 - To require approval for tools the logs never show, add a
   `sensitive_data` rule like the example below. Its condition lists the
   tools seen in the logs, its action is `require_approval`, and its

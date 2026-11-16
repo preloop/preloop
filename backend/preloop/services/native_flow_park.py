@@ -70,10 +70,17 @@ def command_fingerprint(tool_name: str, tool_input: Optional[Dict[str, Any]]) ->
 
 
 def is_native_park(request: Any) -> bool:
-    """True when an approval request was raised by a native command park."""
+    """Identify execution gates whose refusal must end a parked run.
+
+    A shared registry approval may be observed by several native executions;
+    it cannot carry one command marker for each of them.
+    """
     tool_args = getattr(request, "tool_args", None)
-    return isinstance(tool_args, dict) and isinstance(
-        tool_args.get(NATIVE_PARK_MARKER), dict
+    context = getattr(request, "rule_context", None)
+    registry_gate = isinstance(context, dict) and context.get("source") == "registry"
+    return bool(registry_gate) or (
+        isinstance(tool_args, dict)
+        and isinstance(tool_args.get(NATIVE_PARK_MARKER), dict)
     )
 
 

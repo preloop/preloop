@@ -715,6 +715,7 @@ class ApprovalService:
         broadcast_created: bool = True,
         desktop_view_id: Optional[uuid.UUID] = None,
         desktop_requester_id: Optional[uuid.UUID] = None,
+        registry_entry_id: Optional[uuid.UUID] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -897,6 +898,18 @@ class ApprovalService:
         )
 
         self.db.add(approval_request)
+        if registry_entry_id is not None:
+            from preloop.models.crud.tool_registry import attach_approval
+
+            await self.db.run_sync(
+                lambda session: attach_approval(
+                    session,
+                    account_id=uuid.UUID(str(account_id)),
+                    entry_id=registry_entry_id,
+                    request_id=approval_request.id,
+                )
+            )
+
         # Admit the lifecycle intent before committing the request.
         # Read correlation_id from context var if available (set by _call_tool)
         corr_id = None
@@ -1072,6 +1085,14 @@ class ApprovalService:
                     or _current_correlation_id()
                 ),
                 extra_details=audit_details,
+            )
+        if (approval_request.rule_context or {}).get("registry_entry_id"):
+            from preloop.models.crud.tool_registry import resolve_approval
+
+            await self.db.run_sync(
+                lambda session: resolve_approval(
+                    session, request=approval_request, user_id=audit_approver_id
+                )
             )
         await self.db.commit()
         await self.db.refresh(approval_request)
@@ -2491,6 +2512,7 @@ class ApprovalService:
         server_name: Optional[str] = None,
         standing_bypass_text: Optional[str] = None,
         request_id: Optional[uuid.UUID] = None,
+        registry_entry_id: Optional[uuid.UUID] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -2546,6 +2568,7 @@ class ApprovalService:
             # or time-boxed bypass, AI decision). Live surfaces must never see
             # it as pending, so "created" is broadcast only once it waits.
             broadcast_created=False,
+            registry_entry_id=registry_entry_id,
         )
 
         from preloop.services.external_approval import uses_external_link
