@@ -8,12 +8,14 @@ from typing_extensions import Literal
 
 import asyncio
 import gitlab
+import requests
 from sqlalchemy.orm import Session
 
 from ..config import logger
 from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
+    TrackerPermissionError,
     TrackerRateLimitError,
     TrackerResponseError,
 )
@@ -115,9 +117,21 @@ class GitLabTracker(BaseTracker):
             self.gl = gitlab.Gitlab(self.url, private_token=api_key)
             self.gl.auth()
         except gitlab.exceptions.GitlabAuthenticationError as e:
-            raise TrackerAuthenticationError(f"GitLab authentication failed: {str(e)}")
-        except gitlab.exceptions.GitlabHttpError as e:
-            raise TrackerConnectionError(f"GitLab connection error: {str(e)}")
+            raise TrackerAuthenticationError("GitLab authentication failed") from e
+        except (
+            requests.RequestException,
+            gitlab.exceptions.GitlabConnectionError,
+        ) as e:
+            raise TrackerConnectionError("GitLab connection failed") from e
+        except gitlab.exceptions.GitlabError as e:
+            if e.response_code == 401:
+                raise TrackerAuthenticationError("GitLab authentication failed") from e
+            if e.response_code == 403:
+                raise TrackerPermissionError(
+                    "GitLab denied access. Check the token's api scope and group permissions.",
+                    status_code=403,
+                ) from e
+            raise TrackerConnectionError("GitLab connection failed") from e
 
     def _get_project_id(self) -> str:
         """Get the project ID from connection details.
@@ -143,17 +157,24 @@ class GitLabTracker(BaseTracker):
             result = await asyncio.to_thread(method, *args, **kwargs)
             return result
         except gitlab.exceptions.GitlabAuthenticationError as e:
-            raise TrackerAuthenticationError(f"GitLab authentication failed: {e}")
-        except gitlab.exceptions.GitlabHttpError as e:
+            raise TrackerAuthenticationError("GitLab authentication failed") from e
+        except (
+            requests.RequestException,
+            gitlab.exceptions.GitlabConnectionError,
+        ) as e:
+            raise TrackerConnectionError("GitLab connection failed") from e
+        except gitlab.exceptions.GitlabError as e:
             if e.response_code == HTTP_STATUS_UNAUTHORIZED:
-                raise TrackerAuthenticationError(f"GitLab authentication failed: {e}")
-            else:
-                raise TrackerResponseError(
-                    f"GitLab API error: {e.response_code} - {e}",
-                    status_code=e.response_code,
-                )
-        except gitlab.exceptions.GitlabConnectionError as e:
-            raise TrackerConnectionError(f"GitLab connection error: {e}")
+                raise TrackerAuthenticationError("GitLab authentication failed") from e
+            if e.response_code == 403:
+                raise TrackerPermissionError(
+                    "GitLab denied access. Check the token's api scope and group permissions.",
+                    status_code=403,
+                ) from e
+            raise TrackerResponseError(
+                f"GitLab API error: {e.response_code} - {e}",
+                status_code=e.response_code,
+            ) from e
         except Exception as e:
             # Catching potential exceptions from to_thread if the callable fails
             logger.error(
@@ -234,17 +255,24 @@ class GitLabTracker(BaseTracker):
             result = await asyncio.to_thread(method, *args, **kwargs)
             return result
         except gitlab.exceptions.GitlabAuthenticationError as e:
-            raise TrackerAuthenticationError(f"GitLab authentication failed: {e}")
-        except gitlab.exceptions.GitlabHttpError as e:
+            raise TrackerAuthenticationError("GitLab authentication failed") from e
+        except (
+            requests.RequestException,
+            gitlab.exceptions.GitlabConnectionError,
+        ) as e:
+            raise TrackerConnectionError("GitLab connection failed") from e
+        except gitlab.exceptions.GitlabError as e:
             if e.response_code == HTTP_STATUS_UNAUTHORIZED:
-                raise TrackerAuthenticationError(f"GitLab authentication failed: {e}")
-            else:
-                raise TrackerResponseError(
-                    f"GitLab API error: {e.response_code} - {e}",
-                    status_code=e.response_code,
-                )
-        except gitlab.exceptions.GitlabConnectionError as e:
-            raise TrackerConnectionError(f"GitLab connection error: {e}")
+                raise TrackerAuthenticationError("GitLab authentication failed") from e
+            if e.response_code == 403:
+                raise TrackerPermissionError(
+                    "GitLab denied access. Check the token's api scope and group permissions.",
+                    status_code=403,
+                ) from e
+            raise TrackerResponseError(
+                f"GitLab API error: {e.response_code} - {e}",
+                status_code=e.response_code,
+            ) from e
         except Exception as e:
             # Catching potential exceptions from to_thread if the callable fails
             logger.error(

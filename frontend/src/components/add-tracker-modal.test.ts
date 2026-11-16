@@ -43,6 +43,19 @@ describe('AddTrackerModal', () => {
       await element.updateComplete;
     });
 
+    it('explains GitLab token scope and webhook roles', async () => {
+      element.trackerType = 'gitlab';
+      await element.updateComplete;
+      const input = element.shadowRoot?.querySelector(
+        'sl-input[name="api_key"]'
+      );
+      const help = input?.getAttribute('help-text') ?? '';
+      expect(help).to.include('api scope');
+      expect(help).to.include('Maintainer');
+      expect(help).to.include('Owner');
+      expect(help).to.include('Premium or Ultimate');
+    });
+
     it('renders correctly in initial add state (step 1)', async () => {
       const dialog = element.shadowRoot?.querySelector('sl-dialog');
       expect(dialog).to.exist;
