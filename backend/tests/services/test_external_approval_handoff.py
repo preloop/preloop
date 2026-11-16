@@ -273,7 +273,13 @@ async def test_external_handoff_acceptance(
             worker.apply_outcomes(db_session, [attempt])
             db_session.refresh(request)
             assert request.external_url == URL
-            await self.send_notifications(request, wf, external_handoff_complete=True)
+            # A delivery retry or recovered claim can outlive the ordinary
+            # 30-second notification guard. The durable worker must still send.
+            request.requested_at = datetime.utcnow() - timedelta(seconds=300)
+            db_session.commit()
+            await worker.send_external_notifications()
+            db_session.refresh(request)
+            assert request.external_handoff_state == "ready"
             if outcome == "expired":
                 request.expires_at = datetime.utcnow() - timedelta(seconds=1)
                 request.status = "expired"

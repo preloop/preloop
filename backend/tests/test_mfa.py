@@ -17,7 +17,10 @@ from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY, decode_token, verify_pas
 from preloop.models import models
 from preloop.models.crud import mfa as crud_mfa
 from preloop.services import mfa
-from preloop.services.authentication_policy import new_authentication
+from preloop.services.authentication_policy import (
+    AuthenticationPurpose,
+    new_authentication,
+)
 from preloop.utils.encryption import decrypt_value
 from tests.test_passkey_only import PASSWORD, _access, _audit, _bearer, _passkey, _user
 
@@ -63,6 +66,127 @@ def challenge(api: TestClient, user: models.User) -> str:
     assert result.json()["detail"]["code"] == "mfa_required"
     assert "access_token" not in result.json()
     return result.json()["detail"]["challenge_token"]
+
+
+def test_enable_passkey_only_preserves_current_otp_session(
+    api: TestClient, db_session: Session, now: list[float]
+) -> None:
+    """Keep the enabling OTP session usable without permitting new password logins."""
+    user, secret, enrolled = enroll(api, db_session, now)
+    _passkey(db_session, user)
+    verified = api.post(
+        BASE + "/verify",
+        json={
+            "challenge_token": challenge(api, user),
+            "code": mfa.totp(secret).at(now[0]),
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    previous = verified.json()
+    response = api.put(
+        "/api/v1/auth/webauthn/passkey-only",
+        json={"enabled": True},
+        headers=_bearer(previous["access_token"]),
+    )
+    assert response.status_code == 200, response.text
+    tokens = response.json()
+    claims = decode_token(tokens["access_token"]).claims
+    assert claims["amr"] == ["password", "otp"]
+    assert (
+        claims["auth_time"]
+        == decode_token(previous["access_token"]).claims["auth_time"]
+    )
+    assert not claims.get("passkey_uv")
+    assert (
+        api.get(
+            "/api/v1/auth/users/me", headers=_bearer(tokens["access_token"])
+        ).status_code
+        == 200
+    )
+    refreshed = api.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert (
+        api.get(
+            "/api/v1/auth/users/me", headers=_bearer(refreshed.json()["access_token"])
+        ).status_code
+        == 200
+    )
+    for old in (enrolled, previous):
+        assert (
+            api.get(
+                "/api/v1/auth/users/me", headers=_bearer(old["access_token"])
+            ).status_code
+            == 401
+        )
+        assert (
+            api.post(
+                "/api/v1/auth/refresh", json={"refresh_token": old["refresh_token"]}
+            ).status_code
+            == 401
+        )
+    login = api.post(
+        "/api/v1/auth/token/json", json={"username": user.email, "password": PASSWORD}
+    )
+    assert login.status_code == 401
+    assert login.json()["detail"]["code"] == "password_login_disabled"
+    from preloop.models.crud import crud_user
+
+    crud_user.set_passkey_only(db_session, user=user, enabled=True, end_sessions=True)
+    continued = refreshed.json()
+    assert (
+        api.get(
+            "/api/v1/auth/users/me", headers=_bearer(continued["access_token"])
+        ).status_code
+        == 401
+    )
+    assert (
+        api.post(
+            "/api/v1/auth/refresh", json={"refresh_token": continued["refresh_token"]}
+        ).status_code
+        == 401
+    )
+
+
+@pytest.mark.parametrize("purpose", ["login", "switch", "exchange"])
+def test_passkey_only_continuation_cannot_authorize_new_sign_in(
+    db_session: Session, purpose: AuthenticationPurpose
+) -> None:
+    """A continuation authorizes only its existing session, never a new sign-in."""
+    from preloop.services.authentication_policy import authorize_authentication
+
+    user = _user(db_session, passkey_only=True)
+    with pytest.raises(HTTPException) as error:
+        authorize_authentication(
+            db_session,
+            user,
+            claims={
+                "amr": ["password", "otp"],
+                "passkey_only_continuation": str(user.id),
+            },
+            purpose=purpose,
+        )
+    assert error.value.detail["code"] == "password_login_disabled"
+
+
+def test_passkey_only_continuation_is_membership_bound(db_session: Session) -> None:
+    """A signed continuation cannot bypass another membership's passkey policy."""
+    from preloop.services.authentication_policy import authorize_authentication
+
+    user = _user(db_session, passkey_only=True)
+    other = _user(db_session, passkey_only=True)
+    with pytest.raises(HTTPException) as error:
+        authorize_authentication(
+            db_session,
+            other,
+            claims={
+                "amr": ["password", "otp"],
+                "passkey_only_continuation": str(user.id),
+            },
+            purpose="access",
+        )
+    assert error.value.detail["code"] == "password_login_disabled"
 
 
 def test_enrollment_encrypted_recovery_and_revocation(

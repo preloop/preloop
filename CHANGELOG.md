@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **API compatibility:** flow responses (including reads, lists, creates,
+  updates and presets) no longer include `webhook_config.webhook_secret`.
+  Integrations that extracted the secret from those responses must retain
+  their existing URL or call the rotate action and save its one-time
+  `webhook_secret`. Responses expose `webhook_secret_set`,
+  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
+  secrets and URLs remain valid until explicitly replaced; the migration
+  adds nullable rotation metadata and does not change credentials. Existing
+  unrotated secrets have a null rotation time (#2336).
+
 - MCP approve-once policies now record account-owned tool routes, share pending approvals, and support review and revocation in Policies → Tools seen.
 
 - MCP policies honour `defaults.unknown_tools` for unmatched calls, including
@@ -470,16 +482,6 @@ view, Talk with live streaming, cost per work item and a faster Spend page.
   `api` and `gateway` services (#2094).
 
 ### Changed
-
-- **API compatibility:** flow responses (including reads, lists, creates,
-  updates and presets) no longer include `webhook_config.webhook_secret`.
-  Integrations that extracted the secret from those responses must retain
-  their existing URL or call the rotate action and save its one-time
-  `webhook_secret`. Responses expose `webhook_secret_set`,
-  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
-  secrets and URLs remain valid until explicitly replaced; the migration
-  adds nullable rotation metadata and does not change credentials. Existing
-  unrotated secrets have a null rotation time (#2336).
 
 - The daily version check marks check-ins from CI jobs with `metadata.ci: true` so CI runs do not count as installs. Set `PRELOOP_DISABLE_TELEMETRY=true` to send nothing.
 - The cost page renders each card as its data arrives, caches closed periods
