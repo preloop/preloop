@@ -46,7 +46,7 @@ def envelope(**changes: object) -> dict:
         {"source_ref": str(uuid4())},
         {"last_used_at": NOW.isoformat()},
         {"errors": ["https://example.com"]},
-        {"schema_version": 3},
+        {"schema_version": 4},
     ],
 )
 def test_private_or_unknown_fields_rejected(extra: dict) -> None:
@@ -130,6 +130,7 @@ def observation_db() -> Generator[Session, None, None]:
     """Fresh in-memory storage never connects to a configured database."""
     engine = create_engine("sqlite://")
     models.DiscoveryObservation.__table__.create(engine)
+    models.DiscoveredExtension.__table__.create(engine)
     # This fixture deliberately contains only the observation table. Receipt
     # locks and history use PostgreSQL and are covered by test_expected_device.
     with (
@@ -489,3 +490,37 @@ def test_configuration_additions_preserve_legacy_canonical_control_bytes() -> No
             "method": "local_config",
         }
     ]
+
+
+def test_v3_managed_configuration_is_not_an_extension_candidate() -> None:
+    """A machine settings observation cannot invent or reconcile an install."""
+    app = {
+        "agent_kind": "claude_code",
+        "config_path_hash": "a" * 64,
+        "config_scope": "managed_config",
+        "controls": [
+            {
+                "axis": "native_tool_hook",
+                "configured": "false",
+                "configuration_evidence": "managed_config",
+            }
+        ],
+    }
+    payload = DiscoveryReportRequest(
+        workstation_fingerprint="b" * 64,
+        evidence=envelope(
+            schema_version=3, scan_scope=["managed_config"], applications=[app]
+        ),
+        candidates=[],
+    )
+    assert payload.evidence.applications[0].extensions is None
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest(
+            workstation_fingerprint="b" * 64,
+            evidence=envelope(
+                schema_version=3,
+                scan_scope=["managed_config"],
+                applications=[{**app, "extensions": [], "completeness": "complete"}],
+            ),
+            candidates=[],
+        )

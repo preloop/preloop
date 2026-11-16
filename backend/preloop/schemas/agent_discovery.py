@@ -13,7 +13,8 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from preloop.schemas.discovered_extension import ExtensionMetadata
 
 HEX_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 AGENT_KIND_PATTERN = r"^[a-z0-9][a-z0-9_\-]{0,63}$"
@@ -45,6 +46,7 @@ class DiscoveryReportCandidate(BaseModel):
     config_path_hash: str = Field(pattern=HEX_SHA256_PATTERN)
     mcp_server_count: int = Field(default=0, ge=0, le=10_000)
     enrolled: bool = False
+    extensions: list[ExtensionMetadata] | None = Field(default=None, max_length=200)
 
 
 class DiscoveryReportRequest(BaseModel):
@@ -59,6 +61,36 @@ class DiscoveryReportRequest(BaseModel):
     candidates: list[DiscoveryReportCandidate] = Field(
         default_factory=list, max_length=MAX_CANDIDATES_PER_REPORT
     )
+
+    @model_validator(mode="after")
+    def match_extension_contexts(self) -> "DiscoveryReportRequest":
+        """Bind every extension list to the identical evidence app context."""
+        if self.evidence is None or self.evidence.schema_version < 3:
+            if any(candidate.extensions is not None for candidate in self.candidates):
+                raise ValueError("Extensions require evidence schema version 3")
+            return self
+        apps = {
+            (app.agent_kind, app.config_path_hash): app
+            for app in self.evidence.applications
+            if app.config_scope != "managed_config"
+        }
+        keys = [
+            (candidate.agent_kind, candidate.config_path_hash)
+            for candidate in self.candidates
+        ]
+        if len(set(keys)) != len(keys) or set(keys) != set(apps):
+            raise ValueError(
+                "Version 3 candidates must match evidence application contexts"
+            )
+        for candidate in self.candidates:
+            if (
+                candidate.extensions
+                != apps[(candidate.agent_kind, candidate.config_path_hash)].extensions
+            ):
+                raise ValueError(
+                    "Candidate extensions must match application extensions"
+                )
+        return self
 
 
 class DiscoveryReportResponse(BaseModel):

@@ -17,7 +17,7 @@ import (
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
-const inventoryDetectorVersion = "2"
+const inventoryDetectorVersion = "3"
 
 type inventoryProbeResult struct {
 	AppID      string `json:"app_id"`
@@ -33,15 +33,17 @@ type inventoryMCPCounts struct {
 }
 
 type inventoryApp struct {
-	AppID         string             `json:"app_id"`
-	ProfileRef    string             `json:"profile_ref,omitempty"`
-	Presence      string             `json:"presence"`
-	EvidenceKinds []string           `json:"evidence_kinds"`
-	Usage         string             `json:"usage"`
-	Auth          string             `json:"auth"`
-	MCPCounts     inventoryMCPCounts `json:"mcp_counts"`
-	MCPRoutes     inventoryMCPRoutes `json:"mcp_routes"`
-	Controls      []inventoryControl `json:"controls"`
+	Extensions    []inventoryExtension `json:"extensions"`
+	Completeness  string               `json:"completeness"`
+	AppID         string               `json:"app_id"`
+	ProfileRef    string               `json:"profile_ref,omitempty"`
+	Presence      string               `json:"presence"`
+	EvidenceKinds []string             `json:"evidence_kinds"`
+	Usage         string               `json:"usage"`
+	Auth          string               `json:"auth"`
+	MCPCounts     inventoryMCPCounts   `json:"mcp_counts"`
+	MCPRoutes     inventoryMCPRoutes   `json:"mcp_routes"`
+	Controls      []inventoryControl   `json:"controls"`
 }
 
 type inventoryEnvelope struct {
@@ -66,15 +68,16 @@ type inventoryEnvelope struct {
 // credential resolver, auth/keychain probe, network client, writer, or process
 // runner. Runtime lookup resolves paths; it never executes the result.
 type inventoryProbeDependencies struct {
-	Home        func() (string, error)
-	Stat        func(string) (os.FileInfo, error)
-	ReadFile    func(string) ([]byte, error)
-	LookPath    func(string) (string, error)
-	Glob        func(string) ([]string, error)
-	Now         func() time.Time
-	ConfigPaths func(agentSpec) []string
-	ProfileOnly bool
-	GOOS        string
+	Home          func() (string, error)
+	Stat          func(string) (os.FileInfo, error)
+	ReadFile      func(string) ([]byte, error)
+	LookPath      func(string) (string, error)
+	Glob          func(string) ([]string, error)
+	Now           func() time.Time
+	ConfigPaths   func(agentSpec) []string
+	ExtensionSalt string
+	ProfileOnly   bool
+	GOOS          string
 }
 
 var inventoryProbes = inventoryProbeDependencies{
@@ -120,7 +123,7 @@ func runAgentsInventory(cmd *cobra.Command) error {
 
 func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 	result := inventoryEnvelope{
-		Schema: "preloop.inventory.v1", ObservedAt: deps.Now().UTC(),
+		Schema: "preloop.inventory.v3", ObservedAt: deps.Now().UTC(),
 		Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{},
 	}
 	result.Collector.Version = version.Version
@@ -132,7 +135,7 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		if !known {
 			continue
 		}
-		app := inventoryApp{AppID: id, Presence: "absent", EvidenceKinds: []string{}, Usage: "unknown", Auth: "unknown", MCPRoutes: inventoryMCPRoutes{Completeness: "complete"}, Controls: inventoryControls(AgentConfig{Name: spec.Name})}
+		app := inventoryApp{Extensions: []inventoryExtension{}, Completeness: "complete", AppID: id, Presence: "absent", EvidenceKinds: []string{}, Usage: "unknown", Auth: "unknown", MCPRoutes: inventoryMCPRoutes{Completeness: "complete"}, Controls: inventoryControls(AgentConfig{Name: spec.Name})}
 		addProbe := func(kind, status, code string) {
 			result.ProbeResults = append(result.ProbeResults, inventoryProbeResult{AppID: id, Kind: kind, Status: status, ErrorCode: code})
 			if status == "error" || status == "unknown" {
@@ -206,6 +209,15 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 			inventorySetConfigured(app.Controls, "managed_mcp", "true")
 		} else if app.MCPRoutes.Completeness == "complete" && app.MCPRoutes.Unknown == 0 {
 			inventorySetConfigured(app.Controls, "managed_mcp", "false")
+		}
+		extensionErrors := []string{}
+		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly)
+		for _, code := range extensionErrors {
+			app.Completeness = "partial"
+			addProbe("extensions", "error", code)
+		}
+		if len(app.Extensions) > 0 {
+			addProbe("extensions", "present", "")
 		}
 		if app.Presence != "absent" {
 			result.Apps = append(result.Apps, app)

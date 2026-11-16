@@ -26,6 +26,8 @@ from preloop.services.fleet_findings import evaluate_fleet_findings
 from preloop.models import models
 from preloop.models.crud import (
     crud_account_discovery_salt,
+    crud_discovery_observation,
+    crud_discovered_extension,
     crud_discovered_agent_candidate,
 )
 from preloop.models.crud.discovered_agent_candidate import (
@@ -137,14 +139,33 @@ def create_discovery_report(
         )
     if payload.evidence is not None:
         service = get_plugin_manager().get_service("discovery_evidence")
-        if service is None:
+        if service is None and payload.evidence.schema_version < 3:
             raise HTTPException(
                 status_code=503, detail="Discovery evidence service unavailable"
             )
         try:
-            service.record(
-                db, account_id=account.id, current_user=current_user, payload=payload
-            )
+            if payload.evidence.schema_version == 3:
+                observation = crud_discovery_observation.record(
+                    db,
+                    account_id=account.id,
+                    workstation_fingerprint=payload.workstation_fingerprint,
+                    source_ref=key.id if key is not None else current_user.id,
+                    evidence=payload.evidence.model_dump(mode="json"),
+                )
+                crud_discovered_extension.upsert_from_report(
+                    db,
+                    account_id=account.id,
+                    workstation_fingerprint=payload.workstation_fingerprint,
+                    evidence=payload.evidence,
+                    observation_id=observation.id,
+                )
+            if service is not None:
+                service.record(
+                    db,
+                    account_id=account.id,
+                    current_user=current_user,
+                    payload=payload,
+                )
         except ObservationConflictError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

@@ -119,6 +119,7 @@ def with_approval(tool_func: Callable) -> Callable:
                     },
                     account_id=user_context.account_id,
                     tool_configuration_id=config.id if config else None,
+                    tool_source="builtin",
                     user_id=getattr(user_context, "user_id", None),
                     execution_id=getattr(user_context, "execution_id", None),
                 )

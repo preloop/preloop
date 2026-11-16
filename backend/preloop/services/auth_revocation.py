@@ -53,7 +53,12 @@ async def session_is_revoked(token_data: TokenData) -> bool:
         if user is None:
             return True
         try:
-            reject_revoked_token(db, user, token_data)
+            context = reject_revoked_token(db, user, token_data)
+            from preloop.services.authentication_policy import (
+                enforce_enrollment_session,
+            )
+
+            enforce_enrollment_session(context, None)
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 return True

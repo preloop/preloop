@@ -70,3 +70,17 @@ func TestInventoryReportControlsMapAxesWithoutExecutionClaims(t *testing.T) {
 		t.Fatal(string(raw))
 	}
 }
+
+func TestConfigurationReportDowngradePreservesProfileInventory(t *testing.T) {
+	scan := inventoryEnvelope{ObservedAt: time.Now().UTC(), Completeness: "complete", Profiles: []inventoryProfileResult{}}
+	report := buildAllUsersReport("salt", "machine", "00000000-0000-4000-8000-000000000001", scan, time.Now().UTC())
+	appendManagedConfigurationEvidence(&report, "salt", "linux", func(string) ([]byte, error) { return []byte(`{}`), nil })
+	old := downgradeInventoryReport(report)
+	if old.Evidence.SchemaVersion != 2 || len(old.Evidence.Applications) != 0 || len(report.Evidence.Applications) != 1 {
+		t.Fatal("downgrade changed original or kept machine context")
+	}
+	raw, _ := json.Marshal(old)
+	if strings.Contains(string(raw), "managed_config") || strings.Contains(string(raw), "configuration_evidence") {
+		t.Fatal(string(raw))
+	}
+}

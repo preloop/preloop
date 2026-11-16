@@ -50,3 +50,20 @@ the app also deletes all recovery codes.
 step, before returning to the CLI. No interactive terminal MFA prompt is needed.
 Older clients that request a password token directly receive HTTP 401 for an
 enrolled user; use browser sign-in instead.
+
+## When your account requires strong sign-in
+
+Your administrator may require an authenticator app, passkey or single sign-on.
+If you arrive at **Protect your sign-in**, enroll one of the offered factors to
+continue. After confirming an authenticator code, save the recovery codes and
+select **Done**. For a passkey, complete registration and sign in with it.
+Until then, ordinary console pages and APIs are unavailable.
+
+The account can prevent removal of your last usable factor. Add another factor
+before removing one, or ask an administrator to reset your sign-in after verifying
+your identity. A reset ends sessions and requires enrollment again. If you are the
+only administrator and lose all factors, the server operator can use the
+[server-side recovery procedure](../../operations/mfa.md).
+
+Social sign-in also shows the authenticator or recovery-code step, including when
+you started from the CLI. Keep that browser tab open until sign-in completes.

@@ -1296,7 +1296,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenPair'
+                $ref: '#/components/schemas/VerifiedSignIn'
         '422':
           description: Validation Error
           content:
@@ -1979,6 +1979,218 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DiscoveredAgentCandidateSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/discovery-extensions:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Extensions
+      description: List present extensions with their account decisions, unknown by
+        default.
+      operationId: list_extensions_api_v1_agents_discovery_extensions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: fingerprint
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Fingerprint
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          - type: 'null'
+          title: Agent Kind
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - approved
+            - unapproved
+            - unknown
+            type: string
+          - type: 'null'
+          title: State
+      - name: source_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - official_marketplace
+            - third_party_marketplace
+            - git
+            - local
+            - builtin
+            - unknown
+            type: string
+          - type: 'null'
+          title: Source Kind
+      - name: group
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - const: extension
+            type: string
+          - type: 'null'
+          title: Group
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveredExtensionList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Approvals
+      description: List durable decisions, including extensions no longer installed.
+      operationId: list_approvals_api_v1_agents_extension_approvals_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionApprovalList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}:
+    put:
+      tags:
+      - Agent discovery
+      summary: Set Approval
+      description: Replace an account decision without modifying anything on the device.
+      operationId: set_approval_api_v1_agents_extension_approvals__agent_kind___extension_kind___extension_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          type: string
+          title: Extension Kind
+      - name: extension_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtensionApprovalUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionApprovalSummary'
         '422':
           description: Validation Error
           content:
@@ -19602,6 +19814,48 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/webhook-secret/rotate:
+    post:
+      tags:
+      - Flows
+      summary: Rotate Flow Webhook Secret
+      description: "Rotate an ingress secret and return its new value once.\n\nArgs:\n\
+        \    db: Active database session.\n    flow_id: Flow owned by the caller's\
+        \ account.\n    current_user: User performing the rotation.\n\nReturns:\n\
+        \    Flow metadata with the new webhook_secret, shown only in this response.\n\
+        \nRaises:\n    HTTPException: 404 for an inaccessible flow, 400 without a\
+        \ webhook\n        trigger, or 403 without edit_flows permission."
+      operationId: rotate_flow_webhook_secret_api_v1_flows__flow_id__webhook_secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/apply-preset-update:
     post:
       tags:
@@ -21400,6 +21654,112 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/tools/registry:
+    get:
+      tags:
+      - Policies
+      summary: List Registry
+      description: List only the current account's observed execution routes.
+      operationId: list_registry_api_v1_tools_registry_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - approved
+            - denied
+            type: string
+          - type: 'null'
+          title: State
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RegistryEntryResponse'
+                title: Response List Registry Api V1 Tools Registry Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/tools/registry/{entry_id}/decision:
+    post:
+      tags:
+      - Policies
+      summary: Decide Registry
+      description: Decide or revoke a route, settling its pending approval with that
+        outcome.
+      operationId: decide_registry_api_v1_tools_registry__entry_id__decision_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Entry Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistryDecision'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistryEntryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/policies/notices/summary:
     get:
@@ -31688,6 +32048,11 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        enroll_only:
+          type: boolean
+          title: Enroll Only
+          description: Session is restricted to factor enrollment.
+          default: false
         id:
           type: string
           format: uuid
@@ -36592,6 +36957,137 @@ components:
       - status
       title: DiscoveredAgentCandidateUpdate
       description: 'Console action on a candidate: mark ignored, or un-ignore.'
+    DiscoveredExtensionList:
+      properties:
+        items:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/DiscoveredExtensionSummary'
+            type: array
+          - items:
+              $ref: '#/components/schemas/ExtensionAggregate'
+            type: array
+          title: Items
+        completeness:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Completeness
+          default: unknown
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - items
+      - next_cursor
+      title: DiscoveredExtensionList
+      description: Keyset-paginated device rows or account aggregates.
+    DiscoveredExtensionSummary:
+      properties:
+        fingerprint:
+          type: string
+          title: Fingerprint
+        profile_ref:
+          type: string
+          title: Profile Ref
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        id_hashed:
+          type: boolean
+          title: Id Hashed
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+        source_kind:
+          type: string
+          enum:
+          - official_marketplace
+          - third_party_marketplace
+          - git
+          - local
+          - builtin
+          - unknown
+          title: Source Kind
+        source_ref_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref Hash
+        scope:
+          type: string
+          enum:
+          - user
+          - project
+          title: Scope
+        project_ref_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Ref Hash
+        enabled:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Enabled
+        present:
+          type: boolean
+          title: Present
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+      type: object
+      required:
+      - fingerprint
+      - profile_ref
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - id_hashed
+      - version
+      - source_kind
+      - source_ref_hash
+      - scope
+      - project_ref_hash
+      - enabled
+      - present
+      - first_seen_at
+      - last_seen_at
+      - approval_state
+      title: DiscoveredExtensionSummary
+      description: Device inventory joined to its account-wide decision.
     DiscoveryEvidence:
       properties:
         schema_version:
@@ -36599,6 +37095,7 @@ components:
           enum:
           - 1
           - 2
+          - 3
           title: Schema Version
           default: 1
         profiles:
@@ -36724,6 +37221,14 @@ components:
           type: boolean
           title: Enrolled
           default: false
+        extensions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExtensionMetadata'
+            type: array
+            maxItems: 200
+          - type: 'null'
+          title: Extensions
       additionalProperties: false
       type: object
       required:
@@ -37676,6 +38181,170 @@ components:
         never added together: "this run cost X, the work it delegated cost Y" is
 
         the question the tree exists to answer, and one number would hide it.'
+    ExtensionAggregate:
+      properties:
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        device_count:
+          type: integer
+          title: Device Count
+        versions:
+          items:
+            type: string
+          type: array
+          title: Versions
+        source_kinds:
+          items:
+            type: string
+            enum:
+            - official_marketplace
+            - third_party_marketplace
+            - git
+            - local
+            - builtin
+            - unknown
+          type: array
+          title: Source Kinds
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+      type: object
+      required:
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - device_count
+      - versions
+      - source_kinds
+      - approval_state
+      title: ExtensionAggregate
+      description: Distinct installed extensions across the account's devices.
+    ExtensionApprovalList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ExtensionApprovalSummary'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - items
+      - next_cursor
+      title: ExtensionApprovalList
+      description: Keyset-paginated account approvals.
+    ExtensionApprovalSummary:
+      properties:
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+        version_constraint:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$
+          - type: 'null'
+          title: Version Constraint
+        note:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Note
+        id:
+          type: string
+          format: uuid
+          title: Id
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_state
+      - id
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - decided_by_user_id
+      - decided_at
+      title: ExtensionApprovalSummary
+      description: A decision and its audit attribution.
+    ExtensionApprovalUpdate:
+      properties:
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+        version_constraint:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$
+          - type: 'null'
+          title: Version Constraint
+        note:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Note
+      additionalProperties: false
+      type: object
+      required:
+      - approval_state
+      title: ExtensionApprovalUpdate
+      description: Replace a decision; null version constraint means any version.
     ExtensionAttentionItem:
       properties:
         id:
@@ -37727,6 +38396,95 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Console attention contribution with a local destination.
+    ExtensionMetadata:
+      properties:
+        kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Kind
+        id:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Id
+        version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Version
+        source_kind:
+          type: string
+          enum:
+          - official_marketplace
+          - third_party_marketplace
+          - git
+          - local
+          - builtin
+          - unknown
+          title: Source Kind
+        source_ref_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Source Ref Hash
+        scope:
+          type: string
+          enum:
+          - user
+          - project
+          title: Scope
+        project_ref_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Project Ref Hash
+        enabled:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Enabled
+          default: unknown
+        content_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Content Hash
+        event:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z][A-Za-z0-9_\-]{0,31}$
+          - type: 'null'
+          title: Event
+        count:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Count
+        id_hashed:
+          type: boolean
+          title: Id Hashed
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - id
+      - source_kind
+      - scope
+      title: ExtensionMetadata
+      description: Only identifiers, version, classification and final hashes leave
+        a device.
     ExternalApprovalResult:
       properties:
         external_reference:
@@ -40099,6 +40857,33 @@ components:
             type: object
           type: object
           title: Effective Limits
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: New ingress secret, returned once by the rotate action only.
+        webhook_secret_rotated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Webhook Secret Rotated At
+          description: Last explicit rotation time; null for existing unrotated secrets.
+        webhook_secret_set:
+          type: boolean
+          title: Webhook Secret Set
+          description: Whether the flow has an ingress credential, without revealing
+            it.
+          readOnly: true
+        webhook_secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret Hint
+          description: The last four characters, matching approval workflow secret
+            hints.
+          readOnly: true
         effective_publication_policy:
           $ref: '#/components/schemas/EffectivePublicationPolicy'
           description: Read-only description derived from this saved flow's configuration.
@@ -40108,6 +40893,8 @@ components:
       - id
       - created_at
       - updated_at
+      - webhook_secret_set
+      - webhook_secret_hint
       - effective_publication_policy
       title: FlowResponse
     FlowSuccessNotifications:
@@ -46402,6 +47189,23 @@ components:
             pattern: ^[0-9a-f]{64}$
           - type: 'null'
           title: Profile Ref
+        completeness:
+          anyOf:
+          - type: string
+            enum:
+            - complete
+            - partial
+            - failed
+          - type: 'null'
+          title: Completeness
+        extensions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExtensionMetadata'
+            type: array
+            maxItems: 200
+          - type: 'null'
+          title: Extensions
         app_version:
           anyOf:
           - type: string
@@ -49083,6 +49887,102 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RegistryDecision:
+      properties:
+        state:
+          type: string
+          enum:
+          - approved
+          - denied
+          title: State
+      type: object
+      required:
+      - state
+      title: RegistryDecision
+      description: An explicit execution authorization or revocation for this route.
+    RegistryEntryResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        tool_source:
+          type: string
+          title: Tool Source
+        mcp_server_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Mcp Server Id
+        server_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Label
+        tool_name:
+          type: string
+          title: Tool Name
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - denied
+          title: State
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        first_seen_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: First Seen Agent Id
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        seen_count:
+          type: integer
+          title: Seen Count
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+      type: object
+      required:
+      - id
+      - tool_source
+      - mcp_server_id
+      - server_label
+      - tool_name
+      - state
+      - first_seen_at
+      - first_seen_agent_id
+      - last_seen_at
+      - seen_count
+      - decided_at
+      - decided_by_user_id
+      - approval_request_id
+      title: RegistryEntryResponse
+      description: Safe route identity, observation metadata and execution approval
+        state.
     ReportPublication:
       properties:
         enabled:
@@ -57751,6 +58651,33 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifiedSignIn:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cli Redirect Uri
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: VerifiedSignIn
+      description: Completed proof with an optional server-validated CLI continuation.
     VerifyRequest:
       properties:
         code:
@@ -57772,6 +58699,12 @@ components:
           maxLength: 4096
           minLength: 1
           title: Challenge Token
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cli Redirect Uri
       type: object
       required:
       - challenge_token
@@ -57849,13 +58782,6 @@ components:
       description: Configuration for webhook triggers.
     WebhookConfigResponse:
       properties:
-        webhook_secret:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated
-            for webhook triggers; unset on flows triggered by tracker events)
         supersede_on_update:
           type: boolean
           title: Supersede On Update
@@ -57874,7 +58800,7 @@ components:
             then 'data.issue.id'.
       type: object
       title: WebhookConfigResponse
-      description: Webhook settings on a flow response. The ingress secret is omitted.
+      description: Webhook settings on a flow response, without ingress credentials.
     WebhookDeliveryRead:
       properties:
         id:

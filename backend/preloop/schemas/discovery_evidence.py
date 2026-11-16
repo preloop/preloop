@@ -16,6 +16,8 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.schemas.discovered_extension import ExtensionMetadata
+
 AGENT_KIND_PATTERN = r"^[a-z0-9][a-z0-9_\-]{0,63}$"
 HEX_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 VERSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$"
@@ -61,6 +63,8 @@ class ObservedApplication(SafeEvidenceModel):
     config_path_hash: str = Field(pattern=HEX_SHA256_PATTERN)
     config_scope: Literal["user_config", "managed_config"] = "user_config"
     profile_ref: str | None = Field(default=None, pattern=HEX_SHA256_PATTERN)
+    completeness: Literal["complete", "partial", "failed"] | None = None
+    extensions: list[ExtensionMetadata] | None = Field(default=None, max_length=200)
     app_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
     surface: Literal["cli", "desktop", "editor", "extension", "other", "unknown"] = (
         "unknown"
@@ -73,6 +77,8 @@ class ObservedApplication(SafeEvidenceModel):
     @model_validator(mode="after")
     def unique_controls(self) -> ObservedApplication:
         """Each axis occurs at most once in a source observation."""
+        if self.config_scope == "managed_config" and self.profile_ref is not None:
+            raise ValueError("System managed configuration has no user profile")
         if len({control.axis for control in self.controls}) != len(self.controls):
             raise ValueError("Control axes must be unique")
         return self
@@ -98,7 +104,7 @@ class ObservedProfile(SafeEvidenceModel):
 class DiscoveryEvidence(SafeEvidenceModel):
     """Versioned bounded observation, including empty and failed scans."""
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=64)
     observation_id: UUID
     collector_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
@@ -141,6 +147,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                     control.pop("configuration_evidence", None)
                     if control.get("configured") == "unknown":
                         control.pop("configured", None)
+        if self.schema_version < 3:
+            for application in data.get("applications", []):
+                application.pop("extensions", None)
+                application.pop("completeness", None)
         return data
 
     @model_validator(mode="after")
@@ -160,7 +170,7 @@ class DiscoveryEvidence(SafeEvidenceModel):
             self.profiles or any(app.profile_ref for app in self.applications)
         ):
             raise ValueError("Profile metadata requires schema version 2")
-        if self.schema_version == 2:
+        if self.schema_version == 2 or (self.schema_version == 3 and self.profiles):
             if any(
                 app.profile_ref not in refs
                 and not (
@@ -173,6 +183,34 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 profile.completeness != "complete" for profile in self.profiles
             ):
                 raise ValueError("Complete collection cannot include partial profiles")
+        for app in self.applications:
+            if self.schema_version < 3 and (
+                app.extensions is not None or app.completeness is not None
+            ):
+                raise ValueError("Extensions require schema version 3")
+            if app.config_scope == "managed_config":
+                if "managed_config" not in self.scan_scope:
+                    raise ValueError("Managed configuration requires its scan scope")
+                if app.extensions is not None or app.completeness is not None:
+                    raise ValueError(
+                        "Managed configuration does not collect extensions"
+                    )
+                continue
+            if self.schema_version == 3:
+                if app.extensions is None or app.completeness is None:
+                    raise ValueError(
+                        "Version 3 requires extensions and app completeness"
+                    )
+                keys = [
+                    (ext.kind, ext.id, ext.scope, ext.project_ref_hash)
+                    for ext in app.extensions
+                ]
+                if len(set(keys)) != len(keys):
+                    raise ValueError(
+                        "Extension keys must be unique within an application"
+                    )
+                if app.profile_ref is not None and app.profile_ref not in refs:
+                    raise ValueError("Application must reference a collected profile")
         keys = [(app.agent_kind, app.config_path_hash) for app in self.applications]
         if len(set(keys)) != len(keys):
             raise ValueError("Application contexts must be unique")

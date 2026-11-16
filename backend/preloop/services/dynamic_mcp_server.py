@@ -544,23 +544,15 @@ class DynamicMCPServer:
 
             # Get database session
             async with get_async_db_session() as db:
-                # Check if there's a tool configuration for this tool
-                # First check default tools using CRUD
+                tool_source = (
+                    "mcp" if tool_name in self._proxied_tools_registry else "builtin"
+                )
                 config = await get_tool_config_by_name_and_source_async(
                     db,
                     account_id=user_context.account_id,
                     tool_name=tool_name,
-                    tool_source="builtin",
+                    tool_source=tool_source,
                 )
-
-                # If not found in default tools, check proxied tools
-                if not config:
-                    config = await get_tool_config_by_name_and_source_async(
-                        db,
-                        account_id=user_context.account_id,
-                        tool_name=tool_name,
-                        tool_source="mcp",
-                    )
 
                 # Evaluate policy rules
                 decision = await evaluate_policy_async(
@@ -573,6 +565,8 @@ class DynamicMCPServer:
                     },
                     account_id=user_context.account_id,
                     tool_configuration_id=config.id if config else None,
+                    tool_source=tool_source,
+                    resolve_tool_configuration=False,
                     user_id=getattr(user_context, "user_id", None),
                     execution_id=getattr(user_context, "execution_id", None),
                     subject_context={

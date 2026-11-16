@@ -346,6 +346,7 @@ async def require_approval(
     halt_scope: str = "tools",
     requested_timeout_seconds: Optional[int] = None,
     server_name: Optional[str] = None,
+    mcp_server_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -495,6 +496,18 @@ async def require_approval(
                 tool_name=tool_name,
                 tool_source=tool_source,
             )
+            if tool_source == "mcp" and mcp_server_id is not None:
+                from preloop.models.crud.tool_configuration import (
+                    get_tool_config_for_route_async,
+                )
+
+                config = await get_tool_config_for_route_async(
+                    db,
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    tool_source="mcp",
+                    mcp_server_id=mcp_server_id,
+                )
             if not config and tool_source == "builtin":
                 alias = TOOL_NAME_ALIASES.get(tool_name)
                 if alias:
@@ -540,7 +553,12 @@ async def require_approval(
                         tool_name=tool_name,
                         tool_source=tool_source,
                         account_id=account_id,
-                        approval_workflow_id=workflow_id,
+                        # Approval tracking must not turn a default into a tool rule.
+                        approval_workflow_id=None
+                        if rule_context
+                        and rule_context.get("source") == "unknown_tools_default"
+                        else workflow_id,
+                        mcp_server_id=mcp_server_id,
                         is_enabled=True,
                         custom_config={},
                     )
@@ -724,26 +742,42 @@ async def require_approval(
 
             try:
                 # Create approval request and send notification
-                approval_request = await approval_service.create_and_notify(
-                    account_id=account_id,
-                    tool_configuration_id=config.id,
-                    approval_workflow=workflow,
-                    tool_name=tool_name,
-                    tool_args=arguments,
-                    agent_reasoning=justification,
-                    # Attribution from the authenticated MCP caller. Without
-                    # it a gated builtin (ask_user, request_approval, any
-                    # proxied tool) landed on the approval pages with no agent,
-                    # no key and no session, and rendered as "AI agent".
-                    execution_id=caller.execution_id,
-                    managed_agent_id=caller.managed_agent_id,
-                    runtime_session_id=caller.runtime_session_id,
-                    managed_agent_name=caller.managed_agent_name,
-                    api_key_id=caller.api_key_id,
-                    rule_context=rule_context,
-                    timeout_seconds=window.seconds,
-                    server_name=server_name,
+                registry_request_id = (rule_context or {}).get(
+                    "registry_approval_request_id"
                 )
+                if registry_request_id:
+                    from preloop.models.crud.approval_request import (
+                        get_approval_request_async,
+                    )
+
+                    approval_request = await get_approval_request_async(
+                        db, request_id=registry_request_id
+                    )
+                    if approval_request is None or str(
+                        approval_request.account_id
+                    ) != str(account_id):
+                        return False, "Registry approval is unavailable"
+                else:
+                    approval_request = await approval_service.create_and_notify(
+                        account_id=account_id,
+                        tool_configuration_id=config.id,
+                        approval_workflow=workflow,
+                        tool_name=tool_name,
+                        tool_args=arguments,
+                        agent_reasoning=justification,
+                        # Attribution from the authenticated MCP caller. Without
+                        # it a gated builtin (ask_user, request_approval, any
+                        # proxied tool) landed on the approval pages with no agent,
+                        # no key and no session, and rendered as "AI agent".
+                        execution_id=caller.execution_id,
+                        managed_agent_id=caller.managed_agent_id,
+                        runtime_session_id=caller.runtime_session_id,
+                        managed_agent_name=caller.managed_agent_name,
+                        api_key_id=caller.api_key_id,
+                        rule_context=rule_context,
+                        timeout_seconds=window.seconds,
+                        server_name=server_name,
+                    )
 
                 # Extract every value needed past this point into plain
                 # locals, then release this session BEFORE any waiting
