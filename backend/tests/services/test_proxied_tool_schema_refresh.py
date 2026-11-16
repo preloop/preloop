@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
@@ -185,3 +185,52 @@ def test_stale_schema_error_silent_when_call_fits_schema() -> None:
         _stale_schema_error("publish_release", {"x": 1}, _listed(SCHEMA_V1), None)
         is None
     )
+
+
+async def test_replay_after_schema_change_explains_instead_of_failing() -> None:
+    """Approved arguments that no longer fit get an explicit refusal."""
+    mcp = DynamicFastMCP(name="test")
+    await _list(mcp, SCHEMA_V1)
+    await _list(mcp, SCHEMA_V2)  # rescan while an approval was pending
+    approved = {
+        "version": "1",
+        "change_uid": "c",
+        "long_description": "l",
+        "short_description": "s",
+    }
+    with (
+        patch.object(mcp, "_halt_dispatch_denial", AsyncMock(return_value=None)),
+        patch.object(mcp, "_record_attributed_refusal") as refusal,
+    ):
+        result = await mcp.call_registered_tool_without_policy(
+            INTERNAL, approved, account_id=ACCOUNT_ID
+        )
+    text = " ".join(getattr(block, "text", "") for block in result.content)
+    assert "changed after this call was approved" in text
+    assert "publish_release" in text
+    assert "version_number" in text  # newly required
+    refusal.assert_called_once()
+
+
+async def test_replay_with_fitting_arguments_dispatches() -> None:
+    """Arguments that fit the current schema are not refused."""
+    mcp = DynamicFastMCP(name="test")
+    await _list(mcp, SCHEMA_V2)
+    assert (
+        mcp._replay_schema_error(
+            INTERNAL,
+            {"version_number": "2", "version_date": "d", "description": "x"},
+        )
+        is None
+    )
+
+
+def test_unregister_keeps_wrapper_owned_by_another_server() -> None:
+    """Deleting a shadowed server leaves the owning server's wrapper."""
+    mcp = DynamicFastMCP(name="test")
+    mcp._registered_proxied_tools.add(INTERNAL)
+    mcp._proxied_tool_servers["publish_release"] = "owner"
+    removed = mcp.unregister_proxied_tools(ACCOUNT_ID, "shadowed", ["publish_release"])
+    assert removed == 0
+    assert INTERNAL in mcp._registered_proxied_tools
+    assert mcp._proxied_tool_servers["publish_release"] == "owner"

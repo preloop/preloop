@@ -1308,6 +1308,28 @@ def _schema_fingerprint(schema: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _schema_fields(schema: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """Return the declared and required argument names of an input schema.
+
+    Args:
+        schema: The tool's stored ``input_schema``.
+
+    Returns:
+        ``(declared, required)`` name sets; empty when the schema has none.
+    """
+    if not isinstance(schema, dict):
+        return frozenset(), frozenset()
+    properties = schema.get("properties")
+    declared = frozenset(properties) if isinstance(properties, dict) else frozenset()
+    required = schema.get("required")
+    needed = (
+        frozenset(r for r in required if isinstance(r, str))
+        if isinstance(required, list)
+        else frozenset()
+    )
+    return declared, needed & declared if declared else needed
+
+
 def _stale_schema_error(
     name: str,
     arguments: Dict[str, Any],
@@ -1429,6 +1451,11 @@ class DynamicFastMCP(FastMCP):
         # internal name -> fingerprint of the input schema its wrapper was
         # built from; a rescan that changes the schema rebuilds the wrapper.
         self._proxied_schema_fingerprints: Dict[str, str] = {}
+        # internal name -> (declared, required) argument names of that schema,
+        # used to explain persisted arguments that no longer fit on replay.
+        self._proxied_schema_fields: Dict[
+            str, tuple[frozenset[str], frozenset[str]]
+        ] = {}
         logger.info("DynamicFastMCP initialized")
 
     def unregister_proxied_tools(
@@ -1446,10 +1473,16 @@ class DynamicFastMCP(FastMCP):
         removed = 0
         for tool_name in tool_names:
             internal_name = f"account_{safe_account_id}_{tool_name}"
+            owner = self._proxied_tool_servers.get(tool_name)
+            if owner is not None and owner != str(server_id):
+                # Another (owning) server still serves this name; a shadowed
+                # server's removal must not drop the owner's wrapper.
+                continue
             if internal_name in self._registered_proxied_tools:
                 self._registered_proxied_tools.discard(internal_name)
                 self._proxied_param_aliases.pop(internal_name, None)
                 self._proxied_schema_fingerprints.pop(internal_name, None)
+                self._proxied_schema_fields.pop(internal_name, None)
                 try:
                     self.local_provider.remove_tool(internal_name)
                 except Exception:
@@ -1790,6 +1823,9 @@ class DynamicFastMCP(FastMCP):
                     # Track as registered
                     self._registered_proxied_tools.add(internal_name)
                     self._proxied_schema_fingerprints[internal_name] = fingerprint
+                    self._proxied_schema_fields[internal_name] = _schema_fields(
+                        mcp_tool.input_schema
+                    )
 
                 # Always track the mapping for name translation
                 self._proxied_tool_servers[exposed_name] = str(mcp_server.id)
@@ -4243,6 +4279,48 @@ async def {internal_name}({params_str}):
             return "Access denied: unable to verify account halt state"
         return kill_switch_service.TOOL_DENIAL_MESSAGE if halted else None
 
+    def _replay_schema_error(
+        self, internal_name: str, arguments: Dict[str, Any]
+    ) -> Optional[str]:
+        """Explain approved arguments that no longer fit the tool's schema.
+
+        An approval stores the call's arguments. If the upstream tool was
+        rescanned with a different schema before the approval was resolved,
+        the rebuilt wrapper would reject them with a bare validation error.
+
+        Args:
+            internal_name: Registered wrapper name.
+            arguments: Arguments persisted with the approval.
+
+        Returns:
+            An error message, or None when the arguments still fit or the
+            tool is not a proxied tool with a recorded schema.
+        """
+        fields = self._proxied_schema_fields.get(internal_name)
+        if fields is None:
+            return None
+        declared, required = fields
+        given = set(arguments) - {"justification"}
+        unknown = sorted(given - declared)
+        missing = sorted(required - given)
+        if not unknown and not missing:
+            return None
+        tool_name = internal_name
+        prefix = "account_"
+        if internal_name.startswith(prefix):
+            tool_name = internal_name[len(prefix) :].split("_", 5)[-1]
+        problems = []
+        if unknown:
+            problems.append(f"no longer declares {', '.join(unknown)}")
+        if missing:
+            problems.append(f"now requires {', '.join(missing)}")
+        return (
+            f"Error: the input schema of tool '{tool_name}' changed after this "
+            f"call was approved: it {' and '.join(problems)}. The approved call "
+            "was not executed; call the tool again with arguments that match "
+            "the refreshed schema."
+        )
+
     async def call_registered_tool_without_policy(
         self,
         name: str,
@@ -4274,6 +4352,16 @@ async def {internal_name}({params_str}):
                 account_id=account_id,
             )
             return _tool_error_result(denial)
+        replay_error = self._replay_schema_error(name, arguments or {})
+        if replay_error is not None:
+            await asyncio.to_thread(
+                self._record_attributed_refusal,
+                name,
+                arguments,
+                replay_error,
+                account_id=account_id,
+            )
+            return _tool_error_result(replay_error)
         translation_token = None
         if name in self._registered_proxied_tools:
             translation_token = _is_proxy_translation_var.set(True)
