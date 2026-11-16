@@ -64,6 +64,41 @@ describe('Login second step', () => {
     return element;
   }
 
+  // protects=social callback reaches the same second step, including CLI delivery;
+  // fails_when=raw challenge remains in URL or tokens are stored before proof; no_claim=server is stubbed.
+  it('completes a social CLI challenge after the code', async () => {
+    const originalUrl = location.href;
+    history.replaceState(
+      {},
+      '',
+      '/login#mfa_challenge=social-challenge&cli_redirect_uri=http%3A%2F%2F127.0.0.1%3A4321%2Fcallback'
+    );
+    fetchStub.callsFake(async (input) =>
+      String(input).endsWith('/features')
+        ? json({ features: {} })
+        : json({ access_token: 'cli-access', refresh_token: 'cli-refresh' })
+    );
+    try {
+      const element = await fixture<LoginView>(html`<login-view></login-view>`);
+      expect(element.shadowRoot?.textContent).to.contain(
+        'Confirm your sign-in'
+      );
+      expect(location.hash).to.equal('');
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      const deliver = sinon.stub(element as any, '_completeCliMfa');
+      element
+        .shadowRoot!.querySelector('form')!
+        .dispatchEvent(new Event('submit', { cancelable: true }));
+      await waitUntil(() => deliver.called);
+      const callback = new URL(deliver.firstCall.args[0]);
+      expect(callback.origin).to.equal('http://127.0.0.1:4321');
+      expect(callback.searchParams.get('access_token')).to.equal('cli-access');
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+    } finally {
+      history.replaceState({}, '', originalUrl);
+    }
+  });
+
   // protects=password challenge has no token persistence and permits recovery;
   // fails_when=password fields remain or tokens are stored; no_claim=server is stubbed.
   it('switches to a code field and offers recovery', async () => {

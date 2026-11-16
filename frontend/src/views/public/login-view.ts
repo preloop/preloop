@@ -2,6 +2,8 @@ import {
   mfaMessage,
   storeMfaTokens,
   takePendingMfaChallenge,
+  takeRedirectMfaChallenge,
+  enrollmentOnly,
 } from '../../services/mfa';
 import { REST_API_PREFIX } from '../../api-path';
 import { discoverSso } from '../../services/sso-api';
@@ -40,6 +42,7 @@ export class LoginView extends LitElement {
   @state() private mfaCode = '';
   @state() private useRecoveryCode = false;
   private targetAccountId: string | undefined;
+  private cliMfaRedirect: string | null = null;
 
   @state() private ssoEnabled = false;
   @state() private showOtherMethods = false;
@@ -152,6 +155,11 @@ export class LoginView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.mfaChallenge = takePendingMfaChallenge();
+    const handoff = takeRedirectMfaChallenge();
+    if (handoff) {
+      this.mfaChallenge = handoff.challenge;
+      this.cliMfaRedirect = handoff.cliRedirect;
+    }
     const urlParams = new URLSearchParams(window.location.search);
     const target = urlParams.get('account_id');
     this.targetAccountId =
@@ -202,6 +210,10 @@ export class LoginView extends LitElement {
   }
 
   private _navigateAfterLogin() {
+    if (enrollmentOnly(localStorage.getItem('accessToken'))) {
+      Router.go('/enroll-sign-in');
+      return;
+    }
     const redirectPath = consumeLoginReturn();
     if (redirectPath) {
       if (redirectPath.startsWith('/admin')) {
@@ -527,6 +539,15 @@ export class LoginView extends LitElement {
         challenge_token: this.mfaChallenge,
         [this.useRecoveryCode ? 'recovery_code' : 'code']: this.mfaCode,
       });
+      if (this.cliMfaRedirect) {
+        const callback = new URL(this.cliMfaRedirect);
+        callback.searchParams.set('access_token', data.access_token);
+        callback.searchParams.set('refresh_token', data.refresh_token);
+        callback.searchParams.set('token_type', 'Bearer');
+        this.mfaChallenge = this.mfaCode = '';
+        this._completeCliMfa(callback.href);
+        return;
+      }
       storeMfaTokens(data);
       this.mfaChallenge = this.mfaCode = '';
       window.dispatchEvent(
@@ -539,6 +560,10 @@ export class LoginView extends LitElement {
       this.submitting = false;
       this.mfaCode = '';
     }
+  }
+
+  private _completeCliMfa(url: string): void {
+    window.location.assign(url);
   }
 
   private _renderSignInForm() {
@@ -573,6 +598,7 @@ export class LoginView extends LitElement {
           variant="text"
           @click=${() => {
             this.mfaChallenge = this.mfaCode = this.error = '';
+            this.cliMfaRedirect = null;
           }}
           >Start again</sl-button
         >`;

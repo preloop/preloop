@@ -31730,6 +31730,11 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        enroll_only:
+          type: boolean
+          title: Enroll Only
+          description: Session is restricted to factor enrollment.
+          default: false
         id:
           type: string
           format: uuid

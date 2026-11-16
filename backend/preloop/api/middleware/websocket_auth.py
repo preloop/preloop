@@ -157,6 +157,8 @@ class WebSocketAuthMiddleware:
             token_data = decode_token(token)
             if not token_data or not token_data.sub:
                 return None
+            if token_data.refresh or token_data.claims.get("purpose"):
+                return None
 
             user_id = UUID(token_data.sub)
 
@@ -164,7 +166,12 @@ class WebSocketAuthMiddleware:
                 """Load the user in a short-lived session on a worker thread."""
                 user = crud_user.get(db, id=user_id)
                 if user and user.is_active:
-                    reject_revoked_token(db, user, token_data)
+                    context = reject_revoked_token(db, user, token_data)
+                    from preloop.services.authentication_policy import (
+                        enforce_enrollment_session,
+                    )
+
+                    enforce_enrollment_session(context, None)
                     # Preserve already-verified claims for the live watcher;
                     # the JWT can expire while the handler finishes setup.
                     user._auth_token_data = token_data
