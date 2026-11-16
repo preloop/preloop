@@ -4223,6 +4223,15 @@ async def {internal_name}({params_str}):
                     or decision.source == "rule_evaluation_error"
                 ):
                     return "Access denied: current policy blocks approval replay"
+                if (
+                    decision.action == "require_approval"
+                    and decision.source == "registry"
+                ):
+                    registry_request_id = (decision.rule_context or {}).get(
+                        "registry_approval_request_id"
+                    )
+                    if str(registry_request_id) != str(request.id):
+                        return "Access denied: current registry approval is pending"
                 if decision.action == "require_approval" and str(
                     decision.approval_workflow_id
                 ) != str(request.approval_workflow_id):
