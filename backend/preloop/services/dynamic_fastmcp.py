@@ -1295,6 +1295,61 @@ _RESERVED_WRAPPER_LOCALS = (
 )
 
 
+def _schema_fingerprint(schema: Any) -> str:
+    """Return a stable digest of a stored upstream input schema.
+
+    Args:
+        schema: The tool's ``input_schema`` (JSON-compatible, possibly None).
+
+    Returns:
+        A hex SHA-256 of the canonical JSON form.
+    """
+    canonical = json.dumps(schema or {}, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stale_schema_error(
+    name: str,
+    arguments: Dict[str, Any],
+    available_tools: List[Tool],
+    server_name: Optional[str],
+) -> Optional[str]:
+    """Explain a proxied call whose arguments the stored schema lacks.
+
+    The wrapper's signature mirrors the schema stored at the last scan, so
+    such a call would fail with FastMCP's bare "Unexpected keyword argument".
+    The usual cause is an upstream tool that changed after that scan.
+
+    Args:
+        name: Client-facing tool name.
+        arguments: Call arguments (justification already removed).
+        available_tools: The caller's tool list from ``list_tools``.
+        server_name: Upstream MCP server name, or None for a builtin tool.
+
+    Returns:
+        An error message, or None when the call fits the stored schema or
+        the tool is not proxied.
+    """
+    if server_name is None or not arguments:
+        return None
+    listed = next((tool for tool in available_tools if tool.name == name), None)
+    properties = (getattr(listed, "parameters", None) or {}).get("properties")
+    if not isinstance(properties, dict):
+        return None
+    unknown = sorted(set(arguments) - set(properties) - {"justification"})
+    if not unknown:
+        return None
+    accepted = ", ".join(sorted(set(properties) - {"justification"})) or "none"
+    return (
+        f"Error: tool '{name}' was called with arguments its stored input "
+        f"schema does not declare: {', '.join(unknown)}. Accepted arguments: "
+        f"{accepted}. If MCP server '{server_name}' changed this tool, its "
+        "schema in Preloop is stale: refresh the server's tools (console: "
+        f"Tools > Refresh tools, CLI: preloop mcp-servers scan {server_name}) "
+        "and call again."
+    )
+
+
 def _is_safe_tool_identifier(name: str) -> bool:
     """Return whether *name* is safe as a proxied tool name in ``internal_name``.
 
@@ -1371,6 +1426,9 @@ class DynamicFastMCP(FastMCP):
         self._registered_proxied_tools: set = set()
         # original schema key -> generated wrapper parameter name
         self._proxied_param_aliases: Dict[str, Dict[str, str]] = {}
+        # internal name -> fingerprint of the input schema its wrapper was
+        # built from; a rescan that changes the schema rebuilds the wrapper.
+        self._proxied_schema_fingerprints: Dict[str, str] = {}
         logger.info("DynamicFastMCP initialized")
 
     def unregister_proxied_tools(
@@ -1391,6 +1449,7 @@ class DynamicFastMCP(FastMCP):
             if internal_name in self._registered_proxied_tools:
                 self._registered_proxied_tools.discard(internal_name)
                 self._proxied_param_aliases.pop(internal_name, None)
+                self._proxied_schema_fingerprints.pop(internal_name, None)
                 try:
                     self.local_provider.remove_tool(internal_name)
                 except Exception:
@@ -1688,11 +1747,22 @@ class DynamicFastMCP(FastMCP):
                     mcp_server,
                 )
 
-                # Only register if not already registered
-                if internal_name not in self._registered_proxied_tools:
+                # Register on first sight, and again when a rescan stored a
+                # different input schema: the wrapper's signature is what
+                # FastMCP validates calls against, so a stale one rejects the
+                # fields ``tools/list`` now advertises.
+                fingerprint = _schema_fingerprint(mcp_tool.input_schema)
+                stale = (
+                    internal_name in self._registered_proxied_tools
+                    and self._proxied_schema_fingerprints.get(internal_name)
+                    != fingerprint
+                )
+                if internal_name not in self._registered_proxied_tools or stale:
                     logger.info(
-                        f"Dynamically registering proxied tool: {exposed_name} "
-                        f"(internal: {internal_name})"
+                        "%s proxied tool: %s (internal: %s)",
+                        "Rebuilding stale" if stale else "Dynamically registering",
+                        exposed_name,
+                        internal_name,
                     )
 
                     # Create wrapper function with approval and streaming
@@ -1713,11 +1783,13 @@ class DynamicFastMCP(FastMCP):
                     if wrapper is None:
                         continue
 
-                    # Register with FastMCP using @mcp.tool() decorator
+                    # Register with FastMCP using @mcp.tool() decorator. A
+                    # rebuild replaces the entry under the same key in place.
                     self.tool()(wrapper)
 
                     # Track as registered
                     self._registered_proxied_tools.add(internal_name)
+                    self._proxied_schema_fingerprints[internal_name] = fingerprint
 
                 # Always track the mapping for name translation
                 self._proxied_tool_servers[exposed_name] = str(mcp_server.id)
@@ -2656,6 +2728,17 @@ async def {internal_name}({params_str}):
                 f"unauthorized tool: {name}"
             )
             return await _refuse(f"Access denied: Tool '{name}' is not available")
+
+        stale_schema_error = _stale_schema_error(
+            name,
+            arguments,
+            available_tools,
+            self._proxied_tool_server_names.get(name)
+            if name in self._proxied_tool_servers
+            else None,
+        )
+        if stale_schema_error is not None:
+            return await _refuse(stale_schema_error)
 
         # Resolve the same prefix/first-wins owner used by dispatch once.
         # Keep its copied credentials in memory through any synchronous wait.

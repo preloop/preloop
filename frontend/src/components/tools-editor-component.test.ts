@@ -114,7 +114,7 @@ describe('ToolsEditorComponent – MCP server actions', () => {
       'sl-icon-button[name="arrow-clockwise"]'
     ) as HTMLElement | null;
     expect(refresh).to.exist;
-    expect(refresh!.getAttribute('label')).to.equal('Scan for new tools');
+    expect(refresh!.getAttribute('label')).to.equal('Refresh tools');
     const magic = el.shadowRoot?.querySelector(
       'sl-icon-button[name="magic"]'
     ) as HTMLElement | null;
