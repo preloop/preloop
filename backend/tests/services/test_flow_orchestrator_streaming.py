@@ -986,3 +986,44 @@ async def test_recovered_stream_restores_native_tool_ids(orchestrator) -> None:
         call.args[0] != "mcp_call"
         for call in orchestrator._publish_update.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_stops_and_preserves_result(orchestrator) -> None:
+    """Native loops stop with an accurate message and retain existing event keys."""
+    from preloop.agents.base import AgentStatus
+
+    executor = AsyncMock()
+    executor.get_status.return_value = AgentStatus.RUNNING
+    detection = {
+        "pattern_length": 1,
+        "repetitions": 4,
+        "pattern": [{"server_name": "codex_cli", "tool_name": "Bash"}],
+    }
+    artifact = {"status": "incomplete", "summary": "Review interrupted"}
+    orchestrator.execution_logger.log_milestone = MagicMock()
+    with (
+        patch.object(orchestrator, "_listen_for_commands", AsyncMock()),
+        patch.object(orchestrator, "_stream_logs_to_nats", AsyncMock()),
+        patch.object(orchestrator, "_publish_update", AsyncMock()) as publish,
+        patch.object(orchestrator, "_check_no_progress", AsyncMock(return_value=False)),
+        patch.object(
+            orchestrator,
+            "_sync_runtime_tool_activity_metrics",
+            AsyncMock(return_value=detection),
+        ),
+        patch.object(
+            orchestrator, "_capture_result_artifact", AsyncMock(return_value=artifact)
+        ),
+    ):
+        result = await orchestrator._monitor_agent_execution("native-session", executor)
+    executor.stop.assert_awaited_once_with("native-session")
+    assert result["status"] == "FAILED"
+    assert result["result"] == artifact
+    assert "repeated tool loop: codex_cli/Bash" in result["error_message"]
+    assert "MCP" not in result["error_message"]
+    assert any(call.args[0] == "agent_loop_detected" for call in publish.call_args_list)
+    assert any(
+        call.args[0] == "mcp_tool_loop_detected"
+        for call in orchestrator.execution_logger.log_milestone.call_args_list
+    )
