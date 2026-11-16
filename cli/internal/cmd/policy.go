@@ -151,6 +151,8 @@ var policyDiffCmd = &cobra.Command{
 	Long: `Compare a local policy file with the version currently on the server.
 
 This shows what would change if you applied the local policy.
+Variable references are resolved locally as with apply. Use --no-resolve-env
+to compare the references literally.
 
 Examples:
   preloop policy diff my-policy.yaml`,
@@ -232,6 +234,7 @@ func init() {
 	policyApplyCmd.Flags().Bool("dry-run", false, "validate and show what would be applied without making changes")
 	policyApplyCmd.Flags().Bool("no-resolve-env", false, "upload variable references literally without local resolution")
 	policyApplyCmd.Flags().BoolP("recursive", "r", false, "recursively apply policies from directory")
+	policyDiffCmd.Flags().Bool("no-resolve-env", false, "compare variable references literally without local resolution")
 
 	// Flags for export
 	policyExportCmd.Flags().StringP("output", "o", "", "output file (default: stdout)")
@@ -527,19 +530,19 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
 
-	// Use the same application checks for dry runs and writes.
+	// Validate the resolved content without requiring permission to apply it.
 	if dryRun {
 		fmt.Printf("Dry run - validating policy: %s\n\n", filePath)
 
-		result, err := applyPolicyContent(client, filepath.Base(filePath), content, true)
+		result, err := validatePolicyContent(client, filepath.Base(filePath), content)
 		if err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
 
-		if !result.Success {
+		if !result.IsValid {
 			fmt.Printf("✗ Policy validation failed\n")
 			for _, e := range result.Errors {
-				fmt.Printf("  %s\n", e)
+				fmt.Printf("  %s\n", e.Message)
 			}
 			return fmt.Errorf("validation failed")
 		}
@@ -579,6 +582,13 @@ func runPolicyDiff(cmd *cobra.Command, args []string) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
+	}
+	noResolveEnv, _ := cmd.Flags().GetBool("no-resolve-env")
+	if !noResolveEnv {
+		content, err = resolvePolicyVariables(content, filePath)
+		if err != nil {
+			return err
+		}
 	}
 
 	client, err := api.NewClient(FlagToken, FlagURL)

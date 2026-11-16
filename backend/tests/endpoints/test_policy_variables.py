@@ -215,3 +215,31 @@ def test_upload_dry_run(
     assert not crud_mcp_server.get_multi_by_account(
         db_session, account_id=str(test_user.account_id)
     )
+
+
+@pytest.mark.parametrize("endpoint", ["upload", "validate", "diff"])
+@pytest.mark.parametrize("invalid_field", ["auth_config", "metadata"])
+def test_validation_diagnostics_omit_submitted_values(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    endpoint: str,
+    invalid_field: str,
+) -> None:
+    """Diagnostics report the field and problem without copying input values."""
+    data = policy_data()
+    value = "operator-auth-value"
+    if invalid_field == "auth_config":
+        data["mcp_servers"][0]["auth_config"] = value
+    else:
+        data["mcp_servers"][0]["auth_config"] = {"token": value}
+        data.pop("metadata")
+    response = client.post(
+        "/api/v1/policies/" + endpoint,
+        files={"file": ("policy.json", json.dumps(data))},
+    )
+    assert response.status_code == (200 if endpoint == "validate" else 400)
+    assert value not in response.text
+    assert value not in caplog.text
+    errors = response.json().get("detail", response.json())["errors"]
+    assert errors
+    assert all(error["value"] is None for error in errors)

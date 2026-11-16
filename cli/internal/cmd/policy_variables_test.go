@@ -39,15 +39,19 @@ func TestPolicyApplyVariables(t *testing.T) {
 					requests := 0
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						requests++
-						if r.URL.Path != policiesUploadPath {
-							t.Errorf("path = %s, want upload", r.URL.Path)
+						wantPath := policiesUploadPath
+						if dryRun {
+							wantPath = policiesValidatePath
+						}
+						if r.URL.Path != wantPath {
+							t.Errorf("path = %s, want %s", r.URL.Path, wantPath)
 						}
 						if err := r.ParseMultipartForm(1 << 20); err != nil {
 							t.Error(err)
 							return
 						}
 						defer r.MultipartForm.RemoveAll()
-						if r.FormValue("dry_run") != fmt.Sprint(dryRun) || r.FormValue("resolve_env") != "false" {
+						if !dryRun && (r.FormValue("dry_run") != "false" || r.FormValue("resolve_env") != "false") {
 							t.Errorf("unexpected form fields: %v", r.Form)
 						}
 						part, _, err := r.FormFile("file")
@@ -166,5 +170,87 @@ func TestPolicyVariablesKeepJSONNumbers(t *testing.T) {
 	}
 	if !strings.Contains(string(resolved), `"number":123456789012345678901234567890`) {
 		t.Fatalf("JSON number changed: %s", resolved)
+	}
+}
+
+func TestPolicyDiffVariables(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		t.Run(fmt.Sprint(preserve), func(t *testing.T) {
+			t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+			testenv.SetTempHome(t)
+			t.Setenv("PRELOOP_POLICY_TEST_VALUE", "operator-value")
+			file := filepath.Join(t.TempDir(), "policy.yaml")
+			if err := os.WriteFile(file, []byte("metadata:\n  name: ${PRELOOP_POLICY_TEST_VALUE}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != policiesDiffPath {
+					t.Errorf("path = %s, want diff", r.URL.Path)
+				}
+				part, _, err := r.FormFile("file")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer part.Close()
+				defer r.MultipartForm.RemoveAll()
+				body, _ := io.ReadAll(part)
+				want := "operator-value"
+				if preserve {
+					want = "${PRELOOP_POLICY_TEST_VALUE}"
+				}
+				if !strings.Contains(string(body), want) {
+					t.Errorf("diff input = %s, want %s", body, want)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"has_changes":false,"changes":[],"summary":"No changes"}`)
+			}))
+			defer server.Close()
+			originalURL, originalToken := FlagURL, FlagToken
+			FlagURL, FlagToken = server.URL, "test-token"
+			t.Cleanup(func() { FlagURL, FlagToken = originalURL, originalToken })
+			cmd := &cobra.Command{}
+			cmd.Flags().Bool("no-resolve-env", preserve, "")
+			if err := runPolicyDiff(cmd, []string{file}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if flag := policyDiffCmd.Flags().Lookup("no-resolve-env"); flag == nil || flag.DefValue != "false" {
+		t.Fatal("diff must offer --no-resolve-env, disabled by default")
+	}
+}
+
+func TestPolicyDryRunValidationDiagnostics(t *testing.T) {
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	testenv.SetTempHome(t)
+	file := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(file, []byte("tools: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != policiesValidatePath {
+			t.Errorf("path = %s, want validation", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_valid":false,"errors":[{"path":"$.metadata","message":"Field required","value":null}]}`)
+	}))
+	defer server.Close()
+	originalURL, originalToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "test-token"
+	t.Cleanup(func() { FlagURL, FlagToken = originalURL, originalToken })
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("dry-run", true, "")
+	cmd.Flags().Bool("no-resolve-env", false, "")
+	var runErr error
+	output := captureStdout(t, func() error {
+		runErr = runPolicyApply(cmd, []string{file})
+		return nil
+	})
+	if runErr == nil || runErr.Error() != "validation failed" {
+		t.Fatalf("expected validation error, got %v", runErr)
+	}
+	if !strings.Contains(output, "  Field required\n") || strings.Contains(output, `"errors"`) {
+		t.Fatalf("expected readable diagnostic, got %s", output)
 	}
 }

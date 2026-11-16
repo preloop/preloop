@@ -62,8 +62,10 @@ the operator's local environment before upload, including with `--dry-run`.
 Unset variables stop the command and are named in the error. Empty variables
 are allowed. Use `--no-resolve-env` to upload references literally. The API
 preserves references and returns a warning; its `resolve_env` form field is
-accepted for compatibility and ignored. `validate` and `diff` inspect the file
-as written. `$NAME` without braces is always literal.
+accepted for compatibility and ignored. `policy diff` uses the same local
+resolution and supports `--no-resolve-env`; `validate` inspects the file as
+written. `$NAME` without braces is always literal. Dry runs use the validation
+endpoint and require only the permission to view policies.
 
 ## Schema Reference
 

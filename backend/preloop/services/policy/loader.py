@@ -322,13 +322,12 @@ def load_policy_from_string(
     try:
         policy = PolicyDocument.model_validate(data)
     except ValidationError as e:
-        for error in e.errors():
+        for error in e.errors(include_input=False, include_url=False):
             path = ".".join(str(loc) for loc in error["loc"])
             errors.append(
                 PolicyValidationError(
                     path=f"$.{path}" if path else "$",
                     message=error["msg"],
-                    value=error.get("input"),
                 )
             )
         return None, PolicyValidationResult(

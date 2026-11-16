@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Policies: the CLI now resolves variable references; the server no longer does.
-  `policy apply --dry-run` uses the same local resolution and application checks.
+  `policy apply --dry-run` and `policy diff` use the same local resolution.
   Unset variables stop the upload; `--no-resolve-env` preserves references.
   The upload API accepts and ignores `resolve_env` and warns about unresolved
   references.
