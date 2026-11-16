@@ -232,7 +232,12 @@ class ChatBroker:
             channel_action=True,
         )
         token = create_access_token(
-            {"sub": str(user.id)},
+            {
+                "sub": str(user.id),
+                "purpose": "channel_action",
+                "channel_method": method,
+                "channel_path": route,
+            },
             timedelta(seconds=90),
             auth_generation=user.auth_generation,
             auth_context=auth_context,

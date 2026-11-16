@@ -233,6 +233,12 @@ export class MfaCard extends LitElement {
                     @click=${() => {
                       this.codes = [];
                       this.saved = false;
+                      this.dispatchEvent(
+                        new CustomEvent('mfa-enrollment-complete', {
+                          bubbles: true,
+                          composed: true,
+                        })
+                      );
                     }}
                     >Done</sl-button
                   >
