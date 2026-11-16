@@ -598,6 +598,8 @@ _grant_binding_var: ContextVar[Optional[dict[str, Any]]] = ContextVar(
 
 async def _evaluate_snapshot_grant(
     snapshot: GrantDispatchSnapshot,
+    *,
+    force: bool = False,
 ) -> Optional[GrantResult]:
     """Check grant state for the token on the copied dispatch configuration."""
     auth = snapshot.client_config["auth_config"]
@@ -620,6 +622,7 @@ async def _evaluate_snapshot_grant(
         token if isinstance(token, str) else None,
         config,
         server_id=snapshot.client_config["server_id"],
+        **({"force": True} if force else {}),
     )
 
 
@@ -1221,6 +1224,7 @@ def _optional_annotation(annotation: str) -> str:
 #: ``account_id``, ...). An upstream property with the same name would become
 #: a function parameter and shadow the trusted value for the whole body.
 _WRAPPER_NAMESPACE_KEYS = (
+    "ToolResult",
     "self",
     "account_id",
     "tool_name",
@@ -2055,10 +2059,11 @@ async def {internal_name}({params_str}):
     from preloop.services.dynamic_fastmcp import _justification_var
     justification = _justification_var.get(None)
 
+    from preloop.services.external_approval import scope_replay
     snapshot = _grant_dispatch_var.get(None)
     if snapshot is None or snapshot.account_id != account_id or snapshot.tool_name != tool_name:
         try:
-            if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+            if scope_replay.get() or getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
                 snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name, introspect=False)
             else:
                 snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
@@ -2102,7 +2107,7 @@ async def {internal_name}({params_str}):
     if not approved:
         return _wrapper_tool_error(error, status="refused")
 
-    denial = await self._grant_dispatch_denial(snapshot, user_context)
+    denial = await self._grant_dispatch_denial(snapshot, user_context, **({{"force": True}} if scope_replay.get() else {{}}))
     if denial:
         return _wrapper_tool_error(denial, status="refused")
 
@@ -2122,7 +2127,11 @@ async def {internal_name}({params_str}):
         if denial:
             return _wrapper_tool_error(denial, status="refused")
         # Call tool on external server
-        result = await client.call_tool(upstream_name, arguments, correlation_id=corr_id)
+        result = await self._call_upstream_with_approval(
+            client, snapshot, user_context, arguments, ctx=ctx, correlation_id=corr_id
+        )
+        if isinstance(result, ToolResult):
+            return result
         try:
             await self._observe_mcp_dispatch(snapshot, user_context)
         except Exception as observation_error:
@@ -2210,6 +2219,7 @@ async def {internal_name}({params_str}):
             "tool_name": tool_name,
             "_resolve_proxied_tool_server": _resolve_proxied_tool_server,
             "_upstream_tool_name": _upstream_tool_name,
+            "ToolResult": ToolResult,
             "_grant_dispatch_var": _grant_dispatch_var,
             "_grant_binding_var": _grant_binding_var,
             "deepcopy": deepcopy,
@@ -3285,6 +3295,215 @@ async def {internal_name}({params_str}):
             status=TOOL_CALL_STATUS_REFUSED,
         )
 
+    async def _call_upstream_with_approval(
+        self,
+        client: Any,
+        snapshot: GrantDispatchSnapshot,
+        user_context: UserContext,
+        arguments: dict[str, Any],
+        *,
+        ctx: Any,
+        correlation_id: Optional[str],
+    ) -> Any:
+        """Hold an opted-in scope refusal and retry this server exactly once."""
+        from preloop.services.approval_helper import (
+            require_approval,
+            consume_last_approval_meta,
+        )
+        from preloop.services.external_approval import (
+            handoff_reference,
+            outcome_error,
+            scope_refusal,
+            scope_replay,
+        )
+
+        replay = scope_replay.get()
+        if replay and (
+            replay.get("server_id") != snapshot.client_config["server_id"]
+            or replay.get("upstream_name") != snapshot.upstream_name
+        ):
+            return _wrapper_tool_error(
+                outcome_error("retry refused", replay.get("external_reference")),
+                status="refused",
+            )
+        if replay:
+            grant = await _evaluate_snapshot_grant(snapshot, force=True)
+            if grant is not None:
+                binding = _grant_binding_var.get(None)
+                if binding is not None:
+                    binding.clear()
+                    binding.update(deepcopy(grant.binding))
+                else:
+                    _grant_binding_var.set(deepcopy(grant.binding))
+                if grant.deny_reason:
+                    return _wrapper_tool_error(
+                        outcome_error(
+                            "approved but grant refused",
+                            replay.get("external_reference"),
+                        ),
+                        status="refused",
+                    )
+            client = await get_mcp_client_pool().get_client(**snapshot.client_config)
+        try:
+            result = await client.call_tool(
+                snapshot.upstream_name, arguments, correlation_id=correlation_id
+            )
+        except Exception as exc:
+            if replay:
+                return _wrapper_tool_error(
+                    outcome_error(
+                        "approved but retry failed", replay.get("external_reference")
+                    ),
+                    status="failed",
+                )
+            if not scope_refusal(exc):
+                raise
+            refusal = exc
+        else:
+            if replay:
+                if getattr(result, "is_error", False):
+                    return _wrapper_tool_error(
+                        outcome_error(
+                            "approved but retry refused",
+                            replay.get("external_reference"),
+                        ),
+                        status="failed",
+                    )
+                return result
+            if not scope_refusal(result):
+                return result
+            refusal = result
+
+        auth = snapshot.client_config.get("auth_config")
+        workflow_id = auth.get("approval_workflow") if isinstance(auth, dict) else None
+        if (
+            not isinstance(auth, dict)
+            or auth.get("on_insufficient_scope") != "request_approval"
+            or not workflow_id
+        ):
+            if isinstance(refusal, Exception):
+                raise refusal
+            return refusal
+
+        # Record the refused attempt before approval_created, using the same
+        # redaction and durable-outbox handling as every governed refusal.
+        fields = await asyncio.to_thread(
+            self._audit_refused_tool_call,
+            user_context,
+            client_tool_name=snapshot.tool_name,
+            arguments=arguments,
+            reason="Upstream refused the call: insufficient_scope",
+            correlation_id=correlation_id,
+            audit_result="upstream_error",
+            error_code="insufficient_scope",
+        )
+        await asyncio.to_thread(
+            self._persist_tool_call_activity,
+            user_context,
+            tool_name=snapshot.tool_name,
+            client_tool_name=snapshot.tool_name,
+            status="failed",
+            summary="Upstream refused the call: insufficient_scope",
+            arguments=arguments,
+            correlation_id=correlation_id,
+            audit_fields=fields,
+        )
+        reference_token = handoff_reference.set(None)
+        try:
+            approved, error = await require_approval(
+                tool_name=snapshot.tool_name,
+                tool_source="mcp",
+                account_id=snapshot.account_id,
+                arguments=arguments,
+                ctx=ctx,
+                workflow_id=str(workflow_id),
+                correlation_id=correlation_id,
+                server_name=snapshot.server_name,
+                rule_context={
+                    "source": "upstream_scope_refusal",
+                    "server_id": snapshot.client_config["server_id"],
+                    "upstream_name": snapshot.upstream_name,
+                },
+            )
+            reference = handoff_reference.get()
+            if not approved:
+                if _is_pending_approval_payload(error):
+                    return _wrapper_tool_error(error, status="refused")
+                meta = consume_last_approval_meta() or {}
+                status = meta.get("status", "not approved")
+                return _wrapper_tool_error(
+                    outcome_error(status, reference), status="refused"
+                )
+
+            # Resolve current credentials but never retarget an approved call
+            # to a different server or upstream tool after a catalogue edit.
+            fresh, _ = await _prepare_grant_dispatch(
+                snapshot.account_id, snapshot.tool_name, introspect=False
+            )
+            if (
+                fresh is None
+                or fresh.client_config["server_id"]
+                != snapshot.client_config["server_id"]
+                or fresh.upstream_name != snapshot.upstream_name
+            ):
+                return _wrapper_tool_error(
+                    outcome_error("retry refused", reference), status="refused"
+                )
+            grant = await _evaluate_snapshot_grant(fresh, force=True)
+            if grant is not None:
+                binding = _grant_binding_var.get(None)
+                if binding is not None:
+                    binding.clear()
+                    binding.update(deepcopy(grant.binding))
+                else:
+                    _grant_binding_var.set(deepcopy(grant.binding))
+                if grant.deny_reason:
+                    return _wrapper_tool_error(
+                        outcome_error("approved but grant refused", reference),
+                        status="refused",
+                    )
+            denial = await self._restricted_runtime_denial(user_context, fresh)
+            denial = denial or await self._halt_dispatch_denial(snapshot.account_id)
+            if denial:
+                return _wrapper_tool_error(
+                    outcome_error("retry refused", reference), status="refused"
+                )
+            retry_client = await get_mcp_client_pool().get_client(**fresh.client_config)
+            denial = await self._halt_dispatch_denial(snapshot.account_id)
+            denial = denial or await self._grant_dispatch_denial(fresh, user_context)
+            if denial:
+                return _wrapper_tool_error(
+                    outcome_error("retry refused", reference), status="refused"
+                )
+            try:
+                retried = await retry_client.call_tool(
+                    fresh.upstream_name, arguments, correlation_id=correlation_id
+                )
+            except Exception as retry_error:
+                return _wrapper_tool_error(
+                    outcome_error(
+                        "approved but retry refused"
+                        if scope_refusal(retry_error)
+                        else "approved but retry failed",
+                        reference,
+                    ),
+                    status="failed",
+                )
+            if getattr(retried, "is_error", False):
+                return _wrapper_tool_error(
+                    outcome_error("approved but retry refused", reference),
+                    status="failed",
+                )
+            return retried
+        except Exception:
+            logger.exception("External approval retry could not complete")
+            return _wrapper_tool_error(
+                outcome_error("retry unavailable", handoff_reference.get()),
+                status="failed",
+            )
+        finally:
+            handoff_reference.reset(reference_token)
+
     async def _observe_mcp_dispatch(
         self, snapshot: GrantDispatchSnapshot, user_context: UserContext
     ) -> None:
@@ -3714,6 +3933,8 @@ async def {internal_name}({params_str}):
         reason: str,
         correlation_id: Optional[str],
         grant: Optional[dict[str, Any]] = None,
+        audit_result: str = AUDIT_TOOL_CALL_DECLINED,
+        error_code: str = "refused",
     ) -> Optional[dict[str, Any]]:
         """Write the audit ``tool_call`` row for a call refused before dispatch.
 
@@ -3777,7 +3998,7 @@ async def {internal_name}({params_str}):
                 else None,
                 tool_name=client_tool_name,
                 tool_args=tool_args,
-                result=AUDIT_TOOL_CALL_DECLINED,
+                result=audit_result,
                 duration_ms=0,
                 policy_decision=None,
                 # The guard that refused the call (kill switch, availability,
@@ -3792,7 +4013,7 @@ async def {internal_name}({params_str}):
                 api_key_id=user_context.api_key_id,
                 api_key_name=user_context.api_key_name,
                 **_audit_grant_kwargs(audit_service, grant),
-                **_audit_error_kwargs(audit_service, "refused", _short_reason(reason)),
+                **_audit_error_kwargs(audit_service, error_code, _short_reason(reason)),
             )
             if not outbox_enabled():
                 audit_service.log_tool_call_async(
@@ -3889,14 +4110,20 @@ async def {internal_name}({params_str}):
         return None
 
     async def _grant_dispatch_denial(
-        self, snapshot: GrantDispatchSnapshot, user_context: UserContext
+        self,
+        snapshot: GrantDispatchSnapshot,
+        user_context: UserContext,
+        *,
+        force: bool = False,
     ) -> Optional[str]:
         """Recheck after human/connection waits, without resolving another owner."""
         denial = await self._restricted_runtime_denial(user_context, snapshot)
         if denial:
             return denial
         try:
-            grant = await _evaluate_snapshot_grant(snapshot)
+            grant = await _evaluate_snapshot_grant(
+                snapshot, **({"force": True} if force else {})
+            )
         except Exception:
             grant = GrantResult(
                 grant_introspector._unavailable(), "introspection_unavailable"

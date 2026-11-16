@@ -60,8 +60,32 @@ curl -fsSL https://preloop.ai/install/oss | \
 | `PRELOOP_SKIP_ADMIN=1` | Skip first-user creation, leave signups open |
 | `PRELOOP_BOOTSTRAP_TOKEN` | Provide your own first-user setup token instead of the generated one (kept across re-runs) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `PRELOOP_SKIP_SMTP=1` | Mail settings |
-| `PRELOOP_DISABLE_TELEMETRY=true` | No daily version check-in: set on every test/CI install |
+| `PRELOOP_DISABLE_TELEMETRY=true` | Disable the daily version check-in; saved in the install's `.env`. Set on every test/CI install |
+| `DISABLE_VERSION_CHECK=true` | Compatibility alias for the same opt-out; also saved in `.env` |
 | `INSTALL_DIR` | Override `~/.preloop-oss` |
+
+The installer reports whether the version check-in is **ON** or **OFF** in its
+final summary. Opt-outs are stored in `~/.preloop-oss/.env` (or
+`$INSTALL_DIR/.env`) and survive clean-shell Compose runs, installer re-runs,
+and upgrades. An existing opt-out takes precedence over installer environment
+variables, even if a later run supplies `false`.
+
+To turn the check-in back on, remove both `PRELOOP_DISABLE_TELEMETRY` and
+`DISABLE_VERSION_CHECK` from that `.env` file (or set both to `false`), unset
+both variables in your shell, then run `docker compose up -d api` from the
+install directory. Both flags accept `true`, `1`, `t`, or `yes`, ignoring case
+and surrounding whitespace.
+
+For Helm installs, persist the opt-out in your values file:
+
+```yaml
+extraEnv:
+  - name: PRELOOP_DISABLE_TELEMETRY
+    value: "true"
+```
+
+Use that values file on upgrades as well. `DISABLE_VERSION_CHECK` is also
+accepted through `extraEnv`; remove or disable both entries to opt back in.
 
 ## 2. Connect the CLI to your instance
 

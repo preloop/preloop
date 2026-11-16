@@ -8,6 +8,8 @@ For Phase 1A: Only default tools, conditional on tracker presence.
 For Phase 1B: Add support for proxied tools from external MCP servers.
 """
 
+from preloop.services.external_approval import agent_visible_comment
+
 import logging
 import time
 from typing import Dict, List, Optional, Any
@@ -763,7 +765,7 @@ class DynamicMCPServer:
                 approval_request_id, poll_interval=2.0
             )
             final_status = final_request.status
-            final_comment = final_request.approver_comment
+            final_comment = agent_visible_comment(final_request)
 
             # Check final status
             if final_status == "declined":
