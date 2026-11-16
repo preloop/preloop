@@ -15,6 +15,8 @@ an absent decision escalates to a human (unless a require_approval rule
 already decided).
 """
 
+from preloop.services.external_approval import agent_visible_comment
+
 import asyncio
 import logging
 import uuid
@@ -857,7 +859,7 @@ async def request_agent_permission(
 
         request_id = str(approval.id)
         status = approval.status
-        comment = approval.approver_comment
+        comment = agent_visible_comment(approval)
         expires_at = getattr(approval, "expires_at", None)
 
     # AI-driven workflows resolve immediately inside create_and_notify.
@@ -894,7 +896,7 @@ async def request_agent_permission(
                 poll_db, request_id=uuid.UUID(request_id)
             )
             status = req.status if req is not None else "missing"
-            comment = req.approver_comment if req is not None else None
+            comment = agent_visible_comment(req) if req is not None else None
         if status == "approved":
             return ("allow", comment or "", request_id, False)
         return (
@@ -921,7 +923,7 @@ async def request_agent_permission(
             if req is None:
                 return ("deny", "Approval request not found", request_id, False)
             status = req.status
-            comment = req.approver_comment
+            comment = agent_visible_comment(req)
         if status == "approved":
             return ("allow", comment or "", request_id, False)
         if status in ("declined", "cancelled"):

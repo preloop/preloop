@@ -173,6 +173,11 @@ class MCPServerDefinition(BaseModel):
     @model_validator(mode="after")
     def validate_introspection(self) -> "MCPServerDefinition":
         """Introspection guards the static bearer or OAuth token we forward."""
+        from preloop.models.schemas.external_approval import (
+            validate_scope_approval_config,
+        )
+
+        validate_scope_approval_config(self.auth_config)
         if self.auth_config and self.auth_config.get("introspection") is not None:
             if self.auth_type not in ("bearer", "oauth"):
                 raise ValueError(
@@ -217,6 +222,10 @@ class ApprovalWorkflowDefinition(BaseModel):
         ai_fallback_behavior: What to do when AI is uncertain.
         escalation_workflow: Policy to escalate to when AI is uncertain.
     """
+
+    external_approval_link: Optional[bool] = None
+    external_approval_hosts: Optional[List[str]] = None
+    expose_comment_to_agent: Optional[bool] = None
 
     name: str = Field(..., description="Unique name for this policy")
     description: Optional[str] = Field(None, description="Policy description")
@@ -287,6 +296,26 @@ class ApprovalWorkflowDefinition(BaseModel):
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @model_validator(mode="after")
+    def validate_external_options(self) -> "ApprovalWorkflowDefinition":
+        """Share external-link validation with the workflow API."""
+        from preloop.models.schemas.external_approval import (
+            validate_external_workflow_config,
+        )
+
+        validate_external_workflow_config(
+            {
+                key: getattr(self, key)
+                for key in (
+                    "external_approval_link",
+                    "external_approval_hosts",
+                    "expose_comment_to_agent",
+                )
+                if getattr(self, key) is not None
+            }
+        )
+        return self
 
     @model_validator(mode="after")
     def validate_ai_driven_settings(self) -> "ApprovalWorkflowDefinition":

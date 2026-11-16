@@ -1,3 +1,4 @@
+import { hasExternalDecision } from '../../actions/approval-actions';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, nothing, unsafeCSS, type PropertyValues } from 'lit';
@@ -925,7 +926,12 @@ export class ApprovalView extends AuthedElement {
     options: ApprovalDecisionOptions,
     successMessage: string
   ) {
-    if (!this.approvalRequest || this.submitting || this.reconciliationRequired)
+    if (
+      !this.approvalRequest ||
+      hasExternalDecision(this.approvalRequest) ||
+      this.submitting ||
+      this.reconciliationRequired
+    )
       return;
 
     const generation = this.requestGeneration;
@@ -1584,10 +1590,27 @@ export class ApprovalView extends AuthedElement {
             `
           : ''
       }
-
+      ${
+        isPending && hasExternalDecision(request)
+          ? html`<sl-alert open variant="primary">
+              ${
+                request.external_url
+                  ? html`<p>The decision is made on the external service.</p>
+                      <a
+                        href=${request.external_url}
+                        rel="noopener noreferrer"
+                        referrerpolicy="no-referrer"
+                        >Decide on external service</a
+                      >`
+                  : html`Waiting for the external service to provide a decision
+                    link.`
+              }
+            </sl-alert>`
+          : ''
+      }
       <sl-card>
         ${
-          isQuestion && isPending
+          isQuestion && isPending && !hasExternalDecision(request)
             ? html`
                 <div class="content-section">
                   <question-answer-panel
@@ -1696,7 +1719,10 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${
-          !isQuestion && isPending && request.question_schema
+          !isQuestion &&
+          isPending &&
+          !hasExternalDecision(request) &&
+          request.question_schema
             ? html`
                 <div class="content-section">
                   <h2>What this decision needs</h2>

@@ -192,6 +192,11 @@ class MCPServerBase(BaseModel):
         cls, value: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
         """Validate nested grant configuration without changing write-only secrets."""
+        from preloop.models.schemas.external_approval import (
+            validate_scope_approval_config,
+        )
+
+        validate_scope_approval_config(value)
         if value and value.get("introspection") is not None:
             IntrospectionConfig.model_validate(value["introspection"])
         return value

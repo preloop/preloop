@@ -52,6 +52,8 @@ separate tool precisely so we do not break that contract.
 
 from __future__ import annotations
 
+from preloop.services.external_approval import agent_visible_comment
+
 import asyncio
 import hashlib
 import json
@@ -217,7 +219,7 @@ async def _poll_for_decision(
             if request is None:
                 return _deny(f"Approval request {request_id} not found")
             status = request.status
-            comment = request.approver_comment
+            comment = agent_visible_comment(request)
             if status in _TERMINAL_STATUSES:
                 await _mark_consumed(db, request)
                 return _map_terminal(status, comment, tool_input, request_id)
@@ -280,7 +282,7 @@ async def evaluate_permission_prompt(
             ):
                 # A human decided between Claude's retries: deliver it once.
                 status = request.status
-                comment = request.approver_comment
+                comment = agent_visible_comment(request)
                 request_id = str(request.id)
                 await _mark_consumed(db, request)
                 logger.info(
@@ -391,7 +393,7 @@ async def evaluate_permission_prompt(
         )
         request_id = str(approval.id)
         status = approval.status
-        comment = approval.approver_comment
+        comment = agent_visible_comment(approval)
         if status in _TERMINAL_STATUSES:
             # AI-driven workflows and standing bypasses resolve inside
             # create_and_notify; consume immediately so the row can never be

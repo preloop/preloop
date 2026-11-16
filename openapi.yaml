@@ -9873,6 +9873,16 @@ paths:
           description: Filter by end date (ISO 8601 format)
           title: End Date
         description: Filter by end date (ISO 8601 format)
+      - name: grant_reference
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Exact external grant reference
+          title: Grant Reference
+        description: Exact external grant reference
       - name: consent_ref
         in: query
         required: false
@@ -10039,6 +10049,16 @@ paths:
           description: Maximum estimated gateway spend (USD)
           title: Max Cost
         description: Maximum estimated gateway spend (USD)
+      - name: grant_reference
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Exact external grant reference
+          title: Grant Reference
+        description: Exact external grant reference
       - name: consent_ref
         in: query
         required: false
@@ -30017,6 +30037,10 @@ components:
         rendering.'
     ApprovalDecision:
       properties:
+        result:
+          anyOf:
+          - $ref: '#/components/schemas/ExternalApprovalResult'
+          - type: 'null'
         approved:
           anyOf:
           - type: boolean
@@ -30235,6 +30259,27 @@ components:
           - type: string
           - type: 'null'
           title: Approval Workflow Id
+        external_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Reference
+        external_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Url
+        external_result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: External Result
+        external_handoff_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Handoff State
         status:
           type: string
           title: Status
@@ -37724,6 +37769,36 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Console attention contribution with a local destination.
+    ExternalApprovalResult:
+      properties:
+        external_reference:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: External Reference
+        grant_reference:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Grant Reference
+        fields:
+          additionalProperties:
+            type: string
+            maxLength: 2048
+          propertyNames:
+            maxLength: 128
+            minLength: 1
+          type: object
+          maxProperties: 32
+          title: Fields
+      additionalProperties: false
+      type: object
+      title: ExternalApprovalResult
+      description: References and flat string fields; never evidence or nested objects.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:

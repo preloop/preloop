@@ -111,3 +111,50 @@ call to a different upstream credential. It checks the copied token again after
 approval and client-connection waits, honoring expiry and the configured cache
 TTL. An asynchronous approval replay resolves a fresh snapshot and applies the
 grant gate even though its access-rule approval has already been granted.
+
+## Approval after an upstream scope refusal
+
+An MCP server can opt into an external approval hand-off when the upstream
+returns HTTP 403 with `insufficient_scope` in its `WWW-Authenticate` challenge
+or JSON error body. Configure the server's `auth_config`:
+
+```json
+{
+  "on_insufficient_scope": "request_approval",
+  "approval_workflow": "00000000-0000-4000-8000-000000000001"
+}
+```
+
+`approval_workflow` is the UUID of a workflow in the same account. Pair it with
+an [external-link workflow](webhooks.md#external-approval-hand-off). All settings
+are optional. Without the per-server setting, upstream errors pass through as
+before. Other statuses and other 403 errors never trigger this flow. An MCP
+error result can also carry an explicit numeric `status` or `status_code` of
+403 and an `error: "insufficient_scope"` or `error.code` field in its structured
+content; text-only tool errors cannot impersonate an HTTP refusal.
+
+Preloop records the refused `tool_call` with error code `insufficient_scope`,
+then creates one approval with the same correlation ID. The external service
+owns the question and consent; Preloop neither generates that question with a
+model nor substitutes an AI or local bypass decision for external consent.
+
+On approval, Preloop loads the server's current credential, forces fresh grant
+introspection when configured, and retries the original call **once**. This
+supports either a widened grant on the same token or a credential rotated
+while the call was held. The original server and upstream tool identity must
+still match; editing the tool catalogue cannot redirect the approved retry to
+another server. Current halt and restricted-runtime checks still apply.
+
+The agent receives the retry's tool result. Decline, expiry, a failed grant
+check, or a failed retry produces a single tool error naming the outcome and
+external reference. A second refusal never creates another approval or a
+second retry. The refused attempt and final outcome are separately audited
+under the same correlation ID; the decision audit carries the structured
+external and grant references.
+
+Async workflows use the same checks through `get_approval_status`. The replay
+claim and cached result prevent later polls from executing the call again.
+As with other async approvals, stored arguments are subject to storage
+redaction; a reference-only record without replayable arguments cannot be
+reconstructed into an original call. Token exchange per caller is not part of
+this flow.

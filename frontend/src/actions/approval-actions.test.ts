@@ -38,6 +38,23 @@ const ctx = {
 };
 
 describe('approvalActions', () => {
+  it('carries an external URL unchanged and offers no local decision', () => {
+    const url = 'https://consent.example.com/path?request=a%2Fb&state=x%2By';
+    const request = makeRequest({ external_url: url });
+    const actions = approvalActions(request, ctx);
+    expect(isDecidableRequest(request, NOW)).to.equal(false);
+    expect(actionIds(actions)).to.deep.equal(['external-decision', 'details']);
+    expect(actions.find((a) => a.id === 'external-decision')!.href).to.equal(
+      url
+    );
+    expect(
+      isDecidableRequest(
+        makeRequest({ external_handoff_state: 'waiting' }),
+        NOW
+      )
+    ).to.equal(false);
+  });
+
   it('offers Approve and Deny on a pending, unexpired request', () => {
     expect(actionIds(approvalActions(makeRequest(), ctx))).to.deep.equal([
       'approve',

@@ -775,6 +775,11 @@ async def require_approval(
                 approval_request_id = approval_request.id
                 approval_request_expires_at = approval_request.expires_at
                 resolved_workflow_id = workflow.id
+                from types import SimpleNamespace
+
+                comment_workflow = SimpleNamespace(
+                    approval_config=dict(workflow.approval_config or {})
+                )
                 workflow_name = workflow.name
                 workflow_approval_type = workflow.approval_type
                 # The poll loop is bounded by the resolved window, not by the
@@ -1090,6 +1095,19 @@ async def require_approval(
                             if current_request
                             else None
                         )
+                        from preloop.services.external_approval import (
+                            hide_agent_comment,
+                            handoff_reference,
+                        )
+
+                        if current_request:
+                            reference = getattr(
+                                current_request, "external_reference", None
+                            )
+                            if isinstance(reference, str):
+                                handoff_reference.set(reference)
+                            if hide_agent_comment(current_request, comment_workflow):
+                                current_comment = None
                         # The form answer, when this request carried one.
                         current_answer = (
                             getattr(current_request, "structured_answer", None)
@@ -1105,7 +1123,12 @@ async def require_approval(
                             else []
                         )
                         current_responded_by = None
-                        if current_status in ["approved", "declined", "cancelled"]:
+                        if current_status in [
+                            "approved",
+                            "declined",
+                            "cancelled",
+                            "expired",
+                        ]:
                             responded_by_id = next(
                                 (
                                     vote.get("user_id")
@@ -1139,7 +1162,12 @@ async def require_approval(
                         )
 
                     # Check if resolved
-                    if current_status in ["approved", "declined", "cancelled"]:
+                    if current_status in [
+                        "approved",
+                        "declined",
+                        "cancelled",
+                        "expired",
+                    ]:
                         logger.info(
                             f"[Polling] ✅ Approval resolved with status: {current_status}"
                         )

@@ -230,3 +230,55 @@ def test_invalid_grant_shape_preserves_audit_without_queueing_secrets(
     assert len(rows) == 1
     assert rows[0].details.get("grant") is None
     assert "synthetic-secret" not in str(rows[0].details)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_external_grant_reference_filter_is_account_scoped(
+    audit_client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    grouped: bool,
+) -> None:
+    """A decision reference also finds its tool-call group, never another account."""
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": "Other example"}
+    )
+    for account_id, reference in [
+        (test_user.account_id, "grant-example"),
+        (test_user.account_id, "grant-other"),
+        (other.id, "grant-example"),
+    ]:
+        correlation = f"call-{account_id}-{reference}"
+        crud_audit_log.log_action(
+            db_session,
+            account_id=account_id,
+            action="tool_call",
+            status="executed",
+            resource_type="tool",
+            resource_id="read_record",
+            details={"correlation_id": correlation},
+        )
+        crud_audit_log.log_action(
+            db_session,
+            account_id=account_id,
+            action="approval_approved",
+            status="approved",
+            resource_type="approval",
+            resource_id="request-example",
+            details={
+                "correlation_id": correlation,
+                "external_result": {"grant_reference": reference},
+            },
+        )
+    path = "/api/v1/audit-logs" + ("/grouped" if grouped else "")
+    response = audit_client.get(path, params={"grant_reference": "grant-example"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    if grouped:
+        assert data["groups"][0]["primary_event"]["action"] == "tool_call"
+    else:
+        assert (
+            data["logs"][0]["details"]["external_result"]["grant_reference"]
+            == "grant-example"
+        )

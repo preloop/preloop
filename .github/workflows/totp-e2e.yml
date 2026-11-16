@@ -1,0 +1,156 @@
+name: TOTP browser journey
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/totp-e2e.yml"
+      - "backend/preloop/api/auth/**"
+      - "backend/preloop/services/authentication_policy.py"
+      - "backend/preloop/services/mfa.py"
+      - "backend/preloop/services/rate_limit.py"
+      - "backend/preloop/models/crud/mfa.py"
+      - "backend/tests/e2e_support/totp_server.py"
+      - "frontend/tests/e2e/totp-sign-in.spec.ts"
+      - "frontend/tests/e2e/vite.totp.config.ts"
+      - "frontend/playwright*.ts"
+      - "frontend/src/components/mfa-card.ts"
+      - "frontend/src/components/step-up-dialog.ts"
+      - "frontend/src/services/mfa.ts"
+      - "frontend/src/services/passkeys.ts"
+      - "frontend/src/views/public/*"
+      - "frontend/src/views/authed/settings/security-view.ts"
+      - "cli/internal/cmd/auth*.go"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: totp-e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PRELOOP_DISABLE_TELEMETRY: "true"
+  TESTING: "true"
+  REGISTRATION_ENABLED: "true"
+  MFA_TOTP_ENABLED: "true"
+  MODEL_PRICE_LIVE_LOOKUP_ENABLED: "false"
+  SECRET_KEY: synthetic-browser-test-signing-key
+  WEBAUTHN_RP_ID: localhost
+  WEBAUTHN_ORIGIN: http://localhost:5173
+  PRELOOP_SERVICE_ROLE: all
+  PYTHONPATH: ${{ github.workspace }}/backend
+
+jobs:
+  totp-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: preloop
+          POSTGRES_PASSWORD: synthetic-browser-test-password
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-ci-python-deps
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: Install browser dependencies and build the CLI
+        run: |
+          npm ci --prefix frontend
+          make -C cli build
+      - name: Install Chromium
+        working-directory: frontend
+        env:
+          WITH_DEPS: ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }}
+        run: |
+          args=()
+          if [ -n "$WITH_DEPS" ]; then args+=("$WITH_DEPS"); fi
+          npx playwright install "${args[@]}" chromium
+      - name: Prepare private harness and isolated NATS
+        shell: bash
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+        run: |
+          set -euo pipefail
+          test_dir=$(mktemp -d "$RUNNER_TEMP/totp-e2e.XXXXXX")
+          mkdir "$test_dir/outbox" "$test_dir/cli-home"
+          python -c 'import time; print(int(time.time()) // 30 * 30)' > "$test_dir/clock"
+          {
+            echo "PRELOOP_E2E_DIR=$test_dir"
+            echo "PRELOOP_E2E_PYTHON=$(command -v python)"
+            echo "DATABASE_URL=postgresql+psycopg://postgres:synthetic-browser-test-password@127.0.0.1:$POSTGRES_PORT/preloop"
+          } >> "$GITHUB_ENV"
+          python - <<'PY' >> "$GITHUB_ENV"
+          import socket
+          with socket.socket() as api, socket.socket() as console:
+              api.bind(('127.0.0.1', 0))
+              console.bind(('127.0.0.1', 0))
+              api_port = api.getsockname()[1]
+              console_port = console.getsockname()[1]
+          print(f'PRELOOP_E2E_API_PORT={api_port}')
+          print(f'PRELOOP_E2E_API_URL=http://127.0.0.1:{api_port}')
+          print(f'VITE_API_PROXY_TARGET=http://127.0.0.1:{api_port}')
+          print(f'PRELOOP_E2E_FRONTEND_PORT={console_port}')
+          print(f'WEBAUTHN_ORIGIN=http://localhost:{console_port}')
+          PY
+          nats_id=$(docker run -d --rm -p 127.0.0.1::4222 nats:alpine -js)
+          echo "$nats_id" > "$RUNNER_TEMP/totp-nats-id"
+          nats_port=$(docker port "$nats_id" 4222/tcp | cut -d: -f2)
+          echo "NATS_URL=nats://127.0.0.1:$nats_port" >> "$GITHUB_ENV"
+      - name: Initialize and start the real application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/init_db.py --force
+          python -m tests.e2e_support.totp_server serve --port "$PRELOOP_E2E_API_PORT" > "$PRELOOP_E2E_DIR/server.log" 2>&1 &
+          echo "$!" > "$PRELOOP_E2E_DIR/server.pid"
+          for _ in $(seq 1 60); do
+            if curl --silent --fail "$PRELOOP_E2E_API_URL/api/v1/health" > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Local MFA test server did not become healthy' >&2
+          exit 1
+      - name: Run the existing e2e-ci harness with controlled MFA time
+        working-directory: frontend
+        run: npx playwright test --config playwright.totp.config.ts
+      - name: Upload only masked browser evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totp-browser-evidence
+          path: frontend/test-results/**/*.png
+          if-no-files-found: ignore
+      - name: Stop only this job's processes and containers
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${PRELOOP_E2E_DIR:-}" ] && [ -f "$PRELOOP_E2E_DIR/server.pid" ]; then
+            kill "$(cat "$PRELOOP_E2E_DIR/server.pid")" 2>/dev/null || true
+          fi
+          if [ -f "$RUNNER_TEMP/totp-nats-id" ]; then
+            docker stop "$(cat "$RUNNER_TEMP/totp-nats-id")" > /dev/null
+            rm "$RUNNER_TEMP/totp-nats-id"
+          fi

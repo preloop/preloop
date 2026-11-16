@@ -1,3 +1,4 @@
+import { hasExternalDecision } from '../../actions/approval-actions';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -2239,7 +2240,10 @@ export class ApprovalsView extends AuthedElement {
             : ''
         }
         ${
-          this.isQuestion(request) && waiting && !requestNeedsForm(request)
+          this.isQuestion(request) &&
+          waiting &&
+          !hasExternalDecision(request) &&
+          !requestNeedsForm(request)
             ? html`
                 <div role="gridcell">
                   <question-answer-panel

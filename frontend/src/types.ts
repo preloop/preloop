@@ -2689,6 +2689,10 @@ export interface AnswerFieldError {
  * the plain approve/decline UI.
  */
 export interface ApprovalRequest {
+  external_url?: string | null;
+  external_reference?: string | null;
+  external_result?: Record<string, unknown> | null;
+  external_handoff_state?: string | null;
   id: string;
   account_id: string;
   tool_configuration_id: string;

@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Union
 from uuid import UUID
 from sqlalchemy import Text, and_, cast, func, or_
-from sqlalchemy.orm import Query, Session, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Query, Session, selectinload
 from sqlalchemy.future import select
 
 from preloop.models import models
@@ -593,5 +593,21 @@ async def get_approval_request_for_update_async(
         .options(selectinload(ApprovalRequest.approval_workflow))
         .with_for_update()
         .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_replay_request_async(
+    db: AsyncSession, *, request_id: UUID, account_id: str
+) -> Optional[models.ApprovalRequest]:
+    """Lock an account-owned replay with its comment policy eagerly loaded."""
+    result = await db.execute(
+        select(models.ApprovalRequest)
+        .where(
+            models.ApprovalRequest.id == request_id,
+            models.ApprovalRequest.account_id == account_id,
+        )
+        .options(selectinload(models.ApprovalRequest.approval_workflow))
+        .with_for_update()
     )
     return result.scalar_one_or_none()

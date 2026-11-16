@@ -209,6 +209,17 @@ class ApprovalRequest(Base):
         comment="Snapshot of the policy rule that required this approval",
     )
 
+    external_reference: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
+    external_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_result: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    external_handoff_state: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    correlation_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    server_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     summary: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,

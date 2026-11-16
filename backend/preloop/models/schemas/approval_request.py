@@ -14,6 +14,8 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.models.schemas.external_approval import ExternalApprovalResult
+
 # `Notification via {channel} to {recipients} ({status})` as stored for the
 # authenticated console timeline. Recipients may be emails or usernames.
 _NOTIFICATION_DETAIL = re.compile(r"^(Notification via \S+)(?: to (.+))? \(([^)]+)\)$")
@@ -206,6 +208,10 @@ class ApprovalRequestCreate(ApprovalRequestBase):
 class ApprovalRequestUpdate(BaseModel):
     """Schema for updating an approval request."""
 
+    external_reference: Optional[str] = None
+    external_url: Optional[str] = None
+    external_result: Optional[Dict[str, Any]] = None
+    external_handoff_state: Optional[str] = None
     status: Optional[str] = None
     summary: Optional[str] = None
     approver_comment: Optional[str] = None
@@ -231,6 +237,10 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     account_id: UUID  # Changed from str to UUID for validation, serializer converts to str for JSON
     tool_configuration_id: UUID
     approval_workflow_id: UUID
+    external_reference: Optional[str] = None
+    external_url: Optional[str] = None
+    external_result: Optional[Dict[str, Any]] = None
+    external_handoff_state: Optional[str] = None
     status: str
     requested_at: datetime
     resolved_at: Optional[datetime]
@@ -463,6 +473,8 @@ class ApprovalEventPublic(BaseModel):
 
 class ApprovalDecision(BaseModel):
     """Schema for an approval decision or a question answer."""
+
+    result: Optional[ExternalApprovalResult] = None
 
     approved: Optional[bool] = Field(
         None,
