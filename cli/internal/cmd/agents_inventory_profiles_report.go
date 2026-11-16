@@ -25,24 +25,39 @@ type inventoryReportApplication struct {
 	Configured     string                `json:"configured"`
 }
 type inventoryReportEvidence struct {
-	SchemaVersion     int                          `json:"schema_version"`
-	ObservationID     string                       `json:"observation_id"`
-	CollectorVersion  string                       `json:"collector_version,omitempty"`
-	OSFamily          string                       `json:"os_family"`
-	DetectorVersion   string                       `json:"detector_version"`
-	SourceEnvironment string                       `json:"source_environment"`
-	StartedAt         time.Time                    `json:"started_at"`
-	EndedAt           time.Time                    `json:"ended_at"`
-	ScanScope         []string                     `json:"scan_scope"`
-	Completeness      string                       `json:"completeness"`
-	Errors            []string                     `json:"errors"`
-	Profiles          []inventoryProfileResult     `json:"profiles"`
-	Applications      []inventoryReportApplication `json:"applications"`
+	ExtensionCompleteness string                       `json:"extension_completeness,omitempty"`
+	SchemaVersion         int                          `json:"schema_version"`
+	ObservationID         string                       `json:"observation_id"`
+	CollectorVersion      string                       `json:"collector_version,omitempty"`
+	OSFamily              string                       `json:"os_family"`
+	DetectorVersion       string                       `json:"detector_version"`
+	SourceEnvironment     string                       `json:"source_environment"`
+	StartedAt             time.Time                    `json:"started_at"`
+	EndedAt               time.Time                    `json:"ended_at"`
+	ScanScope             []string                     `json:"scan_scope"`
+	Completeness          string                       `json:"completeness"`
+	Errors                []string                     `json:"errors"`
+	Profiles              []inventoryProfileResult     `json:"profiles"`
+	Applications          []inventoryReportApplication `json:"applications"`
 }
 
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
 	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence.ExtensionCompleteness = "complete"
+	if scan.Scope.ErrorCode != "" || scan.Completeness == "failed" {
+		evidence.ExtensionCompleteness = "partial"
+	}
+	for _, profile := range scan.Profiles {
+		if profile.Completeness == "failed" {
+			evidence.ExtensionCompleteness = "partial"
+		}
+	}
+	for _, app := range scan.Apps {
+		if app.Completeness != "complete" {
+			evidence.ExtensionCompleteness = "partial"
+		}
+	}
 	if discoveryVersionPattern.MatchString(version.Version) {
 		report.CLIVersion = version.Version
 		evidence.CollectorVersion = version.Version
@@ -65,6 +80,7 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 			continue
 		}
 		if len(evidence.Applications) == 100 {
+			evidence.ExtensionCompleteness = "partial"
 			evidence.Completeness = "partial"
 			evidence.Errors = []string{"unavailable"}
 			break
