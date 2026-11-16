@@ -45,6 +45,24 @@ describe('MFA browser handoff', () => {
     }
   });
 
+  // protects=signed callback comparison keeps the original URI spelling;
+  // fails_when=browser canonicalization changes the value sent to verification; no_claim=server validates the signature.
+  it('preserves the exact callback hint for server comparison', () => {
+    const previous = location.href;
+    try {
+      history.replaceState(
+        {},
+        '',
+        '/login#mfa_challenge=synthetic&cli_redirect_uri=http%3A%2F%2Flocalhost%3A80'
+      );
+      expect(takeRedirectMfaChallenge()?.cliRedirect).to.equal(
+        'http://localhost:80'
+      );
+    } finally {
+      history.replaceState({}, '', previous);
+    }
+  });
+
   // protects=enrollment routing understands bounded boolean; fails_when=malformed token crashes; no_claim=this hint never authorizes API access.
   it('reads enrollment scope as a presentation hint', () => {
     expect(

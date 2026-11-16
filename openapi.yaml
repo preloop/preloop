@@ -1296,7 +1296,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenPair'
+                $ref: '#/components/schemas/VerifiedSignIn'
         '422':
           description: Validation Error
           content:
@@ -57804,6 +57804,33 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    VerifiedSignIn:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cli Redirect Uri
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - expires_in
+      title: VerifiedSignIn
+      description: Completed proof with an optional server-validated CLI continuation.
     VerifyRequest:
       properties:
         code:
@@ -57825,6 +57852,12 @@ components:
           maxLength: 4096
           minLength: 1
           title: Challenge Token
+        cli_redirect_uri:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cli Redirect Uri
       type: object
       required:
       - challenge_token

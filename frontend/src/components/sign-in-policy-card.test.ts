@@ -184,4 +184,32 @@ describe('Account sign-in policy', () => {
         .some((call) => String(call.args[0]).includes('offset=50'))
     ).to.equal(true);
   });
+  for (const empty of [false, true]) {
+    // protects=partial success cannot corrupt browser credentials; fails_when=undefined tokens replace session; no_claim=server schema is tested separately.
+    it(`preserves session on ${empty ? '204' : 'token-less 200'} policy save`, async () => {
+      const element = await card();
+      localStorage.setItem('refreshToken', 'existing-refresh');
+      fetchStub.callsFake(async (input, init) => {
+        if (init?.method === 'PUT')
+          return empty ? new Response(null, { status: 204 }) : json(coverage);
+        if (String(input).endsWith('/features'))
+          return json({ features: { strong_sign_in_policy: true } });
+        if (String(input).endsWith('/users/me'))
+          return json({ account_id: 'account', id: 'admin' });
+        return json(coverage);
+      });
+      element
+        .shadowRoot!.querySelector('form')!
+        .dispatchEvent(new Event('submit', { cancelable: true }));
+      await waitUntil(
+        () =>
+          !!element.shadowRoot!.querySelector('[role="status"]')?.textContent
+      );
+      expect(localStorage.getItem('accessToken')).to.equal('synthetic-access');
+      expect(localStorage.getItem('refreshToken')).to.equal('existing-refresh');
+      expect(element.shadowRoot!.textContent).to.contain(
+        'Account sign-in policy saved.'
+      );
+    });
+  }
 });
