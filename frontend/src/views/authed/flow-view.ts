@@ -18,6 +18,7 @@ import {
   getFlowExecutions,
   createFlow,
   updateFlow,
+  rotateFlowWebhookSecret,
   deleteFlow,
   getTrackers,
   getAIModels,
@@ -393,6 +394,12 @@ export class FlowView extends LitElement {
   private canEditFlows = false;
 
   @state()
+  private newWebhookSecret: string | null = null;
+
+  @state()
+  private rotatingWebhookSecret = false;
+
+  @state()
   private flowReady = false;
 
   /**
@@ -466,6 +473,7 @@ export class FlowView extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.newWebhookSecret = null;
     ++this.flowLoadGeneration;
     // Clean up polling intervals
     if (this.organizationPollingInterval) {
@@ -509,6 +517,7 @@ export class FlowView extends LitElement {
 
   private async loadFlowData(urlParams: URLSearchParams) {
     const generation = ++this.flowLoadGeneration;
+    this.newWebhookSecret = null;
     this.agentsLoaded = false;
     this.flowReady = false;
     this.loadError = null;
@@ -1416,44 +1425,12 @@ ${this.flow.review_instructions}</pre>
           }
           ${this.renderScheduleCard()}
           ${
-            this.flow.trigger_event_source === 'webhook' &&
-            this.flow.webhook_config?.webhook_secret
-              ? html`
-                  <sl-card>
-                    <div slot="header">
-                      <sl-icon name="link-45deg"></sl-icon>
-                      Webhook URL
-                    </div>
-                    <div>
-                      <p
-                        style="margin-bottom: var(--sl-spacing-medium); color: var(--sl-color-neutral-600);"
-                      >
-                        Use this URL to trigger the flow from external services.
-                        Keep it secret!
-                      </p>
-                      <div
-                        style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-                      >
-                        <sl-input
-                          readonly
-                          class="sr-label"
-                          label="Webhook URL"
-                          style="flex: 1;"
-                          value="${
-                            window.location.origin
-                          }${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${
-                            this.flow.webhook_config.webhook_secret
-                          }"
-                        ></sl-input>
-                        <sl-button @click=${() => this.copyWebhookUrl()}>
-                          <sl-icon name="clipboard"></sl-icon>
-                          Copy
-                        </sl-button>
-                      </div>
-                    </div>
-                  </sl-card>
-                `
-              : ''
+            this.flow.trigger_event_source === 'webhook'
+              ? html`<sl-card>
+                  <div slot="header">Webhook</div>
+                  ${this.renderWebhookSecretControls()}
+                </sl-card>`
+              : nothing
           }
           ${this.renderPublicationPolicy()} ${this.renderPlatformReviewCard()}
           ${this.renderGovernanceDisclosure()}
@@ -1967,12 +1944,106 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     };
   }
 
-  copyWebhookUrl() {
-    if (!this.flow.webhook_config?.webhook_secret) return;
-    const webhookUrl = `${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
-    navigator.clipboard.writeText(webhookUrl).then(() => {
-      alert('Webhook URL copied to clipboard!');
-    });
+  private get webhookUrl(): string {
+    return `${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${this.newWebhookSecret || '{webhook_secret}'}`;
+  }
+
+  private renderWebhookSecretControls() {
+    return html`
+      <p>
+        ${this.flow.webhook_secret_set ? 'Secret configured' : 'No secret configured'}
+        ${this.flow.webhook_secret_hint ? html`(ending in ${this.flow.webhook_secret_hint})` : nothing}.
+        Last rotated:
+        ${
+          this.flow.webhook_secret_rotated_at
+            ? formatLocalDateTime(this.flow.webhook_secret_rotated_at)
+            : 'Not recorded'
+        }.
+      </p>
+      ${
+        this.canEditFlows
+          ? html`
+              <sl-input
+                readonly
+                label="Webhook URL"
+                .value=${this.webhookUrl}
+              ></sl-input>
+              <p>
+                ${
+                  this.newWebhookSecret
+                    ? 'This URL is shown once. Copy it now and update your webhook sender.'
+                    : 'Use your saved secret in this URL. Rotate to get a new secret; existing integrations keep working until then.'
+                }
+              </p>
+              ${this.newWebhookSecret ? html`<sl-button @click=${() => this.copyWebhookUrl()}>Copy URL</sl-button>` : nothing}
+              <sl-button
+                data-rotate-webhook-secret
+                ?loading=${this.rotatingWebhookSecret}
+                ?disabled=${this.rotatingWebhookSecret}
+                @click=${() => this.rotateWebhookSecret()}
+              >
+                Rotate webhook secret
+              </sl-button>
+            `
+          : nothing
+      }
+    `;
+  }
+
+  private async rotateWebhookSecret(): Promise<void> {
+    if (!this.flowId || !this.canEditFlows || this.rotatingWebhookSecret)
+      return;
+    const flowId = this.flowId;
+    const generation = this.flowLoadGeneration;
+    this.rotatingWebhookSecret = true;
+    try {
+      const confirmed = await confirmDialog({
+        title: 'Rotate webhook secret',
+        message: 'Replace this flow’s webhook secret?',
+        detail:
+          'The current URL stops working immediately. Copy the new URL and update every webhook sender.',
+        confirmLabel: 'Rotate secret',
+        variant: 'danger',
+      });
+      if (
+        !confirmed ||
+        this.flowId !== flowId ||
+        generation !== this.flowLoadGeneration
+      )
+        return;
+      const response = await rotateFlowWebhookSecret(flowId);
+      if (
+        !this.isConnected ||
+        this.flowId !== flowId ||
+        generation !== this.flowLoadGeneration
+      )
+        return;
+      const { webhook_secret, ...metadata } = response;
+      this.newWebhookSecret = webhook_secret;
+      this.flow = { ...this.flow, ...metadata };
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : 'Failed to rotate webhook secret',
+        'danger'
+      );
+    } finally {
+      this.rotatingWebhookSecret = false;
+    }
+  }
+
+  async copyWebhookUrl(): Promise<void> {
+    if (!this.newWebhookSecret) return;
+    try {
+      await navigator.clipboard.writeText(this.webhookUrl);
+      showToast('Webhook URL copied', 'success');
+    } catch {
+      showToast(
+        'Could not copy the URL. Select it and copy it manually.',
+        'danger'
+      );
+    }
   }
 
   /**
@@ -2472,8 +2543,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   }
 
   renderWebhookTriggerFields() {
-    // If editing and webhook config exists, show the URL
-    if (!this.isNew && this.flow.webhook_config?.webhook_secret) {
+    if (!this.isNew) {
       return html`
         <div>
           <p
@@ -2482,24 +2552,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             This flow will be triggered when a POST request is sent to the
             webhook URL below.
           </p>
-          <div>
-            <div
-              style="display: flex; gap: var(--sl-spacing-small); align-items: flex-end;"
-            >
-              <sl-input
-                readonly
-                label="Webhook URL"
-                style="flex: 1;"
-                value="${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${
-                  this.flowId
-                }/${this.flow.webhook_config.webhook_secret}"
-              ></sl-input>
-              <sl-button @click=${() => this.copyWebhookUrl()}>
-                <sl-icon name="clipboard"></sl-icon>
-                Copy
-              </sl-button>
-            </div>
-          </div>
+          ${this.renderWebhookSecretControls()}
           <div>
             <label
               style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
@@ -2533,8 +2586,8 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       <div>
         <p style="color: var(--sl-color-neutral-600); margin: 0;">
           <sl-icon name="info-circle"></sl-icon>
-          The webhook URL will be generated after you create the flow. You can
-          then use it to trigger this flow from external services.
+          After saving, rotate the webhook secret to get a URL shown once. You
+          can then use it to trigger this flow from external services.
         </p>
       </div>
     `;

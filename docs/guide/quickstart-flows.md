@@ -144,7 +144,7 @@ Your flow has a unique webhook URL. You can trigger it from external services!
 
 1. Go back to your flow details page
 2. Find the **Webhook URL** section
-3. Copy the URL (looks like: `https://preloop.ai/api/v1/webhooks/flows/{flow_id}/{webhook_secret}`)
+3. Click **Rotate webhook secret** and copy the URL shown once (looks like: `https://preloop.ai/api/v1/webhooks/flows/{flow_id}/{webhook_secret}`)
 
 **Test with curl:**
 

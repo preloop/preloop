@@ -591,4 +591,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     bundle_registry = script.get_revision("20261113_bundle_registry")
     assert bundle_registry.down_revision == joined.revision
-    assert script.get_heads() == ["20261113_bundle_registry"]
+    rotation = script.get_revision("20261210_flow_webhook_rotation")
+    assert rotation.down_revision == bundle_registry.revision
+    assert script.get_heads() == [rotation.revision]

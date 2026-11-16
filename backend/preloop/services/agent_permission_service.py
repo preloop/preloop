@@ -50,14 +50,6 @@ NATIVE_RULES_OVERRIDE_CLIENT_DECISION = True
 
 BLOCKED_TOOL_REASON = "Tool blocked in Preloop"
 
-# evaluate_policy_async returns these allow descriptions when no rule won.
-_NO_MATCH_ALLOW_REASONS = {
-    "No rules matched (default allow)",
-    "No tool configuration found",
-    "No scoped rules matched (default allow for subject)",
-    "No access rules defined",
-}
-
 
 def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
     """SQL expression extracting a managed-agent governance field as text."""
@@ -348,6 +340,14 @@ async def resolve_workflow(
     return workflow
 
 
+def parse_mcp_tool_name(tool_name: str) -> Optional[Tuple[str, str]]:
+    """Classify Claude Code MCP hooks, retaining the server's route label."""
+    parts = tool_name.split("__", 2)
+    if len(parts) == 3 and parts[0] == "mcp" and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return None
+
+
 async def resolve_tool_config(
     db: Any, account_id: str, tool_name: str, workflow_id: uuid.UUID
 ) -> Any:
@@ -362,7 +362,7 @@ async def resolve_tool_config(
         db,
         account_id=account_id,
         tool_name=tool_name,
-        tool_source=AGENT_TOOL_SOURCE,
+        tool_source="mcp" if parse_mcp_tool_name(tool_name) else AGENT_TOOL_SOURCE,
     )
     if config is not None:
         return config
@@ -374,9 +374,11 @@ async def resolve_tool_config(
         db,
         obj_in=ToolConfigurationCreate(
             tool_name=tool_name,
-            tool_source=AGENT_TOOL_SOURCE,
+            tool_source="mcp" if parse_mcp_tool_name(tool_name) else AGENT_TOOL_SOURCE,
             account_id=account_id,
-            approval_workflow_id=workflow_id,
+            approval_workflow_id=None
+            if parse_mcp_tool_name(tool_name)
+            else workflow_id,
             is_enabled=True,
             custom_config={},
         ),
@@ -422,7 +424,7 @@ def _honour_native_policy_decision(decision: Any) -> bool:
     action = decision[0]
     source = _native_decision_source(decision)
     stored_source = getattr(decision, "stored_source", None)
-    if source == SOURCE_SUBJECT_SCOPED_RULE and stored_source not in (
+    if source in (SOURCE_SUBJECT_SCOPED_RULE, "scoped_rule") and stored_source not in (
         None,
         "",
         AGENT_TOOL_SOURCE,
@@ -439,6 +441,10 @@ def _honour_native_policy_decision(decision: Any) -> bool:
             SOURCE_TOOL_ACCESS_RULE,
             SOURCE_SUBJECT_SCOPED_RULE,
             SOURCE_RULE_EVALUATION_ERROR,
+            "rule",
+            "scoped_rule",
+            "unknown_tools_default",
+            "registry",
         }
     if action != "allow":
         # An unsupported action from a matching native rule is still a match.
@@ -447,15 +453,20 @@ def _honour_native_policy_decision(decision: Any) -> bool:
             SOURCE_TOOL_ACCESS_RULE,
             SOURCE_SUBJECT_SCOPED_RULE,
             SOURCE_RULE_EVALUATION_ERROR,
+            "rule",
+            "scoped_rule",
+            "unknown_tools_default",
+            "registry",
         }
     if source in {
         SOURCE_TOOL_ACCESS_RULE,
         SOURCE_SUBJECT_SCOPED_RULE,
         SOURCE_RULE_EVALUATION_ERROR,
+        "rule",
+        "scoped_rule",
     }:
         return True
-    reason = decision[2] if len(decision) > 2 else None
-    return reason not in _NO_MATCH_ALLOW_REASONS and reason is not None
+    return getattr(decision, "matched", False) is True
 
 
 async def apply_native_access_rules(
@@ -484,7 +495,8 @@ async def apply_native_access_rules(
 
     if config is not None and not bool(config.is_enabled):
         return ("deny", BLOCKED_TOOL_REASON, None, None)
-    if config is None:
+    mcp_identity = parse_mcp_tool_name(tool_name)
+    if config is None and mcp_identity is None:
         return None
 
     decision = await evaluate_policy_async(
@@ -496,7 +508,9 @@ async def apply_native_access_rules(
             if key != "_preloop_origin"
         },
         account_id,
-        tool_configuration_id=config.id,
+        tool_configuration_id=config.id if config is not None else None,
+        tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
+        server_label=mcp_identity[0] if mcp_identity else None,
         user_id=user_id,
         subject_context={
             "managed_agent_id": str(managed_agent_id) if managed_agent_id else None,
@@ -504,7 +518,7 @@ async def apply_native_access_rules(
             "runtime_session_id": str(runtime_session_id)
             if runtime_session_id
             else None,
-            "tool_source": AGENT_TOOL_SOURCE,
+            "tool_source": "mcp" if mcp_identity else AGENT_TOOL_SOURCE,
         },
     )
     if not _honour_native_policy_decision(decision):
@@ -643,7 +657,7 @@ async def request_agent_permission(
             db,
             account_id=account_id,
             tool_name=tool_name,
-            tool_source=AGENT_TOOL_SOURCE,
+            tool_source="mcp" if parse_mcp_tool_name(tool_name) else AGENT_TOOL_SOURCE,
         )
         rule_outcome = await apply_native_access_rules(
             db,
@@ -727,17 +741,23 @@ async def request_agent_permission(
                 flow_id=flow_id,
             )
             if matched_require and matched_require[1] is not None:
-                rule_wf_result = await db.execute(
-                    select(models.ApprovalWorkflow)
-                    .where(
-                        models.ApprovalWorkflow.id == matched_require[1],
-                        models.ApprovalWorkflow.account_id == account_id,
-                    )
-                    .limit(1)
+                from preloop.models.crud.approval_workflow import (
+                    get_approval_workflow_async,
                 )
-                rule_workflow = rule_wf_result.scalars().first()
-                if rule_workflow is not None:
-                    workflow = rule_workflow
+
+                rule_workflow = await get_approval_workflow_async(
+                    db,
+                    workflow_id=matched_require[1],
+                    account_id=account_id,
+                )
+                if rule_workflow is None:
+                    return (
+                        "deny",
+                        "Required approval workflow is unavailable",
+                        None,
+                        False,
+                    )
+                workflow = rule_workflow
             timeout_seconds = workflow.timeout_seconds or 300
             config = existing or await resolve_tool_config(
                 db, account_id, tool_name, workflow.id
