@@ -406,13 +406,17 @@ class TestPolicyApplierDefaults:
         defaults = DefaultsDefinition.model_construct(
             unknown_tools=UnknownToolsPolicy.REQUIRE_APPROVAL,
             require_approval_for_new_tools=True,
-            default_approval_workflow="david-approval",
+            default_approval_workflow="missing-review",
         )
 
         assert applier._apply_defaults(defaults, dry_run=True) is False
-        assert len(applier._result.errors) == 1
-        assert "restrictive default settings" in applier._result.errors[0]
-        assert "unknown_tools='require_approval'" in applier._result.errors[0]
+        assert any(
+            "require_approval_for_new_tools" in error
+            for error in applier._result.errors
+        )
+        assert any(
+            "default_approval_workflow" in error for error in applier._result.errors
+        )
         assert "BaseModel.__init__" not in applier._result.errors[0]
 
 

@@ -3676,6 +3676,51 @@ def read_flow(
     return flow
 
 
+@router.post(
+    "/flows/{flow_id}/webhook-secret/rotate",
+    response_model=schemas.FlowResponse,
+)
+@require_permission("edit_flows")
+def rotate_flow_webhook_secret(
+    *,
+    db: Session = Depends(get_db),
+    flow_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> schemas.FlowResponse:
+    """Rotate an ingress secret and return its new value once.
+
+    Args:
+        db: Active database session.
+        flow_id: Flow owned by the caller's account.
+        current_user: User performing the rotation.
+
+    Returns:
+        Flow metadata with the new webhook_secret, shown only in this response.
+
+    Raises:
+        HTTPException: 404 for an inaccessible flow, 400 without a webhook
+            trigger, or 403 without edit_flows permission.
+    """
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    if flow.trigger_event_source != "webhook":
+        raise HTTPException(status_code=400, detail="Flow has no webhook trigger")
+    secret = secrets.token_urlsafe(32)
+    flow = crud_flow.rotate_webhook_secret(db, db_obj=flow, secret=secret)
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="flow",
+        action="webhook_secret_rotated",
+        new_value={"id": str(flow.id), "name": flow.name},
+    )
+    response = schemas.FlowResponse.model_validate(flow)
+    response.webhook_secret = secret
+    return response
+
+
 @router.put("/flows/{flow_id}", response_model=schemas.FlowResponse)
 @require_permission("edit_flows")
 def update_flow(
@@ -3687,7 +3732,11 @@ def update_flow(
 ):
     """Update a flow."""
     ensure_permission_in_oss(db, current_user, "edit_flows")
-    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    # Settings saves preserve omitted credentials from the current locked row,
+    # so a concurrent rotation cannot be undone by a stale ORM snapshot.
+    flow = crud_flow.get(
+        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
+    )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 
@@ -3933,12 +3982,27 @@ def update_flow(
     old_enabled = flow.is_enabled
     from preloop.services.flow_result_schema import ResultSchemaError
 
+    webhook_secret_changed = bool(
+        existing_secret
+        and flow_in.webhook_config
+        and flow_in.webhook_config.webhook_secret
+        and flow_in.webhook_config.webhook_secret != existing_secret
+    )
     try:
         flow = crud_flow.update(
             db=db, db_obj=flow, flow_in=flow_in, account_id=current_user.account_id
         )
     except ResultSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if webhook_secret_changed:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="flow",
+            action="webhook_secret_rotated",
+            new_value={"id": str(flow.id), "name": flow.name},
+        )
 
     # Determine if this was an enable/disable toggle
     update_fields = flow_in.model_dump(exclude_unset=True)

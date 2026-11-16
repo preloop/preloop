@@ -1941,3 +1941,20 @@ describe('PoliciesView', () => {
     expect((element as any)._rollbackConfirmVisible).to.be.false;
   });
 });
+
+describe('MCP policy defaults', () => {
+  it('protects=defaults share YAML; fails_when=unrelated policy is erased; no_claim=no API apply', async () => {
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    const view = element as any;
+    view._yamlDraft =
+      'version: "1.0"\nmetadata:\n  name: Example\n# Keep this comment\ndefaults:\n  inherit_from_parent: false\n';
+    view._setDefaults('unknown_tools', 'deny');
+    expect(view._yamlDraft).to.include('unknown_tools: deny');
+    expect(view._yamlDraft).to.include('inherit_from_parent: false');
+    expect(view._yamlDraft).to.include('# Keep this comment');
+    expect(view._yamlDraft).to.include('name: Example');
+    expect(view._yamlDirty).to.equal(true);
+  });
+});

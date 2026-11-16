@@ -13,7 +13,7 @@
 # server holds; see README.md in this directory.
 #
 # Tool names come from kubernetes-mcp-server v0.0.67, DBHub v1.5.0 and
-# sentry-mcp 0.42.0. A tool call that no rule matches is allowed, so each
+# sentry-mcp 0.42.0. Without account defaults, unmatched calls allow; each
 # server gets a rule that denies every tool not on its read list. A tool that
 # a later upstream release adds stays denied until someone adds it here.
 

@@ -28,8 +28,13 @@ refresh never gates existing derived flows (production incident 2026-11-04,
 where a refresh switched the gate on for every derived flow while the API
 still ran a build without the receipt-writing tool, and every run failed with
 `no_receipt` after delivering its review). To require publication on an
-existing flow, set `review_publication.required: true` on that flow once the
-API build that writes receipts is serving; `required: false` opts out.
+existing flow, set `review_publication.required: true` on that flow only after
+verifying a consistent deployment: the API serving MCP calls and all workers
+run the intended build, with the API writing review receipts.
+`required: false` opts out. No migration or preset catalog sync opts existing
+derived flows in.
+See the [API opt-in and canary check](../guide/flows/pull-request-review.md#enable-an-existing-flow)
+for updating an existing flow while preserving its clone configuration.
 
 Manual preset and CLI PR runs carry the fetched head in the same provider
 fields as webhook events. A trigger naming a PR without its head fails with

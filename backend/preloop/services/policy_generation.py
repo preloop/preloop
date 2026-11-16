@@ -35,7 +35,7 @@ from preloop.services.model_credentials import (
     resolve_model_call_credentials,
 )
 from preloop.services.policy import export_current_policy
-from preloop.services.policy.loader import unsupported_default_settings
+from preloop.services.policy.loader import invalid_default_settings
 from preloop.services.policy.schema import (
     PolicyDocument,
     SensitiveDataConfig,
@@ -596,9 +596,11 @@ No markdown fences, no explanation.
 - If the user describes async behaviour, set `async_approval: true`.
 - If the user mentions justification, set `justification: required`.
 - Fill in sensible `timeout_seconds` (default 300).
-- Leave out `defaults`. `preloop policy apply` only accepts
-  `unknown_tools: allow`, so a tool call that no rule matches is
-  allowed.
+- `defaults.unknown_tools` governs unmatched MCP calls: allow (the
+  backward-compatible default), deny, or require_approval. For require_approval,
+  set `defaults.default_approval_workflow` to a defined workflow name.
+  Native tools retain the client decision. Do not set scoped defaults or
+  `require_approval_for_new_tools: true` (not yet implemented).
 - To deny every tool on an MCP server except a list, add a
   `sensitive_data` rule scoped to that server whose CEL `condition` is
   true for any tool not on the list, as in the example below. Replace
@@ -635,6 +637,12 @@ follow these rules:
 ```yaml
 {SERVER_ALLOWLIST_EXAMPLE}```
 
+### EXAMPLE: DENY UNMATCHED MCP TOOLS ACCOUNT-WIDE
+```yaml
+defaults:
+  unknown_tools: deny
+```
+
 ### JSON SCHEMA
 ```json
 {schema_json}
@@ -666,9 +674,11 @@ Output ONLY the raw YAML. No fences, no explanation.
 - Use `version: "1.0"`.
 - Every `approval_workflow` referenced MUST be defined.
 - Prefer `condition_type: simple` for straightforward conditions.
-- Leave out `defaults`. `preloop policy apply` only accepts
-  `unknown_tools: allow`, so a tool call that no rule matches is
-  allowed.
+- `defaults.unknown_tools` governs unmatched MCP calls: allow (the
+  backward-compatible default), deny, or require_approval. For require_approval,
+  set `defaults.default_approval_workflow` to a defined workflow name.
+  Native tools retain the client decision. Do not set scoped defaults or
+  `require_approval_for_new_tools: true` (not yet implemented).
 - To require approval for tools the logs never show, add a
   `sensitive_data` rule like the example below. Its condition lists the
   tools seen in the logs, its action is `require_approval`, and its
@@ -690,6 +700,12 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
 ### EXAMPLE: APPROVAL FOR TOOLS THE LOGS NEVER SHOW
 ```yaml
 {UNSEEN_TOOLS_APPROVAL_EXAMPLE}```
+
+### EXAMPLE: DENY UNMATCHED MCP TOOLS ACCOUNT-WIDE
+```yaml
+defaults:
+  unknown_tools: deny
+```
 
 ### JSON SCHEMA
 ```json
@@ -802,7 +818,9 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
             ) from exc
 
         if document.defaults is not None:
-            unsupported = unsupported_default_settings(document.defaults)
+            unsupported = invalid_default_settings(
+                document.defaults, {w.name for w in document.approval_workflows or []}
+            )
             if unsupported:
                 raise PolicyGenerationError(
                     "Generated policy sets defaults that `preloop policy apply` "

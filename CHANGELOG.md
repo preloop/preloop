@@ -6,17 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+ 
+### Changed
 
-### Fixed
+- **API compatibility:** flow responses (including reads, lists, creates,
+  updates and presets) no longer include `webhook_config.webhook_secret`.
+  Integrations that extracted the secret from those responses must retain
+  their existing URL or call the rotate action and save its one-time
+  `webhook_secret`. Responses expose `webhook_secret_set`,
+  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
+  secrets and URLs remain valid until explicitly replaced; the migration
+  adds nullable rotation metadata and does not change credentials. Existing
+  unrotated secrets have a null rotation time (#2336).
 
-- flows: a Codex native-result read-only review whose session ends with an
-  answer but no command (the model satisfied the result schema on its first
-  turn) is continued in up to two fresh sessions that must inspect the
-  checkout first, inside the flow's existing timeout and budget. If none
-  inspects, the run fails `review_not_inspected`; that category now wins over
-  `review_binding_mismatch` when both apply (#2100).
+- MCP policies honour `defaults.unknown_tools` for unmatched calls, including
+  hook-observed MCP tools. Allow remains the default for existing accounts;
+  deny and approval defaults are opt-in (#2313).
 
 ### Added
+
+- flows: rotate webhook ingress secrets with
+  `POST /api/v1/flows/{id}/webhook-secret/rotate`,
+  `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console
+  flow page. The new `webhook_secret` is returned once by rotation; the old
+  URL stops working immediately. Each rotation records an audit event
+  without the credential (#2336).
 
 - flows: restricted-CI read-only reviews bind their result to the admitted
   revision and require repository inspection. A result whose `head_sha`,
@@ -97,6 +111,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- flows: a Codex native-result read-only review whose session ends with an
+  answer but no command (the model satisfied the result schema on its first
+  turn) is continued in up to two fresh sessions that must inspect the
+  checkout first, inside the flow's existing timeout and budget. If none
+  inspects, the run fails `review_not_inspected`; that category now wins over
+  `review_binding_mismatch` when both apply (#2100).
 
 - models: mark deleted routing, label and enabled retry targets as missing in
   flow details and lists, including flows with a healthy default model. Repairing

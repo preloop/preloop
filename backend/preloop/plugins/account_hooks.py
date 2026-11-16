@@ -76,6 +76,23 @@ FactorRemovalPolicy = Callable[["Session", "User", str], None]
 StepUpPolicy = Callable[["Session", "User", str], Optional[int]]
 _factor_removal_policy: Optional[FactorRemovalPolicy] = None
 _step_up_policy: Optional[StepUpPolicy] = None
+SignInStrengthPolicy = Callable[["Session", "User", dict[str, Any], str], None]
+_sign_in_strength_policy: Optional[SignInStrengthPolicy] = None
+
+
+def register_sign_in_strength_policy(provider: Optional[SignInStrengthPolicy]) -> None:
+    """Register a membership policy that may restrict a human session to enrollment."""
+    global _sign_in_strength_policy
+    _sign_in_strength_policy = provider
+
+
+def apply_sign_in_strength_policy(
+    db: "Session", user: "User", claims: dict[str, Any], purpose: str
+) -> None:
+    """Re-evaluate enrollment on every session boundary; absent policy is inert."""
+    claims.pop("enroll_only", None)
+    if _sign_in_strength_policy is not None:
+        _sign_in_strength_policy(db, user, claims, purpose)
 
 
 def register_factor_removal_policy(provider: Optional[FactorRemovalPolicy]) -> None:
@@ -104,6 +121,8 @@ def enforce_step_up_policy(
     not gain a new dependency on a console session.
     """
     if _step_up_policy is None or getattr(user, "_auth_api_key", None) is not None:
+        return
+    if getattr(getattr(request, "state", None), "paired_channel_action", False) is True:
         return
     from preloop.services.authentication_policy import (
         check_recent_strong_auth,
@@ -876,3 +895,6 @@ def reset_account_hooks() -> None:
     register_billing_account_resolver(None)
     register_session_hook(None)
     register_runner_policy_provider(None)
+    register_sign_in_strength_policy(None)
+    register_step_up_policy(None)
+    register_factor_removal_policy(None)

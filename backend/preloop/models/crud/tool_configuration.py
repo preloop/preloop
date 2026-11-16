@@ -562,3 +562,35 @@ async def create_tool_configuration_async(
     await db.commit()
     await db.refresh(db_config)
     return db_config
+
+
+def _route_query(
+    *,
+    account_id: Any,
+    tool_name: str,
+    tool_source: str,
+    mcp_server_id: Optional[Any] = None,
+) -> Any:
+    """Select only this dispatch route; never borrow a same-name tool's rules."""
+    return select(models.ToolConfiguration).where(
+        models.ToolConfiguration.account_id == account_id,
+        models.ToolConfiguration.tool_name == tool_name,
+        models.ToolConfiguration.tool_source == tool_source,
+        models.ToolConfiguration.mcp_server_id == mcp_server_id,
+        models.ToolConfiguration.managed_agent_id.is_(None),
+    )
+
+
+def get_tool_config_for_route(
+    db: Session, **identity: Any
+) -> Optional[models.ToolConfiguration]:
+    """Read an exact route; ambiguous stored configurations fail closed."""
+    return db.execute(_route_query(**identity)).scalar_one_or_none()
+
+
+async def get_tool_config_for_route_async(
+    db: Any, **identity: Any
+) -> Optional[models.ToolConfiguration]:
+    """Read an exact route asynchronously, failing closed on ambiguity."""
+    result = await db.execute(_route_query(**identity))
+    return result.scalar_one_or_none()
