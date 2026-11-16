@@ -13,7 +13,7 @@ import {
   type Response,
   type TestInfo,
 } from '@playwright/test';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -49,6 +49,22 @@ interface Mail {
   text: string;
 }
 
+/** Preserve traceback locations without leaking SQL parameters or mail proofs. */
+function helperFailure(label: string, result: SpawnSyncReturns<string>): Error {
+  const diagnostic = spawnSync(
+    python,
+    ['-m', 'tests.e2e_support.totp_server', 'diagnose'],
+    { cwd: root, env: childEnv, input: result.stderr || '', encoding: 'utf8' }
+  );
+  const systemCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  return new Error(
+    `${label} failed (exit ${result.status}, ${systemCode || 'subprocess'}):\n` +
+      (diagnostic.status === 0
+        ? diagnostic.stdout.trim()
+        : 'Traceback sanitizer unavailable')
+  );
+}
+
 /** Execute a private helper without placing proofs on command lines or logs. */
 function driver(command: string, payload: object): string {
   const result = spawnSync(
@@ -61,7 +77,7 @@ function driver(command: string, payload: object): string {
       encoding: 'utf8',
     }
   );
-  if (result.status !== 0) throw new Error('The local MFA helper failed');
+  if (result.status !== 0) throw helperFailure('The local MFA helper', result);
   return result.stdout.trim();
 }
 
@@ -314,7 +330,7 @@ function operator(script: string, user: User): void {
     ],
     { cwd: root, env: childEnv, encoding: 'utf8' }
   );
-  expect(result.status).toBe(0);
+  if (result.status !== 0) throw helperFailure('The operator reset', result);
 }
 
 /** Complete the real headless CLI OAuth flow in a private scratch HOME. */
@@ -840,7 +856,7 @@ test.describe('local TOTP sign-in', () => {
     }
     test.fail(
       true,
-      'Known defect: enabling with password+OTP returns a pair immediately refused as password_login_disabled; the documented current session should remain signed in.'
+      'D1 (https://github.com/preloop/preloop/pull/2343; feature #2299): enabling with password+OTP returns a pair immediately refused as password_login_disabled; remove this marker when the documented current session remains usable.'
     );
     expect(currentStatus).toBe(200);
   });
