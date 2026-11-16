@@ -76,3 +76,26 @@ videos and automatic screenshots are disabled for these tests; CI uploads only
 the explicitly masked PNG evidence, never the private outbox or CLI HOME.
 Helper and startup failures report traceback locations and exception classes;
 raw messages and bound parameters are omitted because they can contain proofs.
+
+### Extension inventory
+
+`playwright.extensions.config.ts` runs the real CLI report path, PostgreSQL
+inventory/approval endpoints, and the Lit extension table against loopback-only
+servers. The rig supplies a synthetic identity and profile enumeration; it does
+not test sign-in or operating-system user enumeration. The fixture plants a
+secret in plugin metadata and the CLI asserts it is absent from output. Separate
+collector tests inspect both offline and report serialization.
+
+Create and migrate an isolated local database whose name contains
+`extension_inventory`, then run from `frontend/`:
+
+```sh
+PRELOOP_DISABLE_TELEMETRY=true TZ=UTC \
+DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5432/extension_inventory_test \
+npx playwright test --config playwright.extensions.config.ts
+```
+
+The backend requires the clone-local `.venv` (or `PRELOOP_E2E_PYTHON`); Go and
+Chromium must be installed. `PRELOOP_EXTENSION_API_PORT` and
+`PRELOOP_EXTENSION_FRONTEND_PORT` override the default loopback ports. No real
+agent credentials, provider calls or external services are used.

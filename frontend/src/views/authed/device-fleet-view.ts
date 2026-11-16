@@ -40,6 +40,7 @@ import {
   type FleetRuleName,
 } from '../../device-fleet-api';
 import '../../components/view-header';
+import '../../components/extension-inventory';
 import '../../components/fleet-map';
 import { getFleetMap, type FleetMapGraph } from '../../fleet-map-api';
 import {
@@ -1505,6 +1506,18 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
             </p>`
           : nothing
       }
+      <sl-card data-testid="device-extensions">
+        <div slot="header" class="card-title">Extensions</div>
+        ${
+          /^fp:[0-9a-f]{64}$/.test(device.device_key)
+            ? html`<extension-inventory
+                .fingerprint=${device.device_key.slice(3)}
+              ></extension-inventory>`
+            : html`<p class="card-empty">
+                No discovery fingerprint is available for this device.
+              </p>`
+        }
+      </sl-card>
       <details>
         <summary>Raw evidence (${device.sources.length} sources)</summary>
         <pre>${JSON.stringify(device.sources, null, 2)}</pre>

@@ -108,6 +108,18 @@ describe('discovered-agents-panel', () => {
     expect(el.shadowRoot!.querySelector('section')).to.equal(null);
   });
 
+  // protects=account inventory entry point; fails_when=extensions require an
+  // ungoverned agent to be present; no_claim=tab wiring, child API tested separately.
+  it('opens Extensions even when there are no discovered candidates', async () => {
+    const el = await mount([]);
+    const tabs = el.shadowRoot!.querySelector('sl-tab-group')!;
+    tabs.dispatchEvent(
+      new CustomEvent('sl-tab-show', { detail: { name: 'extensions' } })
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('extension-inventory')).to.exist;
+  });
+
   it('builds onboard commands and short labels', () => {
     expect(onboardCommandFor(candidate({ agent_kind: 'codex' }))).to.equal(
       'preloop agents onboard codex'
