@@ -1,7 +1,7 @@
 """Synthetic PostgreSQL and HTTP contracts for installed extension inventory."""
 
-from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from typing import Any
 from unittest.mock import Mock
@@ -18,16 +18,16 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models import models
 from preloop.models.crud import (
+    crud_account,
     crud_discovered_extension,
     crud_discovery_observation,
-    crud_extension_approval,
-    crud_account,
     crud_expected_device,
+    crud_extension_approval,
     crud_user,
 )
 from preloop.schemas.agent_discovery import DiscoveryReportRequest
-from preloop.schemas.discovery_evidence import DiscoveryEvidence
 from preloop.schemas.discovered_extension import ExtensionApprovalUpdate
+from preloop.schemas.discovery_evidence import DiscoveryEvidence
 
 NOW = datetime(2026, 11, 16, tzinfo=UTC)
 REPORTS = "/api/v1/agents/discovery-reports"
