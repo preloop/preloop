@@ -1458,15 +1458,8 @@ class WebhookConfig(BaseModel):
 
 
 class WebhookConfigResponse(BaseModel):
-    """Webhook settings on a flow response. The ingress secret is omitted."""
+    """Webhook settings on a flow response, without ingress credentials."""
 
-    webhook_secret: Optional[str] = Field(
-        default=None,
-        description=(
-            "Secure token for authenticating webhook requests (auto-generated "
-            "for webhook triggers; unset on flows triggered by tracker events)"
-        ),
-    )
     supersede_on_update: bool = Field(
         default=False,
         description=(
@@ -2093,6 +2086,29 @@ class FlowResponse(FlowBase):
     # number, "source": "flow"|"environment"}}; an unset ceiling is absent.
     effective_limits: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="New ingress secret, returned once by the rotate action only.",
+    )
+    webhook_secret_rotated_at: Optional[datetime] = Field(
+        default=None,
+        description="Last explicit rotation time; null for existing unrotated secrets.",
+    )
+
+    @computed_field
+    @property
+    def webhook_secret_set(self) -> bool:
+        """Whether the flow has an ingress credential, without revealing it."""
+        return bool(self.webhook_config and self.webhook_config.webhook_secret)
+
+    @computed_field
+    @property
+    def webhook_secret_hint(self) -> Optional[str]:
+        """The last four characters, matching approval workflow secret hints."""
+        secret = self.webhook_config.webhook_secret if self.webhook_config else None
+        return secret[-4:] if secret and len(secret) > 4 else None
+
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="after")
@@ -2116,19 +2132,14 @@ class FlowResponse(FlowBase):
         return self
 
     @field_serializer("webhook_config", return_type=Optional[WebhookConfigResponse])
-    def redact_employee_secret(
+    def redact_ingress_secrets(
         self, value: Optional[WebhookConfig]
     ) -> Optional[WebhookConfigResponse]:
-        """Keep ingress credentials in storage but out of all Flow responses.
-
-        A dedicated response model keeps ``webhook_secret``,
-        ``supersede_on_update`` and ``dedupe_path`` in the published schema.
-        A dict return type would widen the field to an untyped object.
-        """
+        """Keep both ingress credentials in storage and out of every response."""
         if value is None:
             return None
         return WebhookConfigResponse.model_validate(
-            value.model_dump(exclude={"employee_secret"})
+            value.model_dump(exclude={"employee_secret", "webhook_secret"})
         )
 
     @computed_field
