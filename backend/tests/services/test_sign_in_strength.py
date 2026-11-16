@@ -28,6 +28,7 @@ def test_absent_policy_keeps_oss_sessions_unrestricted() -> None:
     ("method", "path", "allowed"),
     [
         ("GET", "/api/v1/users/me", True),
+        ("GET", "/api/v1/me/memberships", True),
         ("POST", "/api/v1/auth/mfa/enroll", True),
         ("POST", "/api/v1/auth/mfa/enroll/confirm", True),
         ("GET", "/api/v1/auth/mfa/status", True),
@@ -119,5 +120,57 @@ async def test_live_and_websocket_sessions_recheck_enrollment(
         account_hooks.register_sign_in_strength_policy(None)
         assert await middleware._validate_token(token) is not None
         assert not await auth_revocation.session_is_revoked(decode_token(token))
+    finally:
+        account_hooks.register_sign_in_strength_policy(None)
+
+
+@pytest.mark.parametrize("purpose", ["refresh", "switch", "exchange", "login"])
+def test_delegation_cannot_be_exchanged(purpose: str) -> None:
+    """protects=delegated actor proof never becomes a target-owned session;
+    fails_when=an exchange accepts delegation; no_claim=signature validation is upstream."""
+    from uuid import uuid4
+
+    with pytest.raises(HTTPException) as exc:
+        policy.authorize_authentication(
+            Mock(), Mock(), claims={"impersonated_by": str(uuid4())}, purpose=purpose
+        )
+    assert exc.value.status_code == 403
+
+
+def test_delegated_proof_is_only_visible_to_access_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=bounded actor proof is distinct from target authentication;
+    fails_when=proof escapes the hook or carries account-specific authority;
+    no_claim=revocation and signatures are exercised by integration tests."""
+    from uuid import uuid4
+
+    user = SimpleNamespace(
+        account_id=uuid4(), non_sso_auth_generation=0, passkey_only=True
+    )
+    monkeypatch.setattr(
+        policy, "get_plugin_manager", lambda: Mock(get_service=lambda name: None)
+    )
+    provider = Mock()
+    account_hooks.register_sign_in_strength_policy(provider)
+    try:
+        result = policy.authorize_authentication(
+            Mock(),
+            user,
+            claims={
+                "impersonated_by": str(uuid4()),
+                "impersonator_auth": {
+                    "amr": ["password", "otp"],
+                    "auth_time": 123,
+                    "sso_break_glass": True,
+                },
+            },
+            purpose="access",
+        )
+        assert result == {}
+        assert provider.call_args.args[2]["delegated_auth"] == {
+            "amr": ["password", "otp"],
+            "auth_time": 123,
+        }
     finally:
         account_hooks.register_sign_in_strength_policy(None)

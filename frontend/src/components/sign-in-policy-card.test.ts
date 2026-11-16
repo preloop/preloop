@@ -8,6 +8,9 @@ const coverage = {
   policy: 'all',
   step_up_window_minutes: 15,
   members_total: 12,
+  members_pending_total: 4,
+  members_offset: 0,
+  members_limit: 50,
   members_with_factor: 6,
   members_with_totp: 4,
   members_sso: 2,
@@ -138,5 +141,47 @@ describe('Account sign-in policy', () => {
     expect(
       fetchStub.getCalls().some((call) => call.args[1]?.method === 'PUT')
     ).to.equal(false);
+  });
+  // protects=bounded coverage can reach later members while totals remain global; fails_when=next page missing or first-page pending count used; no_claim=network responses are mocked.
+  it('loads another coverage page and keeps the account totals', async () => {
+    fetchStub.callsFake(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/features'))
+        return json({ features: { strong_sign_in_policy: true } });
+      if (url.endsWith('/users/me'))
+        return json({ account_id: 'account', id: 'admin' });
+      const offset = Number(
+        new URL(url, window.location.origin).searchParams.get('offset') || 0
+      );
+      return json({
+        ...coverage,
+        members_total: 121,
+        members_pending_total: 120,
+        members_offset: offset,
+        members: [
+          {
+            ...coverage.members[0],
+            email: offset ? 'later@example.com' : 'first@example.com',
+          },
+        ],
+      });
+    });
+    const element = await card();
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '120 have no factor'
+    );
+    const next = Array.from(
+      element.shadowRoot!.querySelectorAll<any>('sl-button')
+    ).find((button) => button.textContent.trim() === 'Next');
+    expect(next).not.to.equal(undefined);
+    next.click();
+    await waitUntil(() =>
+      element.shadowRoot!.textContent!.includes('later@example.com')
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('offset=50'))
+    ).to.equal(true);
   });
 });

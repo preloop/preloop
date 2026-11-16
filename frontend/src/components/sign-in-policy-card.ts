@@ -30,6 +30,9 @@ interface Policy {
   policy: 'off' | 'admins' | 'all';
   step_up_window_minutes: number;
   members_total: number;
+  members_pending_total: number;
+  members_offset: number;
+  members_limit: number;
   members_with_factor: number;
   members_with_totp: number;
   members_sso: number;
@@ -54,13 +57,17 @@ export class SignInPolicyCard extends LitElement {
     void this.load();
   }
 
-  private async load(): Promise<void> {
+  private async load(offset = this.data?.members_offset ?? 0): Promise<void> {
+    this.busy = true;
     try {
       const features = await getFeatures();
       if (features.features.strong_sign_in_policy !== true) return;
       const user = await getUserProfile();
       this.accountId = user.account_id;
-      const response = await fetchWithAuth(this.url(), { passive: true });
+      const response = await fetchWithAuth(
+        `${this.url()}?offset=${offset}&limit=50`,
+        { passive: true }
+      );
       if (response.status === 403 || response.status === 404) return;
       this.available = true;
       if (!response.ok)
@@ -71,6 +78,8 @@ export class SignInPolicyCard extends LitElement {
         error instanceof Error
           ? error.message
           : 'Could not load account sign-in policy.';
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -242,7 +251,7 @@ export class SignInPolicyCard extends LitElement {
                 ${this.data.members_with_factor} of ${this.data.members_total}
                 members have a local factor; ${this.data.members_with_totp} use
                 an authenticator app. ${this.data.members_sso} use enforced SSO.
-                ${this.data.members_pending.length} have no factor.
+                ${this.data.members_pending_total} have no factor.
               </p>
               <div class="coverage">
                 <table>
@@ -286,6 +295,35 @@ export class SignInPolicyCard extends LitElement {
                   </tbody>
                 </table>
               </div>
+              <nav aria-label="Member coverage pages">
+                <sl-button
+                  ?disabled=${this.busy || this.data.members_offset === 0}
+                  @click=${() => {
+                    this.resetting = null;
+                    void this.load(
+                      Math.max(
+                        0,
+                        this.data!.members_offset - this.data!.members_limit
+                      )
+                    );
+                  }}
+                  >Previous</sl-button
+                >
+                <span
+                  >${this.data.members_total ? this.data.members_offset + 1 : 0}–${this.data.members_offset + this.data.members.length}
+                  of ${this.data.members_total}</span
+                >
+                <sl-button
+                  ?disabled=${this.busy || this.data.members_offset + this.data.members_limit >= this.data.members_total}
+                  @click=${() => {
+                    this.resetting = null;
+                    void this.load(
+                      this.data!.members_offset + this.data!.members_limit
+                    );
+                  }}
+                  >Next</sl-button
+                >
+              </nav>
               ${
                 this.resetting
                   ? html`<form @submit=${this.reset}>
