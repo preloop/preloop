@@ -187,7 +187,10 @@ async function signOut(page: Page): Promise<void> {
   // auth-change can briefly route to /login before the awaited server logout
   // finishes and assigns /. Wait for that final document navigation.
   await Promise.all([
-    page.waitForNavigation({ waitUntil: 'load' }),
+    page.waitForNavigation({
+      url: (url) => url.pathname === '/',
+      waitUntil: 'load',
+    }),
     page.getByRole('menuitem', { name: 'Sign out', exact: true }).click(),
   ]);
   expect(await page.evaluate(() => !!localStorage.getItem('accessToken'))).toBe(
