@@ -362,11 +362,11 @@ The example requires `curl` and `jq`:
 ```sh
 curl --fail-with-body --silent --show-error \
   -H "Authorization: Bearer ${PRELOOP_TOKEN}" \
-  "${PRELOOP_URL}/api/v1/flows/${FLOW_ID}" > flow-before.json
+  "${PRELOOP_URL}/api/v1/flows/${FLOW_ID}" > flow-before.json &&
 
 jq '{git_clone_config: ((.git_clone_config // {}) |
   .review_publication = ((.review_publication // {}) + {required: true}))}' \
-  flow-before.json > flow-update.json
+  flow-before.json > flow-update.json &&
 
 curl --fail-with-body --silent --show-error --request PUT \
   -H "Authorization: Bearer ${PRELOOP_TOKEN}" \
