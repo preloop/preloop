@@ -185,7 +185,10 @@ async def test_update_flow(mock_account: Account, mocker: MockerFixture):
     # Assert
     assert result.name == flow_update.name
     mock_crud_flow.get.assert_called_once_with(
-        db=mocker.ANY, id=flow_id, account_id=mock_account.account_id
+        db=mocker.ANY,
+        id=flow_id,
+        account_id=mock_account.account_id,
+        for_update=True,
     )
     mock_crud_flow.update.assert_called_once_with(
         db=mocker.ANY,

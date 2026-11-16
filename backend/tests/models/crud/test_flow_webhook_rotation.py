@@ -3,15 +3,21 @@
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from uuid import uuid4
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from preloop.api.auth import get_current_active_user
+from preloop.api.endpoints import flows
 from preloop.models import models, schemas
-from preloop.models.crud import crud_flow
+from preloop.models.crud import crud_account, crud_flow, crud_user
+from preloop.models.crud.base import CRUDBase
 
 SECRET = "synthetic-existing-webhook-secret"
 
@@ -70,6 +76,53 @@ def test_rotation_persists_and_redacted_settings_round_trip(
         client.post(f"/api/v1/webhooks/flows/{flow.id}/{SECRET}", json={}).status_code
         == 403
     )
+
+
+def test_settings_save_preserves_rotation_after_stale_read(db_engine: Engine) -> None:
+    """A settings save loaded before rotation must retain the committed new secret."""
+    with Session(db_engine, expire_on_commit=False) as stale:
+        account = crud_account.create(stale, obj_in={"organization_name": "Example"})
+        user = crud_user.create(
+            stale,
+            obj_in={
+                "account_id": account.id,
+                "username": f"example-{uuid4()}",
+                "email": f"{uuid4()}@example.com",
+                "is_active": True,
+                "is_superuser": True,
+            },
+        )
+        account_id, person_id = account.id, user.person_id
+        flow = _create(stale, user)
+        flow_id = flow.id
+        try:
+            with Session(db_engine) as rotating:
+                current = crud_flow.get(rotating, id=flow_id, account_id=account_id)
+                crud_flow.rotate_webhook_secret(
+                    rotating, db_obj=current, secret="synthetic-rotated-secret"
+                )
+            assert flow.webhook_config["webhook_secret"] == SECRET
+            app = FastAPI()
+            app.include_router(flows.router, prefix="/api/v1")
+            app.dependency_overrides[flows.get_db] = lambda: stale
+            app.dependency_overrides[get_current_active_user] = lambda: user
+            with TestClient(app) as client:
+                response = client.put(
+                    f"/api/v1/flows/{flow_id}",
+                    json={"webhook_config": {"dedupe_path": "delivery.id"}},
+                )
+            assert response.status_code == 200, response.text
+            with Session(db_engine) as verifying:
+                stored = crud_flow.get(verifying, id=flow_id, account_id=account_id)
+                assert (
+                    stored.webhook_config["webhook_secret"]
+                    == "synthetic-rotated-secret"
+                )
+                assert stored.webhook_config["dedupe_path"] == "delivery.id"
+        finally:
+            stale.rollback()
+            crud_account.delete(stale, id=account_id)
+            CRUDBase(models.Person).delete(stale, id=person_id)
 
 
 def _migration() -> ModuleType:

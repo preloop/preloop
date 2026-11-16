@@ -179,6 +179,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                     raise ValueError(
                         "Extension keys must be unique within an application"
                     )
+                if self.completeness == "complete" and app.completeness != "complete":
+                    raise ValueError(
+                        "Complete collection cannot include partial applications"
+                    )
                 if app.profile_ref is not None and app.profile_ref not in refs:
                     raise ValueError("Application must reference a collected profile")
         keys = [(app.agent_kind, app.config_path_hash) for app in self.applications]

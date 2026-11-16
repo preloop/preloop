@@ -235,6 +235,9 @@ def test_emergency_totp_disable_allows_fresh_passkey_bootstrap(
     assert login.status_code == 200
     token = login.json()["access_token"]
     assert decode_token(token).claims["amr"] == ["password"]
+    # Password login uses wall time; keep the controlled proof clock aligned
+    # even when enrollment crosses the next TOTP window during a slow run.
+    now[0] = float(decode_token(token).claims["auth_time"])
     headers = _bearer(token)
     response = api.post("/api/v1/auth/webauthn/register/options", headers=headers)
     assert response.status_code == 200, response.text
