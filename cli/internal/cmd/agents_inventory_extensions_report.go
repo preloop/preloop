@@ -51,6 +51,7 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 			evidence.Profiles[0].ErrorCode = "probe_incomplete"
 		}
 	}
+	evidence.ExtensionCompleteness = evidence.Completeness
 	report.Evidence = evidence
 	return nil
 }
@@ -92,6 +93,7 @@ func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequ
 	evidence := *report.Evidence
 	evidence.SchemaVersion = 2
 	evidence.ScopeCompleteness = nil
+	evidence.ExtensionCompleteness = ""
 	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
 	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
 	legacyApps := []inventoryReportApplication{}

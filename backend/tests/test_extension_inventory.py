@@ -1,13 +1,17 @@
 """Synthetic PostgreSQL and HTTP contracts for installed extension inventory."""
 
 from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import Engine, event, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +22,8 @@ from preloop.models.crud import (
     crud_discovery_observation,
     crud_extension_approval,
     crud_account,
+    crud_expected_device,
+    crud_user,
 )
 from preloop.schemas.agent_discovery import DiscoveryReportRequest
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
@@ -438,6 +444,7 @@ def test_managed_failure_preserves_complete_user_inventory(
         errors=["permission_denied"],
         scan_scope=["user_config", "managed_config"],
         scope_completeness={"user_config": "complete", "managed_config": "partial"},
+        extension_completeness="complete",
     )
     payload["evidence"]["applications"].append(
         {
@@ -484,3 +491,208 @@ def test_empty_complete_user_scan_with_managed_context_is_complete(
         )
         == "complete"
     )
+
+
+def test_extension_coverage_states(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """protects=honest coverage; fails_when=legacy or failed scope looks complete;
+    no_claim=synthetic HTTP reports, not OS profile enumeration.
+    """
+    assert client.get(EXTENSIONS).json()["completeness"] == "unknown"
+    payload = report(profile_ref="c" * 64)
+    payload["evidence"]["completeness"] = "partial"
+    payload["evidence"]["profiles"][0].update(
+        completeness="partial", error_code="probe_incomplete"
+    )
+    payload["evidence"]["extension_completeness"] = "complete"
+    assert client.post(REPORTS, json=payload).status_code == 202
+    assert client.get(EXTENSIONS).json()["completeness"] == "complete"
+    payload = report(completeness="partial", at=NOW + timedelta(minutes=1))
+    assert client.post(REPORTS, json=payload).status_code == 202
+    assert client.get(EXTENSIONS).json()["completeness"] == "partial"
+    legacy = report(profile_ref="c" * 64, at=NOW + timedelta(minutes=2))
+    legacy["workstation_fingerprint"] = "d" * 64
+    legacy["candidates"][0].pop("extensions")
+    legacy["evidence"]["schema_version"] = 2
+    legacy["evidence"]["applications"][0].pop("extensions")
+    legacy["evidence"]["applications"][0].pop("completeness")
+    crud_discovery_observation.record(
+        db_session,
+        account_id=test_user.account_id,
+        workstation_fingerprint=legacy["workstation_fingerprint"],
+        source_ref=test_user.id,
+        evidence=DiscoveryEvidence.model_validate(legacy["evidence"]).model_dump(
+            mode="json"
+        ),
+    )
+    assert client.get(EXTENSIONS).json()["completeness"] == "unknown"
+
+
+def test_failed_profile_preserves_presence_and_newer_empty_blocks_old_presence(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=absence ordering; fails_when=failed profiles delete or old scans
+    resurrect absent rows; no_claim=source timestamps are synthetic.
+    """
+    account = test_user.account_id
+    store(db_session, account, report(profile_ref="c" * 64))
+    payload = report([], profile_ref="c" * 64, at=NOW + timedelta(minutes=1))
+    payload["evidence"]["profiles"][0].update(
+        completeness="failed", error_code="profile_unreadable"
+    )
+    payload["evidence"]["completeness"] = "partial"
+    store(db_session, account, payload)
+    assert (
+        len(
+            crud_discovered_extension.list_for_account(db_session, account_id=account)[
+                0
+            ]
+        )
+        == 1
+    )
+    store(
+        db_session,
+        account,
+        report([], profile_ref="c" * 64, at=NOW + timedelta(minutes=2)),
+    )
+    store(db_session, account, report(profile_ref="c" * 64))
+    assert (
+        crud_discovered_extension.list_for_account(db_session, account_id=account)[0]
+        == []
+    )
+
+
+def test_account_lock_is_exclusive_for_writers() -> None:
+    """protects=writer serialization; fails_when=SQL uses shared KEY SHARE;
+    no_claim=SQL compilation only, concurrency is exercised separately.
+    """
+    db = Mock()
+    crud_expected_device.lock_account(db, account_id=uuid4())
+    statement = db.scalar.call_args.args[0]
+    assert str(statement.compile(dialect=postgresql.dialect())).endswith(
+        "FOR NO KEY UPDATE"
+    )
+
+
+def test_concurrent_first_reports_and_approvals(db_engine: Engine) -> None:
+    """protects=atomic first writes; fails_when=parallel reports/decisions race
+    into duplicates or old presence wins; no_claim=4 local PostgreSQL writers.
+    """
+    with Session(db_engine) as db:
+        account = crud_account.create(
+            db, obj_in={"organization_name": "Example concurrency"}
+        )
+        account_id = account.id
+        user = crud_user.create(
+            db,
+            obj_in={
+                "account_id": account_id,
+                "email": f"{uuid4()}@example.com",
+                "username": f"user-{uuid4()}",
+                "hashed_password": "synthetic",
+            },
+        )
+        user_id = user.id
+        db.commit()
+    barrier = Barrier(4)
+
+    def write(index: int) -> None:
+        """Start independent transactions together against one natural key."""
+        with Session(db_engine) as db:
+            barrier.wait(timeout=10)
+            if index < 2:
+                store(
+                    db,
+                    account_id,
+                    report([] if index else None, at=NOW + timedelta(minutes=index)),
+                )
+            else:
+                crud_extension_approval.set_state(
+                    db,
+                    account_id=account_id,
+                    agent_kind="claude_code",
+                    extension_kind="plugin",
+                    extension_id="reviewer@community",
+                    decided_by_user_id=user_id,
+                    payload=ExtensionApprovalUpdate(approval_state="approved"),
+                )
+            db.commit()
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(write, range(4)))
+        with Session(db_engine) as db:
+            assert (
+                crud_discovered_extension.list_for_account(db, account_id=account_id)[0]
+                == []
+            )
+            assert len(crud_extension_approval.list(db, account_id=account_id)[0]) == 1
+    finally:
+        with Session(db_engine) as db:
+            crud_account.delete(db, id=account_id)
+
+
+def test_coverage_projects_scalars_after_selecting_latest(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=bounded result payload; fails_when=coverage fetches full history
+    JSON; no_claim=1000 synthetic observations, not production latency benchmark.
+    """
+    for index in range(1000):
+        evidence = DiscoveryEvidence.model_validate(
+            report(
+                [extension(id=f"plugin-{i}") for i in range(20)],
+                at=NOW + timedelta(seconds=index),
+            )["evidence"]
+        )
+        crud_discovery_observation.record(
+            db_session,
+            account_id=test_user.account_id,
+            workstation_fingerprint="a" * 64,
+            source_ref=test_user.id,
+            evidence=evidence.model_dump(mode="json"),
+        )
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        """Capture only SQL structure, never bound report values."""
+        statements.append(statement)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        assert (
+            crud_discovered_extension.completeness(
+                db_session, account_id=test_user.account_id
+            )
+            == "complete"
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert len(statements) == 1
+    projection = statements[0].split("FROM", 1)[0]
+    assert "->>" in projection and "coalesce" in projection
+    assert "DISTINCT ON" in statements[0]
+    assert "SELECT DISTINCT ON" in statements[0]
+
+
+@pytest.mark.parametrize("legacy", [1, 2])
+def test_extension_coverage_is_v3_only(legacy: int) -> None:
+    """protects=immutable legacy schema; fails_when=v3 scalar enters v1/v2;
+    no_claim=Pydantic validation only.
+    """
+    payload = report()["evidence"]
+    payload["schema_version"] = legacy
+    payload["applications"][0].pop("extensions")
+    payload["applications"][0].pop("completeness")
+    payload["extension_completeness"] = "complete"
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(payload)

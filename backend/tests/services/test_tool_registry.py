@@ -1,6 +1,7 @@
 """Approve-once registry persistence and lifecycle regression tests."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from typing import Any, AsyncIterator
 from sqlalchemy import Engine
@@ -583,6 +584,7 @@ async def test_hook_reuses_registry_request_when_parking(
     )
     db_session.add(key)
     db_session.flush()
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
     result = await service.request_agent_permission(
         base_url="https://example.com",
         account_id=str(test_user.account_id),
@@ -598,6 +600,7 @@ async def test_hook_reuses_registry_request_when_parking(
         api_key_id=key.id,
         flow_execution_id=execution.id,
     )
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
     [entry] = tool_registry.list_entries(db_session, account_id=test_user.account_id)
     assert result[0] == "park" and result[2] == str(entry.approval_request_id)
     assert (
@@ -611,9 +614,9 @@ async def test_hook_reuses_registry_request_when_parking(
     assert str(request.execution_id) == str(execution.id)
     assert request.api_key_id == key.id
     assert parked_calls[0]["expires_at"] == request.expires_at
-    assert (request.expires_at - request.created_at).total_seconds() == pytest.approx(
-        172800, abs=1
-    )
+    # created_at is PostgreSQL's transaction start, which can precede this
+    # request's deadline calculation by arbitrary setup/summary work.
+    assert before + timedelta(days=2) <= request.expires_at <= after + timedelta(days=2)
 
 
 @pytest.mark.asyncio

@@ -58,18 +58,20 @@ class CRUDDiscoveredExtension:
                 select(func.max(observation.ended_at)).where(
                     observation.account_id == account_id,
                     observation.workstation_fingerprint == workstation_fingerprint,
-                    observation.evidence["applications"].contains(
-                        [
-                            {
-                                "agent_kind": agent_kind,
-                                "extensions": [],
-                                "profile_ref": None
-                                if profile_ref == "current"
-                                else profile_ref,
-                            }
-                        ]
+                    observation.evidence.contains(
+                        {
+                            "schema_version": 3,
+                            "applications": [
+                                {
+                                    "agent_kind": agent_kind,
+                                    "extensions": [],
+                                    "profile_ref": None
+                                    if profile_ref == "current"
+                                    else profile_ref,
+                                }
+                            ],
+                        }
                     ),
-                    observation.evidence["schema_version"].as_integer() == 3,
                 )
             )
             if (
@@ -151,40 +153,44 @@ class CRUDDiscoveredExtension:
     ) -> str:
         """Describe the latest report per device without claiming unseen scope."""
         model = models.DiscoveryObservation
-        query = select(model).where(model.account_id == account_id)
+        query = select(model.id, model.workstation_fingerprint).where(
+            model.account_id == account_id
+        )
         if fingerprint:
             query = query.where(model.workstation_fingerprint == fingerprint)
+        latest = (
+            query.distinct(model.workstation_fingerprint)
+            .order_by(
+                model.workstation_fingerprint,
+                model.ended_at.desc(),
+                model.received_at.desc(),
+            )
+            .subquery()
+        )
+        # First select one id per device through the ordered index. Only then
+        # extract the scalar coverage fields; never transfer extension payloads.
         rows = list(
-            db.scalars(
-                query.distinct(model.workstation_fingerprint).order_by(
-                    model.workstation_fingerprint,
-                    model.ended_at.desc(),
-                    model.received_at.desc(),
-                )
+            db.execute(
+                select(
+                    model.evidence["schema_version"].as_integer(),
+                    func.coalesce(
+                        model.evidence["extension_completeness"].as_string(),
+                        model.evidence["scope_completeness"]["user_config"].as_string(),
+                        model.evidence["completeness"].as_string(),
+                    ),
+                    model.evidence["scan_scope"].contains(["user_config"]),
+                ).join(latest, latest.c.id == model.id)
             )
         )
-        if not rows or any(row.evidence.get("schema_version", 1) < 3 for row in rows):
+        if not rows or any((version or 1) < 3 for version, _, _ in rows):
             return "unknown"
-        if any("user_config" not in row.evidence.get("scan_scope", []) for row in rows):
+        if any(not user_scope for _, _, user_scope in rows):
             return "unknown"
-        if any(
-            row.evidence.get("scope_completeness", {}).get(
-                "user_config", row.evidence.get("completeness")
-            )
-            != "complete"
-            or any(
-                profile.get("completeness") != "complete"
-                for profile in row.evidence.get("profiles", [])
-            )
-            or any(
-                app.get("completeness") != "complete"
-                for app in row.evidence.get("applications", [])
-                if app.get("config_scope") != "managed_config"
-            )
-            for row in rows
-        ):
-            return "partial"
-        return "complete"
+        return (
+            "complete"
+            if all(state == "complete" for _, state, _ in rows)
+            else "partial"
+        )
 
     def list_for_device(
         self, db: Session, *, account_id: UUID, fingerprint: str, **filters: Any

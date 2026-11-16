@@ -642,4 +642,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     stack = script.get_revision("20261217_extensions_stack")
     assert set(stack.down_revision) == {extension_merge.revision, tool_policy.revision}
-    assert script.get_heads() == [stack.revision]
+    indexes = script.get_revision("20261218_extension_obs_idx")
+    assert indexes.down_revision == stack.revision
+    assert script.get_heads() == [indexes.revision]
