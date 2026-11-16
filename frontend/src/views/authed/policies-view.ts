@@ -1816,6 +1816,22 @@ export class PoliciesView extends LitElement {
   }
 
   private async _decideRegistry(id: string, state: 'approved' | 'denied') {
+    if (state === 'denied') {
+      const entry = this._registryEntries.find((row) => row.id === id);
+      if (!entry) return;
+      const route = `${entry.server_label || entry.mcp_server_id || 'MCP server'} / ${entry.tool_name}`;
+      const confirmed = await confirmDialog({
+        title:
+          entry.state === 'approved'
+            ? 'Deny and revoke tool access?'
+            : 'Deny tool access?',
+        message: `Deny ${route} for this account? Future calls to this route will be blocked.`,
+        confirmLabel:
+          entry.state === 'approved' ? 'Deny and revoke' : 'Deny tool',
+        variant: 'danger',
+      });
+      if (!confirmed) return;
+    }
     this._registryDeciding = id;
     this._registryError = '';
     try {

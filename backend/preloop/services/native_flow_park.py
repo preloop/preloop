@@ -69,19 +69,23 @@ def command_fingerprint(tool_name: str, tool_input: Optional[Dict[str, Any]]) ->
     return hashlib.sha256(body).hexdigest()
 
 
-def is_native_park(request: Any) -> bool:
-    """Identify execution gates whose refusal must end a parked run.
-
-    A shared registry approval may be observed by several native executions;
-    it cannot carry one command marker for each of them.
-    """
-    tool_args = getattr(request, "tool_args", None)
+def is_registry_gate(request: Any) -> bool:
+    """Identify a route approval shared by multiple callers."""
     context = getattr(request, "rule_context", None)
-    registry_gate = isinstance(context, dict) and context.get("source") == "registry"
-    return bool(registry_gate) or (
-        isinstance(tool_args, dict)
-        and isinstance(tool_args.get(NATIVE_PARK_MARKER), dict)
+    return isinstance(context, dict) and context.get("source") == "registry"
+
+
+def is_native_park(request: Any) -> bool:
+    """Identify an approval bound to one native command."""
+    tool_args = getattr(request, "tool_args", None)
+    return isinstance(tool_args, dict) and isinstance(
+        tool_args.get(NATIVE_PARK_MARKER), dict
     )
+
+
+def is_execution_gate(request: Any) -> bool:
+    """Identify approvals whose refusal must end every parked observer."""
+    return is_native_park(request) or is_registry_gate(request)
 
 
 def command_text(tool_input: Optional[Dict[str, Any]]) -> str:
@@ -294,7 +298,12 @@ def fail_closed(db: Any, parked: Any, request: Any) -> bool:
         else FAILURE_CATEGORY_APPROVAL_DENIED
     )
     command = command_text(getattr(request, "tool_args", None))
-    if expired:
+    if is_registry_gate(request):
+        message = (
+            f"Approval request {request.id} for MCP route {request.tool_name} "
+            f"was {status}; the run failed closed and its tool call did not run."
+        )
+    elif expired:
         message = (
             f"Approval request {request.id} for {request.tool_name} "
             f"`{command}` expired with no decision; the run failed closed and the "

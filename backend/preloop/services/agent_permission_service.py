@@ -484,7 +484,9 @@ async def apply_native_access_rules(
     user_id: Optional[uuid.UUID],
     managed_agent_id: Optional[uuid.UUID],
     runtime_session_id: Optional[uuid.UUID],
+    api_key_id: Optional[uuid.UUID] = None,
     flow_id: Optional[uuid.UUID] = None,
+    flow_execution_id: Optional[uuid.UUID] = None,
 ) -> Optional[Tuple[str, str, Optional[Any], Optional[dict]]]:
     """Evaluate blocked-tool and access rules for a native call.
 
@@ -517,7 +519,9 @@ async def apply_native_access_rules(
         tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
         server_label=mcp_identity[0] if mcp_identity else None,
         user_id=user_id,
+        execution_id=flow_execution_id,
         subject_context={
+            "api_key_id": str(api_key_id) if api_key_id else None,
             "managed_agent_id": str(managed_agent_id) if managed_agent_id else None,
             "flow_id": str(flow_id) if flow_id else None,
             "runtime_session_id": str(runtime_session_id)
@@ -686,6 +690,8 @@ async def request_agent_permission(
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             flow_id=flow_id,
+            flow_execution_id=flow_execution_id,
+            api_key_id=api_key_id,
         )
         from preloop.services.audit.async_writer import outbox_enabled
 

@@ -316,6 +316,12 @@ cancelled request leaves the entry pending, and the next call raises a fresh
 request. Policy changes do not erase decisions; disabling approve-once skips the
 registry. Explicit matching rules take precedence over registry decisions.
 
+The first observer sets the shared request's approval window using its flow,
+workflow and account cap. Later observers reuse that request and its expiry.
+After approval, each parked run retries its own original call under current
+policy. A refusal or expiry ends every run parked on that request; arguments
+from the first caller are not copied into another run's resume instructions.
+
 In **Policies → Tools seen**, filter pending/approved/denied tools and Approve or
 Deny a route. Deny also revokes a prior approval. A manual decision settles the
 route's open approval with the same outcome. Viewing requires `view_policies`;

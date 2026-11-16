@@ -70,7 +70,7 @@ def list_registry(
     "/tools/registry/{entry_id}/decision", response_model=RegistryEntryResponse
 )
 @require_permission("manage_policies")
-async def decide_registry(
+def decide_registry(
     entry_id: UUID,
     decision: RegistryDecision,
     account: models.Account = Depends(get_account_for_user),
@@ -79,8 +79,6 @@ async def decide_registry(
 ) -> RegistryEntryResponse:
     """Decide or revoke a route, settling its pending approval with that outcome."""
     import asyncio
-
-    from preloop.api.loop_safety import run_db_off_loop
 
     async def apply_decision() -> RegistryEntryResponse:
         """Keep blocking CRUD and approval resolution on the worker thread."""
@@ -122,4 +120,4 @@ async def decide_registry(
         db.commit()
         return RegistryEntryResponse.model_validate(entry)
 
-    return await run_db_off_loop(lambda: asyncio.run(apply_decision()))
+    return asyncio.run(apply_decision())

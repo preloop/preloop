@@ -2811,6 +2811,7 @@ async def {internal_name}({params_str}):
                     if user_context.user_id
                     else None,
                     server_name=scope_server_name,
+                    execution_id=getattr(user_context, "flow_execution_id", None),
                     tool_source="mcp"
                     if name in self._proxied_tool_servers
                     else "builtin",
@@ -4258,6 +4259,7 @@ async def {internal_name}({params_str}):
                     mcp_server_id=uuid.UUID(server_id),
                     subject_context=subject_context,
                     execution_id=execution_id,
+                    record=False,
                 )
                 if outbox_enabled():
                     await db.commit()

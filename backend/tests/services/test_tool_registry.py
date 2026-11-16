@@ -1,7 +1,8 @@
 """Approve-once registry persistence and lifecycle regression tests."""
 
+import asyncio
 from uuid import uuid4
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from sqlalchemy import Engine
 
 import pytest
@@ -216,7 +217,8 @@ async def test_manual_decision_resolves_open_request(
         server_label="docs",
     )
     [entry] = tool_registry.list_entries(db_session, account_id=test_user.account_id)
-    result = await decide_registry(
+    result = await asyncio.to_thread(
+        decide_registry,
         entry.id,
         RegistryDecision(state="denied"),
         account=test_user.account,
@@ -394,12 +396,12 @@ def test_shared_registry_park_refusal_is_execution_gate(status: str) -> None:
     fails_when=markerless shared requests resume; no_claim=no live orchestrator.
     """
     from types import SimpleNamespace
-    from preloop.services.native_flow_park import is_native_park, refused_or_expired
+    from preloop.services.native_flow_park import is_execution_gate, refused_or_expired
 
     request = SimpleNamespace(
         tool_args={}, rule_context={"source": "registry"}, status=status
     )
-    assert is_native_park(request) and refused_or_expired(request)
+    assert is_execution_gate(request) and refused_or_expired(request)
 
 
 def test_registry_existing_route_performance(
@@ -510,7 +512,8 @@ async def test_registry_api_account_filter_and_missing_decision(
     )
     assert len(next_page) == 1 and own[0].id != next_page[0].id
     with pytest.raises(HTTPException) as error:
-        await decide_registry(
+        await asyncio.to_thread(
+            decide_registry,
             entry.id,
             RegistryDecision(state="approved"),
             account=test_user.account,
@@ -551,7 +554,35 @@ async def test_hook_reuses_registry_request_when_parking(
     monkeypatch.setattr(
         native_flow_park, "resolve_window", lambda *_: SimpleNamespace(seconds=300)
     )
-    monkeypatch.setattr(native_flow_park, "park", lambda **_: True)
+    parked_calls: list[dict[str, Any]] = []
+
+    def park(**kwargs: Any) -> bool:
+        """Capture the actual expiry passed to the parking service."""
+        parked_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(native_flow_park, "park", park)
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        created_by_user_id=test_user.id,
+        name="Example",
+        prompt_template="Review",
+        agent_config={},
+        approval_window_seconds=172800,
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(flow_id=flow.id, status="RUNNING")
+    db_session.add(execution)
+    db_session.flush()
+    key = models.ApiKey(
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        name="Example credential",
+        key="synthetic-registry-test-credential",
+    )
+    db_session.add(key)
+    db_session.flush()
     result = await service.request_agent_permission(
         base_url="https://example.com",
         account_id=str(test_user.account_id),
@@ -564,7 +595,8 @@ async def test_hook_reuses_registry_request_when_parking(
         tool_input={},
         agent_reasoning=None,
         client_decision="allow",
-        flow_execution_id=uuid4(),
+        api_key_id=key.id,
+        flow_execution_id=execution.id,
     )
     [entry] = tool_registry.list_entries(db_session, account_id=test_user.account_id)
     assert result[0] == "park" and result[2] == str(entry.approval_request_id)
@@ -573,6 +605,14 @@ async def test_hook_reuses_registry_request_when_parking(
         .filter_by(account_id=test_user.account_id)
         .count()
         == 1
+    )
+
+    request = db_session.get(models.ApprovalRequest, entry.approval_request_id)
+    assert str(request.execution_id) == str(execution.id)
+    assert request.api_key_id == key.id
+    assert parked_calls[0]["expires_at"] == request.expires_at
+    assert (request.expires_at - request.created_at).total_seconds() == pytest.approx(
+        172800, abs=1
     )
 
 
@@ -653,7 +693,7 @@ async def test_registry_replay_rechecks_revocation_and_errors(
             """Inject an unavailable registry, never a permissive fallback."""
             raise RuntimeError("registry unavailable")
 
-        monkeypatch.setattr(tool_registry, "get_or_create_seen", broken)
+        monkeypatch.setattr(tool_registry, "find", broken)
         assert "policy check failed" in await mcp._approval_replay_denial(
             str(test_user.account_id), "docs_fetch", {}
         )
@@ -695,6 +735,20 @@ async def test_proxy_dispatch_obeys_defaults_and_registry(
         enabled_proxied_tools=[],
     )
     mcp, client, _, server = _setup(monkeypatch, user_context)
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        created_by_user_id=test_user.id,
+        name="Example",
+        prompt_template="Review",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(flow_id=flow.id, status="RUNNING")
+    db_session.add(execution)
+    db_session.flush()
+    user_context.flow_id = str(flow.id)
+    user_context.flow_execution_id = str(execution.id)
     row = models.MCPServer(
         account_id=test_user.account_id,
         name="docs",
@@ -733,6 +787,15 @@ async def test_proxy_dispatch_obeys_defaults_and_registry(
     monkeypatch.setattr("preloop.models.db.session.get_async_db_session", session)
     monkeypatch.setattr(policy_evaluator, "evaluate_policy_async", real_evaluator)
     monkeypatch.setattr(approval_helper, "require_approval", real_require)
+    storage_scopes: list[str | None] = []
+    original_storage = ApprovalService._storage_redacted_tool_args
+
+    async def store(self: ApprovalService, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Observe the real redaction scope without replacing redaction."""
+        storage_scopes.append(kwargs.get("server_name"))
+        return await original_storage(self, *args, **kwargs)
+
+    monkeypatch.setattr(ApprovalService, "_storage_redacted_tool_args", store)
     result = await mcp.call_tool("safe_tool", {"ok": "yes"})
     if mode == "allow":
         client.call_tool.assert_awaited_once()
@@ -751,6 +814,9 @@ async def test_proxy_dispatch_obeys_defaults_and_registry(
         and requests[0].approval_workflow_id == registry_environment.id
     )
     assert requests[0].status == "pending"
+    if mode == "registry":
+        assert str(requests[0].execution_id) == str(execution.id)
+    assert "upstream" in storage_scopes
     if mode == "registry":
         await mcp.call_tool("safe_tool", {"ok": "yes"})
         assert (
@@ -778,3 +844,46 @@ async def test_proxy_dispatch_obeys_defaults_and_registry(
         )
         await mcp.call_tool("safe_tool", {"ok": "yes"})
         client.call_tool.assert_awaited_once()
+
+
+@pytest.mark.parametrize("status", ["approved", "declined", "expired"])
+def test_registry_resume_does_not_share_caller_arguments(status: str) -> None:
+    """protects=each shared observer resumes its own call without argument leakage;
+    fails_when=first caller command enters another run; no_claim=runtime resume mocked.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from preloop.services.approval_park import answer_from_request, answers_prompt_block
+    from preloop.services.native_flow_park import fail_closed
+
+    request = SimpleNamespace(
+        id="shared-request",
+        status=status,
+        account_id="account",
+        tool_name="mcp__docs__fetch",
+        tool_args={
+            "command": "first-caller-private-argument",
+            "question": "private-question",
+        },
+        rule_context={"source": "registry"},
+    )
+    for execution_id in ("first-run", "second-run"):
+        answer = answer_from_request(request)
+        prompt = answers_prompt_block(answer)
+        assert "first-caller-private-argument" not in str(answer) + prompt
+        assert "private-question" not in str(answer) + prompt
+        assert "native_command" not in answer
+        if status == "approved":
+            assert "your own original tool call" in prompt
+            assert "get_approval_status" not in prompt
+        else:
+            with patch(
+                "preloop.models.crud.crud_flow_execution.fail_parked_for_request",
+                return_value=False,
+            ) as fail:
+                fail_closed(None, SimpleNamespace(id=execution_id), request)
+                assert fail.call_args.kwargs["execution_id"] == execution_id
+                assert (
+                    "first-caller-private-argument"
+                    not in fail.call_args.kwargs["error_message"]
+                )

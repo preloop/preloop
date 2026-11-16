@@ -1,5 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { answerConfirmDialog } from '../../utils/test-confirm-dialog';
 
 import { invalidateApiCaches } from '../../api';
 import '../../components/view-header.ts';
@@ -2027,7 +2028,15 @@ describe('PoliciesView', () => {
     await view._loadRegistry();
     await view._decideRegistry('entry-1', 'approved');
     expect(view._registryEntries[0].state).to.equal('approved');
-    await view._decideRegistry('entry-1', 'denied');
+    const cancelled = view._decideRegistry('entry-1', 'denied');
+    const copy = await answerConfirmDialog(false);
+    await cancelled;
+    expect(copy).to.include('docs / fetch');
+    expect(copy).to.include('Deny and revoke');
+    expect(view._registryEntries[0].state).to.equal('approved');
+    const revoked = view._decideRegistry('entry-1', 'denied');
+    await answerConfirmDialog(true);
+    await revoked;
     expect(view._registryEntries[0].state).to.equal('denied');
     const posts = fetchStub
       .getCalls()
