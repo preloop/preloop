@@ -186,6 +186,16 @@ class ApprovalWorkflowBase(BaseModel):
         None, description="workflow to escalate to when fallback_behavior='escalate'"
     )
 
+    @model_validator(mode="after")
+    def validate_external_options(self) -> "ApprovalWorkflowBase":
+        """Validate opt-in external settings while preserving legacy config."""
+        from preloop.models.schemas.external_approval import (
+            validate_external_workflow_config,
+        )
+
+        validate_external_workflow_config(self.approval_config)
+        return self
+
 
 class ApprovalWorkflowCreate(ApprovalWorkflowBase):
     """Schema for creating approval workflow."""

@@ -62,6 +62,7 @@ class NotificationPayloadBuilder:
         rule_context: Optional[Dict[str, Any]] = None,
         agent_name: Optional[str] = None,
         runtime_session_id: Optional[str] = None,
+        external_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build payload for new approval request.
 
@@ -213,6 +214,11 @@ class NotificationPayloadBuilder:
             "priority": priority,
             "risk_level": risk_level,
         }
+        if external_url:
+            custom_data["external_url"] = external_url
+            custom_data["external_decision"] = True
+            category = "EXTERNAL_APPROVAL"
+            body = "Decide on the external service."
         if ask_text:
             custom_data["summary"] = ask_text
         if asker:

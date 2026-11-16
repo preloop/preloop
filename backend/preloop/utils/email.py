@@ -463,6 +463,7 @@ async def send_approval_request_email(
     summary: Optional[str] = None,
     agent_name: Optional[str] = None,
     runtime_session_id: Optional[str] = None,
+    external_decision: bool = False,
 ) -> None:
     """Send an approval request email to an approver.
 
@@ -543,7 +544,9 @@ async def send_approval_request_email(
             "Arguments:",
             tool_args_formatted,
             "",
-            "To approve or decline this request, please visit:",
+            "Decide on the external service:"
+            if external_decision
+            else "To approve or decline this request, please visit:",
             approval_url,
             "",
             "This link will expire in 5 minutes.",
@@ -635,9 +638,11 @@ async def send_approval_request_email(
         [
             "      <p><strong>Arguments:</strong></p>",
             f'      <pre class="arguments">{esc(tool_args_formatted)}</pre>',
-            "      <p>Please review and decide:</p>",
+            "      <p>Decide on the external service:</p>"
+            if external_decision
+            else "      <p>Please review and decide:</p>",
             '      <div style="text-align: center; margin: 20px 0;">',
-            f'        <a href="{approval_url}" class="button">Review Request</a>',
+            f'        <a href="{esc(approval_url)}" class="button">Review Request</a>',
             "      </div>",
             '      <p class="warning">⚠️ This link will expire in 5 minutes.</p>',
             "    </div>",

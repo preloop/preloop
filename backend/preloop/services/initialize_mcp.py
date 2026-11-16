@@ -2242,20 +2242,17 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         try:
             async with get_async_db_session() as db:
                 from sqlalchemy import select
-                from preloop.models.models.approval_request import ApprovalRequest
 
                 # Fetch the approval request, verifying account ownership.
                 # Use FOR UPDATE to prevent concurrent poll requests from
                 # both executing the tool when status becomes "approved".
-                result = await db.execute(
-                    select(ApprovalRequest)
-                    .where(
-                        ApprovalRequest.id == request_id,
-                        ApprovalRequest.account_id == user_context.account_id,
-                    )
-                    .with_for_update()
+                from preloop.models.crud.approval_request import (
+                    get_replay_request_async,
                 )
-                approval_request = result.scalar_one_or_none()
+
+                approval_request = await get_replay_request_async(
+                    db, request_id=request_id, account_id=user_context.account_id
+                )
 
                 if not approval_request:
                     return json.dumps(
@@ -2274,6 +2271,25 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 )
                 events = list(events_result.scalars())
 
+                from preloop.services.external_approval import (
+                    hide_agent_comment,
+                    scope_replay,
+                    outcome_error,
+                )
+
+                private_comment = hide_agent_comment(approval_request)
+                scope_context = getattr(approval_request, "rule_context", None)
+                scope_context = scope_context if isinstance(scope_context, dict) else {}
+                is_scope_approval = (
+                    scope_context.get("source") == "upstream_scope_refusal"
+                )
+                external_reference = getattr(
+                    approval_request, "external_reference", None
+                )
+                external_reference = (
+                    external_reference if isinstance(external_reference, str) else None
+                )
+
                 # Build event log
                 event_log = []
                 for event in events:
@@ -2283,7 +2299,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         "type": event.event_type,
                         "detail": event.detail,
                     }
-                    if event.comment:
+                    if event.comment and not private_comment and not is_scope_approval:
                         entry["comment"] = event.comment
                     event_log.append(entry)
 
@@ -2294,6 +2310,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     "tool_name": approval_request.tool_name,
                     "events": event_log,
                 }
+
+                if external_reference:
+                    response["external_reference"] = external_reference
 
                 # Add remaining time for pending requests
                 if approval_request.status == "pending" and approval_request.expires_at:
@@ -2371,7 +2390,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         # ask_user replay: the approver's comment IS the
                         # human's answer — capture it before releasing the
                         # lock so the re-executed tool can return it.
-                        approver_comment = approval_request.approver_comment
+                        approver_comment = (
+                            None
+                            if private_comment or is_scope_approval
+                            else approval_request.approver_comment
+                        )
                         # Same for a form answer: the data, plus the id it was
                         # decided under, so the replayed tool can return both.
                         approver_answer = approval_request.structured_answer
@@ -2420,6 +2443,14 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             _approved_comment_var.set(approver_comment)
                             _approved_answer_var.set(approver_answer)
                             _approved_id_var.set(str(req_id))
+                            scope_token = scope_replay.set(
+                                {
+                                    **scope_context,
+                                    "external_reference": external_reference,
+                                }
+                                if is_scope_approval
+                                else None
+                            )
                             try:
                                 # Namespaced name for a proxied (external MCP)
                                 # tool, original name for a built-in one. The
@@ -2454,6 +2485,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                     else:
                                         raise
                             finally:
+                                scope_replay.reset(scope_token)
                                 _correlation_id_var.reset(replay_correlation)
                                 replay_grant = _grant_binding_var.get(None)
                                 _grant_binding_var.set(None)
@@ -2462,6 +2494,18 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 _approved_answer_var.set(None)
                                 _approved_id_var.set(None)
 
+                            if is_scope_approval and getattr(
+                                tool_result, "is_error", False
+                            ):
+                                from preloop.services.dynamic_fastmcp import (
+                                    _tool_error_result,
+                                )
+
+                                tool_result = _tool_error_result(
+                                    outcome_error(
+                                        "approved but retry refused", external_reference
+                                    )
+                                )
                             # An upstream isError result is not "executed".
                             exec_status, exec_error = post_approval_exec_outcome(
                                 tool_result
@@ -2490,10 +2534,16 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             )
                             # Store a failure sentinel so subsequent polls
                             # do not re-execute the tool.
-                            result_data = {"_error": str(exec_err)}
-                            response["tool_execution_error"] = str(exec_err)
+                            exec_error = (
+                                outcome_error(
+                                    "approved but retry failed", external_reference
+                                )
+                                if is_scope_approval
+                                else str(exec_err)
+                            )
+                            result_data = {"_error": exec_error}
+                            response["tool_execution_error"] = exec_error
                             exec_status = "failed"
-                            exec_error = str(exec_err)
 
                         elapsed_ms = int((_time.monotonic() - exec_start) * 1000)
 
@@ -2542,9 +2592,21 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
                 # If declined/cancelled, include the reason
                 if approval_request.status in ("declined", "cancelled"):
-                    if approval_request.approver_comment:
+                    if (
+                        approval_request.approver_comment
+                        and not private_comment
+                        and not is_scope_approval
+                    ):
                         response["reason"] = approval_request.approver_comment
 
+                if is_scope_approval and approval_request.status in {
+                    "declined",
+                    "cancelled",
+                    "expired",
+                }:
+                    response["tool_execution_error"] = outcome_error(
+                        approval_request.status, external_reference
+                    )
                 return json.dumps(response)
 
         except Exception as e:

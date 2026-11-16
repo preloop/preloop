@@ -19,7 +19,7 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, case, false, func, or_, text
+from sqlalchemy import and_, case, false, func, or_, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
 
@@ -347,6 +347,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        grant_reference: Optional[str] = None,
     ) -> List[AuditLog]:
         """Get audit logs for an account with optional filters.
 
@@ -377,6 +378,13 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             query = query.filter(AuditLog.resource_type == resource_type)
         if resource_id is not None:
             query = query.filter(AuditLog.resource_id == resource_id)
+        if grant_reference is not None:
+            query = query.filter(
+                AuditLog.details.op("->")("external_result").op("->>")(
+                    "grant_reference"
+                )
+                == grant_reference
+            )
         if consent_ref is not None:
             query = query.filter(
                 AuditLog.details.op("->")("grant").op("->>")("consent_ref")
@@ -607,6 +615,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        grant_reference: Optional[str] = None,
         min_cost: Optional[float] = None,
         max_cost: Optional[float] = None,
         count_limit: Optional[int] = None,
@@ -658,6 +667,30 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
 
         # Filters every count and page shares, whatever the event type.
         scope_filters: List[Any] = [AuditLog.account_id == account_id_str]
+        if grant_reference is not None:
+            decision_row = aliased(AuditLog)
+            matching_decision = (
+                select(decision_row.id)
+                .where(
+                    decision_row.account_id == account_id_str,
+                    decision_row.details.op("->")("external_result").op("->>")(
+                        "grant_reference"
+                    )
+                    == grant_reference,
+                    decision_row.details["correlation_id"].astext
+                    == AuditLog.details["correlation_id"].astext,
+                )
+                .exists()
+            )
+            scope_filters.append(
+                or_(
+                    AuditLog.details.op("->")("external_result").op("->>")(
+                        "grant_reference"
+                    )
+                    == grant_reference,
+                    matching_decision,
+                )
+            )
         if consent_ref is not None:
             scope_filters.append(
                 AuditLog.details.op("->")("grant").op("->>")("consent_ref")
@@ -1068,6 +1101,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        grant_reference: Optional[str] = None,
     ) -> int:
         """Count audit logs for an account with optional filters.
 
@@ -1098,6 +1132,13 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             query = query.filter(AuditLog.resource_type == resource_type)
         if user_id is not None:
             query = query.filter(AuditLog.user_id == user_id)
+        if grant_reference is not None:
+            query = query.filter(
+                AuditLog.details.op("->")("external_result").op("->>")(
+                    "grant_reference"
+                )
+                == grant_reference
+            )
         if consent_ref is not None:
             query = query.filter(
                 AuditLog.details.op("->")("grant").op("->>")("consent_ref")

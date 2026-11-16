@@ -266,6 +266,9 @@ def list_audit_logs(
     end_date: Optional[datetime] = Query(
         None, description="Filter by end date (ISO 8601 format)"
     ),
+    grant_reference: Optional[str] = Query(
+        None, description="Exact external grant reference"
+    ),
     consent_ref: Optional[str] = Query(
         None,
         min_length=1,
@@ -300,6 +303,11 @@ def list_audit_logs(
                 start_date=start_date,
                 end_date=end_date,
                 consent_ref=consent_ref,
+                **(
+                    {"grant_reference": grant_reference}
+                    if grant_reference is not None
+                    else {}
+                ),
             ),
         )
 
@@ -315,6 +323,11 @@ def list_audit_logs(
                 start_date=start_date,
                 end_date=end_date,
                 consent_ref=consent_ref,
+                **(
+                    {"grant_reference": grant_reference}
+                    if grant_reference is not None
+                    else {}
+                ),
             ),
         )
 
@@ -379,6 +392,9 @@ def list_grouped_audit_logs(
     max_cost: Optional[float] = Query(
         None, ge=0, description="Maximum estimated gateway spend (USD)"
     ),
+    grant_reference: Optional[str] = Query(
+        None, description="Exact external grant reference"
+    ),
     consent_ref: Optional[str] = Query(
         None,
         min_length=1,
@@ -423,6 +439,11 @@ def list_grouped_audit_logs(
                 start_date=start_date,
                 end_date=end_date,
                 consent_ref=consent_ref,
+                **(
+                    {"grant_reference": grant_reference}
+                    if grant_reference is not None
+                    else {}
+                ),
                 min_cost=min_cost,
                 max_cost=max_cost,
                 **count_kwargs,

@@ -155,7 +155,7 @@ async def process_one(db: Session, app: Any) -> bool:
                                 ],
                             },
                         )
-                        await broker.request(
+                        approval_data = await broker.request(
                             "GET",
                             f"/api/v1/approval-requests/{request_id}",
                             "view_approvals",
@@ -173,6 +173,13 @@ async def process_one(db: Session, app: Any) -> bool:
                             and not provider_config(connection).verification_secret,
                         )
                         reply = f"Preloop approval {request_id} needs your review. Use {approve} or {deny}. Review full details in the dashboard before deciding."
+                        if isinstance(approval_data, dict) and approval_data.get(
+                            "external_url"
+                        ):
+                            reply = (
+                                "Decide on the external service: "
+                                + approval_data["external_url"]
+                            )
                     elif text.startswith("/"):
                         # Commit intent before the POST. A crash is observable.
                         permission = (

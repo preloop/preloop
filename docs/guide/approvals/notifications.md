@@ -233,3 +233,15 @@ Always on. The notification bell shows pending requests; clicking one opens the 
 - [Teams in Approval Workflows](teams.md): routing to groups of approvers
 - [Per-Tool Justification](justification.md): agent reasoning in notifications
 - [Native Tool Approvals](ai-approvals.md#native-tool-approvals): approvals for agents' shell and file operations, delivered over the same channels
+
+## Decisions on an external service
+
+A workflow with `approval_config.external_approval_link: true` waits for its
+signed webhook's response before notifying people. When that response supplies
+a valid `external_url`, email, private chat, push payloads and the console carry
+that URL unchanged and identify the external service as the place to decide.
+Preloop's own decision buttons are hidden for the request. The external service
+posts the outcome using the existing token or API decision endpoints.
+
+See [External approval hand-off](../webhooks.md#external-approval-hand-off) for
+host allow-lists, structured results, failure behavior and comment privacy.

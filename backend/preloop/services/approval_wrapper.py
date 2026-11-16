@@ -4,6 +4,8 @@ This module provides a decorator that wraps tool functions to add approval logic
 while maintaining proper streaming of progress notifications to the MCP client.
 """
 
+from preloop.services.external_approval import agent_visible_comment
+
 import asyncio
 import logging
 import os
@@ -277,7 +279,7 @@ def with_approval(tool_func: Callable) -> Callable:
                             current_request.status if current_request else None
                         )
                         current_comment = (
-                            current_request.approver_comment
+                            agent_visible_comment(current_request)
                             if current_request
                             else None
                         )
