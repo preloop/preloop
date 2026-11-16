@@ -591,4 +591,10 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     bundle_registry = script.get_revision("20261113_bundle_registry")
     assert bundle_registry.down_revision == joined.revision
-    assert script.get_heads() == ["20261113_bundle_registry"]
+    external_approval = script.get_revision("20261210_external_approval")
+    assert external_approval.down_revision == bundle_registry.revision
+    external_grant_indexes = script.get_revision("20261211_external_grant_idx")
+    assert external_grant_indexes.down_revision == external_approval.revision
+    sign_in_policy = script.get_revision("20261116_sign_in_policy")
+    assert sign_in_policy.down_revision == external_grant_indexes.revision
+    assert script.get_heads() == [sign_in_policy.revision]
