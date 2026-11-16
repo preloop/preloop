@@ -7,10 +7,13 @@ message with ``finish_reason: stop``, its second a streamed tool call.
 """
 
 import json
+from collections.abc import Iterator
 from contextlib import ExitStack
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -63,7 +66,9 @@ def _payload() -> dict[str, Any]:
     }
 
 
-def _service() -> tuple[OpenAIGatewayService, ExitStack]:
+@pytest.fixture
+def service() -> Iterator[OpenAIGatewayService]:
+    """Restore gateway patches after every test, including normalization checks."""
     model = SimpleNamespace(
         id="model-1",
         provider_name="openrouter",
@@ -77,28 +82,28 @@ def _service() -> tuple[OpenAIGatewayService, ExitStack]:
             user=SimpleNamespace(id="u", account_id="a"),  # type: ignore[arg-type]
         ),
     )
-    stack = ExitStack()
-    stack.enter_context(
-        patch.object(service, "_resolve_requested_model", return_value=model)
-    )
-    for method in (
-        "_check_budget",
-        "_emit_gateway_request_started",
-        "_record_gateway_request",
-        "_defer_stream_record",
-        "_finish_stream_generator",
-    ):
-        stack.enter_context(patch.object(service, method, return_value=None))
-    stack.enter_context(
-        patch.object(service, "_is_openai_codex_model", return_value=False)
-    )
-    stack.enter_context(
-        patch(
-            "preloop.services.openai_gateway.should_use_responses_passthrough",
-            return_value=False,
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(service, "_resolve_requested_model", return_value=model)
         )
-    )
-    return service, stack
+        for method in (
+            "_check_budget",
+            "_emit_gateway_request_started",
+            "_record_gateway_request",
+            "_defer_stream_record",
+            "_finish_stream_generator",
+        ):
+            stack.enter_context(patch.object(service, method, return_value=None))
+        stack.enter_context(
+            patch.object(service, "_is_openai_codex_model", return_value=False)
+        )
+        stack.enter_context(
+            patch(
+                "preloop.services.openai_gateway.should_use_responses_passthrough",
+                return_value=False,
+            )
+        )
+        yield service
 
 
 def _events(stream: Any) -> list[dict[str, Any]]:
@@ -109,8 +114,9 @@ def _events(stream: Any) -> list[dict[str, Any]]:
     ]
 
 
-def test_tools_tool_choice_and_schema_reach_the_chat_upstream() -> None:
-    service, _ = _service()
+def test_tools_tool_choice_and_schema_reach_the_chat_upstream(
+    service: OpenAIGatewayService,
+) -> None:
     kwargs = service._normalize_completion_parameters(_payload(), provider="openai")
     names = [tool["function"]["name"] for tool in kwargs["tools"]]
     assert names == ["exec_command", "write_stdin"]
@@ -121,8 +127,9 @@ def test_tools_tool_choice_and_schema_reach_the_chat_upstream() -> None:
     assert kwargs["response_format"]["json_schema"]["schema"] == SCHEMA
 
 
-def test_stop_turn_then_tool_call_turn_render_as_responses_items() -> None:
-    service, stack = _service()
+def test_stop_turn_then_tool_call_turn_render_as_responses_items(
+    service: OpenAIGatewayService,
+) -> None:
     stop_turn = [
         {"choices": [{"delta": {"content": "Starting by locating the checkout."}}]},
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
@@ -136,21 +143,18 @@ def test_stop_turn_then_tool_call_turn_render_as_responses_items() -> None:
         {"choices": [{"delta": {"tool_calls": [{**call, "index": 0}]}}]},
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
     ]
-    with stack:
-        with patch.object(
-            service, "_open_upstream_stream", side_effect=[iter(stop_turn)]
-        ) as upstream:
-            first = _events(service.stream_response(_payload()))
-        sent = upstream.call_args.kwargs["payload"]
-        assert sent["tools"] == TOOLS and sent["tool_choice"] == "auto"
-        done = next(e for e in first if e["type"] == "response.completed")
-        assert done["response"]["status"] == "completed"
-        assert [item["type"] for item in done["response"]["output"]] == ["message"]
+    with patch.object(
+        service, "_open_upstream_stream", side_effect=[iter(stop_turn)]
+    ) as upstream:
+        first = _events(service.stream_response(_payload()))
+    sent = upstream.call_args.kwargs["payload"]
+    assert sent["tools"] == TOOLS and sent["tool_choice"] == "auto"
+    done = next(e for e in first if e["type"] == "response.completed")
+    assert done["response"]["status"] == "completed"
+    assert [item["type"] for item in done["response"]["output"]] == ["message"]
 
-        with patch.object(
-            service, "_open_upstream_stream", side_effect=[iter(tool_turn)]
-        ):
-            second = _events(service.stream_response(_payload()))
+    with patch.object(service, "_open_upstream_stream", side_effect=[iter(tool_turn)]):
+        second = _events(service.stream_response(_payload()))
     done = next(e for e in second if e["type"] == "response.completed")
     calls = [i for i in done["response"]["output"] if i["type"] == "function_call"]
     assert [(c["name"], c["call_id"]) for c in calls] == [("exec_command", "call_1")]
