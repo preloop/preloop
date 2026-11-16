@@ -130,10 +130,12 @@ class CRUDDiscoveredExtension:
                     row.present = True
                     row.last_seen_at = received
                     row.last_observation_id = observation_id
-            complete = all(app.completeness == "complete" for app in apps)
+            complete = evidence.completeness != "failed" and all(
+                app.completeness == "complete" for app in apps
+            )
             # Failed profiles make their app claims insufficient for absence.
             complete = complete and all(
-                profile.completeness == "complete"
+                profile.completeness != "failed"
                 for profile in evidence.profiles
                 if profile.profile_ref == profile_ref
             )
@@ -163,17 +165,17 @@ class CRUDDiscoveredExtension:
         )
         if not rows or any(row.evidence.get("schema_version", 1) < 3 for row in rows):
             return "unknown"
-        if any(
-            row.evidence.get("applications")
-            and all(
-                app.get("config_scope") == "managed_config"
-                for app in row.evidence["applications"]
-            )
-            for row in rows
-        ):
+        if any("user_config" not in row.evidence.get("scan_scope", []) for row in rows):
             return "unknown"
         if any(
-            row.evidence.get("completeness") != "complete"
+            row.evidence.get("scope_completeness", {}).get(
+                "user_config", row.evidence.get("completeness")
+            )
+            != "complete"
+            or any(
+                profile.get("completeness") != "complete"
+                for profile in row.evidence.get("profiles", [])
+            )
             or any(
                 app.get("completeness") != "complete"
                 for app in row.evidence.get("applications", [])

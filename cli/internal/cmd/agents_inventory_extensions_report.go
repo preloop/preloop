@@ -91,6 +91,7 @@ func postInventoryReport(client *api.Client, report discoveryReportRequest, resp
 func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequest {
 	evidence := *report.Evidence
 	evidence.SchemaVersion = 2
+	evidence.ScopeCompleteness = nil
 	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
 	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
 	legacyApps := []inventoryReportApplication{}

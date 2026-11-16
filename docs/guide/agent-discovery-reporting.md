@@ -218,7 +218,10 @@ All-user reporting also inspects the standard Claude Code system
 or absence of the exported Preloop PreToolUse hook as a separate machine-level
 application context with a salted config-path hash and `managed_config` scope.
 The absence of the file or hook is configuration evidence only. Unreadable or
-malformed files make the report partial and the control unknown. This does not
+malformed files mark managed configuration incomplete and the control unknown.
+`evidence.scope_completeness` keeps the original user-config scan status separate
+from the managed-config status. The overall report retains its most severe state
+and accumulated error codes. This does not
 inspect higher managed sources or establish the effective policy in the app.
 Commands, file contents, environment values and credentials are never sent.
 Offline profile inventory remains limited to profile configuration.

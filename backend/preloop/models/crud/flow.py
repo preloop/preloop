@@ -188,6 +188,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         account_id: Union[str, UUID, None] = None,
         *,
         refresh: bool = False,
+        for_update: bool = False,
     ) -> Optional[models.Flow]:
         """
         Retrieve a flow by its ID.
@@ -196,6 +197,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db: The database session.
             id: The ID of the flow to retrieve (string or UUID).
             account_id: The ID of the account associated with the flow (string or UUID). Optional.
+            refresh: Reload the flow and its selected model from storage.
+            for_update: Refresh and lock the flow until this transaction ends.
 
         Returns:
             The flow object if found, otherwise None.
@@ -206,6 +209,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
         query = db.query(self.model).filter(cast(self.model.id, String) == id_str)
         if refresh:
             query = query.populate_existing().options(joinedload(self.model.ai_model))
+        if for_update:
+            query = query.populate_existing().with_for_update(of=self.model)
 
         if account_id:
             account_id_str = (

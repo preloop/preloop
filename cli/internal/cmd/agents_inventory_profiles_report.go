@@ -35,6 +35,7 @@ type inventoryReportApplication struct {
 	Completeness   string                   `json:"completeness,omitempty"`
 }
 type inventoryReportEvidence struct {
+	ScopeCompleteness map[string]string            `json:"scope_completeness,omitempty"`
 	SchemaVersion     int                          `json:"schema_version"`
 	ObservationID     string                       `json:"observation_id"`
 	CollectorVersion  string                       `json:"collector_version,omitempty"`

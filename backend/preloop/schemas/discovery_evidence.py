@@ -119,6 +119,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
         Literal["installed_apps", "user_config", "managed_config", "running_apps"]
     ] = Field(min_length=1, max_length=4)
     completeness: Literal["complete", "partial", "failed"]
+    scope_completeness: dict[
+        Literal["user_config", "managed_config"],
+        Literal["complete", "partial", "failed"],
+    ] = Field(default_factory=dict, max_length=2)
     errors: list[
         Literal[
             "permission_denied", "unavailable", "unsupported", "parse_failed", "timeout"
@@ -134,6 +138,8 @@ class DiscoveryEvidence(SafeEvidenceModel):
     ) -> dict[str, Any]:
         """Preserve v1 canonical bytes for immutable observation replay hashes."""
         data: dict[str, Any] = handler(self)
+        if not self.scope_completeness:
+            data.pop("scope_completeness", None)
         if self.schema_version == 1:
             data.pop("profiles", None)
             for application in data.get("applications", []):
@@ -163,6 +169,12 @@ class DiscoveryEvidence(SafeEvidenceModel):
             raise ValueError("Collection window must be ordered and at most one day")
         if self.completeness == "complete" and self.errors:
             raise ValueError("Complete collection cannot include errors")
+        if any(scope not in self.scan_scope for scope in self.scope_completeness):
+            raise ValueError("Scope completeness requires a declared scan scope")
+        if self.completeness == "complete" and any(
+            value != "complete" for value in self.scope_completeness.values()
+        ):
+            raise ValueError("Complete collection cannot include partial scopes")
         refs = [profile.profile_ref for profile in self.profiles]
         if len(set(refs)) != len(refs):
             raise ValueError("Profile references must be unique")
@@ -208,6 +220,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 if len(set(keys)) != len(keys):
                     raise ValueError(
                         "Extension keys must be unique within an application"
+                    )
+                if self.completeness == "complete" and app.completeness != "complete":
+                    raise ValueError(
+                        "Complete collection cannot include partial applications"
                     )
                 if app.profile_ref is not None and app.profile_ref not in refs:
                     raise ValueError("Application must reference a collected profile")

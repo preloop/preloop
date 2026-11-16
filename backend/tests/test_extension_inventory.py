@@ -379,3 +379,108 @@ def test_managed_configuration_does_not_reconcile_or_stale_extension_contexts(
     )
     store(db, account, report([], at=NOW + timedelta(minutes=1)))
     assert crud_discovered_extension.list_for_account(db, account_id=account)[0] == []
+
+
+def test_complete_app_reconciles_despite_unrelated_profile_partial(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=app-level absence; fails_when=unverified runtime blocks removals;
+    no_claim=synthetic all-profile evidence, no OS enumeration.
+    """
+    store(db_session, test_user.account_id, report(profile_ref="c" * 64))
+    payload = report([], profile_ref="c" * 64, at=NOW + timedelta(minutes=1))
+    payload["evidence"]["completeness"] = "partial"
+    payload["evidence"]["profiles"][0].update(
+        completeness="partial", error_code="probe_incomplete"
+    )
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.list_for_account(
+            db_session, account_id=test_user.account_id
+        )[0]
+        == []
+    )
+
+
+def test_failed_envelope_never_proves_absence(
+    db_session: Session, test_user: models.User
+) -> None:
+    """protects=failed scope; fails_when=a failed envelope removes inventory;
+    no_claim=synthetic contradictory collector claims.
+    """
+    store(db_session, test_user.account_id, report())
+    payload = report([], at=NOW + timedelta(minutes=1))
+    payload["evidence"]["completeness"] = "failed"
+    store(db_session, test_user.account_id, payload)
+    assert (
+        len(
+            crud_discovered_extension.list_for_account(
+                db_session, account_id=test_user.account_id
+            )[0]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("has_user_app", [False, True])
+def test_managed_failure_preserves_complete_user_inventory(
+    db_session: Session,
+    test_user: models.User,
+    has_user_app: bool,
+) -> None:
+    """Completed profile scans retain their coverage when another scope fails."""
+    payload = report(profile_ref="c" * 64)
+    if not has_user_app:
+        payload["candidates"] = []
+        payload["evidence"]["applications"] = []
+    payload["evidence"].update(
+        completeness="partial",
+        errors=["permission_denied"],
+        scan_scope=["user_config", "managed_config"],
+        scope_completeness={"user_config": "complete", "managed_config": "partial"},
+    )
+    payload["evidence"]["applications"].append(
+        {
+            "agent_kind": "claude_code",
+            "config_path_hash": "d" * 64,
+            "config_scope": "managed_config",
+            "controls": [
+                {
+                    "axis": "native_tool_hook",
+                    "configured": "unknown",
+                    "configuration_evidence": "unavailable",
+                }
+            ],
+        }
+    )
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.completeness(
+            db_session, account_id=test_user.account_id
+        )
+        == "complete"
+    )
+
+
+def test_empty_complete_user_scan_with_managed_context_is_complete(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Zero installed applications is a valid complete profile collection."""
+    payload = report(profile_ref="c" * 64)
+    payload["candidates"] = []
+    payload["evidence"]["scan_scope"] = ["user_config", "managed_config"]
+    payload["evidence"]["applications"] = [
+        {
+            "agent_kind": "claude_code",
+            "config_path_hash": "d" * 64,
+            "config_scope": "managed_config",
+        }
+    ]
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.completeness(
+            db_session, account_id=test_user.account_id
+        )
+        == "complete"
+    )

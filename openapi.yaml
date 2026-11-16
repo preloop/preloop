@@ -37167,6 +37167,20 @@ components:
           - partial
           - failed
           title: Completeness
+        scope_completeness:
+          additionalProperties:
+            type: string
+            enum:
+            - complete
+            - partial
+            - failed
+          propertyNames:
+            enum:
+            - user_config
+            - managed_config
+          type: object
+          maxProperties: 2
+          title: Scope Completeness
         errors:
           items:
             type: string

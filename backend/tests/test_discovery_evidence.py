@@ -481,6 +481,7 @@ def test_configuration_additions_preserve_legacy_canonical_control_bytes() -> No
     )
     app = evidence.model_dump(mode="json")["applications"][0]
     assert "config_scope" not in app
+    assert "scope_completeness" not in evidence.model_dump(mode="json")
     assert app["controls"] == [
         {
             "axis": "native_tool_hook",
@@ -523,4 +524,21 @@ def test_v3_managed_configuration_is_not_an_extension_candidate() -> None:
                 applications=[{**app, "extensions": [], "completeness": "complete"}],
             ),
             candidates=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        {"managed_config": "complete"},
+        {"user_config": "private-value"},
+        {"private-path": "complete"},
+        {"user_config": "partial"},
+    ],
+)
+def test_scope_completeness_is_bounded_and_consistent(scopes: dict[str, str]) -> None:
+    """Undeclared scope, arbitrary values and false completeness are rejected."""
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(
+            envelope(scan_scope=["user_config"], scope_completeness=scopes)
         )

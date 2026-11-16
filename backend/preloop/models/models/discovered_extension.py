@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    func,
     Index,
     String,
     UniqueConstraint,
@@ -45,6 +46,12 @@ class DiscoveredExtension(Base):
             "extension_kind",
             "extension_id",
         ),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     account_id: Mapped[UUID] = mapped_column(
         ForeignKey("account.id", ondelete="CASCADE")

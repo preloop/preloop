@@ -3,7 +3,14 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -23,6 +30,12 @@ class ExtensionApproval(Base):
         ),
         CheckConstraint("approval_state IN ('approved','unapproved','unknown')"),
         CheckConstraint("extension_kind IN ('plugin','skill','hook','command')"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     account_id: Mapped[UUID] = mapped_column(
         ForeignKey("account.id", ondelete="CASCADE")

@@ -25,14 +25,6 @@ func inventoryReportControls(controls []inventoryControl) []inventoryReportContr
 	return result
 }
 
-func managedInventoryPath(goos string) string {
-	return map[string]string{
-		"darwin":  "/Library/Application Support/ClaudeCode/managed-settings.json",
-		"linux":   "/etc/claude-code/managed-settings.json",
-		"windows": `C:\Program Files\ClaudeCode\managed-settings.json`,
-	}[goos]
-}
-
 // Reuse confined, bounded reads, rejecting symlinks and non-regular files in
 // every path component. The single allowlisted system file is the entire scope.
 func readManagedInventoryConfig(path string) ([]byte, error) {
@@ -48,13 +40,15 @@ func readManagedInventoryConfig(path string) ([]byte, error) {
 // System configuration is a separate machine context, never attributed to a
 // local user profile. Absence is a fact only after a successful bounded scan.
 func appendManagedConfigurationEvidence(report *discoveryReportRequest, salt, goos string, read func(string) ([]byte, error)) {
-	path := managedInventoryPath(goos)
+	path := managedConfigTarget(goos)
 	if report.Evidence == nil || path == "" {
 		return
 	}
 	evidence := report.Evidence
+	evidence.ScopeCompleteness = map[string]string{"user_config": evidence.Completeness, "managed_config": "complete"}
+	evidence.ScanScope = append(evidence.ScanScope, "managed_config")
 	if len(evidence.Applications) >= 100 {
-		evidence.Completeness, evidence.Errors = "partial", []string{"unavailable"}
+		markManagedInventoryIncomplete(evidence, "unavailable")
 		return
 	}
 	control := inventoryReportControl{Axis: "native_tool_hook", Supported: "true", Configured: "unknown", ConfigurationEvidence: "unavailable", Method: "managed_config"}
@@ -62,13 +56,17 @@ func appendManagedConfigurationEvidence(report *discoveryReportRequest, salt, go
 	if os.IsNotExist(err) {
 		control.Configured, control.ConfigurationEvidence = "false", "managed_config"
 	} else if err != nil {
-		evidence.Completeness, evidence.Errors = "partial", []string{"permission_denied"}
+		code := "unavailable"
+		if os.IsPermission(err) {
+			code = "permission_denied"
+		}
+		markManagedInventoryIncomplete(evidence, code)
 	} else if len(data) > inventoryConfigLimit || !json.Valid(data) || !strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
-		evidence.Completeness, evidence.Errors = "partial", []string{"parse_failed"}
+		markManagedInventoryIncomplete(evidence, "parse_failed")
 	} else {
 		present, parseErr := managedInventoryHookPresent(data, goos)
 		if parseErr != nil {
-			evidence.Completeness, evidence.Errors = "partial", []string{"parse_failed"}
+			markManagedInventoryIncomplete(evidence, "parse_failed")
 		} else {
 			control.Configured, control.ConfigurationEvidence = "false", "managed_config"
 			if present {
@@ -76,7 +74,6 @@ func appendManagedConfigurationEvidence(report *discoveryReportRequest, salt, go
 			}
 		}
 	}
-	evidence.ScanScope = append(evidence.ScanScope, "managed_config")
 	evidence.Applications = append(evidence.Applications, inventoryReportApplication{
 		AgentKind: "claude_code", ConfigPathHash: configPathHash(salt, "", path), ConfigScope: "managed_config",
 		Installed: "unknown", Configured: control.Configured, Controls: []inventoryReportControl{control},
@@ -123,4 +120,20 @@ func managedInventoryHookPresent(data []byte, goos string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// Preserve the base scan's severity and errors when the independent scope fails.
+func markManagedInventoryIncomplete(evidence *inventoryReportEvidence, code string) {
+	if evidence.Completeness != "failed" {
+		evidence.Completeness = "partial"
+	}
+	evidence.ScopeCompleteness["managed_config"] = "partial"
+	for _, existing := range evidence.Errors {
+		if existing == code {
+			return
+		}
+	}
+	if len(evidence.Errors) < 5 {
+		evidence.Errors = append(evidence.Errors, code)
+	}
 }

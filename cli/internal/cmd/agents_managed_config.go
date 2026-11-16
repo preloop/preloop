@@ -96,18 +96,14 @@ func renderClaudeManagedBundle(platform, executable string, timeout int) ([]mana
 	if timeout < 30 || timeout > 3600 {
 		return nil, errors.New("--timeout must be between 30 and 3600 seconds")
 	}
-	targets := map[string]string{
-		"darwin":  "/Library/Application Support/ClaudeCode/managed-settings.json",
-		"linux":   "/etc/claude-code/managed-settings.json",
-		"windows": `C:\Program Files\ClaudeCode\managed-settings.json`,
-	}
+	target := managedConfigTarget(platform)
 	settings := managedSettings{Hooks: map[string][]managedHookGroup{
 		"PreToolUse": {{Matcher: "*", Hooks: []managedHook{{Type: "command", Command: command, Timeout: timeout, Shell: shell}}}},
 	}}
 	manifest := managedBundleManifest{
 		Schema: managedBundleSchema, AppID: "claude-code", Platform: platform,
 		Artifact: "managed-settings.json", Keys: []string{"hooks.PreToolUse"},
-		TargetLocations: []string{targets[platform]}, ManagedSource: "system managed-settings.json",
+		TargetLocations: []string{target}, ManagedSource: "system managed-settings.json",
 		DocumentedSemantics: "managed hooks cannot be removed by lower user/project settings; higher managed sources can supersede this file",
 		Verification:        "unverified",
 		Prerequisites: []string{
@@ -133,7 +129,7 @@ func renderClaudeManagedBundle(platform, executable string, timeout int) ([]mana
 	if err != nil {
 		return nil, err
 	}
-	preview := fmt.Sprintf("Claude Code managed hook overlay (%s)\n\nEmits only hooks.PreToolUse with matcher *.\nHook command: %s\nHost timeout: %d seconds\nReviewed delivery target: %s\n\nThis export is offline and performs no installation or enrollment.\nProvision the per-device/user hook credential separately through supported onboarding.\nMissing credentials deny under the existing permission-hook contract.\nThe application honoring this overlay remains unverified. A higher managed source may supersede it.\nManaged configuration is not device attestation or local-admin immunity.\n\nOmitted: model routing, MCP allowlists, permission rules, OTel, credentials, Codex, Desktop.\nReview manifest.json and docs/guide/clients/claude-code.md before delivery.\n", platform, command, timeout, targets[platform])
+	preview := fmt.Sprintf("Claude Code managed hook overlay (%s)\n\nEmits only hooks.PreToolUse with matcher *.\nHook command: %s\nHost timeout: %d seconds\nReviewed delivery target: %s\n\nThis export is offline and performs no installation or enrollment.\nProvision the per-device/user hook credential separately through supported onboarding.\nMissing credentials deny under the existing permission-hook contract.\nThe application honoring this overlay remains unverified. A higher managed source may supersede it.\nManaged configuration is not device attestation or local-admin immunity.\n\nOmitted: model routing, MCP allowlists, permission rules, OTel, credentials, Codex, Desktop.\nReview manifest.json and docs/guide/clients/claude-code.md before delivery.\n", platform, command, timeout, target)
 	return []managedBundleFile{{"managed-settings.json", settingsJSON}, {"manifest.json", append(manifestJSON, '\n')}, {"preview.txt", []byte(preview)}}, nil
 }
 
@@ -324,4 +320,12 @@ func validManagedWindowsExecutable(normalized string) bool {
 		}
 	}
 	return true
+}
+
+func managedConfigTarget(goos string) string {
+	return map[string]string{
+		"darwin":  "/Library/Application Support/ClaudeCode/managed-settings.json",
+		"linux":   "/etc/claude-code/managed-settings.json",
+		"windows": `C:\Program Files\ClaudeCode\managed-settings.json`,
+	}[goos]
 }
