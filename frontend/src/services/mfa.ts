@@ -6,6 +6,54 @@ export interface MfaTokens {
   refresh_token: string;
 }
 
+/** Presentation hint only; the server authorizes every API request. */
+export function enrollmentOnly(token: string | null): boolean {
+  if (!token) return false;
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(payload)).enroll_only === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read a browser redirect challenge once, then erase proof from the address. */
+export function takeRedirectMfaChallenge(): {
+  challenge: string;
+  cliRedirect: string | null;
+} | null {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const challenge = params.get('mfa_challenge');
+  if (!challenge) return null;
+  const candidate = params.get('cli_redirect_uri');
+  window.history.replaceState(
+    {},
+    '',
+    window.location.pathname + window.location.search
+  );
+  return { challenge, cliRedirect: safeCliRedirect(candidate) };
+}
+
+/** Only literal loopback callbacks may receive a CLI's completed session. */
+export function safeCliRedirect(value: string | null): string | null {
+  if (!value || /[\\\r\n\t]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    const loopback =
+      url.hostname === 'localhost' ||
+      url.hostname === '[::1]' ||
+      /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+    return loopback &&
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 let pendingChallenge = '';
 
 /** Carry a proved email sign-in to the login view without URLs or storage. */
@@ -54,6 +102,8 @@ export function mfaMessage(error: unknown): string {
       'This code is invalid or has already been used. Try the next code.',
     challenge_expired: 'This sign-in has expired. Start again.',
     challenge_locked: 'Too many incorrect codes. Start again later.',
+    mfa_required_by_policy:
+      'Your account requires a strong sign-in method. Add another factor before removing this one.',
   };
   return error instanceof ApiError && error.code && messages[error.code]
     ? messages[error.code]
