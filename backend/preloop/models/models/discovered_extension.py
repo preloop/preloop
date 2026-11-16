@@ -8,10 +8,10 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    func,
     Index,
     String,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column

@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import func, select, tuple_
@@ -149,7 +149,7 @@ class CRUDDiscoveredExtension:
 
     def completeness(
         self, db: Session, *, account_id: UUID, fingerprint: str | None = None
-    ) -> str:
+    ) -> Literal["complete", "partial", "unknown"]:
         """Describe the latest report per device without claiming unseen scope."""
         model = models.DiscoveryObservation
         query = select(model.id, model.workstation_fingerprint).where(
@@ -258,15 +258,15 @@ class CRUDDiscoveredExtension:
                 encode_cursor(list(rows[limit - 1][:3])) if len(rows) > limit else None
             )
         else:
-            query = (
+            device_query = (
                 select(model, approval)
                 .outerjoin(approval, approval_join())
                 .where(*filters)
                 .order_by(model.id)
             )
             if key:
-                query = query.where(model.id > UUID(key[0]))
-            rows = list(db.execute(query.limit(limit + 1)))
+                device_query = device_query.where(model.id > UUID(key[0]))
+            rows = list(db.execute(device_query.limit(limit + 1)))
             items = []
             for row, decision in rows[:limit]:
                 item = row.to_dict()
