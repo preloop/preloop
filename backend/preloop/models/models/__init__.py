@@ -461,6 +461,8 @@ __all__ = [
     "TicketCreationRecord",
     "DeliveryReportPolicySetting",
     "EntitlementEnforcementSetting",
+    "DiscoveredExtension",
+    "ExtensionApproval",
 ]
 
 from .readiness import (
@@ -503,3 +505,6 @@ from .entitlement_enforcement import EntitlementEnforcementSetting
 
 from .managed_bundle import RegisteredBundleRevision, ControlExpectation
 from .mfa import UserMfaFactor, UserMfaRecoveryCode
+
+from .discovered_extension import DiscoveredExtension
+from .extension_approval import ExtensionApproval

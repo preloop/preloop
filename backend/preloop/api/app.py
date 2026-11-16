@@ -953,6 +953,7 @@ def _register_control_plane_routes(
         desktop,
         agent_deployments,
         agent_discovery,
+        extension_inventory,
         agent_permission,
         ai_models,
         fleet_map,
@@ -1065,6 +1066,12 @@ def _register_control_plane_routes(
     # capture "/agents/discovery-candidates".
     app.include_router(
         agent_discovery.router,
+        prefix="/api/v1",
+        tags=["Agent discovery"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        extension_inventory.router,
         prefix="/api/v1",
         tags=["Agent discovery"],
         dependencies=[Depends(get_current_active_user)],

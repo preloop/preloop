@@ -52,7 +52,7 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 				return os.OpenRoot(home)
 			}}
 			result := collectAllUsersInventory(deps, pd, "salt-a", "workstation-a")
-			if result.Schema != "preloop.inventory.v2" || result.Completeness != "partial" || len(result.Profiles) != 3 {
+			if result.Schema != "preloop.inventory.v3" || result.Completeness != "partial" || len(result.Profiles) != 3 {
 				t.Fatalf("bad result %+v", result)
 			}
 			if result.Profiles[2].ErrorCode != "profile_unreadable" {
@@ -261,7 +261,7 @@ func TestAllUsersInventoryCommandOfflineAndReport(t *testing.T) {
 				if err := json.Unmarshal(rec.report, &payload); err != nil {
 					t.Fatal(err)
 				}
-				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 2 || len(payload.Candidates) != 1 {
+				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 3 || len(payload.Candidates) != 1 {
 					t.Fatalf("bad report %+v", payload)
 				}
 			}
@@ -331,6 +331,9 @@ func TestAllUsersInventoryReportWireFixture(t *testing.T) {
 		{AppID: "claude-code", ProfileRef: refs[0], Presence: "unknown"},
 	}}
 	report := buildAllUsersReport(testDiscoverySalt, "synthetic-machine", "00000000-0000-4000-8000-000000000001", scan, now)
+	// protects=historical v2 wire bytes; fails_when=downgrade changes the old
+	// contract; no_claim=server acceptance is tested by the backend fixture.
+	report = downgradeInventoryReport(report)
 	// Keep the wire fixture independent of the OS running the test.
 	report.OS = "linux"
 	report.Evidence.OSFamily = "linux"

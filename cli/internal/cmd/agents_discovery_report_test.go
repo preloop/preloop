@@ -187,9 +187,22 @@ func assertReportIsPrivate(t *testing.T, home string, raw []byte) discoveryRepor
 	_ = json.Unmarshal(raw, &generic)
 	for key := range generic {
 		switch key {
-		case "workstation_fingerprint", "cli_version", "os", "candidates":
+		case "workstation_fingerprint", "cli_version", "os", "candidates", "evidence":
 		default:
 			t.Fatalf("unexpected top-level key %q", key)
+		}
+	}
+	// protects=v3 metadata binding; fails_when=extensions lack their hashed
+	// context; no_claim=fixture server, not backend validation.
+	if report.Evidence != nil {
+		if report.Evidence.SchemaVersion != 3 || len(report.Evidence.Applications) != len(report.Candidates) {
+			t.Fatal("invalid v3 evidence")
+		}
+		for i, candidate := range report.Candidates {
+			app := report.Evidence.Applications[i]
+			if app.AgentKind != candidate.AgentKind || app.ConfigPathHash != candidate.ConfigPathHash || candidate.Extensions == nil {
+				t.Fatal("unbound extension context")
+			}
 		}
 	}
 	return report

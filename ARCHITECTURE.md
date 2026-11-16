@@ -92,3 +92,11 @@ single-use challenges and fresh-authentication checks for factor management.
 See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
+
+Installed agent extension inventory uses a bounded, metadata-only v3 discovery
+contract. `discovered_extension` stores presence per account, device, profile and
+agent; `extension_approval` stores account-wide name decisions independently of
+inventory retention. CRUD owns reconciliation and approval joins. Only complete
+app scans prove absence; older reports cannot replace newer inventory. Extension
+files, commands and source URLs remain on the device. See the
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).

@@ -129,9 +129,17 @@ class CRUDDiscoveryObservation:
         The always-on discovery sweeper owns this system pass and its commit.
         """
         cutoff = (now or datetime.now(UTC)) - timedelta(days=CANDIDATE_RETENTION_DAYS)
+        expired = select(models.DiscoveryObservation.id).where(
+            models.DiscoveryObservation.received_at < cutoff
+        )
+        db.execute(
+            delete(models.DiscoveredExtension).where(
+                models.DiscoveredExtension.last_observation_id.in_(expired)
+            )
+        )
         result = db.execute(
             delete(models.DiscoveryObservation).where(
-                models.DiscoveryObservation.received_at < cutoff
+                models.DiscoveryObservation.id.in_(expired)
             )
         )
         return int(result.rowcount)
@@ -141,10 +149,19 @@ class CRUDDiscoveryObservation:
     ) -> int:
         """Delete only the caller's retained evidence; caller owns transaction."""
         cutoff = (now or datetime.now(UTC)) - timedelta(days=CANDIDATE_RETENTION_DAYS)
+        expired = select(models.DiscoveryObservation.id).where(
+            models.DiscoveryObservation.account_id == account_id,
+            models.DiscoveryObservation.received_at < cutoff,
+        )
+        db.execute(
+            delete(models.DiscoveredExtension).where(
+                models.DiscoveredExtension.account_id == account_id,
+                models.DiscoveredExtension.last_observation_id.in_(expired),
+            )
+        )
         result = db.execute(
             delete(models.DiscoveryObservation).where(
-                models.DiscoveryObservation.account_id == account_id,
-                models.DiscoveryObservation.received_at < cutoff,
+                models.DiscoveryObservation.id.in_(expired)
             )
         )
         return int(result.rowcount)

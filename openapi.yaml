@@ -1992,6 +1992,218 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/discovery-extensions:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Extensions
+      description: List present extensions with their account decisions, unknown by
+        default.
+      operationId: list_extensions_api_v1_agents_discovery_extensions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: fingerprint
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Fingerprint
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          - type: 'null'
+          title: Agent Kind
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - approved
+            - unapproved
+            - unknown
+            type: string
+          - type: 'null'
+          title: State
+      - name: source_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - official_marketplace
+            - third_party_marketplace
+            - git
+            - local
+            - builtin
+            - unknown
+            type: string
+          - type: 'null'
+          title: Source Kind
+      - name: group
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - const: extension
+            type: string
+          - type: 'null'
+          title: Group
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveredExtensionList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Approvals
+      description: List durable decisions, including extensions no longer installed.
+      operationId: list_approvals_api_v1_agents_extension_approvals_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionApprovalList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}:
+    put:
+      tags:
+      - Agent discovery
+      summary: Set Approval
+      description: Replace an account decision without modifying anything on the device.
+      operationId: set_approval_api_v1_agents_extension_approvals__agent_kind___extension_kind___extension_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          type: string
+          title: Extension Kind
+      - name: extension_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtensionApprovalUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionApprovalSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/telemetry/otlp/v1/metrics:
     post:
       tags:
@@ -36592,6 +36804,137 @@ components:
       - status
       title: DiscoveredAgentCandidateUpdate
       description: 'Console action on a candidate: mark ignored, or un-ignore.'
+    DiscoveredExtensionList:
+      properties:
+        items:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/DiscoveredExtensionSummary'
+            type: array
+          - items:
+              $ref: '#/components/schemas/ExtensionAggregate'
+            type: array
+          title: Items
+        completeness:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Completeness
+          default: unknown
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - items
+      - next_cursor
+      title: DiscoveredExtensionList
+      description: Keyset-paginated device rows or account aggregates.
+    DiscoveredExtensionSummary:
+      properties:
+        fingerprint:
+          type: string
+          title: Fingerprint
+        profile_ref:
+          type: string
+          title: Profile Ref
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        id_hashed:
+          type: boolean
+          title: Id Hashed
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+        source_kind:
+          type: string
+          enum:
+          - official_marketplace
+          - third_party_marketplace
+          - git
+          - local
+          - builtin
+          - unknown
+          title: Source Kind
+        source_ref_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref Hash
+        scope:
+          type: string
+          enum:
+          - user
+          - project
+          title: Scope
+        project_ref_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Ref Hash
+        enabled:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Enabled
+        present:
+          type: boolean
+          title: Present
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+      type: object
+      required:
+      - fingerprint
+      - profile_ref
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - id_hashed
+      - version
+      - source_kind
+      - source_ref_hash
+      - scope
+      - project_ref_hash
+      - enabled
+      - present
+      - first_seen_at
+      - last_seen_at
+      - approval_state
+      title: DiscoveredExtensionSummary
+      description: Device inventory joined to its account-wide decision.
     DiscoveryEvidence:
       properties:
         schema_version:
@@ -36599,6 +36942,7 @@ components:
           enum:
           - 1
           - 2
+          - 3
           title: Schema Version
           default: 1
         profiles:
@@ -36724,6 +37068,14 @@ components:
           type: boolean
           title: Enrolled
           default: false
+        extensions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExtensionMetadata'
+            type: array
+            maxItems: 200
+          - type: 'null'
+          title: Extensions
       additionalProperties: false
       type: object
       required:
@@ -37676,6 +38028,170 @@ components:
         never added together: "this run cost X, the work it delegated cost Y" is
 
         the question the tree exists to answer, and one number would hide it.'
+    ExtensionAggregate:
+      properties:
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        device_count:
+          type: integer
+          title: Device Count
+        versions:
+          items:
+            type: string
+          type: array
+          title: Versions
+        source_kinds:
+          items:
+            type: string
+            enum:
+            - official_marketplace
+            - third_party_marketplace
+            - git
+            - local
+            - builtin
+            - unknown
+          type: array
+          title: Source Kinds
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+      type: object
+      required:
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - device_count
+      - versions
+      - source_kinds
+      - approval_state
+      title: ExtensionAggregate
+      description: Distinct installed extensions across the account's devices.
+    ExtensionApprovalList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ExtensionApprovalSummary'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - items
+      - next_cursor
+      title: ExtensionApprovalList
+      description: Keyset-paginated account approvals.
+    ExtensionApprovalSummary:
+      properties:
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+        version_constraint:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$
+          - type: 'null'
+          title: Version Constraint
+        note:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Note
+        id:
+          type: string
+          format: uuid
+          title: Id
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_state
+      - id
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - decided_by_user_id
+      - decided_at
+      title: ExtensionApprovalSummary
+      description: A decision and its audit attribution.
+    ExtensionApprovalUpdate:
+      properties:
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+        version_constraint:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$
+          - type: 'null'
+          title: Version Constraint
+        note:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Note
+      additionalProperties: false
+      type: object
+      required:
+      - approval_state
+      title: ExtensionApprovalUpdate
+      description: Replace a decision; null version constraint means any version.
     ExtensionAttentionItem:
       properties:
         id:
@@ -37727,6 +38243,95 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Console attention contribution with a local destination.
+    ExtensionMetadata:
+      properties:
+        kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Kind
+        id:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Id
+        version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Version
+        source_kind:
+          type: string
+          enum:
+          - official_marketplace
+          - third_party_marketplace
+          - git
+          - local
+          - builtin
+          - unknown
+          title: Source Kind
+        source_ref_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Source Ref Hash
+        scope:
+          type: string
+          enum:
+          - user
+          - project
+          title: Scope
+        project_ref_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Project Ref Hash
+        enabled:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Enabled
+          default: unknown
+        content_hash:
+          anyOf:
+          - type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          - type: 'null'
+          title: Content Hash
+        event:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z][A-Za-z0-9_\-]{0,31}$
+          - type: 'null'
+          title: Event
+        count:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Count
+        id_hashed:
+          type: boolean
+          title: Id Hashed
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - id
+      - source_kind
+      - scope
+      title: ExtensionMetadata
+      description: Only identifiers, version, classification and final hashes leave
+        a device.
     ExternalApprovalResult:
       properties:
         external_reference:
@@ -46395,6 +47000,23 @@ components:
             pattern: ^[0-9a-f]{64}$
           - type: 'null'
           title: Profile Ref
+        completeness:
+          anyOf:
+          - type: string
+            enum:
+            - complete
+            - partial
+            - failed
+          - type: 'null'
+          title: Completeness
+        extensions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExtensionMetadata'
+            type: array
+            maxItems: 200
+          - type: 'null'
+          title: Extensions
         app_version:
           anyOf:
           - type: string
@@ -57282,7 +57904,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

@@ -292,3 +292,7 @@ without treating fixture checks as vendor-tenant acceptance.
 [event-source]: https://github.com/preloop/preloop/blob/726d71a3899af476b1170d9e45a64f7fd544ce26/backend/preloop/services/event_webhooks/emitters.py
 [purge-source]: https://github.com/preloop/preloop/blob/726d71a3899af476b1170d9e45a64f7fd544ce26/backend/preloop/services/discovery_candidate_purge.py
 [roles-source]: https://github.com/preloop/preloop/blob/726d71a3899af476b1170d9e45a64f7fd544ce26/backend/preloop/services/service_roles.py
+
+| Inventory evidence | What it establishes | Limitation |
+| --- | --- | --- |
+| Installed extension | Files present in a known location | Does not prove the agent loaded or ran it. |

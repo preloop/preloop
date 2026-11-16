@@ -46,7 +46,7 @@ def envelope(**changes: object) -> dict:
         {"source_ref": str(uuid4())},
         {"last_used_at": NOW.isoformat()},
         {"errors": ["https://example.com"]},
-        {"schema_version": 3},
+        {"schema_version": 4},
     ],
 )
 def test_private_or_unknown_fields_rejected(extra: dict) -> None:
@@ -130,6 +130,7 @@ def observation_db() -> Generator[Session, None, None]:
     """Fresh in-memory storage never connects to a configured database."""
     engine = create_engine("sqlite://")
     models.DiscoveryObservation.__table__.create(engine)
+    models.DiscoveredExtension.__table__.create(engine)
     # This fixture deliberately contains only the observation table. Receipt
     # locks and history use PostgreSQL and are covered by test_expected_device.
     with (

@@ -58,10 +58,11 @@ type discoverySaltResponse struct {
 }
 
 type discoveryReportCandidate struct {
-	AgentKind      string `json:"agent_kind"`
-	ConfigPathHash string `json:"config_path_hash"`
-	MCPServerCount int    `json:"mcp_server_count"`
-	Enrolled       bool   `json:"enrolled"`
+	Extensions     *[]inventoryExtension `json:"extensions,omitempty"`
+	AgentKind      string                `json:"agent_kind"`
+	ConfigPathHash string                `json:"config_path_hash"`
+	MCPServerCount int                   `json:"mcp_server_count"`
+	Enrolled       bool                  `json:"enrolled"`
 }
 
 type discoveryReportRequest struct {
@@ -192,11 +193,14 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	}
 	home, _ := os.UserHomeDir()
 	report := buildDiscoveryReport(salt, machineID, home, agents)
+	if err := addDiscoveryExtensions(&report, salt, home, inventoryProbes); err != nil {
+		return err
+	}
 	var resp discoveryReportResponse
-	if err := client.Post(discoveryReportPath, report, &resp); err != nil {
+	if err := postInventoryReport(client, report, &resp); err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
-	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Only salted hashes, agent kinds and counts were sent.\n", resp.Received, resp.Created) //nolint:errcheck
+	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent inventory metadata, extension identifiers and hashes; no file contents or credentials.\n", resp.Received, resp.Created) //nolint:errcheck
 	return nil
 }
 

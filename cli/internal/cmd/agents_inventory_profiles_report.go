@@ -16,11 +16,13 @@ import (
 // These narrow DTOs implement DiscoveryEvidence v2. No local path or parsed
 // config value can enter this serializer.
 type inventoryReportApplication struct {
-	AgentKind      string `json:"agent_kind"`
-	ConfigPathHash string `json:"config_path_hash"`
-	ProfileRef     string `json:"profile_ref"`
-	Installed      string `json:"installed"`
-	Configured     string `json:"configured"`
+	Extensions     *[]inventoryExtension `json:"extensions,omitempty"`
+	Completeness   string                `json:"completeness,omitempty"`
+	AgentKind      string                `json:"agent_kind"`
+	ConfigPathHash string                `json:"config_path_hash"`
+	ProfileRef     string                `json:"profile_ref"`
+	Installed      string                `json:"installed"`
+	Configured     string                `json:"configured"`
 }
 type inventoryReportEvidence struct {
 	SchemaVersion     int                          `json:"schema_version"`
@@ -40,7 +42,7 @@ type inventoryReportEvidence struct {
 
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
-	evidence := inventoryReportEvidence{SchemaVersion: 2, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
 	if discoveryVersionPattern.MatchString(version.Version) {
 		report.CLIVersion = version.Version
 		evidence.CollectorVersion = version.Version
@@ -70,8 +72,8 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 		// Aggregate each app within one profile; do not imply enrollment or actual
 		// runtime usage. The separate namespace prevents collisions with v1 paths.
 		hash := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
-		evidence.Applications = append(evidence.Applications, inventoryReportApplication{AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app)})
-		report.Candidates = append(report.Candidates, discoveryReportCandidate{AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
+		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app)})
+		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
 	}
 	report.Evidence = &evidence
 	return report
@@ -107,7 +109,7 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	scan := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
 	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
 	var response discoveryReportResponse
-	if err = client.Post(discoveryReportPath, report, &response); err != nil {
+	if err = postInventoryReport(client, report, &response); err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)
 	}
 	// Emit only the safe inventory DTO, even with --verbose or --json.

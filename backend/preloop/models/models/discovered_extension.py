@@ -1,0 +1,72 @@
+"""Installed extension metadata, never extension contents or configuration."""
+
+from datetime import datetime
+from uuid import UUID
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .base import Base
+
+
+class DiscoveredExtension(Base):
+    """Latest presence of an extension in one device/profile/app context."""
+
+    __tablename__ = "discovered_extension"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "workstation_fingerprint",
+            "profile_ref",
+            "agent_kind",
+            "extension_kind",
+            "extension_id",
+            "scope",
+            "project_ref_hash",
+            name="uq_discovered_extension",
+            postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint("extension_kind IN ('plugin','skill','hook','command')"),
+        CheckConstraint("scope IN ('user','project')"),
+        CheckConstraint("enabled IN ('true','false','unknown')"),
+        Index(
+            "ix_discovered_extension_account_ext",
+            "account_id",
+            "agent_kind",
+            "extension_kind",
+            "extension_id",
+        ),
+    )
+    account_id: Mapped[UUID] = mapped_column(
+        ForeignKey("account.id", ondelete="CASCADE")
+    )
+    workstation_fingerprint: Mapped[str] = mapped_column(String(128))
+    agent_kind: Mapped[str] = mapped_column(String(64))
+    profile_ref: Mapped[str] = mapped_column(String(80), server_default="current")
+    extension_kind: Mapped[str] = mapped_column(String(16))
+    extension_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[str | None] = mapped_column(String(64))
+    source_kind: Mapped[str] = mapped_column(String(32))
+    source_ref_hash: Mapped[str | None] = mapped_column(String(80))
+    scope: Mapped[str] = mapped_column(String(16))
+    project_ref_hash: Mapped[str | None] = mapped_column(String(80))
+    enabled: Mapped[str] = mapped_column(String(8), server_default="unknown")
+    content_hash: Mapped[str | None] = mapped_column(String(80))
+    event: Mapped[str | None] = mapped_column(String(32))
+    hook_count: Mapped[int | None]
+    id_hashed: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    present: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("discovery_observation.id", ondelete="SET NULL"), index=True
+    )

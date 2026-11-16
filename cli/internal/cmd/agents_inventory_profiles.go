@@ -116,7 +116,7 @@ func inventoryDirectoryProfiles(root string, entries []os.DirEntry, readErr erro
 }
 
 func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inventoryProfileDependencies, salt, context string) inventoryEnvelope {
-	result := inventoryEnvelope{Schema: "preloop.inventory.v2", ObservedAt: deps.Now().UTC(), Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{}, Profiles: []inventoryProfileResult{}}
+	result := inventoryEnvelope{Schema: "preloop.inventory.v3", ObservedAt: deps.Now().UTC(), Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{}, Profiles: []inventoryProfileResult{}}
 	result.Collector.Version = version.Version
 	result.Collector.DetectorVersion = inventoryDetectorVersion
 	result.Scope.User, result.Scope.Coverage = "all-local-profiles", "known-registry"
@@ -165,6 +165,7 @@ func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inven
 				continue
 			}
 			scoped := profileInventoryDependencies(deps, root, profile.Home)
+			scoped.ExtensionSalt = salt
 			scan := collectAgentInventory(scoped)
 			root.Close()
 			state.Completeness = scan.Completeness
@@ -172,6 +173,11 @@ func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inven
 				state.ErrorCode = "probe_incomplete"
 			}
 			for _, app := range scan.Apps {
+				if len(result.Apps) >= 100 {
+					state.Completeness, state.ErrorCode = "partial", "probe_incomplete"
+					result.Scope.ErrorCode = "app_limit"
+					break
+				}
 				app.ProfileRef = ref
 				result.Apps = append(result.Apps, app)
 			}
