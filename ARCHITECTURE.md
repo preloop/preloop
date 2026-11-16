@@ -92,3 +92,24 @@ single-use challenges and fresh-authentication checks for factor management.
 See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
+
+## Request rate limiting
+
+`backend/preloop/services/rate_limit.py` defines fixed-window request budgets
+for authentication, OAuth, public approvals, passkey challenges, verification
+and password-reset email, OTLP ingest, and test push notifications. Its
+PostgreSQL store updates `rate_limit_bucket` through the CRUD layer, so API
+replicas share a budget and restarts preserve it. If the store fails, the
+limiter logs an error and enforces the same budget in memory on each process;
+the memory backend is also available for tests and local development.
+
+Refusals return HTTP 429 with `Retry-After`, increment
+`preloop_rate_limit_hits_total{rule}`, and carry the JSON `rate_limited` code.
+OTLP preserves its protocol status envelope. Operator-note and desktop-view
+creation caps already count persisted rows through CRUD and retain their
+rolling-hour semantics separately from these fixed-window request budgets.
+
+Helm deployments configure the limiter through `extraEnv`, keeping the
+environment settings and defaults authoritative across deployment methods.
+See [rules, defaults, proxy trust, and audit behavior](docs/operations/rate-limiting.md)
+and the [Helm configuration example](helm/preloop/README.md#request-rate-limiting).
