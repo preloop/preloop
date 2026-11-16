@@ -228,6 +228,36 @@ env_value() {
   compose_env_unescape "$(sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1)"
 }
 
+# Match instance_service.is_telemetry_disabled, including quoted .env values.
+opt_out_enabled() {
+  normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+      -e "s/^[\"']//;s/[\"']$//" \
+      -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$normalized" in
+    true|1|t|yes) return 0 ;;
+  esac
+  return 1
+}
+
+# A stored opt-out wins even when this run explicitly supplies false. To opt
+# back in, the operator must edit .env. Print the effective value for export
+# so Compose's shell precedence cannot override the persisted opt-out either.
+persist_opt_out() {
+  opt_out_key="$1"
+  opt_out_value="$2"
+  stored_opt_out="$(env_value "$opt_out_key" "${INSTALL_DIR}/.env")"
+  if opt_out_enabled "$stored_opt_out" || opt_out_enabled "$opt_out_value"; then
+    opt_out_value=true
+  elif [ -z "$opt_out_value" ]; then
+    opt_out_value="$stored_opt_out"
+  fi
+  if [ -n "$opt_out_value" ]; then
+    set_env_value "$opt_out_key" "$opt_out_value"
+  fi
+  printf '%s' "$opt_out_value"
+}
+
 # True only when a real terminal is attached. `curl ... | sh` leaves stdin as
 # the pipe, so prompts must go through /dev/tty — but /dev/tty merely EXISTING
 # is not enough (in CI / cloud-init it opens and then fails), so probe it.
@@ -849,9 +879,8 @@ issue_certificate() {
   return 0
 }
 
-# Carry REGISTRATION_ENABLED into the API. Kept in a script-owned overlay rather
-# than relying on the released compose file, so signup lockdown works even on
-# releases whose compose file predates the setting.
+# Carry first-user settings and telemetry opt-outs into the API through a
+# script-owned overlay, including releases whose Compose file predates them.
 write_auth_overlay() {
   cat > "${INSTALL_DIR}/docker-compose.auth.yaml" <<'EOF'
 services:
@@ -859,6 +888,8 @@ services:
     environment:
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       PRELOOP_BOOTSTRAP_TOKEN: ${PRELOOP_BOOTSTRAP_TOKEN:-}
+      PRELOOP_DISABLE_TELEMETRY: ${PRELOOP_DISABLE_TELEMETRY:-}
+      DISABLE_VERSION_CHECK: ${DISABLE_VERSION_CHECK:-}
 EOF
 }
 
@@ -995,6 +1026,12 @@ EOF
     set_env_value PRELOOP_BOOTSTRAP_TOKEN "$PRELOOP_BOOTSTRAP_TOKEN"
   fi
 
+  PRELOOP_DISABLE_TELEMETRY="$(persist_opt_out PRELOOP_DISABLE_TELEMETRY \
+    "${PRELOOP_DISABLE_TELEMETRY:-}")"
+  DISABLE_VERSION_CHECK="$(persist_opt_out DISABLE_VERSION_CHECK \
+    "${DISABLE_VERSION_CHECK:-}")"
+  export PRELOOP_DISABLE_TELEMETRY DISABLE_VERSION_CHECK
+
   write_auth_overlay
   COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml"
   if [ "$WANT_TLS" -eq 1 ]; then
@@ -1117,6 +1154,12 @@ EOF
     echo "Email: NOT configured — approval emails, invitations and password"
     echo "  resets will not be delivered. To enable, set SMTP_HOST/SMTP_PORT/"
     echo "  SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM in ${INSTALL_DIR}/.env"
+  fi
+  if opt_out_enabled "$PRELOOP_DISABLE_TELEMETRY" \
+    || opt_out_enabled "$DISABLE_VERSION_CHECK"; then
+    echo "Version check-in: OFF (opt-out saved in ${INSTALL_DIR}/.env)"
+  else
+    echo "Version check-in: ON (daily check-in to preloop.ai)"
   fi
   echo "  (change any setting: edit ${INSTALL_DIR}/.env, then re-run 'docker compose up -d')"
   echo ""
