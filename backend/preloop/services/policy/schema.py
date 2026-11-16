@@ -55,9 +55,9 @@ Example YAML:
         keywords:
           - name: codenames
             terms: ["Project Phoenix"]
-      # No defaults block: apply only accepts unknown_tools: allow, so a
-      # tool call that no rule matches is allowed. This rule denies every
-      # other tool on github-mcp instead. The scope names the server
+      # This server-scoped allowlist restricts only github-mcp. Account
+      # defaults.unknown_tools can instead govern all unmatched MCP calls.
+      # The scope names the server
       # defined under mcp_servers; apply rejects a server that neither the
       # file nor the account has.
       rules:

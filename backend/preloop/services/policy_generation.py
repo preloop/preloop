@@ -637,6 +637,12 @@ follow these rules:
 ```yaml
 {SERVER_ALLOWLIST_EXAMPLE}```
 
+### EXAMPLE: DENY UNMATCHED MCP TOOLS ACCOUNT-WIDE
+```yaml
+defaults:
+  unknown_tools: deny
+```
+
 ### JSON SCHEMA
 ```json
 {schema_json}
@@ -694,6 +700,12 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
 ### EXAMPLE: APPROVAL FOR TOOLS THE LOGS NEVER SHOW
 ```yaml
 {UNSEEN_TOOLS_APPROVAL_EXAMPLE}```
+
+### EXAMPLE: DENY UNMATCHED MCP TOOLS ACCOUNT-WIDE
+```yaml
+defaults:
+  unknown_tools: deny
+```
 
 ### JSON SCHEMA
 ```json
