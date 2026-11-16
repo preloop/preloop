@@ -411,3 +411,90 @@ and TLS hostname verification. Retries resolve and check again, and redirects
 are not followed. With this policy enabled, the delivery worker connects
 directly, without environment proxies, so a proxy cannot independently resolve
 an unchecked destination.
+
+## External approval hand-off
+
+An approval workflow can delegate its decision page to an external consent
+service. This is opt-in: existing webhooks continue to behave as before. Set
+these keys in the workflow's `approval_config` through the workflow API:
+
+```json
+{
+  "external_approval_link": true,
+  "external_approval_hosts": ["consent.example.com"],
+  "expose_comment_to_agent": false
+}
+```
+
+The same three settings are available directly on an `approval_workflows`
+entry in policy YAML. Configure the receiving endpoint with
+`channel_configs.webhook.url`. If `external_approval_hosts` is absent, only the
+host of that webhook URL is allowed. Entries are exact DNS hosts, without
+wildcards, schemes, paths or ports.
+
+The existing signed `approval.created` workflow delivery includes the machine
+callback URLs in `decision.approve_url` and `decision.decline_url`. The receiver
+may return a 2xx JSON response:
+
+```json
+{
+  "external_reference": "request-example",
+  "external_url": "https://consent.example.com/decide?request=a%2Fb&state=x%2By"
+}
+```
+
+Preloop stores the URL unchanged. It waits for this response before sending
+email, private chat and push notifications. Those notifications and the console
+approval page direct the person to the external service; local approve and
+decline controls are hidden. Push includes `external_url` and
+`external_decision: true` in both the top-level payload and the Android data
+block. Opening the link in mobile apps is a separate feature.
+
+URLs must use HTTPS on port 443 (or omit the port), have an allowed host, and
+contain no user information, whitespace, controls or ambiguous browser syntax.
+An invalid response is recorded as a failed delivery and is not automatically
+retried. The approval remains pending and human notifications use the normal
+Preloop page. A successful response without either hand-off field also uses the
+normal page. Other delivery failures retain the existing outbox retry policy;
+normal notifications resume when retries are exhausted. Notification work is
+persisted so a worker restart can resume it. The webhook remains an
+at-least-once delivery; receivers should deduplicate by delivery/event identity.
+
+An allow-listed host is a trusted decision service. Preloop does not follow the
+external URL or inspect redirects from its page. The operator must ensure that
+host cannot be used as an open redirect or serve attacker-controlled decision
+pages. Use a dedicated consent origin, rather than a general URL shortener.
+
+The external service later POSTs a decision using the token URL or the existing
+approval API. Existing authentication and step-up checks still apply to the
+API. Both decision surfaces accept `result` next to `comment`:
+
+```json
+{
+  "comment": "Private note for the audit trail",
+  "result": {
+    "external_reference": "request-example",
+    "grant_reference": "grant-example",
+    "fields": {"purpose": "read requested record"}
+  }
+}
+```
+
+When a hand-off reference is stored, `result.external_reference` must match it.
+The result permits only these three keys. References are strings of at most
+512 characters. `fields` is a flat object of at most 32 string values; keys are
+at most 128 characters and values at most 2,048 characters. The serialized
+result is limited to 8 KiB. Nested objects, lists, numbers and booleans are
+rejected. The webhook response itself is limited to 16 KiB.
+
+Results receive the tool argument credential scrub and the account's scoped
+storage redaction before persistence. They are stored on the approval and on
+`approval_approved` / `approval_denied` audit rows as `details.external_result`.
+Use `grant_reference` on the audit list or grouped audit API to find a recorded
+grant. A redacted grant reference cannot be searched by its original value.
+Do not send proof documents, credentials or personal data in references.
+
+Approval comments for external-link workflows never appear in agent progress
+messages or polling results. Decline comments keep their existing behavior
+unless `expose_comment_to_agent` is false. Calls held after an upstream scope
+refusal always return only the outcome and external reference on failure.

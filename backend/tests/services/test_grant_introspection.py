@@ -331,3 +331,27 @@ async def test_json_escaped_credential_echo_is_unavailable(
     assert result.binding["client_id"] is None
     assert result.binding["consent_ref"] is None
     assert all(entry.binding == result.binding for entry in client._cache.values())
+
+
+@pytest.mark.asyncio
+async def test_approval_recheck_bypasses_cached_grant() -> None:
+    """A widened grant on an unchanged token is visible immediately after approval."""
+    scopes = "read"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"active": True, "scope": scopes})
+
+    client = client_for(handler)
+    cfg = config(required_scopes=["write"])
+    initial = await client.evaluate(TOKEN, cfg, server_id="server-example")
+    assert initial.deny_reason == "scope_not_granted"
+    scopes = "read write"
+    cached = await client.evaluate(TOKEN, cfg, server_id="server-example")
+    assert cached.deny_reason == "scope_not_granted"
+    approved = await client.evaluate(TOKEN, cfg, server_id="server-example", force=True)
+    assert approved.deny_reason is None
+    assert approved.binding["cached"] is False
+    assert calls == 2

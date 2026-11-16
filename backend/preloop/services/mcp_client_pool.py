@@ -69,8 +69,9 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
 class MCPAuthenticationError(PermissionError):
     """Sanitized upstream auth rejection retaining its HTTP status for audit."""
 
-    def __init__(self, status_code: int) -> None:
+    def __init__(self, status_code: int, *, insufficient_scope: bool = False) -> None:
         self.status_code = status_code
+        self.insufficient_scope = insufficient_scope
         super().__init__(
             f"MCP server rejected authentication or authorization (HTTP {status_code}). "
             "Configure or reconnect authentication in Preloop, then rescan. "
@@ -670,8 +671,11 @@ class MCPClient:
                 if isinstance(
                     target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
                 ) and target_exc.response.status_code in {401, 403}:
+                    from preloop.services.external_approval import scope_refusal
+
                     raise MCPAuthenticationError(
-                        target_exc.response.status_code
+                        target_exc.response.status_code,
+                        insufficient_scope=scope_refusal(target_exc),
                     ) from None
                 if self.auth_type == "oauth":
                     raise PermissionError(message) from None

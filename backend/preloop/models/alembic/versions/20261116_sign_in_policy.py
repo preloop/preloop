@@ -1,14 +1,14 @@
 """Add inert account sign-in policy storage.
 
 Revision ID: 20261116_sign_in_policy
-Revises: 20261113_bundle_registry
+Revises: 20261211_external_grant_idx
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "20261116_sign_in_policy"
-down_revision = "20261113_bundle_registry"
+down_revision = "20261211_external_grant_idx"
 branch_labels = None
 depends_on = None
 
