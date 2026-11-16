@@ -80,7 +80,9 @@ def test_upgrade_keeps_existing_opt_out(
 
 
 @pytest.mark.parametrize("key", OPT_OUTS)
-@pytest.mark.parametrize("value", ["YES", '"true"', "'1'", " t "])
+@pytest.mark.parametrize(
+    "value", ["YES", '"true"', "'1'", " t ", "true # opt out", '"yes" # opt out']
+)
 def test_upgrade_keeps_hand_written_opt_out(
     tmp_path: Path, key: str, value: str
 ) -> None:

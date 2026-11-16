@@ -231,7 +231,8 @@ env_value() {
 # Match instance_service.is_telemetry_disabled, including quoted .env values.
 opt_out_enabled() {
   normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-    | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+    | sed -e 's/[[:space:]]#.*$//' \
+      -e 's/^[[:space:]]*//;s/[[:space:]]*$//' \
       -e "s/^[\"']//;s/[\"']$//" \
       -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   case "$normalized" in
