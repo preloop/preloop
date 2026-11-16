@@ -478,7 +478,10 @@ class WebSocketManager:
         if connection is not None and connection.task is not None:
             if connection.task is not asyncio.current_task():
                 connection.task.cancel()
-                await asyncio.gather(connection.task, return_exceptions=True)
+                # Preserve the caller's cancellation if disconnect interrupts the join.
+                await asyncio.shield(
+                    asyncio.gather(connection.task, return_exceptions=True)
+                )
 
     async def _watch_revocation(self, connection_id: str) -> None:
         """Recheck on a clock independent of incoming WebSocket traffic."""
