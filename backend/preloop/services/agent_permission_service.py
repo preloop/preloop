@@ -414,8 +414,9 @@ def _honour_native_policy_decision(
     A match is the decision's ``action`` plus ``source``. Deny (including
     a subject-level disable with no source) always matches. Allow matches
     when ``source`` names a rule, or when the description is not a
-    no-match sentinel. Scoped rules with a stored source other than
-    ``agent`` do not match.
+    no-match sentinel. Scoped rules match only when their stored source is
+    absent or equals the call's tool source: ``agent`` for native tools,
+    or ``mcp`` for ``mcp__server__tool`` hook calls.
     """
     from preloop.services.approval_rule_context import (
         SOURCE_RULE_EVALUATION_ERROR,
@@ -494,9 +495,10 @@ async def apply_native_access_rules(
     matching rule or a blocked configuration decides the call. A match is
     read from the decision's ``action`` and ``source`` (allow and deny
     rules return ``rule_context=None``). Subject-level disables are
-    honoured as deny. Scoped rules whose stored ``source`` is not
-    ``agent`` or absent are ignored. Returns ``None`` when no rule
-    matched so the caller keeps the legacy path.
+    honoured as deny. Scoped rules with a stored ``source`` other than the
+    call's tool source (``agent``, or ``mcp`` for ``mcp__`` hook calls) are
+    ignored. An absent stored source matches either. Returns ``None`` when
+    no rule matched so the caller keeps the legacy path.
     """
     from preloop.services.policy_evaluator import evaluate_policy_async
 

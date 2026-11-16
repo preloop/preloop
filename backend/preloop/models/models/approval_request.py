@@ -88,6 +88,11 @@ class ApprovalRequest(Base):
             "resolved_at",
             postgresql_where=text("resolved_at IS NOT NULL"),
         ),
+        Index(
+            "ix_approval_request_external_notifications",
+            "id",
+            postgresql_where=text("external_handoff_state = 'notify'"),
+        ),
         # One pending security-maintenance request per work item. Concurrent
         # creators race past the advisory lock; this partial unique index is
         # the durable control. Crash/retry binds the surviving row.

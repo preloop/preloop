@@ -604,4 +604,16 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     registry = script.get_revision("20261116_tool_registry")
     assert registry.down_revision == merged.revision
-    assert script.get_heads() == [registry.revision]
+    sign_in_policy = script.get_revision("20261116_sign_in_policy")
+    assert sign_in_policy.down_revision == external_grant_indexes.revision
+    joined_policy = script.get_revision("20261213_flow_signin_merge")
+    assert set(joined_policy.down_revision) == {
+        merged.revision,
+        sign_in_policy.revision,
+    }
+    joined_registry = script.get_revision("20261214_mcp_registry_merge")
+    assert set(joined_registry.down_revision) == {
+        registry.revision,
+        joined_policy.revision,
+    }
+    assert script.get_heads() == [joined_registry.revision]
