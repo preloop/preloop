@@ -2016,11 +2016,25 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         !this.isConnected ||
         this.flowId !== flowId ||
         generation !== this.flowLoadGeneration
-      )
+      ) {
+        showToast(
+          'Webhook secret rotated, but the new URL could not be displayed because the flow view changed. Rotate again from the flow page and update your webhook sender.',
+          'warning',
+          {
+            label: 'Open flow',
+            onClick: () =>
+              Router.go(`/console/flows/${encodeURIComponent(flowId)}`),
+          }
+        );
         return;
-      const { webhook_secret, ...metadata } = response;
-      this.newWebhookSecret = webhook_secret;
-      this.flow = { ...this.flow, ...metadata };
+      }
+      this.newWebhookSecret = response.webhook_secret;
+      this.flow = {
+        ...this.flow,
+        webhook_secret_set: response.webhook_secret_set,
+        webhook_secret_hint: response.webhook_secret_hint,
+        webhook_secret_rotated_at: response.webhook_secret_rotated_at,
+      };
     } catch (error) {
       showToast(
         error instanceof Error

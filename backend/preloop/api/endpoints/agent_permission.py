@@ -1063,6 +1063,7 @@ async def expire_approval_by_hook(
 
     from preloop.models.db.session import get_async_db_session
     from preloop.services.approval_service import ApprovalService
+    from preloop.services.external_approval import agent_visible_comment
 
     minutes = ""
     if payload.waited_seconds:
@@ -1073,6 +1074,7 @@ async def expire_approval_by_hook(
         updated = await service.expire_request(
             approval_id, reason=payload.reason, detail=detail
         )
+        comment = agent_visible_comment(updated) if updated is not None else None
     if updated is None:
         raise HTTPException(status_code=404, detail="Approval request not found")
     decided_by = None
@@ -1083,7 +1085,7 @@ async def expire_approval_by_hook(
     return ApprovalExpireResponse(
         approval_request_id=str(updated.id),
         status=updated.status,
-        approver_comment=updated.approver_comment,
+        approver_comment=comment,
         decided_by=decided_by,
     )
 
