@@ -206,6 +206,24 @@ def authorize_authentication(
     apply, and no strong authentication assurance is granted.
     """
     context = authentication_claims(claims)
+    delegated_auth = None
+    if claims and claims.get("impersonated_by"):
+        # Delegation is access-only. Never turn the administrator's proof into
+        # the target's sign-in assurance or copy it into refreshes/grants.
+        if purpose != "access":
+            raise HTTPException(403, "Impersonation cannot issue another session")
+        try:
+            UUID(str(claims["impersonated_by"]))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(401, "Invalid delegation context") from exc
+        proof = claims.get("impersonator_auth")
+        if isinstance(proof, Mapping):
+            bounded = authentication_claims(proof)
+            delegated_auth = {
+                key: bounded[key]
+                for key in ("amr", "auth_time", "passkey_uv")
+                if key in bounded
+            }
     _enforce_core_policy(db, user, context, purpose=purpose, source_ip=source_ip)
     if channel_action and (
         purpose not in {"exchange", "access"} or context.get("amr") != ["chat"]
@@ -223,6 +241,8 @@ def authorize_authentication(
     if not channel_action:
         from preloop.plugins.account_hooks import apply_sign_in_strength_policy
 
+        if delegated_auth is not None:
+            context["delegated_auth"] = delegated_auth
         apply_sign_in_strength_policy(db, user, context, purpose)
     return authentication_claims(context)
 
@@ -241,6 +261,7 @@ _ENROLLMENT_ROUTES = frozenset(
         ("POST", "/api/v1/auth/refresh"),
         ("POST", "/api/v1/auth/switch-account"),
         ("GET", "/api/v1/auth/memberships"),
+        ("GET", "/api/v1/me/memberships"),
     }
 )
 
