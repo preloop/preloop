@@ -686,6 +686,10 @@ export class ConsoleShell extends LitElement {
         }),
       ]);
       this._profileUnavailable = profile === null;
+      if (profile?.enroll_only) {
+        Router.go('/enroll-sign-in');
+        return;
+      }
       this.features = featuresResponse.features;
       this._fleetAllowed =
         !!profile && hasFleetPermission(profile, 'view_device_fleet');

@@ -3,7 +3,7 @@
 Authenticator apps and recovery codes are available in Preloop without an
 edition plugin. Enrollment is optional per user. Organization-wide policies,
 coverage reporting, and resetting another member from the console are separate
-Preloop Enterprise features; the core change does not implement those policies.
+Preloop Enterprise features supplied through optional policy hooks.
 
 ## Lost phone and recovery codes
 
@@ -61,3 +61,29 @@ Approvals made through mobile apps, watches, Slack or Mattermost do not carry
 a console session and are not subject to console step-up. They remain governed
 by device pairing and channel identity. Any edition UI exposing account
 step-up settings must display this limitation alongside the setting.
+
+## Account policy and restricted sessions
+
+An edition provider can require strong sign-in using
+`register_sign_in_strength_policy`. Core stores `strong_sign_in_policy`
+(`off`, `admins`, `all`, default `off`) and provides the restricted-session
+boundary; without a provider, sign-in remains unchanged. Policy decisions run at
+sign-in, refresh, account switch, grants, HTTP access and live-session checks.
+
+A weak sign-in can receive `enroll_only: true`. It may read its profile and factor
+status, enroll TOTP or a passkey, refresh, sign out, or switch accounts. Other
+APIs and authenticated WebSockets refuse it. TOTP confirmation returns a normal
+session; a registered passkey must be used for sign-in. Factor removal may return
+`mfa_required_by_policy` until another usable factor is available.
+
+Account enforcement can keep a reset user at enrollment even after
+`reset_mfa.py`. If the last administrator loses every factor, a server operator
+first disables the account policy with the edition's audited policy reset
+script, then uses `reset_mfa.py` and, when needed, `reset_passkey_only.py`.
+Administrative server access is sufficient; a browser session is not required.
+Disabling `MFA_TOTP_ENABLED` does not disable an account's strong-sign-in policy.
+
+Social browser sign-in carries a short-lived challenge to the second-step screen
+in a URL fragment, which is removed immediately. No session token is minted
+before proof. CLI social sign-in returns the completed token pair only to a
+validated loopback callback after the second factor succeeds.

@@ -822,6 +822,19 @@ async function performFetchWithAuth(
     // response without destroying the session. The next request retries.
   }
 
+  if (response.status === 403) {
+    const body = await response
+      .clone()
+      .json()
+      .catch(() => null);
+    if (
+      body?.detail?.code === 'strong_sign_in_required' &&
+      body.detail.enroll_only === true
+    ) {
+      Router.go('/enroll-sign-in');
+    }
+  }
+
   // A passive request is not a user action, so neither of the two answers
   // below is allowed to interrupt the page. The caller reads the status and
   // decides what to leave out.
@@ -4274,6 +4287,7 @@ export async function commitIssueDependencies(
 }
 
 export interface UserProfile {
+  enroll_only?: boolean;
   is_account_owner?: boolean;
   /** The caller's user id. Matches an approval workflow's approver_user_ids. */
   id: string;

@@ -78,6 +78,10 @@ class Account(Base):
 
     __tablename__ = "account"
 
+    strong_sign_in_policy: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="off", server_default="off"
+    )
+
     step_up_window_minutes: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -184,6 +188,10 @@ class Account(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "strong_sign_in_policy IN ('off', 'admins', 'all')",
+            name="ck_account_strong_sign_in_policy",
+        ),
         CheckConstraint(
             "step_up_window_minutes = 0 OR step_up_window_minutes BETWEEN 5 AND 720",
             name="ck_account_step_up_window",

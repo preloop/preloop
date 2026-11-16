@@ -69,7 +69,7 @@ def authentication_claims(claims: Mapping[str, Any] | None) -> dict[str, Any]:
                     status_code=401, detail="Invalid authentication context"
                 )
             result[name] = value
-    for name in ("sso_break_glass", "passkey_uv"):
+    for name in ("sso_break_glass", "passkey_uv", "enroll_only"):
         if name in source:
             if type(source[name]) is not bool:
                 raise HTTPException(
@@ -207,7 +207,9 @@ def authorize_authentication(
     """
     context = authentication_claims(claims)
     _enforce_core_policy(db, user, context, purpose=purpose, source_ip=source_ip)
-    if channel_action and (purpose != "exchange" or context.get("amr") != ["chat"]):
+    if channel_action and (
+        purpose not in {"exchange", "access"} or context.get("amr") != ["chat"]
+    ):
         raise HTTPException(401, "Invalid channel authentication context")
     if purpose in {"login", "exchange", "switch"} and not channel_action:
         from preloop.services.mfa import require_challenge
@@ -218,7 +220,49 @@ def authorize_authentication(
         gate.authorize(
             db, user=user, claims=context, purpose=purpose, source_ip=source_ip
         )
+    if not channel_action:
+        from preloop.plugins.account_hooks import apply_sign_in_strength_policy
+
+        apply_sign_in_strength_policy(db, user, context, purpose)
     return authentication_claims(context)
+
+
+_ENROLLMENT_ROUTES = frozenset(
+    {
+        ("GET", "/api/v1/users/me"),
+        ("GET", "/api/v1/auth/users/me"),
+        ("GET", "/api/v1/auth/mfa/status"),
+        ("POST", "/api/v1/auth/mfa/enroll"),
+        ("POST", "/api/v1/auth/mfa/enroll/confirm"),
+        ("POST", "/api/v1/auth/webauthn/register/options"),
+        ("POST", "/api/v1/auth/webauthn/register/verify"),
+        ("GET", "/api/v1/auth/webauthn/credentials"),
+        ("POST", "/api/v1/auth/logout"),
+        ("POST", "/api/v1/auth/refresh"),
+        ("POST", "/api/v1/auth/switch-account"),
+        ("GET", "/api/v1/auth/memberships"),
+    }
+)
+
+
+def enforce_enrollment_session(
+    context: Mapping[str, Any], request: Request | None
+) -> None:
+    """Keep restricted human sessions off ordinary APIs, sockets and gateways.
+
+    The context must have been re-evaluated against the current account policy.
+    Refresh independently evaluates the policy before issuing its new pair.
+    """
+    if context.get("enroll_only") is not True:
+        return
+    if (
+        request is not None
+        and (request.method, request.url.path.rstrip("/")) in _ENROLLMENT_ROUTES
+    ):
+        return
+    raise HTTPException(
+        403, detail={"code": "strong_sign_in_required", "enroll_only": True}
+    )
 
 
 def new_authentication(
@@ -228,6 +272,7 @@ def new_authentication(
     method: str,
     connection_id: UUID | None = None,
     source_ip: str | None = None,
+    passkey_uv: bool = False,
 ) -> dict[str, Any]:
     """Gate a proven fresh sign-in before its tokens are minted."""
     context: dict[str, Any] = {
@@ -239,6 +284,8 @@ def new_authentication(
     }
     if connection_id is not None:
         context["sso_connection_id"] = str(connection_id)
+    if method == "passkey":
+        context["passkey_uv"] = passkey_uv
     return authorize_authentication(
         db, user, claims=context, purpose="login", source_ip=source_ip
     )
