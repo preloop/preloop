@@ -650,15 +650,25 @@ async def request_agent_permission(
     from preloop.models.crud.approval_request import get_approval_request_async
     from preloop.models.crud.tool_configuration import (
         get_tool_config_by_name_and_source_async,
+        get_tool_config_for_route_async,
     )
 
     async with get_async_db_session() as db:
-        existing = await get_tool_config_by_name_and_source_async(
-            db,
-            account_id=account_id,
-            tool_name=tool_name,
-            tool_source="mcp" if parse_mcp_tool_name(tool_name) else AGENT_TOOL_SOURCE,
-        )
+        if parse_mcp_tool_name(tool_name):
+            existing = await get_tool_config_for_route_async(
+                db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_source="mcp",
+                mcp_server_id=None,
+            )
+        else:
+            existing = await get_tool_config_by_name_and_source_async(
+                db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_source=AGENT_TOOL_SOURCE,
+            )
         rule_outcome = await apply_native_access_rules(
             db,
             config=existing,

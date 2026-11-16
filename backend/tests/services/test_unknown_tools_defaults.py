@@ -424,3 +424,70 @@ async def test_validate_upload_parity(
             await policies.upload_policy(**kwargs)
         assert error.value.status_code == 400
         assert "default_approval_workflow" in str(error.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_hook_does_not_adopt_proxy_configuration(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=hook/proxy route isolation; fails_when=proxy allow widens hook;
+    no_claim=real permission/evaluator/DB, no live hook process or MCP network.
+    """
+    from contextlib import asynccontextmanager
+    from preloop.models.crud.policy_defaults import replace
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services import agent_permission_service as service
+
+    server = models.MCPServer(
+        account_id=test_user.account_id,
+        name="docs",
+        url="https://example.com/mcp",
+        transport="http-streaming",
+        auth_type="none",
+    )
+    db_session.add(server)
+    db_session.flush()
+    config = models.ToolConfiguration(
+        account_id=test_user.account_id,
+        tool_source="mcp",
+        mcp_server_id=server.id,
+        tool_name="mcp__docs__fetch",
+        is_enabled=True,
+    )
+    db_session.add(config)
+    db_session.flush()
+    db_session.add(
+        models.ToolAccessRule(
+            account_id=test_user.account_id,
+            tool_configuration_id=config.id,
+            action="allow",
+            condition_expression="true",
+        )
+    )
+    db_session.flush()
+    replace(db_session, test_user.account_id, {"unknown_tools": "deny"})
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[SyncApprovalSession]:
+        """Provide the real transaction through the production async adapter."""
+        yield SyncApprovalSession(db_session)
+
+    monkeypatch.setattr(service, "get_async_db_session", session)
+    monkeypatch.setattr(evaluator, "_log_policy_decision_async", MagicMock())
+    decision, reason, request_id, _ = await service.request_agent_permission(
+        base_url="https://example.com",
+        account_id=str(test_user.account_id),
+        user_id=test_user.id,
+        managed_agent_id=None,
+        runtime_session_id=None,
+        managed_agent_name=None,
+        source="claude_code",
+        tool_name="mcp__docs__fetch",
+        tool_input={},
+        agent_reasoning=None,
+        client_decision="allow",
+    )
+    assert decision == "deny" and request_id is None
+    assert "unknown_tools=deny" in reason
