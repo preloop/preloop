@@ -6132,6 +6132,15 @@ true
         Returns:
             Shell command string for post-execution git operations
         """
+        # Delivery reports inspect repository history and may propose tracker
+        # updates, but never publish repository changes. Older presets have
+        # legacy clone config: create_pull_request=False alone still enables
+        # pushes and embeds a credential-refresh client for every repository.
+        # Keep those scripts and publication capabilities out of report runs.
+        if (execution_context.get("agent_config") or {}).get(
+            "report_kind"
+        ) == "delivery_report":
+            return ""
         if (
             execution_context.get("read_only_review")
             or (execution_context.get("git_clone_config") or {}).get("publication_mode")

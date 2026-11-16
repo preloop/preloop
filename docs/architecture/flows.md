@@ -480,6 +480,11 @@ restoring an execution also restores recorded call IDs before replay. Tool
 arguments and results are excluded from these metric entries. Legacy text MCP
 markers remain supported for harnesses without structured output.
 
+Native permission-hook activity carries the authenticated flow execution ID
+as well as the session ID. Execution tool counters and repeated-call detection
+therefore include native shell calls; a caller-supplied execution ID cannot
+reattribute them.
+
 ## Employee event intake
 
 [Employee event intake](../guide/virtual-employees.md) authenticates provider events, verifies Flow/account/source scope, reserves the existing delivery-keyed execution before dispatch, and reuses Flow worker claims and recovery. Managed-agent control commands carry encrypted execution credentials; Codex/Nanobot tasks use independent bounded conversations and command-owned interruption.
@@ -499,6 +504,11 @@ pending decisions change. Execution detail projects forge state from
 Project reruns use the existing manual flow trigger, narrow the report policy's
 scope for that execution, and recheck the policy before running. They preserve
 the account's assessment budgets and tracker-write rules.
+
+Delivery Report repository checkouts never generate post-execution push or
+publication credential-refresh scripts, including for older presets using
+legacy clone configuration. Tracker-write policy does not authorize repository
+publication. This also keeps multi-repository reports within the launch budget.
 
 The account report policy shows recipient roles only when the Enterprise plugin
 advertises `delivery_report_recipients`. Its roster, role overrides, sponsoring

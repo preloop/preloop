@@ -403,6 +403,9 @@ def _record_native_tool_call(
                 db,
                 account_id=identity.account_id,
                 runtime_session_id=runtime_session_id,
+                # Execution metrics and loop detection read this binding,
+                # not the session id. Use authenticated identity only.
+                flow_execution_id=identity.flow_execution_id,
                 api_key_id=identity.api_key_id,
                 server_name=source,
                 tool_name=(payload.tool_name or "")[:255] or None,
