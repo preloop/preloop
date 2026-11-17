@@ -171,6 +171,7 @@ class UserContext:
         flow_id: Optional[str] = None,
         credential_type: str = "legacy",
         api_key_scopes: Optional[tuple[Any, ...]] = None,
+        codex_tools: str = "default",
     ):
         self.user_id = user_id
         self.account_id = account_id
@@ -195,6 +196,7 @@ class UserContext:
         self.flow_id = flow_id
         self.credential_type = credential_type
         self.api_key_scopes = api_key_scopes
+        self.codex_tools = codex_tools
 
 
 class DynamicMCPServer:

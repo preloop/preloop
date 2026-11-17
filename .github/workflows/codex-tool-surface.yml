@@ -1,0 +1,60 @@
+name: Codex tool surface
+
+on:
+  pull_request:
+    paths:
+      - 'backend/preloop/agents/codex*.py'
+      - 'backend/preloop/models/schemas/flow.py'
+      - 'backend/preloop/services/codex_tool_profiles.py'
+      - 'backend/preloop/services/flow_approval_discovery.py'
+      - 'backend/preloop/services/dynamic*mcp*.py'
+      - 'backend/preloop/services/flow_runtime_token.py'
+      - 'backend/preloop/services/initialize_mcp.py'
+      - 'backend/preloop/tools/builtin_defs.py'
+      - 'backend/preloop/api/endpoints/tools.py'
+      - 'backend/presets/002-pull-request-reviewer.yaml'
+      - 'backend/tests/agents/test_codex_tool*.py'
+      - 'backend/tests/services/test_codex_profile_identity.py'
+      - 'backend/tests/services/test_flow_approval_discovery.py'
+      - 'environments/preloop/tools/package*.json'
+      - '.github/requirements/app-dev.txt'
+      - '.github/workflows/codex-tool-surface.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-tool-surface-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PRELOOP_DISABLE_TELEMETRY: 'true'
+      PYTHONPATH: ${{ github.workspace }}/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/install-ci-python-deps
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install the pinned hosted CLI
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-tool-surface" --no-audit --no-fund @openai/codex@0.153.4
+          echo "PRELOOP_TEST_CODEX_BINARY=$RUNNER_TEMP/codex-tool-surface/node_modules/.bin/codex" >> "$GITHUB_ENV"
+      - name: Record requests without a model provider
+        run: |
+          test -x "$PRELOOP_TEST_CODEX_BINARY"
+          python -m pytest -q \
+            backend/tests/agents/test_codex_tool_profiles.py \
+            backend/tests/agents/test_codex_tool_surface_cli.py \
+            backend/tests/services/test_codex_profile_identity.py \
+            backend/tests/services/test_flow_approval_discovery.py
