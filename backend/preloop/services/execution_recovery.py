@@ -68,6 +68,14 @@ def _retire_runtime_credentials(db: Session, execution: models.FlowExecution) ->
     )
 
 
+#: Written to ``stop_reason`` when the bound settles a stop. The row leaves
+#: recovery, but the reason says plainly that termination was not observed.
+RECOVERY_EXHAUSTED_REASON = (
+    "termination not verified: recovery gave up after {attempts} attempts; "
+    "operator inspection required"
+)
+
+
 class ExecutionRecoveryService:
     """Recovers and resumes monitoring for orphaned flow executions."""
 
@@ -327,7 +335,11 @@ class ExecutionRecoveryService:
                 keep.append(execution)
                 continue
             try:
-                crud_flow_execution.confirm_stop(db, execution_id=execution.id)
+                crud_flow_execution.settle_unverified_stop(
+                    db,
+                    execution_id=execution.id,
+                    reason=RECOVERY_EXHAUSTED_REASON.format(attempts=attempts),
+                )
             except Exception as exc:  # noqa: BLE001 - one row must not end the pass
                 db.rollback()
                 logger.error(
@@ -339,7 +351,8 @@ class ExecutionRecoveryService:
             summary.settled += 1
             logger.error(
                 "Settled %s execution %s after %s re-dispatches without "
-                "confirming its stop; no longer recovering it",
+                "confirming its stop; its runtime was NOT verified gone and "
+                "needs operator inspection",
                 execution.status,
                 execution.id,
                 attempts,
@@ -433,10 +446,18 @@ class ExecutionRecoveryService:
         summary.redispatched = len(published)
         summary.failed = len(admissible) - len(published)
 
-        if published:
+        # A terminal row is counted even when its publish failed: otherwise
+        # a dispatch that keeps failing would never reach the terminal bound.
+        counted = published + [
+            execution.id
+            for execution, ok in zip(admissible, results, strict=False)
+            if not ok
+            and execution.status in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+        ]
+        if counted:
             # Count the publish against each row before the next pass reads
             # it, so the backoff holds across workers and across restarts.
-            crud_flow_execution.record_redispatch(db, execution_ids=published, now=now)
+            crud_flow_execution.record_redispatch(db, execution_ids=counted, now=now)
 
         logger.info(summary.as_log_line())
         return summary.redispatched

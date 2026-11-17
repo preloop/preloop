@@ -4397,6 +4397,43 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
+    def settle_unverified_stop(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        reason: str,
+    ) -> None:
+        """Take a terminal run out of recovery without termination evidence.
+
+        Only the recovery bound calls this, after repeated attempts could not
+        confirm the stop. ``stop_confirmed_at`` is what removes the row from
+        the recovery set, so it is written, but ``reason`` is appended to
+        ``stop_reason`` so the row says that nobody saw the runtime end.
+        """
+        from datetime import timezone
+
+        reason_value = case(
+            (
+                func.coalesce(models.FlowExecution.stop_reason, "") == "",
+                reason,
+            ),
+            else_=func.left(models.FlowExecution.stop_reason + "; " + reason, 500),
+        )
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution_id,
+            models.FlowExecution.stop_requested_at.isnot(None),
+            models.FlowExecution.stop_confirmed_at.is_(None),
+            models.FlowExecution.status.in_(self.TERMINAL_EXECUTION_STATUSES),
+        ).update(
+            {
+                models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc),
+                models.FlowExecution.stop_reason: reason_value,
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+
     def fail_unleased_runner_execution(
         self,
         db: Session,

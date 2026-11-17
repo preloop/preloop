@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose flow settings changed after launch in a way that made recovery fail
   each time (for example a run stopped when its pull request merged).
   As a backstop, a finished run whose stop still cannot be confirmed after
-  five attempts is settled with one error log line, instead of being retried
-  forever.
+  five attempts leaves recovery with one error log line, and its stop reason
+  says that termination was not verified and needs an operator, instead of
+  being retried forever.
 - Native-result reviews: a final answer that does not match the result schema
   (a missing required field, a value outside an enum, a wrong type, or no
   JSON) no longer fails the run at once. The hosted Codex runtime asks the

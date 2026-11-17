@@ -62,9 +62,21 @@ async def _close_executor(agent_executor: Any) -> None:
             )
 
 
+def _is_hosted_container_reference(session_reference: str) -> bool:
+    """Whether a reference names a hosted Kubernetes Job or Docker container.
+
+    Job and container names never contain a colon. Private runner
+    (``runner:``) and Agent Control (``control:``, ``control-consent:``)
+    references do, and only their own executor can tell whether the run
+    behind them is gone: a container lookup would report any of them as
+    absent, which is not termination evidence.
+    """
+    return bool(session_reference) and ":" not in session_reference
+
+
 def _executor_for_stop(
     db: Any,
-    flow: Any,
+    flow: Optional[Any],
     execution: Any,
     session_reference: str,
 ) -> Any:
@@ -77,6 +89,12 @@ def _executor_for_stop(
     """
     from preloop.agents import create_agent_executor, create_executor_for_execution
 
+    if flow is None:
+        # The flow is gone; only a hosted Job or container can still be
+        # inspected, and that needs no flow configuration.
+        if not _is_hosted_container_reference(session_reference):
+            raise ValueError("no flow to build a non-hosted executor from")
+        return create_agent_executor("codex", {})
     agent_config = getattr(flow, "agent_config", None) or {}
     try:
         return create_executor_for_execution(
@@ -87,7 +105,7 @@ def _executor_for_stop(
             db=db,
         )
     except ValueError as exc:
-        if session_reference.startswith("runner:"):
+        if not _is_hosted_container_reference(session_reference):
             raise
         logger.warning(
             "Executor for stopped execution %s refused (%s); inspecting its "
@@ -107,7 +125,7 @@ def _executor_for_stop(
 async def settle_terminal_stop(
     db: Any,
     *,
-    flow: Any,
+    flow: Optional[Any],
     execution: Any,
     session_reference: str,
 ) -> bool:
@@ -148,6 +166,22 @@ async def settle_terminal_stop(
         await _close_executor(agent_executor)
     if stopped:
         crud_flow_execution.confirm_stop(db, execution_id=execution_id)
+        # The orchestrator that would have retired these is gone, which is
+        # why recovery is running. Both helpers are no-ops once done, so a
+        # session already ended writes no second audit entry.
+        from preloop.services.execution_recovery import (
+            _retire_runtime_credentials,
+        )
+
+        try:
+            _retire_runtime_credentials(db, execution)
+        except Exception as exc:  # noqa: BLE001 - the stop is already confirmed
+            db.rollback()
+            logger.warning(
+                "Could not retire runtime credentials of execution %s: %s",
+                execution_id,
+                type(exc).__name__,
+            )
         logger.info(
             "Confirmed the stop of %s execution %s: its runtime is gone",
             execution.status,
@@ -477,8 +511,15 @@ async def claim_and_run_execution(
         flow_row = crud_flow.get(db, id=execution.flow_id)
         if flow_row is None:
             if _is_terminal(execution):
-                # Keep the stored outcome. With no flow there is no runtime
-                # to inspect; the reaper's bound settles the stop.
+                # Keep the stored outcome; a hosted runtime can still be
+                # inspected and stopped without its flow.
+                if session_reference:
+                    await settle_terminal_stop(
+                        db,
+                        flow=None,
+                        execution=execution,
+                        session_reference=session_reference,
+                    )
                 return {"status": "missing_flow", "execution_id": execution_id_str}
             crud_flow_execution.update(
                 db,

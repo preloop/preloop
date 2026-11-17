@@ -294,6 +294,8 @@ async def test_bound_settles_a_terminal_run_that_never_confirms(
     assert execution.end_time == STOPPED_AT
     assert execution.error_message == ORIGINAL_ERROR
     assert execution.id not in _candidate_ids(db_session)
+    # Leaving recovery is not proof the runtime ended; the row says so.
+    assert "termination not verified" in execution.stop_reason
     settled = [r for r in caplog.records if str(execution.id) in r.getMessage()]
     assert len(settled) == 1
     assert settled[0].levelno == logging.ERROR
@@ -359,10 +361,15 @@ async def test_missing_flow_keeps_a_terminal_outcome(
         patch.object(runner, "get_db_session", return_value=iter([db_session])),
         patch.object(db_session, "close"),
         patch.object(runner.crud_flow, "get", return_value=None),
+        patch(
+            "preloop.agents.create_agent_executor", return_value=GoneRuntime()
+        ) as hosted,
     ):
         outcome = await runner.claim_and_run_execution(str(execution.id), resume=True)
     assert outcome["status"] == "missing_flow"
+    hosted.assert_called_once_with("codex", {})
     db_session.refresh(execution)
+    assert execution.stop_confirmed_at is not None
     assert execution.status == "STOPPED"
     assert execution.end_time == STOPPED_AT
     assert execution.error_message == ORIGINAL_ERROR
@@ -372,3 +379,73 @@ async def test_missing_flow_keeps_a_terminal_outcome(
 async def test_parked_run_is_not_treated_as_terminal() -> None:
     assert not runner._is_terminal(SimpleNamespace(status="WAITING_FOR_HUMAN"))
     assert runner._is_terminal(SimpleNamespace(status="CANCELLED"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference", ["control:agent-1:command-1", "control-consent:agent-1:c-1"]
+)
+async def test_refused_executor_never_inspects_a_control_reference_as_a_container(
+    db_session: Session, flow: models.Flow, reference: str
+) -> None:
+    """A container lookup would call any non-container reference gone."""
+    execution = _stopped_run(db_session, flow.id)
+    execution.agent_session_reference = reference
+    db_session.commit()
+    plain = MagicMock(return_value=GoneRuntime())
+
+    await _recovery_pass(
+        db_session,
+        create_executor_for_execution=MagicMock(side_effect=ValueError("refused")),
+        create_agent_executor=plain,
+    )
+
+    plain.assert_not_called()
+    db_session.refresh(execution)
+    assert execution.stop_confirmed_at is None
+
+
+@pytest.mark.asyncio
+async def test_failed_dispatch_of_a_terminal_run_still_counts_towards_the_bound(
+    db_session: Session, flow: models.Flow
+) -> None:
+    execution = _stopped_run(db_session, flow.id)
+    with patch(
+        "preloop.services.flow_execution_dispatcher.dispatch_resume",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        for _ in range(MAX_TERMINAL_REDISPATCHES + 1):
+            execution.last_redispatch_at = None
+            db_session.commit()
+            await ExecutionRecoveryService()._redispatch_stale_executions(
+                db_session, stale_after_seconds=120
+            )
+    db_session.refresh(execution)
+    assert execution.redispatch_count == MAX_TERMINAL_REDISPATCHES
+    assert execution.stop_confirmed_at is not None
+    assert execution.id not in _candidate_ids(db_session)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_stop_retires_the_runtime_credentials(
+    db_session: Session, flow: models.Flow
+) -> None:
+    execution = _stopped_run(db_session, flow.id)
+    with (
+        patch(
+            "preloop.services.flow_runtime_token.end_flow_execution_runtime_session"
+        ) as end_session,
+        patch(
+            "preloop.services.flow_runtime_token.revoke_flow_runtime_tokens"
+        ) as revoke,
+    ):
+        for _ in range(2):
+            await _recovery_pass(
+                db_session,
+                create_executor_for_execution=MagicMock(return_value=GoneRuntime()),
+            )
+    assert end_session.call_count == 1
+    assert end_session.call_args.kwargs["execution_id"] == execution.id
+    assert end_session.call_args.kwargs["account_id"] == flow.account_id
+    assert revoke.call_count == 1
