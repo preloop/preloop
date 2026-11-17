@@ -304,6 +304,32 @@ class CRUDProject(CRUDBase[Project]):
             )
         return query.count()
 
+    def created_since(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        since: Any,
+        organization_id: Optional[Any] = None,
+    ) -> bool:
+        """Return whether a project of the account was created after ``since``.
+
+        Args:
+            db: Database session.
+            account_id: The account whose projects count.
+            since: Naive UTC lower bound on ``created_at``.
+            organization_id: Restrict to one organization.
+
+        Returns:
+            True when at least one such project exists.
+        """
+        query = self._scope_to_account(db.query(Project.id), account_id).filter(
+            Project.created_at >= since
+        )
+        if organization_id is not None:
+            query = query.filter(Project.organization_id == organization_id)
+        return db.query(query.exists()).scalar() is True
+
     def get_active(
         self,
         db: Session,

@@ -229,6 +229,7 @@
   "GET /api/v1/operator-notes": "deny",
   "GET /api/v1/operator-notes/session-targets": "deny",
   "GET /api/v1/operator-notes/{note_id}": "deny",
+  "GET /api/v1/operator/accounts/{account_id}/health": "deny",
   "GET /api/v1/organizations": "deny",
   "GET /api/v1/organizations/by-identifier/{identifier}": "deny",
   "GET /api/v1/organizations/{organization_id}": "deny",

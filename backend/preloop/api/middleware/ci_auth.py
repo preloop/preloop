@@ -21,6 +21,7 @@ from preloop.api.auth.ci_policy import (
     validate_machine_policies,
 )
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.traffic_attribution import attribute_principal, set_route_template
 from preloop.models import crud
 from preloop.models.crud.ci_principal import CiTokenInspection
 from preloop.models.db.session import get_auth_db_session
@@ -266,7 +267,7 @@ class RestrictedCiAuthMiddleware:
         self.app = app
         validate_machine_policies(app, policies)
         self.policies = tuple(
-            (method, compile_path(path)[0], action)
+            (method, compile_path(path)[0], action, path)
             for (method, path), action in dict(policies).items()
         )
 
@@ -280,14 +281,14 @@ class RestrictedCiAuthMiddleware:
             return
         action = None
         if scope["type"] == "http" and canonical:
-            for method, pattern, candidate in self.policies:
-                if (
-                    method == scope["method"]
-                    and pattern.fullmatch(scope["path"])
-                    and matched_machine_handler(scope, candidate)
-                ):
-                    action = candidate
-                    break
+            for method, pattern, candidate, template in self.policies:
+                if method == scope["method"] and pattern.fullmatch(scope["path"]):
+                    # Denials never reach the router; keep the policy's
+                    # template so traffic records still name the route.
+                    set_route_template(scope, template)
+                    if matched_machine_handler(scope, candidate):
+                        action = candidate
+                        break
         cache_key = PASS_THROUGH_CACHE.key(tokens, action)
         cached = PASS_THROUGH_CACHE.get(cache_key)
         if cached is not None:
@@ -324,6 +325,13 @@ class RestrictedCiAuthMiddleware:
             PASS_THROUGH_CACHE.put(cache_key, inspection)
             await self.app(scope, receive, send)
             return
+        if inspection.account_id is not None or inspection.principal_id is not None:
+            attribute_principal(
+                scope,
+                kind="ci_identity",
+                principal_id=inspection.principal_id,
+                account_id=inspection.account_id,
+            )
         target = _denial_target(scope)
         if scope["type"] == "websocket":
             await _audit_denial_safely(inspection, "ci_route_denied", target)

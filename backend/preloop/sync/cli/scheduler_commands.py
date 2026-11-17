@@ -302,6 +302,28 @@ async def run_scheduler_async(
         misfire_grace_time=30,
     )
 
+    # Hourly hygiene: deactivate keys of runs that ended, and drop REST
+    # traffic rows past retention. Both passes are bounded.
+    for task_name, job_id in (
+        ("deactivate_ended_run_keys", "run_key_maintenance"),
+        ("prune_api_traffic", "api_traffic_retention"),
+    ):
+
+        async def _publish_hourly(name: str = task_name) -> None:
+            try:
+                await event_bus_service.publish_task(name)
+            except Exception:
+                logger.error("Failed to publish %s", name)
+
+        scheduler.add_job(
+            _publish_hourly,
+            trigger=IntervalTrigger(hours=1),
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+
     # Post-deploy data backfills. Migrations only register them (the Helm
     # pre-upgrade hook has a five-minute budget); a worker advances pending
     # ones in committed batches. The first pass runs shortly after start, so

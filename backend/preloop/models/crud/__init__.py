@@ -66,6 +66,8 @@ from .expected_device import crud_expected_device
 from .fleet import crud_fleet_finding, crud_fleet_alert_settings
 from .managed_bundle import crud_bundle_revision, crud_control_expectation
 from .live_activity import crud_live_activity
+from .account_health import crud_account_health
+from .api_traffic import crud_api_traffic
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
 from .agent_control_command import CRUDAgentControlCommand
 from .ai_model import CRUDAIModel
@@ -353,6 +355,8 @@ __all__ = [
     "crud_fleet_finding",
     "crud_fleet_alert_settings",
     "crud_live_activity",
+    "crud_account_health",
+    "crud_api_traffic",
     "identity_directory",
     "CRUDPerson",
     "IdentityConflictError",
