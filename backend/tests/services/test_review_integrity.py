@@ -18,7 +18,7 @@ MERGE_BASE = "c" * 40
 DIGEST = "d" * 64
 ZERO = "0" * 40
 PLACEHOLDER = {
-    "review": "placeholder",
+    "review": "Review completed",
     "status": "success",
     "success": True,
     "verdict": "pass",
@@ -36,8 +36,55 @@ SCHEMA = {
         "merge_base_sha": {"type": "string"},
     },
 }
-INSPECTED = {"repository_tool_calls": 1, "other_tool_calls": 0, "native_commands": 0}
+INSPECTED = {
+    "diff_commands": 1,
+    "repository_tool_calls": 1,
+    "other_tool_calls": 0,
+    "native_commands": 0,
+}
 NOTHING = {"repository_tool_calls": 0, "other_tool_calls": 0, "native_commands": 0}
+
+
+def test_directory_and_revision_queries_do_not_establish_diff_inspection() -> None:
+    outcome = run(
+        {**PLACEHOLDER, "head_sha": HEAD, "base_sha": BASE},
+        inspection={"repository_tool_calls": 2, "native_commands": 2},
+    )
+    assert outcome["category"] == "review_not_inspected"
+
+
+def test_degenerate_review_precedes_binding_failure() -> None:
+    outcome = run(
+        {**PLACEHOLDER, "review": "n", "findings": [{"problem": "n", "fix": "n"}]},
+        inspection={"diff_commands": 1},
+    )
+    assert outcome["category"] == "review_degenerate"
+
+
+def test_short_no_issues_review_is_usable() -> None:
+    outcome = run(
+        {
+            **PLACEHOLDER,
+            "review": "No issues found",
+            "head_sha": HEAD,
+            "base_sha": BASE,
+        },
+        inspection={"diff_commands": 1},
+    )
+    assert outcome["status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "inspection", [{"repository_tool_calls": 2}, {"diff_commands": 1}]
+)
+def test_one_word_review_without_findings_is_degenerate(
+    inspection: dict[str, int],
+) -> None:
+    outcome = run(
+        {**PLACEHOLDER, "review": "starting", "head_sha": HEAD, "base_sha": BASE},
+        inspection=inspection,
+    )
+    assert outcome["category"] == "review_degenerate"
 
 
 def flow(**integrity: Any) -> SimpleNamespace:
@@ -160,6 +207,7 @@ def test_write_only_and_unknown_tools_are_not_inspection() -> None:
         "repository_tool_calls": 0,
         "other_tool_calls": 4,
         "native_commands": 0,
+        "diff_commands": 0,
     }
 
 
@@ -229,6 +277,7 @@ def test_counts_come_from_captured_evidence_not_claims() -> None:
         "repository_tool_calls": 1,
         "other_tool_calls": 1,
         "native_commands": 0,
+        "diff_commands": 0,
     }
     native = {
         "observations": [
@@ -310,3 +359,30 @@ def test_startup_receipt_status_is_explicit() -> None:
     for status in ("ABORTED", "CANCELED", "CANCELLED", "TIMED_OUT"):
         assert startup_receipt_status(row(status), None) == "failed"
     assert startup_receipt_status(row("RUNNING", binding=False), None) is None
+
+
+@pytest.mark.parametrize("category", ["result_schema_invalid", "no_confirmation"])
+def test_native_review_without_inspection_reports_the_missing_work(
+    category: str,
+) -> None:
+    from unittest.mock import MagicMock, patch
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = FlowExecutionOrchestrator(MagicMock(), "flow", {}, MagicMock())
+    orchestrator.flow = flow()
+    orchestrator._native_result_effective = True
+    orchestrator.execution_log = SimpleNamespace(
+        id="execution",
+        ci_review_binding={"head_sha": HEAD, "base_sha": BASE},
+        startup_receipt=None,
+    )
+    orchestrator._record_completion = MagicMock()
+    with patch(
+        "preloop.models.crud.execution_tool_evidence.inspection_summary",
+        return_value={},
+    ):
+        status, result, _ = orchestrator._apply_review_integrity_gate(
+            "FAILED", {"failure_category": category}, None
+        )
+    assert status == "FAILED"
+    assert result["failure_category"] == "review_not_inspected"

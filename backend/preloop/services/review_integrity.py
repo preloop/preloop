@@ -1,18 +1,18 @@
 """Controller checks that a read-only review result describes what was reviewed.
 
-Two checks run on every restricted-CI read-only review that would otherwise
+Integrity checks run on every restricted-CI read-only review that would otherwise
 succeed, and again before Preloop posts anything on the pull request:
 
 - **Result binding.** Result fields that name the reviewed revision must
   equal what the controller admitted (``ci_review_binding``) and computed
   (the startup receipt's ``diff``). A schema-valid result whose ``head_sha``
   is all zeros, missing or another commit is not a review of this change.
-- **Evidence floor.** A review that made no repository tool call and ran no
-  command did not read the change, whatever its verdict says. "Inspected" is
+- **Evidence floor.** A review must successfully read the bound patch or a changed
+  file, rather than just query revisions or list the checkout. "Inspected" is
   decided only from tool evidence Preloop captured itself: gateway-observed
-  tool calls and native command events, never from the model's claims.
+  tool calls and completed native command events, never model claims.
 
-Both are on by default for read-only reviews. ``git_clone_config.
+These checks are on by default for read-only reviews. ``git_clone_config.
 review_integrity`` can name explicit bindings or turn the evidence floor off.
 """
 
@@ -38,6 +38,7 @@ DEFAULT_BINDINGS: dict[str, str] = {
 
 CATEGORY_BINDING_MISMATCH = "review_binding_mismatch"
 CATEGORY_NOT_INSPECTED = "review_not_inspected"
+CATEGORY_DEGENERATE = "review_degenerate"
 
 STATUS_VERIFIED = "verified"
 STATUS_REJECTED = "rejected"
@@ -45,7 +46,7 @@ STATUS_NOT_APPLICABLE = "not_applicable"
 
 #: Tools that can read the repository. An allowlist: a tool not named here
 #: (``apply_patch``, ``request_user_input``, a future tool) is not evidence
-#: that the change was read. Native command events always count.
+#: that the change was read. Only qualifying completed commands establish inspection.
 INSPECTING_TOOLS: frozenset[str] = frozenset(
     {
         "exec_command",
@@ -121,6 +122,17 @@ def inspection_required(flow: Any) -> bool:
     return block.get("require_inspection") is not False
 
 
+def inspection_root(flow: Any, binding: Mapping[str, Any]) -> str:
+    """Resolve the admitted repository's hosted path, including shared flows."""
+    config = getattr(flow, "git_clone_config", None) or {}
+    repositories = config.get("repositories") or []
+    for repository in repositories:
+        if str(repository.get("project_id")) == str(binding.get("project_id")):
+            path = repository.get("clone_path", "/workspace-1")
+            return path if path.startswith("/") else "/workspace/" + path
+    return ""
+
+
 def _bindings(flow: Any, result: Mapping[str, Any]) -> dict[str, tuple[str, bool]]:
     """Field to (fact, required). Explicit bindings are always required."""
     block = review_integrity_block(getattr(flow, "git_clone_config", None))
@@ -164,6 +176,50 @@ def controller_facts(
     }
 
 
+def degenerate_review(flow: Any, document: Mapping[str, Any]) -> bool:
+    """Reject tiny narratives and single-word conclusions without findings.
+
+    Identity fields, control fields, schema enums/constants and platform metadata
+    are not narrative. Schemas with no narrative fields remain supported.
+    """
+    excluded = (
+        set(_bindings(flow, document))
+        | set(DEFAULT_BINDINGS)
+        | {
+            "status",
+            "verdict",
+            "severity",
+            "success",
+            "container_termination",
+        }
+    )
+    strings: list[str] = []
+
+    def visit(value: Any, schema: Any) -> None:
+        schema = schema if isinstance(schema, Mapping) else {}
+        if "enum" in schema or "const" in schema:
+            return
+        if isinstance(value, str):
+            strings.append(value.strip())
+        elif isinstance(value, Mapping):
+            properties = schema.get("properties") or {}
+            for key, child in value.items():
+                if key not in excluded and not key.startswith("_"):
+                    visit(child, properties.get(key, {}))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, schema.get("items"))
+
+    visit(document, getattr(flow, "result_schema", None))
+    return bool(strings) and (
+        all(len(value) < 3 for value in strings)
+        or (
+            not document.get("findings")
+            and all(len(value.split()) < 2 for value in strings)
+        )
+    )
+
+
 def evaluate(
     flow: Any,
     *,
@@ -194,7 +250,9 @@ def evaluate(
     facts = controller_facts(binding, diff)
     reasons: list[str] = []
     checked: list[dict[str, Any]] = []
-    for field, (fact, required) in sorted(_bindings(flow, document).items()):
+    degenerate = degenerate_review(flow, document)
+    bindings = {} if degenerate else _bindings(flow, document)
+    for field, (fact, required) in sorted(bindings.items()):
         expected = facts.get(fact)
         claimed = document.get(field)
         if field not in document:
@@ -213,9 +271,7 @@ def evaluate(
     ):
         reasons.append("head_sha_unbound")
     counts = dict(inspection) if isinstance(inspection, Mapping) else {}
-    inspected = bool(counts.get("repository_tool_calls")) or bool(
-        counts.get("native_commands")
-    )
+    inspected = bool(counts.get("diff_commands"))
     category = None
     if reasons:
         category = CATEGORY_BINDING_MISMATCH
@@ -224,6 +280,9 @@ def evaluate(
         # admitted revision follow from it, so this category wins.
         reasons.append("no_repository_inspection")
         category = CATEGORY_NOT_INSPECTED
+    if degenerate:
+        reasons.insert(0, "narrative_not_substantive")
+        category = CATEGORY_DEGENERATE
     return {
         "status": STATUS_REJECTED if category else STATUS_VERIFIED,
         "category": category,
@@ -235,6 +294,7 @@ def evaluate(
             "repository_tool_calls": int(counts.get("repository_tool_calls") or 0),
             "other_tool_calls": int(counts.get("other_tool_calls") or 0),
             "native_commands": int(counts.get("native_commands") or 0),
+            "diff_commands": int(counts.get("diff_commands") or 0),
         },
     }
 
@@ -242,10 +302,12 @@ def evaluate(
 def failure_message(outcome: Mapping[str, Any]) -> str:
     """A stable, value-free message for the execution row."""
     reasons = ", ".join(outcome.get("reasons") or []) or "unverified"
+    if outcome.get("category") == CATEGORY_DEGENERATE:
+        return "review_degenerate: review narrative is too short or contains only a word without findings"
     if outcome.get("category") == CATEGORY_NOT_INSPECTED:
         return (
-            "review_not_inspected: the review made no repository tool call or "
-            f"command, so its verdict is not recorded ({reasons})"
+            "review_not_inspected: no successful command read the bound diff or "
+            f"a changed file, so its verdict is not recorded ({reasons})"
         )
     return (
         "review_binding_mismatch: the result does not name the admitted "
@@ -261,7 +323,17 @@ class ObservationCounter:
     documents contribute command events, counted once per item.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        binding: Mapping[str, Any] | None = None,
+        diff: Mapping[str, Any] | None = None,
+        root: str = "",
+    ) -> None:
+        self._binding = binding or {}
+        self._diff = diff or {}
+        self._root = root
+        self._diff_commands: set[str] = set()
         self._calls: dict[str, str | None] = {}
         self._commands: set[str] = set()
         self._anonymous_inspecting = 0
@@ -278,6 +350,23 @@ class ObservationCounter:
                 identity = item.get("item_id")
                 if isinstance(identity, str):
                     self._commands.add(identity)
+                    from preloop.services.review_inspection import command_reads_change
+
+                    if (
+                        item.get("event") == "item.completed"
+                        and type(item.get("exit_code")) is int
+                        and item["exit_code"] == 0
+                        and not item.get("truncated")
+                        and not item.get("redacted")
+                        and command_reads_change(
+                            item.get("value"),
+                            base=self._binding.get("base_sha", ""),
+                            head=self._binding.get("head_sha", ""),
+                            files=self._diff.get("files", []),
+                            root=self._root,
+                        )
+                    ):
+                        self._diff_commands.add(identity)
                 continue
             if item.get("source") != "response" or item.get("kind") != "call":
                 continue
@@ -297,12 +386,13 @@ class ObservationCounter:
             "repository_tool_calls": inspecting + self._anonymous_inspecting,
             "other_tool_calls": len(self._calls) - inspecting + self._anonymous_other,
             "native_commands": len(self._commands),
+            "diff_commands": len(self._diff_commands),
         }
 
     def inspected(self) -> bool:
-        """Whether any inspecting call or native command was seen."""
+        """Whether a successful read of the bound change was seen."""
         counts = self.counts()
-        return bool(counts["repository_tool_calls"] or counts["native_commands"])
+        return bool(counts["diff_commands"])
 
 
 def count_observations(documents: Any) -> dict[str, int]:
@@ -337,6 +427,12 @@ def evaluate_execution(
         result=getattr(execution, "result", None),
         binding=getattr(execution, "ci_review_binding", None),
         diff=review_diff_identity(execution),
-        inspection=inspection_summary(db, execution_id=execution.id),
+        inspection=inspection_summary(
+            db,
+            execution_id=execution.id,
+            binding=execution.ci_review_binding,
+            diff=review_diff_identity(execution),
+            root=inspection_root(flow, execution.ci_review_binding),
+        ),
         require_head=require_head,
     )

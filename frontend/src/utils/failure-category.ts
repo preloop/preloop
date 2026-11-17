@@ -110,10 +110,15 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The review result names a commit or diff other than the one Preloop admitted and checked out, so its verdict is not recorded or posted.',
   },
+  review_degenerate: {
+    label: 'review has no substance',
+    tooltip:
+      'The review contains only minimal text without a usable conclusion or findings, so its verdict is not recorded or posted.',
+  },
   review_not_inspected: {
     label: 'review not inspected',
     tooltip:
-      'The review made no repository tool call and ran no command, so it did not read the change and its verdict is not recorded or posted.',
+      'No successful command read the bound diff or a changed file, so the review verdict is not recorded or posted.',
   },
   tool_error: {
     label: 'tool error',

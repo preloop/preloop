@@ -373,10 +373,8 @@ def test_native_responses_schema_is_forwarded_without_silent_drop() -> None:
         "strict": True,
     }
     kwargs = _build_kwargs(model, payload={"text": {"format": native_format}})
-    assert kwargs["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {"name": "review", "schema": schema, "strict": True},
-    }
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert '"additionalProperties": false' in kwargs["messages"][0]["content"]
     assert kwargs["drop_params"] is True
 
 
@@ -430,7 +428,13 @@ def test_zai_schema_rejects_unsupported_format_explicitly() -> None:
         model_identifier="glm-5.3",
         api_endpoint="https://api.z.ai/api/paas/v4",
     )
-    with pytest.raises(ModelGatewayAPIError, match="structured response_format"):
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.get_supported_openai_params",
+            return_value=["tools"],
+        ),
+        pytest.raises(ModelGatewayAPIError, match="structured response_format"),
+    ):
         _build_kwargs(
             model,
             {"response_format": {"type": "json_object"}, "parallel_tool_calls": True},

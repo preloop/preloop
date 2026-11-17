@@ -154,7 +154,8 @@ def review_integrity_projection(execution: Any) -> dict[str, Any] | None:
     return {
         "status": stored["status"],
         "category": stored.get("category")
-        if stored.get("category") in {"review_binding_mismatch", "review_not_inspected"}
+        if stored.get("category")
+        in {"review_binding_mismatch", "review_not_inspected", "review_degenerate"}
         else None,
         "reasons": [r for r in stored.get("reasons") or [] if isinstance(r, str)],
         "bindings": [
@@ -175,6 +176,7 @@ def review_integrity_projection(execution: Any) -> dict[str, Any] | None:
                     "repository_tool_calls",
                     "other_tool_calls",
                     "native_commands",
+                    "diff_commands",
                 )
             },
         },

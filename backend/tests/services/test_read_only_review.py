@@ -36,6 +36,7 @@ def review() -> tuple[Any, Any]:
         project_id=uuid4(),
         tracker_id=uuid4(),
         head_sha="a" * 40,
+        base_sha="c" * 40,
         base_branch="main",
         tracker_type="github",
         repository_slug="example/project",
@@ -125,8 +126,12 @@ async def test_scoped_lease_binds_exact_repo_and_revision_without_broad_resolver
     assert list(context["git_credentials_map"]) == [lease.repository_url]
     repository = context["git_clone_config"]["repositories"][0]
     assert repository["commit"] == binding.head_sha
+    assert context["read_only_base_ref"] == "main"
+    assert context["read_only_head_sha"] == binding.head_sha
+    assert binding.base_sha in context["prompt"]
+    assert binding.head_sha in context["prompt"]
     assert "repository_url" not in flow.git_clone_config["repositories"][0]
-    executor = CodexAgent.__new__(CodexAgent)
+    executor = CodexAgent({})
     executor.logger = MagicMock()
     assert executor._resolve_repository_token(repository, context)[0] == "only-read"
     # Exercise the final native clone generator with conflicting moving-PR
@@ -147,6 +152,13 @@ async def test_scoped_lease_binds_exact_repo_and_revision_without_broad_resolver
     assert f'"$(git rev-parse HEAD)" != {binding.head_sha}' in command
     assert "b" * 40 not in command
     assert "git clone -b" not in command
+    startup = executor._prepare_init_commands(context)
+    for name, value in (
+        ("HEAD_SHA", binding.head_sha),
+        ("BASE_SHA", binding.base_sha),
+        ("BASE_REF", "main"),
+    ):
+        assert f"export PRELOOP_REVIEW_{name}={value}" in startup
     assert executor._wrap_clone_with_workspace_restore(command, context) == command
     with patch.object(executor, "_get_token_from_project") as fallback:
         with pytest.raises(ValueError):
@@ -306,7 +318,10 @@ async def test_native_result_persists_and_owned_callback_remains_available(
         payload=CiSubscriptionCreate(url="https://example.com/completed"),
     )
     execution = crud.crud_ci_execution.create(
-        db_session, context=principal, binding=review_binding(principal), event={}
+        db_session,
+        context=principal,
+        binding=review_binding(principal).model_copy(update={"base_sha": "b" * 40}),
+        event={},
     )
     orch = FlowExecutionOrchestrator(
         db_session, str(flow.id), execution.trigger_event_details, AsyncMock()
@@ -319,7 +334,7 @@ async def test_native_result_persists_and_owned_callback_remains_available(
             {"review": "Native helper reviewed the exact admitted revision"}
             if shape == "inspected"
             else {
-                "review": "placeholder",
+                "review": "Starting repository inspection",
                 "status": "success",
                 "success": True,
                 "verdict": "pass",
@@ -476,6 +491,7 @@ async def test_native_result_persists_and_owned_callback_remains_available(
             "repository_tool_calls": 0,
             "other_tool_calls": 0,
             "native_commands": 0,
+            "diff_commands": 0,
         }
         return
     assert execution.status == "SUCCEEDED", execution.error_message
@@ -757,3 +773,52 @@ def test_shared_selector_cannot_enable_write_capability(
                 "publication_mode": "legacy",
             }
         )
+
+
+def test_checkout_fetches_admitted_base_outside_current_remote_refs(
+    tmp_path: Path,
+) -> None:
+    """A force-moved base ref cannot remove the admitted diff from the checkout."""
+    import os
+    import subprocess
+
+    env = {**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"}
+    remote = tmp_path / "remote"
+    checkout = tmp_path / "checkout"
+    remote.mkdir()
+
+    def git(root: Path, *args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(root), *args], text=True, env=env
+        ).strip()
+
+    git(remote, "init", "-q", "-b", "main")
+    git(remote, "config", "user.name", "Jane Doe")
+    git(remote, "config", "user.email", "jane@example.com")
+    (remote / "change.txt").write_text("original\n")
+    git(remote, "add", ".")
+    git(remote, "commit", "-qm", "Original")
+    ancestor = git(remote, "rev-parse", "HEAD")
+    (remote / "base.txt").write_text("admitted base\n")
+    git(remote, "add", ".")
+    git(remote, "commit", "-qm", "Base")
+    base = git(remote, "rev-parse", "HEAD")
+    git(remote, "reset", "--hard", ancestor)
+    (remote / "change.txt").write_text("reviewed change\n")
+    git(remote, "commit", "-qam", "Head")
+    head = git(remote, "rev-parse", "HEAD")
+    subprocess.run(
+        ["git", "clone", "--quiet", remote.as_uri(), str(checkout)], env=env, check=True
+    )
+    assert (
+        subprocess.run(
+            ["git", "-C", str(checkout), "cat-file", "-e", base],
+            env=env,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
+    shell = CodexAgent({})._build_review_base_fetch_shell(str(checkout), base, head)
+    subprocess.run(["bash", "-c", shell], env=env, check=True, capture_output=True)
+    assert "reviewed change" in git(checkout, "diff", f"{base}...{head}")
+    assert git(checkout, "rev-parse", "HEAD") == head

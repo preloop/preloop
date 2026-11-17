@@ -403,7 +403,7 @@ def inspect(db: Session, execution: Any, item: str = "item_1") -> None:
                 "item": {
                     "id": item,
                     "type": "command_execution",
-                    "command": "git diff",
+                    "command": f"git diff {execution.ci_review_binding['base_sha']}...{execution.ci_review_binding['head_sha']}",
                     "exit_code": 0,
                 },
             }
@@ -432,6 +432,7 @@ def finished(
         head_sha=head,
         provider_pr_id="9001",
         base_branch="develop",
+        base_sha="b" * 40,
     )
     execution = crud.crud_ci_execution.create(
         world.db, context=who.context, binding=binding, event={}
@@ -688,7 +689,7 @@ async def test_reported_placeholder_pass_posts_an_error_status_and_no_review(
     assert outcome is not None
     assert world.github.reviews == {}
     assert outcome["review"] == "skipped"
-    assert outcome["review_reason"] == "review_not_inspected"
+    assert outcome["review_reason"] == "review_degenerate"
     status_entry = world.github.statuses[(project.slug, HEAD)][0]
     assert status_entry["state"] == "error"
     assert status_entry["description"].startswith("Review not verified")

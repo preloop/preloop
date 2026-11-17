@@ -212,7 +212,13 @@ async def test_start_and_poll_succeeds_when_command_completes(
     assert isinstance(executor, AgentControlExecutor)
     assert reference == f"control:{agent_id}:{command.command_id}"
 
+    orchestrator._publish_update = AsyncMock()
     result = await orchestrator._monitor_agent_execution(reference, executor)
+    assert not any(
+        call.args[1].get("status") in {"SUCCEEDED", "FAILED", "STOPPED"}
+        for call in orchestrator._publish_update.call_args_list
+        if call.args[0] == "agent_status"
+    )
     assert result["status"] == "SUCCEEDED"
     assert result.get("output_summary") == "Review posted"
     assert result.get("control_usage") == {
