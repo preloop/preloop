@@ -283,6 +283,11 @@ for features that must not be treated as shipped coverage.
 
 ## Extensions
 
+V3 reports distinguish extension collection coverage from runtime probes through
+`extension_completeness`. Unverified runtime usage does not make an otherwise
+complete extension inventory partial. Unreadable profiles, bounded scans and
+failed extension probes still report incomplete coverage.
+
 `preloop agents discover --inventory` emits `preloop.inventory.v3`, including
 installed extensions for Claude Code and Codex CLI. `--report` sends the same
 metadata on each candidate, bound to the matching app's hashed config context.
@@ -362,6 +367,11 @@ account aggregates with distinct device counts, versions and source kinds.
 (default 50, maximum 500) and an opaque `cursor`, returning `next_cursor` until
 all results have been read. Approval is `unknown` when no decision exists.
 
+`GET /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
+reads one decision with `view_agents` permission, or returns 404 when no decision
+exists. The console uses this lookup to preserve notes and version constraints
+without scanning the account's approval list.
+
 `PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
 requires `manage_agents` and accepts `approval_state` (`approved`, `unapproved`,
 `unknown`), optional `note`, and optional `version_constraint`. A constraint is an
@@ -369,3 +379,10 @@ exact version or a prefix ending in `.*`; null means any version. The list shows
 the stored name decision, not a claim that a particular version complies.
 Approvals apply account-wide, not per device. Inventory and approvals do not
 block an extension from loading or running.
+
+In the console, the Agents page's **Extensions** tab lists distinct extensions
+with device counts and versions seen. Device detail shows per-profile inventory,
+source/project hash prefixes, scope and enabled state. Both views filter by
+approval state and source. Users with `manage_agents` can change an approval;
+other viewers see the decision without an editor. The table warns when collection
+is partial or unknown, and **Load more** follows the server's cursor.

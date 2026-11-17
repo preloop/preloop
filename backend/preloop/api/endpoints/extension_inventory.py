@@ -91,6 +91,38 @@ def list_approvals(
     )
 
 
+@router.get(
+    "/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}",
+    response_model=ExtensionApprovalSummary,
+    responses={404: {"description": "Extension approval not found"}},
+)
+@require_permission("view_agents")
+def get_approval(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    agent_kind: str = Path(pattern=AGENT_KIND_PATTERN),
+    extension_kind: ExtensionKind = Path(),
+    extension_id: str = Path(pattern=IDENTIFIER_PATTERN),
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ExtensionApprovalSummary:
+    """Read one account decision without traversing unrelated approvals."""
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    if len(extension_id.encode()) > 128:
+        raise HTTPException(
+            status_code=422, detail="Extension identifier exceeds 128 bytes"
+        )
+    row = crud_extension_approval.get(
+        db,
+        account_id=account.id,
+        agent_kind=agent_kind,
+        extension_kind=extension_kind,
+        extension_id=extension_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Extension approval not found")
+    return ExtensionApprovalSummary.model_validate(row)
+
+
 @router.put(
     "/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}",
     response_model=ExtensionApprovalSummary,

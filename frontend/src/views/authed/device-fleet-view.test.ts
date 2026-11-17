@@ -182,6 +182,21 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return file;
   }
+  // protects=device-scoped extension lookup; fails_when=detail loads the whole
+  // account inventory; no_claim=synthetic fleet device and API fixtures.
+  it('binds the extension table to the device fingerprint', async () => {
+    history.replaceState(
+      {},
+      '',
+      `?device=${encodeURIComponent(device.device_key)}`
+    );
+    setup();
+    const view = await mount();
+    const inventory = view.shadowRoot.querySelector('extension-inventory');
+    expect(inventory).to.exist;
+    expect(inventory.fingerprint).to.equal('a'.repeat(64));
+  });
+
   it('combines governance and roster filters and clears both', async () => {
     setup();
     const view = await mount();

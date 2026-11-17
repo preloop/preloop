@@ -1,5 +1,10 @@
+import './extension-inventory';
+import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
+import '@shoelace-style/shoelace/dist/components/tab/tab.js';
+import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, css, html, nothing } from 'lit';
+import type { TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -43,6 +48,7 @@ export class DiscoveredAgentsPanel extends LitElement {
     status: 'new' | 'ignored'
   ) => Promise<DiscoveredAgentCandidate> = updateDiscoveryCandidate;
 
+  @state() private extensionsActive = false;
   @state() private candidates: DiscoveredAgentCandidate[] = [];
   @state() private total = 0;
   @state() private truncated = false;
@@ -143,7 +149,23 @@ export class DiscoveredAgentsPanel extends LitElement {
     return `Showing the first ${shown} of ${total}.`;
   }
 
-  render() {
+  render(): TemplateResult | typeof nothing {
+    if (!this.loaded) return nothing;
+    return html`<sl-tab-group
+      @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
+        this.extensionsActive = event.detail.name === 'extensions';
+      }}
+    >
+      <sl-tab slot="nav" panel="agents">Discovered agents</sl-tab>
+      <sl-tab slot="nav" panel="extensions">Extensions</sl-tab>
+      <sl-tab-panel name="agents">${this.renderCandidates()}</sl-tab-panel>
+      <sl-tab-panel name="extensions"
+        >${this.extensionsActive ? html`<extension-inventory></extension-inventory>` : nothing}</sl-tab-panel
+      >
+    </sl-tab-group>`;
+  }
+
+  private renderCandidates(): TemplateResult | typeof nothing {
     // Nothing reported means discovery reporting is not in use: stay out of
     // the way instead of showing an empty section on every Agents page.
     if (!this.loaded || this.candidates.length === 0) {

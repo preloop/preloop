@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -238,5 +239,41 @@ func TestExtensionReportVersionFallback(t *testing.T) {
 				t.Fatal("fallback mutated input")
 			}
 		})
+	}
+}
+
+// protects=CLI report transport into a local stack; fails_when=collected plugins
+// cannot be ingested or fixture secrets escape; no_claim=fixture profile store and
+// identity provider, no OS user enumeration or authentication-provider coverage.
+func TestExtensionReportToLocalStack(t *testing.T) {
+	endpoint := os.Getenv("PRELOOP_EXTENSION_E2E_URL")
+	if endpoint == "" {
+		t.Skip("run with the isolated extension browser harness")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") {
+		t.Fatal("extension harness requires a loopback server")
+	}
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	home := t.TempDir()
+	writeInventoryFixture(t, home, ".claude/settings.json", `{}`)
+	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"community","version":"1.4.0","description":"synthetic-extension-secret"}`)
+	oldProbes, oldProfiles := inventoryProbes, inventoryProfiles
+	inventoryProbes = inventoryTestDependencies(t, home)
+	inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
+	oldURL, oldToken := FlagURL, FlagToken
+	FlagURL, FlagToken = endpoint, "synthetic-extension-identity"
+	t.Cleanup(func() {
+		inventoryProbes, inventoryProfiles = oldProbes, oldProfiles
+		FlagURL, FlagToken = oldURL, oldToken
+	})
+	var output bytes.Buffer
+	if err := runAllUsersInventory(&output, true, "synthetic-extension-device"); err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{home, "synthetic-extension-secret"} {
+		if strings.Contains(output.String(), private) {
+			t.Fatal("private fixture value escaped")
+		}
 	}
 }
