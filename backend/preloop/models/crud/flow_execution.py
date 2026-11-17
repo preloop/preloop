@@ -1603,8 +1603,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return [], 0
         query = db.query(FlowExecution).filter(
             FlowExecution.flow_id.in_(flow_ids),
-            FlowExecution.result.isnot(None),
-            func.jsonb_typeof(FlowExecution.result) == "object",
+            or_(
+                func.jsonb_typeof(FlowExecution.result) == "object",
+                FlowExecution.status.in_(["FAILED", "TIMEOUT", "TIMED_OUT"]),
+            ),
         )
         if since is not None:
             query = query.filter(FlowExecution.start_time >= since)
@@ -1616,6 +1618,63 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
         return rows, total
+
+    def claim_report_failure_notice(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> bool:
+        """Persist a per-run claim before SMTP, serialized across workers."""
+        row = (
+            db.query(models.FlowExecution)
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.Flow.account_id == account_id,
+            )
+            .populate_existing()
+            .with_for_update(of=models.FlowExecution)
+            .first()
+        )
+        if row is None or row.status not in {"FAILED", "TIMEOUT", "TIMED_OUT"}:
+            db.commit()
+            return False
+        result = dict(row.result) if isinstance(row.result, dict) else {}
+        if "failure_notice" in result:
+            db.commit()
+            return False
+        row.result = {
+            **result,
+            "failure_notice": {
+                "status": "claimed",
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        db.commit()
+        return True
+
+    def finish_report_failure_notice(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        account_id: Any,
+        record: Dict[str, Any],
+    ) -> None:
+        """Record the send outcome without overwriting other result fields."""
+        row = (
+            db.query(models.FlowExecution)
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.Flow.account_id == account_id,
+            )
+            .populate_existing()
+            .with_for_update(of=models.FlowExecution)
+            .first()
+        )
+        if row is not None:
+            result = dict(row.result) if isinstance(row.result, dict) else {}
+            row.result = {**result, "failure_notice": record}
+            db.commit()
 
     def delivery_reports_with_proposals(
         self, db: Session, *, account_id: str, limit: int = 100

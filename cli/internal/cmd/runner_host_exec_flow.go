@@ -67,6 +67,7 @@ type hostExecCheckout struct {
 	Repositories []hostExecCheckoutRepo `json:"repositories"`
 	GitUserName  string                 `json:"git_user_name"`
 	GitUserEmail string                 `json:"git_user_email"`
+	ReportKind   string                 `json:"report_kind,omitempty"`
 }
 
 // jobHostExecMCPToken returns the delivered MCP token, "" when the flow has
@@ -107,7 +108,7 @@ func jobHostExecCheckout(job map[string]any) (*hostExecCheckout, error) {
 	if len(plan.Repositories) == 0 {
 		return nil, nil
 	}
-	if len(plan.Repositories) > hostExecMaxCheckoutRepos {
+	if plan.ReportKind != "delivery_report" && len(plan.Repositories) > hostExecMaxCheckoutRepos {
 		return nil, fmt.Errorf("host_exec_checkout supports at most %d repositories", hostExecMaxCheckoutRepos)
 	}
 	for _, value := range []string{plan.GitUserName, plan.GitUserEmail} {
@@ -227,6 +228,9 @@ func hostExecCheckoutPreamble(workspace string, plan *hostExecCheckout) string {
 	if plan == nil || len(plan.Repositories) == 0 {
 		return ""
 	}
+	if plan.ReportKind == "delivery_report" {
+		return fmt.Sprintf("Read the repository path map at %s. It maps the container paths in these instructions to the checkouts on this runner host.\n\n", filepath.Join(workspace, ".preloop-repository-paths.json"))
+	}
 	var b strings.Builder
 	b.WriteString("Preloop checked out the repositories for this run on the runner host. ")
 	b.WriteString("Where these instructions mention a container path, use the local path instead:\n")
@@ -235,6 +239,34 @@ func hostExecCheckoutPreamble(workspace string, plan *hostExecCheckout) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// writeHostReportPaths keeps arbitrarily many repository paths out of the CLI
+// prompt/arguments. The manifest contains locations only, never credentials.
+func writeHostReportPaths(workspace string, plan *hostExecCheckout) error {
+	if plan == nil || plan.ReportKind != "delivery_report" {
+		return nil
+	}
+	paths := make([]map[string]string, 0, len(plan.Repositories))
+	for _, repo := range plan.Repositories {
+		paths = append(paths, map[string]string{
+			"container_path": "/" + repo.Path,
+			"local_path":     filepath.Join(workspace, filepath.FromSlash(repo.Path)),
+		})
+	}
+	file, err := os.CreateTemp(workspace, ".preloop-repository-paths-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := json.NewEncoder(file).Encode(paths); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join(workspace, ".preloop-repository-paths.json"))
 }
 
 // hostExecGitEnv is the environment of every git process in a checkout. The

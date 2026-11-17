@@ -3129,6 +3129,35 @@ class FlowExecutionOrchestrator:
                 run = self._plan_delivery_report_run()
                 if run is not None and run.calls_model:
                     assert self.flow is not None
+                    from preloop.services.delivery_report import (
+                        report_window,
+                        _parse_time,
+                    )
+
+                    window = report_window(
+                        (self.trigger_event_data or {}).get("payload"),
+                        now=getattr(self.execution_log, "start_time", None),
+                    )
+                    start, end = (
+                        _parse_time(window.get("from")),
+                        _parse_time(window.get("to")),
+                    )
+                    active_projects = None
+                    if start is not None and end is not None:
+                        try:
+                            active_projects = (
+                                crud_delivery_report_policy.active_report_projects(
+                                    self.db,
+                                    account_id=self.flow.account_id,
+                                    start=start,
+                                    end=end,
+                                )
+                            )
+                        except Exception:
+                            # Missing synced evidence must preserve the former scope.
+                            logger.warning(
+                                "Could not read repository activity for the report"
+                            )
                     scope = {name.lower() for name in run.policy.projects}
                     repositories = []
                     for (
@@ -3140,6 +3169,11 @@ class FlowExecutionOrchestrator:
                         self.db, account_id=self.flow.account_id
                     ):
                         if scope and name not in scope:
+                            continue
+                        if (
+                            active_projects is not None
+                            and project_id not in active_projects
+                        ):
                             continue
                         project_policy = run.project_policies.get(name)
                         if project_policy is not None and not project_policy.enabled:
@@ -3153,7 +3187,11 @@ class FlowExecutionOrchestrator:
                         else:
                             entry["use_remote_default"] = True
                         repositories.append(entry)
-                    return {**config, "repositories": repositories}
+                    return {
+                        **config,
+                        "enabled": bool(repositories),
+                        "repositories": repositories,
+                    }
             return config
 
         project_id = self._resolve_trigger_project_id(
@@ -3661,6 +3699,7 @@ class FlowExecutionOrchestrator:
             "execution_id": str(self.execution_log.id),
             "account_id": self.flow.account_id,
             "git_clone_config": self._git_clone_config_for_trigger(),
+            "agent_config": getattr(self.flow, "agent_config", None) or {},
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
@@ -9802,6 +9841,14 @@ class FlowExecutionOrchestrator:
         try:
             if not self.flow or not self.execution_log:
                 return
+            try:
+                from preloop.services.delivery_report_email import distribute_failure
+
+                await distribute_failure(
+                    self.db, flow=self.flow, execution=self.execution_log
+                )
+            except Exception:
+                logger.error("Delivery Report failure notification failed")
             # Emitted before the tracker-notification work below, which
             # returns early when the flow has no notifications configured.
             # A webhook subscriber asked for every finish, not just the
@@ -9920,6 +9967,10 @@ class FlowExecutionOrchestrator:
         held, so the scan keeps its success fast path without reading an ORM
         instance across threads.
         """
+        # Reports have their own per-run recipient notice. A streak alert
+        # would send a second email for the same weekly failure.
+        if is_delivery_report_flow(self.flow):
+            return
         flow_id = getattr(self.flow, "id", None)
         execution_id = getattr(self.execution_log, "id", "unknown")
         if flow_id is None:

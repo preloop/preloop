@@ -266,6 +266,38 @@ files, which the missing-downgrade rule reads. Each shipped change carries
 `body_summary` (the first prose paragraph of the PR body, outside the brief
 and review summary blocks), `files` and `files_changed`.
 
+### Repository checkout and failed runs
+
+Scheduled assessed reports with automatic scope use synced repository push,
+issue and merge activity to skip repositories that were inactive in the reporting
+window. Unknown activity keeps the repository in scope. Report contents, policy
+scope and checks for active repositories are unchanged.
+
+Repository setup is delivered as a compressed file instead of a separate launch
+script block for every repository. Hosted Kubernetes runners mount a Job-owned
+Secret; Docker uploads the file before startup. Private runners use the existing
+chunked seed protocol and do not need a CLI upgrade for Docker execution.
+Native host profiles use a checkout plan and a repository path-map file; more
+than eight repositories requires the CLI containing this change. The existing process and
+transport size limits still apply, with a specific `launch_payload_too_large`
+failure that includes repository count, measured bytes and the limit.
+
+Kubernetes deployments must include the chart's agent-manager permissions to
+create, read and update setup Secrets. Deployments using their own kubeconfig
+must grant those permissions in the agent namespace. The Job owns the Secret,
+so Job cleanup also removes its setup data and credentials.
+
+A failed report appears on the Delivery Report page even if its agent never
+started. The OSS report recipient receives a short failure email with the reason
+and a link to the failed run, without needing flow notifications configured.
+A durable `failure_notice` record permits one delivery attempt per run across
+workers. Opt-outs, disabled reports and missing SMTP configuration are respected.
+Enterprise custom roles and per-member distribution use the Enterprise plugin;
+this OSS failure path covers the owner or sponsoring lead.
+
+For a local synthetic launch check, see
+[large-account report verification](../../testing/delivery-report-launch-size.md).
+
 ### Email
 
 When a run finishes, deterministic or assessed, the report is emailed to

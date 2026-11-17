@@ -308,3 +308,25 @@ def test_execution_pr_uses_ledger_and_newest_assessment_at_current_revision(
     assert (
         client.get(f"/api/v1/flows/executions/{run.id}").json()["pull_request"] is None
     )
+
+
+def test_failed_launch_without_result_is_listed_and_readable(
+    client: Any, db_session: Session, test_user: Any
+) -> None:
+    """A report that never reached its agent still has a report-page failure."""
+    flow = _flow(db_session, test_user.account_id, report=True)
+    execution = _run(db_session, flow, hours=0, result=None)
+    execution.status = "FAILED"
+    execution.failure_category = "launch_payload_too_large"
+    execution.error_message = (
+        "Repository setup for 500 repositories is 1800000 bytes; limit 1048576 bytes."
+    )
+    db_session.commit()
+    listed = client.get(BASE)
+    assert listed.status_code == 200
+    row = next(row for row in listed.json()["items"] if row["id"] == str(execution.id))
+    assert row["status"] == "FAILED"
+    assert row["report_status"] == "error"
+    detail = client.get(f"{BASE}/{execution.id}")
+    assert detail.status_code == 200, detail.text
+    assert "500 repositories" in detail.json()["report"]["reason"]

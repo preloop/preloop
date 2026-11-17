@@ -23,7 +23,10 @@ it*, not about severity:
     taken (Kubernetes 409 AlreadyExists). Infrastructure, always transient.
 ``runner_error``
     Runtime infrastructure failures, including startup errors (bad manifest,
-    quota, oversized entrypoint) and confirmed container memory kills.
+    quota) and confirmed container memory kills.
+``launch_payload_too_large``
+    Setup was refused before launch because a process or transport size limit
+    was exceeded; the diagnostic records repository count, bytes and limit.
 ``model_transient``
     The model provider dropped, throttled or 5xx'd the request mid-run.
     Retryable, and the reason the run-level retry exists.
@@ -155,6 +158,7 @@ from preloop.services.upstream_errors import (
 
 FAILURE_CATEGORY_RUNNER_CONFLICT = "runner_conflict"
 FAILURE_CATEGORY_RUNNER_ERROR = "runner_error"
+FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE = "launch_payload_too_large"
 FAILURE_CATEGORY_MODEL_TRANSIENT = "model_transient"
 FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
@@ -203,6 +207,7 @@ FAILURE_CATEGORY_CANCELLED = "cancelled"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
 
 FAILURE_CATEGORIES = (
+    FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE,
     FAILURE_CATEGORY_RUNNER_CONFLICT,
     FAILURE_CATEGORY_RUNNER_ERROR,
     FAILURE_CATEGORY_MODEL_TRANSIENT,
@@ -280,10 +285,8 @@ _RUNNER_CONFLICT_RE = re.compile(
 )
 # Any other "Failed to start agent Job/container: ..." (e.g. the observed
 # "exec /opt/entrypoint.sh: argument list too long"), plus the pre-launch
-# guard's own refusal. The guard (preloop.utils.execve_limits) runs the
-# kernel's arithmetic before the Job is created, so the run never reaches the
-# runtime's opaque "argument list too long"; its message must land in the
-# same category, since it is the same failure caught earlier.
+# guard is classified separately as launch_payload_too_large before this
+# generic runtime rule.
 _RUNNER_ERROR_RE = re.compile(
     r"failed to start agent (?:job|container|pod)"
     r"|failed to create (?:kubernetes )?job"
@@ -534,6 +537,15 @@ _MODEL_KEY_REJECTION_RE = re.compile(
 )
 
 _STRUCTURAL_MESSAGE_RULES = (
+    (
+        re.compile(
+            r"launch payload exceeds|Repository setup for \d+ repositories is "
+            r"|Private runner bootstrap script is \d+ bytes"
+            r"|Private runner launch variable .* is \d+ bytes",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE,
+    ),
     (_PROVIDER_SCHEMA_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_MODEL_KEY_REJECTION_RE, FAILURE_CATEGORY_MODEL_AUTH),
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),

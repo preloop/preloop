@@ -126,6 +126,8 @@ class LaunchPayloadTooLargeError(ValueError):
     never started.
     """
 
+    category = "launch_payload_too_large"
+
 
 def _encoded(text: str) -> bytes:
     return text.encode("utf-8")

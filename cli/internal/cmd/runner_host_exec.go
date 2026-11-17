@@ -796,6 +796,9 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := writeHostReportPaths(workspace, checkout); err != nil {
+		return nil, fmt.Errorf("could not write repository path map: %w", err)
+	}
 	if preamble := hostExecCheckoutPreamble(workspace, checkout); preamble != "" {
 		prompt, err := jobPromptText(job)
 		if err != nil {

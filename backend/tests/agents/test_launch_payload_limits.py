@@ -30,7 +30,9 @@ from preloop.agents.errors import AgentStartError
 from preloop.agents.gemini import GeminiAgent
 from preloop.agents.openhands import OpenHandsAgent
 from preloop.agents.opencode import OpenCodeAgent
-from preloop.services.flow_failure_category import FAILURE_CATEGORY_RUNNER_ERROR
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE,
+)
 from preloop.utils.execve_limits import (
     MAX_ARG_STRLEN,
     MAX_LAUNCH_STRING_BYTES,
@@ -202,7 +204,7 @@ class TestThePreLaunchGuard:
         }
         with pytest.raises(AgentStartError) as excinfo:
             executor._guard_docker_launch_payload(config, what="opencode container")
-        assert excinfo.value.category == FAILURE_CATEGORY_RUNNER_ERROR
+        assert excinfo.value.category == FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE
         assert "env[AGENT_PROMPT]" in str(excinfo.value)
         assert "opencode container" in str(excinfo.value)
         executor.logger.warning.assert_called()
@@ -224,11 +226,11 @@ class TestThePreLaunchGuard:
                 what="agent Job agent-a8844f7a",
             )
         assert "agent Job agent-a8844f7a" in str(excinfo.value)
-        assert excinfo.value.category == FAILURE_CATEGORY_RUNNER_ERROR
+        assert excinfo.value.category == FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE
 
 
 class TestTheClassificationStaysCorrect:
-    def test_the_guard_message_classifies_as_runner_error(self):
+    def test_the_guard_message_classifies_as_launch_payload_too_large(self):
         """Even without the explicit category, the text must classify right.
 
         The orchestrator prefers the runner's explicit category, but the
@@ -245,5 +247,5 @@ class TestTheClassificationStaysCorrect:
             )
         assert (
             derive_failure_category(status="FAILED", error_message=str(excinfo.value))
-            == FAILURE_CATEGORY_RUNNER_ERROR
+            == FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE
         )
