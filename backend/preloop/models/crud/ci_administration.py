@@ -19,6 +19,7 @@ from preloop.models.crud.ci_principal import (
 )
 from preloop.models.crud.ci_subscription import crud_ci_subscription
 from preloop.models.models.webhook_endpoint import DELIVERY_KIND_GITHUB_DISPATCH
+from preloop.models.schemas.flow_revision import RevisionCondition
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
     CiAdminCreate,
@@ -861,6 +862,7 @@ class CRUDCiAdministration:
             binding_mode=_binding_mode(config),
             read_only=config.get("enabled") is True and read_only_review(config),
             projects=projects,
+            revision=int(flow.config_revision or 1),
         )
 
     def _account_flow(
@@ -910,6 +912,7 @@ class CRUDCiAdministration:
         actor: models.User,
         flow_id: UUID,
         payload: CiSharedFlowUpdate,
+        expected_revision: RevisionCondition | None = None,
     ) -> CiSharedFlowRead:
         """Replace the project allowlist of a shared read-only review flow.
 
@@ -926,6 +929,8 @@ class CRUDCiAdministration:
             actor: Human who may manage CI identities.
             flow_id: Flow in the actor's account.
             payload: The complete new allowlist.
+            expected_revision: The caller's ``If-Match``, checked under the
+                flow's row lock before anything is written.
 
         Returns:
             The stored allowlist.
@@ -934,6 +939,8 @@ class CRUDCiAdministration:
             PermissionError: The actor may not manage CI identities.
             LookupError: The flow is not in the actor's account.
             CiSharedFlowError: The flow or a project cannot be admitted.
+            FlowRevisionMismatchError: The flow is at another revision;
+                nothing was written.
         """
         from preloop.models.schemas.flow import GitCloneConfig
         from preloop.services.publication_credentials import (
@@ -954,6 +961,8 @@ class CRUDCiAdministration:
         )
         flow = self._account_flow(db, actor=actor, flow_id=flow_id, lock=True)
         try:
+            if expected_revision is not None:
+                expected_revision.require(flow.config_revision)
             config = flow.git_clone_config
             if (
                 not isinstance(config, dict)

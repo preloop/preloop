@@ -153,6 +153,72 @@ describe('flow-platform-review-card', () => {
     expect(q(element, 'sl-badge').textContent.trim()).to.equal('On');
   });
 
+  it('recovers from a concurrent change: keeps the draft, retries on the latest revision', async () => {
+    const ifMatch: (string | null)[] = [];
+    const latest = {
+      ...FLOW,
+      revision: 5,
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        repositories: [
+          ...FLOW.git_clone_config.repositories,
+          { tracker_id: 't1', identifier: 'acme/web' },
+        ],
+      },
+    };
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/trackers'))
+          return new Response(JSON.stringify(TRACKERS));
+        if (url.includes('/flows/flow-1') && init?.method === 'PUT') {
+          ifMatch.push(new Headers(init.headers).get('If-Match'));
+          putBodies.push(JSON.parse(String(init.body)));
+          if (ifMatch.length === 1) {
+            return new Response(
+              JSON.stringify({ detail: { current_revision: 5 } }),
+              { status: 412 }
+            );
+          }
+          return new Response(
+            JSON.stringify({ ...latest, ...putBodies[1], revision: 6 })
+          );
+        }
+        if (url.includes('/flows/flow-1'))
+          return new Response(JSON.stringify(latest));
+        return new Response('[]');
+      }
+    );
+    const element = await mount({ ...FLOW, revision: 4 });
+    const toggle = q(element, '[data-field="enabled"]');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    const statusOn = q(element, '[data-field="status_on"]');
+    statusOn.checked = true;
+    statusOn.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await element.updateComplete;
+    expect(ifMatch).to.deep.equal(['"4"']);
+    expect(q(element, '[data-error]').textContent).to.contain('Save again');
+    // The draft survived the refresh to the latest flow.
+    expect(q(element, '[data-field="enabled"]').checked).to.equal(true);
+
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await element.updateComplete;
+    expect(ifMatch).to.deep.equal(['"4"', '"5"']);
+    // The retry is built on the latest config, so the other change is kept.
+    expect(putBodies[1].git_clone_config.repositories).to.have.length(2);
+    expect(putBodies[1].git_clone_config.platform_review.enabled).to.equal(
+      true
+    );
+    expect(q(element, '[data-saved]')).to.exist;
+  });
+
   it('blocks a save the server would refuse and says why', async () => {
     const element = await mount({ ...FLOW, validate_result: false });
     const toggle = q(element, '[data-field="enabled"]');

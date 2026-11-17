@@ -431,6 +431,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    flow_revision: Optional[int] = Field(
+        None,
+        description=(
+            "The flow's configuration revision when this execution was "
+            "created. Null for executions created before revisions existed."
+        ),
+    )
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None

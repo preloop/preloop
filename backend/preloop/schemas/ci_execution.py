@@ -325,6 +325,10 @@ class CiExecutionResponse(BaseModel):
     start_time: datetime | None
     end_time: datetime | None
     failure_category: str | None
+    flow_revision: int | None = Field(
+        default=None,
+        description="The flow's configuration revision when this execution was created; null on executions created before revisions existed.",
+    )
     # Controller-observed startup receipt for a read-only review; null when
     # startup did not complete or the execution is not a read-only review.
     startup_receipt: dict[str, Any] | None = None

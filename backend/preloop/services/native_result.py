@@ -200,7 +200,8 @@ from typing import Any
 native_path = Path("/workspace/.preloop-native-result.json")
 result_path = Path("/workspace/result.json")
 bundle_path = Path("/workspace/.preloop-native-result-bundle.json")
-def read(path: Path) -> Any:
+NOT_JSON = object()
+def read(path: Path, strict: bool = False) -> Any:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as source:
@@ -212,11 +213,18 @@ def read(path: Path) -> Any:
             raw = source.read(256 * 1024 + 1)
         if len(raw) > 256 * 1024:
             return {"error": "result_artifact_too_large"}
-        return json.loads(raw)
-    except (OSError, ValueError):
+    except OSError:
         return None
-native = read(native_path)
-if native is not None:
+    try:
+        return json.loads(raw)
+    except ValueError:
+        # An answer that is text but not JSON is reported as such (no content).
+        return NOT_JSON if strict and raw.strip() else None
+native = read(native_path, strict=True)
+native_error = None
+if native is NOT_JSON:
+    native, native_error = None, "not_json"
+if native is not None or native_error:
     file_result = read(result_path)
     key = "_preloop_native_result_candidates_v1"
     if isinstance(file_result, dict) and key in file_result:
@@ -227,7 +235,10 @@ if native is not None:
         temporary = Path(directory) / "capture.json"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as destination:
-            json.dump({key: {"native": native, "file": file_result}}, destination, ensure_ascii=False, separators=(",", ":"))
+            candidates = {"native": native, "file": file_result}
+            if native_error:
+                candidates["native_error"] = native_error
+            json.dump({key: candidates}, destination, ensure_ascii=False, separators=(",", ":"))
         os.replace(temporary, bundle_path)
 """
 

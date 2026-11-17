@@ -12,6 +12,10 @@ from sqlalchemy.orm import Query, Session, defer
 from preloop.models import models
 from preloop.models.crud.ci_principal import CiAuthorizationContext, crud_ci_principal
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.models.schemas.flow_revision import (
+    FlowRevisionMismatchError,
+    RevisionCondition,
+)
 from preloop.schemas.ci_execution import CiReviewBinding, ci_review_event
 from preloop.schemas.ci_principal import CiAction
 
@@ -76,8 +80,25 @@ class CRUDCiExecution:
         context: CiAuthorizationContext,
         binding: CiReviewBinding,
         event: dict[str, Any],
+        expected_revision: RevisionCondition | None = None,
     ) -> models.FlowExecution:
-        """Persist trusted acceptance and attribution in the initial insert."""
+        """Persist trusted acceptance and attribution in the initial insert.
+
+        Args:
+            db: Database session.
+            context: The restricted CI principal.
+            binding: The verified pull request binding.
+            event: Routing-prepared trigger event.
+            expected_revision: The caller's ``If-Match``, checked under a
+                share lock on the flow in the inserting transaction.
+
+        Returns:
+            The committed execution.
+
+        Raises:
+            FlowRevisionMismatchError: The flow is at another revision; the
+                transaction is rolled back and nothing is inserted.
+        """
         from preloop.models import crud
 
         fresh = crud_ci_principal.authorize(
@@ -94,6 +115,13 @@ class CRUDCiExecution:
         canonical.update(event)
         if not _valid_event(binding, canonical):
             raise PermissionError("Restricted CI execution provenance denied")
+        if expected_revision is not None:
+            revision = crud.crud_flow.lock_revision(db, flow_id=fresh.flow_id)
+            if revision is None or not expected_revision.matches(revision):
+                db.rollback()
+                if revision is None:
+                    raise PermissionError("Restricted CI flow unavailable")
+                raise FlowRevisionMismatchError(revision)
         execution = crud.crud_flow_execution.create(
             db,
             obj_in=FlowExecutionCreate.model_validate(

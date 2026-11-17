@@ -17,7 +17,11 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
-from preloop.agents.codex import NATIVE_RESULT_REPAIR_CONTINUATIONS, CodexAgent
+from preloop.agents.codex import (
+    MAX_EXTRA_SESSIONS,
+    NATIVE_RESULT_REPAIR_CONTINUATIONS,
+    CodexAgent,
+)
 from preloop.agents.container import RUN_DEADLINE_EPOCH_CONTEXT_KEY
 from preloop.services.flow_result_schema import validate_result_document
 from preloop.services.native_result_repair import (
@@ -398,14 +402,138 @@ def test_repair_session_is_cut_at_the_run_budget() -> None:
     assert "timeout -k 5 $(_pl_repair_left)" in block
 
 
-def test_uninspected_review_is_not_repaired(tmp_path: Path) -> None:
-    calls, _, log = _run(
-        tmp_path, _blocks(_context()), [review(findings=...)], inspect_from=99
+#: A final answer that is a progress note: valid JSON, none of the schema's
+#: required properties.
+PROGRESS_NOTE: dict[str, Any] = {
+    "": {"Content": "Fetching the full contiguous diff before review."}
+}
+COMBINED = "uninspected_invalid_result"
+UNINSPECTED = "no_repository_inspection"
+
+
+def _reasons(log: str) -> list[str]:
+    return [marker["reason"] for marker in _markers(log)]
+
+
+def test_uninspected_progress_note_gets_one_combined_continuation(
+    tmp_path: Path,
+) -> None:
+    # Two sessions end without reading the change, the third ends on a
+    # progress note. One more session is told both things and does both.
+    calls, result, log = _run(
+        tmp_path,
+        _blocks(_context()),
+        [review(), review(), PROGRESS_NOTE, review()],
+        inspect_from=4,
     )
-    # Only the inspection continuations ran; a repair cannot stand in for
+    assert calls == 4
+    assert "findings" in json.loads(result.read_text())
+    markers = _markers(log)
+    assert [m["reason"] for m in markers] == [UNINSPECTED, UNINSPECTED, COMBINED]
+    assert markers[2]["attempt"] == 1
+    assert "$.findings" in markers[2]["paths"]
+    prompt = (tmp_path / "state" / "prompt-4").read_text()
+    assert prompt.startswith("Review the change")
+    assert "not complete" in prompt
+    assert "has not been inspected" in prompt
+    assert "git diff " in prompt
+    assert "- $.findings: 'findings' is a required property" in prompt
+    assert json.dumps(PROGRESS_NOTE) in prompt
+
+
+def test_combined_continuation_that_does_not_inspect_is_not_repaired(
+    tmp_path: Path,
+) -> None:
+    calls, result, log = _run(
+        tmp_path,
+        _blocks(_context()),
+        [review(), review(), PROGRESS_NOTE],
+        inspect_from=99,
+    )
+    # One combined continuation, then nothing: a repair cannot stand in for
     # reading the change, and the controller fails the run as not inspected.
-    assert [m["reason"] for m in _markers(log)] == ["no_repository_inspection"] * 2
+    assert calls == 4
+    assert _reasons(log) == [UNINSPECTED, UNINSPECTED, COMBINED]
+    assert json.loads(result.read_text()) == PROGRESS_NOTE
+
+
+def test_combined_continuation_is_followed_by_the_bounded_repairs(
+    tmp_path: Path,
+) -> None:
+    calls, result, log = _run(
+        tmp_path, _blocks(_context()), [PROGRESS_NOTE], inspect_from=4
+    )
+    # 1 first session + 2 inspection + 1 combined + 2 repairs, never more.
+    assert calls == 1 + MAX_EXTRA_SESSIONS == 6
+    assert _reasons(log) == [
+        UNINSPECTED,
+        UNINSPECTED,
+        COMBINED,
+        "result_schema_invalid",
+        "result_schema_invalid",
+    ]
+    assert [m["attempt"] for m in _markers(log)] == [1, 2, 1, 1, 2]
+    # Nothing is synthesised: the controller sees the model's last answer.
+    assert json.loads(result.read_text()) == PROGRESS_NOTE
+
+
+def test_uninspected_valid_answer_gets_no_combined_continuation(
+    tmp_path: Path,
+) -> None:
+    calls, _, log = _run(tmp_path, _blocks(_context()), [review()], inspect_from=99)
     assert calls == 3
+    assert _reasons(log) == [UNINSPECTED, UNINSPECTED]
+
+
+def test_no_combined_continuation_without_room_in_the_run_budget(
+    tmp_path: Path,
+) -> None:
+    context = _context(**{RUN_DEADLINE_EPOCH_CONTEXT_KEY: int(time.time()) + 25})
+    calls, _, log = _run(tmp_path, _blocks(context), [PROGRESS_NOTE], inspect_from=99)
+    assert calls == 3
+    assert _reasons(log) == [UNINSPECTED, UNINSPECTED]
+
+
+def test_combined_continuation_is_cut_at_the_run_budget() -> None:
+    context = _context(**{RUN_DEADLINE_EPOCH_CONTEXT_KEY: 2_000_000_000})
+    block = CodexAgent({})._native_result_repair_block(
+        context, event_filter="cat", model="m", sandbox_flags="--yolo"
+    )
+    combined = block[block.index(COMBINED) : block.index("_pl_result_repair=0")]
+    assert "timeout -k 5 $(_pl_repair_left)" in combined
+    # One `if`, not a loop: at most one combined continuation per run.
+    assert block.count(COMBINED) == 1
+    assert "while" not in combined
+
+
+def test_no_combined_continuation_without_the_inspection_floor() -> None:
+    context = _context(
+        git_clone_config={
+            "publication_mode": "read_only",
+            "review_integrity": {"require_inspection": False},
+        }
+    )
+    assert COMBINED not in _blocks(context)
+    assert "_pl_result_repair=0" in _blocks(context)
+
+
+def test_combined_prompt_names_the_inspection_and_the_errors() -> None:
+    answer = json.dumps(PROGRESS_NOTE)
+    prompt = repair_prompt(
+        answer, SCHEMA, "Review the change", inspection="Run `git diff B...H`."
+    )
+    assert prompt.startswith("Review the change")
+    assert "not complete" in prompt
+    assert "has not been inspected" in prompt
+    assert "Run `git diff B...H`." in prompt
+    assert "- $.verdict: 'verdict' is a required property" in prompt
+    assert answer in prompt
+    assert "progress note" in prompt
+    # The plain repair prompt is unchanged and never claims an inspection gap.
+    assert "has not been inspected" not in repair_prompt(answer, SCHEMA, "Review")
+    assert repair_prompt(json.dumps(review()), SCHEMA, "R", inspection="x") == ""
+    missing = repair_prompt(None, SCHEMA, "R", inspection="x")
+    assert "- $: No final answer was written" in missing
 
 
 def test_repair_follows_an_inspection_continuation(tmp_path: Path) -> None:
@@ -484,6 +612,7 @@ def test_default_pull_request_reviewer_script_is_unchanged() -> None:
         script = agent._build_codex_script(context)
     assert "result_schema_invalid" not in script
     assert "_pl_result_repair" not in script
+    assert COMBINED not in script
 
 
 def test_review_script_contains_repair_after_inspection() -> None:

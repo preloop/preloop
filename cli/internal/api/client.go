@@ -304,6 +304,13 @@ func (c *Client) Put(path string, body, result interface{}) error {
 	return c.do(http.MethodPut, path, body, result)
 }
 
+// PutWithHeaders performs a PUT with additional request headers, such as
+// “If-Match“ for a conditional flow write. Standard headers take
+// precedence, as in PostWithHeaders.
+func (c *Client) PutWithHeaders(path string, body interface{}, headers map[string]string, result interface{}) error {
+	return c.doWithHeaders(http.MethodPut, path, body, headers, result)
+}
+
 // Delete performs a DELETE request to the specified path.
 func (c *Client) Delete(path string, result interface{}) error {
 	return c.do(http.MethodDelete, path, nil, result)

@@ -1421,3 +1421,83 @@ def test_inactive_tracker_refuses_every_project_on_it(
     )
     assert response.status_code == 409, response.text
     assert response.json()["detail"] == SHARED_FLOW_PROJECT_REFUSED
+
+
+# --- conditional configuration (#2375) ---------------------------------------
+
+
+def test_allowlist_put_honours_if_match(
+    db_session: Session, shared: Shared, api: TestClient, actor: dict[str, Any]
+) -> None:
+    """A stale allowlist PUT is refused with 412 and writes nothing."""
+    actor["user"] = shared.owner
+    path = f"{ADMIN}/shared-flows/{shared.flow.id}"
+    read = api.get(path)
+    assert read.status_code == 200, read.text
+    revision = read.json()["revision"]
+    assert read.headers["ETag"] == f'"{revision}"'
+    clone_before = copy.deepcopy(shared.flow.git_clone_config)
+    triggers_before = list(shared.flow.trigger_project_ids)
+
+    stale = api.put(
+        path,
+        json={"project_ids": [str(shared.project_a.id)]},
+        headers={"If-Match": f'"{revision - 1}"'},
+    )
+    assert stale.status_code == 412, stale.text
+    assert stale.json()["detail"]["current_revision"] == revision
+    assert stale.headers["ETag"] == f'"{revision}"'
+    db_session.refresh(shared.flow)
+    assert shared.flow.git_clone_config == clone_before
+    assert shared.flow.trigger_project_ids == triggers_before
+    assert shared.flow.config_revision == revision
+
+    fresh = api.put(
+        path,
+        json={"project_ids": [str(shared.project_a.id)]},
+        headers={"If-Match": f'"{revision}"'},
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["revision"] == revision + 1
+    assert fresh.headers["ETag"] == f'"{revision + 1}"'
+    assert [row["project_id"] for row in fresh.json()["projects"]] == [
+        str(shared.project_a.id)
+    ]
+
+
+def test_ci_trigger_refuses_a_configuration_it_did_not_review(
+    db_session: Session,
+    shared: Shared,
+    api: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If-Match on the restricted CI trigger: stale is 412 and creates nothing."""
+    _, _, token = _identity(db_session, shared, shared.project_a)
+    reviewed = shared.flow.config_revision
+    shared.flow.prompt_template = "Changed after the caller reviewed it"
+    db_session.commit()
+    db_session.refresh(shared.flow)
+    current = shared.flow.config_revision
+    assert current == reviewed + 1
+
+    dispatch, _ = _provider(monkeypatch, _pull(shared.project_a, SHA_A))
+    stale = api.post(
+        f"/api/v1/flows/{shared.flow.id}/trigger",
+        headers={**_bearer(token), "If-Match": f'"{reviewed}"'},
+        json={"pr_number": 7, "head_sha": SHA_A},
+    )
+    assert stale.status_code == 412, stale.text
+    assert stale.json()["detail"]["current_revision"] == current
+    assert stale.headers["ETag"] == f'"{current}"'
+    dispatch.assert_not_awaited()
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    assert crud.crud_ci_execution.list(db_session, context=context) == []
+
+    accepted = api.post(
+        f"/api/v1/flows/{shared.flow.id}/trigger",
+        headers={**_bearer(token), "If-Match": f'"{current}"'},
+        json={"pr_number": 7, "head_sha": SHA_A},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["flow_revision"] == current
+    dispatch.assert_awaited_once()

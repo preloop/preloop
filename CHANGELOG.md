@@ -30,6 +30,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /api/v1/approval-requests` no longer writes on every read. A periodic
   sweep marks requests past their deadline as expired; until it runs, the
   list already shows them as expired and filters them that way.
+- Execution recovery: a run that had already stopped, failed or finished, but
+  whose stop was never confirmed, was picked up by the recovery pass every
+  30 seconds without end. Each time its end time and error were overwritten
+  with a timeout message, a session-ended audit entry was written and its
+  end-of-run notifications ran again. Recovery now only checks such a run's
+  runtime: when the runtime is gone (or once it has been stopped) the stop
+  is confirmed and the run leaves recovery in that pass. Its stored outcome is
+  not touched and nothing is notified a second time. This also covers runs
+  whose flow settings changed after launch in a way that made recovery fail
+  each time (for example a run stopped when its pull request merged).
+  As a backstop, a finished run whose stop still cannot be confirmed after
+  five attempts leaves recovery with one error log line instead of being
+  retried forever. Its stop stays unconfirmed and its stop reason says that
+  termination was not verified and needs an operator.
+- Native-result reviews: a run whose sessions never read the change and whose
+  last answer is a progress note (or is missing, not JSON, or otherwise does
+  not match the result schema) gets one more session instead of ending there.
+  That session is told that the review is not complete, what the inspection
+  check requires, and which validation errors the last answer had, and has to
+  inspect and answer. It runs at most once per run and within the execution
+  deadline, and is logged as a `PRELOOP_REVIEW_CONTINUATION` with reason
+  `uninspected_invalid_result`. A run starts at most five sessions after its
+  first (two inspection continuations, this one, two schema repairs). The
+  controller's checks are unchanged: a review that was not inspected still
+  fails with `review_not_inspected`.
+- Native-result reviews: a final answer that exists but does not match the
+  result schema now fails with `result_schema_invalid` and the failing paths
+  even when it carries no completion status. It used to fail with
+  `no_confirmation` and a message saying that no result was written. The
+  `result_schema_invalid` message now lists the other failing paths after the
+  first error.
+- Native-result runs: the `no_confirmation` message says what was observed (no
+  final answer, an answer that is not JSON, or an answer that does not match
+  the schema), and the recorded validation no longer says
+  `No result.json was captured` for a run that is never asked for that file.
+  When the model provider rejected the request before any answer, it says that
+  the model request failed and points to the provider error.
 - Native-result reviews: a final answer that does not match the result schema
   (a missing required field, a value outside an enum, a wrong type, or no
   JSON) no longer fails the run at once. The hosted Codex runtime asks the
@@ -85,6 +122,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (without its signing secret) instead of returning 405.
 - `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
   identity's GitHub dispatch subscriptions, without tokens or secrets.
+- flows: changes can be made conditional, so one editor cannot silently
+  overwrite another. Each flow has a configuration revision that goes up by
+  one on every configuration change (never on runs). Flow reads and writes
+  return it as `revision` and as the `ETag` header. Send that value in
+  `If-Match` on `PUT /api/v1/flows/{id}` or the other flow write actions:
+  if the flow changed since you read it, nothing is saved and the response
+  is `412` with the current revision. Requests without `If-Match` work as
+  before. The console editor uses this and offers to reload instead of
+  overwriting, and `preloop flow review-posting` sends it. Triggers accept
+  `If-Match` too, so a caller can refuse to run a configuration it did not
+  review, and each execution records the revision it was created with as
+  `flow_revision` (#2375).
+
 - flows: rotate webhook ingress secrets with
   `POST /api/v1/flows/{id}/webhook-secret/rotate`,
   `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console

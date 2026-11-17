@@ -8637,7 +8637,16 @@ paths:
 
         that still has identities bound to it is refused with 409; retire them
 
-        first, because an identity''s binding mode is fixed at provisioning.'
+        first, because an identity''s binding mode is fixed at provisioning.
+
+
+        The allowlist is part of the flow''s configuration: a successful PUT
+
+        moves the flow''s revision, returned as ``revision`` and in the ``ETag``
+
+        header. With ``If-Match`` the PUT applies only at that revision and is
+
+        refused with 412 otherwise.'
       operationId: put_shared_flow_api_v1_ci_identities_shared_flows__flow_id__put
       security:
       - bearerAuth: []
@@ -8649,6 +8658,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+            for example "7") or *. A stale value is refused with 412 and nothing is
+            changed. Without the header the request is unconditional.'
+          title: If-Match
+        description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+          for example "7") or *. A stale value is refused with 412 and nothing is
+          changed. Without the header the request is unconditional.'
       requestBody:
         required: true
         content:
@@ -8662,6 +8685,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CiSharedFlowRead'
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -19878,6 +19907,11 @@ paths:
         \ 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects and the trigger fans\
         \ out to\none execution per entry, all sharing a ``batch_id`` (an empty object\
         \ runs\nthe flow defaults). Without ``matrix`` the behaviour is unchanged.\n\
+        \n**Either credential** may send ``If-Match`` with the flow's ETag. The\n\
+        execution is then created only while the flow is still at that\nconfiguration\
+        \ revision (checked under a share lock in the transaction\nthat inserts it);\
+        \ otherwise the response is 412, carries the current\nETag, and nothing is\
+        \ created. Each execution records the revision it was\ncreated with as ``flow_revision``.\n\
         \nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data: ``pr_number``\
         \ and ``head_sha`` for a restricted\n        CI credential; otherwise optional\
         \ custom trigger event data for\n        testing template variables, plus\
@@ -19895,6 +19929,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional: run only the configuration you reviewed. Send the
+            flow''s ETag (its revision in quotes, for example "7"); a flow at another
+            revision is refused with 412 and no execution is created.'
+          title: If-Match
+        description: 'Optional: run only the configuration you reviewed. Send the
+          flow''s ETag (its revision in quotes, for example "7"); a flow at another
+          revision is refused with 412 and no execution is created.'
       requestBody:
         content:
           application/json:
@@ -19915,6 +19963,12 @@ paths:
             or execution conflicts with a flow admission policy. Key rejections include
             model_name, origin, provider, category, upstream_status, provider_message,
             first_rejected_at, and key replacement instructions.
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -19990,7 +20044,12 @@ paths:
       tags:
       - Flows
       summary: Read Flow
-      description: Get flow by ID.
+      description: 'Get flow by ID.
+
+
+        The ``ETag`` header carries the flow''s configuration revision; send it
+
+        back as ``If-Match`` to make a later write or trigger conditional.'
       operationId: read_flow_api_v1_flows__flow_id__get
       security:
       - bearerAuth: []
@@ -20026,7 +20085,27 @@ paths:
       tags:
       - Flows
       summary: Update Flow
-      description: Update a flow.
+      description: 'Update a flow.
+
+
+        Top-level fields that are sent replace the stored value; fields that are
+
+        omitted are kept. A nested object that is sent (``agent_config``,
+
+        ``git_clone_config``, ``webhook_config``, ``result_schema``,
+
+        ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
+
+        stored object whole, except that omitted webhook secrets are kept and the
+
+        run-limit fields merge into ``agent_config``.
+
+
+        With ``If-Match`` the update is conditional: it is applied only when the
+
+        flow is still at that revision, checked under the row lock, and refused
+
+        with 412 otherwise. The response''s ``ETag`` is the new revision.'
       operationId: update_flow_api_v1_flows__flow_id__put
       security:
       - bearerAuth: []
@@ -20038,6 +20117,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+            for example "7") or *. A stale value is refused with 412 and nothing is
+            changed. Without the header the request is unconditional.'
+          title: If-Match
+        description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+          for example "7") or *. A stale value is refused with 412 and nothing is
+          changed. Without the header the request is unconditional.'
       requestBody:
         required: true
         content:
@@ -20051,6 +20144,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -20122,10 +20221,13 @@ paths:
       summary: Rotate Flow Webhook Secret
       description: "Rotate an ingress secret and return its new value once.\n\nArgs:\n\
         \    db: Active database session.\n    flow_id: Flow owned by the caller's\
-        \ account.\n    current_user: User performing the rotation.\n\nReturns:\n\
-        \    Flow metadata with the new webhook_secret, shown only in this response.\n\
-        \nRaises:\n    HTTPException: 404 for an inaccessible flow, 400 without a\
-        \ webhook\n        trigger, or 403 without edit_flows permission."
+        \ account.\n    current_user: User performing the rotation.\n    if_match:\
+        \ Optional revision precondition, checked under the row lock.\n    response:\
+        \ Carries the new ETag.\n\nReturns:\n    Flow metadata with the new webhook_secret,\
+        \ shown only in this response.\n\nRaises:\n    HTTPException: 404 for an inaccessible\
+        \ flow, 400 without a webhook\n        trigger or for a malformed If-Match,\
+        \ 403 without edit_flows\n        permission, or 412 when If-Match names another\
+        \ revision."
       operationId: rotate_flow_webhook_secret_api_v1_flows__flow_id__webhook_secret_rotate_post
       security:
       - bearerAuth: []
@@ -20137,6 +20239,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+            for example "7") or *. A stale value is refused with 412 and nothing is
+            changed. Without the header the request is unconditional.'
+          title: If-Match
+        description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+          for example "7") or *. A stale value is refused with 412 and nothing is
+          changed. Without the header the request is unconditional.'
       responses:
         '200':
           description: Successful Response
@@ -20144,6 +20260,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -20182,6 +20304,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+            for example "7") or *. A stale value is refused with 412 and nothing is
+            changed. Without the header the request is unconditional.'
+          title: If-Match
+        description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+          for example "7") or *. A stale value is refused with 412 and nothing is
+          changed. Without the header the request is unconditional.'
       responses:
         '200':
           description: Successful Response
@@ -20189,6 +20325,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -20225,6 +20367,20 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+            for example "7") or *. A stale value is refused with 412 and nothing is
+            changed. Without the header the request is unconditional.'
+          title: If-Match
+        description: 'Optional precondition: the flow''s ETag (its revision in quotes,
+          for example "7") or *. A stale value is refused with 412 and nothing is
+          changed. Without the header the request is unconditional.'
       responses:
         '200':
           description: Successful Response
@@ -20232,6 +20388,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
+        '400':
+          description: The If-Match header is malformed.
+        '412':
+          description: 'If-Match named another revision; nothing was changed. The
+            body names current_revision and the ETag header carries it: re-read the
+            flow and reconsider the change.'
         '422':
           description: Validation Error
           content:
@@ -34737,6 +34899,13 @@ components:
           - type: string
           - type: 'null'
           title: Failure Category
+        flow_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Flow Revision
+          description: The flow's configuration revision when this execution was created;
+            null on executions created before revisions existed.
         startup_receipt:
           anyOf:
           - additionalProperties: true
@@ -34835,6 +35004,13 @@ components:
           - type: string
           - type: 'null'
           title: Failure Category
+        flow_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Flow Revision
+          description: The flow's configuration revision when this execution was created;
+            null on executions created before revisions existed.
         startup_receipt:
           anyOf:
           - additionalProperties: true
@@ -35031,6 +35207,12 @@ components:
             $ref: '#/components/schemas/CiSharedFlowProject'
           type: array
           title: Projects
+        revision:
+          type: integer
+          title: Revision
+          description: The flow's configuration revision, also sent as the ETag header.
+            Send it as If-Match on PUT to refuse a stale allowlist with 412.
+          default: 1
       type: object
       required:
       - flow_id
@@ -40718,6 +40900,13 @@ components:
           type: string
           format: date-time
           title: Updated At
+        flow_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Flow Revision
+          description: The flow's configuration revision when this execution was created.
+            Null for executions created before revisions existed.
         flow_name:
           anyOf:
           - type: string
@@ -41192,6 +41381,14 @@ components:
           type: string
           format: date-time
           title: Updated At
+        revision:
+          type: integer
+          title: Revision
+          description: Configuration revision. Increases by one on every change to
+            the flow's configuration and never on run bookkeeping. The ETag header
+            of flow reads and writes is the revision in quotes ("7"); send it as If-Match
+            to make a write conditional.
+          default: 1
         slug:
           anyOf:
           - type: string
