@@ -315,6 +315,28 @@ execution nobody claims is republished on a doubling delay up to
 finds flow tasks already queued undelivered publishes nothing. Each pass
 logs one summary line with its counts.
 
+## Request rate limiting
+
+Use `extraEnv` to configure the shared request limiter. This is the supported
+Helm interface: it uses the same environment settings as native deployments,
+keeps defaults in the backend, and accepts new rules without chart changes.
+PostgreSQL is the default store, so API replicas share each identity's budget.
+
+```yaml
+extraEnv:
+  - name: RATE_LIMIT_BACKEND
+    value: "postgres"
+  - name: RATE_LIMIT_ENABLED
+    value: "true"
+  - name: RATE_LIMIT_AUTH_LOGIN_IP
+    value: "10/60"
+```
+
+The example preserves the login rule's default. Merge these entries into any
+existing `extraEnv` list because Helm replaces lists when applying overlays.
+See [request rate limiting](../../docs/operations/rate-limiting.md) for all
+rules, defaults, legacy setting names, trusted proxies, and fallback behavior.
+
 ## Uninstalling the Chart
 
 To uninstall/delete the `preloop` deployment:

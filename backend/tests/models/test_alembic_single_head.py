@@ -631,6 +631,24 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         joined_registry.revision,
         flow_policy.revision,
     }
+    # protects=one stack head; fails_when=extension and policy chains fork;
+    # no_claim=graph only, PostgreSQL DDL is exercised separately.
+    extensions = script.get_revision("20261212_extensions")
+    assert extensions.down_revision == external_grant_indexes.revision
+    extension_merge = script.get_revision("20261215_extensions_merge")
+    assert set(extension_merge.down_revision) == {
+        extensions.revision,
+        joined_registry.revision,
+    }
+    stack = script.get_revision("20261217_extensions_stack")
+    assert set(stack.down_revision) == {extension_merge.revision, tool_policy.revision}
+    indexes = script.get_revision("20261218_extension_obs_idx")
+    assert indexes.down_revision == stack.revision
     grant_evidence = script.get_revision("20261217_grant_evidence_idx")
     assert grant_evidence.down_revision == tool_policy.revision
-    assert script.get_heads() == [grant_evidence.revision]
+    joined_evidence = script.get_revision("20261219_ext_grant_merge")
+    assert set(joined_evidence.down_revision) == {
+        indexes.revision,
+        grant_evidence.revision,
+    }
+    assert script.get_heads() == [joined_evidence.revision]

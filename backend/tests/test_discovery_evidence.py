@@ -46,7 +46,7 @@ def envelope(**changes: object) -> dict:
         {"source_ref": str(uuid4())},
         {"last_used_at": NOW.isoformat()},
         {"errors": ["https://example.com"]},
-        {"schema_version": 3},
+        {"schema_version": 4},
     ],
 )
 def test_private_or_unknown_fields_rejected(extra: dict) -> None:
@@ -130,6 +130,7 @@ def observation_db() -> Generator[Session, None, None]:
     """Fresh in-memory storage never connects to a configured database."""
     engine = create_engine("sqlite://")
     models.DiscoveryObservation.__table__.create(engine)
+    models.DiscoveredExtension.__table__.create(engine)
     # This fixture deliberately contains only the observation table. Receipt
     # locks and history use PostgreSQL and are covered by test_expected_device.
     with (
@@ -411,3 +412,133 @@ def test_go_profile_report_wire_contract() -> None:
     assert len(report.evidence.applications) == len(report.candidates) == 2
     assert len({candidate.config_path_hash for candidate in report.candidates}) == 2
     assert all(not candidate.enrolled for candidate in report.candidates)
+
+
+def test_managed_configuration_facts_are_scoped_and_unverified() -> None:
+    """Machine configuration does not masquerade as a collected user profile."""
+    app = {
+        "agent_kind": "claude_code",
+        "config_path_hash": "a" * 64,
+        "config_scope": "managed_config",
+        "controls": [
+            {
+                "axis": "native_tool_hook",
+                "configured": "false",
+                "configuration_evidence": "managed_config",
+                "method": "managed_config",
+            }
+        ],
+    }
+    evidence = DiscoveryEvidence.model_validate(
+        envelope(
+            schema_version=2,
+            scan_scope=["managed_config"],
+            applications=[app],
+        )
+    )
+    control = evidence.applications[0].controls[0]
+    assert control.configured == "false"
+    assert control.applied == "unknown"
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(
+            envelope(
+                schema_version=2,
+                applications=[{**app, "config_scope": "user_config"}],
+            )
+        )
+    for field, value in [
+        ("command", "private"),
+        ("configuration_evidence", "private"),
+        ("verification", "passed"),
+    ]:
+        with pytest.raises(ValidationError):
+            DiscoveryEvidence.model_validate(
+                envelope(
+                    applications=[
+                        {
+                            **app,
+                            "controls": [{**app["controls"][0], field: value}],
+                        }
+                    ]
+                )
+            )
+
+
+def test_configuration_additions_preserve_legacy_canonical_control_bytes() -> None:
+    """Adding optional facts cannot change immutable historical replay hashes."""
+    evidence = DiscoveryEvidence.model_validate(
+        envelope(
+            applications=[
+                {
+                    "agent_kind": "claude_code",
+                    "config_path_hash": "a" * 64,
+                    "controls": [
+                        {"axis": "native_tool_hook", "method": "local_config"}
+                    ],
+                }
+            ]
+        )
+    )
+    app = evidence.model_dump(mode="json")["applications"][0]
+    assert "config_scope" not in app
+    assert "scope_completeness" not in evidence.model_dump(mode="json")
+    assert app["controls"] == [
+        {
+            "axis": "native_tool_hook",
+            "supported": "unknown",
+            "requested": "unknown",
+            "applied": "unknown",
+            "method": "local_config",
+        }
+    ]
+
+
+def test_v3_managed_configuration_is_not_an_extension_candidate() -> None:
+    """A machine settings observation cannot invent or reconcile an install."""
+    app = {
+        "agent_kind": "claude_code",
+        "config_path_hash": "a" * 64,
+        "config_scope": "managed_config",
+        "controls": [
+            {
+                "axis": "native_tool_hook",
+                "configured": "false",
+                "configuration_evidence": "managed_config",
+            }
+        ],
+    }
+    payload = DiscoveryReportRequest(
+        workstation_fingerprint="b" * 64,
+        evidence=envelope(
+            schema_version=3, scan_scope=["managed_config"], applications=[app]
+        ),
+        candidates=[],
+    )
+    assert payload.evidence.applications[0].extensions is None
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest(
+            workstation_fingerprint="b" * 64,
+            evidence=envelope(
+                schema_version=3,
+                scan_scope=["managed_config"],
+                applications=[{**app, "extensions": [], "completeness": "complete"}],
+            ),
+            candidates=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        {"managed_config": "complete"},
+        {"user_config": "private-value"},
+        {"private-path": "complete"},
+        {"user_config": "partial"},
+    ],
+)
+def test_scope_completeness_is_bounded_and_consistent(scopes: dict[str, str]) -> None:
+    """Undeclared scope, arbitrary values and false completeness are rejected."""
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(
+            envelope(scan_scope=["user_config"], scope_completeness=scopes)
+        )

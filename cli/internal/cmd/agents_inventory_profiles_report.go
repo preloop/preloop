@@ -15,32 +15,60 @@ import (
 
 // These narrow DTOs implement DiscoveryEvidence v2. No local path or parsed
 // config value can enter this serializer.
+type inventoryReportControl struct {
+	Axis                  string `json:"axis"`
+	Supported             string `json:"supported"`
+	Configured            string `json:"configured"`
+	ConfigurationEvidence string `json:"configuration_evidence"`
+	Method                string `json:"method"`
+}
+
 type inventoryReportApplication struct {
-	AgentKind      string `json:"agent_kind"`
-	ConfigPathHash string `json:"config_path_hash"`
-	ProfileRef     string `json:"profile_ref"`
-	Installed      string `json:"installed"`
-	Configured     string `json:"configured"`
+	AgentKind      string                   `json:"agent_kind"`
+	ConfigPathHash string                   `json:"config_path_hash"`
+	ProfileRef     string                   `json:"profile_ref,omitempty"`
+	Installed      string                   `json:"installed"`
+	Configured     string                   `json:"configured"`
+	ConfigScope    string                   `json:"config_scope,omitempty"`
+	Controls       []inventoryReportControl `json:"controls,omitempty"`
+	Extensions     *[]inventoryExtension    `json:"extensions,omitempty"`
+	Completeness   string                   `json:"completeness,omitempty"`
 }
 type inventoryReportEvidence struct {
-	SchemaVersion     int                          `json:"schema_version"`
-	ObservationID     string                       `json:"observation_id"`
-	CollectorVersion  string                       `json:"collector_version,omitempty"`
-	OSFamily          string                       `json:"os_family"`
-	DetectorVersion   string                       `json:"detector_version"`
-	SourceEnvironment string                       `json:"source_environment"`
-	StartedAt         time.Time                    `json:"started_at"`
-	EndedAt           time.Time                    `json:"ended_at"`
-	ScanScope         []string                     `json:"scan_scope"`
-	Completeness      string                       `json:"completeness"`
-	Errors            []string                     `json:"errors"`
-	Profiles          []inventoryProfileResult     `json:"profiles"`
-	Applications      []inventoryReportApplication `json:"applications"`
+	ScopeCompleteness     map[string]string            `json:"scope_completeness,omitempty"`
+	ExtensionCompleteness string                       `json:"extension_completeness,omitempty"`
+	SchemaVersion         int                          `json:"schema_version"`
+	ObservationID         string                       `json:"observation_id"`
+	CollectorVersion      string                       `json:"collector_version,omitempty"`
+	OSFamily              string                       `json:"os_family"`
+	DetectorVersion       string                       `json:"detector_version"`
+	SourceEnvironment     string                       `json:"source_environment"`
+	StartedAt             time.Time                    `json:"started_at"`
+	EndedAt               time.Time                    `json:"ended_at"`
+	ScanScope             []string                     `json:"scan_scope"`
+	Completeness          string                       `json:"completeness"`
+	Errors                []string                     `json:"errors"`
+	Profiles              []inventoryProfileResult     `json:"profiles"`
+	Applications          []inventoryReportApplication `json:"applications"`
 }
 
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
-	evidence := inventoryReportEvidence{SchemaVersion: 2, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence.ExtensionCompleteness = "complete"
+	if scan.Scope.ErrorCode != "" || scan.Completeness == "failed" {
+		evidence.ExtensionCompleteness = "partial"
+	}
+	for _, profile := range scan.Profiles {
+		if profile.Completeness == "failed" {
+			evidence.ExtensionCompleteness = "partial"
+		}
+	}
+	for _, app := range scan.Apps {
+		if app.Completeness != "complete" {
+			evidence.ExtensionCompleteness = "partial"
+		}
+	}
 	if discoveryVersionPattern.MatchString(version.Version) {
 		report.CLIVersion = version.Version
 		evidence.CollectorVersion = version.Version
@@ -63,6 +91,7 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 			continue
 		}
 		if len(evidence.Applications) == 100 {
+			evidence.ExtensionCompleteness = "partial"
 			evidence.Completeness = "partial"
 			evidence.Errors = []string{"unavailable"}
 			break
@@ -70,8 +99,10 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 		// Aggregate each app within one profile; do not imply enrollment or actual
 		// runtime usage. The separate namespace prevents collisions with v1 paths.
 		hash := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
-		evidence.Applications = append(evidence.Applications, inventoryReportApplication{AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app)})
-		report.Candidates = append(report.Candidates, discoveryReportCandidate{AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
+
+		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app), Controls: inventoryReportControls(app.Controls)})
+		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
+
 	}
 	report.Evidence = &evidence
 	return report
@@ -106,8 +137,10 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	scan := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
 	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
+	appendManagedConfigurationEvidence(&report, salt, inventoryProbes.GOOS, readManagedInventoryConfig)
+	report.Evidence.EndedAt = inventoryProbes.Now().UTC()
 	var response discoveryReportResponse
-	if err = client.Post(discoveryReportPath, report, &response); err != nil {
+	if err = postInventoryReport(client, report, &response); err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)
 	}
 	// Emit only the safe inventory DTO, even with --verbose or --json.

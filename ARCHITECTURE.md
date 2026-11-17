@@ -90,7 +90,7 @@ graph LR
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |
-| [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance and API diagnostics. |
+| [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance, API diagnostics and shared request rate limiting. |
 
 User authentication includes optional TOTP and hashed recovery codes, with
 single-use challenges and fresh-authentication checks for factor management.
@@ -98,6 +98,13 @@ See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
 
+Installed agent extension inventory uses a bounded, metadata-only v3 discovery
+contract. `discovered_extension` stores presence per account, device, profile and
+agent; `extension_approval` stores account-wide name decisions independently of
+inventory retention. CRUD owns reconciliation and approval joins. Only complete
+app scans prove absence; older reports cannot replace newer inventory. Extension
+files, commands and source URLs remain on the device. See the
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID
 or direct-hook server label and exposed tool name. CRUD serializes first sightings
@@ -105,3 +112,16 @@ and approval attachment in one transaction; approval resolution updates the rout
 decision, and async replays recheck the current policy before dispatch. Native
 agent tools retain their client-decision fallback. See
 [policy defaults](docs/guide/concepts/policy-as-code.md#unlisted-tools).
+
+**Request rate limiting.** `backend/preloop/services/rate_limit.py` enforces
+fixed-window budgets for auth, OAuth, public approvals, passkey challenges,
+verification and password-reset email, OTLP ingest, and test pushes. PostgreSQL
+counters updated through CRUD share budgets across replicas and survive restarts;
+a store outage logs an error and falls back to per-process enforcement. Refusals
+return 429 with `Retry-After` and increment `preloop_rate_limit_hits_total{rule}`.
+JSON APIs carry `rate_limited`; OTLP retains its protocol envelope. Operator notes
+and desktop views separately count persisted rows over a rolling hour. See the
+[architecture chapter](docs/architecture/operations.md#request-rate-limiting),
+[rules and audit behavior](docs/operations/rate-limiting.md), and the supported
+[Helm extraEnv configuration](helm/preloop/README.md#request-rate-limiting), which
+keeps backend defaults authoritative across deployment methods.

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint, desc
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,19 @@ class DiscoveryObservation(Base):
             "source_ref",
             "observation_id",
             name="uq_discovery_observation_source",
+        ),
+        Index(
+            "ix_discovery_observation_context_evidence",
+            "evidence",
+            postgresql_using="gin",
+            postgresql_ops={"evidence": "jsonb_path_ops"},
+        ),
+        Index(
+            "ix_discovery_observation_device_latest",
+            "account_id",
+            "workstation_fingerprint",
+            desc("ended_at"),
+            desc("received_at"),
         ),
     )
     account_id: Mapped[uuid.UUID] = mapped_column(

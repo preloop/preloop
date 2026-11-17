@@ -2,7 +2,7 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-Preloop throttles its public and authentication endpoints (EE #66). Every
+Preloop throttles its public and authentication endpoints. Every
 rule is a fixed window: at most *limit* requests per *window* seconds for one
 identity. A refused request gets HTTP 429:
 
@@ -65,9 +65,10 @@ not on the trusted-proxy walk described below.
 | `EMAIL_VERIFICATION_RESEND_LIMIT`, `EMAIL_VERIFICATION_RESEND_WINDOW` | `3`, `900` | budget and window in seconds for `auth.email_send` |
 | `PRELOOP_OTLP_INGEST_RATE_LIMIT` | `600` | requests per minute per key for `telemetry.otlp_ingest` (read at startup) |
 
-The Helm chart has no dedicated rate-limit values: like other API tuning
-settings, these are set through `extraEnv`, which reaches the API pods, for
-example:
+The Helm chart supports limiter configuration through `extraEnv`, which
+reaches the API pods. There are no dedicated rate-limit values: using the
+same environment settings across Helm and native deployments keeps defaults
+in one place and supports new rules without a chart change. For example:
 
 ```yaml
 extraEnv:
@@ -112,3 +113,18 @@ increment `preloop_rate_limit_store_errors_total{rule}`. Counters are exported
 when OTLP metrics are configured.
 
 Ingress-level limits remain a useful optional extra layer.
+
+### Failed-login audit events
+
+Password sign-in through both `/api/v1/auth/token` and
+`/api/v1/auth/token/json` records an `auth.login.failed` event for a failed
+authentication attempt with an identifiable account. Wrong passwords use
+`reason_code=invalid_credentials`; the event includes the password method,
+person and membership identifiers, and source IP, never the password.
+Unknown identities have no tenant audit destination and produce an unscoped,
+content-free authentication event in the service log instead.
+
+The audit trail records individual outcomes, not the running
+`auth.login.user` bucket count. Requests rejected by the IP or failed-login
+budget before credential verification do not enter the password audit path;
+those refusals appear in the limiter logs and metrics described above.
