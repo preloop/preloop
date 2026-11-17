@@ -113,6 +113,7 @@ def test_legacy_missing_evidence_is_not_inferred_from_exit_or_registration() -> 
         "captured": False,
         "source": None,
         "result_sha256": None,
+        "answer_unwrapped": None,
     }
     assert completion["result_valid"] is None
     timing = timings_projection(execution, [{"duration": 10}])
@@ -269,3 +270,32 @@ def test_restricted_timing_projection_keeps_safe_effective_controls() -> None:
     assert effective["upstream_parameters"]["output_format"]["strict"] is True
     assert effective["upstream_parameters"]["provider"] == {"only": ["host-a"]}
     assert effective["upstream_provider"] == "Host A"
+
+
+@pytest.mark.parametrize("fact", ["markdown_fence", None, "something_else"])
+def test_projection_names_an_unwrapped_native_answer(fact: object) -> None:
+    facts = {"capture_state": "captured", "result_captured_at": "2026-01-01T00:00:00Z"}
+    if fact is not None:
+        facts["answer_unwrapped"] = fact
+    execution = SimpleNamespace(
+        status="SUCCEEDED",
+        result={"status": "success"},
+        startup_receipt={"_completion": facts},
+        result_schema_validation={"valid": True},
+    )
+    captured = completion_projection(execution)["result_captured"]
+    expected = "markdown_fence" if fact == "markdown_fence" else None
+    assert captured["answer_unwrapped"] == expected
+
+
+def test_captured_result_records_the_unwrapped_answer() -> None:
+    orch = FlowExecutionOrchestrator(MagicMock(), uuid4(), {}, AsyncMock())
+    orch.execution_log = SimpleNamespace(id=uuid4())
+    orch._native_result_effective = True
+    orch._native_answer_unwrapped = "markdown_fence"
+    with patch(
+        "preloop.services.flow_orchestrator.crud_flow_execution"
+        ".record_completion_evidence"
+    ) as record:
+        orch._store_captured_result({"status": "success"})
+    assert record.call_args.kwargs["facts"]["answer_unwrapped"] == "markdown_fence"

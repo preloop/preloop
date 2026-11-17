@@ -241,6 +241,13 @@ class ReviewCapturedResult(BaseModel):
     captured: bool | None
     source: Literal["native_structured_result", "file"] | None
     result_sha256: str | None
+    answer_unwrapped: Literal["markdown_fence"] | None = Field(
+        default=None,
+        description=(
+            "Set when the native final answer was one JSON document inside a "
+            "Markdown code fence and the fence was removed before validation."
+        ),
+    )
 
 
 class ReviewAgentFinished(BaseModel):

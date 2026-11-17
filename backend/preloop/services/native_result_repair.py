@@ -13,9 +13,19 @@ know is skipped, so it can under-report but never invents an error that the
 controller would not also find for the keywords it does check.
 """
 
-import json
 import re
 from typing import Any
+
+try:
+    from preloop.services.native_answer import parse_native_answer
+except ImportError:  # pragma: no cover - embedded after that module's source
+    pass
+
+#: Said first for an answer that is not JSON, in words a model acts on.
+NOT_JSON_INSTRUCTION = (
+    "Your answer was wrapped in a Markdown code fence or contained text "
+    "outside the JSON. Reply with the JSON object only: no backticks, no prose."
+)
 
 #: Most errors named in one repair prompt.
 MAX_REPAIR_ERRORS = 20
@@ -348,9 +358,14 @@ def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> s
         text = str(raw)
         previous = text[:MAX_PREVIOUS_ANSWER_CHARS]
         try:
-            document = json.loads(text)
+            document, _ = parse_native_answer(text)
         except ValueError as exc:
-            errors = [{"path": "$", "message": f"Not valid JSON: {exc}"}]
+            errors = [
+                {
+                    "path": "$",
+                    "message": f"{NOT_JSON_INSTRUCTION} Not valid JSON: {exc}",
+                }
+            ]
         else:
             errors = schema_errors(document, schema)
     if not errors:
@@ -381,7 +396,7 @@ def repair_paths(raw: Any, schema: Any) -> list[str]:
         Up to :data:`MAX_REPAIR_ERRORS` distinct paths.
     """
     try:
-        document = json.loads(str(raw))
+        document, _ = parse_native_answer(raw)
     except (TypeError, ValueError):
         return ["$"]
     paths = [error["path"] for error in schema_errors(document, schema)]

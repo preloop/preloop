@@ -144,6 +144,9 @@ def completion_projection(
             }
             else None,
             "result_sha256": result_sha256(execution.result) if available else None,
+            "answer_unwrapped": "markdown_fence"
+            if available and facts.get("answer_unwrapped") == "markdown_fence"
+            else None,
         },
         "result_valid": valid if type(valid) is bool else None,
         "review_integrity": review_integrity_projection(execution),
