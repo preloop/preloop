@@ -348,12 +348,14 @@ def test_consent_search_includes_last_known_only_when_requested(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reference_only", [False, True])
+@pytest.mark.parametrize("runtime_error", [False, True])
 async def test_revocation_evidence_uses_stored_consent_without_caching_token(
     monkeypatch: pytest.MonkeyPatch,
     db_session: Session,
     test_user: models.User,
     audit_client: TestClient,
     reference_only: bool,
+    runtime_error: bool,
 ) -> None:
     """An active read followed by an RFC 7662 minimal refusal retains attribution."""
     from types import SimpleNamespace
@@ -382,13 +384,16 @@ async def test_revocation_evidence_uses_stored_consent_without_caching_token(
         )
     )
     monkeypatch.setattr(gateway, "grant_introspector", introspector)
-    snapshot = gateway.GrantDispatchSnapshot(
-        str(test_user.account_id),
-        "read_record",
-        "Example server",
-        "read",
-        {
-            "server_id": "00000000-0000-4000-8000-000000000123",
+    from datetime import datetime
+    from preloop.models.crud import crud_mcp_server
+
+    server = crud_mcp_server.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "name": "Example server",
+            "url": "https://upstream.example.com/mcp",
+            "transport": "http-streaming",
             "auth_type": "bearer",
             "auth_config": {
                 "token": "synthetic-bearer",
@@ -399,8 +404,15 @@ async def test_revocation_evidence_uses_stored_consent_without_caching_token(
                     "max_cache_ttl_seconds": 0,
                 },
             },
+            "updated_at": datetime(2026, 1, 1),
         },
-        registry_revision="2026-11-17T00:00:00+00:00",
+    )
+    db_proxy = MagicMock(wraps=db_session)
+    db_proxy.close = MagicMock()
+    monkeypatch.setattr(gateway, "get_db", lambda: iter([db_proxy]))
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server)
+    snapshot, allowed = await gateway._prepare_grant_dispatch(
+        str(test_user.account_id), "read_record"
     )
     user = SimpleNamespace(
         user_id=str(test_user.id),
@@ -412,7 +424,6 @@ async def test_revocation_evidence_uses_stored_consent_without_caching_token(
     )
     service = audit.AuditService()
     monkeypatch.setattr(audit, "_broadcast_audit_event", lambda **kw: None)
-    allowed = await gateway._evaluate_snapshot_grant(snapshot)
     service.log_tool_call(
         db_session,
         account_id=test_user.account_id,
@@ -421,8 +432,14 @@ async def test_revocation_evidence_uses_stored_consent_without_caching_token(
         result="executed",
         grant=allowed.binding,
     )
+    if runtime_error:
+        gateway._record_mcp_server_error(str(server.id), "http_403: upstream refused")
+        db_session.refresh(server)
+        assert server.last_error == "http_403: upstream refused"
     active = False
-    denied = await gateway._evaluate_snapshot_grant(snapshot)
+    snapshot, denied = await gateway._prepare_grant_dispatch(
+        str(test_user.account_id), "read_record"
+    )
     assert denied.deny_reason == "grant_inactive"
     config = SensitiveDataConfig.model_validate(
         {
@@ -485,3 +502,37 @@ async def test_revocation_evidence_uses_stored_consent_without_caching_token(
         "last_known_consent_ref" not in entry.binding
         for entry in introspector._cache.values()
     )
+
+
+def test_grant_revision_changes_only_with_credential_binding(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Name, scan and diagnostic updates preserve evidence; token rotation does not."""
+    from preloop.models.crud import crud_mcp_server
+
+    server = crud_mcp_server.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "name": "Example server",
+            "url": "https://upstream.example.com/mcp",
+            "auth_type": "bearer",
+            "auth_config": {"token": "synthetic-before"},
+        },
+    )
+    revision = server.grant_revision
+    crud_mcp_server.update(
+        db_session,
+        db_obj=server,
+        obj_in={
+            "name": "Renamed server",
+            "last_error": "temporarily unavailable",
+            "last_scan_at": "2026-11-17T00:00:00",
+        },
+    )
+    assert server.grant_revision == revision
+    crud_mcp_server.update(
+        db_session, db_obj=server, obj_in={"auth_config": {"token": "synthetic-after"}}
+    )
+    assert server.grant_revision != revision

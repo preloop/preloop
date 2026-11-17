@@ -101,7 +101,7 @@ principal fields as policy allow rows for that caller.
 
 An inactive answer may contain only `{"active": false}`. When it omits the consent
 claim, Preloop leaves `details.grant.consent_ref` null and looks up the most recent
-stored consent claim for the same account, server ID and configuration revision.
+stored consent claim for the same account, server ID and authentication/configuration revision.
 If found, it records `details.grant.last_known_consent_ref`. This is historical
 evidence, **not a claim that the consent is currently active**. The lookup never
 uses another denial's fallback reference and adds no token cache or fingerprint.
@@ -119,9 +119,10 @@ account-scoped match. Last-known searches and server history lookups have partia
 composite indexes built concurrently with audit writes.
 
 History is available only from stored rows carrying the server identity and
-revision, written by this version. Configuration edits (including credential
-rotation) conservatively start a new history; OAuth credential versions are also
-separated. No reference is inferred from older rows without that attribution or
+revision, written by this version. The revision is an opaque UUID that changes
+when the credential binding changes (authentication/introspection configuration,
+endpoint, transport or disabling the server). Diagnostic errors, scans and name
+edits preserve it. OAuth credential versions are also separated. No reference is inferred from older rows without that attribution or
 from writes that have not reached the audit log yet. If reference-only logging
 covers the call, the fallback is omitted so a historical clear-text consent
 reference cannot be reintroduced. A failed evidence lookup also omits the

@@ -1,4 +1,4 @@
-"""Index scope errors and historical grant evidence without blocking audit writes."""
+"""Add opaque grant revisions and index evidence without blocking audit writes."""
 
 import sqlalchemy as sa
 from alembic import op
@@ -31,7 +31,11 @@ INDEXES = (
 
 
 def upgrade() -> None:
-    """Build lookup indexes without blocking writes, repairing interrupted builds."""
+    """Add credential generations and build repairable concurrent audit indexes."""
+    op.execute(
+        "ALTER TABLE mcp_server ADD COLUMN IF NOT EXISTS grant_revision "
+        "uuid NOT NULL DEFAULT gen_random_uuid()"
+    )
     with concurrent_index_ddl(op.get_context()):
         for name, definition in INDEXES:
             invalid = (
@@ -55,7 +59,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove lookup indexes without blocking audit writes."""
+    """Remove lookup indexes concurrently and drop credential generations."""
     with concurrent_index_ddl(op.get_context()):
         for name, _ in reversed(INDEXES):
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
+    op.execute("ALTER TABLE mcp_server DROP COLUMN IF EXISTS grant_revision")

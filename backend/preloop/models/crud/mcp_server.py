@@ -1,7 +1,7 @@
 """CRUD operations for MCPServer model."""
 
 from typing import Any, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -91,6 +91,7 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             or without_identity_flags(next_config) != without_identity_flags(config)
         )
         if changed:
+            server.grant_revision = uuid4()
             crud_upstream_mcp_oauth.invalidate(db, server.id)
         if server.auth_type == "oauth":
             next_config = next_config or {}

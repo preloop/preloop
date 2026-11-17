@@ -57,6 +57,10 @@ def isolated_connection(db_engine: Engine) -> Iterator[Connection]:
                     "CREATE TABLE audit_log (id uuid, account_id uuid, timestamp timestamptz, details jsonb)"
                 )
             )
+            connection.execute(text("CREATE TABLE mcp_server (id uuid PRIMARY KEY)"))
+            connection.execute(
+                text("INSERT INTO mcp_server VALUES (gen_random_uuid())")
+            )
             yield connection
         finally:
             connection.commit()
@@ -106,13 +110,25 @@ def test_upgrade_is_idempotent_and_reversible(
     """Upgrade builds valid partial indexes; downgrade removes them."""
     connection = isolated_connection
     run_migration(connection, "upgrade")
+    revision = connection.execute(
+        text("SELECT grant_revision FROM mcp_server")
+    ).scalar()
+    assert revision is not None
     defs = index_defs(connection)
-    assert set(defs) == {name for name, _ in load_migration().INDEXES}
-    assert all(valid and "WHERE" in definition for valid, definition in defs.values())
+    assert set(defs) == {
+        "mcp_server_pkey",
+        *(name for name, _ in load_migration().INDEXES),
+    }
+    assert all(valid for valid, _ in defs.values())
+    assert all("WHERE" in defs[name][1] for name, _ in load_migration().INDEXES)
     run_migration(connection, "upgrade")
     assert index_defs(connection) == defs
+    assert (
+        connection.execute(text("SELECT grant_revision FROM mcp_server")).scalar()
+        == revision
+    )
     run_migration(connection, "downgrade")
-    assert index_defs(connection) == {}
+    assert set(index_defs(connection)) == {"mcp_server_pkey"}
 
 
 def test_upgrade_rebuilds_invalid_index(isolated_connection: Connection) -> None:
@@ -123,14 +139,14 @@ def test_upgrade_rebuilds_invalid_index(isolated_connection: Connection) -> None
         text(
             "UPDATE pg_index SET indisvalid = false WHERE indexrelid IN "
             "(SELECT c.oid FROM pg_class c JOIN pg_namespace n "
-            "ON n.oid = c.relnamespace WHERE n.nspname = current_schema())"
+            "ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname != 'mcp_server_pkey')"
         )
     )
     run_migration(connection, "upgrade")
     assert all(valid for valid, _ in index_defs(connection).values())
 
 
-def test_model_metadata_declares_unsealed_index() -> None:
+def test_model_metadata_declares_grant_evidence_indexes() -> None:
     """The model carries the same partial index the migration builds."""
     definitions = {
         index.name: str(CreateIndex(index).compile(dialect=postgresql.dialect()))

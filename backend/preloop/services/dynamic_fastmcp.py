@@ -584,6 +584,7 @@ class GrantDispatchSnapshot:
     upstream_name: str
     client_config: dict[str, Any]
     registry_revision: Optional[str] = None
+    grant_revision: Optional[str] = None
 
 
 _grant_dispatch_var: ContextVar[Optional[GrantDispatchSnapshot]] = ContextVar(
@@ -603,7 +604,7 @@ async def _evaluate_snapshot_grant(
 ) -> Optional[GrantResult]:
     """Check grant state for the token on the copied dispatch configuration."""
     auth = snapshot.client_config["auth_config"]
-    revision = snapshot.registry_revision
+    revision = snapshot.grant_revision
     if not isinstance(auth, dict) or auth.get("introspection") is None:
         return None
     if snapshot.client_config["auth_type"] == "oauth":
@@ -658,6 +659,11 @@ async def _prepare_grant_dispatch(
                 registry_revision=(
                     server.updated_at.isoformat()
                     if isinstance(getattr(server, "updated_at", None), datetime)
+                    else None
+                ),
+                grant_revision=(
+                    str(server.grant_revision)
+                    if isinstance(getattr(server, "grant_revision", None), uuid.UUID)
                     else None
                 ),
                 upstream_name=_upstream_tool_name(
@@ -3562,6 +3568,15 @@ async def {internal_name}({params_str}):
                 else:
                     _grant_binding_var.set(deepcopy(grant.binding))
                 if grant.deny_reason:
+                    await _record_grant_denial(
+                        fresh.account_id,
+                        fresh.tool_name,
+                        grant,
+                        user_id=user_context.user_id,
+                        user_context=user_context,
+                        snapshot=fresh,
+                        correlation_id=correlation_id,
+                    )
                     return _wrapper_tool_error(
                         outcome_error("approved but grant refused", reference),
                         status="refused",
