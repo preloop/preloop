@@ -209,7 +209,22 @@ endpoint. Version 1 reports remain supported. Version 2 adds:
 | `evidence.profiles[].profile_ref` | A keyed reference scoped to the account and workstation. It identifies profile scope without sending a profile name or home path. |
 | `evidence.profiles[].completeness` | `complete`, `partial` or `failed`, including profiles that yielded no application rows. |
 | `evidence.profiles[].error_code` | Absent for complete scope; otherwise `profile_unavailable`, `profile_unreadable` or `probe_incomplete`. |
-| `evidence.applications[].profile_ref` | The reference of the profile in which this app context was observed. |
+| `evidence.applications[].profile_ref` | The reference of the profile in which this app context was observed; omitted for machine-level managed configuration. |
+| `evidence.applications[].config_scope` | `user_config` (default) or `managed_config`. |
+| `evidence.applications[].controls[]` | Allowlisted axis, adapter support, configured state, and configuration source. No execution or verification claim. |
+
+All-user reporting also inspects the standard Claude Code system
+`managed-settings.json` on Linux, macOS and Windows. It reports the presence
+or absence of the exported Preloop PreToolUse hook as a separate machine-level
+application context with a salted config-path hash and `managed_config` scope.
+The absence of the file or hook is configuration evidence only. Unreadable or
+malformed files mark managed configuration incomplete and the control unknown.
+`evidence.scope_completeness` keeps the original user-config scan status separate
+from the managed-config status. The overall report retains its most severe state
+and accumulated error codes. This does not
+inspect higher managed sources or establish the effective policy in the app.
+Commands, file contents, environment values and credentials are never sent.
+Offline profile inventory remains limited to profile configuration.
 
 Offline v2 output also associates probe results with `profile_ref`. Its fresh
 per-run random salt makes profile references unrelated across offline runs.

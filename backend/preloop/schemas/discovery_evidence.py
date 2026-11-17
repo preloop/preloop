@@ -44,6 +44,10 @@ class ObservedControl(SafeEvidenceModel):
     """Independent collector assertions, with no effective/verified field."""
 
     axis: ControlAxis
+    configured: State = "unknown"
+    configuration_evidence: Literal["local_config", "managed_config", "unavailable"] = (
+        "unavailable"
+    )
     supported: State = "unknown"
     requested: State = "unknown"
     applied: State = "unknown"
@@ -57,6 +61,7 @@ class ObservedApplication(SafeEvidenceModel):
 
     agent_kind: str = Field(pattern=AGENT_KIND_PATTERN)
     config_path_hash: str = Field(pattern=HEX_SHA256_PATTERN)
+    config_scope: Literal["user_config", "managed_config"] = "user_config"
     profile_ref: str | None = Field(default=None, pattern=HEX_SHA256_PATTERN)
     completeness: Literal["complete", "partial", "failed"] | None = None
     extensions: list[ExtensionMetadata] | None = Field(default=None, max_length=200)
@@ -72,6 +77,8 @@ class ObservedApplication(SafeEvidenceModel):
     @model_validator(mode="after")
     def unique_controls(self) -> ObservedApplication:
         """Each axis occurs at most once in a source observation."""
+        if self.config_scope == "managed_config" and self.profile_ref is not None:
+            raise ValueError("System managed configuration has no user profile")
         if len({control.axis for control in self.controls}) != len(self.controls):
             raise ValueError("Control axes must be unique")
         return self
@@ -113,6 +120,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
         Literal["installed_apps", "user_config", "managed_config", "running_apps"]
     ] = Field(min_length=1, max_length=4)
     completeness: Literal["complete", "partial", "failed"]
+    scope_completeness: dict[
+        Literal["user_config", "managed_config"],
+        Literal["complete", "partial", "failed"],
+    ] = Field(default_factory=dict, max_length=2)
     errors: list[
         Literal[
             "permission_denied", "unavailable", "unsupported", "parse_failed", "timeout"
@@ -128,10 +139,21 @@ class DiscoveryEvidence(SafeEvidenceModel):
     ) -> dict[str, Any]:
         """Preserve v1 canonical bytes for immutable observation replay hashes."""
         data: dict[str, Any] = handler(self)
+        if not self.scope_completeness:
+            data.pop("scope_completeness", None)
         if self.schema_version == 1:
             data.pop("profiles", None)
             for application in data.get("applications", []):
                 application.pop("profile_ref", None)
+        # Additive facts must not alter immutable replay hashes for old reports.
+        for application in data.get("applications", []):
+            if application.get("config_scope") == "user_config":
+                application.pop("config_scope", None)
+            for control in application.get("controls", []):
+                if control.get("configuration_evidence") == "unavailable":
+                    control.pop("configuration_evidence", None)
+                    if control.get("configured") == "unknown":
+                        control.pop("configured", None)
         if self.schema_version < 3:
             data.pop("extension_completeness", None)
             for application in data.get("applications", []):
@@ -149,6 +171,12 @@ class DiscoveryEvidence(SafeEvidenceModel):
             raise ValueError("Collection window must be ordered and at most one day")
         if self.completeness == "complete" and self.errors:
             raise ValueError("Complete collection cannot include errors")
+        if any(scope not in self.scan_scope for scope in self.scope_completeness):
+            raise ValueError("Scope completeness requires a declared scan scope")
+        if self.completeness == "complete" and any(
+            value != "complete" for value in self.scope_completeness.values()
+        ):
+            raise ValueError("Complete collection cannot include partial scopes")
         refs = [profile.profile_ref for profile in self.profiles]
         if len(set(refs)) != len(refs):
             raise ValueError("Profile references must be unique")
@@ -157,7 +185,13 @@ class DiscoveryEvidence(SafeEvidenceModel):
         ):
             raise ValueError("Profile metadata requires schema version 2")
         if self.schema_version == 2 or (self.schema_version == 3 and self.profiles):
-            if any(app.profile_ref not in refs for app in self.applications):
+            if any(
+                app.profile_ref not in refs
+                and not (
+                    app.profile_ref is None and app.config_scope == "managed_config"
+                )
+                for app in self.applications
+            ):
                 raise ValueError("Application must reference a collected profile")
             if self.completeness == "complete" and any(
                 profile.completeness != "complete" for profile in self.profiles
@@ -166,9 +200,13 @@ class DiscoveryEvidence(SafeEvidenceModel):
         if self.schema_version < 3 and self.extension_completeness is not None:
             raise ValueError("Extension completeness requires schema version 3")
         if self.extension_completeness == "complete" and (
-            self.completeness == "failed"
+            self.scope_completeness.get("user_config", self.completeness) == "failed"
             or any(profile.completeness == "failed" for profile in self.profiles)
-            or any(app.completeness != "complete" for app in self.applications)
+            or any(
+                app.completeness != "complete"
+                for app in self.applications
+                if app.config_scope != "managed_config"
+            )
         ):
             raise ValueError(
                 "Complete extensions cannot include failed or partial extension scope"
@@ -178,6 +216,14 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 app.extensions is not None or app.completeness is not None
             ):
                 raise ValueError("Extensions require schema version 3")
+            if app.config_scope == "managed_config":
+                if "managed_config" not in self.scan_scope:
+                    raise ValueError("Managed configuration requires its scan scope")
+                if app.extensions is not None or app.completeness is not None:
+                    raise ValueError(
+                        "Managed configuration does not collect extensions"
+                    )
+                continue
             if self.schema_version == 3:
                 if app.extensions is None or app.completeness is None:
                     raise ValueError(

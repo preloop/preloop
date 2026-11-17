@@ -15,16 +15,27 @@ import (
 
 // These narrow DTOs implement DiscoveryEvidence v2. No local path or parsed
 // config value can enter this serializer.
+type inventoryReportControl struct {
+	Axis                  string `json:"axis"`
+	Supported             string `json:"supported"`
+	Configured            string `json:"configured"`
+	ConfigurationEvidence string `json:"configuration_evidence"`
+	Method                string `json:"method"`
+}
+
 type inventoryReportApplication struct {
-	Extensions     *[]inventoryExtension `json:"extensions,omitempty"`
-	Completeness   string                `json:"completeness,omitempty"`
-	AgentKind      string                `json:"agent_kind"`
-	ConfigPathHash string                `json:"config_path_hash"`
-	ProfileRef     string                `json:"profile_ref"`
-	Installed      string                `json:"installed"`
-	Configured     string                `json:"configured"`
+	AgentKind      string                   `json:"agent_kind"`
+	ConfigPathHash string                   `json:"config_path_hash"`
+	ProfileRef     string                   `json:"profile_ref,omitempty"`
+	Installed      string                   `json:"installed"`
+	Configured     string                   `json:"configured"`
+	ConfigScope    string                   `json:"config_scope,omitempty"`
+	Controls       []inventoryReportControl `json:"controls,omitempty"`
+	Extensions     *[]inventoryExtension    `json:"extensions,omitempty"`
+	Completeness   string                   `json:"completeness,omitempty"`
 }
 type inventoryReportEvidence struct {
+	ScopeCompleteness     map[string]string            `json:"scope_completeness,omitempty"`
 	ExtensionCompleteness string                       `json:"extension_completeness,omitempty"`
 	SchemaVersion         int                          `json:"schema_version"`
 	ObservationID         string                       `json:"observation_id"`
@@ -88,8 +99,10 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 		// Aggregate each app within one profile; do not imply enrollment or actual
 		// runtime usage. The separate namespace prevents collisions with v1 paths.
 		hash := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
-		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app)})
+
+		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app), Controls: inventoryReportControls(app.Controls)})
 		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
+
 	}
 	report.Evidence = &evidence
 	return report
@@ -124,6 +137,8 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	scan := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
 	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
+	appendManagedConfigurationEvidence(&report, salt, inventoryProbes.GOOS, readManagedInventoryConfig)
+	report.Evidence.EndedAt = inventoryProbes.Now().UTC()
 	var response discoveryReportResponse
 	if err = postInventoryReport(client, report, &response); err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)

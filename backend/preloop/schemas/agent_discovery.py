@@ -72,6 +72,7 @@ class DiscoveryReportRequest(BaseModel):
         apps = {
             (app.agent_kind, app.config_path_hash): app
             for app in self.evidence.applications
+            if app.config_scope != "managed_config"
         }
         keys = [
             (candidate.agent_kind, candidate.config_path_hash)

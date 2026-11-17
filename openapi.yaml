@@ -37176,6 +37176,20 @@ components:
           - partial
           - failed
           title: Completeness
+        scope_completeness:
+          additionalProperties:
+            type: string
+            enum:
+            - complete
+            - partial
+            - failed
+          propertyNames:
+            enum:
+            - user_config
+            - managed_config
+          type: object
+          maxProperties: 2
+          title: Scope Completeness
         errors:
           items:
             type: string
@@ -47185,6 +47199,13 @@ components:
           type: string
           pattern: ^[0-9a-f]{64}$
           title: Config Path Hash
+        config_scope:
+          type: string
+          enum:
+          - user_config
+          - managed_config
+          title: Config Scope
+          default: user_config
         profile_ref:
           anyOf:
           - type: string
@@ -47275,6 +47296,22 @@ components:
           - content_inspection
           - usage_visibility
           title: Axis
+        configured:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Configured
+          default: unknown
+        configuration_evidence:
+          type: string
+          enum:
+          - local_config
+          - managed_config
+          - unavailable
+          title: Configuration Evidence
+          default: unavailable
         supported:
           type: string
           enum:

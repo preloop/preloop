@@ -92,12 +92,25 @@ func postInventoryReport(client *api.Client, report discoveryReportRequest, resp
 func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequest {
 	evidence := *report.Evidence
 	evidence.SchemaVersion = 2
+	evidence.ScopeCompleteness = nil
 	evidence.ExtensionCompleteness = ""
 	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
 	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
-	for i := range evidence.Applications {
-		evidence.Applications[i].Extensions = nil
-		evidence.Applications[i].Completeness = ""
+	legacyApps := []inventoryReportApplication{}
+	for _, app := range evidence.Applications {
+		if app.ConfigScope == "managed_config" {
+			continue
+		}
+		app.Extensions, app.Controls = nil, nil
+		app.Completeness, app.ConfigScope = "", ""
+		legacyApps = append(legacyApps, app)
+	}
+	evidence.Applications = legacyApps
+	evidence.ScanScope = []string{}
+	for _, scope := range report.Evidence.ScanScope {
+		if scope != "managed_config" {
+			evidence.ScanScope = append(evidence.ScanScope, scope)
+		}
 	}
 	for i := range report.Candidates {
 		report.Candidates[i].Extensions = nil

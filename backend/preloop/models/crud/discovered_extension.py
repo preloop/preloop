@@ -64,6 +64,7 @@ class CRUDDiscoveredExtension:
                             "applications": [
                                 {
                                     "agent_kind": agent_kind,
+                                    "extensions": [],
                                     "profile_ref": None
                                     if profile_ref == "current"
                                     else profile_ref,
@@ -174,15 +175,21 @@ class CRUDDiscoveredExtension:
                     model.evidence["schema_version"].as_integer(),
                     func.coalesce(
                         model.evidence["extension_completeness"].as_string(),
+                        model.evidence["scope_completeness"]["user_config"].as_string(),
                         model.evidence["completeness"].as_string(),
                     ),
+                    model.evidence["scan_scope"].contains(["user_config"]),
                 ).join(latest, latest.c.id == model.id)
             )
         )
-        if not rows or any((version or 1) < 3 for version, _ in rows):
+        if not rows or any((version or 1) < 3 for version, _, _ in rows):
+            return "unknown"
+        if any(not user_scope for _, _, user_scope in rows):
             return "unknown"
         return (
-            "complete" if all(state == "complete" for _, state in rows) else "partial"
+            "complete"
+            if all(state == "complete" for _, state, _ in rows)
+            else "partial"
         )
 
     def list_for_device(

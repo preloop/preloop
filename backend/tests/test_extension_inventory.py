@@ -350,6 +350,43 @@ def test_legacy_evidence_canonical_bytes() -> None:
     assert "profiles" not in dumped
 
 
+def test_managed_configuration_does_not_reconcile_or_stale_extension_contexts(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Machine configuration is independent of profile extension collection."""
+    db, account = db_session, test_user.account_id
+    payload = report()
+    managed = {
+        "agent_kind": "claude_code",
+        "config_path_hash": "d" * 64,
+        "config_scope": "managed_config",
+        "controls": [
+            {
+                "axis": "native_tool_hook",
+                "configured": "true",
+                "configuration_evidence": "managed_config",
+            }
+        ],
+    }
+    payload["evidence"]["scan_scope"].append("managed_config")
+    payload["evidence"]["applications"].append(managed)
+    store(db, account, payload)
+    assert crud_discovered_extension.completeness(db, account_id=account) == "complete"
+    # A later machine-only collection must not supersede the user context.
+    later = report([], at=NOW + timedelta(minutes=2))
+    later["candidates"] = []
+    later["evidence"]["applications"] = [managed]
+    later["evidence"]["scan_scope"] = ["managed_config"]
+    store(db, account, later)
+    assert crud_discovered_extension.completeness(db, account_id=account) == "unknown"
+    assert (
+        len(crud_discovered_extension.list_for_account(db, account_id=account)[0]) == 1
+    )
+    store(db, account, report([], at=NOW + timedelta(minutes=1)))
+    assert crud_discovered_extension.list_for_account(db, account_id=account)[0] == []
+
+
 def test_complete_app_reconciles_despite_unrelated_profile_partial(
     db_session: Session, test_user: models.User
 ) -> None:
@@ -388,6 +425,71 @@ def test_failed_envelope_never_proves_absence(
             )[0]
         )
         == 1
+    )
+
+
+@pytest.mark.parametrize("has_user_app", [False, True])
+def test_managed_failure_preserves_complete_user_inventory(
+    db_session: Session,
+    test_user: models.User,
+    has_user_app: bool,
+) -> None:
+    """Completed profile scans retain their coverage when another scope fails."""
+    payload = report(profile_ref="c" * 64)
+    if not has_user_app:
+        payload["candidates"] = []
+        payload["evidence"]["applications"] = []
+    payload["evidence"].update(
+        completeness="partial",
+        errors=["permission_denied"],
+        scan_scope=["user_config", "managed_config"],
+        scope_completeness={"user_config": "complete", "managed_config": "partial"},
+        extension_completeness="complete",
+    )
+    payload["evidence"]["applications"].append(
+        {
+            "agent_kind": "claude_code",
+            "config_path_hash": "d" * 64,
+            "config_scope": "managed_config",
+            "controls": [
+                {
+                    "axis": "native_tool_hook",
+                    "configured": "unknown",
+                    "configuration_evidence": "unavailable",
+                }
+            ],
+        }
+    )
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.completeness(
+            db_session, account_id=test_user.account_id
+        )
+        == "complete"
+    )
+
+
+def test_empty_complete_user_scan_with_managed_context_is_complete(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Zero installed applications is a valid complete profile collection."""
+    payload = report(profile_ref="c" * 64)
+    payload["candidates"] = []
+    payload["evidence"]["scan_scope"] = ["user_config", "managed_config"]
+    payload["evidence"]["applications"] = [
+        {
+            "agent_kind": "claude_code",
+            "config_path_hash": "d" * 64,
+            "config_scope": "managed_config",
+        }
+    ]
+    store(db_session, test_user.account_id, payload)
+    assert (
+        crud_discovered_extension.completeness(
+            db_session, account_id=test_user.account_id
+        )
+        == "complete"
     )
 
 
