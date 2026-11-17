@@ -1,8 +1,10 @@
 """Credential masking at persistence and provider boundaries."""
 
 from pathlib import Path
+from collections.abc import Callable
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -12,6 +14,56 @@ from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.utils.execution_credentials import CredentialMasker
 
 TOKEN = "synthetic-unprefixed-execution-credential-123456789"
+
+
+@pytest.mark.asyncio
+async def test_streamed_line_reuses_fresh_masking_snapshot_for_delivery() -> None:
+    """One inventory read per line also sees credentials registered mid-run."""
+    import json
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    db = MagicMock()
+    nats = AsyncMock()
+    subject = FlowExecutionOrchestrator(
+        db=db, flow_id=uuid4(), trigger_event_data={}, nats_client=nats
+    )
+    subject.flow = SimpleNamespace(account_id=uuid4())
+    subject.execution_log = SimpleNamespace(id=uuid4())
+    subject.execution_logger = MagicMock()
+    later = "synthetic-later-credential-987654321"
+
+    async def run_db(operation: Callable[[Any], Any]) -> Any:
+        return operation(db)
+
+    with (
+        patch(
+            "preloop.models.crud.execution_credentials.for_execution",
+            side_effect=[
+                CredentialMasker.from_values([TOKEN]),
+                CredentialMasker.from_values([TOKEN, later]),
+            ],
+        ) as lookup,
+        patch("preloop.services.execution_realtime.run_db_async", side_effect=run_db),
+        patch(
+            "preloop.services.execution_realtime.crud_realtime.allocate_sequence",
+            return_value=(1, 0),
+        ),
+    ):
+        for index, line in enumerate((TOKEN, later)):
+            await subject._process_agent_log_line(
+                line,
+                session_reference="example-session",
+                previous_line="",
+                log_count=index,
+            )
+    assert lookup.call_count == 2
+    assert nats.publish.await_count == 2
+    for call in nats.publish.await_args_list:
+        event = json.loads(call.args[1])
+        assert event["payload"]["line"] == "[REDACTED]"
+    for call in subject.execution_logger.log_agent_output.call_args_list:
+        assert call.args[0] == "[REDACTED]"
 
 
 def test_log_persistence_masks_messages_and_metadata() -> None:

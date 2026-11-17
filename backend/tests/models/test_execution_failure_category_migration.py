@@ -34,6 +34,13 @@ def test_category_backfill_and_guard(db_engine: Engine) -> None:
                 "INSERT INTO flow_execution VALUES ('FAILED', 'native_result requires an enabled result_schema', NULL), ('FAILED', 'Agent reported an explicit failure in result.json', 'unknown'), ('RUNNING', NULL, NULL), ('FAILED', 'Execution stopped after detecting a repeated tool loop: native/Bash repeated 20 times with identical arguments.', 'unknown')"
             )
         )
+        connection.execute(
+            text(
+                "INSERT INTO flow_execution VALUES "
+                "('STOPPED', 'user stopped', NULL), "
+                "('CANCELLED', 'user cancelled', 'unknown')"
+            )
+        )
         with Operations.context(MigrationContext.configure(connection)):
             migration.upgrade()
         assert connection.execute(
@@ -42,6 +49,8 @@ def test_category_backfill_and_guard(db_engine: Engine) -> None:
             "agent_reported_failure",
             "agent_tool_loop",
             "flow_config",
+            "cancelled",
+            "cancelled",
             None,
         ]
         connection.execute(
@@ -51,8 +60,35 @@ def test_category_backfill_and_guard(db_engine: Engine) -> None:
         )
         connection.execute(
             text(
-                "UPDATE flow_execution SET status='FAILED', failure_category='unknown' WHERE status='RUNNING'"
+                "UPDATE flow_execution SET status='STOPPED', failure_category='unknown' WHERE status='RUNNING'"
             )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO flow_execution VALUES "
+                "('STOPPED', 'stopped on insert', ''), "
+                "('CANCELLED', 'cancelled on insert', NULL), "
+                "('STOPPED', 'preserved cause', 'runner_error')"
+            )
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM flow_execution "
+                    "WHERE status IN ('STOPPED', 'CANCELLED') "
+                    "AND failure_category='cancelled'"
+                )
+            ).scalar()
+            == 5
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT failure_category FROM flow_execution "
+                    "WHERE error_message='preserved cause'"
+                )
+            ).scalar()
+            == "runner_error"
         )
         assert (
             connection.execute(
