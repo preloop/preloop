@@ -85,7 +85,7 @@ graph LR
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |
-| [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance and API diagnostics. |
+| [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance, API diagnostics and shared request rate limiting. |
 
 User authentication includes optional TOTP and hashed recovery codes, with
 single-use challenges and fresh-authentication checks for factor management.
@@ -107,3 +107,16 @@ and approval attachment in one transaction; approval resolution updates the rout
 decision, and async replays recheck the current policy before dispatch. Native
 agent tools retain their client-decision fallback. See
 [policy defaults](docs/guide/concepts/policy-as-code.md#unlisted-tools).
+
+**Request rate limiting.** `backend/preloop/services/rate_limit.py` enforces
+fixed-window budgets for auth, OAuth, public approvals, passkey challenges,
+verification and password-reset email, OTLP ingest, and test pushes. PostgreSQL
+counters updated through CRUD share budgets across replicas and survive restarts;
+a store outage logs an error and falls back to per-process enforcement. Refusals
+return 429 with `Retry-After` and increment `preloop_rate_limit_hits_total{rule}`.
+JSON APIs carry `rate_limited`; OTLP retains its protocol envelope. Operator notes
+and desktop views separately count persisted rows over a rolling hour. See the
+[architecture chapter](docs/architecture/operations.md#request-rate-limiting),
+[rules and audit behavior](docs/operations/rate-limiting.md), and the supported
+[Helm extraEnv configuration](helm/preloop/README.md#request-rate-limiting), which
+keeps backend defaults authoritative across deployment methods.
