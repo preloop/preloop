@@ -561,3 +561,43 @@ async def test_failed_post_is_retried_by_the_sweep_then_given_up(
     assert not crud_flow_execution.claim_final_commit_status(
         db_session, execution_id=execution.id, state="success", stale_after=timedelta(0)
     )
+
+
+@pytest.mark.asyncio
+async def test_sweep_gives_up_after_three_failed_posts(
+    db_session: Session, flow: Flow, tracker: FakeTracker, monkeypatch: Any
+) -> None:
+    execution = await _worker_died_after_terminal_write(db_session, flow)
+    _use_session(monkeypatch, db_session)
+    monkeypatch.setattr(commit_status_settlement, "CLAIM_STALE_AFTER", timedelta(0))
+    for _ in range(3):
+        tracker.fail_next = True
+        await commit_status_settlement.settle_commit_statuses()
+    final = record(db_session, execution.id)["final"]
+    assert final["attempts"] == 3 and final["gave_up"] is True
+    assert execution.id not in _found_ids(db_session)
+    await commit_status_settlement.settle_commit_statuses()
+    assert [c["state"] for c in tracker.calls] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_run_whose_tracker_is_gone_leaves_the_batch(
+    db_session: Session, flow: Flow, tracker: FakeTracker, monkeypatch: Any
+) -> None:
+    execution = await _worker_died_after_terminal_write(db_session, flow)
+
+    async def no_client(self: FlowExecutionOrchestrator) -> None:
+        return None
+
+    monkeypatch.setattr(
+        FlowExecutionOrchestrator, "_get_tracker_client_for_status", no_client
+    )
+    _use_session(monkeypatch, db_session)
+    monkeypatch.setattr(commit_status_settlement, "CLAIM_STALE_AFTER", timedelta(0))
+    passes = 0
+    while execution.id in _found_ids(db_session):
+        passes += 1
+        assert passes <= 3, "an unsettleable run must leave the batch"
+        await commit_status_settlement.settle_commit_statuses()
+    assert record(db_session, execution.id)["final"]["gave_up"] is True
+    assert [c["state"] for c in tracker.calls] == ["pending"]

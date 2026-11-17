@@ -10310,6 +10310,12 @@ class FlowExecutionOrchestrator:
             # say what was posted. Never raises and never touches the status
             # or result that were just stored.
             await self._publish_platform_review()
+            # The publication wrote on its own session (who posted, the
+            # record); read it back so the finished event reports it.
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:
+                logger.debug("Could not refresh the execution after posting")
             self._emit_execution_finished_webhook(
                 status, getattr(self.execution_log, "failure_category", None)
             )

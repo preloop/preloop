@@ -33,6 +33,25 @@ CLAIM_STALE_AFTER = timedelta(minutes=10)
 BATCH_SIZE = 50
 
 
+def _attempts(execution: Any) -> int:
+    """Final-status attempts recorded on an execution so far."""
+    final = crud_flow_execution.commit_status_record(execution).get("final")
+    return int(final.get("attempts") or 0) if isinstance(final, dict) else 0
+
+
+def _count_attempt(session: Any, execution: Any) -> None:
+    """Record a pass that could not post, toward the attempt limit."""
+    if crud_flow_execution.claim_final_commit_status(
+        session,
+        execution_id=execution.id,
+        state=str(execution.status),
+        stale_after=CLAIM_STALE_AFTER,
+    ):
+        crud_flow_execution.record_final_commit_status(
+            session, execution_id=execution.id, posted=False
+        )
+
+
 async def settle_commit_statuses(limit: int = BATCH_SIZE) -> dict[str, int]:
     """Set the final commit status of terminal runs left pending.
 
@@ -70,6 +89,8 @@ async def settle_commit_statuses(limit: int = BATCH_SIZE) -> dict[str, int]:
                     else None
                 )
                 if execution is None or flow is None:
+                    if execution is not None:
+                        _count_attempt(session, execution)
                     counts["skipped"] += 1
                     continue
                 continuation = getattr(execution, "resume_execution_id", None)
@@ -100,6 +121,7 @@ async def settle_commit_statuses(limit: int = BATCH_SIZE) -> dict[str, int]:
                 orchestrator.execution_log = execution
                 orchestrator.flow = flow
                 orchestrator._final_status_stale_after = CLAIM_STALE_AFTER
+                before = _attempts(execution)
                 await orchestrator.settle_commit_status(
                     str(execution.status),
                     error_message=execution.error_message,
@@ -115,6 +137,14 @@ async def settle_commit_statuses(limit: int = BATCH_SIZE) -> dict[str, int]:
                     counts["failed"] += 1
                 else:
                     counts["skipped"] += 1
+                if not (isinstance(final, dict) and final.get("posted_at")) and (
+                    _attempts(execution) == before
+                ):
+                    # This pass attempted nothing: no tracker or commit can
+                    # be resolved for the run any more. Count it so the row
+                    # leaves the batch after a bounded number of passes
+                    # instead of starving runs that can still settle.
+                    _count_attempt(session, execution)
             except Exception as error:
                 session.rollback()
                 counts["failed"] += 1

@@ -655,3 +655,43 @@ async def test_sweep_pass_leaves_manual_runs_unposted(
     await sweep_platform_reviews()
     assert world.github.calls == []
     assert isinstance(world.github, FakeGitHub)
+
+
+@pytest.mark.asyncio
+async def test_finished_event_reports_an_automatic_post_made_on_another_session(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The completion path posts on its own session; the event must see it."""
+    execution = finished(world, identity(world, world.projects[0]))
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    world.db.refresh(execution)
+    # The orchestrator's copy, loaded before the publication wrote anything.
+    loaded_before = dict(execution.startup_receipt or {})
+
+    async def publish_elsewhere(*, account_id: Any, execution_id: Any) -> None:
+        await platform_review.publish_platform_review(
+            world.db, account_id=account_id, execution_id=execution_id
+        )
+        # Written on the publication's own session: the orchestrator's
+        # object still holds what it loaded before.
+        set_committed_value(execution, "startup_receipt", loaded_before)
+
+    monkeypatch.setattr(
+        platform_review, "publish_finished_execution", publish_elsewhere
+    )
+    orchestrator = _orchestrator(world.flow, execution)
+    orchestrator.db = world.db
+    seen: list[Any] = []
+
+    def capture(status: str, failure_category: Any) -> None:
+        seen.append(
+            platform_review.platform_review_projection(
+                world.db, orchestrator.execution_log, flow=world.flow
+            )
+        )
+
+    monkeypatch.setattr(orchestrator, "_emit_execution_finished_webhook", capture)
+    await orchestrator._notify_terminal(status="SUCCEEDED")
+    assert seen and seen[0] is not None
+    assert (seen[0]["status"], seen[0]["posted_by"]) == ("posted", "automatic")
