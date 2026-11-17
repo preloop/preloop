@@ -1321,8 +1321,14 @@ jobs:
   leaf-release-validation:
     needs: [changes, fast]
     if: needs.changes.outputs.release_validation == 'true'
+    # Read-only scopes the callee's dispatch-only remote-audit job declares;
+    # GitHub rejects the whole run at startup if a caller grants less.
     permissions:
       contents: read
+      actions: read
+      attestations: read
+      packages: read
+      security-events: read
     uses: ./.github/workflows/release-validation.yml
     with:
       full: ${{ needs.changes.outputs.full == 'true' }}
