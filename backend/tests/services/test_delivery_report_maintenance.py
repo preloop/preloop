@@ -193,3 +193,58 @@ def test_operator_enabled_flow_survives_remove_unclaimed(
         ("keep", "enabled by an operator")
     ]
     assert crud_flow.get(db_session, id=UUID(created.flows[0].flow_id)) is not None
+
+
+def test_enable_adopts_an_existing_system_created_flow(
+    db_session: Session, test_user: Any
+) -> None:
+    """Enabling an account that already has an unclaimed flow keeps that flow."""
+    account = test_user.account_id
+    flow = _flow(db_session, account, name="system-failed", runs=("FAILED",) * 3)
+    planned = maintenance.enable_for_account(db_session, account_id=account)
+    assert [(f.flow_id, f.action) for f in planned.flows] == [
+        (str(flow.id), "would_adopt")
+    ]
+    adopted = maintenance.enable_for_account(
+        db_session, account_id=account, dry_run=False
+    )
+    again = maintenance.enable_for_account(
+        db_session, account_id=account, dry_run=False
+    )
+    assert [f.action for f in adopted.flows] == ["adopted"]
+    assert [f.action for f in again.flows] == ["exists"]
+    summary = maintenance.remove_unclaimed_report_flows(
+        db_session, account_id=account, dry_run=False
+    )
+    assert [(f.action, f.reason) for f in summary.flows] == [
+        ("keep", "enabled by an operator")
+    ]
+    assert crud_flow.get(db_session, id=flow.id) is not None
+
+
+def test_enable_creates_nothing_when_the_adoption_cannot_be_recorded(
+    db_session: Session, test_user: Any
+) -> None:
+    """Flow and adoption commit together, so a failed write leaves neither."""
+    import pytest
+
+    account = test_user.account_id
+    with (
+        patch(
+            "preloop.api.endpoints.flows._resolve_clone_model_binding",
+            return_value=None,
+        ),
+        patch.object(
+            maintenance.crud_audit_log,
+            "log_action",
+            side_effect=RuntimeError("audit write failed"),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        maintenance.enable_for_account(db_session, account_id=account, dry_run=False)
+    db_session.rollback()
+    assert not [
+        flow
+        for flow in crud_flow.get_by_account(db_session, account_id=account)
+        if (flow.agent_config or {}).get("report_kind") == "delivery_report"
+    ]

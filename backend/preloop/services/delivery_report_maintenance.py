@@ -141,7 +141,9 @@ def enable_for_account(
         dry_run: Report what would be installed and change nothing.
 
     Returns:
-        The existing or new flow (``exists``, ``would_create``, ``created``).
+        The flow and what happened: ``created`` / ``would_create`` for a new
+        flow, ``adopted`` / ``would_adopt`` for an existing system-created
+        flow now marked as operator-enabled, ``exists`` otherwise.
     """
     from preloop.services.delivery_report_activation import (
         ensure_default_report_flow,
@@ -180,11 +182,29 @@ def enable_for_account(
             )
         )
         return summary
-    if existing is None:
-        db.commit()
-        # The operator's explicit enable adopts the flow: remove-unclaimed
-        # keeps flows with this entry. Written directly so it does not depend
-        # on the audit service being enabled.
+    adopt = (
+        flow.created_by_user_id is None
+        and not crud_audit_log.flow_has_config_action(
+            db, account_id=account_id, flow_id=flow.id, action=OPERATOR_ENABLED_ACTION
+        )
+    )
+    if dry_run:
+        # Only an existing flow reaches here in a dry run.
+        summary.flows.append(
+            FlowAction(
+                flow_id=str(flow.id),
+                account_id=str(account_id),
+                name=str(flow.name),
+                is_enabled=bool(flow.is_enabled),
+                action="would_adopt" if adopt else "exists",
+            )
+        )
+        return summary
+    if adopt:
+        # The operator's explicit enable adopts a system-created flow, new or
+        # existing: remove-unclaimed keeps flows with this entry. Written
+        # directly (not through the audit service, which may be off) and in
+        # the same transaction as the flow, so a flow never exists unadopted.
         crud_audit_log.log_action(
             db=db,
             account_id=account_id,
@@ -198,15 +218,22 @@ def enable_for_account(
                 "action": OPERATOR_ENABLED_ACTION,
                 "new_value": {"id": str(flow.id), "name": flow.name},
             },
+            commit=False,
         )
+    try:
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
     summary.flows.append(
         FlowAction(
             flow_id=str(flow.id),
             account_id=str(account_id),
             name=str(flow.name),
             is_enabled=bool(flow.is_enabled),
-            action="exists" if existing is not None else "created",
+            action=(
+                "created" if existing is None else "adopted" if adopt else "exists"
+            ),
         )
     )
     return summary
